@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, OverlayType, OVERLAY_PRIORITY as _OP, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { useConfigStore } from './configStore'
+import { isQuietHours } from '../utils/quietHours'
 import { saveSessions as saveSessionsToBackend, loadSessions as loadSessionsFromBackend } from '../services/tauriApi'
 
 // Debounce helper
@@ -280,9 +281,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
             data: { summary: event.summary },
             createdAt: Date.now(),
           }
-          const dwellSeconds = useConfigStore.getState().taskCompleteDwellSeconds || 3
           setTimeout(() => useSessionStore.getState().pushOverlay(completionOverlay), 0)
-          setTimeout(() => useSessionStore.getState().dismissOverlay(completionId), dwellSeconds * 1000)
           break
         }
 
@@ -460,6 +459,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
   },
 
   pushOverlay: (item) => {
+    // Skip overlays for muted sessions
+    const muted = useSessionStore.getState().mutedSessions[item.sessionId]
+    if (muted && Date.now() < muted) return
+
+    // During quiet hours, suppress non-blocking overlays (response/completion)
+    const isNonBlocking = item.type === 'response' || item.type === 'completion'
+    if (isNonBlocking && isQuietHours()) return
+
     set((state) => {
       const queue = [...state.overlayQueue, item].sort(
         (a, b) => (OVERLAY_PRIORITY[b.type] ?? 0) - (OVERLAY_PRIORITY[a.type] ?? 0)

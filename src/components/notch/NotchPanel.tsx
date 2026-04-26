@@ -35,7 +35,7 @@ function OverlayRenderer({ overlay, onDismiss }: { overlay: OverlayItem; onDismi
           overlay={overlay}
           session={session}
           onAllow={() => { respondPermission(session.id, true); useSessionStore.getState().clearPermission(session.id) }}
-          onAllowAlways={() => { respondPermission(session.id, true); useSessionStore.getState().clearPermission(session.id) }}
+          onAllowAlways={() => { respondPermission(session.id, true, true); useSessionStore.getState().clearPermission(session.id) }}
           onDeny={() => { respondPermission(session.id, false); useSessionStore.getState().clearPermission(session.id) }}
           onDismiss={onDismiss}
         />

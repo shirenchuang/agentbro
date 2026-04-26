@@ -24,17 +24,15 @@ export function OverlayResponseCard({ overlay, session, onJumpToTerminal, onDism
   useEffect(() => {
     const interval = setInterval(() => {
       if (!paused.current) {
-        setRemaining((r) => {
-          if (r <= 100) {
-            onDismiss()
-            return 0
-          }
-          return r - 100
-        })
+        setRemaining((r) => Math.max(0, r - 100))
       }
     }, 100)
     return () => clearInterval(interval)
-  }, [dwellMs, onDismiss])
+  }, [dwellMs])
+
+  useEffect(() => {
+    if (remaining <= 0) onDismiss()
+  }, [remaining, onDismiss])
 
   const handleMouseEnter = useCallback(() => { paused.current = true }, [])
   const handleMouseLeave = useCallback(() => { paused.current = false }, [])

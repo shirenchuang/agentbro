@@ -70,8 +70,7 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onAcceptEdi
       <div className="plan-approval__actions">
         <button
           className="plan-approval__btn plan-approval__btn--feedback"
-          onClick={handleSendFeedback}
-          disabled={!feedback.trim()}
+          onClick={feedback.trim() ? handleSendFeedback : onDismiss}
         >
           {feedback.trim() ? t('notch.sendFeedback', { defaultValue: 'Send Feedback' }) : t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>
