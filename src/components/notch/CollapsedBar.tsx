@@ -1,6 +1,7 @@
 /* Collapsed Bar — Pill-shaped header with pixel art, info, and controls */
 import { useTranslation } from 'react-i18next'
 import type { PanelState, RateLimitInfo, SessionState } from '../../types/agent'
+import { computePriority, PRIORITY } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { RateLimitBar } from './RateLimitBar'
 import { useTick } from '../../hooks/useTick'
@@ -15,17 +16,7 @@ interface CollapsedBarProps {
 }
 
 function getLeadSession(sessions: SessionState[]): SessionState | undefined {
-  const priority: Record<string, number> = {
-    waiting_approval: 0,
-    waiting_input: 1,
-    processing: 2,
-    compacting: 3,
-    error: 4,
-    done: 5,
-    idle: 6,
-    interrupted: 7,
-  }
-  return [...sessions].sort((a, b) => (priority[a.phase] ?? 99) - (priority[b.phase] ?? 99))[0]
+  return [...sessions].sort((a, b) => computePriority(b) - computePriority(a))[0]
 }
 
 function getSessionInfo(session: SessionState | undefined, t: (key: string, opts?: Record<string, string>) => string): string {
@@ -44,6 +35,8 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
   const info = getSessionInfo(lead, t)
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
+  const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
+  const leadPriority = lead ? computePriority(lead) : PRIORITY.dormant
 
   return (
     <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
@@ -107,7 +100,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
         <div className="collapsed-bar__left">
           {lead ? (
             <>
-              <PixelIndicator phase={lead.phase} size={14} />
+              <PixelIndicator priority={leadPriority} size={14} />
               <span className="collapsed-bar__info">{info}</span>
             </>
           ) : (
@@ -118,6 +111,9 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
         </div>
 
         <div className="collapsed-bar__right">
+          {alertCount > 0 && (
+            <span className="collapsed-bar__alert-badge">{alertCount}</span>
+          )}
           {count > 0 && (
             <span className="collapsed-bar__count">{count}</span>
           )}

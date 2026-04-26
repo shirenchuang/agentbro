@@ -1,42 +1,48 @@
-/* PixelIndicator — Animated multi-color pixel art grid indicator */
+/* PixelIndicator — Priority-driven animated pixel art grid */
 import { useMemo } from 'react'
+import type { Priority } from '../../types/priority'
+import { PRIORITY, computePriority, priorityName } from '../../types/priority'
 import type { SessionPhase } from '../../types/agent'
 import './PixelIndicator.css'
 
 interface PixelIndicatorProps {
-  phase: SessionPhase
+  priority?: Priority
+  phase?: SessionPhase
   size?: number
 }
 
-// Color palettes per state
-const ACTIVE_COLORS = ['#FF9500', '#30D158', '#007AFF', '#FF3B30', '#E8654A', '#FFD60A']
-const IDLE_COLORS = ['#30D158', '#28a745', '#22c55e', '#4ade80']
-const ERROR_COLORS = ['#FF3B30', '#FF453A', '#EF4444', '#DC2626']
-const DONE_COLORS = ['#30D158', '#4ade80', '#86efac', '#22c55e']
-
-function getColors(phase: SessionPhase): string[] {
-  switch (phase) {
-    case 'processing':
-    case 'waiting_approval':
-    case 'waiting_input':
-    case 'compacting':
-      return ACTIVE_COLORS
-    case 'error':
-      return ERROR_COLORS
-    case 'done':
-      return DONE_COLORS
-    default:
-      return IDLE_COLORS
-  }
+const PRIORITY_COLORS: Record<number, string[]> = {
+  [PRIORITY.dormant]:   ['#666', '#777', '#555', '#666'],
+  [PRIORITY.idle]:      ['#30D158', '#28a745', '#22c55e', '#4ade80'],
+  [PRIORITY.done]:      ['#30D158', '#4ade80', '#86efac', '#22c55e'],
+  [PRIORITY.thinking]:  ['#007AFF', '#2196F3', '#60a5fa', '#3b82f6'],
+  [PRIORITY.working]:   ['#FF9500', '#30D158', '#007AFF', '#E8654A'],
+  [PRIORITY.compacting]:['#9C27B0', '#AB47BC', '#CE93D8', '#7B1FA2'],
+  [PRIORITY.attention]: ['#FF3B30', '#FF453A', '#FF9500', '#FFD60A'],
 }
 
-export function PixelIndicator({ phase, size = 14 }: PixelIndicatorProps) {
-  const isActive = phase === 'waiting_approval' || phase === 'waiting_input' || phase === 'processing' || phase === 'compacting'
-  const isError = phase === 'error'
+const PRIORITY_SPEED: Record<number, number> = {
+  [PRIORITY.dormant]: 0,
+  [PRIORITY.idle]: 2000,
+  [PRIORITY.done]: 1500,
+  [PRIORITY.thinking]: 800,
+  [PRIORITY.working]: 600,
+  [PRIORITY.compacting]: 500,
+  [PRIORITY.attention]: 300,
+}
 
-  const colors = getColors(phase)
+function phaseToFallbackPriority(phase: SessionPhase): Priority {
+  return computePriority({ phase, startedAt: Date.now() })
+}
 
-  // Generate a 2x2 grid of pixel colors
+export function PixelIndicator({ priority, phase, size = 14 }: PixelIndicatorProps) {
+  const p = priority ?? (phase ? phaseToFallbackPriority(phase) : PRIORITY.idle)
+  const isAnimated = p >= PRIORITY.thinking
+  const isAttention = p === PRIORITY.attention
+
+  const colors = PRIORITY_COLORS[p] ?? PRIORITY_COLORS[PRIORITY.idle]
+  const speed = PRIORITY_SPEED[p] ?? 1500
+
   const pixels = useMemo(() => {
     return [0, 1, 2, 3].map(i => colors[i % colors.length])
   }, [colors])
@@ -46,9 +52,9 @@ export function PixelIndicator({ phase, size = 14 }: PixelIndicatorProps) {
 
   const className = [
     'pixel-indicator',
-    isActive ? 'pixel-indicator--active' : '',
-    isError ? 'pixel-indicator--error' : '',
-    !isActive && !isError ? 'pixel-indicator--idle' : '',
+    isAnimated ? 'pixel-indicator--active' : '',
+    isAttention ? 'pixel-indicator--error' : '',
+    !isAnimated && !isAttention ? 'pixel-indicator--idle' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -56,6 +62,7 @@ export function PixelIndicator({ phase, size = 14 }: PixelIndicatorProps) {
       className={className}
       style={{ width: size, height: size }}
       aria-hidden
+      data-priority={priorityName(p)}
     >
       <span className="pixel-indicator__grid" style={{ gap }}>
         {pixels.map((color, i) => (
@@ -66,7 +73,8 @@ export function PixelIndicator({ phase, size = 14 }: PixelIndicatorProps) {
               width: pixelSize,
               height: pixelSize,
               background: color,
-              animationDelay: isActive ? `${i * 0.15}s` : undefined,
+              animationDelay: isAnimated ? `${i * (speed / 4000)}s` : undefined,
+              animationDuration: isAnimated ? `${speed}ms` : undefined,
             }}
           />
         ))}

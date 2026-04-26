@@ -1,0 +1,40 @@
+/* Agent Island — Priority System */
+
+export const PRIORITY = {
+  dormant: 0,
+  idle: 1,
+  done: 2,
+  thinking: 3,
+  working: 4,
+  compacting: 5,
+  attention: 6,
+} as const
+
+export type Priority = typeof PRIORITY[keyof typeof PRIORITY]
+export type PriorityName = keyof typeof PRIORITY
+
+export function computePriority(session: {
+  phase: string
+  lastToolName?: string
+  idleSince?: number
+  startedAt: number
+}): Priority {
+  if (session.phase === 'error') return PRIORITY.attention
+  if (session.phase === 'waiting_approval' || session.phase === 'waiting_input')
+    return PRIORITY.attention
+  if (session.phase === 'compacting') return PRIORITY.compacting
+  if (session.phase === 'done') return PRIORITY.done
+  if (session.phase === 'processing') {
+    return session.lastToolName ? PRIORITY.working : PRIORITY.thinking
+  }
+  if (session.phase === 'idle') {
+    const idleMs = Date.now() - (session.idleSince ?? session.startedAt)
+    return idleMs > 10 * 60 * 1000 ? PRIORITY.idle : PRIORITY.done
+  }
+  return PRIORITY.idle
+}
+
+export function priorityName(p: Priority): PriorityName {
+  const entries = Object.entries(PRIORITY) as [PriorityName, Priority][]
+  return entries.find(([, v]) => v === p)?.[0] ?? 'idle'
+}

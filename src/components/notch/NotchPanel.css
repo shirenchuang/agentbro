@@ -11,6 +11,7 @@
 }
 
 .notch-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-xl);
@@ -39,4 +40,57 @@
   20% { transform: scale(1.03); }
   50% { transform: scale(0.98); }
   80% { transform: scale(1.01); }
+}
+
+/* Overlay layer — floats above base content */
+.notch-panel__overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 10;
+}
+
+.notch-panel__overlay-card {
+  background: rgba(30, 30, 30, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: var(--radius-lg, 12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.notch-panel__overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notch-panel__overlay-type {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vi-text-secondary, #aaa);
+}
+
+.notch-panel__overlay-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--vi-text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.notch-panel__overlay-close:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--vi-text-primary, #fff);
 }

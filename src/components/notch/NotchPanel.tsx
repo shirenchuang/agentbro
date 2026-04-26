@@ -1,10 +1,11 @@
-/* Agent Island — Notch Panel (3-state Dynamic Island) */
+/* Agent Island — Notch Panel (Layered Dynamic Island) */
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits } from '../../stores/sessionStore'
+import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { respondPermission, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
+import { computePriority, PRIORITY } from '../../types/priority'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
@@ -22,6 +23,8 @@ export function NotchPanel() {
   const setPanelState = useSessionStore((s) => s.setPanelState)
   const sessions = useSessionStore(selectSessionList)
   const rateLimits = useSessionStore(selectRateLimits)
+  const activeOverlay = useSessionStore(selectActiveOverlay)
+  const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
   const dwellDuration = useConfigStore((s) => s.dwellDuration)
   const notchStyle = useConfigStore((s) => s.notchStyle)
   const maxPanelHeight = useConfigStore((s) => s.maxPanelHeight)
@@ -30,18 +33,17 @@ export function NotchPanel() {
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [bouncing, setBouncing] = useState(false)
 
-  // Track sessions needing attention for bounce animation
+  // Track sessions needing attention via overlay queue
   const attentionCount = useMemo(
-    () => sessions.filter(s => s.phase === 'waiting_approval').length,
+    () => sessions.filter(s => computePriority(s) === PRIORITY.attention).length,
     [sessions],
   )
 
-  // Bounce animation + auto-expand on new permission request
+  // Bounce animation + auto-expand on new attention event
   const prevAttentionRef = useRef(0)
   useEffect(() => {
     if (attentionCount > 0) {
       setBouncing(true)
-      // Auto-expand to hover when a new permission request arrives
       if (attentionCount > prevAttentionRef.current && panelState === 'collapsed') {
         setPanelState('hover')
       }
@@ -49,7 +51,7 @@ export function NotchPanel() {
     prevAttentionRef.current = attentionCount
   }, [attentionCount, panelState, setPanelState])
 
-  // Auto-collapse after permission is resolved (attentionCount drops to 0)
+  // Auto-collapse after all attention resolved
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
     if (attentionCount === 0 && prevAttentionRef.current > 0 && panelState === 'hover') {
@@ -63,7 +65,7 @@ export function NotchPanel() {
     }
   }, [attentionCount, panelState, setPanelState])
 
-  // Auto-hide when no sessions: fade out after 1 second, restore on new session
+  // Auto-hide when no sessions
   const autoHideNoSessions = useConfigStore((s) => s.autoHideNoSessions)
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -71,12 +73,10 @@ export function NotchPanel() {
     if (!autoHideNoSessions) return
 
     if (sessions.length === 0) {
-      // Start 1-second timer before hiding
       autoHideTimerRef.current = setTimeout(() => {
         setNotchOpacity(0)
       }, 1000)
     } else {
-      // Sessions appeared — cancel timer and restore visibility
       if (autoHideTimerRef.current) {
         clearTimeout(autoHideTimerRef.current)
         autoHideTimerRef.current = undefined
@@ -91,7 +91,7 @@ export function NotchPanel() {
     }
   }, [sessions.length, autoHideNoSessions])
 
-  // Mouse enter — clear pending leave timer and expand
+  // Mouse enter
   const handleMouseEnter = () => {
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current)
@@ -102,7 +102,7 @@ export function NotchPanel() {
     }
   }
 
-  // Mouse leave — configurable dwell delay before collapsing
+  // Mouse leave
   const handleMouseLeave = () => {
     if (!autoCollapse) return
     if (panelState === 'hover') {
@@ -113,22 +113,19 @@ export function NotchPanel() {
     }
   }
 
-  // Cleanup leave timer on unmount
   useEffect(() => {
     return () => {
       if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current)
     }
   }, [])
 
-  // Keyboard shortcuts (configurable via settings)
+  // Keyboard shortcuts
   useEffect(() => {
-    /** Check if a keyboard event matches a shortcut binding */
     function matchesShortcut(e: KeyboardEvent, shortcut: { keys: string }): boolean {
       const parts = shortcut.keys.split('+').map(p => p.trim())
       const needsMeta = parts.includes('\u2318')
       const needsShift = parts.includes('Shift')
       const key = parts.filter(p => p !== '\u2318' && p !== 'Shift')[0] || ''
-
       return e.key.toLowerCase() === key.toLowerCase()
         && !!e.metaKey === needsMeta
         && !!e.shiftKey === needsShift
@@ -139,14 +136,32 @@ export function NotchPanel() {
     }
 
     const handler = (e: KeyboardEvent) => {
-      // Collapse panel
+      const store = useSessionStore.getState()
+
+      // Progressive ESC
+      if (e.key === 'Escape') {
+        const overlay = store.activeOverlay
+        if (overlay) {
+          if (overlay.type === 'completion' || overlay.type === 'response') {
+            store.dismissOverlay(overlay.id)
+          } else {
+            setPanelState('collapsed')
+          }
+        } else if (store.panelState === 'expanded') {
+          setPanelState('hover')
+        } else if (store.panelState === 'hover') {
+          setPanelState('collapsed')
+        }
+        return
+      }
+
+      // Collapse panel shortcut
       const collapseBinding = findShortcut('collapse-panel')
       if (collapseBinding && matchesShortcut(e, collapseBinding)) {
         setPanelState('collapsed')
         return
       }
 
-      const store = useSessionStore.getState()
       const active = store.activeSessionId ? store.sessions[store.activeSessionId] : null
 
       // Approve action
@@ -167,7 +182,7 @@ export function NotchPanel() {
         return
       }
 
-      // Jump to terminal (Cmd+J default)
+      // Jump to terminal
       if (e.metaKey && e.key === 'j') {
         e.preventDefault()
         const sid = store.activeSessionId
@@ -195,7 +210,6 @@ export function NotchPanel() {
     useSessionStore.getState().setActiveSession(sessionId)
     setPanelState('expanded')
 
-    // Fetch full chat history from the JSONL file when expanding
     getChatHistory(sessionId)
       .then((parsed) => {
         if (parsed.length > 0) {
@@ -210,24 +224,23 @@ export function NotchPanel() {
     setPanelState('collapsed')
   }
 
-  // Vibe Island sizing — wider panel
+  // Sizing
   const isCompact = notchStyle === 'compact'
+  const hasOverlay = activeOverlay !== null
   const panelWidth = panelState === 'collapsed' ? (isCompact ? 280 : 340) : (isCompact ? 560 : 620)
 
-  // Height: status bar (32px) + main bar (36px) + session cards
   const statusBarHeight = panelState !== 'collapsed' ? 32 : 0
+  const overlayExtraHeight = hasOverlay ? 120 : 0
   const panelHeight =
     panelState === 'collapsed'
       ? 36
       : panelState === 'hover'
-        ? Math.min(statusBarHeight + 36 + Math.max(sessions.length, 1) * 72 + 16, 480)
+        ? Math.min(statusBarHeight + 36 + Math.max(sessions.length, 1) * 72 + 16 + overlayExtraHeight, 480)
         : (maxPanelHeight || 560)
 
-  // Resize the Tauri window to match panel content (with padding for position offset)
   useEffect(() => {
-    // Add some padding: 8px top offset + 8px bottom breathing room
     const windowHeight = panelHeight + 16
-    const windowWidth = panelWidth + 20 // 10px each side for shadow
+    const windowWidth = panelWidth + 20
     resizeNotch(windowWidth, windowHeight)
   }, [panelWidth, panelHeight])
 
@@ -261,7 +274,7 @@ export function NotchPanel() {
           />
 
           <AnimatePresence mode="wait">
-            {/* Hover state: session list */}
+            {/* Base layer: session list */}
             {panelState === 'hover' && (
               <motion.div
                 key="hover"
@@ -278,7 +291,7 @@ export function NotchPanel() {
               </motion.div>
             )}
 
-            {/* Expanded state: full detail */}
+            {/* Base layer: detail view */}
             {panelState === 'expanded' && (
               <motion.div
                 key="expanded"
@@ -289,6 +302,33 @@ export function NotchPanel() {
                 style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
               >
                 <ChatView onBack={() => setPanelState('hover')} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Overlay layer — renders on top of base layer */}
+          <AnimatePresence>
+            {activeOverlay && panelState !== 'collapsed' && (
+              <motion.div
+                key={`overlay-${activeOverlay.id}`}
+                className="notch-panel__overlay"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+              >
+                <div className="notch-panel__overlay-card">
+                  <div className="notch-panel__overlay-header">
+                    <span className="notch-panel__overlay-type">{activeOverlay.type}</span>
+                    <button
+                      className="notch-panel__overlay-close"
+                      onClick={() => dismissOverlay(activeOverlay.id)}
+                      aria-label="Dismiss"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>

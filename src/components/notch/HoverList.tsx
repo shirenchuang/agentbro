@@ -1,8 +1,9 @@
 /* Hover List — Session cards in Vibe Island style */
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { SessionState } from '../../types/agent'
+import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { ToolCallDisplay } from './ToolCallDisplay'
 import { TaskSummary } from './TaskSummary'
@@ -77,7 +78,12 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverL
     })
   }, [])
 
-  if (sessions.length === 0) {
+  const sortedSessions = useMemo(
+    () => [...sessions].sort((a, b) => computePriority(b) - computePriority(a)),
+    [sessions]
+  )
+
+  if (sortedSessions.length === 0) {
     return (
       <div className="hover-list__empty">
         <svg className="hover-list__empty-logo" viewBox="0 0 48 48" fill="none" aria-hidden>
@@ -96,7 +102,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverL
   return (
     <div className="hover-list">
       <AnimatePresence initial={false}>
-        {sessions.map((session, index) => {
+        {sortedSessions.map((session, index) => {
           const badgeColor = AGENT_BADGE_COLORS[session.agentType] || '#6B7280'
 
           return (
@@ -113,7 +119,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverL
               >
                 {/* Row 1: Pixel + project + session title + badges + duration + jump */}
                 <div className="hover-list__row1">
-                  <PixelIndicator phase={session.phase} size={14} />
+                  <PixelIndicator priority={computePriority(session)} size={14} />
                   <span className="hover-list__project">{session.project}</span>
                   {session.sessionTitle && (
                     <>
@@ -223,7 +229,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverL
       </AnimatePresence>
 
       {/* Completion notification cards */}
-      {sessions
+      {sortedSessions
         .filter((s) => s.phase === 'done' && completedIds.has(s.id))
         .map((s) => (
           <CompletionCard key={`complete-${s.id}`} session={s} onDismiss={dismissCompletion} />

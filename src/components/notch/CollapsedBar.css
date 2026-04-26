@@ -92,6 +92,23 @@
   font-weight: 400;
 }
 
+/* Alert badge — red pill for attention-needed count */
+.collapsed-bar__alert-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #FF3B30;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 /* Session count — plain number, no colored circle */
 .collapsed-bar__count {
   font-size: var(--font-size-sm);

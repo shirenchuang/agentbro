@@ -16,6 +16,27 @@ export type SessionPhase =
 
 export type PanelState = 'collapsed' | 'hover' | 'expanded'
 
+export type BaseLayer = 'compact' | 'expanded' | 'detail'
+export type DisplayLevel = 'dormant' | 'compact' | 'visible'
+
+export type OverlayType = 'permission' | 'question' | 'plan' | 'completion' | 'response'
+
+export const OVERLAY_PRIORITY: Record<OverlayType, number> = {
+  permission: 100,
+  plan: 90,
+  question: 80,
+  completion: 20,
+  response: 10,
+}
+
+export interface OverlayItem {
+  id: string
+  sessionId: string
+  type: OverlayType
+  data: unknown
+  createdAt: number
+}
+
 export interface TokenUsage {
   input: number
   output: number
@@ -68,6 +89,7 @@ export interface SessionState {
   terminal: string
   phase: SessionPhase
   startedAt: number
+  idleSince?: number
   duration: number
   tokens: TokenUsage
   rateLimits?: RateLimitInfo

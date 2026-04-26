@@ -1,6 +1,7 @@
 /* Agent Island — Session State Management (Zustand) */
 import { create } from 'zustand'
-import type { AgentEvent, ChatMessage, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, OverlayType, OVERLAY_PRIORITY as _OP, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import { OVERLAY_PRIORITY } from '../types/agent'
 import { useConfigStore } from './configStore'
 import { saveSessions as saveSessionsToBackend, loadSessions as loadSessionsFromBackend } from '../services/tauriApi'
 
@@ -41,10 +42,18 @@ interface SessionStore {
   activeSessionId: string | null
   panelState: PanelState
   rateLimits?: RateLimitInfo
+  // Layered state machine
+  baseLayer: BaseLayer
+  overlayQueue: OverlayItem[]
+  activeOverlay: OverlayItem | null
   // actions
   updateSession: (event: AgentEvent) => void
   setActiveSession: (id: string | null) => void
   setPanelState: (state: PanelState) => void
+  setBaseLayer: (layer: BaseLayer) => void
+  pushOverlay: (item: OverlayItem) => void
+  dismissOverlay: (id: string) => void
+  clearSessionOverlays: (sessionId: string) => void
   removeSession: (id: string) => void
   replaceAllSessions: (sessions: SessionState[]) => void
   setChatHistory: (sessionId: string, messages: ChatMessage[]) => void
@@ -63,6 +72,9 @@ export const selectActiveSession = (s: SessionStore): SessionState | undefined =
 export const selectPanelState = (s: SessionStore) => s.panelState
 export const selectActiveSessionId = (s: SessionStore) => s.activeSessionId
 export const selectRateLimits = (s: SessionStore) => s.rateLimits
+export const selectBaseLayer = (s: SessionStore) => s.baseLayer
+export const selectActiveOverlay = (s: SessionStore) => s.activeOverlay
+export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 
 export const useSessionStore = create<SessionStore>((set) => ({
   sessions: {},
@@ -70,6 +82,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
   activeSessionId: null,
   panelState: 'collapsed',
   rateLimits: undefined,
+  baseLayer: 'compact',
+  overlayQueue: [],
+  activeOverlay: null,
 
   updateSession: (event: AgentEvent) => {
     set((state) => {
@@ -102,13 +117,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
             const ids = Object.keys(sessions)
             activeSessionId = ids[0] ?? null
           }
+          setTimeout(() => useSessionStore.getState().clearSessionOverlays(event.sessionId), 0)
           break
         }
 
         case 'processing': {
           const session = sessions[event.sessionId]
           if (session) {
-            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description }
+            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined }
           }
           break
         }
@@ -133,6 +149,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
               lastToolTarget: event.toolTarget,
               lastToolStatus: event.status,
               chatHistory: [...session.chatHistory, msg],
+              idleSince: undefined,
             }
           }
           break
@@ -154,7 +171,22 @@ export const useSessionStore = create<SessionStore>((set) => ({
               chatHistory: [...session.chatHistory, msg],
             }
           }
-          panelState = 'expanded'
+          // Push overlay instead of forcing panel state
+          const permOverlayId = `perm-${event.sessionId}-${Date.now()}`
+          const permOverlay: OverlayItem = {
+            id: permOverlayId,
+            sessionId: event.sessionId,
+            type: 'permission',
+            data: {
+              toolName: event.toolName,
+              toolInput: event.toolInput || '',
+              diff: event.diff,
+              options: event.options,
+            },
+            createdAt: Date.now(),
+          }
+          // Queue overlay after set() — use setTimeout(0) to run after state update
+          setTimeout(() => useSessionStore.getState().pushOverlay(permOverlay), 0)
           activeSessionId = event.sessionId
           break
         }
@@ -168,7 +200,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
               pendingQuestion: { question: event.question, options: event.options },
             }
           }
-          panelState = 'expanded'
+          const qOverlay: OverlayItem = {
+            id: `question-${event.sessionId}-${Date.now()}`,
+            sessionId: event.sessionId,
+            type: 'question',
+            data: { question: event.question, options: event.options },
+            createdAt: Date.now(),
+          }
+          setTimeout(() => useSessionStore.getState().pushOverlay(qOverlay), 0)
           activeSessionId = event.sessionId
           break
         }
@@ -185,17 +224,21 @@ export const useSessionStore = create<SessionStore>((set) => ({
               pendingQuestion: undefined,
               chatHistory: [...session.chatHistory, msg],
               taskCompletedAt: Date.now(),
+              idleSince: Date.now(),
             }
           }
-          // Store session ID and verify it's still active before collapsing
-          const completedSessionId = event.sessionId
+          // Push completion overlay with auto-dismiss
+          const completionId = `completion-${event.sessionId}-${Date.now()}`
+          const completionOverlay: OverlayItem = {
+            id: completionId,
+            sessionId: event.sessionId,
+            type: 'completion',
+            data: { summary: event.summary },
+            createdAt: Date.now(),
+          }
           const dwellSeconds = useConfigStore.getState().taskCompleteDwellSeconds || 3
-          setTimeout(() => {
-            const store = useSessionStore.getState()
-            if (store.activeSessionId === completedSessionId) {
-              store.setPanelState('collapsed')
-            }
-          }, dwellSeconds * 1000)
+          setTimeout(() => useSessionStore.getState().pushOverlay(completionOverlay), 0)
+          setTimeout(() => useSessionStore.getState().dismissOverlay(completionId), dwellSeconds * 1000)
           break
         }
 
@@ -250,7 +293,10 @@ export const useSessionStore = create<SessionStore>((set) => ({
   },
 
   setActiveSession: (id) => set({ activeSessionId: id }),
-  setPanelState: (panelState) => set({ panelState }),
+  setPanelState: (panelState) => {
+    const layerMap: Record<PanelState, BaseLayer> = { collapsed: 'compact', hover: 'expanded', expanded: 'detail' }
+    set({ panelState, baseLayer: layerMap[panelState] })
+  },
   removeSession: (id) => {
     set((state) => {
       const sessions = { ...state.sessions }
@@ -306,7 +352,8 @@ export const useSessionStore = create<SessionStore>((set) => ({
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined },
       }
-      return { sessions, sessionList: toList(sessions) }
+      const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'permission'))
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
   },
 
@@ -318,11 +365,40 @@ export const useSessionStore = create<SessionStore>((set) => ({
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingQuestion: undefined },
       }
-      return { sessions, sessionList: toList(sessions) }
+      const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'question'))
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
   },
 
   setRateLimits: (limits) => {
     set({ rateLimits: limits })
+  },
+
+  setBaseLayer: (baseLayer) => {
+    const panelMap: Record<BaseLayer, PanelState> = { compact: 'collapsed', expanded: 'hover', detail: 'expanded' }
+    set({ baseLayer, panelState: panelMap[baseLayer] })
+  },
+
+  pushOverlay: (item) => {
+    set((state) => {
+      const queue = [...state.overlayQueue, item].sort(
+        (a, b) => (OVERLAY_PRIORITY[b.type] ?? 0) - (OVERLAY_PRIORITY[a.type] ?? 0)
+      )
+      return { overlayQueue: queue, activeOverlay: queue[0] ?? null }
+    })
+  },
+
+  dismissOverlay: (id) => {
+    set((state) => {
+      const queue = state.overlayQueue.filter((o) => o.id !== id)
+      return { overlayQueue: queue, activeOverlay: queue[0] ?? null }
+    })
+  },
+
+  clearSessionOverlays: (sessionId) => {
+    set((state) => {
+      const queue = state.overlayQueue.filter((o) => o.sessionId !== sessionId)
+      return { overlayQueue: queue, activeOverlay: queue[0] ?? null }
+    })
   },
 }))
