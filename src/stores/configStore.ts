@@ -92,6 +92,13 @@ interface ConfigState {
 
   // Language
   language: 'en' | 'zh'
+
+  // Quiet Hours
+  quietHours: {
+    enabled: boolean
+    start: string
+    end: string
+  }
 }
 
 interface ConfigActions {
@@ -200,6 +207,9 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Language
   language: (navigator.language.startsWith('zh') ? 'zh' : 'en') as 'en' | 'zh',
+
+  // Quiet Hours
+  quietHours: { enabled: false, start: '22:00', end: '08:00' },
 
   // Actions
   updateConfig: (key, value) => {

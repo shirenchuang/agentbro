@@ -162,4 +162,5 @@ export type AgentEvent =
   | { type: 'context_compact'; sessionId: string; phase: 'pre' | 'post' }
   | { type: 'token_usage'; sessionId: string; input: number; output: number; cacheRead: number; cacheCreate: number }
   | { type: 'plan_request'; sessionId: string; planTitle: string; planContent: string; requestedPermissions?: string[] }
+  | { type: 'task_update'; sessionId: string; taskId: string; subject: string; status: 'pending' | 'in_progress' | 'completed' }
   | { type: 'user_message'; sessionId: string; content: string }

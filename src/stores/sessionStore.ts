@@ -46,6 +46,8 @@ interface SessionStore {
   baseLayer: BaseLayer
   overlayQueue: OverlayItem[]
   activeOverlay: OverlayItem | null
+  // Session mute
+  mutedSessions: Record<string, number>  // sessionId → mute expiry timestamp
   // actions
   updateSession: (event: AgentEvent) => void
   setActiveSession: (id: string | null) => void
@@ -60,6 +62,9 @@ interface SessionStore {
   clearPermission: (sessionId: string) => void
   clearQuestion: (sessionId: string) => void
   setRateLimits: (limits: RateLimitInfo) => void
+  muteSession: (id: string, durationMs?: number) => void
+  unmuteSession: (id: string) => void
+  isSessionMuted: (id: string) => boolean
 }
 
 function toList(sessions: Record<string, SessionState>): SessionState[] {
@@ -85,6 +90,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   baseLayer: 'compact',
   overlayQueue: [],
   activeOverlay: null,
+  mutedSessions: {},
 
   updateSession: (event: AgentEvent) => {
     set((state) => {
@@ -142,15 +148,52 @@ export const useSessionStore = create<SessionStore>((set) => ({
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'tool_use', toolName: event.toolName, toolInput: event.toolInput, status: event.status, timestamp: Date.now() }
-            sessions[event.sessionId] = {
+            const updatedSession = {
               ...session,
-              phase: 'processing',
+              phase: 'processing' as const,
               lastToolName: event.toolName,
               lastToolTarget: event.toolTarget,
               lastToolStatus: event.status,
               chatHistory: [...session.chatHistory, msg],
               idleSince: undefined,
             }
+
+            // Task tracking: detect TaskCreate/TaskUpdate tool calls
+            if (event.toolName === 'TaskCreate' && event.toolInput && event.status === 'success') {
+              try {
+                const parsed = JSON.parse(event.toolInput)
+                if (parsed.subject) {
+                  const newTask = { id: `task-${Date.now()}`, name: parsed.subject, status: 'pending' as const }
+                  updatedSession.tasks = [...(session.tasks || []), newTask]
+                }
+              } catch {}
+            } else if (event.toolName === 'TaskUpdate' && event.toolInput && event.status === 'success') {
+              try {
+                const parsed = JSON.parse(event.toolInput)
+                if (parsed.taskId && parsed.status && session.tasks) {
+                  updatedSession.tasks = session.tasks.map((t) =>
+                    t.id === parsed.taskId ? { ...t, status: parsed.status } : t
+                  )
+                }
+              } catch {}
+            }
+
+            // Subagent tracking: detect Agent tool calls
+            if (event.toolName === 'Agent' && event.toolInput && event.status === 'running') {
+              try {
+                const parsed = JSON.parse(event.toolInput)
+                const subagent = {
+                  agentId: `sub-${Date.now()}`,
+                  description: parsed.description || parsed.prompt?.slice(0, 80) || 'Subagent',
+                  startedAt: Date.now(),
+                  status: 'running' as const,
+                  tools: [],
+                }
+                updatedSession.subagents = [...session.subagents, subagent]
+              } catch {}
+            }
+
+            sessions[event.sessionId] = updatedSession
           }
           break
         }
@@ -225,6 +268,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
               chatHistory: [...session.chatHistory, msg],
               taskCompletedAt: Date.now(),
               idleSince: Date.now(),
+              subagents: session.subagents.map((s) => s.status === 'running' ? { ...s, status: 'completed' as const } : s),
             }
           }
           // Push completion overlay with auto-dismiss
@@ -260,6 +304,21 @@ export const useSessionStore = create<SessionStore>((set) => ({
           }
           setTimeout(() => useSessionStore.getState().pushOverlay(planOverlay), 0)
           activeSessionId = event.sessionId
+          break
+        }
+
+        case 'task_update': {
+          const session = sessions[event.sessionId]
+          if (session) {
+            const tasks = [...(session.tasks || [])]
+            const idx = tasks.findIndex((t) => t.id === event.taskId)
+            if (idx >= 0) {
+              tasks[idx] = { ...tasks[idx], name: event.subject, status: event.status }
+            } else {
+              tasks.push({ id: event.taskId, name: event.subject, status: event.status })
+            }
+            sessions[event.sessionId] = { ...session, tasks }
+          }
           break
         }
 
@@ -421,5 +480,33 @@ export const useSessionStore = create<SessionStore>((set) => ({
       const queue = state.overlayQueue.filter((o) => o.sessionId !== sessionId)
       return { overlayQueue: queue, activeOverlay: queue[0] ?? null }
     })
+  },
+
+  muteSession: (id, durationMs = 30 * 60 * 1000) => {
+    const expiry = Date.now() + durationMs
+    set((state) => ({
+      mutedSessions: { ...state.mutedSessions, [id]: expiry },
+    }))
+    setTimeout(() => {
+      useSessionStore.getState().unmuteSession(id)
+    }, durationMs)
+  },
+
+  unmuteSession: (id) => {
+    set((state) => {
+      const mutedSessions = { ...state.mutedSessions }
+      delete mutedSessions[id]
+      return { mutedSessions }
+    })
+  },
+
+  isSessionMuted: (id) => {
+    const expiry = useSessionStore.getState().mutedSessions[id]
+    if (!expiry) return false
+    if (Date.now() > expiry) {
+      useSessionStore.getState().unmuteSession(id)
+      return false
+    }
+    return true
   },
 }))
