@@ -1,0 +1,46 @@
+.token-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs) var(--space-lg);
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.token-bar__counts {
+  color: var(--text-tertiary);
+}
+
+.token-bar__cache {
+  color: var(--accent);
+}
+
+.token-bar__right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.token-bar__cost {
+  color: var(--status-active);
+  font-weight: 500;
+}
+
+.token-bar__model-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-sans);
+  padding: 1px 5px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.token-bar__model-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}

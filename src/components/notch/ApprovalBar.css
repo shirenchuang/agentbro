@@ -1,0 +1,180 @@
+.approval-bar {
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Warning header: ⚠ ToolName in orange */
+.approval-bar__warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-bar__warning-icon {
+  color: var(--vi-warning-orange);
+  font-size: 14px;
+}
+
+.approval-bar__warning-text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--vi-warning-orange);
+  font-weight: 600;
+}
+
+/* Tool detail card */
+.approval-bar__tool-card {
+  background: var(--vi-card);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.approval-bar__tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.approval-bar__tool-icon {
+  font-size: 14px;
+}
+
+.approval-bar__tool-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--vi-text-primary);
+}
+
+.approval-bar__tool-input {
+  font-size: 11px;
+  color: var(--vi-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 4 action buttons row */
+.approval-bar__buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.approval-bar__btn {
+  flex: 1;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s, filter 0.15s;
+  white-space: nowrap;
+}
+
+.approval-bar__btn:hover {
+  opacity: 0.85;
+}
+
+/* Deny: dark gray */
+.approval-bar__btn--deny {
+  background: var(--vi-badge-dark);
+  color: var(--vi-text-primary);
+}
+
+/* Allow once: dark gray */
+.approval-bar__btn--allow {
+  background: var(--vi-badge-dark);
+  color: var(--vi-text-primary);
+}
+
+/* Allow always: blue */
+.approval-bar__btn--always {
+  background: var(--vi-accent-blue);
+  color: white;
+}
+
+/* Auto-approve: red */
+.approval-bar__btn--auto {
+  background: var(--vi-accent-red);
+  color: white;
+}
+
+/* Accept edits: orange */
+.approval-bar__btn--accept-edits {
+  background: var(--vi-accent-orange);
+  color: white;
+}
+
+/* Option buttons */
+.approval-bar__btn--option {
+  background: var(--vi-badge-dark);
+  color: var(--vi-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.approval-bar__shortcut {
+  font-size: 10px;
+  opacity: 0.5;
+  font-family: var(--font-mono);
+}
+
+.approval-bar__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+/* Input row */
+.approval-bar__input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.approval-bar__input {
+  flex: 1;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-sm);
+  color: var(--vi-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.approval-bar__input::placeholder {
+  color: var(--vi-text-tertiary);
+}
+
+.approval-bar__input:focus {
+  border-color: var(--vi-accent-blue);
+}
+
+.approval-bar__send {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--vi-card-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--vi-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.approval-bar__send:hover {
+  background: rgba(0, 122, 255, 0.2);
+  color: var(--vi-accent-blue);
+}

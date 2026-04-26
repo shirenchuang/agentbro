@@ -1,0 +1,50 @@
+.pixel-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  image-rendering: pixelated;
+}
+
+.pixel-indicator__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.pixel-indicator__pixel {
+  border-radius: 1px;
+}
+
+/* Active: colorful animated pixels */
+.pixel-indicator--active .pixel-indicator__pixel {
+  animation: pixel-shift 1.8s ease-in-out infinite;
+}
+
+/* Idle: gentle pulse */
+.pixel-indicator--idle .pixel-indicator__pixel {
+  opacity: 0.8;
+  animation: pixel-idle-pulse 3s ease-in-out infinite;
+}
+
+/* Error: fast blink */
+.pixel-indicator--error .pixel-indicator__pixel {
+  animation: pixel-error-blink 0.8s ease-in-out infinite;
+}
+
+@keyframes pixel-shift {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  25% { opacity: 0.5; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+  75% { opacity: 0.7; transform: scale(0.9); }
+}
+
+@keyframes pixel-idle-pulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes pixel-error-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

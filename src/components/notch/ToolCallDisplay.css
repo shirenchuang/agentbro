@@ -1,0 +1,39 @@
+.tool-call-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Tool name in Vibe Island green */
+.tool-call-display__name {
+  font-family: var(--font-mono);
+  color: var(--vi-tool-green);
+  font-weight: 600;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* Tool input in lighter gray */
+.tool-call-display__input {
+  color: var(--vi-text-tertiary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-call-display__spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--vi-text-tertiary);
+  border-top-color: var(--vi-accent-green);
+  border-radius: 50%;
+  animation: tool-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes tool-spin {
+  to { transform: rotate(360deg); }
+}

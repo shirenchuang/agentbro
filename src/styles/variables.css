@@ -1,0 +1,97 @@
+/* Agent Island — CSS Custom Properties (Vibe Island Design System) */
+
+:root {
+  /* ── Vibe Island Core Palette ─────────────────────────────── */
+  --vi-bg: #1a1a1c;
+  --vi-card: #2c2c2e;
+  --vi-card-border: #3a3a3c;
+  --vi-text-primary: #ffffff;
+  --vi-text-secondary: #8e8e93;
+  --vi-text-tertiary: #636366;
+  --vi-accent-green: #30D158;
+  --vi-accent-blue: #007AFF;
+  --vi-accent-orange: #FF9500;
+  --vi-accent-red: #FF3B30;
+  --vi-accent-coral: #E8654A;
+  --vi-badge-dark: #3a3a3c;
+  --vi-tool-green: #30D158;
+  --vi-warning-orange: #FF9500;
+
+  /* ── Glass backgrounds (mapped to VI palette) ─────────────── */
+  --glass-bg-light: rgba(255, 255, 255, 0.45);
+  --glass-bg-medium: rgba(255, 255, 255, 0.35);
+  --glass-bg-heavy: rgba(255, 255, 255, 0.25);
+
+  --glass-bg-dark: rgba(26, 26, 28, 0.92);
+  --glass-bg-dark-medium: rgba(26, 26, 28, 0.85);
+  --glass-bg-dark-heavy: rgba(26, 26, 28, 0.95);
+
+  /* Borders */
+  --glass-border-light: rgba(255, 255, 255, 0.3);
+  --glass-border-dark: rgba(255, 255, 255, 0.08);
+
+  /* Text */
+  --text-primary: var(--vi-text-primary);
+  --text-secondary: var(--vi-text-secondary);
+  --text-tertiary: var(--vi-text-tertiary);
+
+  /* Accent */
+  --accent: var(--vi-accent-blue);
+  --accent-hover: #409CFF;
+  --accent-glass: rgba(0, 122, 255, 0.3);
+
+  /* Status colors */
+  --status-active: var(--vi-accent-green);
+  --status-waiting: var(--vi-accent-orange);
+  --status-error: var(--vi-accent-red);
+  --status-idle: rgba(255, 255, 255, 0.3);
+
+  /* Shadows */
+  --shadow-light: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-dark: 0 8px 32px rgba(0, 0, 0, 0.3);
+  --shadow-elevated: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.3);
+
+  /* Blur */
+  --blur-light: 12px;
+  --blur-medium: 24px;
+  --blur-heavy: 32px;
+
+  /* Border radius */
+  --radius-pill: 999px;
+  --radius-xl: 20px;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Typography */
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-size-xs: 10px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+
+  /* Animation */
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1.0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+
+  /* Panel dimensions — Vibe Island responsive sizing */
+  --panel-width: min(620px, 32vw);
+  --panel-max-height: 560px;
+  --collapsed-width: min(340px, 18vw);
+  --collapsed-height: 36px;
+}

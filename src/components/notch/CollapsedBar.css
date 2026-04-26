@@ -1,0 +1,101 @@
+.collapsed-bar {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+}
+
+/* Status row: rate limits + icons (only shown when expanded) */
+.collapsed-bar__status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 0;
+  min-height: 24px;
+}
+
+.collapsed-bar__rate-limits {
+  flex: 1;
+  overflow: hidden;
+}
+
+.collapsed-bar__icons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.collapsed-bar__icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--vi-text-tertiary);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.collapsed-bar__icon-btn:hover {
+  color: var(--vi-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Separator below status row */
+.collapsed-bar--expanded .collapsed-bar__status-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+}
+
+/* Main row: pixel + info + count */
+.collapsed-bar__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 36px;
+  min-height: 36px;
+}
+
+.collapsed-bar__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  overflow: hidden;
+  flex: 1;
+}
+
+.collapsed-bar__right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.collapsed-bar__info {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--vi-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.collapsed-bar__info--empty {
+  color: var(--vi-text-tertiary);
+  font-weight: 400;
+}
+
+/* Session count — plain number, no colored circle */
+.collapsed-bar__count {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--vi-text-secondary);
+  font-variant-numeric: tabular-nums;
+}

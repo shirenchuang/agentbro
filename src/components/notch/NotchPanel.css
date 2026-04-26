@@ -1,0 +1,42 @@
+/* Notch Panel — Vibe Island Layout */
+
+.notch-container {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+}
+
+.notch-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-elevated);
+  cursor: default;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Collapsed state: pill shape */
+.notch-panel[aria-expanded="false"] {
+  border-radius: var(--radius-pill);
+}
+
+/* Bounce wrapper for attention animation */
+.notch-bounce {
+  display: flex;
+}
+
+.notch-bounce--active {
+  animation: notch-bounce 0.5s ease-out;
+}
+
+@keyframes notch-bounce {
+  0%, 100% { transform: scale(1); }
+  20% { transform: scale(1.03); }
+  50% { transform: scale(0.98); }
+  80% { transform: scale(1.01); }
+}

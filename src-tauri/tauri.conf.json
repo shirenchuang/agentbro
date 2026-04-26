@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
+  "productName": "Agent Island",
+  "identifier": "com.agent-island.app",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "notch",
+        "title": "Agent Island",
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "width": 420,
+        "height": 52,
+        "x": null,
+        "y": 0,
+        "visible": true,
+        "backgroundColor": "#00000000"
+      },
+      {
+        "label": "settings",
+        "title": "Agent Island Settings",
+        "visible": false,
+        "width": 800,
+        "height": 600,
+        "center": true,
+        "backgroundColor": "#00000000"
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    },
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://releases.agent-island.dev/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "pubkey": ""
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+[package]
+name = "agent-island"
+version = "0.1.0"
+description = "Cross-platform Dynamic Island for AI coding agents"
+authors = ["Agent Island"]
+edition = "2021"
+default-run = "agent-island"
+
+[lib]
+name = "agent_island_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "agent-island-bridge"
+path = "src/bridge/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "6"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+rodio = "0.19"
+notify = { version = "7", features = ["macos_kqueue"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = ["std", "NSWindow"] }

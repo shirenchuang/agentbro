@@ -1,0 +1,31 @@
+.rate-limit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rate-limit__segment {
+  letter-spacing: -0.02em;
+}
+
+.rate-limit__segment--green {
+  color: var(--rate-limit-green, #22c55e);
+}
+
+.rate-limit__segment--amber {
+  color: var(--rate-limit-amber, #f59e0b);
+}
+
+.rate-limit__segment--red {
+  color: var(--rate-limit-red, #ef4444);
+}
+
+.rate-limit__divider {
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}

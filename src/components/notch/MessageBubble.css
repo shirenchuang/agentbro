@@ -1,0 +1,192 @@
+/* Message Bubbles — Chat conversation styles */
+
+.msg {
+  padding: 2px 0;
+}
+
+/* User message — right aligned pill */
+.msg--user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.msg__pill {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  max-width: 85%;
+  word-break: break-word;
+}
+
+.msg__prefix {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+/* Assistant message — left aligned */
+.msg--assistant {
+  padding: 4px 0;
+}
+
+.msg__content {
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+/* Tool use — compact with status dot */
+.msg--tool {
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.msg__tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.msg__tool-name {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.msg__mcp-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(99, 102, 241, 0.2);
+  color: #818CF8;
+  font-weight: 600;
+}
+
+.msg__tool-spinner {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--text-tertiary);
+  border-top-color: var(--text-primary);
+  border-radius: 50%;
+  animation: msg-spin 0.8s linear infinite;
+}
+
+@keyframes msg-spin {
+  to { transform: rotate(360deg); }
+}
+
+.msg__tool-check {
+  color: var(--status-active);
+  font-size: var(--font-size-xs);
+}
+
+.msg__tool-x {
+  color: var(--status-error);
+  font-size: var(--font-size-xs);
+}
+
+.msg__tool-detail {
+  margin-top: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-xs);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.msg__tool-detail pre {
+  margin: 0;
+  font-size: inherit;
+  white-space: pre-wrap;
+}
+
+/* Permission request — amber highlight */
+.msg--permission {
+  background: rgba(255, 214, 10, 0.06);
+  border-left: 2px solid var(--status-waiting);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 8px 12px;
+  margin: 4px 0;
+}
+
+.msg__perm-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
+.msg__perm-icon {
+  font-size: var(--font-size-md);
+}
+
+.msg__perm-tool {
+  color: var(--status-waiting);
+  font-family: var(--font-mono);
+}
+
+.msg__perm-input {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  max-height: 60px;
+  overflow: hidden;
+}
+
+.msg__perm-input pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Thinking — gray italic */
+.msg--thinking {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.msg__thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.msg__thinking-text {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+/* Error message */
+.msg--error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: var(--font-size-sm);
+  color: var(--status-error);
+}
+
+.msg__error-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-error);
+  flex-shrink: 0;
+}

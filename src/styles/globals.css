@@ -1,0 +1,37 @@
+/* Agent Island — Global Styles */
+@import './variables.css';
+@import './glass.css';
+@import './settings.css';
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+code, pre {
+  font-family: var(--font-mono);
+}
+
+/* Disable text selection in UI, allow in content areas */
+.selectable {
+  user-select: text;
+}

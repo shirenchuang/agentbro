@@ -1,0 +1,113 @@
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.chat-view__messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-view__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: var(--space-sm);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  padding: var(--space-2xl) 0;
+}
+
+.chat-view__empty-icon {
+  font-size: 24px;
+  opacity: 0.4;
+}
+
+.chat-view__scroll-btn {
+  position: absolute;
+  bottom: 80px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(30, 30, 30, 0.8);
+  backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.chat-view__scroll-btn:hover {
+  background: rgba(30, 30, 30, 0.95);
+  color: var(--text-primary);
+}
+
+/* Error state banner */
+.chat-view__error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  margin: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: rgba(255, 69, 58, 0.08);
+  border: 1px solid rgba(255, 69, 58, 0.25);
+}
+
+.chat-view__error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-view__error-title {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--red, #ff453a);
+}
+
+.chat-view__error-message {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.chat-view__error-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.chat-view__error-jump {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.chat-view__error-jump:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}

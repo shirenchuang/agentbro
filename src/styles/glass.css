@@ -1,0 +1,165 @@
+/* Agent Island — Vibe Island Solid Dark Styles (no transparency) */
+
+/* Base Glass Panel — solid dark background */
+.glass-panel {
+  background: #000000;
+  border: none;
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+}
+
+.glass-panel--light {
+  background: var(--vi-bg);
+}
+
+.glass-panel--heavy {
+  background: var(--vi-bg);
+}
+
+/* Glass Highlight (refraction edge) */
+.glass-highlight {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.03) 50%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+}
+
+/* Glass Card — solid dark card */
+.glass-card {
+  background: var(--vi-card);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-md);
+  transition: transform var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+}
+
+.glass-card:hover {
+  background: #333335;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* Glass Button — Primary */
+.glass-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  border: none;
+}
+
+.glass-btn--primary {
+  background: var(--vi-accent-blue);
+  color: white;
+}
+
+.glass-btn--primary:hover {
+  opacity: 0.85;
+}
+
+.glass-btn--secondary {
+  background: var(--vi-badge-dark);
+  color: var(--vi-text-primary);
+}
+
+.glass-btn--secondary:hover {
+  background: #444446;
+}
+
+.glass-btn--danger {
+  background: var(--vi-accent-red);
+  color: white;
+}
+
+.glass-btn--danger:hover {
+  opacity: 0.85;
+}
+
+.glass-btn--ghost {
+  background: transparent;
+  color: var(--vi-text-secondary);
+}
+
+.glass-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--vi-text-primary);
+}
+
+/* Glass Input — solid dark */
+.glass-input {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-sm);
+  color: var(--vi-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.glass-input::placeholder {
+  color: var(--vi-text-tertiary);
+}
+
+.glass-input:focus {
+  border-color: var(--vi-accent-blue);
+}
+
+/* Status Dot */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot--active { background: var(--status-active); box-shadow: 0 0 6px var(--status-active); }
+.status-dot--waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
+.status-dot--error { background: var(--status-error); box-shadow: 0 0 6px var(--status-error); }
+.status-dot--idle { background: var(--status-idle); }
+
+/* Divider */
+.glass-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 0;
+  border: none;
+}
+
+/* Scrollbar */
+.glass-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.glass-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Reduced motion fallback */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

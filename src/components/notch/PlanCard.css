@@ -1,0 +1,58 @@
+.plan-card {
+  background: var(--vi-card);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.plan-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.plan-card__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vi-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* Green/teal "计划" label */
+.plan-card__label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--vi-accent-green);
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.plan-card__content {
+  padding: 6px 10px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.plan-card__content::-webkit-scrollbar {
+  width: 3px;
+}
+
+.plan-card__content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.plan-card__text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--vi-text-secondary);
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

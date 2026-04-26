@@ -1,0 +1,246 @@
+.hover-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+}
+
+/* Session card — dark card style */
+.hover-list__card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--vi-card);
+  border: 1px solid var(--vi-card-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.hover-list__card:hover {
+  background: #333335;
+  transform: translateY(-1px);
+}
+
+/* Row 1: main info row */
+.hover-list__row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.hover-list__project {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--vi-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.hover-list__sep {
+  color: var(--vi-text-tertiary);
+  font-size: var(--font-size-xs);
+  flex-shrink: 0;
+}
+
+.hover-list__title {
+  font-size: var(--font-size-xs);
+  color: var(--vi-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.hover-list__badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Agent badge: colored background (coral for Claude, etc.) */
+.hover-list__agent-badge {
+  font-size: 10px;
+  color: white;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* Terminal badge: dark gray background */
+.hover-list__terminal-badge {
+  font-size: 10px;
+  color: var(--vi-text-secondary);
+  background: var(--vi-badge-dark);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.hover-list__duration {
+  font-size: 10px;
+  color: var(--vi-text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Jump button: ^G + arrow in green */
+.hover-list__jump {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vi-accent-green);
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+  transition: all var(--duration-fast) var(--ease-out);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.hover-list__jump-text {
+  font-size: 10px;
+}
+
+.hover-list__jump:hover {
+  background: rgba(48, 209, 88, 0.15);
+}
+
+/* Row 2: user message preview */
+.hover-list__user-msg {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 20px;
+  overflow: hidden;
+}
+
+.hover-list__user-msg-prefix {
+  font-size: 11px;
+  color: var(--vi-text-tertiary);
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.hover-list__user-msg-text {
+  font-size: 11px;
+  color: var(--vi-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Row 3: tool call */
+.hover-list__tool-row {
+  padding-left: 20px;
+}
+
+/* Row 4: task summary */
+.hover-list__task-row {
+  padding-left: 20px;
+}
+
+/* Plan row */
+.hover-list__plan-row {
+  padding-left: 20px;
+  padding-right: 4px;
+}
+
+/* Response row */
+.hover-list__response-row {
+  padding-left: 20px;
+  padding-right: 4px;
+}
+
+/* Approval row */
+.hover-list__approval-row {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 4px;
+}
+
+.hover-list__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xl) 0;
+  gap: var(--space-sm);
+  color: var(--vi-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.hover-list__empty-text {
+  text-align: center;
+  line-height: 1.5;
+}
+
+.hover-list__empty-logo {
+  width: 36px;
+  height: 36px;
+  opacity: 0.5;
+}
+
+/* Green highlight for completed sessions */
+.hover-list__card--done {
+  border-color: rgba(48, 209, 88, 0.25);
+  animation: hover-list-done-flash 2s ease-out forwards;
+}
+
+@keyframes hover-list-done-flash {
+  0% { background: rgba(48, 209, 88, 0.08); }
+  100% { background: var(--vi-card); }
+}
+
+/* Completion card inline */
+.completion-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid rgba(48, 209, 88, 0.2);
+  background: rgba(48, 209, 88, 0.06);
+  border-radius: var(--radius-md);
+}
+
+.completion-card__icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.completion-card__body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.completion-card__project {
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  color: var(--vi-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.completion-card__summary {
+  font-size: var(--font-size-xs);
+  color: var(--vi-accent-green);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

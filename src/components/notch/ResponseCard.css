@@ -1,0 +1,58 @@
+.response-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.response-card__user {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.response-card__user-prefix {
+  font-size: 11px;
+  color: var(--vi-text-tertiary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.response-card__user-text {
+  font-size: 11px;
+  color: var(--vi-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* "完成" badge in green */
+.response-card__done-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--vi-accent-green);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.response-card__content {
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+.response-card__content::-webkit-scrollbar {
+  width: 3px;
+}
+
+.response-card__content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.response-card__text {
+  font-size: 11px;
+  color: var(--vi-text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

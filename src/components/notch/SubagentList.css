@@ -1,0 +1,84 @@
+/* SubagentList — Nested agent tree under main session */
+
+.subagent-list {
+  padding: 0 var(--space-md);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.subagent-list__toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.subagent-list__toggle:hover {
+  color: var(--text-secondary);
+}
+
+.subagent-list__chevron {
+  transition: transform var(--duration-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.subagent-list__chevron--open {
+  transform: rotate(90deg);
+}
+
+.subagent-list__label {
+  font-weight: 500;
+}
+
+.subagent-list__items {
+  padding: 2px 0 6px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+
+.subagent-row__desc {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-row__tool {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.subagent-row__spinner {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--text-tertiary);
+  border-top-color: var(--text-primary);
+  border-radius: 50%;
+  animation: subagent-spin 0.8s linear infinite;
+}
+
+@keyframes subagent-spin {
+  to { transform: rotate(360deg); }
+}

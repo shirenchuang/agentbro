@@ -1,0 +1,97 @@
+.task-summary {
+  font-size: 11px;
+}
+
+.task-summary__header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+/* "任务" label in green/teal */
+.task-summary__label {
+  color: var(--vi-accent-green);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.task-summary__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.task-summary__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* Blue dot for in-progress */
+.task-summary__bullet {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.task-summary__bullet--active {
+  background: var(--vi-accent-blue);
+  box-shadow: 0 0 4px rgba(0, 122, 255, 0.4);
+}
+
+/* Checkbox: unchecked */
+.task-summary__checkbox {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--vi-text-tertiary);
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Checkbox: checked */
+.task-summary__checkbox--checked {
+  border-color: var(--vi-accent-green);
+  color: var(--vi-accent-green);
+  background: rgba(48, 209, 88, 0.1);
+}
+
+.task-summary__name {
+  color: var(--vi-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* In-progress: white text */
+.task-summary__item--in-progress .task-summary__name {
+  color: var(--vi-text-primary);
+}
+
+/* Completed: strikethrough + dimmed */
+.task-summary__name--done {
+  text-decoration: line-through;
+  color: var(--vi-text-tertiary);
+}
+
+/* "+N completed" toggle */
+.task-summary__toggle {
+  background: none;
+  border: none;
+  color: var(--vi-text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 18px;
+  font-family: inherit;
+}
+
+.task-summary__toggle:hover {
+  color: var(--vi-text-secondary);
+}

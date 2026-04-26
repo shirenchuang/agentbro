@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agent-island</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #000000 !important;
+        background-color: #000000 !important;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #root {
+        background: #000000 !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      document.documentElement.style.setProperty("background", "#000000", "important");
+      document.body.style.setProperty("background", "#000000", "important");
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
