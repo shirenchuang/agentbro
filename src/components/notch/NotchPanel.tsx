@@ -6,9 +6,15 @@ import { useConfigStore } from '../../stores/configStore'
 import { respondPermission, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority, PRIORITY } from '../../types/priority'
+import type { OverlayItem } from '../../types/agent'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
+import { PermissionCard } from '../overlay/PermissionCard'
+import { PlanApprovalCard } from '../overlay/PlanApprovalCard'
+import { QuestionCard } from '../overlay/QuestionCard'
+import { OverlayResponseCard } from '../overlay/OverlayResponseCard'
+import { OverlayCompletionCard } from '../overlay/OverlayCompletionCard'
 import './NotchPanel.css'
 
 const springTransition = {
@@ -16,6 +22,64 @@ const springTransition = {
   stiffness: 400,
   damping: 30,
   mass: 0.8,
+}
+
+function OverlayRenderer({ overlay, onDismiss }: { overlay: OverlayItem; onDismiss: () => void }) {
+  const session = useSessionStore((s) => s.sessions[overlay.sessionId])
+  if (!session) return null
+
+  switch (overlay.type) {
+    case 'permission':
+      return (
+        <PermissionCard
+          overlay={overlay}
+          session={session}
+          onAllow={() => { respondPermission(session.id, true); useSessionStore.getState().clearPermission(session.id) }}
+          onAllowAlways={() => { respondPermission(session.id, true); useSessionStore.getState().clearPermission(session.id) }}
+          onDeny={() => { respondPermission(session.id, false); useSessionStore.getState().clearPermission(session.id) }}
+          onDismiss={onDismiss}
+        />
+      )
+    case 'plan':
+      return (
+        <PlanApprovalCard
+          overlay={overlay}
+          session={session}
+          onSendFeedback={(msg) => sendMessage(session.id, msg)}
+          onAcceptEdits={() => { sendMessage(session.id, 'acceptEdits'); onDismiss() }}
+          onAutoApprove={() => { sendMessage(session.id, 'bypassPermissions'); onDismiss() }}
+          onDismiss={onDismiss}
+        />
+      )
+    case 'question':
+      return (
+        <QuestionCard
+          overlay={overlay}
+          session={session}
+          onAnswer={(answer) => { sendMessage(session.id, answer); useSessionStore.getState().clearQuestion(session.id) }}
+          onDismiss={onDismiss}
+        />
+      )
+    case 'response':
+      return (
+        <OverlayResponseCard
+          overlay={overlay}
+          session={session}
+          onJumpToTerminal={() => jumpToTerminal(session.id)}
+          onDismiss={onDismiss}
+        />
+      )
+    case 'completion':
+      return (
+        <OverlayCompletionCard
+          overlay={overlay}
+          session={session}
+          onDismiss={onDismiss}
+        />
+      )
+    default:
+      return null
+  }
 }
 
 export function NotchPanel() {
@@ -317,18 +381,7 @@ export function NotchPanel() {
                 exit={{ opacity: 0, y: 8 }}
                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}
               >
-                <div className="notch-panel__overlay-card">
-                  <div className="notch-panel__overlay-header">
-                    <span className="notch-panel__overlay-type">{activeOverlay.type}</span>
-                    <button
-                      className="notch-panel__overlay-close"
-                      onClick={() => dismissOverlay(activeOverlay.id)}
-                      aria-label="Dismiss"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
+                <OverlayRenderer overlay={activeOverlay} onDismiss={() => dismissOverlay(activeOverlay.id)} />
               </motion.div>
             )}
           </AnimatePresence>

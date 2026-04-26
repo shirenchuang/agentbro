@@ -161,4 +161,5 @@ export type AgentEvent =
   | { type: 'interrupt'; sessionId: string }
   | { type: 'context_compact'; sessionId: string; phase: 'pre' | 'post' }
   | { type: 'token_usage'; sessionId: string; input: number; output: number; cacheRead: number; cacheCreate: number }
+  | { type: 'plan_request'; sessionId: string; planTitle: string; planContent: string; requestedPermissions?: string[] }
   | { type: 'user_message'; sessionId: string; content: string }

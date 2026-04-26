@@ -1,0 +1,96 @@
+.overlay-card {
+  background: rgba(30, 30, 30, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: var(--radius-lg, 12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.overlay-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.overlay-card__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--vi-text-secondary, #aaa);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.overlay-card__close:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--vi-text-primary, #fff);
+}
+
+.overlay-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Session context header */
+.overlay-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.overlay-ctx__row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vi-text-secondary, #aaa);
+}
+
+.overlay-ctx__project {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overlay-ctx__sep {
+  opacity: 0.4;
+}
+
+.overlay-ctx__agent {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.overlay-ctx__row2 {
+  display: flex;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--vi-text-tertiary, #666);
+  overflow: hidden;
+}
+
+.overlay-ctx__you {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.overlay-ctx__msg {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

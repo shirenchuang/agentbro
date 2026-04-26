@@ -242,6 +242,27 @@ export const useSessionStore = create<SessionStore>((set) => ({
           break
         }
 
+        case 'plan_request': {
+          const session = sessions[event.sessionId]
+          if (session) {
+            sessions[event.sessionId] = {
+              ...session,
+              planTitle: event.planTitle,
+              planContent: event.planContent,
+            }
+          }
+          const planOverlay: OverlayItem = {
+            id: `plan-${event.sessionId}-${Date.now()}`,
+            sessionId: event.sessionId,
+            type: 'plan',
+            data: { planTitle: event.planTitle, planContent: event.planContent, requestedPermissions: event.requestedPermissions },
+            createdAt: Date.now(),
+          }
+          setTimeout(() => useSessionStore.getState().pushOverlay(planOverlay), 0)
+          activeSessionId = event.sessionId
+          break
+        }
+
         case 'error': {
           const session = sessions[event.sessionId]
           if (session) {

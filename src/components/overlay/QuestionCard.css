@@ -1,0 +1,115 @@
+.question-card__text {
+  font-size: var(--font-size-sm, 12px);
+  font-weight: 500;
+  color: var(--vi-text-primary, #fff);
+  line-height: 1.4;
+}
+
+.question-card__options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question-card__option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--vi-card-border, #333);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--vi-card, #1e1e1e);
+  color: var(--vi-text-primary, #fff);
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.question-card__option:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.question-card__option--selected {
+  border-color: var(--vi-accent-blue, #007AFF);
+  background: rgba(0, 122, 255, 0.1);
+}
+
+.question-card__check {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.question-card__shortcut {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.question-card__option-label {
+  font-weight: 500;
+}
+
+.question-card__option-desc {
+  font-size: 11px;
+  color: var(--vi-text-tertiary, #666);
+  margin-left: auto;
+}
+
+.question-card__confirm {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--vi-accent-blue, #007AFF);
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.question-card__confirm:hover {
+  opacity: 0.85;
+}
+
+.question-card__custom {
+  display: flex;
+}
+
+.question-card__input {
+  flex: 1;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--vi-card-border, #333);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--vi-text-primary, #fff);
+  font-family: var(--font-sans, system-ui);
+  font-size: var(--font-size-sm, 12px);
+  outline: none;
+}
+
+.question-card__input::placeholder {
+  color: var(--vi-text-tertiary, #666);
+}
+
+.question-card__input:focus {
+  border-color: var(--vi-accent-blue, #007AFF);
+}
+
+.question-card__custom-toggle {
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--vi-text-tertiary, #666);
+  font-size: 11px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.question-card__custom-toggle:hover {
+  color: var(--vi-text-secondary, #aaa);
+}

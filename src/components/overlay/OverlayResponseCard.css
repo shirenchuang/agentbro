@@ -1,0 +1,40 @@
+.overlay-response__content {
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.overlay-response__text {
+  display: block;
+  font-size: 12px;
+  color: var(--vi-text-secondary, #aaa);
+  line-height: 1.4;
+  max-height: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overlay-response__jump {
+  display: block;
+  font-size: 11px;
+  color: var(--vi-accent-blue, #007AFF);
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
+.overlay-response__jump:hover {
+  opacity: 1;
+}
+
+.overlay-response__progress {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.overlay-response__progress-bar {
+  height: 100%;
+  background: var(--vi-accent-blue, #007AFF);
+  border-radius: 1px;
+  transition: width 0.1s linear;
+}

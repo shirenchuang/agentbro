@@ -1,5 +1,5 @@
 /* Hover List — Session cards in Vibe Island style */
-import { useState, useCallback, useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { SessionState } from '../../types/agent'
@@ -7,14 +7,8 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { ToolCallDisplay } from './ToolCallDisplay'
 import { TaskSummary } from './TaskSummary'
-import { ApprovalBar } from './ApprovalBar'
-import { PlanCard } from './PlanCard'
-import { ResponseCard } from './ResponseCard'
-import { CompletionCard } from './CompletionCard'
 import { useTick } from '../../hooks/useTick'
 import { formatDuration } from '../../utils/time'
-import { respondPermission, sendMessage } from '../../services/tauriApi'
-import { useSessionStore } from '../../stores/sessionStore'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -48,35 +42,6 @@ function getAgentName(session: SessionState): string {
 export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverListProps) {
   const { t } = useTranslation()
   useTick(1000, sessions.length > 0)
-
-  // Track recently completed sessions for completion cards
-  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set())
-  const [prevPhases, setPrevPhases] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    const nextPhases: Record<string, string> = {}
-    const newlyCompleted = new Set(completedIds)
-
-    for (const session of sessions) {
-      nextPhases[session.id] = session.phase
-      if (session.phase === 'done' && prevPhases[session.id] && prevPhases[session.id] !== 'done') {
-        newlyCompleted.add(session.id)
-      }
-    }
-
-    if (newlyCompleted.size !== completedIds.size) {
-      setCompletedIds(newlyCompleted)
-    }
-    setPrevPhases(nextPhases)
-  }, [sessions])
-
-  const dismissCompletion = useCallback((sessionId: string) => {
-    setCompletedIds((prev) => {
-      const next = new Set(prev)
-      next.delete(sessionId)
-      return next
-    })
-  }, [])
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => computePriority(b) - computePriority(a)),
@@ -179,61 +144,12 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal }: HoverL
                     <TaskSummary tasks={session.tasks} />
                   </div>
                 )}
-
-                {/* Plan card */}
-                {session.planContent && (
-                  <div className="hover-list__plan-row">
-                    <PlanCard title={session.planTitle} content={session.planContent} />
-                  </div>
-                )}
-
-                {/* Response card */}
-                {session.phase === 'done' && session.responseText && (
-                  <div className="hover-list__response-row">
-                    <ResponseCard
-                      userMessage={session.lastUserMessage}
-                      responseText={session.responseText}
-                    />
-                  </div>
-                )}
-
-                {/* Inline approval bar for waiting_approval sessions */}
-                {session.phase === 'waiting_approval' && session.pendingPermission && (
-                  <div className="hover-list__approval-row" onClick={(e) => e.stopPropagation()}>
-                    <ApprovalBar
-                      session={session}
-                      onAllow={() => {
-                        respondPermission(session.id, true)
-                        useSessionStore.getState().clearPermission(session.id)
-                      }}
-                      onAllowAlways={() => {
-                        respondPermission(session.id, true)
-                        useSessionStore.getState().clearPermission(session.id)
-                      }}
-                      onDeny={() => {
-                        respondPermission(session.id, false)
-                        useSessionStore.getState().clearPermission(session.id)
-                      }}
-                      onAutoApprove={() => {
-                        respondPermission(session.id, true)
-                        useSessionStore.getState().clearPermission(session.id)
-                      }}
-                      onSendMessage={(msg) => sendMessage(session.id, msg)}
-                    />
-                  </div>
-                )}
               </div>
             </motion.div>
           )
         })}
       </AnimatePresence>
 
-      {/* Completion notification cards */}
-      {sortedSessions
-        .filter((s) => s.phase === 'done' && completedIds.has(s.id))
-        .map((s) => (
-          <CompletionCard key={`complete-${s.id}`} session={s} onDismiss={dismissCompletion} />
-        ))}
     </div>
   )
 }

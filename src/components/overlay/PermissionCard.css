@@ -1,0 +1,103 @@
+.perm-card__tool {
+  background: var(--vi-card, #1e1e1e);
+  border: 1px solid var(--vi-card-border, #333);
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px;
+}
+
+.perm-card__tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.perm-card__tool-icon {
+  color: var(--vi-warning-orange, #FF9500);
+  font-size: 14px;
+}
+
+.perm-card__tool-name {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm, 12px);
+  font-weight: 600;
+  color: var(--vi-warning-orange, #FF9500);
+}
+
+.perm-card__tool-input {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--vi-text-secondary, #aaa);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.perm-card__diff {
+  max-height: 150px;
+  overflow-y: auto;
+  border-radius: var(--radius-sm, 6px);
+}
+
+.perm-card__diff .diff-view {
+  margin: 0;
+}
+
+.perm-card__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.perm-card__btn {
+  flex: 1;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.perm-card__btn:hover {
+  opacity: 0.85;
+}
+
+.perm-card__btn--deny {
+  background: var(--vi-badge-dark, #333);
+  color: var(--vi-text-primary, #fff);
+}
+
+.perm-card__btn--allow {
+  background: var(--vi-badge-dark, #333);
+  color: var(--vi-text-primary, #fff);
+}
+
+.perm-card__btn--always {
+  background: var(--vi-accent-blue, #007AFF);
+  color: white;
+}
+
+.perm-card__hints {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--vi-text-tertiary, #666);
+}
+
+.perm-card__hints kbd {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.perm-card__hint-sep {
+  opacity: 0.4;
+}
