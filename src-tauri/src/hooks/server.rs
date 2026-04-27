@@ -364,7 +364,7 @@ impl HookServer {
             }
             Some(ref agent_event) => {
                 // Process non-permission events (with sound)
-                Self::process_event(&store, agent_event, &raw, &sound);
+                Self::process_event(&store, agent_event, &raw, &sound, &app);
             }
             None => {
                 // No adapter matched — try generic processing (with sound)
@@ -395,6 +395,7 @@ impl HookServer {
         event: &AgentEvent,
         _raw: &serde_json::Value,
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        app: &Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) {
         match event {
             AgentEvent::SessionStart { session_id, project, cwd, terminal, agent_type } => {
@@ -485,6 +486,17 @@ impl HookServer {
             }
             AgentEvent::TaskComplete { session_id, .. } => {
                 store.update_phase(session_id, SessionPhase::Done);
+                let is_suppressed = Self::check_suppression(&store, session_id);
+                if is_suppressed {
+                    if let Ok(guard) = app.lock() {
+                        if let Some(ref handle) = *guard {
+                            let summary = store.get_session(session_id)
+                                .and_then(|s| s.session_title.clone())
+                                .unwrap_or_else(|| "Task completed".to_string());
+                            crate::platform::notifications::send_completion_notification(handle, &summary);
+                        }
+                    }
+                }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
             }
             AgentEvent::Error { session_id, .. } => {
