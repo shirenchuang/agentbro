@@ -9,6 +9,7 @@ use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
 use crate::hooks::session_store::{SessionState, SessionStore};
 use crate::license::{LicenseManager, LicenseStatus};
+use crate::platform::display_controller::DisplayController;
 use crate::sound::SoundEngine;
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +26,7 @@ pub struct AppState {
     /// Conversation file watcher — watches JSONL files for real-time chat updates.
     /// Wrapped in Mutex because RecommendedWatcher is not Sync on all platforms.
     pub conversation_watcher: Arc<Mutex<Option<ConversationWatcher>>>,
+    pub display_controller: Arc<DisplayController>,
 }
 
 // ── Session Commands ──────────────────────────────────────────────
@@ -109,6 +111,46 @@ pub async fn send_message(
 
     crate::agents::claude_code::send_message_to_terminal(tty, &message)
         .map_err(|e| e.to_string())
+}
+
+// ── Auto-Approve Command ─────────────────────────────────────────
+
+#[tauri::command]
+pub async fn respond_auto_approve(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    log::info!("Auto-approve: session={}", session_id);
+
+    let hook_result = state.hook_server
+        .respond_auto_approve(&session_id)
+        .await;
+
+    match hook_result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log::warn!(
+                "Hook socket auto-approve failed for {}: {}. Falling back to tmux.",
+                session_id, e
+            );
+
+            let session = state.session_store
+                .get_session(&session_id)
+                .ok_or_else(|| format!("Session {} not found", session_id))?;
+
+            let pid = session.pid
+                .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
+
+            let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
+                .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
+
+            crate::terminal::approval::approve_always(&tmux_target)
+                .map_err(|e| e.to_string())?;
+
+            state.session_store.set_pending_permission(&session_id, None);
+            Ok(())
+        }
+    }
 }
 
 // ── Hook Verification Commands ───────────────────────────────────

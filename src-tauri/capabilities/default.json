@@ -23,6 +23,7 @@
     "core:webview:allow-webview-position",
     "core:webview:allow-webview-size",
     "shell:allow-open",
-    "updater:default"
+    "updater:default",
+    "notification:default"
   ]
 }

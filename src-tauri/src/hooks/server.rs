@@ -45,6 +45,8 @@ pub struct HookServer {
     adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
     /// Optional sound engine for playing event sounds
     sound_engine: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+    /// App handle for sending notifications
+    app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
 }
 
 impl HookServer {
@@ -54,6 +56,14 @@ impl HookServer {
             session_store,
             adapters,
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
+            app_handle: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Set the app handle (called after construction)
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        if let Ok(mut h) = self.app_handle.lock() {
+            *h = Some(handle);
         }
     }
 
@@ -108,14 +118,16 @@ impl HookServer {
         let store = self.session_store.clone();
         let adapters = self.adapters.clone();
         let sound = self.sound_engine.clone();
+        let app = self.app_handle.clone();
 
         // Start Unix socket listener
         let pending_unix = pending.clone();
         let store_unix = store.clone();
         let adapters_unix = adapters.clone();
         let sound_unix = sound.clone();
+        let app_unix = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_unix(pending_unix, store_unix, adapters_unix, sound_unix).await {
+            if let Err(e) = Self::listen_unix(pending_unix, store_unix, adapters_unix, sound_unix, app_unix).await {
                 log::error!("Unix socket listener error: {}", e);
             }
         });
@@ -125,8 +137,9 @@ impl HookServer {
         let store_tcp = store.clone();
         let adapters_tcp = adapters.clone();
         let sound_tcp = sound.clone();
+        let app_tcp = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_tcp(pending_tcp, store_tcp, adapters_tcp, sound_tcp).await {
+            if let Err(e) = Self::listen_tcp(pending_tcp, store_tcp, adapters_tcp, sound_tcp, app_tcp).await {
                 log::error!("TCP listener error: {}", e);
             }
         });
@@ -141,6 +154,7 @@ impl HookServer {
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) -> anyhow::Result<()> {
         // Remove stale socket file
         let socket_path = Path::new(UNIX_SOCKET_PATH);
@@ -166,8 +180,9 @@ impl HookServer {
                     let store = store.clone();
                     let adapters = adapters.clone();
                     let sound = sound.clone();
+                    let app = app.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound).await {
+                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound, app).await {
                             log::debug!("Unix connection handler error: {}", e);
                         }
                     });
@@ -185,6 +200,7 @@ impl HookServer {
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) -> anyhow::Result<()> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", TCP_PORT)).await?;
         log::info!("Listening on TCP: 127.0.0.1:{}", TCP_PORT);
@@ -197,8 +213,9 @@ impl HookServer {
                     let store = store.clone();
                     let adapters = adapters.clone();
                     let sound = sound.clone();
+                    let app = app.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound).await {
+                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound, app).await {
                             log::debug!("TCP connection handler error: {}", e);
                         }
                     });
@@ -217,6 +234,7 @@ impl HookServer {
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) -> anyhow::Result<()>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -271,6 +289,11 @@ impl HookServer {
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
                     store.emit_update_suppressed(true);
+                    if let Ok(guard) = app.lock() {
+                        if let Some(ref handle) = *guard {
+                            crate::platform::notifications::send_permission_notification(handle, tool_name);
+                        }
+                    }
                 }
 
                 // Create a oneshot channel for the permission response
@@ -332,6 +355,11 @@ impl HookServer {
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
                     store.emit_update_suppressed(true);
+                    if let Ok(guard) = app.lock() {
+                        if let Some(ref handle) = *guard {
+                            crate::platform::notifications::send_question_notification(handle, question);
+                        }
+                    }
                 }
             }
             Some(ref agent_event) => {
@@ -599,6 +627,23 @@ impl HookServer {
                 reason: if allowed { None } else { Some("Denied by user via Agent Island".to_string()) },
             };
             // Ignore send error — receiver may have already dropped
+            let _ = entry.tx.send(response);
+            Ok(())
+        } else {
+            anyhow::bail!("No pending permission for session {}", session_id)
+        }
+    }
+
+    pub async fn respond_auto_approve(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut pending_map = self.pending_permissions.lock().await;
+        if let Some(entry) = pending_map.remove(session_id) {
+            let response = PermissionResponse {
+                decision: "auto".to_string(),
+                reason: None,
+            };
             let _ = entry.tx.send(response);
             Ok(())
         } else {

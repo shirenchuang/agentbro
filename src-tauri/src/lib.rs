@@ -7,6 +7,7 @@ pub mod terminal;
 pub mod license;
 pub mod sound;
 pub mod platform;
+pub mod theme;
 
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -25,6 +26,51 @@ use hooks::session_store::SessionStore;
 use license::LicenseManager;
 use platform::display::{DisplayInfo, list_displays_inner, find_target_monitor};
 use sound::{SoundEngine, SoundEvent};
+
+// ── Display Controller Commands ─────────────────────────────────
+
+#[tauri::command]
+async fn get_display_level(state: tauri::State<'_, commands::AppState>) -> Result<platform::display_controller::DisplayLevel, String> {
+    Ok(state.display_controller.current_level())
+}
+
+#[tauri::command]
+async fn notify_cursor_enter(state: tauri::State<'_, commands::AppState>) -> Result<(), String> {
+    state.display_controller.on_cursor_enter().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn notify_cursor_leave(state: tauri::State<'_, commands::AppState>) -> Result<(), String> {
+    state.display_controller.on_cursor_leave().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn notify_esc(state: tauri::State<'_, commands::AppState>) -> Result<(), String> {
+    state.display_controller.on_esc().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn notify_expand(state: tauri::State<'_, commands::AppState>) -> Result<(), String> {
+    state.display_controller.on_expand();
+    Ok(())
+}
+
+// ── Theme Commands ──────────────────────────────────────────────
+
+#[tauri::command]
+async fn get_themes() -> Result<Vec<serde_json::Value>, String> {
+    Ok(theme::scanner::scan_themes())
+}
+
+#[tauri::command]
+async fn set_active_theme(state: tauri::State<'_, commands::AppState>, name: String) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.theme = name;
+    state.config_store.update(config)
+}
 
 // ── Suppression Commands ────────────────────────────────────────
 
@@ -247,6 +293,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Position notch window at top center
             if let Some(window) = app.get_webview_window("notch") {
@@ -327,6 +374,11 @@ pub fn run() {
             let mut config_store = ConfigStore::new();
             config_store.set_app_handle(app.handle().clone());
 
+            // Initialize themes: ensure built-in themes exist in user dir
+            if let Some(resource_path) = app.path().resource_dir().ok() {
+                theme::scanner::ensure_builtin_themes(&resource_path);
+            }
+
             // Initialize adapters (single shared vec for both HookServer and AppState)
             let adapters: Arc<Vec<Arc<dyn AgentAdapter>>> = Arc::new(vec![
                 Arc::new(ClaudeCodeAdapter::new()),
@@ -366,6 +418,7 @@ pub fn run() {
             // Initialize and start hook server
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
             let hook_server = Arc::new(hook_server);
+            hook_server.set_app_handle(app.handle().clone());
 
             // Start hook server in background
             let server = hook_server.clone();
@@ -374,6 +427,9 @@ pub fn run() {
                     log::error!("Failed to start HookServer: {}", e);
                 }
             });
+
+            // Start hook auto-recovery watcher
+            hooks::recovery::start_hook_recovery(adapters.clone(), app.handle().clone());
 
             // Initialize license manager
             let mut license_manager = LicenseManager::new();
@@ -513,6 +569,10 @@ pub fn run() {
             let conversation_watcher = Arc::new(std::sync::Mutex::new(conversation_watcher));
 
             // Store shared state for Tauri commands
+            // Initialize display controller
+            let display_controller = Arc::new(platform::display_controller::DisplayController::new());
+            display_controller.set_app_handle(app.handle().clone());
+
             let app_state = AppState {
                 session_store,
                 hook_server,
@@ -521,6 +581,7 @@ pub fn run() {
                 license_manager,
                 sound_engine,
                 conversation_watcher,
+                display_controller,
             };
             app.manage(app_state);
 
@@ -530,6 +591,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_sessions,
             commands::respond_permission,
+            commands::respond_auto_approve,
             commands::send_message,
             commands::jump_to_terminal,
             commands::get_config,
@@ -554,6 +616,13 @@ pub fn run() {
             get_cursor_position,
             save_sessions,
             load_sessions,
+            get_themes,
+            set_active_theme,
+            get_display_level,
+            notify_cursor_enter,
+            notify_cursor_leave,
+            notify_esc,
+            notify_expand,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agent Island");

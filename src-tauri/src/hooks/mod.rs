@@ -4,3 +4,4 @@ pub mod session_store;
 pub mod conversation_parser;
 pub mod file_watcher;
 pub mod tool_processor;
+pub mod recovery;
