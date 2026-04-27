@@ -1,0 +1,35 @@
+{
+  "name": "minimal-dot",
+  "version": "1.0.0",
+  "author": "builtin",
+  "pixelGrid": { "cols": 3, "rows": 3 },
+  "priorityColors": {
+    "dormant": "#555555",
+    "idle": "#8E8E93",
+    "done": "#34C759",
+    "thinking": "#5AC8FA",
+    "working": "#FFD60A",
+    "compacting": "#BF5AF2",
+    "attention": "#FF453A"
+  },
+  "prioritySpeeds": {
+    "dormant": 0,
+    "idle": 3000,
+    "done": 2000,
+    "thinking": 1000,
+    "working": 700,
+    "compacting": 600,
+    "attention": 400
+  },
+  "priorityPatterns": {
+    "dormant": { "activePixels": [{ "row": 1, "col": 1 }], "animation": "pulse", "fps": 1 },
+    "idle": { "activePixels": [{ "row": 1, "col": 1 }], "animation": "breath", "fps": 2 },
+    "done": { "activePixels": [{ "row": 1, "col": 1 }], "animation": "pulse", "fps": 2 },
+    "thinking": { "activePixels": [{ "row": 0, "col": 1 }, { "row": 1, "col": 0 }, { "row": 1, "col": 2 }, { "row": 2, "col": 1 }], "animation": "spin", "fps": 3 },
+    "working": { "activePixels": [{ "row": 0, "col": 0 }, { "row": 0, "col": 2 }, { "row": 2, "col": 0 }, { "row": 2, "col": 2 }], "animation": "wave", "fps": 4 },
+    "compacting": { "activePixels": [{ "row": 0, "col": 1 }, { "row": 1, "col": 0 }, { "row": 1, "col": 2 }, { "row": 2, "col": 1 }], "animation": "spin", "fps": 5 },
+    "attention": { "activePixels": [{ "row": 0, "col": 0 }, { "row": 0, "col": 1 }, { "row": 0, "col": 2 }, { "row": 1, "col": 0 }, { "row": 1, "col": 2 }, { "row": 2, "col": 0 }, { "row": 2, "col": 1 }, { "row": 2, "col": 2 }], "animation": "blink", "fps": 6 }
+  },
+  "sounds": { "pack": "synth" },
+  "compactHeight": 24
+}

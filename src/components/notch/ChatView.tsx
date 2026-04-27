@@ -6,10 +6,49 @@ import { useConfigStore } from '../../stores/configStore'
 import { ChatHeader } from './ChatHeader'
 import { SubagentList } from './SubagentList'
 import { MessageBubble } from './MessageBubble'
+import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
+import type { ChatMessage } from '../../types/agent'
 import { respondPermission, sendMessage, jumpToTerminal, respondAutoApprove } from '../../services/tauriApi'
 import './ChatView.css'
+
+interface MessageGroup {
+  type: 'collapsed' | 'single'
+  messages: ChatMessage[]
+}
+
+function isCollapsible(msg: ChatMessage): boolean {
+  return msg.role === 'thinking' || msg.role === 'tool_use'
+}
+
+function groupMessages(messages: ChatMessage[]): MessageGroup[] {
+  const groups: MessageGroup[] = []
+  let buffer: ChatMessage[] = []
+
+  for (const msg of messages) {
+    if (isCollapsible(msg)) {
+      buffer.push(msg)
+    } else {
+      if (buffer.length >= 3) {
+        groups.push({ type: 'collapsed', messages: buffer })
+      } else {
+        for (const b of buffer) groups.push({ type: 'single', messages: [b] })
+      }
+      buffer = []
+      groups.push({ type: 'single', messages: [msg] })
+    }
+  }
+
+  // Flush remaining buffer
+  if (buffer.length >= 3) {
+    groups.push({ type: 'collapsed', messages: buffer })
+  } else {
+    for (const b of buffer) groups.push({ type: 'single', messages: [b] })
+  }
+
+  return groups
+}
 
 interface ChatViewProps {
   onBack: () => void
@@ -123,9 +162,13 @@ export function ChatView({ onBack }: ChatViewProps) {
             <span>{t('notch.waitingMessages')}</span>
           </div>
         ) : (
-          activeSession.chatHistory.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
-          ))
+          groupMessages(activeSession.chatHistory).map((group, i) =>
+            group.type === 'collapsed' ? (
+              <CollapsedGroup key={`g-${i}`} messages={group.messages} />
+            ) : (
+              <MessageBubble key={`m-${i}`} message={group.messages[0]} />
+            )
+          )
         )}
       </div>
 

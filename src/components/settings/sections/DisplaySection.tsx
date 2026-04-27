@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../../../stores/configStore'
+import { useThemeStore } from '../../../stores/themeStore'
 import { MODEL_PRICING } from '../../../utils/tokens'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -24,6 +25,12 @@ const fontSizeOptions = [
 export function DisplaySection() {
   const { t } = useTranslation()
   const config = useConfigStore()
+  const { themes, activeThemeName, setActiveTheme } = useThemeStore()
+
+  const themeOptions = themes.map((th) => ({
+    value: th.name,
+    label: th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/-/g, ' '),
+  }))
 
   const tokenDisplayOptions = [
     { value: 'both', label: t('settings.tokensBoth') },
@@ -63,6 +70,17 @@ export function DisplaySection() {
             <div className="notch-style-card__description">{t('settings.detailedDesc')}</div>
           </div>
         </div>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.theme', { defaultValue: 'Theme' })}>
+        <SettingRow label={t('settings.activeTheme', { defaultValue: 'Active Theme' })} description={t('settings.activeThemeDesc', { defaultValue: 'Visual style for pixel indicator and colors' })}>
+          <Dropdown
+            value={activeThemeName}
+            options={themeOptions}
+            onChange={(v) => setActiveTheme(v)}
+            minWidth={160}
+          />
+        </SettingRow>
       </SettingGroup>
 
       <SettingGroup label={t('settings.panelSize')}>
