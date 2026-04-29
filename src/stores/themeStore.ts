@@ -14,13 +14,13 @@ export interface ColorThemeInfo {
 }
 
 export const COLOR_THEMES: ColorThemeInfo[] = [
-  { id: 'midnight', label: 'Midnight', labelZh: '暗夜', tag: 'Default', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#3b82f6' },
-  { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '冰霜毛玻璃', tag: 'Cool', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#3b82f6' },
-  { id: 'warm-paper', label: 'Warm Paper', labelZh: '暖纸', tag: 'Warm', isDark: false, bg: '#f2efe8', card: '#faf7f0', accent: '#3b82f6' },
-  { id: 'soft-lavender', label: 'Soft Lavender', labelZh: '柔紫', tag: 'Elegant', isDark: false, bg: '#eeedf6', card: '#f8f7fc', accent: '#6366f1' },
-  { id: 'ocean-mist', label: 'Ocean Mist', labelZh: '海雾', tag: 'Calm', isDark: false, bg: '#e8eef5', card: '#f2f6fb', accent: '#3b82f6' },
-  { id: 'apple', label: 'Apple', labelZh: '苹果风', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
-  { id: 'smoke', label: 'Smoke', labelZh: '烟雾', tag: 'Neutral', isDark: false, bg: '#e8e8ec', card: '#f4f4f6', accent: '#3b82f6' },
+  { id: 'classic', label: 'Classic', labelZh: '经典', tag: 'Default', isDark: true, bg: '#0a0a0a', card: '#111111', accent: '#3b82f6' },
+  { id: 'forest', label: 'Forest', labelZh: '森林', tag: 'Nature', isDark: true, bg: '#1a2e1a', card: '#243524', accent: '#22c55e' },
+  { id: 'neon-tokyo', label: 'Neon Tokyo', labelZh: '霓虹东京', tag: 'Cyber', isDark: true, bg: '#0a0a0f', card: '#12121a', accent: '#ff00ff' },
+  { id: 'sunset', label: 'Sunset', labelZh: '落日', tag: 'Warm', isDark: true, bg: '#1f1020', card: '#2a1a2e', accent: '#fbbf24' },
+  { id: 'retro-arcade', label: 'Retro Arcade', labelZh: '复古街机', tag: '8-bit', isDark: true, bg: '#0f0f23', card: '#1a1a30', accent: '#ff0040' },
+  { id: 'high-contrast', label: 'High Contrast', labelZh: '高对比', tag: 'A11y', isDark: true, bg: '#000000', card: '#111111', accent: '#00ffff' },
+  { id: 'sakura', label: 'Sakura', labelZh: '樱花', tag: 'Soft', isDark: true, bg: '#1a0f14', card: '#24131c', accent: '#ec4899' },
 ]
 
 const DEFAULT_THEME: ThemeConfig = {
@@ -78,7 +78,7 @@ export const useThemeStore = create<ThemeStore>()(
       themes: [DEFAULT_THEME],
       activeThemeName: 'default',
       activeTheme: DEFAULT_THEME,
-      colorTheme: 'midnight',
+      colorTheme: 'classic',
 
       setActiveTheme: (name) => {
         const theme = get().themes.find((t) => t.name === name)

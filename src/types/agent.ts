@@ -90,6 +90,7 @@ export interface SessionState {
   phase: SessionPhase
   startedAt: number
   idleSince?: number
+  unattendedSince?: number // timestamp when session entered a waiting state
   duration: number
   tokens: TokenUsage
   rateLimits?: RateLimitInfo

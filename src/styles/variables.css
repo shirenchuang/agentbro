@@ -44,8 +44,13 @@
   /* Status colors */
   --status-active: var(--vi-accent-green);
   --status-waiting: var(--vi-accent-orange);
-  --status-error: var(--vi-accent-red);
   --status-idle: var(--island-text-muted);
+  --status-working: #06b6d4;
+  --status-approval: #f59e0b;
+  --status-error: #ef4444;
+  --status-done: #22c55e;
+  --status-thinking: #a855f7;
+  --status-warning: #f97316;
 
   /* Shadows */
   --shadow-light: var(--island-pill-shadow);

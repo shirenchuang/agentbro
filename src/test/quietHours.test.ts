@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 
 // Isolated helper extracted from quietHours logic for unit testing
 // (avoids needing a live Zustand store in tests)

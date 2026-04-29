@@ -80,6 +80,7 @@ interface ConfigState {
 
   // Display
   notchStyle: 'compact' | 'detailed'
+  hoverSpeed: 'instant' | 'normal' | 'slow'
   contentFontSize: string
   completionCardHeight: number
   maxPanelHeight: number
@@ -219,6 +220,7 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Display
   notchStyle: 'compact',
+  hoverSpeed: 'normal',
   contentFontSize: '13px',
   completionCardHeight: 120,
   maxPanelHeight: 560,

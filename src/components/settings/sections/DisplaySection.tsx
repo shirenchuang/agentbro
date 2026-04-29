@@ -33,6 +33,12 @@ export function DisplaySection() {
     label: th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/-/g, ' '),
   }))
 
+  const hoverSpeedOptions = [
+    { value: 'instant', label: t('settings.hoverSpeedInstant') },
+    { value: 'normal', label: t('settings.hoverSpeedNormal') },
+    { value: 'slow', label: t('settings.hoverSpeedSlow') },
+  ]
+
   const tokenDisplayOptions = [
     { value: 'both', label: t('settings.tokensBoth') },
     { value: 'tokens', label: t('settings.tokensOnly') },
@@ -117,6 +123,14 @@ export function DisplaySection() {
       </SettingGroup>
 
       <SettingGroup label={t('settings.panelSize')}>
+        <SettingRow label={t('settings.hoverSpeed')} description={t('settings.hoverSpeedDesc')}>
+          <Dropdown
+            value={config.hoverSpeed}
+            options={hoverSpeedOptions}
+            onChange={(v) => config.updateConfig('hoverSpeed', v as 'instant' | 'normal' | 'slow')}
+            minWidth={160}
+          />
+        </SettingRow>
         <SettingRow label={t('settings.contentFontSize')}>
           <Dropdown
             value={config.contentFontSize}

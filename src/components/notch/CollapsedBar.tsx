@@ -1,12 +1,16 @@
 /* Collapsed Bar — Pill-shaped header with pixel art, info, and controls */
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { PanelState, RateLimitInfo, SessionState } from '../../types/agent'
+import { AnimatePresence, motion } from 'framer-motion'
+import type { PanelState, RateLimitInfo, SessionPhase, SessionState } from '../../types/agent'
 import { computePriority, PRIORITY } from '../../types/priority'
 import { RateLimitBar } from './RateLimitBar'
 import { MascotRouter } from './mascots'
 import { useTick } from '../../hooks/useTick'
 import { isTauri } from '../../services/tauriApi'
 import './CollapsedBar.css'
+
+const CAROUSEL_INTERVAL = 3000
 
 interface CollapsedBarProps {
   sessions: SessionState[]
@@ -19,23 +23,102 @@ function getLeadSession(sessions: SessionState[]): SessionState | undefined {
   return [...sessions].sort((a, b) => computePriority(b) - computePriority(a))[0]
 }
 
-function getSessionInfo(session: SessionState | undefined, t: (key: string, opts?: Record<string, string>) => string): string {
-  if (!session) return t('notch.waitingForSessions')
-  const parts: string[] = [session.project]
-  if (session.sessionTitle) parts.push(session.sessionTitle)
-  else if (session.phase === 'processing' && session.description) parts.push(session.description.split('\n')[0])
-  else if (session.phase === 'waiting_approval') parts.push(t('notch.needsApproval'))
-  return parts.join(' \u00B7 ')
+const PHASE_LABELS: Record<SessionPhase, string> = {
+  idle: 'notch.idle',
+  processing: 'notch.working',
+  waiting_approval: 'notch.needsApproval',
+  waiting_input: 'notch.waitingInput',
+  compacting: 'notch.compactingShort',
+  done: 'notch.taskComplete',
+  error: 'notch.error',
+  interrupted: 'notch.interrupted',
+}
+
+function getCarouselSlides(session: SessionState, t: (key: string) => string): string[] {
+  const slides: string[] = [session.project]
+
+  if (session.lastToolName) {
+    const target = session.lastToolTarget ? `: ${session.lastToolTarget}` : ''
+    slides.push(`${session.lastToolName}${target}`)
+  } else if (session.description) {
+    slides.push(session.description.split('\n')[0])
+  }
+
+  const statusKey = PHASE_LABELS[session.phase]
+  const status = statusKey ? t(statusKey) : session.phase
+  if (status && status !== slides[0]) slides.push(status)
+
+  return slides.filter(Boolean)
+}
+
+function getUnattendedLevel(unattendedSince: number | undefined): 'none' | 'amber' | 'red' {
+  if (!unattendedSince) return 'none'
+  const elapsed = Date.now() - unattendedSince
+  if (elapsed >= 60000) return 'red'
+  if (elapsed >= 30000) return 'amber'
+  return 'none'
+}
+
+function formatElapsed(unattendedSince: number | undefined): string {
+  if (!unattendedSince) return ''
+  const secs = Math.floor((Date.now() - unattendedSince) / 1000)
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return s > 0 ? `${m}m${s}s` : `${m}m`
 }
 
 export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: CollapsedBarProps) {
   const { t } = useTranslation()
   useTick(1000, sessions.length > 0)
+
   const lead = getLeadSession(sessions)
-  const info = getSessionInfo(lead, t)
+  const slides = lead ? getCarouselSlides(lead, t) : []
+  const slidesCount = slides.length
+
+  const [slideIndex, setSlideIndex] = useState(0)
+  const leadId = lead?.id
+
+  // Reset to slide 0 when the lead session changes
+  useEffect(() => {
+    setSlideIndex(0)
+  }, [leadId])
+
+  // Cycle slides every 3s
+  useEffect(() => {
+    if (slidesCount <= 1) return
+    const timer = setInterval(() => {
+      setSlideIndex(prev => (prev + 1) % slidesCount)
+    }, CAROUSEL_INTERVAL)
+    return () => clearInterval(timer)
+  }, [slidesCount, leadId])
+
+  const safeIndex = slidesCount > 0 ? slideIndex % slidesCount : 0
+  const currentSlide = slides[safeIndex] ?? ''
+
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
   const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
+
+  const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)
+  const elapsedText = unattendedLevel !== 'none' ? formatElapsed(lead?.unattendedSince) : ''
+
+  const settingsButtonRef = useRef<HTMLButtonElement>(null)
+  async function openSettings(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (isTauri()) {
+      try {
+        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+        const settingsWin = await WebviewWindow.getByLabel('settings')
+        if (settingsWin) {
+          await settingsWin.show()
+          await settingsWin.setFocus()
+        }
+      } catch (err) {
+        console.error('[settings] Failed to open settings window:', err)
+      }
+    }
+  }
 
   return (
     <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
@@ -69,21 +152,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
             <button
               className="collapsed-bar__icon-btn"
               title={t('notch.settings')}
-              onClick={async (e) => {
-                e.stopPropagation()
-                if (isTauri()) {
-                  try {
-                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-                    const settingsWin = await WebviewWindow.getByLabel('settings')
-                    if (settingsWin) {
-                      await settingsWin.show()
-                      await settingsWin.setFocus()
-                    }
-                  } catch (err) {
-                    console.error('[settings] Failed to open settings window:', err)
-                  }
-                }
-              }}
+              onClick={openSettings}
             >
               <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
                 <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" fill="currentColor"/>
@@ -94,13 +163,26 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
         </div>
       )}
 
-      {/* Main row: mascot + info + count */}
+      {/* Main row: mascot + carousel info + unattended + count */}
       <div className="collapsed-bar__main">
         <div className="collapsed-bar__left">
           {lead ? (
             <>
               <MascotRouter toolType={lead.agentType} phase={lead.phase} size={22} />
-              <span className="collapsed-bar__info">{info}</span>
+              <div className="collapsed-bar__carousel">
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.span
+                    key={`${leadId}-${safeIndex}`}
+                    className="collapsed-bar__info"
+                    initial={{ y: 8, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    exit={{ y: -8, opacity: 0 }}
+                    transition={{ duration: 0.18, ease: 'easeOut' }}
+                  >
+                    {currentSlide}
+                  </motion.span>
+                </AnimatePresence>
+              </div>
             </>
           ) : (
             <span className="collapsed-bar__info collapsed-bar__info--empty">
@@ -110,6 +192,12 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
         </div>
 
         <div className="collapsed-bar__right">
+          {/* Unattended timer badge */}
+          {unattendedLevel !== 'none' && (
+            <span className={`collapsed-bar__unattended collapsed-bar__unattended--${unattendedLevel}`}>
+              {elapsedText}
+            </span>
+          )}
           {alertCount > 0 && (
             <span className="collapsed-bar__alert-badge">{alertCount}</span>
           )}
@@ -119,23 +207,10 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
           {/* Settings gear only in collapsed state */}
           {!isExpanded && (
             <button
+              ref={settingsButtonRef}
               className="collapsed-bar__icon-btn"
               title={t('notch.settings')}
-              onClick={async (e) => {
-                e.stopPropagation()
-                if (isTauri()) {
-                  try {
-                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-                    const settingsWin = await WebviewWindow.getByLabel('settings')
-                    if (settingsWin) {
-                      await settingsWin.show()
-                      await settingsWin.setFocus()
-                    }
-                  } catch (err) {
-                    console.error('[settings] Failed to open settings window:', err)
-                  }
-                }
-              }}
+              onClick={openSettings}
             >
               <svg width="12" height="12" viewBox="0 0 20 20" fill="none">
                 <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" fill="currentColor"/>

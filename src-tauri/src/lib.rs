@@ -863,6 +863,7 @@ pub fn run() {
             test_webhook,
             get_webhook_logs,
             get_diagnostic_events,
+            commands::buddy::read_buddy_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agent Island");

@@ -1,5 +1,6 @@
 // Tauri IPC Commands — Bridge between frontend and Rust backend
 
+pub mod buddy;
 pub mod persistence;
 
 use crate::agents::{AdapterInfo, AgentAdapter};

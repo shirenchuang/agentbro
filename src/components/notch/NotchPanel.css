@@ -14,20 +14,23 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  border-radius: var(--radius-xl);
+  /* Expanded: asymmetric — flat top for hardware notch feel, rounder bottom */
+  border-radius: 6px 6px 14px 14px;
   cursor: default;
   background: var(--island-bg);
   backdrop-filter: blur(var(--blur-heavy));
   -webkit-backdrop-filter: blur(var(--blur-heavy));
+  box-shadow: var(--island-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-radius var(--duration-normal) var(--ease-out);
   /* GPU acceleration for smooth animations */
   will-change: width, height;
   transform: translateZ(0);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Collapsed state: pill shape */
+/* Collapsed state: pill with 26px radius */
 .notch-panel[aria-expanded="false"] {
-  border-radius: var(--radius-pill);
+  border-radius: 26px;
 }
 
 /* Bounce wrapper for attention animation */

@@ -130,7 +130,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
         case 'processing': {
           const session = sessions[event.sessionId]
           if (session) {
-            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined }
+            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined, unattendedSince: undefined }
           }
           break
         }
@@ -212,6 +212,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
                 options: event.options,
               },
               chatHistory: [...session.chatHistory, msg],
+              unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
           // Push overlay instead of forcing panel state
@@ -241,6 +242,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
               ...session,
               phase: 'waiting_input',
               pendingQuestion: { question: event.question, options: event.options },
+              unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
           const qOverlay: OverlayItem = {
@@ -268,6 +270,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
               chatHistory: [...session.chatHistory, msg],
               taskCompletedAt: Date.now(),
               idleSince: Date.now(),
+              unattendedSince: undefined,
               subagents: session.subagents.map((s) => s.status === 'running' ? { ...s, status: 'completed' as const } : s),
             }
           }
@@ -428,7 +431,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       if (!session) return state
       const sessions = {
         ...state.sessions,
-        [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined },
+        [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'permission'))
       return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
@@ -441,7 +444,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       if (!session) return state
       const sessions = {
         ...state.sessions,
-        [sessionId]: { ...session, phase: 'processing' as const, pendingQuestion: undefined },
+        [sessionId]: { ...session, phase: 'processing' as const, pendingQuestion: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'question'))
       return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }

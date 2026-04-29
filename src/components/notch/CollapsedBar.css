@@ -69,6 +69,7 @@
   gap: var(--space-sm);
   overflow: hidden;
   flex: 1;
+  min-width: 0;
 }
 
 .collapsed-bar__right {
@@ -78,6 +79,15 @@
   flex-shrink: 0;
 }
 
+/* Carousel container — clips the slide-up animation */
+.collapsed-bar__carousel {
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .collapsed-bar__info {
   font-size: var(--font-size-sm);
   font-weight: 500;
@@ -85,6 +95,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: block;
+  width: 100%;
 }
 
 .collapsed-bar__info--empty {
@@ -115,4 +127,36 @@
   font-weight: 500;
   color: var(--vi-text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+/* Unattended timer badge */
+.collapsed-bar__unattended {
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.collapsed-bar__unattended--amber {
+  color: #FF9F0A;
+  background: rgba(255, 159, 10, 0.12);
+  animation: unattended-pulse-amber 2s ease-in-out infinite;
+}
+
+.collapsed-bar__unattended--red {
+  color: #FF3B30;
+  background: rgba(255, 59, 48, 0.12);
+  animation: unattended-pulse-red 1s ease-in-out infinite;
+}
+
+@keyframes unattended-pulse-amber {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 159, 10, 0.3); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 3px rgba(255, 159, 10, 0); }
+}
+
+@keyframes unattended-pulse-red {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 3px rgba(255, 59, 48, 0); }
 }
