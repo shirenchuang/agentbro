@@ -517,6 +517,71 @@ impl HookServer {
                 log::info!("Subagent stopped: {} (status={}) for session {}", agent_id, status, session_id);
                 store.stop_subagent(session_id, agent_id, status);
             }
+            AgentEvent::ShellExecutionStart { session_id, command, cwd } => {
+                log::debug!("Shell starting: {} in {}", command, cwd);
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Processing;
+                    s.last_tool_name = Some(format!("shell:{}", command));
+                    s.last_tool_status = Some("running".to_string());
+                });
+            }
+            AgentEvent::ShellExecutionEnd { session_id, command, exit_code, duration_ms, .. } => {
+                log::debug!("Shell completed: {} (exit={:?}, {}ms)", command, exit_code, duration_ms);
+                let is_error = matches!(exit_code, Some(c) if *c != 0);
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Processing;
+                    s.last_tool_status = Some(if is_error { "error".to_string() } else { "success".to_string() });
+                });
+                if is_error {
+                    Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskError);
+                }
+            }
+            AgentEvent::MCPExecutionStart { session_id, server_name, tool_name, .. } => {
+                log::debug!("MCP {}:{} starting", server_name, tool_name);
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Processing;
+                    s.last_tool_name = Some(format!("mcp:{}:{}", server_name, tool_name));
+                    s.last_tool_status = Some("running".to_string());
+                });
+            }
+            AgentEvent::MCPExecutionEnd { session_id, server_name, tool_name, error, duration_ms, .. } => {
+                log::debug!("MCP {}:{} completed ({}ms)", server_name, tool_name, duration_ms);
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Processing;
+                    s.last_tool_status = Some(if error.is_none() { "success".to_string() } else { "error".to_string() });
+                });
+            }
+            AgentEvent::AgentResponse { session_id, content, content_type } => {
+                log::debug!("Agent response received: {} bytes, type={}", content.len(), content_type);
+                let truncated = if content.len() > 2000 {
+                    let mut end = 1997;
+                    while !content.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &content[..end])
+                } else {
+                    content.clone()
+                };
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Processing;
+                    s.last_response = Some(truncated);
+                });
+            }
+            AgentEvent::AgentThought { session_id, thought } => {
+                log::debug!("Agent thought: {} chars", thought.len());
+                let truncated = if thought.len() > 2000 {
+                    let mut end = 1997;
+                    while !thought.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &thought[..end])
+                } else {
+                    thought.clone()
+                };
+                store.update_session(session_id, |s| {
+                    s.last_thought = Some(truncated);
+                });
+            }
             // PermissionRequest and AskQuestion are handled in handle_connection
             _ => {}
         }

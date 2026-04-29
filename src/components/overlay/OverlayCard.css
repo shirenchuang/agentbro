@@ -1,10 +1,10 @@
 .overlay-card {
-  background: rgba(30, 30, 30, 0.95);
+  background: var(--island-card);
   backdrop-filter: blur(20px);
   border-radius: var(--radius-lg, 12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--island-border);
   padding: 10px 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--island-shadow);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -25,7 +25,7 @@
   height: 20px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle-hover);
   color: var(--vi-text-secondary, #aaa);
   cursor: pointer;
   padding: 0;
@@ -33,7 +33,7 @@
 }
 
 .overlay-card__close:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--island-scrollbar);
   color: var(--vi-text-primary, #fff);
 }
 

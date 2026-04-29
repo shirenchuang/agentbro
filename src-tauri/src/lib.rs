@@ -198,6 +198,14 @@ fn start_cursor_hotzone_poller(app_handle: tauri::AppHandle) {
     });
 }
 
+// ── Quit Command ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 // ── Sound Commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -379,39 +387,41 @@ pub fn run() {
                 theme::scanner::ensure_builtin_themes(&resource_path);
             }
 
-            // Initialize adapters (single shared vec for both HookServer and AppState)
-            let adapters: Arc<Vec<Arc<dyn AgentAdapter>>> = Arc::new(vec![
-                Arc::new(ClaudeCodeAdapter::new()),
-            ]);
+            // Initialize adapters: default ~/.claude + custom engine instances
+            let default_cc = ClaudeCodeAdapter::new();
+            let mut cc_adapters: Vec<ClaudeCodeAdapter> = vec![];
+            {
+                let config = config_store.get();
+                for inst in &config.engine_instances {
+                    if inst.enabled {
+                        let root = agents::claude_code::expand_tilde(&inst.config_root);
+                        cc_adapters.push(
+                            ClaudeCodeAdapter::with_config_root(root, inst.label.clone()),
+                        );
+                    }
+                }
+            }
 
             // Update hook script if app was updated (compare embedded vs deployed)
             if ClaudeCodeAdapter::update_hook_script_if_needed() {
                 log::info!("Hook script was updated to match new app version");
             }
 
+            // Build the shared adapter list
+            let mut adapter_list: Vec<Arc<dyn AgentAdapter>> = vec![
+                Arc::new(default_cc),
+            ];
+            for cc in cc_adapters {
+                adapter_list.push(Arc::new(cc));
+            }
+            let adapters: Arc<Vec<Arc<dyn AgentAdapter>>> = Arc::new(adapter_list);
+
             // Auto-install hooks on startup
             for adapter in adapters.iter() {
                 if let Err(e) = adapter.install_hooks() {
-                    log::warn!("Failed to install hooks for {}: {}", adapter.name(), e);
+                    log::warn!("Failed to install hooks for {}: {}", adapter.display_name(), e);
                 } else {
-                    log::info!("Hooks installed for {}", adapter.name());
-                }
-            }
-
-            // Verify hooks after install and log any issues
-            {
-                let cc = ClaudeCodeAdapter::new();
-                let result = cc.verify_hooks();
-                match result {
-                    agents::claude_code::HookVerificationResult::Ok => {
-                        log::info!("Hook verification passed for claude-code");
-                    }
-                    agents::claude_code::HookVerificationResult::NeedsReinstall => {
-                        log::warn!("Hook verification: bridge binary missing or outdated, needs reinstall");
-                    }
-                    agents::claude_code::HookVerificationResult::SettingsCorrupted => {
-                        log::warn!("Hook verification: settings.json missing or corrupted hook entries");
-                    }
+                    log::info!("Hooks installed for {}", adapter.display_name());
                 }
             }
 
@@ -561,8 +571,15 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Start conversation file watcher (watches ~/.claude/projects/ for JSONL changes)
-            let conversation_watcher = ConversationWatcher::start(app.handle().clone());
+            // Start conversation file watcher (watches projects dirs for JSONL changes)
+            let extra_roots: Vec<std::path::PathBuf> = {
+                let config = config_store.get();
+                config.engine_instances.iter()
+                    .filter(|i| i.enabled)
+                    .map(|i| agents::claude_code::expand_tilde(&i.config_root))
+                    .collect()
+            };
+            let conversation_watcher = ConversationWatcher::start_with_roots(app.handle().clone(), &extra_roots);
             if conversation_watcher.is_some() {
                 log::info!("Conversation watcher started");
             }
@@ -589,6 +606,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            quit_app,
             commands::get_sessions,
             commands::respond_permission,
             commands::respond_auto_approve,
@@ -606,6 +624,9 @@ pub fn run() {
             commands::deactivate_license,
             commands::get_chat_history,
             commands::export_diagnostics,
+            commands::add_engine_instance,
+            commands::remove_engine_instance,
+            commands::verify_engine_path,
             resize_notch,
             play_sound,
             set_sound_volume,

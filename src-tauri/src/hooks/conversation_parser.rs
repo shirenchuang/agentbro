@@ -385,24 +385,29 @@ impl ConversationParser {
 ///
 /// The project directory hash is the cwd with `/` replaced by `-` and `.` replaced by `-`.
 pub fn discover_session_file(session_id: &str, cwd: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let projects_dir = home.join(".claude").join("projects");
+    discover_session_file_in_dirs(session_id, cwd, &all_projects_dirs())
+}
 
+/// Search for a session JSONL across multiple project directories.
+pub fn discover_session_file_in_dirs(session_id: &str, cwd: &str, projects_dirs: &[PathBuf]) -> Option<PathBuf> {
     let project_dir_name = cwd.replace('/', "-").replace('.', "-");
-    let session_file = projects_dir
-        .join(&project_dir_name)
-        .join(format!("{}.jsonl", session_id));
 
-    if session_file.exists() {
-        return Some(session_file);
-    }
+    for projects_dir in projects_dirs {
+        let session_file = projects_dir
+            .join(&project_dir_name)
+            .join(format!("{}.jsonl", session_id));
 
-    // Fallback: search all project directories for this session ID
-    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join(format!("{}.jsonl", session_id));
-            if candidate.exists() {
-                return Some(candidate);
+        if session_file.exists() {
+            return Some(session_file);
+        }
+
+        // Fallback: search all project subdirectories for this session ID
+        if let Ok(entries) = std::fs::read_dir(projects_dir) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join(format!("{}.jsonl", session_id));
+                if candidate.exists() {
+                    return Some(candidate);
+                }
             }
         }
     }
@@ -410,7 +415,7 @@ pub fn discover_session_file(session_id: &str, cwd: &str) -> Option<PathBuf> {
     None
 }
 
-/// Get the Claude projects base directory.
+/// Get the default Claude projects directory (~/.claude/projects).
 pub fn claude_projects_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let dir = home.join(".claude").join("projects");
@@ -419,6 +424,28 @@ pub fn claude_projects_dir() -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// Collect all known projects directories (default + custom engine instances).
+/// Used by file watcher and session discovery.
+pub fn all_projects_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = claude_projects_dir() {
+        dirs.push(d);
+    }
+    dirs
+}
+
+/// Collect projects directories from a set of config roots.
+pub fn projects_dirs_from_roots(config_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for root in config_roots {
+        let dir = root.join("projects");
+        if dir.is_dir() {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 // ── Startup session discovery ─────────────────────────────────
@@ -432,33 +459,34 @@ pub struct DiscoveredSession {
     pub session_title: Option<String>,
 }
 
-/// Scan `~/.claude/projects/` for recently-active JSONL files.
+/// Scan projects directories for recently-active JSONL files.
 ///
 /// Returns sessions whose JSONL file was modified within `max_age`.
 /// For each file, reads the first ~30 lines to extract session metadata
 /// and the first user message as a title.
 pub fn discover_active_sessions(max_age: Duration) -> Vec<DiscoveredSession> {
-    let projects_dir = match claude_projects_dir() {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
+    discover_active_sessions_in_dirs(max_age, &all_projects_dirs())
+}
 
+/// Scan specific projects directories for recently-active sessions.
+pub fn discover_active_sessions_in_dirs(max_age: Duration, projects_dirs: &[PathBuf]) -> Vec<DiscoveredSession> {
     let cutoff = std::time::SystemTime::now()
         .checked_sub(max_age)
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
     let mut results = Vec::new();
 
-    let project_entries = match std::fs::read_dir(&projects_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+    for projects_dir in projects_dirs {
+        let project_entries = match std::fs::read_dir(projects_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
 
-    for project_entry in project_entries.flatten() {
-        let project_path = project_entry.path();
-        if !project_path.is_dir() {
-            continue;
-        }
+        for project_entry in project_entries.flatten() {
+            let project_path = project_entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
 
         let jsonl_entries = match std::fs::read_dir(&project_path) {
             Ok(e) => e,
@@ -500,6 +528,7 @@ pub fn discover_active_sessions(max_age: Duration) -> Vec<DiscoveredSession> {
             if let Some(session) = parse_session_header(&file_path) {
                 results.push(session);
             }
+        }
         }
     }
 

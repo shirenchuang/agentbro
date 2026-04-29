@@ -1,7 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../../../stores/configStore'
-import { installHooks, removeHooks, listDisplays, isTauri } from '../../../services/tauriApi'
+import type { EngineInstance } from '../../../stores/configStore'
+import {
+  installHooks, removeHooks, listDisplays, isTauri,
+  addEngineInstance, removeEngineInstance, verifyEnginePath,
+} from '../../../services/tauriApi'
 import type { BackendDisplayInfo } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -42,6 +46,19 @@ export function GeneralSection() {
     { value: '5s', label: t('settings.duration5s') },
     { value: '10s', label: t('settings.duration10s') },
     { value: 'persistent', label: t('settings.durationPersistent') },
+  ]
+
+  const idleTimeoutOptions = [
+    { value: '0', label: t('settings.idleTimeoutDisabled') },
+    { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
+    { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
+    { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
+    { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
+  ]
+
+  const notificationModeOptions = [
+    { value: 'turnEnd', label: t('settings.notificationTurnEnd') },
+    { value: 'every', label: t('settings.notificationEvery') },
   ]
 
   const languageOptions = [
@@ -104,6 +121,22 @@ export function GeneralSection() {
             unit="ms"
           />
         </SettingRow>
+        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
+          <Dropdown
+            value={String(config.idleTimeoutMinutes)}
+            options={idleTimeoutOptions}
+            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))}
+            minWidth={130}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.notificationMode')} description={t('settings.notificationModeDesc')}>
+          <Dropdown
+            value={config.notificationMode}
+            options={notificationModeOptions}
+            onChange={(v) => config.updateConfig('notificationMode', v as 'turnEnd' | 'every')}
+            minWidth={150}
+          />
+        </SettingRow>
       </SettingGroup>
 
       <SettingGroup label={t('settings.interface')}>
@@ -113,7 +146,54 @@ export function GeneralSection() {
       </SettingGroup>
 
       <SettingGroup label={t('settings.cliHooks')}>
-        {config.agentHooks.map((hook) => (
+        {/* Default ~/.claude instance */}
+        <div className="agent-hook-row">
+          <span className="agent-hook-row__status agent-hook-row__status--connected" />
+          <div style={{ flex: 1 }}>
+            <span className="agent-hook-row__label">Claude Code</span>
+            <span className="agent-hook-row__path">~/.claude</span>
+          </div>
+        </div>
+
+        {/* Custom engine instances */}
+        {config.engineInstances.map((inst: EngineInstance) => (
+          <div key={inst.id} className="agent-hook-row">
+            <span className={`agent-hook-row__status ${inst.enabled ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
+            <div style={{ flex: 1 }}>
+              <span className="agent-hook-row__label">{inst.label}</span>
+              <span className="agent-hook-row__path">{inst.configRoot}</span>
+            </div>
+            <Toggle checked={inst.enabled} onChange={(v) => {
+              const updated = config.engineInstances.map((i: EngineInstance) =>
+                i.id === inst.id ? { ...i, enabled: v } : i
+              )
+              config.updateConfig('engineInstances', updated)
+            }} />
+            <button
+              className="agent-hook-row__remove"
+              onClick={async () => {
+                try {
+                  await removeEngineInstance(inst.id)
+                  const updated = config.engineInstances.filter((i: EngineInstance) => i.id !== inst.id)
+                  config.updateConfig('engineInstances', updated)
+                } catch (e) {
+                  console.error('Failed to remove engine instance:', e)
+                }
+              }}
+              title={t('settings.removeEngine')}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+
+        {/* Add engine instance form */}
+        <EngineInstanceAdder onAdd={(inst) => {
+          config.updateConfig('engineInstances', [...config.engineInstances, inst])
+        }} />
+
+        {/* Other agent hooks */}
+        {config.agentHooks.filter(h => h.agentType !== 'claude-code').map((hook) => (
           <div key={hook.agentType} className="agent-hook-row">
             <span
               className={`agent-hook-row__status ${hook.connected ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`}
@@ -132,5 +212,101 @@ export function GeneralSection() {
         ))}
       </SettingGroup>
     </SettingSection>
+  )
+}
+
+function EngineInstanceAdder({ onAdd }: { onAdd: (inst: EngineInstance) => void }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [label, setLabel] = useState('')
+  const [configRoot, setConfigRoot] = useState('')
+  const [pathValid, setPathValid] = useState<boolean | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const checkPath = useCallback(async (path: string) => {
+    if (!path.trim()) {
+      setPathValid(null)
+      return
+    }
+    setChecking(true)
+    try {
+      const valid = await verifyEnginePath(path)
+      setPathValid(valid)
+    } catch {
+      setPathValid(false)
+    }
+    setChecking(false)
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => checkPath(configRoot), 400)
+    return () => clearTimeout(timer)
+  }, [configRoot, checkPath])
+
+  if (!open) {
+    return (
+      <button className="engine-add-btn" onClick={() => setOpen(true)}>
+        + {t('settings.addEngineBranch')}
+      </button>
+    )
+  }
+
+  const canSubmit = label.trim() && configRoot.trim() && pathValid !== false
+
+  return (
+    <div className="engine-add-form">
+      <div className="engine-add-form__row">
+        <label>{t('settings.engineLabel')}</label>
+        <input
+          type="text"
+          className="glass-input"
+          value={label}
+          placeholder="e.g. engine/cc"
+          onChange={(e) => setLabel(e.target.value)}
+        />
+      </div>
+      <div className="engine-add-form__row">
+        <label>{t('settings.engineConfigRoot')}</label>
+        <div className="engine-add-form__path-input">
+          <input
+            type="text"
+            className="glass-input"
+            value={configRoot}
+            placeholder="~/.codefuse/engine/cc"
+            onChange={(e) => setConfigRoot(e.target.value)}
+          />
+          {checking && <span className="engine-add-form__status">...</span>}
+          {!checking && pathValid === true && (
+            <span className="engine-add-form__status engine-add-form__status--valid">{t('settings.enginePathValid')}</span>
+          )}
+          {!checking && pathValid === false && (
+            <span className="engine-add-form__status engine-add-form__status--invalid">{t('settings.enginePathInvalid')}</span>
+          )}
+        </div>
+      </div>
+      <div className="engine-add-form__actions">
+        <button className="engine-add-form__cancel" onClick={() => { setOpen(false); setLabel(''); setConfigRoot(''); setPathValid(null) }}>
+          {t('settings.cancel')}
+        </button>
+        <button
+          className="engine-add-form__submit"
+          disabled={!canSubmit}
+          onClick={async () => {
+            try {
+              const inst = await addEngineInstance(label.trim(), configRoot.trim())
+              onAdd(inst)
+              setOpen(false)
+              setLabel('')
+              setConfigRoot('')
+              setPathValid(null)
+            } catch (e) {
+              console.error('Failed to add engine instance:', e)
+            }
+          }}
+        >
+          {t('settings.add')}
+        </button>
+      </div>
+    </div>
   )
 }

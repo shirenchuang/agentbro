@@ -319,7 +319,30 @@ export async function quitApp(): Promise<void> {
   try {
     await invoke('quit_app')
   } catch {
-    // Fallback: close the window if the quit command isn't registered
     window.close()
   }
+}
+
+// ── Engine Instance Commands ────────────────────────────────────
+
+export interface BackendEngineInstance {
+  id: string
+  label: string
+  configRoot: string
+  enabled: boolean
+}
+
+export async function addEngineInstance(label: string, configRoot: string): Promise<BackendEngineInstance> {
+  if (!isTauri()) throw new Error('Not in Tauri')
+  return await invoke<BackendEngineInstance>('add_engine_instance', { label, configRoot })
+}
+
+export async function removeEngineInstance(id: string): Promise<void> {
+  if (!isTauri()) return
+  await invoke('remove_engine_instance', { id })
+}
+
+export async function verifyEnginePath(path: string): Promise<boolean> {
+  if (!isTauri()) return false
+  return await invoke<boolean>('verify_engine_path', { path })
 }

@@ -19,8 +19,8 @@ import './NotchPanel.css'
 
 const springTransition = {
   type: 'spring' as const,
-  stiffness: 400,
-  damping: 30,
+  stiffness: 350,
+  damping: 35,
   mass: 0.8,
 }
 
@@ -302,10 +302,14 @@ export function NotchPanel() {
         ? Math.min(statusBarHeight + 36 + Math.max(sessions.length, 1) * 72 + 16 + overlayExtraHeight, 480)
         : (maxPanelHeight || 560)
 
+  // Debounce IPC resize to avoid jitter during spring animation
   useEffect(() => {
-    const windowHeight = panelHeight + 16
-    const windowWidth = panelWidth + 20
-    resizeNotch(windowWidth, windowHeight)
+    const timer = setTimeout(() => {
+      const windowHeight = panelHeight + 16
+      const windowWidth = panelWidth + 20
+      resizeNotch(windowWidth, windowHeight)
+    }, 50)
+    return () => clearTimeout(timer)
   }, [panelWidth, panelHeight])
 
   return (

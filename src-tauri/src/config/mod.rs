@@ -6,6 +6,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
 
+/// A custom Claude Code engine instance at a non-default path
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineInstance {
+    pub id: String,
+    pub label: String,
+    pub config_root: String,
+    pub enabled: bool,
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +45,15 @@ pub struct AppConfig {
     /// Filter out sounds for probe/health-check sessions
     #[serde(default)]
     pub probe_session_filter: bool,
+    /// Minutes of inactivity before auto-hiding (0 = disabled)
+    #[serde(default)]
+    pub idle_timeout_minutes: u32,
+    /// Notification mode: "turnEnd" or "every"
+    #[serde(default = "default_notification_mode")]
+    pub notification_mode: String,
+    /// Custom engine instances (Claude Code at non-default paths)
+    #[serde(default)]
+    pub engine_instances: Vec<EngineInstance>,
 }
 
 fn default_display_id() -> String {
@@ -47,6 +66,10 @@ fn default_true() -> bool {
 
 fn default_sound_pack() -> String {
     "eight-bit".to_string()
+}
+
+fn default_notification_mode() -> String {
+    "turnEnd".to_string()
 }
 
 impl Default for AppConfig {
@@ -65,6 +88,9 @@ impl Default for AppConfig {
             sound_events: std::collections::HashMap::new(),
             sound_pack: "eight-bit".to_string(),
             probe_session_filter: false,
+            idle_timeout_minutes: 0,
+            notification_mode: "turnEnd".to_string(),
+            engine_instances: Vec::new(),
         }
     }
 }

@@ -27,18 +27,74 @@ pub fn jump_to_terminal(pid: u32) -> JumpResult {
     }
 
     // Find the terminal app in the process tree
-    let terminal_app = match process_tree::find_terminal_app_name(pid, &tree) {
-        Some(app) => app,
-        None => return JumpResult::TerminalNotFound,
-    };
-
-    // Try AppleScript for supported terminals (iTerm2, Terminal.app)
-    if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
-        return jump_via_applescript(app_name);
+    if let Some(terminal_app) = process_tree::find_terminal_app_name(pid, &tree) {
+        // Try AppleScript for supported terminals (iTerm2, Terminal.app)
+        if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
+            return jump_via_applescript(app_name);
+        }
+        // Generic activation: use `open -a` for the terminal app
+        return jump_via_app_activation(&terminal_app);
     }
 
-    // Generic activation: use `open -a` for the terminal app
-    jump_via_app_activation(&terminal_app)
+    // Fallback: use TTY device to find which terminal app owns this session
+    log::warn!("Process tree walk failed for PID {}. Trying TTY fallback.", pid);
+    if let Some(tty) = process_tree::get_tty(pid, &tree) {
+        if let Some(terminal_app) = find_terminal_app_for_tty(&tty) {
+            log::info!("TTY fallback found terminal app: {}", terminal_app);
+            if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
+                return jump_via_applescript(app_name);
+            }
+            return jump_via_app_activation(&terminal_app);
+        }
+    }
+
+    // Last resort: find any terminal app that shares the same TTY
+    if let Some(tty) = process_tree::get_tty(pid, &tree) {
+        log::warn!("Trying shared-TTY scan for {}", tty);
+        for info in tree.values() {
+            if info.tty.as_deref() == Some(&tty) && registry::is_terminal(&info.command) {
+                log::info!("Shared-TTY scan found: {}", info.command);
+                if let Some(app_name) = registry::applescript_app_name(&info.command) {
+                    return jump_via_applescript(app_name);
+                }
+                return jump_via_app_activation(&info.command);
+            }
+        }
+    }
+
+    JumpResult::TerminalNotFound
+}
+
+/// Find which terminal app owns a given TTY device using lsof
+fn find_terminal_app_for_tty(tty: &str) -> Option<String> {
+    // Convert short TTY name (e.g. "s002") to device path "/dev/ttys002"
+    let tty_path = if tty.starts_with("/dev/") {
+        tty.to_string()
+    } else {
+        format!("/dev/tty{}", tty)
+    };
+
+    let output = std::process::Command::new("lsof")
+        .arg(&tty_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let command = parts[0];
+        if registry::is_terminal(command) {
+            return Some(command.to_string());
+        }
+    }
+    None
 }
 
 /// Jump to a tmux pane

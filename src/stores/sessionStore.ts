@@ -1,8 +1,7 @@
 /* Agent Island — Session State Management (Zustand) */
 import { create } from 'zustand'
-import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, OverlayType, OVERLAY_PRIORITY as _OP, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
-import { useConfigStore } from './configStore'
 import { isQuietHours } from '../utils/quietHours'
 import { saveSessions as saveSessionsToBackend, loadSessions as loadSessionsFromBackend } from '../services/tauriApi'
 

@@ -43,12 +43,12 @@
 
 .collapsed-bar__icon-btn:hover {
   color: var(--vi-text-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle-hover);
 }
 
 /* Separator below status row */
 .collapsed-bar--expanded .collapsed-bar__status-row {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--island-subtle);
   padding-bottom: 6px;
   margin-bottom: 2px;
 }

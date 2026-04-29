@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../../../stores/configStore'
-import { useThemeStore } from '../../../stores/themeStore'
+import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
 import { MODEL_PRICING } from '../../../utils/tokens'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -23,9 +23,10 @@ const fontSizeOptions = [
 ]
 
 export function DisplaySection() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const config = useConfigStore()
-  const { themes, activeThemeName, setActiveTheme } = useThemeStore()
+  const { themes, activeThemeName, setActiveTheme, colorTheme, setColorTheme } = useThemeStore()
+  const isZh = i18n.language?.startsWith('zh')
 
   const themeOptions = themes.map((th) => ({
     value: th.name,
@@ -41,6 +42,38 @@ export function DisplaySection() {
 
   return (
     <SettingSection title={t('settings.display')} description={t('settings.displayDesc')}>
+      <SettingGroup label={t('settings.colorTheme')}>
+        <div className="color-theme-cards">
+          {COLOR_THEMES.map((ct) => (
+            <div
+              key={ct.id}
+              className={`color-theme-card ${colorTheme === ct.id ? 'color-theme-card--active' : ''}`}
+              onClick={() => setColorTheme(ct.id)}
+            >
+              <div className="color-theme-card__preview">
+                <div
+                  className="color-theme-card__swatch"
+                  style={{ background: ct.bg }}
+                >
+                  <div
+                    className="color-theme-card__swatch-card"
+                    style={{ background: ct.card }}
+                  />
+                  <div
+                    className="color-theme-card__swatch-dot"
+                    style={{ background: ct.accent }}
+                  />
+                </div>
+              </div>
+              <div className="color-theme-card__label">
+                {isZh ? ct.labelZh : ct.label}
+              </div>
+              <div className="color-theme-card__tag">{ct.tag}</div>
+            </div>
+          ))}
+        </div>
+      </SettingGroup>
+
       <SettingGroup label={t('settings.notchStyle')}>
         <div className="notch-style-cards">
           <div

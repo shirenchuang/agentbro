@@ -28,8 +28,8 @@
 }
 
 .question-card__option:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.15);
+  background: var(--island-subtle);
+  border-color: var(--island-scrollbar);
 }
 
 .question-card__option--selected {
@@ -82,7 +82,7 @@
 .question-card__input {
   flex: 1;
   padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--island-input-bg);
   border: 1px solid var(--vi-card-border, #333);
   border-radius: var(--radius-sm, 6px);
   color: var(--vi-text-primary, #fff);

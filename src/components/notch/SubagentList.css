@@ -2,7 +2,7 @@
 
 .subagent-list {
   padding: 0 var(--space-md);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--island-subtle);
 }
 
 .subagent-list__toggle {

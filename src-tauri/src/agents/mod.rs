@@ -74,6 +74,45 @@ pub enum AgentEvent {
         agent_id: String,
         status: String,
     },
+    // Shell execution hooks
+    ShellExecutionStart {
+        session_id: String,
+        command: String,
+        cwd: String,
+    },
+    ShellExecutionEnd {
+        session_id: String,
+        command: String,
+        exit_code: Option<i32>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+        duration_ms: u64,
+    },
+    // MCP execution hooks
+    MCPExecutionStart {
+        session_id: String,
+        server_name: String,
+        tool_name: String,
+        arguments: String,
+    },
+    MCPExecutionEnd {
+        session_id: String,
+        server_name: String,
+        tool_name: String,
+        result: Option<String>,
+        error: Option<String>,
+        duration_ms: u64,
+    },
+    // Agent response hooks
+    AgentResponse {
+        session_id: String,
+        content: String,
+        content_type: String,
+    },
+    AgentThought {
+        session_id: String,
+        thought: String,
+    },
 }
 
 pub trait AgentAdapter: Send + Sync + 'static {

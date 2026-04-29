@@ -2,6 +2,27 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ThemeConfig } from '../types/theme'
 
+export interface ColorThemeInfo {
+  id: string
+  label: string
+  labelZh: string
+  tag: string
+  isDark: boolean
+  bg: string
+  card: string
+  accent: string
+}
+
+export const COLOR_THEMES: ColorThemeInfo[] = [
+  { id: 'midnight', label: 'Midnight', labelZh: '暗夜', tag: 'Default', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#3b82f6' },
+  { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '冰霜毛玻璃', tag: 'Cool', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#3b82f6' },
+  { id: 'warm-paper', label: 'Warm Paper', labelZh: '暖纸', tag: 'Warm', isDark: false, bg: '#f2efe8', card: '#faf7f0', accent: '#3b82f6' },
+  { id: 'soft-lavender', label: 'Soft Lavender', labelZh: '柔紫', tag: 'Elegant', isDark: false, bg: '#eeedf6', card: '#f8f7fc', accent: '#6366f1' },
+  { id: 'ocean-mist', label: 'Ocean Mist', labelZh: '海雾', tag: 'Calm', isDark: false, bg: '#e8eef5', card: '#f2f6fb', accent: '#3b82f6' },
+  { id: 'apple', label: 'Apple', labelZh: '苹果风', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
+  { id: 'smoke', label: 'Smoke', labelZh: '烟雾', tag: 'Neutral', isDark: false, bg: '#e8e8ec', card: '#f4f4f6', accent: '#3b82f6' },
+]
+
 const DEFAULT_THEME: ThemeConfig = {
   name: 'default',
   version: '1.0.0',
@@ -37,11 +58,17 @@ const DEFAULT_THEME: ThemeConfig = {
   sounds: { pack: '8bit' },
 }
 
+function applyColorTheme(id: string) {
+  document.documentElement.setAttribute('data-island-color-theme', id)
+}
+
 interface ThemeStore {
   themes: ThemeConfig[]
   activeThemeName: string
   activeTheme: ThemeConfig
+  colorTheme: string
   setActiveTheme: (name: string) => void
+  setColorTheme: (id: string) => void
   loadThemes: (themes: ThemeConfig[]) => void
 }
 
@@ -51,11 +78,19 @@ export const useThemeStore = create<ThemeStore>()(
       themes: [DEFAULT_THEME],
       activeThemeName: 'default',
       activeTheme: DEFAULT_THEME,
+      colorTheme: 'midnight',
 
       setActiveTheme: (name) => {
         const theme = get().themes.find((t) => t.name === name)
         if (theme) {
           set({ activeThemeName: name, activeTheme: theme })
+        }
+      },
+
+      setColorTheme: (id) => {
+        if (COLOR_THEMES.some((t) => t.id === id)) {
+          applyColorTheme(id)
+          set({ colorTheme: id })
         }
       },
 
@@ -66,6 +101,16 @@ export const useThemeStore = create<ThemeStore>()(
         set({ themes: all, activeTheme })
       },
     }),
-    { name: 'agent-island-theme', partialize: (state) => ({ activeThemeName: state.activeThemeName }) }
+    {
+      name: 'agent-island-theme',
+      partialize: (state) => ({ activeThemeName: state.activeThemeName, colorTheme: state.colorTheme }),
+      onRehydrateStorage: () => {
+        return (state) => {
+          if (state?.colorTheme) {
+            applyColorTheme(state.colorTheme)
+          }
+        }
+      },
+    }
   )
 )

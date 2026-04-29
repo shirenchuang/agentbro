@@ -30,6 +30,10 @@ function parseDiff(raw: string | null): DiffContent | undefined {
 }
 
 function transformSession(bs: BackendSession): SessionState {
+  // Preserve existing chatHistory/subagents/activeTools from the store
+  // so that replaceAllSessions doesn't wipe them on each backend update
+  const existing = useSessionStore.getState().sessions[bs.id]
+
   return {
     id: bs.id,
     agentType: bs.agentType as AgentType,
@@ -51,9 +55,9 @@ function transformSession(bs: BackendSession): SessionState {
     lastToolStatus: (bs.lastToolStatus as ToolStatus) ?? undefined,
     description: bs.description ?? undefined,
     sessionTitle: bs.sessionTitle ?? undefined,
-    chatHistory: [],
-    subagents: [],
-    activeTools: [],
+    chatHistory: existing?.chatHistory ?? [],
+    subagents: existing?.subagents ?? [],
+    activeTools: existing?.activeTools ?? [],
   }
 }
 

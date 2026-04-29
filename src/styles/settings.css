@@ -500,9 +500,133 @@
 }
 
 .agent-hook-row__label {
-  flex: 1;
   font-size: 14px;
   color: var(--settings-text-primary);
+}
+
+.agent-hook-row__path {
+  display: block;
+  font-size: 11px;
+  color: var(--settings-text-secondary);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.agent-hook-row__remove {
+  background: none;
+  border: none;
+  color: var(--settings-text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.5;
+}
+
+.agent-hook-row__remove:hover {
+  opacity: 1;
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff5050;
+}
+
+/* ── Engine Add Button ── */
+.engine-add-btn {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin-top: 4px;
+  background: none;
+  border: 1px dashed var(--settings-separator);
+  border-radius: 8px;
+  color: var(--settings-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.engine-add-btn:hover {
+  border-color: var(--settings-text-secondary);
+  color: var(--settings-text-primary);
+}
+
+/* ── Engine Add Form ── */
+.engine-add-form {
+  padding: 12px;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--settings-separator);
+  border-radius: 8px;
+}
+
+.engine-add-form__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.engine-add-form__row label {
+  font-size: 12px;
+  color: var(--settings-text-secondary);
+  min-width: 80px;
+}
+
+.engine-add-form__row .glass-input {
+  flex: 1;
+}
+
+.engine-add-form__path-input {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.engine-add-form__path-input .glass-input {
+  flex: 1;
+}
+
+.engine-add-form__status {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.engine-add-form__status--valid {
+  color: var(--settings-status-active);
+}
+
+.engine-add-form__status--invalid {
+  color: #ff5050;
+}
+
+.engine-add-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.engine-add-form__cancel,
+.engine-add-form__submit {
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: none;
+}
+
+.engine-add-form__cancel {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--settings-text-secondary);
+}
+
+.engine-add-form__submit {
+  background: var(--settings-status-active);
+  color: #fff;
+}
+
+.engine-add-form__submit:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ── Sound Event Row ── */
@@ -610,6 +734,80 @@
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 12px;
+}
+
+/* ── Color Theme Cards ── */
+.color-theme-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.color-theme-card {
+  padding: 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 2px solid var(--settings-card-border);
+  background: var(--settings-bg);
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.color-theme-card:hover {
+  border-color: #c7c7cc;
+}
+
+.color-theme-card--active {
+  border-color: var(--settings-accent);
+  background: rgba(0, 122, 255, 0.05);
+}
+
+.color-theme-card__preview {
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.color-theme-card__swatch {
+  width: 100%;
+  height: 36px;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.color-theme-card__swatch-card {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.color-theme-card__swatch-dot {
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.color-theme-card__label {
+  font-size: 11px;
+  color: var(--settings-text-primary);
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.color-theme-card__tag {
+  font-size: 9px;
+  color: var(--settings-text-secondary);
+  margin-top: 1px;
 }
 
 /* ── Notch Style Cards ── */

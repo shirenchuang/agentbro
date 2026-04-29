@@ -52,22 +52,30 @@ impl HookRecovery {
 }
 
 /// Start the hook recovery watcher as a background task.
-/// Watches `~/.claude/settings.json` for modifications and re-installs hooks if they were removed.
+/// Watches all adapter settings paths for modifications and re-installs hooks if they were removed.
 pub fn start_hook_recovery(
     adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
     app_handle: tauri::AppHandle,
 ) {
-    let settings_path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".claude")
-        .join("settings.json");
+    // Collect all settings paths and their parent directories from all adapters
+    let mut watch_paths: Vec<PathBuf> = Vec::new();
+    let mut watch_dirs: Vec<PathBuf> = Vec::new();
+    for adapter in adapters.iter() {
+        for path in adapter.hook_config_paths() {
+            if let Some(parent) = path.parent() {
+                if !watch_dirs.contains(&parent.to_path_buf()) {
+                    watch_dirs.push(parent.to_path_buf());
+                }
+            }
+            watch_paths.push(path);
+        }
+    }
 
-    if !settings_path.exists() {
-        log::debug!("Hook recovery: settings.json not found, skipping watcher");
+    if watch_paths.is_empty() {
+        log::debug!("Hook recovery: no settings paths to watch, skipping");
         return;
     }
 
-    let watch_dir = settings_path.parent().unwrap().to_path_buf();
     let recovery = Arc::new(HookRecovery::new());
 
     std::thread::spawn(move || {
@@ -80,20 +88,20 @@ pub fn start_hook_recovery(
             let adapters_inner = adapters.clone();
             let recovery_inner = recovery.clone();
             let app_handle_inner = app_handle.clone();
-            let settings_path_inner = settings_path.clone();
+            let watch_paths_inner = watch_paths.clone();
 
             let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(16);
 
             let _watcher = {
                 let tx = tx.clone();
-                let settings_path = settings_path_inner.clone();
+                let watched = watch_paths_inner.clone();
                 let mut watcher = RecommendedWatcher::new(
                     move |res: Result<Event, notify::Error>| {
                         if let Ok(event) = res {
                             let is_settings_change = matches!(
                                 event.kind,
                                 EventKind::Modify(_) | EventKind::Create(_)
-                            ) && event.paths.iter().any(|p| p == &settings_path);
+                            ) && event.paths.iter().any(|p| watched.contains(p));
 
                             if is_settings_change {
                                 let _ = tx.blocking_send(());
@@ -104,9 +112,13 @@ pub fn start_hook_recovery(
                 )
                 .expect("Failed to create file watcher for hook recovery");
 
-                watcher
-                    .watch(&watch_dir, RecursiveMode::NonRecursive)
-                    .expect("Failed to watch .claude directory");
+                for dir in &watch_dirs {
+                    if dir.exists() {
+                        if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
+                            log::warn!("Hook recovery: failed to watch {}: {}", dir.display(), e);
+                        }
+                    }
+                }
 
                 watcher
             };
@@ -121,18 +133,19 @@ pub fn start_hook_recovery(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 while rx.try_recv().is_ok() {}
 
-                // Verify hooks are intact
+                // Check if any adapter needs hook restoration
                 let needs_restore = adapters_inner.iter().any(|a| {
-                    if a.name() == "claude-code" {
-                        let cc = crate::agents::claude_code::ClaudeCodeAdapter::new();
-                        let result = cc.verify_hooks();
-                        matches!(
-                            result,
-                            crate::agents::claude_code::HookVerificationResult::SettingsCorrupted
-                        )
-                    } else {
-                        false
-                    }
+                    let paths = a.hook_config_paths();
+                    paths.iter().any(|p| {
+                        if !p.exists() {
+                            return true;
+                        }
+                        let content = match std::fs::read_to_string(p) {
+                            Ok(c) => c,
+                            Err(_) => return true,
+                        };
+                        !content.contains("agent-island-bridge")
+                    })
                 });
 
                 if !needs_restore {
@@ -140,24 +153,22 @@ pub fn start_hook_recovery(
                 }
 
                 if !recovery_inner.should_restore().await {
-                    // Rate limited — emit failure event
                     use tauri::Emitter;
                     let _ = app_handle_inner.emit("hook-recovery-failed", ());
                     log::error!("Hook recovery rate-limited. Manual intervention needed.");
                     break;
                 }
 
-                log::info!("Hook recovery: settings.json modified, re-installing hooks...");
+                log::info!("Hook recovery: settings modified, re-installing hooks...");
 
                 for adapter in adapters_inner.iter() {
                     if let Err(e) = adapter.install_hooks() {
-                        log::warn!("Hook recovery failed for {}: {}", adapter.name(), e);
+                        log::warn!("Hook recovery failed for {}: {}", adapter.display_name(), e);
                     } else {
-                        log::info!("Hook recovery: restored hooks for {}", adapter.name());
+                        log::info!("Hook recovery: restored hooks for {}", adapter.display_name());
                     }
                 }
 
-                // Emit recovery event to frontend
                 use tauri::Emitter;
                 let _ = app_handle_inner.emit("hook-recovery", "restored");
             }

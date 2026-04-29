@@ -27,7 +27,7 @@
 
 .overlay-response__progress {
   height: 2px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--island-subtle);
   border-radius: 1px;
   overflow: hidden;
 }

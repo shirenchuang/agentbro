@@ -1,8 +1,8 @@
-/* Agent Island — Vibe Island Solid Dark Styles (no transparency) */
+/* Agent Island — Vibe Island Styles (theme-aware) */
 
-/* Base Glass Panel — solid dark background */
+/* Base Glass Panel */
 .glass-panel {
-  background: #000000;
+  background: var(--island-bg);
   border: none;
   border-radius: var(--radius-lg);
   box-shadow: none;
@@ -20,13 +20,13 @@
 .glass-highlight {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.15) 0%,
-    rgba(255, 255, 255, 0.03) 50%,
-    rgba(255, 255, 255, 0.08) 100%
+    var(--island-subtle-hover) 0%,
+    transparent 50%,
+    var(--island-subtle) 100%
   );
 }
 
-/* Glass Card — solid dark card */
+/* Glass Card */
 .glass-card {
   background: var(--vi-card);
   border: 1px solid var(--vi-card-border);
@@ -37,9 +37,9 @@
 }
 
 .glass-card:hover {
-  background: #333335;
+  background: var(--island-card-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--island-shadow);
 }
 
 /* Glass Button — Primary */
@@ -68,12 +68,12 @@
 }
 
 .glass-btn--secondary {
-  background: var(--vi-badge-dark);
+  background: var(--island-btn-bg);
   color: var(--vi-text-primary);
 }
 
 .glass-btn--secondary:hover {
-  background: #444446;
+  background: var(--island-btn-hover);
 }
 
 .glass-btn--danger {
@@ -91,15 +91,15 @@
 }
 
 .glass-btn--ghost:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle-hover);
   color: var(--vi-text-primary);
 }
 
-/* Glass Input — solid dark */
+/* Glass Input */
 .glass-input {
   width: 100%;
   padding: var(--space-sm) var(--space-md);
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--island-input-bg);
   border: 1px solid var(--vi-card-border);
   border-radius: var(--radius-sm);
   color: var(--vi-text-primary);
@@ -133,7 +133,7 @@
 /* Divider */
 .glass-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--island-subtle);
   margin: 0;
   border: none;
 }
@@ -148,12 +148,12 @@
 }
 
 .glass-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--island-scrollbar);
   border-radius: 2px;
 }
 
 .glass-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--island-scrollbar-hover);
 }
 
 /* Reduced motion fallback */

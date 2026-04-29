@@ -145,6 +145,8 @@ pub struct SessionState {
     pub tty: Option<String>,
     pub subagents: Vec<SubagentInfo>,
     pub active_tools: Vec<ToolResult>,
+    pub last_response: Option<String>,
+    pub last_thought: Option<String>,
 }
 
 impl SessionState {
@@ -170,6 +172,8 @@ impl SessionState {
             tty: None,
             subagents: Vec::new(),
             active_tools: Vec::new(),
+            last_response: None,
+            last_thought: None,
         }
     }
 
@@ -326,14 +330,12 @@ impl SessionStore {
         self.emit_update();
     }
 
-    /// Stop a subagent (mark as completed or remove)
+    /// Stop a subagent (mark as completed, keep in list for frontend display)
     pub fn stop_subagent(&self, session_id: &str, agent_id: &str, status: &str) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             if let Some(existing) = session.subagents.iter_mut().find(|s| s.agent_id == agent_id) {
                 existing.status = status.to_string();
             }
-            // Remove completed subagents after marking them
-            session.subagents.retain(|s| s.status == "running");
             session.update_duration();
         }
         self.emit_update();

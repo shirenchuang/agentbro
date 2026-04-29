@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { NotchPanel } from './components/notch/NotchPanel'
 import { SettingsApp } from './components/settings'
 import { useSessionStore } from './stores/sessionStore'
+import { useThemeStore } from './stores/themeStore'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { isTauri } from './services/tauriApi'
@@ -153,6 +154,12 @@ function App() {
 
   useTauriInit()
   useAutoHide()
+
+  // Apply color theme to DOM
+  const colorTheme = useThemeStore((s) => s.colorTheme)
+  useEffect(() => {
+    document.documentElement.setAttribute('data-island-color-theme', colorTheme)
+  }, [colorTheme])
 
   // Detect window on mount
   useEffect(() => {

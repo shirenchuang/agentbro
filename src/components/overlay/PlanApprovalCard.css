@@ -57,13 +57,13 @@
 .plan-approval__content code {
   font-family: var(--font-mono, monospace);
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--island-subtle);
   padding: 1px 4px;
   border-radius: 3px;
 }
 
 .plan-approval__content pre {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--island-input-bg);
   border-radius: var(--radius-sm, 6px);
   padding: 8px;
   overflow-x: auto;
@@ -92,7 +92,7 @@
 .plan-approval__perm-item {
   font-size: 10px;
   font-family: var(--font-mono, monospace);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--island-subtle);
   border-radius: 3px;
   padding: 2px 6px;
   color: var(--vi-text-secondary, #aaa);
@@ -105,7 +105,7 @@
 .plan-approval__input {
   flex: 1;
   padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--island-input-bg);
   border: 1px solid var(--vi-card-border, #333);
   border-radius: var(--radius-sm, 6px);
   color: var(--vi-text-primary, #fff);

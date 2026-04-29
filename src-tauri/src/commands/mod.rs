@@ -370,3 +370,64 @@ pub async fn export_diagnostics(state: State<'_, AppState>) -> Result<String, St
 
     serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())
 }
+
+// ── Engine Instance Commands ────────────────────────────────────
+
+#[tauri::command]
+pub async fn add_engine_instance(
+    state: State<'_, AppState>,
+    label: String,
+    config_root: String,
+) -> Result<crate::config::EngineInstance, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let instance = crate::config::EngineInstance {
+        id: id.clone(),
+        label: label.clone(),
+        config_root: config_root.clone(),
+        enabled: true,
+    };
+
+    let mut config = state.config_store.get();
+    config.engine_instances.push(instance.clone());
+    state.config_store.update(config)?;
+
+    // Install hooks for the new instance
+    let root = crate::agents::claude_code::expand_tilde(&config_root);
+    let adapter = crate::agents::claude_code::ClaudeCodeAdapter::with_config_root(root, label);
+    if let Err(e) = adapter.install_hooks() {
+        log::warn!("Failed to install hooks for new engine instance: {}", e);
+    }
+
+    Ok(instance)
+}
+
+#[tauri::command]
+pub async fn remove_engine_instance(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let config = state.config_store.get();
+
+    // Find the instance to remove hooks before deleting
+    if let Some(inst) = config.engine_instances.iter().find(|i| i.id == id) {
+        let root = crate::agents::claude_code::expand_tilde(&inst.config_root);
+        let adapter = crate::agents::claude_code::ClaudeCodeAdapter::with_config_root(root, inst.label.clone());
+        if let Err(e) = adapter.remove_hooks() {
+            log::warn!("Failed to remove hooks for engine instance {}: {}", id, e);
+        }
+    }
+
+    let mut config = config;
+    config.engine_instances.retain(|i| i.id != id);
+    state.config_store.update(config)
+}
+
+#[tauri::command]
+pub async fn verify_engine_path(path: String) -> Result<bool, String> {
+    let expanded = crate::agents::claude_code::expand_tilde(&path);
+    if !expanded.is_dir() {
+        return Ok(false);
+    }
+    let settings = expanded.join("settings.json");
+    Ok(settings.exists())
+}

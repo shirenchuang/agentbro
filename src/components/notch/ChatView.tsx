@@ -3,6 +3,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
+import { getChatHistory } from '../../services/tauriApi'
+import { mapParsedMessages } from '../../hooks/useTauri'
 import { ChatHeader } from './ChatHeader'
 import { SubagentList } from './SubagentList'
 import { MessageBubble } from './MessageBubble'
@@ -60,6 +62,21 @@ export function ChatView({ onBack }: ChatViewProps) {
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const contentRef = useRef<HTMLDivElement>(null)
   const [userScrolled, setUserScrolled] = useState(false)
+
+  // Auto-load chat history when ChatView mounts and history is empty
+  useEffect(() => {
+    if (!activeSession) return
+    if (activeSession.chatHistory.length > 0) return
+
+    getChatHistory(activeSession.id)
+      .then((parsed) => {
+        if (parsed.length > 0) {
+          const messages = mapParsedMessages(parsed)
+          useSessionStore.getState().setChatHistory(activeSession.id, messages)
+        }
+      })
+      .catch((e) => console.warn('[ChatView] getChatHistory:', e))
+  }, [activeSession?.id])
 
   // Auto-scroll to bottom
   useEffect(() => {

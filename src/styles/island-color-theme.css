@@ -1,0 +1,164 @@
+/* Island Color Themes — 7 visual themes, each = ~15 CSS variables */
+/* Applied via data-island-color-theme attribute on <html> */
+
+/* ── Midnight (default dark) ── */
+:root,
+html[data-island-color-theme="midnight"] {
+  --island-bg: #000000;
+  --island-card: #0a0a0a;
+  --island-card-hover: #18181c;
+  --island-border: #1a1a1a;
+  --island-text: #e0e0e0;
+  --island-text-secondary: #888888;
+  --island-text-muted: #666666;
+  --island-code-bg: #1a1a1a;
+  --island-input-bg: #0d0d0d;
+  --island-btn-bg: #2a2a2e;
+  --island-btn-hover: #333333;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --island-pill-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  --island-accent: #3b82f6;
+  --island-border-style: none;
+  --island-subtle: rgba(255, 255, 255, 0.06);
+  --island-subtle-hover: rgba(255, 255, 255, 0.08);
+  --island-scrollbar: rgba(255, 255, 255, 0.15);
+  --island-scrollbar-hover: rgba(255, 255, 255, 0.25);
+}
+
+/* ── Frosted Glass — 冰霜毛玻璃 ── */
+html[data-island-color-theme="frosted-glass"] {
+  --island-bg: #eef0f4;
+  --island-card: #f6f7f9;
+  --island-card-hover: #e8eaef;
+  --island-border: #d4d7de;
+  --island-text: #2c2c2e;
+  --island-text-secondary: #5c5c66;
+  --island-text-muted: #8c8c96;
+  --island-code-bg: #e4e6ec;
+  --island-input-bg: #e8eaef;
+  --island-btn-bg: #dcdee5;
+  --island-btn-hover: #d0d2da;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
+  --island-accent: #3b82f6;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Warm Paper — 暖纸 ── */
+html[data-island-color-theme="warm-paper"] {
+  --island-bg: #f2efe8;
+  --island-card: #faf7f0;
+  --island-card-hover: #ede9df;
+  --island-border: #dcd6c8;
+  --island-text: #33302a;
+  --island-text-secondary: #7a7468;
+  --island-text-muted: #a09888;
+  --island-code-bg: #e8e3d8;
+  --island-input-bg: #ede9df;
+  --island-btn-bg: #e2ddd2;
+  --island-btn-hover: #d6d0c2;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
+  --island-accent: #3b82f6;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Soft Lavender — 柔紫 ── */
+html[data-island-color-theme="soft-lavender"] {
+  --island-bg: #eeedf6;
+  --island-card: #f8f7fc;
+  --island-card-hover: #e8e6f2;
+  --island-border: #d4d2e0;
+  --island-text: #2e2c38;
+  --island-text-secondary: #6e6a82;
+  --island-text-muted: #9490a6;
+  --island-code-bg: #dddbe8;
+  --island-input-bg: #e8e6f2;
+  --island-btn-bg: #dddbe8;
+  --island-btn-hover: #d0cee0;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
+  --island-accent: #6366f1;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Ocean Mist — 海雾 ── */
+html[data-island-color-theme="ocean-mist"] {
+  --island-bg: #e8eef5;
+  --island-card: #f2f6fb;
+  --island-card-hover: #dde6f0;
+  --island-border: #c8d4e0;
+  --island-text: #242e3a;
+  --island-text-secondary: #5a6e82;
+  --island-text-muted: #8294a6;
+  --island-code-bg: #d0dae6;
+  --island-input-bg: #dde6f0;
+  --island-btn-bg: #d0dae6;
+  --island-btn-hover: #c0ceda;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
+  --island-accent: #3b82f6;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Apple — 苹果风 ── */
+html[data-island-color-theme="apple"] {
+  --island-bg: #f5f5f7;
+  --island-card: #ffffff;
+  --island-card-hover: #f0f0f2;
+  --island-border: rgba(0, 0, 0, 0.08);
+  --island-text: #1d1d1f;
+  --island-text-secondary: #6e6e73;
+  --island-text-muted: #aeaeb2;
+  --island-code-bg: #f5f5f7;
+  --island-input-bg: #f5f5f7;
+  --island-btn-bg: #e8e8ed;
+  --island-btn-hover: #dddde2;
+  --island-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 8px 32px rgba(0, 0, 0, 0.08);
+  --island-pill-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 2px 12px rgba(0, 0, 0, 0.06);
+  --island-accent: #007aff;
+  --island-border-style: 0.5px solid rgba(0, 0, 0, 0.06);
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Smoke — 烟雾 ── */
+html[data-island-color-theme="smoke"] {
+  --island-bg: #e8e8ec;
+  --island-card: #f4f4f6;
+  --island-card-hover: #e0e0e4;
+  --island-border: #d0d0d6;
+  --island-text: #2a2a30;
+  --island-text-secondary: #6a6a74;
+  --island-text-muted: #8a8a94;
+  --island-code-bg: #d4d4da;
+  --island-input-bg: #e0e0e4;
+  --island-btn-bg: #d4d4da;
+  --island-btn-hover: #c6c6ce;
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
+  --island-accent: #3b82f6;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.04);
+  --island-subtle-hover: rgba(0, 0, 0, 0.06);
+  --island-scrollbar: rgba(0, 0, 0, 0.12);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+}

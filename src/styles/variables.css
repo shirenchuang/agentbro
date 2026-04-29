@@ -1,34 +1,35 @@
 /* Agent Island — CSS Custom Properties (Vibe Island Design System) */
+/* Colors are driven by island-color-theme.css via --island-* variables */
 
 :root {
-  /* ── Vibe Island Core Palette ─────────────────────────────── */
-  --vi-bg: #1a1a1c;
-  --vi-card: #2c2c2e;
-  --vi-card-border: #3a3a3c;
-  --vi-text-primary: #ffffff;
-  --vi-text-secondary: #8e8e93;
-  --vi-text-tertiary: #636366;
+  /* ── Vibe Island Core Palette (mapped to island theme tokens) ── */
+  --vi-bg: var(--island-bg);
+  --vi-card: var(--island-card);
+  --vi-card-border: var(--island-border);
+  --vi-text-primary: var(--island-text);
+  --vi-text-secondary: var(--island-text-secondary);
+  --vi-text-tertiary: var(--island-text-muted);
   --vi-accent-green: #30D158;
   --vi-accent-blue: #007AFF;
   --vi-accent-orange: #FF9500;
   --vi-accent-red: #FF3B30;
   --vi-accent-coral: #E8654A;
-  --vi-badge-dark: #3a3a3c;
+  --vi-badge-dark: var(--island-btn-bg);
   --vi-tool-green: #30D158;
   --vi-warning-orange: #FF9500;
 
-  /* ── Glass backgrounds (mapped to VI palette) ─────────────── */
+  /* ── Glass backgrounds (mapped to island tokens) ── */
   --glass-bg-light: rgba(255, 255, 255, 0.45);
   --glass-bg-medium: rgba(255, 255, 255, 0.35);
   --glass-bg-heavy: rgba(255, 255, 255, 0.25);
 
-  --glass-bg-dark: rgba(26, 26, 28, 0.92);
-  --glass-bg-dark-medium: rgba(26, 26, 28, 0.85);
-  --glass-bg-dark-heavy: rgba(26, 26, 28, 0.95);
+  --glass-bg-dark: var(--island-bg);
+  --glass-bg-dark-medium: var(--island-bg);
+  --glass-bg-dark-heavy: var(--island-bg);
 
   /* Borders */
   --glass-border-light: rgba(255, 255, 255, 0.3);
-  --glass-border-dark: rgba(255, 255, 255, 0.08);
+  --glass-border-dark: var(--island-border);
 
   /* Text */
   --text-primary: var(--vi-text-primary);
@@ -36,7 +37,7 @@
   --text-tertiary: var(--vi-text-tertiary);
 
   /* Accent */
-  --accent: var(--vi-accent-blue);
+  --accent: var(--island-accent);
   --accent-hover: #409CFF;
   --accent-glass: rgba(0, 122, 255, 0.3);
 
@@ -44,12 +45,12 @@
   --status-active: var(--vi-accent-green);
   --status-waiting: var(--vi-accent-orange);
   --status-error: var(--vi-accent-red);
-  --status-idle: rgba(255, 255, 255, 0.3);
+  --status-idle: var(--island-text-muted);
 
   /* Shadows */
-  --shadow-light: 0 8px 32px rgba(0, 0, 0, 0.08);
-  --shadow-dark: 0 8px 32px rgba(0, 0, 0, 0.3);
-  --shadow-elevated: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-light: var(--island-pill-shadow);
+  --shadow-dark: var(--island-shadow);
+  --shadow-elevated: var(--island-shadow);
 
   /* Blur */
   --blur-light: 12px;

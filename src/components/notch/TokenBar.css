@@ -29,8 +29,8 @@
 }
 
 .token-bar__model-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle);
+  border: 1px solid var(--island-subtle);
   border-radius: 4px;
   color: var(--text-tertiary);
   font-size: var(--font-size-xs);
@@ -41,6 +41,6 @@
 }
 
 .token-bar__model-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--island-border);
   color: var(--text-secondary);
 }

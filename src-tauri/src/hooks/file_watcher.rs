@@ -13,7 +13,7 @@ use notify::{
 use tauri::{AppHandle, Emitter};
 
 use super::conversation_parser::{
-    claude_projects_dir, ConversationParser, IncrementalParseResult,
+    claude_projects_dir, projects_dirs_from_roots, ConversationParser, IncrementalParseResult,
 };
 
 /// Tauri event name emitted when new conversation messages are parsed.
@@ -44,19 +44,27 @@ pub struct ConversationWatcher {
 impl ConversationWatcher {
     /// Create and start a new conversation watcher.
     ///
-    /// Returns `None` if the Claude projects directory doesn't exist
-    /// or the watcher fails to initialize (non-fatal — the app can
-    /// still function without conversation parsing).
+    /// Accepts optional extra config roots (custom engine instances) to watch
+    /// in addition to the default `~/.claude/projects/`.
+    /// Returns `None` if no projects directories exist or the watcher fails.
     pub fn start(app_handle: AppHandle) -> Option<Self> {
-        let projects_dir = match claude_projects_dir() {
-            Some(dir) => dir,
-            None => {
-                log::info!(
-                    "Claude projects directory not found — conversation watcher disabled"
-                );
-                return None;
-            }
-        };
+        Self::start_with_roots(app_handle, &[])
+    }
+
+    /// Start watching default + custom engine instance project directories.
+    pub fn start_with_roots(app_handle: AppHandle, extra_roots: &[PathBuf]) -> Option<Self> {
+        let mut projects_dirs = Vec::new();
+        if let Some(d) = claude_projects_dir() {
+            projects_dirs.push(d);
+        }
+        projects_dirs.extend(projects_dirs_from_roots(extra_roots));
+
+        if projects_dirs.is_empty() {
+            log::info!(
+                "No projects directories found — conversation watcher disabled"
+            );
+            return None;
+        }
 
         let parsers: Arc<Mutex<HashMap<String, ConversationParser>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -174,20 +182,20 @@ impl ConversationWatcher {
             }
         };
 
-        // Watch the projects directory recursively
-        if let Err(e) = watcher.watch(&projects_dir, RecursiveMode::Recursive) {
-            log::warn!(
-                "Failed to watch {}: {}",
-                projects_dir.display(),
-                e
-            );
+        // Watch all projects directories recursively
+        let mut watching_any = false;
+        for dir in &projects_dirs {
+            if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
+                log::warn!("Failed to watch {}: {}", dir.display(), e);
+            } else {
+                log::info!("Conversation watcher started on {}", dir.display());
+                watching_any = true;
+            }
+        }
+        if !watching_any {
+            log::warn!("Conversation watcher: could not watch any projects directory");
             return None;
         }
-
-        log::info!(
-            "Conversation watcher started on {}",
-            projects_dir.display()
-        );
 
         Some(Self {
             _watcher: watcher,

@@ -37,6 +37,13 @@ export interface LabFeature {
   enabled: boolean
 }
 
+export interface EngineInstance {
+  id: string
+  label: string
+  configRoot: string
+  enabled: boolean
+}
+
 interface ConfigState {
   // General
   launchAtLogin: boolean
@@ -99,6 +106,15 @@ interface ConfigState {
     start: string
     end: string
   }
+
+  // Idle Timeout
+  idleTimeoutMinutes: number // 0 = disabled, otherwise minutes of inactivity before auto-hiding
+
+  // Notification Mode
+  notificationMode: 'turnEnd' | 'every' // turnEnd = only at turn completion, every = every tool call
+
+  // Engine Instances
+  engineInstances: EngineInstance[]
 }
 
 interface ConfigActions {
@@ -210,6 +226,15 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Quiet Hours
   quietHours: { enabled: false, start: '22:00', end: '08:00' },
+
+  // Idle Timeout
+  idleTimeoutMinutes: 0,
+
+  // Notification Mode
+  notificationMode: 'turnEnd',
+
+  // Engine Instances
+  engineInstances: [],
 
   // Actions
   updateConfig: (key, value) => {

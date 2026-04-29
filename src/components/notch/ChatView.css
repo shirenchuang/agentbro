@@ -38,8 +38,8 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(30, 30, 30, 0.8);
+  border: 1px solid var(--island-border);
+  background: var(--island-card);
   backdrop-filter: blur(8px);
   color: var(--text-secondary);
   font-size: var(--font-size-sm);
@@ -52,7 +52,7 @@
 }
 
 .chat-view__scroll-btn:hover {
-  background: rgba(30, 30, 30, 0.95);
+  background: var(--island-card);
   color: var(--text-primary);
 }
 
@@ -98,8 +98,8 @@
   flex-shrink: 0;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--island-border);
+  background: var(--island-subtle);
   color: var(--text-secondary);
   font-size: var(--font-size-xs);
   cursor: pointer;
@@ -108,6 +108,6 @@
 }
 
 .chat-view__error-jump:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--island-border);
   color: var(--text-primary);
 }

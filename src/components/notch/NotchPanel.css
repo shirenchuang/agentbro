@@ -15,10 +15,14 @@
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-elevated);
   cursor: default;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--island-bg);
+  backdrop-filter: blur(var(--blur-heavy));
+  -webkit-backdrop-filter: blur(var(--blur-heavy));
+  /* GPU acceleration for smooth animations */
+  will-change: width, height;
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Collapsed state: pill shape */
@@ -52,12 +56,12 @@
 }
 
 .notch-panel__overlay-card {
-  background: rgba(30, 30, 30, 0.95);
+  background: var(--island-card);
   backdrop-filter: blur(20px);
   border-radius: var(--radius-lg, 12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--island-border);
   padding: 10px 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--island-shadow);
 }
 
 .notch-panel__overlay-header {
@@ -82,7 +86,7 @@
   height: 20px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle-hover);
   color: var(--vi-text-secondary, #aaa);
   cursor: pointer;
   font-size: 14px;
@@ -91,6 +95,6 @@
 }
 
 .notch-panel__overlay-close:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--island-scrollbar);
   color: var(--vi-text-primary, #fff);
 }

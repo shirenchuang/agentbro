@@ -9,19 +9,44 @@ const BRIDGE_BINARY_NAME: &str = "agent-island-bridge";
 
 /// Claude Code adapter implementation
 pub struct ClaudeCodeAdapter {
+    config_root: PathBuf,
+    label: String,
     status: AdapterStatus,
 }
 
 impl ClaudeCodeAdapter {
     pub fn new() -> Self {
-        // Check if Claude Code is available
+        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let config_root = home.join(".claude");
         let status = if Self::is_claude_code_installed() {
             AdapterStatus::Available
         } else {
             AdapterStatus::Unavailable
         };
 
-        Self { status }
+        Self { config_root, label: "Claude Code".into(), status }
+    }
+
+    /// Create an adapter for a custom engine instance path
+    pub fn with_config_root(config_root: PathBuf, label: String) -> Self {
+        let status = if Self::is_claude_code_installed() {
+            AdapterStatus::Available
+        } else {
+            AdapterStatus::Unavailable
+        };
+
+        Self { config_root, label, status }
+    }
+
+    /// Get the config root path for this instance
+    pub fn config_root(&self) -> &PathBuf {
+        &self.config_root
+    }
+
+    /// Get the projects directory for this instance (for conversation watching)
+    pub fn projects_dir(&self) -> Option<PathBuf> {
+        let dir = self.config_root.join("projects");
+        if dir.is_dir() { Some(dir) } else { None }
     }
 
     /// Check if Claude Code CLI is installed
@@ -34,16 +59,15 @@ impl ClaudeCodeAdapter {
     }
 
     /// Get the path where the bridge binary should be installed
-    /// Uses ~/.agent-island/bin/ to avoid spaces in path
+    /// Uses ~/.agent-island/bin/ to avoid spaces in path (shared across all instances)
     fn bridge_binary_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
         home.join(".agent-island").join("bin").join(BRIDGE_BINARY_NAME)
     }
 
-    /// Get the Claude Code settings.json path
-    fn claude_settings_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-        home.join(".claude").join("settings.json")
+    /// Get the settings.json path for this instance
+    fn settings_path(&self) -> PathBuf {
+        self.config_root.join("settings.json")
     }
 
     /// Find the source bridge binary next to the current executable
@@ -106,6 +130,12 @@ impl ClaudeCodeAdapter {
             "SessionEnd",
             "PreCompact",
             "PostCompact",
+            "beforeShellExecution",
+            "afterShellExecution",
+            "beforeMCPExecution",
+            "afterMCPExecution",
+            "afterAgentResponse",
+            "afterAgentThought",
         ]
     }
 
@@ -118,6 +148,12 @@ impl ClaudeCodeAdapter {
             "PermissionRequest",
             "PermissionDenied",
             "Notification",
+            "beforeShellExecution",
+            "afterShellExecution",
+            "beforeMCPExecution",
+            "afterMCPExecution",
+            "afterAgentResponse",
+            "afterAgentThought",
         ]
     }
 
@@ -148,7 +184,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn display_name(&self) -> &str {
-        "Claude Code"
+        &self.label
     }
 
     fn icon(&self) -> &str {
@@ -159,7 +195,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         // Clean up old Python hook if present
         Self::cleanup_old_python_hook();
 
-        let settings_path = Self::claude_settings_path();
+        let settings_path = self.settings_path();
         let hook_command = Self::hook_command()?;
 
         // Read existing settings or create new
@@ -252,7 +288,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = Self::claude_settings_path();
+        let settings_path = self.settings_path();
 
         if !settings_path.exists() {
             return Ok(());
@@ -459,6 +495,127 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 session_id,
                 description: "Compacting context".to_string(),
             }),
+            "beforeShellExecution" => {
+                let command = raw.get("command")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| raw.get("tool_input").and_then(|v| v.get("command")).and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                Ok(AgentEvent::ShellExecutionStart {
+                    session_id,
+                    command,
+                    cwd: cwd.clone(),
+                })
+            }
+            "afterShellExecution" => {
+                let command = raw.get("command")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| raw.get("tool_input").and_then(|v| v.get("command")).and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let exit_code = raw.get("exit_code")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| raw.get("tool_result").and_then(|r| r.get("exit_code")).and_then(|v| v.as_i64()))
+                    .map(|v| v as i32);
+                let stdout = raw.get("stdout")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| raw.get("tool_result").and_then(|r| r.get("stdout")).and_then(|v| v.as_str()))
+                    .map(|s| s.to_string());
+                let stderr = raw.get("stderr")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| raw.get("tool_result").and_then(|r| r.get("stderr")).and_then(|v| v.as_str()))
+                    .map(|s| s.to_string());
+                let duration_ms = raw.get("duration_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                Ok(AgentEvent::ShellExecutionEnd {
+                    session_id,
+                    command,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                })
+            }
+            "beforeMCPExecution" => {
+                let server_name = raw.get("mcp_server")
+                    .or_else(|| raw.get("server_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mcp_tool_name = raw.get("mcp_tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = raw.get("mcp_arguments")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                Ok(AgentEvent::MCPExecutionStart {
+                    session_id,
+                    server_name,
+                    tool_name: mcp_tool_name,
+                    arguments,
+                })
+            }
+            "afterMCPExecution" => {
+                let server_name = raw.get("mcp_server")
+                    .or_else(|| raw.get("server_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mcp_tool_name = raw.get("mcp_tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let result = raw.get("mcp_result")
+                    .map(|v| v.to_string());
+                let error = raw.get("mcp_error")
+                    .or_else(|| raw.get("error"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let duration_ms = raw.get("duration_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                Ok(AgentEvent::MCPExecutionEnd {
+                    session_id,
+                    server_name,
+                    tool_name: mcp_tool_name,
+                    result,
+                    error,
+                    duration_ms,
+                })
+            }
+            "afterAgentResponse" => {
+                let content = raw.get("response_content")
+                    .or_else(|| raw.get("text"))
+                    .or_else(|| raw.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let ct = raw.get("content_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("text")
+                    .to_string();
+                Ok(AgentEvent::AgentResponse {
+                    session_id,
+                    content,
+                    content_type: ct,
+                })
+            }
+            "afterAgentThought" => {
+                let thought = raw.get("thought_content")
+                    .or_else(|| raw.get("thought"))
+                    .or_else(|| raw.get("reasoning"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok(AgentEvent::AgentThought {
+                    session_id,
+                    thought,
+                })
+            }
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),
@@ -467,7 +624,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn hook_config_paths(&self) -> Vec<PathBuf> {
-        vec![Self::claude_settings_path()]
+        vec![self.settings_path()]
     }
 }
 
@@ -543,7 +700,7 @@ impl ClaudeCodeAdapter {
         }
 
         // 2. Check settings.json has our hook entries
-        let settings_path = Self::claude_settings_path();
+        let settings_path = self.settings_path();
         let settings_content = match std::fs::read_to_string(&settings_path) {
             Ok(c) => c,
             Err(_) => return HookVerificationResult::SettingsCorrupted,
@@ -615,6 +772,18 @@ impl ClaudeCodeAdapter {
             }
         }
         false
+    }
+}
+
+/// Expand `~` prefix to the user's home directory
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        home.join(rest)
+    } else if path == "~" {
+        dirs::home_dir().unwrap_or_else(|| std::env::temp_dir())
+    } else {
+        PathBuf::from(path)
     }
 }
 

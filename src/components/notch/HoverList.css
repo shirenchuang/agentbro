@@ -13,13 +13,13 @@
   padding: var(--space-sm) var(--space-md);
   background: var(--vi-card);
   border: 1px solid var(--vi-card-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition: background 0.15s, transform 0.15s;
 }
 
 .hover-list__card:hover {
-  background: #333335;
+  background: var(--island-card-hover);
   transform: translateY(-1px);
 }
 
@@ -168,7 +168,7 @@
 /* Approval row */
 .hover-list__approval-row {
   margin-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--island-subtle);
   padding-top: 4px;
 }
 
@@ -213,7 +213,7 @@
   padding: var(--space-sm) var(--space-md);
   border: 1px solid rgba(48, 209, 88, 0.2);
   background: rgba(48, 209, 88, 0.06);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
 }
 
 .completion-card__icon {

@@ -141,7 +141,7 @@
 .approval-bar__input {
   flex: 1;
   padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--island-input-bg);
   border: 1px solid var(--vi-card-border);
   border-radius: var(--radius-sm);
   color: var(--vi-text-primary);
@@ -164,7 +164,7 @@
   height: 28px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--vi-card-border);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--island-subtle);
   color: var(--vi-text-secondary);
   cursor: pointer;
   display: flex;

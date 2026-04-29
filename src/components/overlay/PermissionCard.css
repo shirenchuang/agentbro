@@ -93,7 +93,7 @@
 .perm-card__hints kbd {
   font-family: var(--font-mono, monospace);
   font-size: 10px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--island-subtle-hover);
   border-radius: 3px;
   padding: 1px 4px;
 }

@@ -251,6 +251,72 @@ fn main() {
                 .cloned().unwrap_or_else(|| "completed".into());
             obj.insert("agent_status".into(), agent_status);
         }
+        "beforeShellExecution" => {
+            obj.insert("status".into(), "shell_starting".into());
+            if let Some(cmd) = data.get("tool_input").and_then(|v| v.get("command")) {
+                obj.insert("command".into(), cmd.clone());
+            }
+            if let Some(cwd_val) = data.get("cwd") {
+                obj.insert("shell_cwd".into(), cwd_val.clone());
+            }
+        }
+        "afterShellExecution" => {
+            obj.insert("status".into(), "shell_completed".into());
+            if let Some(cmd) = data.get("tool_input").and_then(|v| v.get("command")) {
+                obj.insert("command".into(), cmd.clone());
+            }
+            if let Some(result) = data.get("tool_result") {
+                obj.insert("stdout".into(), result.get("stdout").cloned().unwrap_or_default());
+                obj.insert("stderr".into(), result.get("stderr").cloned().unwrap_or_default());
+                obj.insert("exit_code".into(), result.get("exit_code").cloned().unwrap_or_default());
+            }
+            if let Some(dur) = data.get("duration_ms") {
+                obj.insert("duration_ms".into(), dur.clone());
+            }
+        }
+        "beforeMCPExecution" => {
+            obj.insert("status".into(), "mcp_starting".into());
+            if let Some(tool) = data.get("tool_name") {
+                obj.insert("mcp_tool".into(), tool.clone());
+            }
+            if let Some(server) = data.get("server_name") {
+                obj.insert("mcp_server".into(), server.clone());
+            }
+            obj.insert("mcp_arguments".into(), tool_input.clone());
+        }
+        "afterMCPExecution" => {
+            obj.insert("status".into(), "mcp_completed".into());
+            if let Some(tool) = data.get("tool_name") {
+                obj.insert("mcp_tool".into(), tool.clone());
+            }
+            if let Some(server) = data.get("server_name") {
+                obj.insert("mcp_server".into(), server.clone());
+            }
+            if let Some(result) = data.get("tool_result") {
+                obj.insert("mcp_result".into(), result.clone());
+            }
+            if let Some(err) = data.get("error") {
+                obj.insert("mcp_error".into(), err.clone());
+            }
+            if let Some(dur) = data.get("duration_ms") {
+                obj.insert("duration_ms".into(), dur.clone());
+            }
+        }
+        "afterAgentResponse" => {
+            obj.insert("status".into(), "response_received".into());
+            if let Some(text) = data.get("text").or_else(|| data.get("content")) {
+                obj.insert("response_content".into(), text.clone());
+            }
+            if let Some(content_type) = data.get("content_type") {
+                obj.insert("content_type".into(), content_type.clone());
+            }
+        }
+        "afterAgentThought" => {
+            obj.insert("status".into(), "thought_processed".into());
+            if let Some(thought) = data.get("thought").or_else(|| data.get("reasoning")) {
+                obj.insert("thought_content".into(), thought.clone());
+            }
+        }
         _ => {
             obj.insert("status".into(), "unknown".into());
         }
