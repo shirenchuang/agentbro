@@ -24,7 +24,9 @@ const sidebarGroups: SidebarGroup[] = [
     items: [
       { id: 'shortcuts', labelKey: 'settings.shortcuts', icon: '⌨', iconBg: '#5856D6' },
       { id: 'ssh-remote', labelKey: 'settings.sshRemote', icon: '🔗', iconBg: '#FF9500' },
-      { id: 'labs', labelKey: 'settings.labs', icon: '🧪', iconBg: '#34C759' },
+      { id: 'hooks', labelKey: 'settings.hooks', icon: '🔌', iconBg: '#34C759' },
+      { id: 'webhooks', labelKey: 'settings.webhooks', icon: '📣', iconBg: '#FF2D55' },
+      { id: 'labs', labelKey: 'settings.labs', icon: '🧪', iconBg: '#8E8E93' },
     ],
   },
   {

@@ -54,6 +54,12 @@ pub struct AppConfig {
     /// Custom engine instances (Claude Code at non-default paths)
     #[serde(default)]
     pub engine_instances: Vec<EngineInstance>,
+    /// Webhook forwarding configurations (DingTalk / Feishu)
+    #[serde(default)]
+    pub webhook_configs: Vec<crate::webhook::WebhookConfig>,
+    /// SSH remote host configurations
+    #[serde(default)]
+    pub remote_hosts: Vec<crate::remote::RemoteHost>,
 }
 
 fn default_display_id() -> String {
@@ -91,6 +97,8 @@ impl Default for AppConfig {
             idle_timeout_minutes: 0,
             notification_mode: "turnEnd".to_string(),
             engine_instances: Vec::new(),
+            webhook_configs: Vec::new(),
+            remote_hosts: Vec::new(),
         }
     }
 }

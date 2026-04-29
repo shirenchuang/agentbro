@@ -8,6 +8,8 @@ import { DisplaySection } from './sections/DisplaySection'
 import { SoundSection } from './sections/SoundSection'
 import { ShortcutsSection } from './sections/ShortcutsSection'
 import { SSHRemoteSection } from './sections/SSHRemoteSection'
+import { HookSection } from './sections/HookSection'
+import { WebhookSection } from './sections/WebhookSection'
 import { LabsSection } from './sections/LabsSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
@@ -19,6 +21,8 @@ const sections: Record<string, () => ReactNode> = {
   'sound': SoundSection,
   'shortcuts': ShortcutsSection,
   'ssh-remote': SSHRemoteSection,
+  'hooks': HookSection,
+  'webhooks': WebhookSection,
   'labs': LabsSection,
   'license': LicenseSection,
   'about': AboutSection,

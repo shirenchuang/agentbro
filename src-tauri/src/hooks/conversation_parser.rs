@@ -60,6 +60,10 @@ pub struct IncrementalParseResult {
     pub new_messages: Vec<ParsedMessage>,
     pub all_messages: Vec<ParsedMessage>,
     pub clear_detected: bool,
+    /// Byte offset in the file after this parse (use for next streaming call)
+    pub byte_offset: u64,
+    /// Number of raw JSONL lines read in this batch
+    pub lines_read: usize,
 }
 
 // ── Parser ──────────────────────────────────────────────────────
@@ -91,6 +95,18 @@ impl ConversationParser {
         &self.file_path
     }
 
+    /// Current byte offset (position after the last successful parse).
+    pub fn last_byte_offset(&self) -> u64 {
+        self.last_offset
+    }
+
+    /// Parse from an explicit byte offset (for external streaming callers).
+    /// Updates internal offset to `start_offset` before parsing new lines.
+    pub fn parse_from_offset(&mut self, start_offset: u64) -> Result<IncrementalParseResult, std::io::Error> {
+        self.last_offset = start_offset;
+        self.parse_incremental()
+    }
+
     /// Parse only new lines appended since the last call.
     /// Returns an `IncrementalParseResult` containing new messages,
     /// the full message list, and whether a `/clear` was detected.
@@ -102,6 +118,8 @@ impl ConversationParser {
                     new_messages: vec![],
                     all_messages: self.messages.clone(),
                     clear_detected: false,
+                    byte_offset: self.last_offset,
+                    lines_read: 0,
                 });
             }
             Err(e) => return Err(e),
@@ -122,6 +140,8 @@ impl ConversationParser {
                 new_messages: vec![],
                 all_messages: self.messages.clone(),
                 clear_detected: false,
+                byte_offset: self.last_offset,
+                lines_read: 0,
             });
         }
 
@@ -130,6 +150,7 @@ impl ConversationParser {
 
         let mut new_messages = Vec::new();
         let mut clear_detected = false;
+        let mut lines_read: usize = 0;
 
         let mut line_buf = String::new();
         loop {
@@ -138,6 +159,7 @@ impl ConversationParser {
             if bytes_read == 0 {
                 break;
             }
+            lines_read += 1;
 
             let line = line_buf.trim();
             if line.is_empty() {
@@ -178,6 +200,8 @@ impl ConversationParser {
             new_messages,
             all_messages: self.messages.clone(),
             clear_detected,
+            byte_offset: file_size,
+            lines_read,
         })
     }
 

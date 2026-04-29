@@ -2,8 +2,8 @@
 import { useTranslation } from 'react-i18next'
 import type { PanelState, RateLimitInfo, SessionState } from '../../types/agent'
 import { computePriority, PRIORITY } from '../../types/priority'
-import { PixelIndicator } from './PixelIndicator'
 import { RateLimitBar } from './RateLimitBar'
+import { MascotRouter } from './mascots'
 import { useTick } from '../../hooks/useTick'
 import { isTauri } from '../../services/tauriApi'
 import './CollapsedBar.css'
@@ -36,7 +36,6 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
   const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
-  const leadPriority = lead ? computePriority(lead) : PRIORITY.dormant
 
   return (
     <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
@@ -95,12 +94,12 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
         </div>
       )}
 
-      {/* Main row: pixel art + info + count */}
+      {/* Main row: mascot + info + count */}
       <div className="collapsed-bar__main">
         <div className="collapsed-bar__left">
           {lead ? (
             <>
-              <PixelIndicator priority={leadPriority} size={14} />
+              <MascotRouter toolType={lead.agentType} phase={lead.phase} size={22} />
               <span className="collapsed-bar__info">{info}</span>
             </>
           ) : (

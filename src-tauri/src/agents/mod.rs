@@ -1,8 +1,22 @@
 // Agent Adapter Trait & Registry
+pub mod traits;
+pub mod detection;
+pub mod hook_manager;
 pub mod claude_code;
+pub mod codex;
+pub mod gemini;
+pub mod cursor;
+pub mod copilot;
+pub mod trae;
+pub mod qoder;
+pub mod codebuddy;
+pub mod qwen;
+pub mod kimi;
+pub mod opencode;
+
+pub use traits::AgentAdapter;
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AdapterStatus {
@@ -115,17 +129,6 @@ pub enum AgentEvent {
     },
 }
 
-pub trait AgentAdapter: Send + Sync + 'static {
-    fn name(&self) -> &str;
-    fn display_name(&self) -> &str;
-    fn icon(&self) -> &str;
-    fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>>;
-    fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>>;
-    fn status(&self) -> AdapterStatus;
-    fn parse_event(&self, raw: &serde_json::Value) -> Result<AgentEvent, Box<dyn std::error::Error>>;
-    fn hook_config_paths(&self) -> Vec<PathBuf>;
-}
-
 /// Adapter info returned to the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,4 +137,21 @@ pub struct AdapterInfo {
     pub display_name: String,
     pub icon: String,
     pub status: AdapterStatus,
+}
+
+/// Build the default list of all supported adapters
+pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
+    vec![
+        Box::new(claude_code::ClaudeCodeAdapter::new()),
+        Box::new(codex::CodexAdapter::new()),
+        Box::new(gemini::GeminiAdapter::new()),
+        Box::new(cursor::CursorAdapter::new()),
+        Box::new(copilot::CopilotAdapter::new()),
+        Box::new(trae::TraeAdapter::new()),
+        Box::new(qoder::QoderAdapter::new()),
+        Box::new(codebuddy::CodeBuddyAdapter::new()),
+        Box::new(qwen::QwenAdapter::new()),
+        Box::new(kimi::KimiAdapter::new()),
+        Box::new(opencode::OpenCodeAdapter::new()),
+    ]
 }

@@ -5,11 +5,13 @@ pub mod persistence;
 use crate::agents::{AdapterInfo, AgentAdapter};
 use crate::config::{AppConfig, ConfigStore};
 use crate::hooks::conversation_parser::{discover_session_file, ParsedMessage};
+use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
 use crate::hooks::session_store::{SessionState, SessionStore};
 use crate::license::{LicenseManager, LicenseStatus};
 use crate::platform::display_controller::DisplayController;
+use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +29,8 @@ pub struct AppState {
     /// Wrapped in Mutex because RecommendedWatcher is not Sync on all platforms.
     pub conversation_watcher: Arc<Mutex<Option<ConversationWatcher>>>,
     pub display_controller: Arc<DisplayController>,
+    pub remote_manager: Arc<RemoteManager>,
+    pub diagnostic_buffer: Arc<DiagnosticRingBuffer>,
 }
 
 // ── Session Commands ──────────────────────────────────────────────

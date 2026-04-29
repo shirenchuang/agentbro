@@ -346,3 +346,160 @@ export async function verifyEnginePath(path: string): Promise<boolean> {
   if (!isTauri()) return false
   return await invoke<boolean>('verify_engine_path', { path })
 }
+
+// ── Agent Detection & Hook Management ────────────────────────────
+
+export interface DetectedTool {
+  name: string
+  displayName: string
+  status: 'Active' | 'Installed' | 'Available' | 'Unavailable'
+  binaryPath: string | null
+  configDir: string | null
+}
+
+export interface HookStatus {
+  name: string
+  displayName: string
+  installed: boolean
+  status: string
+}
+
+export async function detectTools(): Promise<DetectedTool[]> {
+  if (!isTauri()) return []
+  return invoke<DetectedTool[]>('detect_tools')
+}
+
+export async function installAgentHook(toolName: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('install_agent_hook', { toolName })
+}
+
+export async function uninstallAgentHook(toolName: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('uninstall_agent_hook', { toolName })
+}
+
+export async function getAllHookStatus(): Promise<HookStatus[]> {
+  if (!isTauri()) return []
+  return invoke<HookStatus[]>('get_all_hook_status')
+}
+
+export async function reinstallAllHooks(): Promise<string[]> {
+  if (!isTauri()) return []
+  return invoke<string[]>('reinstall_all_hooks')
+}
+
+// ── Remote SSH Management ────────────────────────────────────────
+
+export interface RemoteHost {
+  id: string
+  name: string
+  sshTarget: string
+  port: number | null
+  identityFile: string | null
+  authSocket: string | null
+  remoteSocketPath: string
+  autoConnect: boolean
+}
+
+export type ConnectionStatus =
+  | { state: 'disconnected' }
+  | { state: 'connecting' }
+  | { state: 'connected' }
+  | { state: 'failed'; message: string }
+
+export async function listRemoteHosts(): Promise<RemoteHost[]> {
+  if (!isTauri()) return []
+  return invoke<RemoteHost[]>('list_remote_hosts')
+}
+
+export async function addRemoteHost(host: RemoteHost): Promise<void> {
+  if (!isTauri()) return
+  return invoke('add_remote_host', { host })
+}
+
+export async function removeRemoteHost(id: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('remove_remote_host', { id })
+}
+
+export async function connectRemote(id: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('connect_remote', { id })
+}
+
+export async function disconnectRemote(id: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('disconnect_remote', { id })
+}
+
+export async function installRemoteHooks(id: string): Promise<string> {
+  if (!isTauri()) return 'ok'
+  return invoke<string>('install_remote_hooks', { id })
+}
+
+export async function getRemoteStatus(id: string): Promise<ConnectionStatus> {
+  if (!isTauri()) return { state: 'disconnected' }
+  return invoke<ConnectionStatus>('get_remote_status', { id })
+}
+
+// ── Webhook Management ───────────────────────────────────────────
+
+export interface WebhookConfig {
+  id: string
+  name: string
+  platform: 'dingtalk' | 'feishu'
+  url: string
+  secret: string | null
+  sources: string[]
+  enabled: boolean
+}
+
+export async function listWebhooks(): Promise<WebhookConfig[]> {
+  if (!isTauri()) return []
+  return invoke<WebhookConfig[]>('list_webhooks')
+}
+
+export async function addWebhook(config: WebhookConfig): Promise<void> {
+  if (!isTauri()) return
+  return invoke('add_webhook', { config })
+}
+
+export async function removeWebhook(id: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('remove_webhook', { id })
+}
+
+export async function updateWebhook(config: WebhookConfig): Promise<void> {
+  if (!isTauri()) return
+  return invoke('update_webhook', { config })
+}
+
+export async function testWebhook(id: string): Promise<string> {
+  if (!isTauri()) return 'mock: test skipped in browser'
+  return invoke<string>('test_webhook', { id })
+}
+
+export async function getWebhookLogs(): Promise<DiagnosticEvent[]> {
+  if (!isTauri()) return []
+  return invoke<DiagnosticEvent[]>('get_webhook_logs')
+}
+
+// ── Diagnostic Events ────────────────────────────────────────────
+
+export interface DiagnosticEvent {
+  seq: number
+  timestampMs: number
+  severity: 'debug' | 'info' | 'warning' | 'error'
+  component: string
+  message: string
+  payload: unknown | null
+}
+
+export async function getDiagnosticEvents(sinceSeq?: number, component?: string): Promise<DiagnosticEvent[]> {
+  if (!isTauri()) return []
+  return invoke<DiagnosticEvent[]>('get_diagnostic_events', {
+    sinceSeq: sinceSeq ?? null,
+    component: component ?? null,
+  })
+}

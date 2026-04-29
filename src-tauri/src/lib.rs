@@ -4,6 +4,8 @@ pub mod agents;
 pub mod hooks;
 pub mod config;
 pub mod terminal;
+pub mod remote;
+pub mod webhook;
 pub mod license;
 pub mod sound;
 pub mod platform;
@@ -56,6 +58,183 @@ async fn notify_esc(state: tauri::State<'_, commands::AppState>) -> Result<(), S
 async fn notify_expand(state: tauri::State<'_, commands::AppState>) -> Result<(), String> {
     state.display_controller.on_expand();
     Ok(())
+}
+
+// ── Agent Detection & Hook Management Commands ──────────────────
+
+#[tauri::command]
+async fn detect_tools() -> Vec<agents::detection::DetectedTool> {
+    agents::detection::detect_installed_tools()
+}
+
+#[tauri::command]
+async fn install_agent_hook(state: tauri::State<'_, commands::AppState>, tool_name: String) -> Result<(), String> {
+    let adapter = state.adapters.iter().find(|a| a.name() == tool_name)
+        .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+    adapter.install_hooks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn uninstall_agent_hook(state: tauri::State<'_, commands::AppState>, tool_name: String) -> Result<(), String> {
+    let adapter = state.adapters.iter().find(|a| a.name() == tool_name)
+        .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+    adapter.remove_hooks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_all_hook_status(state: tauri::State<'_, commands::AppState>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state.adapters.iter().map(|a| {
+        let paths = a.hook_config_paths();
+        let installed = paths.iter().any(|p| agents::hook_manager::has_agent_island_hooks(p));
+        serde_json::json!({
+            "name": a.name(),
+            "displayName": a.display_name(),
+            "installed": installed,
+            "status": format!("{:?}", a.status()),
+        })
+    }).collect())
+}
+
+#[tauri::command]
+async fn reinstall_all_hooks(state: tauri::State<'_, commands::AppState>) -> Result<Vec<String>, String> {
+    let mut errors = Vec::new();
+    for adapter in &state.adapters {
+        if let Err(e) = adapter.install_hooks() {
+            errors.push(format!("{}: {}", adapter.name(), e));
+        }
+    }
+    Ok(errors)
+}
+
+// ── Remote SSH Commands ─────────────────────────────────────────
+
+#[tauri::command]
+async fn list_remote_hosts(state: tauri::State<'_, commands::AppState>) -> Result<Vec<remote::RemoteHost>, String> {
+    Ok(state.remote_manager.hosts())
+}
+
+#[tauri::command]
+async fn add_remote_host(state: tauri::State<'_, commands::AppState>, host: remote::RemoteHost) -> Result<(), String> {
+    state.remote_manager.add_host(host.clone());
+    let mut cfg = state.config_store.get();
+    cfg.remote_hosts.push(host);
+    state.config_store.update(cfg)
+}
+
+#[tauri::command]
+async fn remove_remote_host(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+    state.remote_manager.remove_host(&id);
+    let mut cfg = state.config_store.get();
+    cfg.remote_hosts.retain(|h| h.id != id);
+    state.config_store.update(cfg)
+}
+
+#[tauri::command]
+async fn connect_remote(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+    state.remote_manager.connect(&id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn disconnect_remote(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+    state.remote_manager.disconnect(&id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn install_remote_hooks(state: tauri::State<'_, commands::AppState>, id: String) -> Result<String, String> {
+    let hosts = state.remote_manager.hosts();
+    let host = hosts.iter().find(|h| h.id == id)
+        .ok_or_else(|| format!("Host {} not found", id))?.clone();
+    let result = remote::installer::RemoteInstaller::install_hooks(&host).await;
+    if result.ok { Ok(result.message) } else { Err(result.message) }
+}
+
+#[tauri::command]
+async fn get_remote_status(state: tauri::State<'_, commands::AppState>, id: String) -> Result<remote::ConnectionStatus, String> {
+    Ok(state.remote_manager.status(&id))
+}
+
+// ── Webhook Commands ────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_webhooks(state: tauri::State<'_, commands::AppState>) -> Result<Vec<webhook::WebhookConfig>, String> {
+    Ok(state.config_store.get().webhook_configs)
+}
+
+#[tauri::command]
+async fn add_webhook(state: tauri::State<'_, commands::AppState>, config: webhook::WebhookConfig) -> Result<(), String> {
+    let mut cfg = state.config_store.get();
+    cfg.webhook_configs.push(config);
+    state.config_store.update(cfg)
+}
+
+#[tauri::command]
+async fn remove_webhook(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+    let mut cfg = state.config_store.get();
+    cfg.webhook_configs.retain(|w| w.id != id);
+    state.config_store.update(cfg)
+}
+
+#[tauri::command]
+async fn update_webhook(state: tauri::State<'_, commands::AppState>, config: webhook::WebhookConfig) -> Result<(), String> {
+    let mut cfg = state.config_store.get();
+    let id = config.id.clone();
+    match cfg.webhook_configs.iter_mut().find(|w| w.id == id) {
+        Some(existing) => {
+            *existing = config;
+            state.config_store.update(cfg)
+        }
+        None => Err(format!("Webhook {} not found", id)),
+    }
+}
+
+#[tauri::command]
+async fn test_webhook(state: tauri::State<'_, commands::AppState>, id: String) -> Result<String, String> {
+    let cfg = state.config_store.get();
+    let wh = cfg.webhook_configs.iter().find(|w| w.id == id)
+        .ok_or_else(|| format!("Webhook {} not found", id))?.clone();
+    let event = webhook::templates::NotificationEvent::Custom {
+        title: "Agent Island Test".to_string(),
+        body: "This is a test notification from Agent Island.".to_string(),
+    };
+    let results = webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session").await;
+    for (_, result) in &results {
+        match result {
+            webhook::WebhookResult::Success => return Ok("Test notification sent successfully".to_string()),
+            webhook::WebhookResult::Failed(msg) => return Err(msg.clone()),
+            webhook::WebhookResult::Skipped => return Ok("Webhook skipped (disabled or source filter)".to_string()),
+        }
+    }
+    Ok("No webhooks matched".to_string())
+}
+
+#[tauri::command]
+async fn get_webhook_logs(state: tauri::State<'_, commands::AppState>) -> Result<Vec<hooks::diagnostics::DiagnosticEvent>, String> {
+    Ok(state.diagnostic_buffer.query(hooks::diagnostics::DiagnosticSeverity::Debug, Some("webhook")))
+}
+
+// ── Diagnostic Event Commands ───────────────────────────────────
+
+#[tauri::command]
+async fn get_diagnostic_events(
+    state: tauri::State<'_, commands::AppState>,
+    since_seq: Option<u64>,
+    component: Option<String>,
+) -> Result<Vec<hooks::diagnostics::DiagnosticEvent>, String> {
+    Ok(match since_seq {
+        Some(seq) => {
+            let mut events = state.diagnostic_buffer.since(seq);
+            if let Some(ref comp) = component {
+                events.retain(|e| &e.component == comp);
+            }
+            events
+        }
+        None => state.diagnostic_buffer.query(
+            hooks::diagnostics::DiagnosticSeverity::Debug,
+            component.as_deref(),
+        ),
+    })
 }
 
 // ── Theme Commands ──────────────────────────────────────────────
@@ -590,6 +769,25 @@ pub fn run() {
             let display_controller = Arc::new(platform::display_controller::DisplayController::new());
             display_controller.set_app_handle(app.handle().clone());
 
+            // Initialize remote manager with persisted hosts
+            let local_socket = dirs::home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".agent-island")
+                .join("remote.sock")
+                .to_string_lossy()
+                .to_string();
+            let remote_manager = Arc::new(remote::RemoteManager::new(local_socket));
+            {
+                let cfg = config_store.get();
+                for host in cfg.remote_hosts {
+                    remote_manager.add_host(host);
+                }
+            }
+            remote_manager.startup();
+
+            // Initialize diagnostic ring buffer
+            let diagnostic_buffer = Arc::new(hooks::diagnostics::DiagnosticRingBuffer::new());
+
             let app_state = AppState {
                 session_store,
                 hook_server,
@@ -599,6 +797,8 @@ pub fn run() {
                 sound_engine,
                 conversation_watcher,
                 display_controller,
+                remote_manager,
+                diagnostic_buffer,
             };
             app.manage(app_state);
 
@@ -644,6 +844,25 @@ pub fn run() {
             notify_cursor_leave,
             notify_esc,
             notify_expand,
+            detect_tools,
+            install_agent_hook,
+            uninstall_agent_hook,
+            get_all_hook_status,
+            reinstall_all_hooks,
+            list_remote_hosts,
+            add_remote_host,
+            remove_remote_host,
+            connect_remote,
+            disconnect_remote,
+            install_remote_hooks,
+            get_remote_status,
+            list_webhooks,
+            add_webhook,
+            remove_webhook,
+            update_webhook,
+            test_webhook,
+            get_webhook_logs,
+            get_diagnostic_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agent Island");

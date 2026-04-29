@@ -96,6 +96,25 @@ export function NotchPanel() {
   const shortcuts = useConfigStore((s) => s.shortcuts)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [bouncing, setBouncing] = useState(false)
+  const [displayChanging, setDisplayChanging] = useState(false)
+
+  // Display-change listener: fade-out → pause → fade-in
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    let fadeInTimer: ReturnType<typeof setTimeout> | undefined
+
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('display-changed', () => {
+        setDisplayChanging(true)
+        fadeInTimer = setTimeout(() => setDisplayChanging(false), 600)
+      }).then((fn) => { unlisten = fn })
+    }).catch(() => {})
+
+    return () => {
+      unlisten?.()
+      if (fadeInTimer) clearTimeout(fadeInTimer)
+    }
+  }, [])
 
   // Track sessions needing attention via overlay queue
   const attentionCount = useMemo(
@@ -327,6 +346,7 @@ export function NotchPanel() {
           animate={{
             width: panelWidth,
             height: panelHeight,
+            opacity: displayChanging ? 0 : 1,
           }}
           transition={springTransition}
           onMouseEnter={handleMouseEnter}

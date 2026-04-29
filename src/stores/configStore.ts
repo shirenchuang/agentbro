@@ -30,6 +30,26 @@ export interface SSHHost {
   enabled: boolean
 }
 
+export interface WebhookEntry {
+  id: string
+  name: string
+  platform: 'dingtalk' | 'feishu'
+  url: string
+  secret: string | null
+  sources: string[]
+  enabled: boolean
+}
+
+export interface RemoteHostEntry {
+  id: string
+  name: string
+  sshTarget: string
+  port: number | null
+  remoteSocketPath: string
+  autoConnect: boolean
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'failed'
+}
+
 export interface LabFeature {
   id: string
   label: string
@@ -115,6 +135,12 @@ interface ConfigState {
 
   // Engine Instances
   engineInstances: EngineInstance[]
+
+  // Webhooks
+  webhooks: WebhookEntry[]
+
+  // Remote Hosts
+  remoteHostEntries: RemoteHostEntry[]
 }
 
 interface ConfigActions {
@@ -125,6 +151,15 @@ interface ConfigActions {
   addSSHHost: (host: SSHHost) => void
   removeSSHHost: (id: string) => void
   toggleLabFeature: (id: string) => void
+  // Webhook actions
+  addWebhook: (webhook: WebhookEntry) => void
+  removeWebhook: (id: string) => void
+  updateWebhook: (webhook: WebhookEntry) => void
+  toggleWebhook: (id: string) => void
+  // Remote host actions
+  addRemoteHostEntry: (host: RemoteHostEntry) => void
+  removeRemoteHostEntry: (id: string) => void
+  updateRemoteHostStatus: (id: string, status: RemoteHostEntry['connectionStatus']) => void
 }
 
 type ConfigStore = ConfigState & ConfigActions
@@ -236,6 +271,12 @@ export const useConfigStore = create<ConfigStore>()(
   // Engine Instances
   engineInstances: [],
 
+  // Webhooks
+  webhooks: [],
+
+  // Remote Hosts
+  remoteHostEntries: [],
+
   // Actions
   updateConfig: (key, value) => {
     set({ [key]: value } as Partial<ConfigState>)
@@ -277,6 +318,42 @@ export const useConfigStore = create<ConfigStore>()(
     set((state) => ({
       labFeatures: state.labFeatures.map((f) =>
         f.id === id ? { ...f, enabled: !f.enabled } : f
+      ),
+    }))
+  },
+
+  addWebhook: (webhook) => {
+    set((state) => ({ webhooks: [...state.webhooks, webhook] }))
+  },
+
+  removeWebhook: (id) => {
+    set((state) => ({ webhooks: state.webhooks.filter((w) => w.id !== id) }))
+  },
+
+  updateWebhook: (webhook) => {
+    set((state) => ({
+      webhooks: state.webhooks.map((w) => (w.id === webhook.id ? webhook : w)),
+    }))
+  },
+
+  toggleWebhook: (id) => {
+    set((state) => ({
+      webhooks: state.webhooks.map((w) => (w.id === id ? { ...w, enabled: !w.enabled } : w)),
+    }))
+  },
+
+  addRemoteHostEntry: (host) => {
+    set((state) => ({ remoteHostEntries: [...state.remoteHostEntries, host] }))
+  },
+
+  removeRemoteHostEntry: (id) => {
+    set((state) => ({ remoteHostEntries: state.remoteHostEntries.filter((h) => h.id !== id) }))
+  },
+
+  updateRemoteHostStatus: (id, status) => {
+    set((state) => ({
+      remoteHostEntries: state.remoteHostEntries.map((h) =>
+        h.id === id ? { ...h, connectionStatus: status } : h
       ),
     }))
   },
