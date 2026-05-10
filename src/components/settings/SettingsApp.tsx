@@ -13,6 +13,7 @@ import { WebhookSection } from './sections/WebhookSection'
 import { LabsSection } from './sections/LabsSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
+import { SkillsSection } from './sections/SkillsSection'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
@@ -21,6 +22,7 @@ const sections: Record<string, () => ReactNode> = {
   'sound': SoundSection,
   'shortcuts': ShortcutsSection,
   'ssh-remote': SSHRemoteSection,
+  'skills': SkillsSection,
   'hooks': HookSection,
   'webhooks': WebhookSection,
   'labs': LabsSection,
