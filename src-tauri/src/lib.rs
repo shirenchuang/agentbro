@@ -61,6 +61,36 @@ async fn notify_expand(state: tauri::State<'_, commands::AppState>) -> Result<()
     Ok(())
 }
 
+/// Toggle the notch window's focusable / key-window state.
+/// When `focusable` is true, the window becomes key window to accept keyboard input.
+/// When false, it resigns key window so it doesn't steal focus from the terminal.
+#[tauri::command]
+async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("notch") {
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::NSWindow;
+            if let Ok(ptr) = window.ns_window() {
+                unsafe {
+                    let ns_window = ptr as *const NSWindow;
+                    if focusable {
+                        (*ns_window).makeKeyWindow();
+                    } else {
+                        (*ns_window).resignKeyWindow();
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            if focusable {
+                let _ = window.set_focus();
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Agent Detection & Hook Management Commands ──────────────────
 
 #[tauri::command]
@@ -493,6 +523,114 @@ async fn perform_haptic(intensity: u8) -> Result<(), String> {
         let _ = intensity;
         Ok(())
     }
+}
+
+// ── Skill Management Commands ───────────────────────────────────
+
+#[tauri::command]
+async fn scan_all_skills() -> Result<std::collections::HashMap<String, Vec<skills::ScannedSkill>>, String> {
+    Ok(skills::scanner::scan_all())
+}
+
+#[tauri::command]
+async fn scan_agent_skills(agent: String) -> Result<Vec<skills::ScannedSkill>, String> {
+    Ok(skills::scanner::scan_agent(&agent))
+}
+
+#[tauri::command]
+async fn install_skill_cmd(
+    source: String,
+    targets: Vec<skills::TargetConfig>,
+    mode: skills::InstallMode,
+) -> Result<(), String> {
+    skills::installer::install_skill(&source, &targets, &mode)?;
+    skills::registry::add_source(
+        &std::path::PathBuf::from(&source)
+            .file_name().unwrap_or_default()
+            .to_string_lossy(),
+        &source,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn uninstall_skill_cmd(skill_path: String) -> Result<(), String> {
+    skills::installer::uninstall_skill(&skill_path)
+}
+
+#[tauri::command]
+async fn toggle_skill_cmd(skill_id: String, agent: String, enabled: bool) -> Result<(), String> {
+    skills::installer::toggle_skill(&skill_id, &agent, enabled)
+}
+
+#[tauri::command]
+async fn read_skill_files(skill_path: String) -> Result<skills::FileTreeNode, String> {
+    Ok(skills::scanner::read_file_tree(&skill_path))
+}
+
+#[tauri::command]
+async fn read_skill_file_content(file_path: String) -> Result<String, String> {
+    std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_packs_cmd() -> Result<Vec<skills::SkillPack>, String> {
+    Ok(skills::registry::list_packs())
+}
+
+#[tauri::command]
+async fn create_pack_cmd(pack: skills::SkillPack) -> Result<(), String> {
+    skills::registry::create_pack(pack)
+}
+
+#[tauri::command]
+async fn update_pack_cmd(pack: skills::SkillPack) -> Result<(), String> {
+    skills::registry::update_pack(pack)
+}
+
+#[tauri::command]
+async fn delete_pack_cmd(id: String) -> Result<(), String> {
+    skills::registry::delete_pack(&id)
+}
+
+#[tauri::command]
+async fn configure_sync_cmd(config: skills::SyncConfig) -> Result<(), String> {
+    skills::registry::set_sync_config(config)
+}
+
+#[tauri::command]
+async fn push_sync_cmd() -> Result<skills::SyncResult, String> {
+    skills::sync::push_to_github()
+}
+
+#[tauri::command]
+async fn pull_sync_cmd() -> Result<skills::SyncResult, String> {
+    skills::sync::pull_from_github()
+}
+
+#[tauri::command]
+async fn sync_agent_to_agent_cmd(from: String, to: String) -> Result<skills::SyncPreview, String> {
+    skills::sync::sync_agent_to_agent(&from, &to)
+}
+
+#[tauri::command]
+async fn execute_agent_sync_cmd(from: String, to: String) -> Result<(), String> {
+    skills::sync::execute_agent_sync(&from, &to)
+}
+
+#[tauri::command]
+async fn export_backup_cmd(path: String) -> Result<(), String> {
+    skills::sync::export_backup(&path)
+}
+
+#[tauri::command]
+async fn import_backup_cmd(path: String) -> Result<(), String> {
+    skills::sync::import_backup(&path)
+}
+
+#[tauri::command]
+async fn get_registry_metadata() -> Result<skills::registry::Metadata, String> {
+    Ok(skills::registry::load())
 }
 
 // ── Opacity helpers ─────────────────────────────────────────────
@@ -1009,9 +1147,29 @@ pub fn run() {
             register_global_shortcut,
             unregister_global_shortcut,
             perform_haptic,
+            set_notch_focusable,
             list_themes,
             get_active_theme_bundle,
             import_theme,
+            scan_all_skills,
+            scan_agent_skills,
+            install_skill_cmd,
+            uninstall_skill_cmd,
+            toggle_skill_cmd,
+            read_skill_files,
+            read_skill_file_content,
+            list_packs_cmd,
+            create_pack_cmd,
+            update_pack_cmd,
+            delete_pack_cmd,
+            configure_sync_cmd,
+            push_sync_cmd,
+            pull_sync_cmd,
+            sync_agent_to_agent_cmd,
+            execute_agent_sync_cmd,
+            export_backup_cmd,
+            import_backup_cmd,
+            get_registry_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");
