@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Island - Skills & Plugins UI Mockup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif; background: #0d0d0d; color: #e0e0e0; }
+
+  .container { display: flex; height: 100vh; }
+
+  /* Left sidebar - settings nav */
+  .sidebar { width: 200px; background: #161616; border-right: 1px solid #2a2a2a; padding: 16px 0; flex-shrink: 0; }
+  .sidebar h2 { font-size: 13px; color: #888; padding: 8px 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .nav-item { padding: 8px 16px; font-size: 13px; color: #999; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .nav-item:hover { background: #1e1e1e; color: #fff; }
+  .nav-item.active { background: #1a2a1a; color: #4ade80; border-right: 2px solid #4ade80; }
+  .nav-icon { width: 16px; text-align: center; }
+
+  /* Main content */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Top bar with tabs */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid #2a2a2a; }
+  .tabs { display: flex; gap: 0; }
+  .tab { padding: 8px 20px; font-size: 13px; color: #888; cursor: pointer; border: 1px solid #2a2a2a; background: #161616; }
+  .tab:first-child { border-radius: 6px 0 0 6px; }
+  .tab:last-child { border-radius: 0 6px 6px 0; }
+  .tab.active { background: #4ade80; color: #000; border-color: #4ade80; font-weight: 600; }
+  .tab:not(.active):hover { background: #1e1e1e; color: #ccc; }
+  .topbar-actions { display: flex; gap: 8px; }
+  .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #333; background: #1e1e1e; color: #ccc; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .btn:hover { background: #2a2a2a; color: #fff; }
+  .btn-primary { background: #4ade80; color: #000; border-color: #4ade80; font-weight: 600; }
+  .btn-primary:hover { background: #22c55e; }
+
+  /* Content area */
+  .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+
+  /* Filter bar */
+  .filter-bar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
+  .search-input { flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #e0e0e0; font-size: 13px; }
+  .search-input::placeholder { color: #555; }
+  .filter-chip { padding: 4px 12px; border-radius: 12px; border: 1px solid #333; background: #1a1a1a; color: #999; font-size: 12px; cursor: pointer; }
+  .filter-chip.active { background: #1a2a1a; color: #4ade80; border-color: #4ade80; }
+
+  /* Agent filter pills */
+  .agent-pills { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .agent-pill { padding: 3px 10px; border-radius: 10px; font-size: 11px; border: 1px solid #333; background: #1a1a1a; color: #888; cursor: pointer; }
+  .agent-pill.active { border-color: #6366f1; color: #a5b4fc; background: #1a1a2e; }
+
+  /* Skill cards */
+  .skill-grid { display: flex; flex-direction: column; gap: 8px; }
+  .skill-card { display: flex; align-items: center; padding: 14px 16px; border-radius: 8px; border: 1px solid #2a2a2a; background: #161616; cursor: pointer; transition: all 0.15s; }
+  .skill-card:hover { border-color: #444; background: #1a1a1a; }
+  .skill-icon { width: 36px; height: 36px; border-radius: 8px; background: #1a2a1a; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-right: 14px; flex-shrink: 0; }
+  .skill-info { flex: 1; min-width: 0; }
+  .skill-name { font-size: 13px; font-weight: 600; color: #e0e0e0; margin-bottom: 2px; }
+  .skill-desc { font-size: 11px; color: #777; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .skill-tags { display: flex; gap: 4px; margin-left: 12px; flex-shrink: 0; }
+  .skill-tag { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 500; }
+  .tag-claude { background: #1a1a2e; color: #a5b4fc; }
+  .tag-codex { background: #2a1a1a; color: #fca5a5; }
+  .tag-gemini { background: #1a2a2a; color: #a5f0fc; }
+  .tag-cursor { background: #2a2a1a; color: #fcd34d; }
+  .skill-toggle { margin-left: 12px; }
+  .toggle { width: 36px; height: 20px; border-radius: 10px; background: #333; position: relative; cursor: pointer; transition: background 0.2s; }
+  .toggle.on { background: #4ade80; }
+  .toggle .dot { width: 16px; height: 16px; border-radius: 50%; background: #fff; position: absolute; top: 2px; left: 2px; transition: left 0.2s; }
+  .toggle.on .dot { left: 18px; }
+  .skill-actions { display: flex; gap: 6px; margin-left: 12px; opacity: 0; transition: opacity 0.15s; }
+  .skill-card:hover .skill-actions { opacity: 1; }
+  .action-btn { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #333; background: #1e1e1e; color: #888; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; }
+  .action-btn:hover { border-color: #555; color: #fff; }
+  .action-btn.danger:hover { border-color: #ef4444; color: #ef4444; }
+
+  /* Section headers */
+  .section-header { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 20px 0 8px; padding-bottom: 6px; border-bottom: 1px solid #1e1e1e; }
+  .section-header:first-child { margin-top: 0; }
+
+  /* Pack view */
+  .pack-card { padding: 16px; border-radius: 10px; border: 1px solid #2a2a2a; background: #161616; margin-bottom: 12px; }
+  .pack-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .pack-name { font-size: 14px; font-weight: 600; }
+  .pack-desc { font-size: 12px; color: #777; margin-bottom: 12px; }
+  .pack-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .pack-skill-chip { padding: 3px 10px; border-radius: 6px; font-size: 11px; background: #1a1a1a; border: 1px solid #2a2a2a; color: #aaa; }
+  .pack-agents { display: flex; gap: 4px; }
+  .pack-footer { display: flex; align-items: center; justify-content: space-between; }
+  .pack-status { font-size: 11px; color: #4ade80; }
+
+  /* Sync panel */
+  .sync-section { padding: 16px; border-radius: 10px; border: 1px solid #2a2a2a; background: #161616; margin-bottom: 12px; }
+  .sync-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .sync-desc { font-size: 12px; color: #777; margin-bottom: 12px; }
+  .sync-config { display: flex; gap: 8px; align-items: center; }
+  .sync-input { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #e0e0e0; font-size: 12px; }
+  .sync-status { font-size: 11px; color: #888; margin-top: 8px; }
+  .divider { height: 1px; background: #2a2a2a; margin: 16px 0; }
+
+  /* Agent-to-Agent sync */
+  .agent-sync { display: flex; align-items: center; gap: 12px; padding: 12px; background: #1a1a1a; border-radius: 8px; }
+  .agent-select { padding: 6px 10px; border-radius: 6px; border: 1px solid #333; background: #161616; color: #e0e0e0; font-size: 12px; }
+  .sync-arrow { color: #4ade80; font-size: 18px; }
+
+  /* Detail side panel */
+  .detail-panel { width: 320px; border-left: 1px solid #2a2a2a; background: #131313; padding: 20px; overflow-y: auto; flex-shrink: 0; }
+  .detail-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .detail-source { font-size: 11px; color: #4ade80; margin-bottom: 16px; word-break: break-all; }
+  .detail-section { margin-bottom: 16px; }
+  .detail-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .detail-agents { display: flex; flex-direction: column; gap: 6px; }
+  .detail-agent-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: #1a1a1a; border-radius: 6px; font-size: 12px; }
+  .detail-file { padding: 12px; background: #0a0a0a; border-radius: 6px; font-family: 'SF Mono', monospace; font-size: 11px; color: #aaa; line-height: 1.6; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  .close-btn { float: right; cursor: pointer; color: #666; font-size: 16px; }
+  .close-btn:hover { color: #fff; }
+
+  /* View switching - hide inactive views */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Tab interaction */
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Settings Sidebar -->
+  <div class="sidebar">
+    <h2>Settings</h2>
+    <div class="nav-item"><span class="nav-icon">&#9881;</span> General</div>
+    <div class="nav-item"><span class="nav-icon">&#9726;</span> Display</div>
+    <div class="nav-item"><span class="nav-icon">&#9835;</span> Sound</div>
+    <div class="nav-item"><span class="nav-icon">&#8599;</span> Hooks</div>
+    <div class="nav-item active"><span class="nav-icon">&#9733;</span> Skills & Plugins</div>
+    <div class="nav-item"><span class="nav-icon">&#8644;</span> SSH Remote</div>
+    <div class="nav-item"><span class="nav-icon">&#9889;</span> Webhooks</div>
+    <div class="nav-item"><span class="nav-icon">&#9000;</span> Shortcuts</div>
+    <div class="nav-item"><span class="nav-icon">&#9878;</span> Labs</div>
+    <div class="nav-item"><span class="nav-icon">&#9432;</span> About</div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('skills')">Skills</div>
+        <div class="tab" onclick="switchTab('packs')">Packs</div>
+        <div class="tab" onclick="switchTab('sync')">Sync</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn" onclick="switchTab('sync')">&#8635; Sync</button>
+        <button class="btn btn-primary" id="install-btn">+ Install Skill</button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex:1;overflow:hidden;">
+      <!-- Scrollable content -->
+      <div class="content">
+        <!-- ===== SKILLS TAB ===== -->
+        <div class="tab-content active" id="tab-skills">
+          <!-- Filter bar -->
+          <div class="filter-bar">
+            <input class="search-input" placeholder="Search skills and MCP servers...">
+            <div class="filter-chip active">All</div>
+            <div class="filter-chip">Skills</div>
+            <div class="filter-chip">MCP</div>
+            <div class="filter-chip">Plugins</div>
+          </div>
+
+          <!-- Agent filter -->
+          <div class="agent-pills">
+            <div class="agent-pill active">All Agents</div>
+            <div class="agent-pill" style="border-color:#6366f1;color:#a5b4fc;">Claude Code</div>
+            <div class="agent-pill">Codex</div>
+            <div class="agent-pill">Gemini CLI</div>
+            <div class="agent-pill">Cursor</div>
+            <div class="agent-pill">Hermes</div>
+          </div>
+
+          <!-- Skills list -->
+          <div class="section-header">Installed via Island (8)</div>
+          <div class="skill-grid">
+            <div class="skill-card" onclick="showDetail(this)">
+              <div class="skill-icon">&#128221;</div>
+              <div class="skill-info">
+                <div class="skill-name">wechat-article</div>
+                <div class="skill-desc">WeChat Official Account publishing workflow</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-codex">Codex</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+
+            <div class="skill-card">
+              <div class="skill-icon">&#127909;</div>
+              <div class="skill-info">
+                <div class="skill-name">video-notes</div>
+                <div class="skill-desc">AI video script generation with TTS and Remotion</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+
+            <div class="skill-card">
+              <div class="skill-icon">&#128248;</div>
+              <div class="skill-info">
+                <div class="skill-name">text-to-image</div>
+                <div class="skill-desc">Generate images with Google Gemini 3 Pro</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-gemini">Gemini</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+
+            <div class="skill-card">
+              <div class="skill-icon">&#128240;</div>
+              <div class="skill-info">
+                <div class="skill-name">fetching-ai-news</div>
+                <div class="skill-desc">Fetch and aggregate AI news from multiple sources</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-codex">Codex</span>
+                <span class="skill-tag tag-gemini">Gemini</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+
+            <div class="skill-card">
+              <div class="skill-icon" style="background:#1a1a2e;">&#9881;</div>
+              <div class="skill-info">
+                <div class="skill-name">mcp-filesystem</div>
+                <div class="skill-desc">MCP server for local filesystem access</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-cursor">Cursor</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-header">Locally Discovered (3)</div>
+          <div class="skill-grid">
+            <div class="skill-card">
+              <div class="skill-icon" style="background:#2a2a1a;">&#128269;</div>
+              <div class="skill-info">
+                <div class="skill-name">browse</div>
+                <div class="skill-desc">Web browsing skill for research</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn" title="Add source">&#128279;</div>
+              </div>
+            </div>
+
+            <div class="skill-card">
+              <div class="skill-icon" style="background:#2a2a1a;">&#128736;</div>
+              <div class="skill-info">
+                <div class="skill-name">init</div>
+                <div class="skill-desc">Initialize CLAUDE.md file with codebase docs</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-claude">Claude</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle on"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn" title="Add source">&#128279;</div>
+              </div>
+            </div>
+
+            <div class="skill-card" style="opacity: 0.5;">
+              <div class="skill-icon" style="background:#2a1a1a;">&#128683;</div>
+              <div class="skill-info">
+                <div class="skill-name">deprecated-tool</div>
+                <div class="skill-desc">An old skill no longer in use</div>
+              </div>
+              <div class="skill-tags">
+                <span class="skill-tag tag-codex">Codex</span>
+              </div>
+              <div class="skill-toggle"><div class="toggle"><div class="dot"></div></div></div>
+              <div class="skill-actions">
+                <div class="action-btn" title="View file">&#128065;</div>
+                <div class="action-btn danger" title="Uninstall">&#128465;</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== PACKS TAB ===== -->
+        <div class="tab-content" id="tab-packs">
+          <div class="filter-bar">
+            <input class="search-input" placeholder="Search packs...">
+            <button class="btn btn-primary">+ New Pack</button>
+          </div>
+
+          <div class="pack-card">
+            <div class="pack-header">
+              <div class="pack-name">&#128230; Content Production</div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn" style="font-size:11px;">Edit</button>
+                <button class="btn btn-primary" style="font-size:11px;">Apply to Agents</button>
+              </div>
+            </div>
+            <div class="pack-desc">WeChat article writing, image gen, video notes, news fetching</div>
+            <div class="pack-skills">
+              <span class="pack-skill-chip">wechat-article</span>
+              <span class="pack-skill-chip">video-notes</span>
+              <span class="pack-skill-chip">text-to-image</span>
+              <span class="pack-skill-chip">fetching-ai-news</span>
+              <span class="pack-skill-chip">upload-to-oss</span>
+            </div>
+            <div class="pack-footer">
+              <div class="pack-agents">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-codex">Codex</span>
+              </div>
+              <div class="pack-status">5/5 installed</div>
+            </div>
+          </div>
+
+          <div class="pack-card">
+            <div class="pack-header">
+              <div class="pack-name">&#128187; Dev Workflow</div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn" style="font-size:11px;">Edit</button>
+                <button class="btn btn-primary" style="font-size:11px;">Apply to Agents</button>
+              </div>
+            </div>
+            <div class="pack-desc">TDD, debugging, code review, and planning skills</div>
+            <div class="pack-skills">
+              <span class="pack-skill-chip">test-driven-development</span>
+              <span class="pack-skill-chip">systematic-debugging</span>
+              <span class="pack-skill-chip">code-reviewer</span>
+              <span class="pack-skill-chip">writing-plans</span>
+            </div>
+            <div class="pack-footer">
+              <div class="pack-agents">
+                <span class="skill-tag tag-claude">Claude</span>
+                <span class="skill-tag tag-gemini">Gemini</span>
+                <span class="skill-tag tag-cursor">Cursor</span>
+              </div>
+              <div class="pack-status">4/4 installed</div>
+            </div>
+          </div>
+
+          <div class="pack-card" style="border-style:dashed;border-color:#333;">
+            <div class="pack-header">
+              <div class="pack-name" style="color:#666;">&#10010; Create New Pack</div>
+            </div>
+            <div class="pack-desc">Group skills together for batch install and management</div>
+          </div>
+        </div>
+
+        <!-- ===== SYNC TAB ===== -->
+        <div class="tab-content" id="tab-sync">
+          <!-- Git sync -->
+          <div class="sync-section">
+            <div class="sync-title">&#128024; GitHub Repository Sync</div>
+            <div class="sync-desc">Sync your skill configuration to a private GitHub repo for cross-device access</div>
+            <div class="sync-config">
+              <input class="sync-input" value="shirenchuang/my-agent-config" placeholder="user/repo">
+              <button class="btn">Configure Token</button>
+              <button class="btn btn-primary">&#8593; Push</button>
+              <button class="btn">&#8595; Pull</button>
+            </div>
+            <div class="sync-status">Last synced: 2026-05-10 14:32 | 8 skills, 2 packs</div>
+          </div>
+
+          <!-- Export/Import -->
+          <div class="sync-section">
+            <div class="sync-title">&#128230; Export / Import</div>
+            <div class="sync-desc">Export configuration as a portable file, or import from one</div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn">&#8595; Export .island-backup.zip</button>
+              <button class="btn">&#8593; Import from file...</button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <!-- Agent-to-Agent -->
+          <div class="sync-section">
+            <div class="sync-title">&#8644; Agent-to-Agent Sync</div>
+            <div class="sync-desc">One-click copy all skills from one agent to another</div>
+            <div class="agent-sync">
+              <select class="agent-select">
+                <option>Claude Code</option>
+                <option>Codex</option>
+                <option>Gemini CLI</option>
+                <option>Cursor</option>
+              </select>
+              <span class="sync-arrow">&#10132;</span>
+              <select class="agent-select">
+                <option>Codex</option>
+                <option>Claude Code</option>
+                <option>Gemini CLI</option>
+                <option>Cursor</option>
+              </select>
+              <button class="btn btn-primary">Sync Now</button>
+            </div>
+            <div class="sync-status">This will copy 8 skills and 3 MCP servers. Existing skills will be skipped.</div>
+          </div>
+
+          <!-- Scan status -->
+          <div class="sync-section" style="background:#0d1a0d;border-color:#1a3a1a;">
+            <div class="sync-title" style="color:#4ade80;">&#9679; Scanner Status</div>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;">
+              <div style="display:flex;justify-content:space-between;">
+                <span>Claude Code</span>
+                <span style="color:#4ade80;">12 skills, 4 MCP &nbsp;&#10003;</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;">
+                <span>Codex</span>
+                <span style="color:#4ade80;">3 skills, 2 MCP &nbsp;&#10003;</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;">
+                <span>Gemini CLI</span>
+                <span style="color:#fcd34d;">1 skill, 0 MCP &nbsp;&#9888;</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;">
+                <span>Cursor</span>
+                <span style="color:#888;">Not installed</span>
+              </div>
+            </div>
+            <div style="margin-top:10px;">
+              <button class="btn" style="font-size:11px;">&#8635; Rescan All Agents</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail side panel (shown when a skill is clicked) -->
+      <div class="detail-panel" id="detail-panel">
+        <span class="close-btn" onclick="hideDetail()">&#10005;</span>
+        <div class="detail-title">wechat-article</div>
+        <div class="detail-source">github.com/user/sz-business-workflows/skills/wechat-article</div>
+
+        <div class="detail-section">
+          <div class="detail-label">Installed On</div>
+          <div class="detail-agents">
+            <div class="detail-agent-row">
+              <span>Claude Code</span>
+              <div class="toggle on" style="width:32px;height:18px;"><div class="dot" style="width:14px;height:14px;left:16px;"></div></div>
+            </div>
+            <div class="detail-agent-row">
+              <span>Codex</span>
+              <div class="toggle on" style="width:32px;height:18px;"><div class="dot" style="width:14px;height:14px;left:16px;"></div></div>
+            </div>
+            <div class="detail-agent-row" style="opacity:0.5;">
+              <span style="color:#666;">+ Add to Gemini CLI</span>
+              <button class="btn" style="font-size:10px;padding:2px 8px;">Install</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-label">Info</div>
+          <div style="font-size:12px;color:#aaa;line-height:1.6;">
+            <div>Type: <span style="color:#e0e0e0;">Skill</span></div>
+            <div>Install Mode: <span style="color:#e0e0e0;">Symlink</span></div>
+            <div>Pack: <span style="color:#4ade80;">Content Production</span></div>
+            <div>Size: <span style="color:#e0e0e0;">12.4 KB</span></div>
+            <div>Modified: <span style="color:#e0e0e0;">2026-05-08</span></div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-label">File Preview</div>
+          <div class="detail-file">---
+name: wechat-article
+description: Complete WeChat publishing workflow
+type: skill
+triggers:
+  - publish to wechat
+  - write article
+---
+
+# WeChat Article Workflow
+
+Write article -> humanize -> generate
+images -> upload to WeChat -> render
+styles -> create draft -> send preview.
+
+## Steps
+1. Draft article content
+2. Run humanization pass
+3. Generate header image
+4. Upload assets to OSS
+5. Push to WeChat draft...</div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button class="btn" style="flex:1;">&#128065; Open File</button>
+          <button class="btn" style="flex:1;color:#ef4444;border-color:#3a1a1a;">&#128465; Uninstall</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+
+  // Update tab styles
+  document.querySelectorAll('.tab').forEach(t => {
+    if (t.textContent.toLowerCase() === name) t.classList.add('active');
+  });
+}
+
+function showDetail(el) {
+  document.getElementById('detail-panel').style.display = 'block';
+}
+
+function hideDetail() {
+  document.getElementById('detail-panel').style.display = 'none';
+}
+
+// Toggle switches
+document.querySelectorAll('.toggle').forEach(t => {
+  t.addEventListener('click', (e) => {
+    e.stopPropagation();
+    t.classList.toggle('on');
+    const dot = t.querySelector('.dot');
+    if (t.classList.contains('on')) {
+      dot.style.left = t.offsetWidth > 34 ? '18px' : '16px';
+    } else {
+      dot.style.left = '2px';
+    }
+  });
+});
+
+// Filter chips
+document.querySelectorAll('.filter-chip').forEach(c => {
+  c.addEventListener('click', () => {
+    document.querySelectorAll('.filter-chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+  });
+});
+
+// Agent pills
+document.querySelectorAll('.agent-pill').forEach(p => {
+  p.addEventListener('click', () => {
+    document.querySelectorAll('.agent-pill').forEach(x => x.classList.remove('active'));
+    p.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
