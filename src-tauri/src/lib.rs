@@ -1,4 +1,4 @@
-// Agent Island — Rust Backend Library
+// AgentBro — Rust Backend Library
 pub mod commands;
 pub mod agents;
 pub mod hooks;
@@ -10,6 +10,7 @@ pub mod license;
 pub mod sound;
 pub mod platform;
 pub mod theme;
+pub mod skills;
 
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -85,7 +86,7 @@ async fn uninstall_agent_hook(state: tauri::State<'_, commands::AppState>, tool_
 async fn get_all_hook_status(state: tauri::State<'_, commands::AppState>) -> Result<Vec<serde_json::Value>, String> {
     Ok(state.adapters.iter().map(|a| {
         let paths = a.hook_config_paths();
-        let installed = paths.iter().any(|p| agents::hook_manager::has_agent_island_hooks(p));
+        let installed = paths.iter().any(|p| agents::hook_manager::has_agentbro_hooks(p));
         serde_json::json!({
             "name": a.name(),
             "displayName": a.display_name(),
@@ -195,8 +196,8 @@ async fn test_webhook(state: tauri::State<'_, commands::AppState>, id: String) -
     let wh = cfg.webhook_configs.iter().find(|w| w.id == id)
         .ok_or_else(|| format!("Webhook {} not found", id))?.clone();
     let event = webhook::templates::NotificationEvent::Custom {
-        title: "Agent Island Test".to_string(),
-        body: "This is a test notification from Agent Island.".to_string(),
+        title: "AgentBro Test".to_string(),
+        body: "This is a test notification from AgentBro.".to_string(),
     };
     let results = webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session").await;
     for (_, result) in &results {
@@ -242,6 +243,23 @@ async fn get_diagnostic_events(
 #[tauri::command]
 async fn get_themes() -> Result<Vec<serde_json::Value>, String> {
     Ok(theme::scanner::scan_themes())
+}
+
+#[tauri::command]
+async fn list_themes() -> Result<Vec<serde_json::Value>, String> {
+    Ok(theme::scanner::scan_themes())
+}
+
+#[tauri::command]
+async fn get_active_theme_bundle(name: String) -> Result<serde_json::Value, String> {
+    theme::scanner::get_theme_bundle(&name)
+        .ok_or_else(|| format!("Theme '{}' not found", name))
+}
+
+#[tauri::command]
+async fn import_theme(path: String) -> Result<String, String> {
+    let src = std::path::Path::new(&path);
+    theme::scanner::import_theme_from_path(src)
 }
 
 #[tauri::command]
@@ -377,6 +395,42 @@ fn start_cursor_hotzone_poller(app_handle: tauri::AppHandle) {
     });
 }
 
+// ── Path Validation Command ─────────────────────────────────────
+
+#[tauri::command]
+async fn validate_path(path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&path).exists())
+}
+
+// ── Global Shortcut Commands ────────────────────────────────────
+
+#[tauri::command]
+async fn register_global_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let app_clone = app.clone();
+    app.global_shortcut().on_shortcut(
+        shortcut.as_str(),
+        move |_app, _shortcut, _event| {
+            if let Some(window) = app_clone.get_webview_window("notch") {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.hide();
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        },
+    ).map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn unregister_global_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    app.global_shortcut().unregister_all().map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
 // ── Quit Command ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -409,6 +463,36 @@ async fn set_sound_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> 
         engine.set_enabled(enabled);
     }
     Ok(())
+}
+
+// ── Haptic Feedback Command ─────────────────────────────────
+
+#[tauri::command]
+async fn perform_haptic(intensity: u8) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let pattern = match intensity {
+            1 => "1",
+            2 => "3",
+            _ => "6",
+        };
+        let script = format!(
+            r#"use framework "AppKit"
+            set mgr to current application's NSHapticFeedbackManager's defaultPerformer()
+            mgr's performFeedbackPattern:{} performanceTime:0"#,
+            pattern
+        );
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = intensity;
+        Ok(())
+    }
 }
 
 // ── Opacity helpers ─────────────────────────────────────────────
@@ -448,7 +532,12 @@ async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String
 /// Resize the notch window dynamically from the frontend and re-center
 /// on the display selected in config (falls back to primary).
 #[tauri::command]
-async fn resize_notch(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+async fn resize_notch(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+    horizontal_offset: Option<f64>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("notch") {
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
 
@@ -464,9 +553,18 @@ async fn resize_notch(app: tauri::AppHandle, width: f64, height: f64) -> Result<
             let scale = monitor.scale_factor();
             let screen_width = monitor.size().width as f64 / scale;
             let monitor_x = monitor.position().x as f64 / scale;
-            let x = monitor_x + (screen_width - width) / 2.0;
+            let margin = 8.0;
+            let base_x = monitor_x + (screen_width - width) / 2.0;
+            let desired_x = base_x + horizontal_offset.unwrap_or(0.0);
+            let min_x = monitor_x + margin;
+            let max_x = monitor_x + screen_width - width - margin;
+            let x = if min_x <= max_x {
+                desired_x.clamp(min_x, max_x)
+            } else {
+                base_x
+            };
             let _ = window.set_position(tauri::Position::Logical(
-                tauri::LogicalPosition::new(x, 0.0),
+                tauri::LogicalPosition::new(x, -6.0),
             ));
         }
     }
@@ -481,6 +579,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Position notch window at top center
             if let Some(window) = app.get_webview_window("notch") {
@@ -494,7 +593,7 @@ pub fn run() {
                     let window_width = 420.0; // 400 panel + 20 shadow padding
                     let x = (screen_width - window_width) / 2.0;
                     let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, 0.0),
+                        tauri::LogicalPosition::new(x, -6.0),
                     ));
                 }
 
@@ -563,7 +662,7 @@ pub fn run() {
 
             // Initialize themes: ensure built-in themes exist in user dir
             if let Some(resource_path) = app.path().resource_dir().ok() {
-                theme::scanner::ensure_builtin_themes(&resource_path);
+                theme::scanner::seed_builtin_themes(&resource_path);
             }
 
             // Initialize adapters: default ~/.claude + custom engine instances
@@ -710,6 +809,28 @@ pub fn run() {
                 });
             }
 
+            // ── Background: focused terminal detection ───────────────
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let output = tokio::process::Command::new("osascript")
+                            .args(["-e", "tell application \"System Events\" to get name of first process whose frontmost is true"])
+                            .output()
+                            .await;
+                        if let Ok(output) = output {
+                            let app_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                            let is_terminal = matches!(app_name.as_str(),
+                                "iTerm2" | "Terminal" | "Ghostty" | "kitty" | "WezTerm" | "Alacritty" | "tmux");
+                            if is_terminal {
+                                let _ = app_handle.emit("focused-terminal-changed", &app_name);
+                            }
+                        }
+                    }
+                });
+            }
+
             // Build system tray icon with menu
             let show_item = MenuItemBuilder::with_id("show", "Show Panel").build(app)?;
             let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
@@ -772,7 +893,7 @@ pub fn run() {
             // Initialize remote manager with persisted hosts
             let local_socket = dirs::home_dir()
                 .unwrap_or_else(std::env::temp_dir)
-                .join(".agent-island")
+                .join(".agentbro")
                 .join("remote.sock")
                 .to_string_lossy()
                 .to_string();
@@ -802,7 +923,27 @@ pub fn run() {
             };
             app.manage(app_state);
 
-            log::info!("Agent Island started");
+            // Register global shortcut from config
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let app_state = app.state::<AppState>();
+                let shortcut_str = app_state.config_store.get().global_shortcut.clone();
+                if !shortcut_str.is_empty() {
+                    let app_handle = app.handle().clone();
+                    let _ = app.global_shortcut().on_shortcut(shortcut_str.as_str(), move |_app, _sc, _event| {
+                        if let Some(window) = app_handle.get_webview_window("notch") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    });
+                }
+            }
+
+            log::info!("AgentBro started");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -864,7 +1005,14 @@ pub fn run() {
             get_webhook_logs,
             get_diagnostic_events,
             commands::buddy::read_buddy_data,
+            validate_path,
+            register_global_shortcut,
+            unregister_global_shortcut,
+            perform_haptic,
+            list_themes,
+            get_active_theme_bundle,
+            import_theme,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Agent Island");
+        .expect("error while running AgentBro");
 }
