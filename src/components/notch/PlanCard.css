@@ -1,7 +1,7 @@
 .plan-card {
-  background: var(--vi-card);
-  border: 1px solid var(--vi-card-border);
-  border-radius: var(--radius-sm);
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -16,7 +16,7 @@
 .plan-card__title {
   font-size: 11px;
   font-weight: 600;
-  color: var(--vi-text-primary);
+  color: var(--island-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -27,7 +27,7 @@
 .plan-card__label {
   font-size: 10px;
   font-weight: 600;
-  color: var(--vi-accent-green);
+  color: #22c55e;
   flex-shrink: 0;
   margin-left: 8px;
 }
@@ -48,9 +48,9 @@
 }
 
 .plan-card__text {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10px;
-  color: var(--vi-text-secondary);
+  color: var(--island-text-secondary);
   line-height: 1.5;
   margin: 0;
   white-space: pre-wrap;

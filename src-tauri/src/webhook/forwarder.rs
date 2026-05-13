@@ -4,8 +4,8 @@
 // HMAC-SHA256 signing uses python3's built-in hmac module.
 // No external crate dependencies required.
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use super::templates::{self, NotificationEvent};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Webhook platform type
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -139,12 +139,18 @@ fn post_json_curl(url: &str, body: &serde_json::Value) -> WebhookResult {
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "--max-time", "10",
-            "--data-raw", &json_str,
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "--max-time",
+            "10",
+            "--data-raw",
+            &json_str,
             url,
         ])
         .output();

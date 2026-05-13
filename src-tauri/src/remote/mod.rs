@@ -3,8 +3,11 @@
 // External dependency required: tokio (already a Tauri dependency)
 // No additional crates needed beyond std + tokio.
 
-pub mod manager;
-pub mod ssh_tunnel;
 pub mod installer;
+pub mod manager;
+pub mod path;
+pub mod ssh_config;
+pub mod ssh_tunnel;
 
-pub use manager::{RemoteHost, RemoteManager, ConnectionStatus};
+pub use manager::{ConnectionStatus, RemoteHost, RemoteManager};
+pub use ssh_config::SshConfigHost;

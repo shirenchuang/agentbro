@@ -18,16 +18,17 @@ export function SpriteCanvas({ theme, priority, size }: SpriteCanvasProps) {
   const pName = priorityName(priority)
   const animName = character ? (theme.stateMapping?.[pName] ?? 'idle') : 'idle'
   const anim = character ? (character.animations[animName] ?? character.animations['idle']) : undefined
+  const spriteSrc = character?.spriteSheetDataUrl ?? character?.spriteSheet
 
   useEffect(() => {
-    if (!character?.spriteSheet) return
+    if (!spriteSrc) return
 
     const img = new Image()
-    img.src = character.spriteSheet
+    img.src = spriteSrc
     img.onload = () => { imageRef.current = img }
 
     return () => { imageRef.current = null }
-  }, [character?.spriteSheet])
+  }, [spriteSrc])
 
   useEffect(() => {
     if (!anim || !character) return

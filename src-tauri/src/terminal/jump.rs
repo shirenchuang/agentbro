@@ -3,7 +3,7 @@
 //           Terminal.app (TTY matching), Kitty (kitten @), WezTerm (wezterm cli),
 //           tmux (select-window + select-pane), and generic app activation
 
-use super::{process_tree, tmux, registry};
+use super::{process_tree, registry, tmux};
 
 /// Result of a jump operation
 #[derive(Debug)]
@@ -67,7 +67,10 @@ pub fn jump_to_terminal(pid: u32) -> JumpResult {
     }
 
     // Fallback: use TTY device to find which terminal app owns this session
-    log::warn!("Process tree walk failed for PID {}. Trying TTY fallback.", pid);
+    log::warn!(
+        "Process tree walk failed for PID {}. Trying TTY fallback.",
+        pid
+    );
     if let Some(tty) = process_tree::get_tty(pid, &tree) {
         if let Some(terminal_app) = find_terminal_app_for_tty(&tty) {
             log::info!("TTY fallback found terminal app: {}", terminal_app);
@@ -119,10 +122,11 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
         return res;
     }
 
-    let terminal_app = process_tree::find_terminal_app_name(ctx.pid, &tree)
-        .or_else(|| {
-            ctx.tty_path.as_ref().and_then(|tty| find_terminal_app_for_tty(tty))
-        });
+    let terminal_app = process_tree::find_terminal_app_name(ctx.pid, &tree).or_else(|| {
+        ctx.tty_path
+            .as_ref()
+            .and_then(|tty| find_terminal_app_for_tty(tty))
+    });
 
     let Some(term_app) = terminal_app else {
         return JumpResult::TerminalNotFound;
@@ -193,30 +197,34 @@ end tell"#
 
 fn jump_iterm_by_tty_or_cwd(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
     // Build TTY match clause
-    let tty_clause = tty.map(|t| {
-        let dev = tty_to_dev_path(t);
-        format!(
-            r#"try
+    let tty_clause = tty
+        .map(|t| {
+            let dev = tty_to_dev_path(t);
+            format!(
+                r#"try
                     if tty of aSession is "{dev}" then
                         select aSession
                         select aWindow
                         return
                     end if
                 end try"#
-        )
-    }).unwrap_or_default();
+            )
+        })
+        .unwrap_or_default();
 
-    let cwd_clause = cwd.map(|c| {
-        format!(
-            r#"try
+    let cwd_clause = cwd
+        .map(|c| {
+            format!(
+                r#"try
                     if variable named "session.path" of aSession is "{c}" then
                         select aSession
                         select aWindow
                         return
                     end if
                 end try"#
-        )
-    }).unwrap_or_default();
+            )
+        })
+        .unwrap_or_default();
 
     if tty_clause.is_empty() && cwd_clause.is_empty() {
         return run_osascript(r#"tell application "iTerm2" to activate"#);
@@ -281,10 +289,11 @@ end tell"#
 // ─── Terminal.app ────────────────────────────────────────────────────────────
 
 fn jump_terminal_app(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
-    let tty_clause = tty.map(|t| {
-        let dev = tty_to_dev_path(t);
-        format!(
-            r#"repeat with aTab in tabs of aWindow
+    let tty_clause = tty
+        .map(|t| {
+            let dev = tty_to_dev_path(t);
+            format!(
+                r#"repeat with aTab in tabs of aWindow
                 try
                     if tty of aTab is "{dev}" then
                         set selected tab of aWindow to aTab
@@ -293,13 +302,15 @@ fn jump_terminal_app(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
                     end if
                 end try
             end repeat"#
-        )
-    }).unwrap_or_default();
+            )
+        })
+        .unwrap_or_default();
 
-    let cwd_clause = cwd.map(|c| {
-        let folder = c.rsplit('/').next().unwrap_or(c);
-        format!(
-            r#"repeat with aTab in tabs of aWindow
+    let cwd_clause = cwd
+        .map(|c| {
+            let folder = c.rsplit('/').next().unwrap_or(c);
+            format!(
+                r#"repeat with aTab in tabs of aWindow
                 try
                     if custom title of aTab contains "{folder}" then
                         set selected tab of aWindow to aTab
@@ -308,8 +319,9 @@ fn jump_terminal_app(tty: Option<&str>, cwd: Option<&str>) -> JumpResult {
                     end if
                 end try
             end repeat"#
-        )
-    }).unwrap_or_default();
+            )
+        })
+        .unwrap_or_default();
 
     let script = format!(
         r#"tell application "Terminal"
@@ -471,9 +483,7 @@ fn run_osascript(script: &str) -> JumpResult {
         .output()
     {
         Ok(o) if o.status.success() => JumpResult::Success,
-        Ok(o) => JumpResult::Failed(
-            String::from_utf8_lossy(&o.stderr).trim().to_string(),
-        ),
+        Ok(o) => JumpResult::Failed(String::from_utf8_lossy(&o.stderr).trim().to_string()),
         Err(e) => JumpResult::Failed(format!("osascript: {}", e)),
     }
 }

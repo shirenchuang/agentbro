@@ -1,0 +1,123 @@
+<h2>Agent Detail — What happens when you click a row?</h2>
+<p class="subtitle">After choosing List View + Expandable Terminal, how should agent details be shown?</p>
+
+<div class="cards">
+
+  <!-- Option A: No detail, everything inline -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Everything in the row</div>
+
+      <!-- Expanded row -->
+      <div style="background:#2a2a3e; border:1px solid #3b82f640; border-radius:8px; overflow:hidden; margin-bottom:6px;">
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 12px;">
+          <div style="font-size:20px;">🤖</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Claude Code</div>
+            <div style="color:#64748b; font-size:10px;">npm · @anthropic-ai/claude-code · v1.0.33</div>
+          </div>
+          <div style="background:#22c55e30; color:#22c55e; padding:3px 10px; border-radius:5px; font-size:10px;">Installed</div>
+          <div style="display:flex; gap:4px;">
+            <div style="background:#374151; color:#94a3b8; padding:4px 8px; border-radius:5px; font-size:10px;">Update</div>
+            <div style="background:#dc262620; color:#ef4444; padding:4px 8px; border-radius:5px; font-size:10px;">Uninstall</div>
+          </div>
+        </div>
+        <!-- Expanded info area -->
+        <div style="padding:10px 14px; border-top:1px solid #374151; display:flex; gap:20px;">
+          <div style="flex:1;">
+            <div style="color:#64748b; font-size:10px; margin-bottom:2px;">Binary</div>
+            <div style="color:#e2e8f0; font-size:11px; font-family:monospace;">/usr/local/bin/claude</div>
+          </div>
+          <div style="flex:1;">
+            <div style="color:#64748b; font-size:10px; margin-bottom:2px;">Config</div>
+            <div style="color:#e2e8f0; font-size:11px; font-family:monospace;">~/.claude/</div>
+          </div>
+          <div style="flex:1;">
+            <div style="color:#64748b; font-size:10px; margin-bottom:2px;">Install command</div>
+            <div style="color:#e2e8f0; font-size:11px; font-family:monospace;">npm i -g @anthropic-ai/claude-code</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Normal row -->
+      <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px; opacity:0.5;">
+        <div style="font-size:20px;">🧬</div>
+        <div style="flex:1;">
+          <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Gemini CLI</div>
+          <div style="color:#64748b; font-size:10px;">pip · gemini-cli</div>
+        </div>
+        <div style="background:#22c55e30; color:#22c55e; padding:3px 10px; border-radius:5px; font-size:10px;">Installed</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Inline Expand</h3>
+      <p>Click row to toggle extra info: binary path, config dir, install command. All stays in-line. No separate panel. Keeps the list flat and simple.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Side detail panel (like Skills) -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">List + Detail Panel</div>
+
+      <div style="display:flex; gap:12px;">
+        <!-- Left: list -->
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; align-items:center; gap:8px; background:#3b3b50; border:1px solid #3b82f640; border-radius:8px; padding:8px 10px; margin-bottom:4px;">
+            <div style="font-size:16px;">🤖</div>
+            <div style="color:#e2e8f0; font-size:11px; font-weight:600; flex:1;">Claude Code</div>
+            <div style="background:#22c55e30; color:#22c55e; padding:2px 8px; border-radius:4px; font-size:9px;">Installed</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; background:#2a2a3e; border-radius:8px; padding:8px 10px; margin-bottom:4px; opacity:0.6;">
+            <div style="font-size:16px;">🧬</div>
+            <div style="color:#e2e8f0; font-size:11px; flex:1;">Gemini CLI</div>
+            <div style="background:#22c55e30; color:#22c55e; padding:2px 8px; border-radius:4px; font-size:9px;">Installed</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; background:#2a2a3e; border-radius:8px; padding:8px 10px; margin-bottom:4px; opacity:0.6;">
+            <div style="font-size:16px;">📦</div>
+            <div style="color:#e2e8f0; font-size:11px; flex:1;">Codex</div>
+            <div style="background:#64748b20; color:#94a3b8; padding:2px 8px; border-radius:4px; font-size:9px;">—</div>
+          </div>
+        </div>
+
+        <!-- Right: detail panel -->
+        <div style="width:200px; background:#2a2a3e; border-radius:10px; padding:14px; border:1px solid #374151;">
+          <div style="text-align:center; margin-bottom:12px;">
+            <div style="font-size:32px; margin-bottom:6px;">🤖</div>
+            <div style="color:#e2e8f0; font-size:13px; font-weight:700;">Claude Code</div>
+            <div style="color:#22c55e; font-size:11px; margin-top:2px;">v1.0.33 — Installed</div>
+          </div>
+
+          <div style="border-top:1px solid #374151; padding-top:10px; margin-bottom:10px;">
+            <div style="color:#64748b; font-size:9px; text-transform:uppercase; margin-bottom:4px;">Info</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span style="color:#94a3b8; font-size:10px;">Package</span>
+              <span style="color:#e2e8f0; font-size:10px;">npm</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span style="color:#94a3b8; font-size:10px;">Binary</span>
+              <span style="color:#e2e8f0; font-size:10px; font-family:monospace;">/usr/local/bin/claude</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span style="color:#94a3b8; font-size:10px;">Config</span>
+              <span style="color:#e2e8f0; font-size:10px; font-family:monospace;">~/.claude/</span>
+            </div>
+          </div>
+
+          <div style="border-top:1px solid #374151; padding-top:10px;">
+            <div style="color:#64748b; font-size:9px; text-transform:uppercase; margin-bottom:6px;">Actions</div>
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <div style="background:#3b82f630; color:#3b82f6; padding:6px; border-radius:6px; font-size:10px; text-align:center;">Check for Update</div>
+              <div style="background:#dc262620; color:#ef4444; padding:6px; border-radius:6px; font-size:10px; text-align:center;">Uninstall</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Side Detail Panel</h3>
+      <p>Click a row to open a detail panel on the right (same pattern as Skills section). Shows icon, version, paths, and actions. More room for info but adds UI complexity.</p>
+    </div>
+  </div>
+
+</div>

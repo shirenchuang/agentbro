@@ -67,7 +67,7 @@ impl SshTunnel {
         let mut guard = self.process.lock().unwrap();
         if let Some(ref mut child) = *guard {
             match child.try_wait() {
-                Ok(None) => true,       // still running
+                Ok(None) => true, // still running
                 Ok(Some(_)) | Err(_) => false,
             }
         } else {
@@ -99,12 +99,18 @@ fn build_ssh_args(host: &super::manager::RemoteHost, local_socket_path: &str) ->
     let mut args = vec![
         "-N".to_string(),
         "-T".to_string(),
-        "-o".to_string(), "BatchMode=yes".to_string(),
-        "-o".to_string(), "ExitOnForwardFailure=yes".to_string(),
-        "-o".to_string(), "ServerAliveInterval=15".to_string(),
-        "-o".to_string(), "ServerAliveCountMax=2".to_string(),
-        "-o".to_string(), "StreamLocalBindUnlink=yes".to_string(),
-        "-o".to_string(), "StreamLocalBindMask=0000".to_string(),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ExitOnForwardFailure=yes".to_string(),
+        "-o".to_string(),
+        "ServerAliveInterval=15".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=2".to_string(),
+        "-o".to_string(),
+        "StreamLocalBindUnlink=yes".to_string(),
+        "-o".to_string(),
+        "StreamLocalBindMask=0000".to_string(),
     ];
 
     if let Some(port) = host.port {
@@ -116,7 +122,7 @@ fn build_ssh_args(host: &super::manager::RemoteHost, local_socket_path: &str) ->
         let trimmed = identity.trim();
         if !trimmed.is_empty() {
             args.push("-i".to_string());
-            args.push(trimmed.to_string());
+            args.push(super::path::expand_tilde(trimmed));
         }
     }
 
@@ -126,4 +132,30 @@ fn build_ssh_args(host: &super::manager::RemoteHost, local_socket_path: &str) ->
     args.push(host.ssh_target.clone());
 
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ssh_args;
+    use crate::remote::manager::RemoteHost;
+
+    #[test]
+    fn expands_tilde_identity_file_for_ssh_command_args() {
+        let host = RemoteHost {
+            id: "h1".to_string(),
+            name: "Dev".to_string(),
+            ssh_target: "dev.example.com".to_string(),
+            port: Some(2222),
+            identity_file: Some("~/.ssh/id_ed25519".to_string()),
+            auth_socket: None,
+            remote_socket_path: "/tmp/agentbro.sock".to_string(),
+            auto_connect: false,
+        };
+
+        let args = build_ssh_args(&host, "/tmp/local.sock");
+        let identity_index = args.iter().position(|arg| arg == "-i").expect("-i arg");
+
+        assert!(args[identity_index + 1].ends_with("/.ssh/id_ed25519"));
+        assert!(!args[identity_index + 1].starts_with('~'));
+    }
 }

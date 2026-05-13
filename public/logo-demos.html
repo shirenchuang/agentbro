@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentBro Bro Badge Redesign</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08090d;
+        --ink: #f4f1e9;
+        --soft: #b5afbd;
+        --line: rgba(244, 241, 233, 0.12);
+        --panel: rgba(17, 18, 24, 0.9);
+        --cyan: #43ddff;
+        --lime: #baff4d;
+        --violet: #8d66ff;
+        --rose: #ff6a66;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", "Helvetica Neue", sans-serif;
+        background:
+          radial-gradient(circle at 14% -10%, rgba(67, 221, 255, 0.18), transparent 30%),
+          radial-gradient(circle at 92% 4%, rgba(186, 255, 77, 0.11), transparent 28%),
+          linear-gradient(180deg, #111219 0%, var(--bg) 48%, #050609 100%);
+      }
+
+      body::before {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        content: "";
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+        background-size: 72px 72px;
+        mask-image: linear-gradient(to bottom, #000 0%, transparent 76%);
+      }
+
+      .page {
+        position: relative;
+        width: min(1180px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 44px 0 52px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 36px;
+        align-items: end;
+        padding-bottom: 26px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 12px;
+        color: var(--lime);
+        font-size: 12px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 9px;
+        height: 9px;
+        content: "";
+        border-radius: 3px;
+        background: var(--lime);
+        box-shadow: 0 0 20px rgba(186, 255, 77, 0.8);
+        transform: rotate(45deg);
+      }
+
+      h1 {
+        max-width: 760px;
+        margin: 0;
+        font-size: 58px;
+        line-height: 0.96;
+        font-weight: 950;
+        letter-spacing: 0;
+      }
+
+      .brief {
+        margin: 0;
+        color: var(--soft);
+        font-size: 15px;
+        line-height: 1.62;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+        gap: 16px;
+        margin-top: 22px;
+      }
+
+      .primary,
+      .notes,
+      .variant {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 34%),
+          var(--panel);
+        box-shadow: 0 26px 72px rgba(0, 0, 0, 0.32);
+      }
+
+      .primary {
+        display: grid;
+        grid-template-columns: minmax(310px, 0.9fr) minmax(0, 1fr);
+        gap: 28px;
+        align-items: center;
+        min-height: 470px;
+        padding: 30px;
+      }
+
+      .big-stage {
+        display: grid;
+        place-items: center;
+        min-height: 360px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        background:
+          radial-gradient(circle at 50% 42%, rgba(67, 221, 255, 0.16), transparent 46%),
+          #07080c;
+      }
+
+      .main-logo {
+        width: min(310px, 80vw);
+        height: auto;
+        filter: drop-shadow(0 32px 36px rgba(0, 0, 0, 0.42));
+      }
+
+      .primary-copy h2,
+      .notes h2 {
+        margin: 0 0 14px;
+        font-size: 28px;
+        line-height: 1.04;
+        font-weight: 950;
+      }
+
+      .primary-copy p,
+      .notes p,
+      .variant p {
+        margin: 0;
+        color: #d8d3dd;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .specs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 22px;
+      }
+
+      .spec {
+        min-height: 82px;
+        padding: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .spec strong {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--lime);
+        font-size: 12px;
+        font-weight: 950;
+      }
+
+      .spec span {
+        color: #c5bfcb;
+        font-size: 13px;
+        line-height: 1.38;
+      }
+
+      .side {
+        display: grid;
+        gap: 16px;
+      }
+
+      .notes {
+        padding: 24px;
+      }
+
+      .mini-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-top: 20px;
+      }
+
+      .dock-tile {
+        display: grid;
+        place-items: center;
+        width: 64px;
+        height: 64px;
+        border-radius: 14px;
+        background: #07080c;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+
+      .dock-tile.small {
+        width: 42px;
+        height: 42px;
+        border-radius: 10px;
+      }
+
+      .dock-tile.tiny {
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
+      }
+
+      .dock-tile svg {
+        width: 52px;
+        height: 52px;
+      }
+
+      .dock-tile.small svg {
+        width: 32px;
+        height: 32px;
+      }
+
+      .dock-tile.tiny svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      .variants {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .variant {
+        min-width: 0;
+        padding: 16px;
+      }
+
+      .variant-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 56px;
+      }
+
+      .variant h3 {
+        margin: 0;
+        font-size: 19px;
+        line-height: 1.08;
+        font-weight: 950;
+      }
+
+      .tag {
+        flex: 0 0 auto;
+        padding: 6px 8px;
+        border: 1px solid color-mix(in srgb, var(--accent), transparent 38%);
+        border-radius: 999px;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 950;
+      }
+
+      .variant:nth-child(1) {
+        --accent: var(--lime);
+      }
+
+      .variant:nth-child(2) {
+        --accent: var(--cyan);
+      }
+
+      .variant:nth-child(3) {
+        --accent: var(--violet);
+      }
+
+      .variant-stage {
+        display: grid;
+        place-items: center;
+        height: 220px;
+        margin: 15px 0;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        background:
+          radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--accent), transparent 86%), transparent 48%),
+          #07080c;
+      }
+
+      .variant-logo {
+        width: 156px;
+        height: 156px;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 16px;
+      }
+
+      .chip {
+        padding: 6px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+        color: #c9c3cf;
+        font-size: 12px;
+        font-weight: 850;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      @media (max-width: 1040px) {
+        header,
+        .hero,
+        .primary {
+          grid-template-columns: 1fr;
+        }
+
+        .variants {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          width: calc(100vw - 28px);
+          padding-top: 30px;
+        }
+
+        h1 {
+          font-size: 38px;
+        }
+
+        .primary {
+          padding: 16px;
+        }
+
+        .specs {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header>
+        <div>
+          <p class="eyebrow">Bro Badge redesign</p>
+          <h1>让 B 像一个可靠的 AI 搭子。</h1>
+        </div>
+        <p class="brief">这次只聚焦 Bro Badge：保留 `B` 作为识别锚点，把 “bro” 表达成两个 agent 节点并肩、接力、互相兜底。</p>
+      </header>
+
+      <section class="hero">
+        <article class="primary">
+          <div class="big-stage">
+            <svg class="main-logo" viewBox="0 0 256 256" role="img" aria-label="AgentBro Bro Badge prime">
+              <defs>
+                <linearGradient id="prime-bg" x1="28" x2="224" y1="24" y2="228" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#1a2027" />
+                  <stop offset=".48" stop-color="#090a0f" />
+                  <stop offset="1" stop-color="#15111f" />
+                </linearGradient>
+                <linearGradient id="prime-ring" x1="46" x2="210" y1="42" y2="214" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#baff4d" />
+                  <stop offset=".48" stop-color="#43ddff" />
+                  <stop offset="1" stop-color="#8d66ff" />
+                </linearGradient>
+                <linearGradient id="prime-b" x1="76" x2="186" y1="66" y2="198" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#fff8df" />
+                  <stop offset=".62" stop-color="#f4f1e9" />
+                  <stop offset="1" stop-color="#b9b3c5" />
+                </linearGradient>
+                <filter id="prime-glow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="5" result="blur" />
+                  <feColorMatrix in="blur" values="0 0 0 0 0.26 0 0 0 0 0.87 0 0 0 0 1 0 0 0 .68 0" />
+                  <feBlend in="SourceGraphic" />
+                </filter>
+              </defs>
+              <rect x="18" y="18" width="220" height="220" rx="56" fill="url(#prime-bg)" />
+              <path d="M74 29h108c25 0 45 20 45 45v108c0 25-20 45-45 45H74c-25 0-45-20-45-45V74c0-25 20-45 45-45Z" fill="none" stroke="url(#prime-ring)" stroke-width="3.5" opacity=".78" />
+              <path d="M82 184V73h57c30 0 49 15 49 39 0 18-10 30-27 35 21 4 34 19 34 40 0 27-21 43-56 43h-25" fill="none" stroke="url(#prime-b)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M82 184V73" fill="none" stroke="#baff4d" stroke-width="24" stroke-linecap="round" filter="url(#prime-glow)" />
+              <circle cx="139" cy="113" r="29" fill="#090a0f" stroke="#43ddff" stroke-width="12" />
+              <circle cx="139" cy="178" r="29" fill="#090a0f" stroke="#8d66ff" stroke-width="12" />
+              <circle cx="139" cy="113" r="6.5" fill="#baff4d" />
+              <circle cx="139" cy="178" r="6.5" fill="#baff4d" />
+              <path d="M165 91c16 0 27 8 31 21M166 200c18 0 30-9 34-23" fill="none" stroke="#43ddff" stroke-width="6" stroke-linecap="round" opacity=".82" />
+              <circle cx="193" cy="84" r="9" fill="#baff4d" />
+            </svg>
+          </div>
+          <div class="primary-copy">
+            <h2>Prime：Bro Badge 主案</h2>
+            <p>`B` 不能只是字母，要像一个产品符号。左侧竖线是稳定的 “bro backbone”，上下两个环是两个 agent 节点，右上角小光点像随时在线的伙伴。</p>
+            <div class="specs">
+              <div class="spec">
+                <strong>识别</strong>
+                <span>先读成 B，再读成两个 agent 并肩。</span>
+              </div>
+              <div class="spec">
+                <strong>气质</strong>
+                <span>不搞怪，像靠谱搭子，有一点酷。</span>
+              </div>
+              <div class="spec">
+                <strong>尺寸</strong>
+                <span>32px 仍保留 B 轮廓和双节点。</span>
+              </div>
+              <div class="spec">
+                <strong>延展</strong>
+                <span>可做 favicon、Dock、启动页和官网标。</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <aside class="side">
+          <section class="notes">
+            <h2>小尺寸测试</h2>
+            <p>如果一个 logo 在 28px 还看得出主轮廓，它才配当 app logo。这版刻意减少细节，把 bro 感集中在双节点结构里。</p>
+            <div class="mini-row">
+              <span class="dock-tile"><svg viewBox="0 0 256 256"><use href="#prime-symbol" /></svg></span>
+              <span class="dock-tile small"><svg viewBox="0 0 256 256"><use href="#prime-symbol" /></svg></span>
+              <span class="dock-tile tiny"><svg viewBox="0 0 256 256"><use href="#prime-symbol" /></svg></span>
+            </div>
+          </section>
+          <section class="notes">
+            <h2>我会继续打磨哪里</h2>
+            <p>下一步不是再换概念，而是微调：`B` 的弯曲比例、上下环间距、外框圆角、亮色面积。目标是让它更像 macOS 图标，而不是前端 SVG 插画。</p>
+          </section>
+        </aside>
+      </section>
+
+      <section class="variants" aria-label="Bro Badge variants">
+        <article class="variant">
+          <div class="variant-head">
+            <h3>01<br />Prime Soft</h3>
+            <span class="tag">主推</span>
+          </div>
+          <div class="variant-stage">
+            <svg class="variant-logo" viewBox="0 0 256 256"><use href="#prime-symbol" /></svg>
+          </div>
+          <p>最接近正式 icon：B 清楚、双节点清楚、情绪克制。适合直接作为下一轮精修基底。</p>
+          <div class="chips">
+            <span class="chip">稳</span>
+            <span class="chip">产品感</span>
+            <span class="chip">小尺寸强</span>
+          </div>
+        </article>
+
+        <article class="variant">
+          <div class="variant-head">
+            <h3>02<br />Prime Sharp</h3>
+            <span class="tag">更科技</span>
+          </div>
+          <div class="variant-stage">
+            <svg class="variant-logo" viewBox="0 0 256 256" role="img" aria-label="Prime Sharp">
+              <defs>
+                <linearGradient id="sharp-bg" x1="28" x2="224" y1="24" y2="228">
+                  <stop stop-color="#101922" />
+                  <stop offset="1" stop-color="#07080c" />
+                </linearGradient>
+                <linearGradient id="sharp-ring" x1="48" x2="210" y1="42" y2="214">
+                  <stop stop-color="#43ddff" />
+                  <stop offset="1" stop-color="#baff4d" />
+                </linearGradient>
+              </defs>
+              <rect x="18" y="18" width="220" height="220" rx="48" fill="url(#sharp-bg)" />
+              <path d="M75 31h106c24 0 44 20 44 44v106c0 24-20 44-44 44H75c-24 0-44-20-44-44V75c0-24 20-44 44-44Z" fill="none" stroke="url(#sharp-ring)" stroke-width="3.5" />
+              <path d="M78 185V72h64c28 0 46 14 46 38 0 18-10 30-28 35 22 4 36 19 36 41 0 28-21 44-57 44h-25" fill="none" stroke="#f4f1e9" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M78 185V72" stroke="#43ddff" stroke-width="22" stroke-linecap="round" />
+              <circle cx="141" cy="112" r="26" fill="#07080c" stroke="#baff4d" stroke-width="11" />
+              <circle cx="141" cy="178" r="26" fill="#07080c" stroke="#43ddff" stroke-width="11" />
+              <circle cx="141" cy="112" r="6" fill="#f4f1e9" />
+              <circle cx="141" cy="178" r="6" fill="#f4f1e9" />
+            </svg>
+          </div>
+          <p>更锋利、更开发者工具。优点是清爽，缺点是 “bro” 温度会弱一点。</p>
+          <div class="chips">
+            <span class="chip">sharp</span>
+            <span class="chip">工具感</span>
+            <span class="chip">更冷</span>
+          </div>
+        </article>
+
+        <article class="variant">
+          <div class="variant-head">
+            <h3>03<br />Prime Warm</h3>
+            <span class="tag">更 bro</span>
+          </div>
+          <div class="variant-stage">
+            <svg class="variant-logo" viewBox="0 0 256 256" role="img" aria-label="Prime Warm">
+              <defs>
+                <linearGradient id="warm-bg" x1="28" x2="224" y1="24" y2="228">
+                  <stop stop-color="#1d1715" />
+                  <stop offset=".55" stop-color="#090a0f" />
+                  <stop offset="1" stop-color="#16121e" />
+                </linearGradient>
+                <linearGradient id="warm-ring" x1="48" x2="210" y1="42" y2="214">
+                  <stop stop-color="#ff6a66" />
+                  <stop offset=".55" stop-color="#baff4d" />
+                  <stop offset="1" stop-color="#8d66ff" />
+                </linearGradient>
+              </defs>
+              <rect x="18" y="18" width="220" height="220" rx="58" fill="url(#warm-bg)" />
+              <path d="M74 30h108c25 0 44 20 44 44v108c0 25-20 44-44 44H74c-25 0-44-20-44-44V74c0-25 20-44 44-44Z" fill="none" stroke="url(#warm-ring)" stroke-width="3.5" opacity=".82" />
+              <path d="M80 184V74h58c30 0 49 15 49 39 0 18-10 31-28 36 21 4 35 19 35 40 0 27-21 43-56 43h-25" fill="none" stroke="#f4f1e9" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M80 184V74" stroke="#ff6a66" stroke-width="24" stroke-linecap="round" />
+              <circle cx="139" cy="113" r="29" fill="#090a0f" stroke="#baff4d" stroke-width="12" />
+              <circle cx="139" cy="178" r="29" fill="#090a0f" stroke="#8d66ff" stroke-width="12" />
+              <path d="M126 113h26M126 178h26" stroke="#f4f1e9" stroke-width="7" stroke-linecap="round" />
+              <path d="M167 93c13 3 22 10 27 22M166 198c14-2 24-9 30-21" fill="none" stroke="#baff4d" stroke-width="6" stroke-linecap="round" />
+            </svg>
+          </div>
+          <p>更有人情味，像两个 agent 在击掌接力。适合更强调 “bro” 的品牌口吻。</p>
+          <div class="chips">
+            <span class="chip">更暖</span>
+            <span class="chip">协作感</span>
+            <span class="chip">情绪更强</span>
+          </div>
+        </article>
+      </section>
+
+      <svg width="0" height="0" aria-hidden="true">
+        <symbol id="prime-symbol" viewBox="0 0 256 256">
+          <rect x="18" y="18" width="220" height="220" rx="56" fill="#090a0f" />
+          <path d="M74 29h108c25 0 45 20 45 45v108c0 25-20 45-45 45H74c-25 0-45-20-45-45V74c0-25 20-45 45-45Z" fill="none" stroke="#43ddff" stroke-width="8" opacity=".9" />
+          <path d="M82 184V73h57c30 0 49 15 49 39 0 18-10 30-27 35 21 4 34 19 34 40 0 27-21 43-56 43h-25" fill="none" stroke="#f4f1e9" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M82 184V73" fill="none" stroke="#baff4d" stroke-width="24" stroke-linecap="round" />
+          <circle cx="139" cy="113" r="29" fill="#090a0f" stroke="#43ddff" stroke-width="12" />
+          <circle cx="139" cy="178" r="29" fill="#090a0f" stroke="#8d66ff" stroke-width="12" />
+          <circle cx="193" cy="84" r="9" fill="#baff4d" />
+        </symbol>
+      </svg>
+    </main>
+  </body>
+</html>

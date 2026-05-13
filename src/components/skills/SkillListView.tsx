@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback, useState } from 'react'
+import { useMemo, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSkillStore } from '../../stores/skillStore'
 import { skillApi } from '../../services/skillApi'
@@ -15,10 +15,6 @@ export function SkillListView() {
     loadAll, batchMode, toggleBatchMode, batchSelected, clearBatch,
   } = useSkillStore()
   const [installOpen, setInstallOpen] = useState(false)
-
-  useEffect(() => {
-    loadAll()
-  }, [loadAll])
 
   const filtered = useMemo(() => {
     let list = skills

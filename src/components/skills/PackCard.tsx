@@ -18,11 +18,20 @@ export function PackCard({ pack, onEdit, onRefresh }: PackCardProps) {
     onRefresh()
   }, [pack.id, onRefresh])
 
+  const handleApply = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    await skillApi.applyPack(pack)
+    onRefresh()
+  }, [pack, onRefresh])
+
   return (
     <div className="pack-card" onClick={() => onEdit(pack)}>
       <div className="pack-card__header">
         <div className="pack-card__name">{pack.name}</div>
         <div className="pack-card__actions">
+          <button className="skills-btn skills-btn--primary skills-btn--small" onClick={handleApply}>
+            {t('skills.applyPack')}
+          </button>
           <button className="skills-btn skills-btn--small" onClick={(e) => { e.stopPropagation(); onEdit(pack) }}>
             {t('skills.edit')}
           </button>

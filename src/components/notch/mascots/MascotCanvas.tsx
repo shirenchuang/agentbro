@@ -27,6 +27,15 @@ const MASCOT_CONFIGS: Record<string, MascotConfig> = {
   'opencode':    { primary: '#4CAF50', secondary: '#1B5E20', accent: '#E8F5E9', eyeStyle: 'wide', bodyShape: 'square', antenna: false, ears: 'none' },
   'droid':       { primary: '#78909C', secondary: '#37474F', accent: '#ECEFF1', eyeStyle: 'wide', bodyShape: 'square', antenna: true, ears: 'wide' },
   'kiro':        { primary: '#00E5FF', secondary: '#006064', accent: '#E0F7FA', eyeStyle: 'dot',  bodyShape: 'hex',    antenna: true, ears: 'none' },
+  'stepfun':     { primary: '#7C4DFF', secondary: '#4A148C', accent: '#EDE7F6', eyeStyle: 'star', bodyShape: 'hex',    antenna: true, ears: 'wide' },
+  'antigravity': { primary: '#00BFA5', secondary: '#004D40', accent: '#E0F2F1', eyeStyle: 'dot',  bodyShape: 'round', antenna: false, ears: 'round' },
+  'workbuddy':   { primary: '#FF7043', secondary: '#BF360C', accent: '#FBE9E7', eyeStyle: 'wide', bodyShape: 'square', antenna: false, ears: 'pointy' },
+  'hermes':      { primary: '#5C6BC0', secondary: '#283593', accent: '#E8EAF6', eyeStyle: 'slash', bodyShape: 'round', antenna: true, ears: 'none' },
+  'pi':          { primary: '#26A69A', secondary: '#004D40', accent: '#E0F2F1', eyeStyle: 'dot',  bodyShape: 'round', antenna: false, ears: 'wide' },
+  'cursor-cli':  { primary: '#E2E8F0', secondary: '#1E293B', accent: '#64748B', eyeStyle: 'slash', bodyShape: 'square', antenna: false, ears: 'none' },
+  'qoder-cli':   { primary: '#FFC107', secondary: '#FF8F00', accent: '#FFF8E1', eyeStyle: 'wide', bodyShape: 'square', antenna: true, ears: 'pointy' },
+  'codebuddycn': { primary: '#F44336', secondary: '#B71C1C', accent: '#FFEBEE', eyeStyle: 'wide', bodyShape: 'round', antenna: false, ears: 'round' },
+  'traecn':      { primary: '#00BCD4', secondary: '#007C8A', accent: '#E0F7FA', eyeStyle: 'dot',  bodyShape: 'round', antenna: true, ears: 'none' },
   'aider':       { primary: '#8BC34A', secondary: '#33691E', accent: '#F1F8E9', eyeStyle: 'wide', bodyShape: 'round', antenna: false, ears: 'pointy' },
   'continue':    { primary: '#1565C0', secondary: '#0D47A1', accent: '#E3F2FD', eyeStyle: 'dot',  bodyShape: 'round', antenna: false, ears: 'round' },
   'amp':         { primary: '#FF6D00', secondary: '#E65100', accent: '#FFF3E0', eyeStyle: 'wide', bodyShape: 'hex',    antenna: true, ears: 'none' },
@@ -303,6 +312,12 @@ export function MascotCanvas({ toolType, animState, size = 32 }: MascotCanvasPro
     if (!ctx) return
 
     ctx.scale(dpr, dpr)
+
+    if (animState === 'idle') {
+      frameRef.current = 0
+      drawMascot(ctx, config, animState, frameRef.current, size)
+      return
+    }
 
     const animate = () => {
       frameRef.current = (frameRef.current + 1) % 240

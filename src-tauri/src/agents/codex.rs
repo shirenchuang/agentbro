@@ -1,10 +1,10 @@
 // CodexAdapter — Agent adapter for OpenAI Codex CLI
 
-use std::path::PathBuf;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use std::path::PathBuf;
 
-const BRIDGE_BINARY_NAME: &str = "agent-island-bridge";
-const AGENT_ISLAND_MARKER: &str = "agent-island";
+const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
+const AGENTBRO_MARKER: &str = "agentbro";
 
 pub struct CodexAdapter {
     config_root: PathBuf,
@@ -20,7 +20,10 @@ impl CodexAdapter {
         } else {
             AdapterStatus::Unavailable
         };
-        Self { config_root, status }
+        Self {
+            config_root,
+            status,
+        }
     }
 
     fn is_installed() -> bool {
@@ -33,7 +36,7 @@ impl CodexAdapter {
 
     fn bridge_binary_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-        home.join(".agent-island").join("bin").join(BRIDGE_BINARY_NAME)
+        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -46,7 +49,12 @@ impl CodexAdapter {
         }
         let hook_entry = serde_json::json!([{"command": hook_command}]);
         let hooks = settings["hooks"].as_object_mut().unwrap();
-        for event in &["pre_tool_use", "post_tool_use", "session_start", "session_end"] {
+        for event in &[
+            "pre_tool_use",
+            "post_tool_use",
+            "session_start",
+            "session_end",
+        ] {
             hooks.insert(event.to_string(), hook_entry.clone());
         }
     }
@@ -55,11 +63,14 @@ impl CodexAdapter {
         if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
             hooks.retain(|_, v| {
                 !v.as_array()
-                    .map(|arr| arr.iter().any(|e| {
-                        e.get("command").and_then(|c| c.as_str())
-                            .map(|c| c.contains(AGENT_ISLAND_MARKER))
-                            .unwrap_or(false)
-                    }))
+                    .map(|arr| {
+                        arr.iter().any(|e| {
+                            e.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| c.contains(AGENTBRO_MARKER))
+                                .unwrap_or(false)
+                        })
+                    })
                     .unwrap_or(false)
             });
         }
@@ -67,9 +78,15 @@ impl CodexAdapter {
 }
 
 impl AgentAdapter for CodexAdapter {
-    fn name(&self) -> &str { "codex" }
-    fn display_name(&self) -> &str { "OpenAI Codex" }
-    fn icon(&self) -> &str { "codex" }
+    fn name(&self) -> &str {
+        "codex"
+    }
+    fn display_name(&self) -> &str {
+        "OpenAI Codex"
+    }
+    fn icon(&self) -> &str {
+        "codex"
+    }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let settings_path = self.settings_path();
@@ -94,7 +111,9 @@ impl AgentAdapter for CodexAdapter {
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let settings_path = self.settings_path();
-        if !settings_path.exists() { return Ok(()); }
+        if !settings_path.exists() {
+            return Ok(());
+        }
 
         let content = std::fs::read_to_string(&settings_path)?;
         let mut settings: serde_json::Value = serde_json::from_str(&content)?;
@@ -104,10 +123,16 @@ impl AgentAdapter for CodexAdapter {
         Ok(())
     }
 
-    fn status(&self) -> AdapterStatus { self.status.clone() }
+    fn status(&self) -> AdapterStatus {
+        self.status.clone()
+    }
 
-    fn parse_event(&self, raw: &serde_json::Value) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw.get("session_id")
+    fn parse_event(
+        &self,
+        raw: &serde_json::Value,
+    ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
+        let session_id = raw
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -115,10 +140,22 @@ impl AgentAdapter for CodexAdapter {
         match event {
             "session_start" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw.get("cwd").and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next()).unwrap_or("").to_string(),
-                cwd: raw.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                terminal: raw.get("tty").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                project: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .and_then(|p| p.rsplit('/').next())
+                    .unwrap_or("")
+                    .to_string(),
+                cwd: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                terminal: raw
+                    .get("tty")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 agent_type: "codex".to_string(),
             }),
             "session_end" => Ok(AgentEvent::SessionEnd { session_id }),

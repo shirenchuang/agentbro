@@ -1,13 +1,13 @@
 // KimiAdapter — Agent adapter for Moonshot Kimi (TOML config format)
 // Uses sentinel-based TOML injection to avoid a toml dependency.
 
-use std::path::PathBuf;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use std::path::PathBuf;
 
-const BRIDGE_BINARY_NAME: &str = "agent-island-bridge";
-const AGENT_ISLAND_MARKER: &str = "agent-island";
-const TOML_BLOCK_START: &str = "# [AGENT-ISLAND-START]";
-const TOML_BLOCK_END: &str = "# [AGENT-ISLAND-END]";
+const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
+const AGENTBRO_MARKER: &str = "agentbro";
+const TOML_BLOCK_START: &str = "# [AGENTBRO-START]";
+const TOML_BLOCK_END: &str = "# [AGENTBRO-END]";
 
 pub struct KimiAdapter {
     config_root: PathBuf,
@@ -23,7 +23,10 @@ impl KimiAdapter {
         } else {
             AdapterStatus::Unavailable
         };
-        Self { config_root, status }
+        Self {
+            config_root,
+            status,
+        }
     }
 
     fn is_installed() -> bool {
@@ -36,7 +39,7 @@ impl KimiAdapter {
 
     fn bridge_binary_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-        home.join(".agent-island").join("bin").join(BRIDGE_BINARY_NAME)
+        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
     }
 
     fn config_path(&self) -> PathBuf {
@@ -74,14 +77,20 @@ impl KimiAdapter {
     }
 
     fn has_our_block(content: &str) -> bool {
-        content.contains(AGENT_ISLAND_MARKER)
+        content.contains(AGENTBRO_MARKER)
     }
 }
 
 impl AgentAdapter for KimiAdapter {
-    fn name(&self) -> &str { "kimi" }
-    fn display_name(&self) -> &str { "Kimi" }
-    fn icon(&self) -> &str { "kimi" }
+    fn name(&self) -> &str {
+        "kimi"
+    }
+    fn display_name(&self) -> &str {
+        "Kimi"
+    }
+    fn icon(&self) -> &str {
+        "kimi"
+    }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.config_path();
@@ -111,10 +120,14 @@ impl AgentAdapter for KimiAdapter {
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.config_path();
-        if !config_path.exists() { return Ok(()); }
+        if !config_path.exists() {
+            return Ok(());
+        }
 
         let content = std::fs::read_to_string(&config_path)?;
-        if !Self::has_our_block(&content) { return Ok(()); }
+        if !Self::has_our_block(&content) {
+            return Ok(());
+        }
 
         let stripped = Self::strip_our_block(&content);
         std::fs::write(&config_path, stripped)?;
@@ -122,10 +135,16 @@ impl AgentAdapter for KimiAdapter {
         Ok(())
     }
 
-    fn status(&self) -> AdapterStatus { self.status.clone() }
+    fn status(&self) -> AdapterStatus {
+        self.status.clone()
+    }
 
-    fn parse_event(&self, raw: &serde_json::Value) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw.get("session_id")
+    fn parse_event(
+        &self,
+        raw: &serde_json::Value,
+    ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
+        let session_id = raw
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -133,9 +152,17 @@ impl AgentAdapter for KimiAdapter {
         match event {
             "session_start" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw.get("cwd").and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next()).unwrap_or("").to_string(),
-                cwd: raw.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                project: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .and_then(|p| p.rsplit('/').next())
+                    .unwrap_or("")
+                    .to_string(),
+                cwd: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 terminal: "".to_string(),
                 agent_type: "kimi".to_string(),
             }),

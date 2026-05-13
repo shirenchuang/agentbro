@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use super::{ScannedSkill, SkillType, SkillSource, AgentSkillState, InstallMode};
 use super::agent_paths;
+use super::{AgentSkillState, InstallMode, ScannedSkill, SkillSource, SkillType};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn scan_agent(agent: &str) -> Vec<ScannedSkill> {
     let paths = agent_paths::paths_for_agent(agent);
@@ -12,6 +12,10 @@ pub fn scan_agent(agent: &str) -> Vec<ScannedSkill> {
             continue;
         }
         scan_directory(skill_dir, agent, &mut results);
+    }
+
+    if let Some(ref mcp_path) = paths.mcp_config {
+        scan_mcp_config(mcp_path, agent, &mut results);
     }
 
     results
@@ -40,19 +44,25 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
         if path.is_dir() {
             let index = find_index_file(&path);
             if let Some(index_path) = index {
-                let (name, desc) = parse_frontmatter(&index_path);
-                let skill_name = name.unwrap_or_else(||
-                    path.file_name().unwrap_or_default().to_string_lossy().to_string()
-                );
+                let fm = parse_frontmatter(&index_path);
+                let skill_name = fm.get("name").cloned().unwrap_or_else(|| {
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                });
+                let desc = fm.get("description").cloned().unwrap_or_default();
                 let meta = fs::metadata(&path).ok();
-                let is_symlink = entry.path().symlink_metadata()
+                let is_symlink = entry
+                    .path()
+                    .symlink_metadata()
                     .map(|m| m.file_type().is_symlink())
                     .unwrap_or(false);
 
                 results.push(ScannedSkill {
                     id: skill_name.clone(),
                     name: skill_name,
-                    description: desc.unwrap_or_default(),
+                    description: desc,
                     skill_type: SkillType::Skill,
                     icon: None,
                     source: SkillSource::Local,
@@ -60,29 +70,39 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                     has_update: false,
                     file_path: path.display().to_string(),
                     file_size: dir_size(&path),
-                    modified_at: meta.and_then(|m| m.modified().ok())
+                    modified_at: meta
+                        .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())
                         .unwrap_or(0),
                     agents: vec![AgentSkillState {
                         agent: agent.to_string(),
                         install_path: path.display().to_string(),
-                        install_mode: if is_symlink { InstallMode::Symlink } else { InstallMode::Direct },
+                        install_mode: if is_symlink {
+                            InstallMode::Symlink
+                        } else {
+                            InstallMode::Direct
+                        },
                         enabled: true,
                     }],
+                    frontmatter: fm,
                 });
             }
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-            let (name, desc) = parse_frontmatter(&path);
-            let skill_name = name.unwrap_or_else(||
-                path.file_stem().unwrap_or_default().to_string_lossy().to_string()
-            );
+            let fm = parse_frontmatter(&path);
+            let skill_name = fm.get("name").cloned().unwrap_or_else(|| {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            let desc = fm.get("description").cloned().unwrap_or_default();
             let meta = fs::metadata(&path).ok();
 
             results.push(ScannedSkill {
                 id: skill_name.clone(),
                 name: skill_name,
-                description: desc.unwrap_or_default(),
+                description: desc,
                 skill_type: SkillType::Skill,
                 icon: None,
                 source: SkillSource::Local,
@@ -90,7 +110,8 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                 has_update: false,
                 file_path: path.display().to_string(),
                 file_size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                modified_at: meta.and_then(|m| m.modified().ok())
+                modified_at: meta
+                    .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
@@ -100,64 +121,153 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                     install_mode: InstallMode::Direct,
                     enabled: true,
                 }],
+                frontmatter: fm,
             });
         }
+    }
+}
+
+fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let servers = json
+        .get("mcpServers")
+        .or_else(|| json.get("mcp_servers"))
+        .and_then(|v| v.as_object());
+
+    let servers = match servers {
+        Some(s) => s,
+        None => return,
+    };
+
+    let meta = fs::metadata(config_path).ok();
+    let modified_at = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for (name, value) in servers {
+        let command = value.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = if command.is_empty() {
+            format!("MCP server: {}", name)
+        } else {
+            let args = value
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            format!("{} {}", command, args)
+        };
+
+        let id = format!("mcp:{}", name);
+        if results.iter().any(|s| s.id == id) {
+            continue;
+        }
+
+        results.push(ScannedSkill {
+            id,
+            name: name.clone(),
+            description: desc,
+            skill_type: SkillType::Mcp,
+            icon: None,
+            source: SkillSource::Local,
+            origin_url: None,
+            has_update: false,
+            file_path: config_path.display().to_string(),
+            file_size: 0,
+            modified_at,
+            agents: vec![AgentSkillState {
+                agent: agent.to_string(),
+                install_path: config_path.display().to_string(),
+                install_mode: InstallMode::Direct,
+                enabled: true,
+            }],
+            frontmatter: std::collections::HashMap::new(),
+        });
     }
 }
 
 fn find_index_file(dir: &Path) -> Option<PathBuf> {
     for name in &["index.md", "README.md", "main.md"] {
         let p = dir.join(name);
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
     }
-    fs::read_dir(dir).ok()?.flatten()
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
         .find(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
         .map(|e| e.path())
 }
 
-fn parse_frontmatter(path: &Path) -> (Option<String>, Option<String>) {
+fn parse_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (None, None),
+        Err(_) => return std::collections::HashMap::new(),
     };
 
     if !content.starts_with("---") {
-        return (None, None);
+        return std::collections::HashMap::new();
     }
 
     let parts: Vec<&str> = content.splitn(3, "---").collect();
     if parts.len() < 3 {
-        return (None, None);
+        return std::collections::HashMap::new();
     }
 
-    let frontmatter = parts[1];
-    let mut name = None;
-    let mut desc = None;
+    let fm_text = parts[1];
+    let mut map = std::collections::HashMap::new();
 
-    for line in frontmatter.lines() {
+    for line in fm_text.lines() {
         let line = line.trim();
-        if let Some(val) = line.strip_prefix("name:") {
-            name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
-        } else if let Some(val) = line.strip_prefix("description:") {
-            desc = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+        if let Some(colon_pos) = line.find(':') {
+            let key = line[..colon_pos].trim().to_string();
+            let val = line[colon_pos + 1..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
+            if !key.is_empty() && !val.is_empty() {
+                map.insert(key, val);
+            }
         }
     }
 
-    (name, desc)
+    map
 }
 
 fn dir_size(path: &Path) -> u64 {
-    fs::read_dir(path).ok()
-        .map(|entries| entries.flatten()
-            .map(|e| {
-                let p = e.path();
-                if p.is_file() {
-                    fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
-                } else if p.is_dir() {
-                    dir_size(&p)
-                } else { 0 }
-            })
-            .sum())
+    fs::read_dir(path)
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| {
+                    let p = e.path();
+                    if p.is_file() {
+                        fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+                    } else if p.is_dir() {
+                        dir_size(&p)
+                    } else {
+                        0
+                    }
+                })
+                .sum()
+        })
         .unwrap_or(0)
 }
 
@@ -167,7 +277,11 @@ pub fn read_file_tree(skill_path: &str) -> super::FileTreeNode {
 }
 
 fn build_tree(path: &Path) -> super::FileTreeNode {
-    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     if path.is_file() {
         return super::FileTreeNode {
@@ -181,7 +295,8 @@ fn build_tree(path: &Path) -> super::FileTreeNode {
     let children: Vec<super::FileTreeNode> = fs::read_dir(path)
         .ok()
         .map(|entries| {
-            let mut nodes: Vec<_> = entries.flatten()
+            let mut nodes: Vec<_> = entries
+                .flatten()
                 .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 .map(|e| build_tree(&e.path()))
                 .collect();

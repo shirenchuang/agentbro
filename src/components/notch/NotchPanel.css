@@ -1,70 +1,194 @@
-/* Notch Panel — Vibe Island Layout */
+/* Notch Panel — Evolab-style macOS notch shell */
 
 .notch-container {
   position: fixed;
-  top: 8px;
+  top: 0;
   left: 50%;
-  transform: translateX(-50%);
   z-index: 9999;
   display: flex;
+  width: var(--notch-hitbox-width, auto);
+  height: var(--notch-hitbox-height, auto);
   justify-content: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.notch-hitbox {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: var(--notch-hitbox-width, auto);
+  height: var(--notch-hitbox-height, auto);
+  padding: 0 var(--notch-hitbox-pad-x, 0);
+  box-sizing: border-box;
+  pointer-events: auto;
+  /*
+   * Transparent Tauri/WebKit windows can be flaky when the only hit target
+   * is a clipped, animated child. This imperceptible paint gives macOS a
+   * stable rectangular hover surface while the visible shell stays clipped.
+   */
+  background: rgba(0, 0, 0, 0.001);
+}
+
+.notch-hitbox[data-island-hidden="true"] .notch-panel {
+  pointer-events: none;
 }
 
 .notch-panel {
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
-  /* Expanded: asymmetric — flat top for hardware notch feel, rounder bottom */
-  border-radius: 6px 6px 14px 14px;
-  cursor: default;
-  background: var(--island-bg);
-  backdrop-filter: blur(var(--blur-heavy));
-  -webkit-backdrop-filter: blur(var(--blur-heavy));
-  box-shadow: var(--island-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  transition: border-radius var(--duration-normal) var(--ease-out);
-  /* GPU acceleration for smooth animations */
-  will-change: width, height;
+  color: var(--island-text);
+  background:
+    radial-gradient(120% 90% at 50% -42%, rgba(255, 255, 255, 0.08), transparent 54%),
+    linear-gradient(180deg, var(--island-card) 0%, var(--island-bg) 44%, var(--island-bg) 100%);
+  border: 1px solid var(--island-border);
+  border-top-width: 0;
+  border-radius: 0 0 22px 22px;
+  box-shadow:
+    var(--island-shadow),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+  clip-path: var(--notch-shell-path, inset(0 round 0 0 22px 22px));
+  -webkit-clip-path: var(--notch-shell-path, inset(0 round 0 0 22px 22px));
+  will-change: width, height, border-radius, transform;
   transform: translateZ(0);
+  transform-origin: top center;
   -webkit-font-smoothing: antialiased;
+  transition:
+    border-color 0.25s ease-out,
+    box-shadow 0.25s ease-out;
 }
 
-/* Collapsed state: pill with 26px radius */
-.notch-panel[aria-expanded="false"] {
-  border-radius: 26px;
+.notch-panel::after {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent) top / 100% 1px no-repeat,
+    radial-gradient(80% 110% at 50% 100%, rgba(255, 255, 255, 0.04), transparent 62%);
+  opacity: 0.42;
 }
 
-/* Bounce wrapper for attention animation */
-.notch-bounce {
-  display: flex;
+.notch-panel > * {
+  position: relative;
+  z-index: 1;
 }
 
-.notch-bounce--active {
-  animation: notch-bounce 0.5s ease-out;
+.notch-panel[data-island-state="micro"],
+.notch-panel[data-island-state="compact"] {
+  border-radius: 0 0 22px 22px;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-@keyframes notch-bounce {
-  0%, 100% { transform: scale(1); }
-  20% { transform: scale(1.03); }
-  50% { transform: scale(0.98); }
-  80% { transform: scale(1.01); }
+.notch-panel[data-island-state="micro"]::after,
+.notch-panel[data-island-state="compact"]::after {
+  opacity: 0.38;
+}
+
+.notch-panel[data-island-state="micro"] {
+  background:
+    radial-gradient(120% 100% at 50% -30%, rgba(255, 255, 255, 0.07), transparent 56%),
+    linear-gradient(180deg, #111114 0%, var(--island-bg) 58%, var(--island-bg) 100%);
+}
+
+.notch-panel[data-island-state="hover"],
+.notch-panel[data-island-state="expanded"],
+.notch-panel[data-island-state="feedback"] {
+  border-radius: 0 0 22px 22px !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="alert_permission"] {
+  border-color: rgba(245, 158, 11, 0.36);
+  box-shadow:
+    var(--island-shadow),
+    0 0 34px rgba(245, 158, 11, 0.14),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="alert_question"],
+.notch-panel[data-island-state="alert_plan"] {
+  border-color: rgba(96, 165, 250, 0.34);
+  box-shadow:
+    var(--island-shadow),
+    0 0 34px rgba(96, 165, 250, 0.13),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="feedback"] {
+  border-color: rgba(74, 222, 128, 0.28);
+  box-shadow:
+    var(--island-shadow),
+    0 0 30px rgba(74, 222, 128, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.notch-panel[data-island-state="pet"] {
+  overflow: visible !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  clip-path: none;
+  -webkit-clip-path: none;
+}
+
+.notch-panel[data-island-state="pet"]::after {
+  content: none;
+}
+
+.notch-panel[data-dragging="true"] {
+  cursor: grabbing;
+  transition: none;
+}
+
+.notch-panel[data-dragging="true"]::before {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  content: "";
+  background:
+    radial-gradient(circle at 50% 50%, var(--island-text-secondary) 1.5px, transparent 2px)
+    center / 10px 10px;
+  opacity: 0.22;
 }
 
 /* Overlay layer — floats above base content */
+.notch-panel__outside-dismiss {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  padding: 0;
+  cursor: default;
+  background: transparent;
+  border: 0;
+}
+
 .notch-panel__overlay {
   position: absolute;
+  right: 8px;
   bottom: 8px;
   left: 8px;
-  right: 8px;
   z-index: 10;
 }
 
 .notch-panel__overlay-card {
-  background: var(--island-card);
-  backdrop-filter: blur(20px);
-  border-radius: var(--radius-lg, 12px);
-  border: 1px solid var(--island-border);
   padding: 10px 12px;
+  color: var(--island-text);
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: var(--radius-lg, 12px);
   box-shadow: var(--island-shadow);
+  backdrop-filter: blur(20px);
 }
 
 .notch-panel__overlay-header {
@@ -74,11 +198,11 @@
 }
 
 .notch-panel__overlay-type {
+  color: var(--island-text-secondary);
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--vi-text-secondary, #aaa);
+  text-transform: uppercase;
 }
 
 .notch-panel__overlay-close {
@@ -87,17 +211,99 @@
   justify-content: center;
   width: 20px;
   height: 20px;
+  padding: 0;
+  color: var(--island-text-secondary);
+  cursor: pointer;
+  background: var(--island-subtle-hover, rgba(255, 255, 255, 0.08));
   border: none;
   border-radius: 50%;
-  background: var(--island-subtle-hover);
-  color: var(--vi-text-secondary, #aaa);
-  cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  padding: 0;
 }
 
 .notch-panel__overlay-close:hover {
-  background: var(--island-scrollbar);
-  color: var(--vi-text-primary, #fff);
+  color: var(--island-text);
+  background: var(--island-scrollbar, rgba(255, 255, 255, 0.15));
+}
+
+.layout-preview {
+  margin: 6px 10px 10px;
+  color: var(--island-text);
+}
+
+.layout-preview--completion {
+  display: grid;
+  min-height: 128px;
+  align-content: center;
+  gap: 7px;
+  padding: 18px;
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 14px;
+}
+
+.layout-preview__eyebrow {
+  color: var(--island-accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.layout-preview__title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.layout-preview__meta {
+  color: var(--island-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.layout-preview--expanded {
+  display: grid;
+  gap: 8px;
+  max-height: calc(100% - 48px);
+  overflow: hidden;
+  padding: 4px 0;
+}
+
+.layout-preview__row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 10px;
+}
+
+.layout-preview__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--island-accent);
+  border-radius: 999px;
+}
+
+.layout-preview__copy {
+  min-width: 0;
+}
+
+.layout-preview__copy strong,
+.layout-preview__copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-preview__copy strong {
+  font-size: 12px;
+}
+
+.layout-preview__copy span,
+.layout-preview__row code {
+  color: var(--island-text-secondary);
+  font-size: 10px;
 }

@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ── Parsed message types ────────────────────────────────────────
@@ -39,6 +39,8 @@ pub enum MessageBlock {
     },
     /// Extended thinking block
     Thinking { thinking: String },
+    /// Image block from multimodal user messages.
+    Image { source: String },
     /// The conversation was interrupted
     Interrupted,
 }
@@ -64,6 +66,13 @@ pub struct IncrementalParseResult {
     pub byte_offset: u64,
     /// Number of raw JSONL lines read in this batch
     pub lines_read: usize,
+}
+
+/// Cache TTL metadata inferred from the latest main-agent assistant JSONL entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheTtlInfo {
+    pub timestamp_ms: i64,
+    pub ttl_ms: i64,
 }
 
 // ── Parser ──────────────────────────────────────────────────────
@@ -102,7 +111,10 @@ impl ConversationParser {
 
     /// Parse from an explicit byte offset (for external streaming callers).
     /// Updates internal offset to `start_offset` before parsing new lines.
-    pub fn parse_from_offset(&mut self, start_offset: u64) -> Result<IncrementalParseResult, std::io::Error> {
+    pub fn parse_from_offset(
+        &mut self,
+        start_offset: u64,
+    ) -> Result<IncrementalParseResult, std::io::Error> {
         self.last_offset = start_offset;
         self.parse_incremental()
     }
@@ -241,13 +253,22 @@ impl ConversationParser {
         }
 
         // Skip meta messages (system injections, command wrappers, etc.)
-        if json.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if json
+            .get("isMeta")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return None;
         }
 
-        let uuid = json.get("uuid").and_then(|v| v.as_str()).unwrap_or("")
+        let uuid = json
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
             .to_string();
-        let timestamp = json.get("timestamp").and_then(|v| v.as_str())
+        let timestamp = json
+            .get("timestamp")
+            .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let message = json.get("message")?;
@@ -330,17 +351,13 @@ impl ConversationParser {
                             .unwrap_or("Unknown")
                             .to_string();
 
-                        let input = Self::flatten_input(
-                            block.get("input").and_then(|v| v.as_object()),
-                        );
+                        let input =
+                            Self::flatten_input(block.get("input").and_then(|v| v.as_object()));
 
                         blocks.push(MessageBlock::ToolUse { id, name, input });
                     }
                     "tool_result" => {
-                        let tool_use_id = match block
-                            .get("tool_use_id")
-                            .and_then(|v| v.as_str())
-                        {
+                        let tool_use_id = match block.get("tool_use_id").and_then(|v| v.as_str()) {
                             Some(id) => id.to_string(),
                             None => continue,
                         };
@@ -362,22 +379,54 @@ impl ConversationParser {
                         });
                     }
                     "thinking" => {
-                        if let Some(thinking) =
-                            block.get("thinking").and_then(|v| v.as_str())
-                        {
+                        if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
                             blocks.push(MessageBlock::Thinking {
                                 thinking: thinking.to_string(),
                             });
                         }
                     }
+                    "image" => {
+                        if let Some(source) = Self::parse_image_source(block) {
+                            blocks.push(MessageBlock::Image { source });
+                        }
+                    }
+                    "image_url" => {
+                        if let Some(source) = block
+                            .get("image_url")
+                            .and_then(|v| v.get("url"))
+                            .and_then(|v| v.as_str())
+                            .or_else(|| block.get("url").and_then(|v| v.as_str()))
+                        {
+                            blocks.push(MessageBlock::Image {
+                                source: source.to_string(),
+                            });
+                        }
+                    }
                     _ => {
-                        // Skip unknown block types (image, etc.) gracefully
+                        // Skip unknown block types gracefully
                     }
                 }
             }
         }
 
         Some(blocks)
+    }
+
+    fn parse_image_source(block: &serde_json::Value) -> Option<String> {
+        let source = block.get("source")?;
+        if let Some(url) = source.get("url").and_then(|v| v.as_str()) {
+            return Some(url.to_string());
+        }
+        if source.get("type").and_then(|v| v.as_str()) == Some("base64") {
+            let media_type = source
+                .get("media_type")
+                .or_else(|| source.get("mediaType"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("image/png");
+            let data = source.get("data").and_then(|v| v.as_str())?;
+            return Some(format!("data:{};base64,{}", media_type, data));
+        }
+        None
     }
 
     /// Flatten a JSON object into a HashMap<String, String> for tool inputs.
@@ -413,7 +462,11 @@ pub fn discover_session_file(session_id: &str, cwd: &str) -> Option<PathBuf> {
 }
 
 /// Search for a session JSONL across multiple project directories.
-pub fn discover_session_file_in_dirs(session_id: &str, cwd: &str, projects_dirs: &[PathBuf]) -> Option<PathBuf> {
+pub fn discover_session_file_in_dirs(
+    session_id: &str,
+    cwd: &str,
+    projects_dirs: &[PathBuf],
+) -> Option<PathBuf> {
     let project_dir_name = cwd.replace('/', "-").replace('.', "-");
 
     for projects_dir in projects_dirs {
@@ -434,6 +487,78 @@ pub fn discover_session_file_in_dirs(session_id: &str, cwd: &str, projects_dirs:
                 }
             }
         }
+    }
+
+    None
+}
+
+/// Read the tail of a Claude Code JSONL transcript and infer cache TTL.
+///
+/// Claude records cache-creation usage on assistant messages. Evolab uses the
+/// latest non-sidechain, non-subagent assistant entry to show whether the next
+/// main-agent request can still reuse the prompt cache.
+pub fn extract_cache_ttl_info(file_path: &Path) -> Option<CacheTtlInfo> {
+    const TAIL_BYTES: u64 = 20 * 1024;
+
+    let mut file = File::open(file_path).ok()?;
+    let file_size = file.metadata().ok()?.len();
+    let start = file_size.saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+
+    let mut buf = String::new();
+    file.read_to_string(&mut buf).ok()?;
+
+    for line in buf.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let entry: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if entry.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        if entry
+            .get("isSidechain")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if entry.get("agentId").is_some() {
+            continue;
+        }
+
+        let Some(cache_creation) = entry
+            .get("message")
+            .and_then(|v| v.get("usage"))
+            .and_then(|v| v.get("cache_creation"))
+        else {
+            continue;
+        };
+
+        let timestamp = entry.get("timestamp").and_then(|v| v.as_str())?;
+        let timestamp_ms = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .ok()?
+            .timestamp_millis();
+        let has_one_hour_cache = cache_creation
+            .get("ephemeral_1h_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0;
+
+        return Some(CacheTtlInfo {
+            timestamp_ms,
+            ttl_ms: if has_one_hour_cache {
+                3_600_000
+            } else {
+                300_000
+            },
+        });
     }
 
     None
@@ -481,6 +606,7 @@ pub struct DiscoveredSession {
     pub cwd: String,
     pub project: String,
     pub session_title: Option<String>,
+    pub projects_dir: PathBuf,
 }
 
 /// Scan projects directories for recently-active JSONL files.
@@ -493,7 +619,10 @@ pub fn discover_active_sessions(max_age: Duration) -> Vec<DiscoveredSession> {
 }
 
 /// Scan specific projects directories for recently-active sessions.
-pub fn discover_active_sessions_in_dirs(max_age: Duration, projects_dirs: &[PathBuf]) -> Vec<DiscoveredSession> {
+pub fn discover_active_sessions_in_dirs(
+    max_age: Duration,
+    projects_dirs: &[PathBuf],
+) -> Vec<DiscoveredSession> {
     let cutoff = std::time::SystemTime::now()
         .checked_sub(max_age)
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -512,47 +641,48 @@ pub fn discover_active_sessions_in_dirs(max_age: Duration, projects_dirs: &[Path
                 continue;
             }
 
-        let jsonl_entries = match std::fs::read_dir(&project_path) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for file_entry in jsonl_entries.flatten() {
-            let file_path = file_entry.path();
-
-            // Only .jsonl files
-            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-
-            // Skip subagent files
-            if file_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.starts_with("agent-"))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-
-            // Check modification time
-            let metadata = match std::fs::metadata(&file_path) {
-                Ok(m) => m,
+            let jsonl_entries = match std::fs::read_dir(&project_path) {
+                Ok(e) => e,
                 Err(_) => continue,
             };
-            let modified = match metadata.modified() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if modified < cutoff {
-                continue;
-            }
 
-            // Parse the first ~30 lines to extract metadata
-            if let Some(session) = parse_session_header(&file_path) {
-                results.push(session);
+            for file_entry in jsonl_entries.flatten() {
+                let file_path = file_entry.path();
+
+                // Only .jsonl files
+                if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+
+                // Skip subagent files
+                if file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.starts_with("agent-"))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
+                // Check modification time
+                let metadata = match std::fs::metadata(&file_path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let modified = match metadata.modified() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if modified < cutoff {
+                    continue;
+                }
+
+                // Parse the first ~30 lines to extract metadata
+                if let Some(mut session) = parse_session_header(&file_path) {
+                    session.projects_dir = projects_dir.clone();
+                    results.push(session);
+                }
             }
-        }
         }
     }
 
@@ -609,7 +739,10 @@ fn parse_session_header(file_path: &std::path::Path) -> Option<DiscoveredSession
         // Extract first user message text as title
         if first_user_text.is_none() {
             let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let is_meta = json.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_meta = json
+                .get("isMeta")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             if msg_type == "user" && !is_meta {
                 if let Some(message) = json.get("message") {
@@ -631,17 +764,14 @@ fn parse_session_header(file_path: &std::path::Path) -> Option<DiscoveredSession
 
     let sid = session_id.or(filename_id)?;
     let cwd_str = cwd.unwrap_or_default();
-    let project = cwd_str
-        .rsplit('/')
-        .next()
-        .unwrap_or(&cwd_str)
-        .to_string();
+    let project = cwd_str.rsplit('/').next().unwrap_or(&cwd_str).to_string();
 
     Some(DiscoveredSession {
         session_id: sid,
         cwd: cwd_str,
         project,
         session_title: first_user_text,
+        projects_dir: PathBuf::new(),
     })
 }
 
@@ -676,12 +806,7 @@ fn extract_text_from_content(content: &serde_json::Value) -> String {
     };
 
     // Clean up: remove [Image #N] prefixes, trim, and truncate
-    let cleaned = raw
-        .lines()
-        .next()
-        .unwrap_or(&raw)
-        .trim()
-        .to_string();
+    let cleaned = raw.lines().next().unwrap_or(&raw).trim().to_string();
 
     if cleaned.len() > 80 {
         // Find a valid char boundary at or before byte 77
@@ -720,7 +845,10 @@ pub fn extract_session_title(file_path: &std::path::Path) -> Option<String> {
         };
 
         let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let is_meta = json.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_meta = json
+            .get("isMeta")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if msg_type == "user" && !is_meta {
             if let Some(message) = json.get("message") {
@@ -740,6 +868,16 @@ pub fn extract_session_title(file_path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_temp_jsonl(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-{name}-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&path, content).expect("write temp jsonl");
+        path
+    }
 
     #[test]
     fn test_flatten_input_strings() {
@@ -844,6 +982,39 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_cache_ttl_info_uses_latest_main_agent_cache_creation() {
+        let path = write_temp_jsonl(
+            "cache-ttl-main",
+            r#"{"type":"assistant","timestamp":"2026-04-23T08:00:00.000Z","message":{"usage":{"cache_creation":{"ephemeral_5m_input_tokens":128}}}}
+{"type":"assistant","timestamp":"2026-04-23T08:10:00.000Z","isSidechain":true,"message":{"usage":{"cache_creation":{"ephemeral_1h_input_tokens":64}}}}
+{"type":"assistant","timestamp":"2026-04-23T08:22:54.251Z","message":{"usage":{"cache_creation":{"ephemeral_1h_input_tokens":256}}}}
+"#,
+        );
+
+        let info = extract_cache_ttl_info(&path).expect("cache TTL info");
+        assert_eq!(info.timestamp_ms, 1776932574251);
+        assert_eq!(info.ttl_ms, 3_600_000);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_extract_cache_ttl_info_defaults_to_five_minutes() {
+        let path = write_temp_jsonl(
+            "cache-ttl-5m",
+            r#"{"type":"assistant","timestamp":"2026-04-23T08:00:00.000Z","agentId":"agent-1","message":{"usage":{"cache_creation":{"ephemeral_1h_input_tokens":64}}}}
+{"type":"assistant","timestamp":"2026-04-23T08:22:54.251Z","message":{"usage":{"cache_creation":{"ephemeral_5m_input_tokens":128}}}}
+"#,
+        );
+
+        let info = extract_cache_ttl_info(&path).expect("cache TTL info");
+        assert_eq!(info.timestamp_ms, 1776932574251);
+        assert_eq!(info.ttl_ms, 300_000);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_tool_use_deduplication() {
         let line = serde_json::json!({
             "type": "assistant",
@@ -902,6 +1073,38 @@ mod tests {
                 assert!(!is_error);
             }
             _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_parse_image_block() {
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": "test-image",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "abc123"
+                        }
+                    }
+                ]
+            }
+        });
+
+        let mut parser = ConversationParser::new(PathBuf::from("/tmp/test.jsonl"));
+        let msg = parser.parse_line(&line).unwrap();
+        assert_eq!(msg.blocks.len(), 2);
+        match &msg.blocks[1] {
+            MessageBlock::Image { source } => {
+                assert_eq!(source, "data:image/png;base64,abc123");
+            }
+            _ => panic!("Expected Image block"),
         }
     }
 }

@@ -1,8 +1,9 @@
 .approval-bar {
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 16px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: 8px;
+  border-top: 1px solid var(--island-border);
 }
 
 /* Warning header: ⚠ ToolName in orange */
@@ -13,22 +14,22 @@
 }
 
 .approval-bar__warning-icon {
-  color: var(--vi-warning-orange);
+  color: #f59e0b;
   font-size: 14px;
 }
 
 .approval-bar__warning-text {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  color: var(--vi-warning-orange);
+  font-family: var(--font-mono, 'SF Mono', monospace);
+  font-size: 11px;
+  color: #f59e0b;
   font-weight: 600;
 }
 
 /* Tool detail card */
 .approval-bar__tool-card {
-  background: var(--vi-card);
-  border: 1px solid var(--vi-card-border);
-  border-radius: var(--radius-sm);
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 6px;
   padding: 8px 10px;
 }
 
@@ -44,14 +45,14 @@
 }
 
 .approval-bar__tool-name {
-  font-size: var(--font-size-sm);
+  font-size: 11px;
   font-weight: 600;
-  color: var(--vi-text-primary);
+  color: var(--island-text);
 }
 
 .approval-bar__tool-input {
   font-size: 11px;
-  color: var(--vi-text-secondary);
+  color: var(--island-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -67,12 +68,12 @@
   flex: 1;
   padding: 6px 8px;
   border: none;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
+  border-radius: 6px;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s, filter 0.15s;
+  transition: opacity 0.15s;
   white-space: nowrap;
 }
 
@@ -82,38 +83,38 @@
 
 /* Deny: dark gray */
 .approval-bar__btn--deny {
-  background: var(--vi-badge-dark);
-  color: var(--vi-text-primary);
+  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
 }
 
 /* Allow once: dark gray */
 .approval-bar__btn--allow {
-  background: var(--vi-badge-dark);
-  color: var(--vi-text-primary);
+  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
 }
 
 /* Allow always: blue */
 .approval-bar__btn--always {
-  background: var(--vi-accent-blue);
-  color: white;
+  background: #2563eb;
+  color: #fff;
 }
 
 /* Auto-approve: red */
 .approval-bar__btn--auto {
-  background: var(--vi-accent-red);
-  color: white;
+  background: #dc2626;
+  color: #fff;
 }
 
 /* Accept edits: orange */
 .approval-bar__btn--accept-edits {
-  background: var(--vi-accent-orange);
-  color: white;
+  background: #f59e0b;
+  color: #fff;
 }
 
 /* Option buttons */
 .approval-bar__btn--option {
-  background: var(--vi-badge-dark);
-  color: var(--vi-text-primary);
+  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -128,53 +129,53 @@
 .approval-bar__options {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-xs);
+  gap: 4px;
 }
 
 /* Input row */
 .approval-bar__input-row {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: 8px;
 }
 
 .approval-bar__input {
   flex: 1;
-  padding: 6px 10px;
-  background: var(--island-input-bg);
-  border: 1px solid var(--vi-card-border);
-  border-radius: var(--radius-sm);
-  color: var(--vi-text-primary);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-sm);
+  padding: 6px 12px;
+  background: var(--island-input-bg, #0d0d0d);
+  border: 1px solid var(--island-border);
+  border-radius: 8px;
+  color: var(--island-text);
+  font-family: inherit;
+  font-size: 12px;
   outline: none;
   transition: border-color 0.15s;
 }
 
 .approval-bar__input::placeholder {
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-muted);
 }
 
 .approval-bar__input:focus {
-  border-color: var(--vi-accent-blue);
+  border-color: var(--island-accent, #7b78ff);
 }
 
 .approval-bar__send {
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--vi-card-border);
-  background: var(--island-subtle);
-  color: var(--vi-text-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--island-border);
+  background: var(--island-subtle, rgba(255, 255, 255, 0.05));
+  color: var(--island-text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all 0.15s ease-out;
 }
 
 .approval-bar__send:hover {
-  background: rgba(0, 122, 255, 0.2);
-  color: var(--vi-accent-blue);
+  background: rgba(123, 120, 255, 0.15);
+  color: var(--island-accent, #7b78ff);
 }

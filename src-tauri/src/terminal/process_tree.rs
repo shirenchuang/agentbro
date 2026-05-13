@@ -1,8 +1,8 @@
 // ProcessTree — Build and query the system process tree
 // Used for: terminal discovery, tmux detection, TTY mapping
 
-use std::collections::HashMap;
 use super::registry;
+use std::collections::HashMap;
 
 /// Information about a single process
 #[derive(Debug, Clone)]
@@ -78,10 +78,22 @@ pub fn build_tree() -> HashMap<u32, ProcessInfo> {
             Ok(p) => p,
             Err(_) => continue,
         };
-        let tty = if parts[2] == "??" { None } else { Some(parts[2].to_string()) };
+        let tty = if parts[2] == "??" {
+            None
+        } else {
+            Some(parts[2].to_string())
+        };
         let command = parts[3..].join(" ");
 
-        tree.insert(pid, ProcessInfo { pid, ppid, command, tty });
+        tree.insert(
+            pid,
+            ProcessInfo {
+                pid,
+                ppid,
+                command,
+                tty,
+            },
+        );
     }
 
     tree
@@ -133,7 +145,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
     if let Some(ref bundle) = env.cf_bundle_identifier {
         let lower = bundle.to_lowercase();
         if lower.contains("iterm") {
-            return TerminalType::ITerm2 { session_id: env.iterm_session_id };
+            return TerminalType::ITerm2 {
+                session_id: env.iterm_session_id,
+            };
         }
         if lower.contains("ghostty") {
             return TerminalType::Ghostty;
@@ -142,7 +156,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
             return TerminalType::WezTerm;
         }
         if lower.contains("kitty") {
-            return TerminalType::Kitty { window_id: env.kitty_window_id };
+            return TerminalType::Kitty {
+                window_id: env.kitty_window_id,
+            };
         }
         if lower.contains("apple.terminal") {
             return TerminalType::TerminalApp;
@@ -153,7 +169,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
     if let Some(ref tp) = env.term_program {
         let lower = tp.to_lowercase();
         if lower.contains("iterm") {
-            return TerminalType::ITerm2 { session_id: env.iterm_session_id };
+            return TerminalType::ITerm2 {
+                session_id: env.iterm_session_id,
+            };
         }
         if lower == "ghostty" {
             return TerminalType::Ghostty;
@@ -162,7 +180,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
             return TerminalType::WezTerm;
         }
         if lower.contains("kitty") {
-            return TerminalType::Kitty { window_id: env.kitty_window_id };
+            return TerminalType::Kitty {
+                window_id: env.kitty_window_id,
+            };
         }
         if lower.contains("apple_terminal") || lower == "terminal" {
             return TerminalType::TerminalApp;

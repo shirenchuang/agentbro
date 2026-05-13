@@ -20,6 +20,7 @@ export interface ScannedSkill {
   fileSize: number
   modifiedAt: number
   agents: AgentSkillState[]
+  frontmatter: Record<string, string>
 }
 
 export interface SkillPack {
@@ -63,7 +64,7 @@ export interface TargetConfig {
   installMode: 'direct' | 'symlink'
 }
 
-const isTauri = '__TAURI__' in window
+const isTauri = '__TAURI_INTERNALS__' in window
 
 export const skillApi = {
   scanAll: () => isTauri
@@ -108,6 +109,10 @@ export const skillApi = {
 
   deletePack: (id: string) => isTauri
     ? invoke('delete_pack_cmd', { id })
+    : Promise.resolve(),
+
+  applyPack: (pack: SkillPack) => isTauri
+    ? invoke('apply_pack_cmd', { pack })
     : Promise.resolve(),
 
   configureSyncConfig: (config: SyncConfig) => isTauri

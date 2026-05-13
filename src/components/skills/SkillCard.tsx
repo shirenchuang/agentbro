@@ -13,9 +13,20 @@ const TYPE_ICONS: Record<string, string> = {
   mcp: '🔌',
 }
 
+const ALL_AGENTS = ['claude-code', 'codex', 'gemini-cli', 'cursor', 'hermes']
+
+const AGENT_LABELS: Record<string, { short: string; color: string }> = {
+  'claude-code': { short: 'C', color: '#d97706' },
+  'codex':       { short: 'X', color: '#10b981' },
+  'gemini-cli':  { short: 'G', color: '#3b82f6' },
+  'cursor':      { short: 'U', color: '#8b5cf6' },
+  'hermes':      { short: 'H', color: '#ef4444' },
+}
+
 export function SkillCard({ skill, onRefresh }: SkillCardProps) {
   const { selectSkill, batchMode, batchSelected, toggleBatchItem } = useSkillStore()
   const allEnabled = skill.agents.every(a => a.enabled)
+  const installedAgents = new Set(skill.agents.map(a => a.agent))
 
   const handleToggle = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -52,10 +63,21 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
           <div className="skill-card__desc">{skill.description}</div>
         )}
       </div>
-      <div className="skill-card__agents">
-        {skill.agents.map(a => (
-          <span key={a.agent} className="skill-card__agent-tag">{a.agent}</span>
-        ))}
+      <div className="skill-card__platforms">
+        {ALL_AGENTS.map(agent => {
+          const installed = installedAgents.has(agent)
+          const cfg = AGENT_LABELS[agent] ?? { short: agent[0].toUpperCase(), color: '#888' }
+          return (
+            <span
+              key={agent}
+              className={`skill-card__platform-icon ${installed ? 'skill-card__platform-icon--active' : ''}`}
+              style={{ '--platform-color': cfg.color } as React.CSSProperties}
+              title={agent}
+            >
+              {cfg.short}
+            </span>
+          )
+        })}
       </div>
       <button
         className={`skill-card__toggle ${allEnabled ? 'skill-card__toggle--on' : ''}`}

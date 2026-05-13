@@ -1,6 +1,8 @@
 /* CompletionPanel — 3-variant task completion UI with auto-dismiss */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SubagentInfo } from '../../types/agent'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './CompletionPanel.css'
 
 export type CompletionVariant = 'claude-stop' | 'subagent-done' | 'pending-tool'
@@ -32,22 +34,21 @@ const QUICK_REPLIES = ['Continue', 'Explain more', 'Run tests', 'Commit']
 const AUTO_DISMISS_MS = 15_000
 
 export function CompletionPanel(props: CompletionPanelProps) {
-  const [remaining, setRemaining] = useState(AUTO_DISMISS_MS)
-  const paused = useRef(false)
   const { onDismiss } = props
   const isPending = props.variant === 'pending-tool'
+  const remainingRef = useRef(AUTO_DISMISS_MS)
+  const startedAtRef = useRef(0)
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (isPending) return
-    const id = setInterval(() => {
-      if (!paused.current) setRemaining(r => Math.max(0, r - 100))
-    }, 100)
-    return () => clearInterval(id)
-  }, [isPending])
-
-  useEffect(() => {
-    if (!isPending && remaining <= 0) onDismiss()
-  }, [remaining, onDismiss, isPending])
+    remainingRef.current = AUTO_DISMISS_MS
+    startedAtRef.current = Date.now()
+    dismissTimerRef.current = setTimeout(onDismiss, AUTO_DISMISS_MS)
+    return () => {
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+    }
+  }, [onDismiss, isPending])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onDismiss() }
@@ -55,9 +56,14 @@ export function CompletionPanel(props: CompletionPanelProps) {
     return () => window.removeEventListener('keydown', handler)
   }, [onDismiss])
 
-  const handleMouseEnter = useCallback(() => { paused.current = true }, [])
-  const handleMouseLeave = useCallback(() => { paused.current = false }, [])
-  const progress = remaining / AUTO_DISMISS_MS
+  const handleMouseEnter = useCallback(() => {
+    if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+    remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAtRef.current))
+  }, [])
+  const handleMouseLeave = useCallback(() => {
+    startedAtRef.current = Date.now()
+    dismissTimerRef.current = setTimeout(onDismiss, remainingRef.current)
+  }, [onDismiss])
 
   return (
     <div className="completion-panel" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
@@ -66,7 +72,7 @@ export function CompletionPanel(props: CompletionPanelProps) {
       {props.variant === 'pending-tool' && <PendingToolVariant {...props} />}
       {!isPending && (
         <div className="completion-panel__countdown">
-          <div className="completion-panel__countdown-bar" style={{ width: `${progress * 100}%` }} />
+          <div className="completion-panel__countdown-bar" />
         </div>
       )}
     </div>
@@ -133,7 +139,7 @@ function SubagentDoneVariant({ subagents, onDismiss }: SubagentDoneProps) {
               {agent.status === 'completed' ? '✓' : agent.status === 'error' ? '✕' : '●'}
             </span>
             <span className="completion-panel__subagent-desc">
-              {agent.description || `Agent ${agent.agentId.slice(0, 8)}`}
+              {agent.lastAssistantMessage || agent.description || `Agent ${agent.agentId.slice(0, 8)}`}
             </span>
           </div>
         ))}
@@ -143,13 +149,8 @@ function SubagentDoneVariant({ subagents, onDismiss }: SubagentDoneProps) {
 }
 
 function PendingToolVariant({ toolName, startedAt, onDismiss }: PendingToolProps) {
-  const [elapsed, setElapsed] = useState(0)
-
-  useEffect(() => {
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000)
-    return () => clearInterval(id)
-  }, [startedAt])
-
+  const { t } = useTranslation()
+  const elapsed = Math.floor((Date.now() - startedAt) / 1000)
   const fmt = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 
   return (
@@ -160,7 +161,7 @@ function PendingToolVariant({ toolName, startedAt, onDismiss }: PendingToolProps
       </div>
       <div className="completion-panel__tool-row">
         <span className="completion-panel__spinner" />
-        <span className="completion-panel__tool-name">{toolName}</span>
+        <span className="completion-panel__tool-name">{getToolActivityLabel(t, toolName)}</span>
         <span className="completion-panel__elapsed">{fmt(elapsed)}</span>
       </div>
     </div>

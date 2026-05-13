@@ -158,7 +158,7 @@ export function SyncView() {
           <select className="sync-agent-select" value={fromAgent} onChange={e => setFromAgent(e.target.value)}>
             {AGENTS.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
-          <span style={{ color: 'rgba(255,255,255,0.4)', padding: '0 4px' }}>→</span>
+          <span style={{ color: 'var(--settings-text-tertiary)', padding: '0 4px' }}>→</span>
           <select className="sync-agent-select" value={toAgent} onChange={e => setToAgent(e.target.value)}>
             {AGENTS.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
@@ -170,7 +170,7 @@ export function SyncView() {
           </button>
         </div>
         {previewDetails.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--settings-text-secondary)' }}>
             {previewDetails.map((d, i) => <div key={i}>{d}</div>)}
           </div>
         )}

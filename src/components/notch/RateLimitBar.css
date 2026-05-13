@@ -2,7 +2,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -26,6 +26,6 @@
 }
 
 .rate-limit__divider {
-  color: var(--text-tertiary);
+  color: var(--island-text-muted);
   opacity: 0.5;
 }

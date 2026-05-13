@@ -1,4 +1,4 @@
-/* Agent Island — Priority System */
+/* AgentBro — Priority System */
 
 export const PRIORITY = {
   dormant: 0,

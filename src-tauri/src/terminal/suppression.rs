@@ -1,7 +1,7 @@
 // Smart Suppression — Tab-level detection of whether the agent's terminal is focused
 // Uses ITERM_SESSION_ID, tmux pane, KITTY_WINDOW_ID for precise tab-level checks.
 
-use super::{process_tree, tmux, registry};
+use super::{process_tree, registry, tmux};
 
 /// Check if an agent session's terminal is currently in the foreground.
 /// Returns true if the user is already looking at it (suppress notifications).
@@ -149,10 +149,7 @@ fn is_kitty_window_focused(window_id: &str) -> bool {
         return false;
     };
 
-    let output = match std::process::Command::new(&bin)
-        .args(["@", "ls"])
-        .output()
-    {
+    let output = match std::process::Command::new(&bin).args(["@", "ls"]).output() {
         Ok(o) if o.status.success() => o,
         _ => return false,
     };

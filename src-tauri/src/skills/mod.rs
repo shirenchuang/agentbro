@@ -1,7 +1,7 @@
 pub mod agent_paths;
-pub mod scanner;
-pub mod registry;
 pub mod installer;
+pub mod registry;
+pub mod scanner;
 pub mod sync;
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,7 @@ pub struct ScannedSkill {
     pub file_size: u64,
     pub modified_at: u64,
     pub agents: Vec<AgentSkillState>,
+    pub frontmatter: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

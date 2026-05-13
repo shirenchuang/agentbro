@@ -1,0 +1,145 @@
+<h2>Agent Management — Page Layout</h2>
+<p class="subtitle">This will be a new top-level settings page alongside General / Island / Skills / License / About.<br>Which layout direction works best for managing 20+ AI agents?</p>
+
+<div class="cards">
+
+  <!-- Option A: Card Grid -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Settings &gt; Agents</div>
+      <!-- Search bar -->
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <div style="flex:1; background:#2a2a3e; border-radius:8px; padding:8px 12px; color:#666; font-size:12px;">Search agents...</div>
+        <div style="background:#3b82f6; color:white; border-radius:8px; padding:8px 14px; font-size:12px;">Refresh</div>
+      </div>
+      <!-- Stats bar -->
+      <div style="display:flex; gap:12px; margin-bottom:16px;">
+        <div style="background:#22c55e20; color:#22c55e; padding:4px 10px; border-radius:6px; font-size:11px;">8 Installed</div>
+        <div style="background:#f59e0b20; color:#f59e0b; padding:4px 10px; border-radius:6px; font-size:11px;">3 Updates</div>
+        <div style="background:#64748b20; color:#94a3b8; padding:4px 10px; border-radius:6px; font-size:11px;">14 Available</div>
+      </div>
+      <!-- Card grid -->
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:24px; margin-bottom:4px;">🤖</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Claude Code</div>
+          <div style="color:#22c55e; font-size:10px;">v1.0.33</div>
+          <div style="margin-top:6px; background:#22c55e30; color:#22c55e; padding:2px 8px; border-radius:4px; font-size:9px;">Installed</div>
+        </div>
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:24px; margin-bottom:4px;">🧬</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Gemini CLI</div>
+          <div style="color:#f59e0b; font-size:10px;">v0.1.2 → v0.2.0</div>
+          <div style="margin-top:6px; background:#f59e0b30; color:#f59e0b; padding:2px 8px; border-radius:4px; font-size:9px;">Update</div>
+        </div>
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center; opacity:0.6;">
+          <div style="font-size:24px; margin-bottom:4px;">📦</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Codex</div>
+          <div style="color:#64748b; font-size:10px;">—</div>
+          <div style="margin-top:6px; background:#3b82f620; color:#3b82f6; padding:2px 8px; border-radius:4px; font-size:9px;">Install</div>
+        </div>
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:24px; margin-bottom:4px;">🖥️</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Cursor</div>
+          <div style="color:#22c55e; font-size:10px;">v0.50</div>
+          <div style="margin-top:6px; background:#22c55e30; color:#22c55e; padding:2px 8px; border-radius:4px; font-size:9px;">Installed</div>
+        </div>
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center; opacity:0.6;">
+          <div style="font-size:24px; margin-bottom:4px;">🔷</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Kiro</div>
+          <div style="color:#64748b; font-size:10px;">—</div>
+          <div style="margin-top:6px; background:#3b82f620; color:#3b82f6; padding:2px 8px; border-radius:4px; font-size:9px;">Install</div>
+        </div>
+        <div style="background:#2a2a3e; border-radius:10px; padding:12px; text-align:center;">
+          <div style="font-size:24px; margin-bottom:4px;">🌊</div>
+          <div style="color:#e2e8f0; font-size:11px; font-weight:600;">Trae</div>
+          <div style="color:#22c55e; font-size:10px;">v1.2.0</div>
+          <div style="margin-top:6px; background:#22c55e30; color:#22c55e; padding:2px 8px; border-radius:4px; font-size:9px;">Installed</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Card Grid</h3>
+      <p>Each agent is a card with icon, name, version, and status badge. Grid layout shows many agents at once. Click card to expand detail panel.</p>
+    </div>
+  </div>
+
+  <!-- Option B: List View -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Settings &gt; Agents</div>
+      <!-- Tabs -->
+      <div style="display:flex; gap:4px; margin-bottom:16px; background:#0f0f1e; border-radius:8px; padding:3px; width:fit-content;">
+        <div style="background:#2a2a3e; color:#e2e8f0; padding:5px 14px; border-radius:6px; font-size:11px; font-weight:500;">All</div>
+        <div style="color:#888; padding:5px 14px; border-radius:6px; font-size:11px;">Installed</div>
+        <div style="color:#888; padding:5px 14px; border-radius:6px; font-size:11px;">Available</div>
+      </div>
+      <!-- List rows -->
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px;">
+          <div style="font-size:20px;">🤖</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Claude Code</div>
+            <div style="color:#64748b; font-size:10px;">npm · @anthropic-ai/claude-code · v1.0.33</div>
+          </div>
+          <div style="background:#22c55e30; color:#22c55e; padding:3px 10px; border-radius:5px; font-size:10px;">Installed</div>
+          <div style="display:flex; gap:4px;">
+            <div style="background:#374151; color:#94a3b8; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Update</div>
+            <div style="background:#dc262620; color:#ef4444; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Uninstall</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px;">
+          <div style="font-size:20px;">🧬</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Gemini CLI</div>
+            <div style="color:#64748b; font-size:10px;">npm · @anthropic-ai/gemini · v0.1.2</div>
+          </div>
+          <div style="background:#f59e0b30; color:#f59e0b; padding:3px 10px; border-radius:5px; font-size:10px;">Update ↑</div>
+          <div style="display:flex; gap:4px;">
+            <div style="background:#3b82f630; color:#3b82f6; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Update</div>
+            <div style="background:#dc262620; color:#ef4444; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Uninstall</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px; opacity:0.65;">
+          <div style="font-size:20px;">📦</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Codex</div>
+            <div style="color:#64748b; font-size:10px;">npm · @openai/codex</div>
+          </div>
+          <div style="background:#64748b20; color:#94a3b8; padding:3px 10px; border-radius:5px; font-size:10px;">Not installed</div>
+          <div style="display:flex; gap:4px;">
+            <div style="background:#3b82f630; color:#3b82f6; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Install</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px; opacity:0.65;">
+          <div style="font-size:20px;">🔷</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Kiro</div>
+            <div style="color:#64748b; font-size:10px;">npm · @anthropic-ai/kiro</div>
+          </div>
+          <div style="background:#64748b20; color:#94a3b8; padding:3px 10px; border-radius:5px; font-size:10px;">Not installed</div>
+          <div style="display:flex; gap:4px;">
+            <div style="background:#3b82f630; color:#3b82f6; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Install</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. List View</h3>
+      <p>Compact rows with inline action buttons. Shows package manager, version, and status at a glance. Filter tabs at top (All / Installed / Available). More info-dense.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>Key features for both options:</h3>
+  <ul style="color: #94a3b8; font-size: 13px; line-height: 1.8;">
+    <li><strong>One-click Install</strong> — runs the correct package manager command (npm/pip/brew/go)</li>
+    <li><strong>One-click Update</strong> — detects available updates, updates to latest</li>
+    <li><strong>One-click Uninstall</strong> — with inline confirm (same pattern as skill uninstall)</li>
+    <li><strong>Auto-detect</strong> — scans system for installed agents on page load</li>
+    <li><strong>Version display</strong> — shows current version, highlights when update available</li>
+    <li><strong>22 agents</strong> — Claude Code, Codex, Gemini, Cursor, Copilot, Trae, Qoder, CodeBuddy, Qwen, Kimi, OpenCode, Droid, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, Kiro, etc.</li>
+  </ul>
+</div>

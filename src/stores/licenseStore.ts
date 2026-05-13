@@ -1,4 +1,4 @@
-/* Agent Island — License State Management (Zustand) */
+/* AgentBro — License State Management (Zustand) */
 import { create } from 'zustand'
 import {
   getLicenseStatus,

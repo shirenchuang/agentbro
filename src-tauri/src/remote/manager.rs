@@ -1,23 +1,29 @@
 // Remote manager — SSH tunnel lifecycle with exponential-backoff auto-reconnect
 
+use super::installer::RemoteInstaller;
+use super::ssh_tunnel::SshTunnel;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use super::ssh_tunnel::SshTunnel;
-use super::installer::RemoteInstaller;
 
 /// SSH remote host configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteHost {
     pub id: String,
     pub name: String,
     /// SSH target: [user@]hostname
+    #[serde(alias = "ssh_target")]
     pub ssh_target: String,
     pub port: Option<u16>,
+    #[serde(alias = "identity_file")]
     pub identity_file: Option<String>,
+    #[serde(alias = "auth_socket")]
     pub auth_socket: Option<String>,
     /// Remote Unix socket path for the reverse tunnel
+    #[serde(alias = "remote_socket_path")]
     pub remote_socket_path: String,
+    #[serde(alias = "auto_connect")]
     pub auto_connect: bool,
 }
 
@@ -124,7 +130,13 @@ impl RemoteManager {
 
     /// Disconnect all hosts
     pub fn shutdown(&self) {
-        let ids: Vec<String> = self.hosts.lock().unwrap().iter().map(|h| h.id.clone()).collect();
+        let ids: Vec<String> = self
+            .hosts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|h| h.id.clone())
+            .collect();
         for id in ids {
             self.disconnect(&id);
         }
@@ -160,7 +172,9 @@ impl RemoteManager {
         let Some(host) = host else { return };
 
         if host.ssh_target.is_empty() {
-            let status = ConnectionStatus::Failed { message: "invalid host".to_string() };
+            let status = ConnectionStatus::Failed {
+                message: "invalid host".to_string(),
+            };
             self.set_status(id, status.clone());
             self.emit_status(id, status);
             return;
@@ -206,7 +220,9 @@ impl RemoteManager {
                     let status = if tunnel.is_running() {
                         ConnectionStatus::Connected
                     } else {
-                        ConnectionStatus::Failed { message: "ssh exited immediately".to_string() }
+                        ConnectionStatus::Failed {
+                            message: "ssh exited immediately".to_string(),
+                        }
                     };
 
                     if let Ok(cb) = status_cb.lock() {
@@ -219,7 +235,11 @@ impl RemoteManager {
                     if status == ConnectionStatus::Connected {
                         let install = RemoteInstaller::install_hooks(&host).await;
                         if !install.ok {
-                            log::warn!("Remote hook install failed for {}: {}", id_owned, install.message);
+                            log::warn!(
+                                "Remote hook install failed for {}: {}",
+                                id_owned,
+                                install.message
+                            );
                         }
                     }
                 }
@@ -274,5 +294,55 @@ impl RemoteManager {
                 f(id, status);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteHost;
+
+    fn host() -> RemoteHost {
+        RemoteHost {
+            id: "remote-1".to_string(),
+            name: "Dev".to_string(),
+            ssh_target: "alice@example.com".to_string(),
+            port: Some(2222),
+            identity_file: Some("~/.ssh/id_ed25519".to_string()),
+            auth_socket: None,
+            remote_socket_path: "/tmp/agentbro-remote.sock".to_string(),
+            auto_connect: true,
+        }
+    }
+
+    #[test]
+    fn remote_host_serializes_for_frontend_with_camel_case_keys() {
+        let value = serde_json::to_value(host()).expect("serialize remote host");
+
+        assert_eq!(value["sshTarget"], "alice@example.com");
+        assert_eq!(value["identityFile"], "~/.ssh/id_ed25519");
+        assert_eq!(value["remoteSocketPath"], "/tmp/agentbro-remote.sock");
+        assert_eq!(value["autoConnect"], true);
+        assert!(value.get("ssh_target").is_none());
+    }
+
+    #[test]
+    fn remote_host_accepts_legacy_snake_case_config_keys() {
+        let value = serde_json::json!({
+            "id": "remote-1",
+            "name": "Dev",
+            "ssh_target": "alice@example.com",
+            "port": 2222,
+            "identity_file": "~/.ssh/id_ed25519",
+            "auth_socket": null,
+            "remote_socket_path": "/tmp/agentbro-remote.sock",
+            "auto_connect": true
+        });
+
+        let parsed: RemoteHost = serde_json::from_value(value).expect("parse legacy remote host");
+
+        assert_eq!(parsed.ssh_target, "alice@example.com");
+        assert_eq!(parsed.identity_file.as_deref(), Some("~/.ssh/id_ed25519"));
+        assert_eq!(parsed.remote_socket_path, "/tmp/agentbro-remote.sock");
+        assert!(parsed.auto_connect);
     }
 }

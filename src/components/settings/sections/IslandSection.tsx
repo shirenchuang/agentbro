@@ -1,0 +1,1562 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import { invoke } from '@tauri-apps/api/core'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { useConfigStore } from '../../../stores/configStore'
+import type { EngineInstance, SoundChoice, SoundRule } from '../../../stores/configStore'
+import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
+import { MODEL_PRICING } from '../../../utils/tokens'
+import {
+  installHooks, removeHooks, listDisplays, isTauri,
+  addEngineInstance, removeEngineInstance, setEngineInstanceEnabled, verifyEnginePath,
+  setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
+  previewIslandLayout, clearIslandLayoutPreview,
+  setSoundQuietHours, setSoundEventRule, importCustomSound as importCustomSoundFile, setCustomSounds,
+  setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
+  setActiveBackendTheme, listRemoteHosts, addRemoteHost, removeRemoteHost, connectRemote,
+  disconnectRemote, installRemoteHooks, getRemoteStatus, listSshConfigHosts,
+} from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
+import { SettingSection } from '../SettingSection'
+import { SettingGroup } from '../SettingGroup'
+import { SettingRow } from '../SettingRow'
+import { Toggle } from '../Toggle'
+import { Dropdown } from '../Dropdown'
+import { Slider } from '../Slider'
+import { GlassButton, GlassInput } from '../../shared'
+
+type IslandTab = 'overview' | 'display' | 'sound' | 'shortcuts' | 'integration' | 'advanced'
+
+function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInfo[]): string {
+  if (value === 'primary' || value === 'auto' || !value) return value
+  const display = displays.find((d) => d.id === value || d.name === value)
+  if (!display) return value
+  return display.isPrimary ? 'primary' : display.id
+}
+
+type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled' | 'followFocus'
+
+function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boolean>>) {
+  const state = useConfigStore.getState()
+  setIslandFeatureFlags({
+    tipsEnabled: next.tipsEnabled ?? state.tipsEnabled,
+    pixelCursorEnabled: next.pixelCursorEnabled ?? state.pixelCursorEnabled,
+    confettiEnabled: next.confettiEnabled ?? state.confettiEnabled,
+    followFocus: next.followFocus ?? state.followFocus,
+  }).catch((err) => console.error('Failed to persist island feature flags:', err))
+}
+
+function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island' | 'pet'; islandPetScale: number }>) {
+  const state = useConfigStore.getState()
+  setIslandSurfaceOptions({
+    islandSurfaceMode: next.islandSurfaceMode ?? state.islandSurfaceMode,
+    islandPetScale: next.islandPetScale ?? state.islandPetScale,
+  }).catch((err) => console.error('Failed to persist island surface options:', err))
+}
+
+// ── Shortcuts helpers ──
+function formatKeyEvent(e: KeyboardEvent): string {
+  const parts: string[] = []
+  if (e.metaKey) parts.push('⌘')
+  if (e.ctrlKey) parts.push('⌃')
+  if (e.altKey) parts.push('⌥')
+  if (e.shiftKey) parts.push('⇧')
+  const key = e.key
+  if (!['Meta', 'Control', 'Alt', 'Shift'].includes(key)) {
+    if (key === 'Enter') parts.push('Enter')
+    else if (key === 'Backspace') parts.push('Backspace')
+    else if (key === 'Escape') parts.push('Escape')
+    else if (key === 'Tab') parts.push('Tab')
+    else if (key === ' ') parts.push('Space')
+    else if (key === 'ArrowUp') parts.push('↑')
+    else if (key === 'ArrowDown') parts.push('↓')
+    else if (key === 'ArrowLeft') parts.push('←')
+    else if (key === 'ArrowRight') parts.push('→')
+    else parts.push(key.length === 1 ? key.toUpperCase() : key)
+  }
+  return parts.join('+')
+}
+
+function ShortcutRow({ action, label, keys }: { action: string; label: string; keys: string }) {
+  const { t } = useTranslation()
+  const [recording, setRecording] = useState(false)
+  const [conflict, setConflict] = useState<string | null>(null)
+  const updateShortcut = useConfigStore((s) => s.updateShortcut)
+  const allShortcuts = useConfigStore((s) => s.shortcuts)
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (!recording) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        setRecording(false)
+        setConflict(null)
+        return
+      }
+      const hasModifier = e.metaKey || e.ctrlKey || e.altKey
+      const isSpecial = ['Escape', 'Enter', 'Backspace', 'Tab'].includes(e.key)
+      if (!hasModifier && !isSpecial && !['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].includes(e.key)) {
+        return
+      }
+      const formatted = formatKeyEvent(e)
+      if (formatted) {
+        const duplicate = allShortcuts.find((s) => s.keys === formatted && s.action !== action)
+        if (duplicate) {
+          setConflict(t('settings.alreadyUsedBy', { label: duplicate.label }))
+          return
+        }
+        setConflict(null)
+        updateShortcut(action, formatted)
+        setRecording(false)
+      }
+    },
+    [recording, action, updateShortcut, allShortcuts, t],
+  )
+
+  useEffect(() => {
+    if (recording) {
+      window.addEventListener('keydown', handleKeyDown, true)
+      return () => window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [recording, handleKeyDown])
+
+  return (
+    <div className="shortcuts-row">
+      <span className="shortcuts-row__action">{label}</span>
+      {recording ? (
+        <span className="shortcuts-row__recording">
+          {conflict ? <span style={{ color: '#FF3B30' }}>{conflict}</span> : t('settings.pressKeys')}
+        </span>
+      ) : (
+        <span className="shortcuts-row__keys">
+          {keys.split('+').map((k, i) => (<kbd key={i}>{k}</kbd>))}
+        </span>
+      )}
+      <button className="shortcuts-row__edit" onClick={() => setRecording(!recording)}>
+        {recording ? t('settings.cancel') : t('settings.edit')}
+      </button>
+    </div>
+  )
+}
+
+// ── Hook helpers ──
+interface ToolHookStatus {
+  toolId: string
+  name: string
+  installStatus: 'installed' | 'not_installed' | 'error'
+  configPath: string
+  version?: string
+}
+
+const TOOL_ICONS: Record<string, string> = {
+  'claude-code': '🟠', 'codex': '🟢', 'gemini-cli': '🔵', 'cursor': '⬛',
+  'copilot': '🔷', 'trae': '🩵', 'qoder': '🟡', 'codebuddy': '🔴',
+  'qwen': '🟣', 'kimi': '🌸', 'opencode': '🌿', 'droid': '🤖',
+  'kiro': '🔵', 'aider': '💚', 'continue': '🔵', 'amp': '🟠',
+}
+
+// ── Webhook helpers ──
+interface WebhookConfig {
+  enabled: boolean
+  url: string
+  secret?: string
+  events: string[]
+}
+
+type WebhookProvider = 'dingtalk' | 'feishu'
+
+const WEBHOOK_EVENT_OPTIONS = [
+  'session_start', 'task_complete', 'error', 'waiting_approval',
+]
+
+function WebhookProviderSection({
+  provider, labelKey, descKey, urlPlaceholder, iconEmoji,
+}: {
+  provider: WebhookProvider; labelKey: string; descKey: string; urlPlaceholder: string; iconEmoji: string
+}) {
+  const { t } = useTranslation()
+  const [config, setConfig] = useState<WebhookConfig>({
+    enabled: false, url: '', secret: '', events: ['task_complete', 'error', 'waiting_approval'],
+  })
+  const [saving, setSaving] = useState(false)
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
+
+  const save = async () => {
+    setSaving(true)
+    try { await invoke('save_webhook_config', { provider, config }) } catch (e) { console.error('Failed to save webhook config:', e) }
+    setSaving(false)
+  }
+
+  const test = async () => {
+    setTestResult(null)
+    try { await invoke('test_webhook', { provider, url: config.url, secret: config.secret }); setTestResult('success') }
+    catch { setTestResult('error') }
+    setTimeout(() => setTestResult(null), 3000)
+  }
+
+  const toggleEvent = (event: string) => {
+    setConfig(prev => ({
+      ...prev,
+      events: prev.events.includes(event) ? prev.events.filter(e => e !== event) : [...prev.events, event],
+    }))
+  }
+
+  return (
+    <SettingGroup label={`${iconEmoji} ${t(labelKey)}`}>
+      <SettingRow label={t('settings.webhookEnabled')} description={t(descKey)}>
+        <Toggle checked={config.enabled} onChange={(v) => setConfig(prev => ({ ...prev, enabled: v }))} />
+      </SettingRow>
+      {config.enabled && (
+        <>
+          <SettingRow label={t('settings.webhookUrl')}>
+            <GlassInput placeholder={urlPlaceholder} value={config.url}
+              onChange={(e) => setConfig(prev => ({ ...prev, url: (e.target as HTMLInputElement).value }))}
+              style={{ width: 260, fontSize: 12 }} />
+          </SettingRow>
+          <SettingRow label={t('settings.webhookSecret')}>
+            <GlassInput type="password" placeholder={t('settings.webhookSecretPlaceholder')} value={config.secret ?? ''}
+              onChange={(e) => setConfig(prev => ({ ...prev, secret: (e.target as HTMLInputElement).value }))}
+              style={{ width: 200, fontSize: 12 }} />
+          </SettingRow>
+          <SettingRow label={t('settings.webhookEvents')} description={t('settings.webhookEventsDesc')}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+              {WEBHOOK_EVENT_OPTIONS.map(event => (
+                <label key={event} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={config.events.includes(event)} onChange={() => toggleEvent(event)} />
+                  <span style={{ color: 'var(--settings-text-secondary)' }}>{t(`settings.webhookEvent_${event}`, { defaultValue: event })}</span>
+                </label>
+              ))}
+            </div>
+          </SettingRow>
+          <div style={{ display: 'flex', gap: 8, paddingTop: 8, justifyContent: 'flex-end' }}>
+            {testResult === 'success' && <span style={{ fontSize: 12, color: 'var(--settings-status-active)', alignSelf: 'center' }}>{t('settings.webhookTestSuccess')}</span>}
+            {testResult === 'error' && <span style={{ fontSize: 12, color: 'var(--settings-danger)', alignSelf: 'center' }}>{t('settings.webhookTestError')}</span>}
+            <GlassButton variant="ghost" onClick={test} disabled={!config.url}>{t('settings.webhookTest')}</GlassButton>
+            <GlassButton variant="primary" onClick={save} disabled={saving || !config.url}>{saving ? '...' : t('settings.save')}</GlassButton>
+          </div>
+        </>
+      )}
+    </SettingGroup>
+  )
+}
+
+// ── Engine Instance Adder ──
+function EngineInstanceAdder({ onAdd }: { onAdd: (inst: EngineInstance) => void }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [label, setLabel] = useState('')
+  const [configRoot, setConfigRoot] = useState('')
+  const [pathValid, setPathValid] = useState<boolean | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const checkPath = useCallback(async (path: string) => {
+    if (!path.trim()) { setPathValid(null); return }
+    setChecking(true)
+    try { const valid = await verifyEnginePath(path); setPathValid(valid) } catch { setPathValid(false) }
+    setChecking(false)
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => checkPath(configRoot), 400)
+    return () => clearTimeout(timer)
+  }, [configRoot, checkPath])
+
+  if (!open) {
+    return (
+      <button className="engine-add-btn" onClick={() => setOpen(true)}>
+        + {t('settings.addEngineBranch')}
+      </button>
+    )
+  }
+
+  const canSubmit = label.trim() && configRoot.trim() && pathValid !== false
+
+  return (
+    <div className="engine-add-form">
+      <div className="engine-add-form__row">
+        <label>{t('settings.engineLabel')}</label>
+        <input type="text" className="glass-input" value={label} placeholder="e.g. engine/cc"
+          onChange={(e) => setLabel(e.target.value)} />
+      </div>
+      <div className="engine-add-form__row">
+        <label>{t('settings.engineConfigRoot')}</label>
+        <div className="engine-add-form__path-input">
+          <input type="text" className="glass-input" value={configRoot} placeholder="~/.codefuse/engine/cc"
+            onChange={(e) => setConfigRoot(e.target.value)} />
+          {checking && <span className="engine-add-form__status">...</span>}
+          {!checking && pathValid === true && <span className="engine-add-form__status engine-add-form__status--valid">{t('settings.enginePathValid')}</span>}
+          {!checking && pathValid === false && <span className="engine-add-form__status engine-add-form__status--invalid">{t('settings.enginePathInvalid')}</span>}
+        </div>
+      </div>
+      <div className="engine-add-form__actions">
+        <button className="engine-add-form__cancel" onClick={() => { setOpen(false); setLabel(''); setConfigRoot(''); setPathValid(null) }}>
+          {t('settings.cancel')}
+        </button>
+        <button className="engine-add-form__submit" disabled={!canSubmit}
+          onClick={async () => {
+            try {
+              const inst = await addEngineInstance(label.trim(), configRoot.trim())
+              onAdd(inst)
+              setOpen(false); setLabel(''); setConfigRoot(''); setPathValid(null)
+            } catch (e) { console.error('Failed to add engine instance:', e) }
+          }}>
+          {t('settings.add')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════
+// Main IslandSection
+// ═══════════════════════════════════════════════
+
+export function IslandSection() {
+  const { t } = useTranslation()
+  const [activeTab, setActiveTab] = useState<IslandTab>('overview')
+
+  const tabs: { id: IslandTab; labelKey: string; icon: string }[] = [
+    { id: 'overview', labelKey: 'settings.island.tabs.overview', icon: '✧' },
+    { id: 'display', labelKey: 'settings.island.tabs.display', icon: '◎' },
+    { id: 'sound', labelKey: 'settings.island.tabs.sound', icon: '⌁' },
+    { id: 'shortcuts', labelKey: 'settings.island.tabs.shortcuts', icon: '⌘' },
+    { id: 'integration', labelKey: 'settings.island.tabs.integration', icon: '◌' },
+    { id: 'advanced', labelKey: 'settings.island.tabs.advanced', icon: '⌁' },
+  ]
+
+  return (
+    <SettingSection title={t('settings.island.title')} description={t('settings.island.desc')}>
+      <div className="island-tabs">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            className={`island-tab ${activeTab === tab.id ? 'island-tab--active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            <span className="island-tab__icon" aria-hidden="true">{tab.icon}</span>
+            {t(tab.labelKey)}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && <OverviewTab />}
+      {activeTab === 'display' && <DisplayTab />}
+      {activeTab === 'sound' && <SoundTab />}
+      {activeTab === 'shortcuts' && <ShortcutsTab />}
+      {activeTab === 'integration' && <IntegrationTab />}
+      {activeTab === 'advanced' && <AdvancedTab />}
+    </SettingSection>
+  )
+}
+
+// ── Overview Tab ──
+function OverviewTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
+  const [displays, setDisplays] = useState<BackendDisplayInfo[]>([])
+
+  useEffect(() => {
+    listDisplays().then(setDisplays)
+    if (!isTauri()) return
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<BackendDisplayInfo[]>('display-changed', (e) => { setDisplays(e.payload) }).then((fn) => { unlisten = fn })
+    })
+    return () => { unlisten?.() }
+  }, [])
+
+  const monitorOptions = [
+    { value: 'primary', label: t('settings.mainDisplay') },
+    { value: 'auto', label: t('settings.autoFollowFocus') },
+    ...displays
+      .filter((d) => !d.isPrimary)
+      .map((d) => ({ value: d.id, label: d.label })),
+  ]
+  const displayMonitorValue = normalizeDisplayMonitorValue(config.displayMonitor, displays)
+
+  const idleTimeoutOptions = [
+    { value: '0', label: t('settings.idleTimeoutDisabled') },
+    { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
+    { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
+    { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
+    { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
+  ]
+
+  const defaultMascotOptions = [
+    { value: 'claude-code', label: 'Claude Code' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'gemini-cli', label: 'Gemini CLI' },
+    { value: 'cursor', label: 'Cursor' },
+    { value: 'copilot', label: 'GitHub Copilot' },
+  ]
+
+  const pluginSessionOptions = [
+    { value: 'separate', label: t('settings.pluginSessionSeparate') },
+    { value: 'merge', label: t('settings.pluginSessionMerge') },
+    { value: 'hide', label: t('settings.pluginSessionHide') },
+  ]
+
+  const resetIslandDefaults = () => {
+    config.resetIslandDefaults()
+    setSoundEnabled(true)
+    setSoundVolume(80)
+    setSoundPack('synth')
+    setProbeSessionFilter(false)
+    setSoundQuietHours(false, '22:00', '08:00')
+    setDisplayId('auto')
+      .then(() => repositionNotch('auto', 0))
+      .catch((e) => console.error('Failed to reset island position:', e))
+  }
+
+  return (
+    <>
+      <div className="overview-showcase">
+        <div className="overview-hero" aria-hidden="true">
+          <div className="overview-hero__wallpaper">
+            <span className="overview-hero__stripe overview-hero__stripe--blue" />
+            <span className="overview-hero__stripe overview-hero__stripe--cyan" />
+            <span className="overview-hero__stripe overview-hero__stripe--warm" />
+            <span className="overview-hero__stripe overview-hero__stripe--gold" />
+          </div>
+          <div className="overview-live-pill">
+            <span className="overview-live-pill__mark">A</span>
+            <span className="overview-live-pill__copy">
+              <strong>{t('settings.island.overview.previewTitle', { defaultValue: 'Codex is running tests' })}</strong>
+              <span>{t('settings.island.overview.previewMeta', { defaultValue: 'evolab · bun test:run · 2m' })}</span>
+            </span>
+            <span className="overview-live-pill__count">11</span>
+          </div>
+        </div>
+
+        <div className="overview-mode-grid">
+          <button
+            className={`overview-mode-card ${config.interactionMode === 'minimal' ? 'overview-mode-card--active' : ''}`}
+            type="button"
+            onClick={() => config.updateConfig('interactionMode', 'minimal')}
+          >
+            <span className="overview-mode-card__island" />
+            <strong>{t('settings.island.overview.quietAssistant', { defaultValue: 'Quiet Assistant' })}</strong>
+            <span>{t('settings.island.overview.quietAssistantDesc', { defaultValue: 'Stays out of the way and only appears for approvals, questions, failures, and completions.' })}</span>
+          </button>
+          <button
+            className={`overview-mode-card ${config.interactionMode === 'persistent' ? 'overview-mode-card--active' : ''}`}
+            type="button"
+            onClick={() => config.updateConfig('interactionMode', 'persistent')}
+          >
+            <span className="overview-mode-card__island" />
+            <strong>{t('settings.island.overview.persistentMonitor', { defaultValue: 'Persistent Monitor' })}</strong>
+            <span>{t('settings.island.overview.persistentMonitorDesc', { defaultValue: 'Keeps the mini island visible so you can confirm the active session and runtime state.' })}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="overview-section-heading">
+        <h3>{t('settings.island.overview.coreSwitches', { defaultValue: 'Core Switches' })}</h3>
+        <p>{t('settings.island.overview.coreSwitchesDesc', { defaultValue: 'Primary controls for visibility, focus behavior, suppression, mascots, and plugin sessions.' })}</p>
+      </div>
+
+      <SettingGroup>
+        <SettingRow label={t('settings.islandResetDefaults')} description={t('settings.islandResetDefaultsDesc')}>
+          <GlassButton variant="secondary" onClick={resetIslandDefaults}>
+            {t('settings.reset')}
+          </GlassButton>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
+          <Dropdown value={displayMonitorValue} options={monitorOptions}
+            onChange={(v) => {
+              config.updateConfig('displayMonitor', v)
+              setDisplayId(v)
+                .then(() => repositionNotch(v))
+                .catch((e) => console.error('Failed to set display:', e))
+            }} minWidth={160} />
+        </SettingRow>
+        <SettingRow label={t('settings.followFocus')} description={t('settings.followFocusDesc')}>
+          <Toggle checked={config.followFocus} onChange={(v) => {
+            config.updateConfig('followFocus', v)
+            persistIslandFeatureFlags({ followFocus: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.smartSuppression')} description={t('settings.smartSuppressionDesc')}>
+          <Toggle checked={config.smartSuppression} onChange={(v) => config.updateConfig('smartSuppression', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.autoCollapse')} description={t('settings.autoCollapseDesc')}>
+          <Toggle checked={config.autoCollapse} onChange={(v) => config.updateConfig('autoCollapse', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.defaultMascot')} description={t('settings.defaultMascotDesc')}>
+          <Dropdown value={config.defaultMascotSource} options={defaultMascotOptions}
+            onChange={(v) => config.updateConfig('defaultMascotSource', v)} minWidth={150} />
+        </SettingRow>
+        <SettingRow label={t('settings.pluginSessionMode')} description={t('settings.pluginSessionModeDesc')}>
+          <Dropdown
+            value={config.pluginSessionMode}
+            options={pluginSessionOptions}
+            onChange={(v) => config.updateConfig('pluginSessionMode', v as 'separate' | 'merge' | 'hide')}
+            minWidth={140}
+          />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.overview.timing')}>
+        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
+          <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
+            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
+        </SettingRow>
+        <SettingRow label={t('settings.carouselInterval')} description={t('settings.carouselIntervalDesc')}>
+          <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
+            onChange={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.processingTimeout')} description={t('settings.processingTimeoutDesc')}>
+          <Slider value={config.processingTimeoutSecs} min={30} max={300} step={10}
+            onChange={(v) => config.updateConfig('processingTimeoutSecs', v)} unit="s" />
+        </SettingRow>
+        <SettingRow label={t('settings.sessionTimeout')} description={t('settings.sessionTimeoutDesc')}>
+          <Slider value={config.sessionTimeoutMinutes} min={5} max={120} step={5}
+            onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.islandInteraction')}>
+        <SettingRow label={t('settings.interactionMode')} description={t('settings.interactionModeDesc')}>
+          <Dropdown value={config.interactionMode}
+            options={[
+              { value: 'minimal', label: t('settings.interactionMinimal') },
+              { value: 'persistent', label: t('settings.interactionPersistent') },
+            ]}
+            onChange={(v) => config.updateConfig('interactionMode', v as 'persistent' | 'minimal')} minWidth={150} />
+        </SettingRow>
+        <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
+          <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
+            onChange={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
+        </SettingRow>
+        <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
+          <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.taskCompleteDwell')} description={t('settings.taskCompleteDwellDesc')}>
+          <Slider value={config.taskCompleteDwellSeconds} min={1} max={30} step={1}
+            onChange={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
+        </SettingRow>
+        <SettingRow label={t('settings.escSilenceDuration')} description={t('settings.escSilenceDurationDesc')}>
+          <Slider value={config.escSilenceDuration} min={10} max={300} step={10}
+            onChange={(v) => config.updateConfig('escSilenceDuration', v)} unit="s" />
+        </SettingRow>
+        <SettingRow label={t('settings.hoverExpandDelay')} description={t('settings.hoverExpandDelayDesc')}>
+          <Slider value={config.hoverExpandDelay} min={0} max={1000} step={50}
+            onChange={(v) => config.updateConfig('hoverExpandDelay', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.microHoverExpandDelay')} description={t('settings.microHoverExpandDelayDesc')}>
+          <Slider value={config.microHoverExpandDelay} min={0} max={1000} step={50}
+            onChange={(v) => config.updateConfig('microHoverExpandDelay', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.collapseDelay')} description={t('settings.collapseDelayDesc')}>
+          <Slider value={config.collapseDelay} min={100} max={1000} step={50}
+            onChange={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
+          <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.tipsEnabled')} description={t('settings.tipsEnabledDesc')}>
+          <Toggle checked={config.tipsEnabled} onChange={(v) => {
+            config.updateConfig('tipsEnabled', v)
+            persistIslandFeatureFlags({ tipsEnabled: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.hapticFeedback')} description={t('settings.hapticFeedbackDesc')}>
+          <Toggle checked={config.hapticOnHover} onChange={(v) => config.updateConfig('hapticOnHover', v)} />
+        </SettingRow>
+        {config.hapticOnHover && (
+          <SettingRow label={t('settings.hapticIntensity')} description={t('settings.hapticIntensityDesc')}>
+            <Slider
+              value={config.hapticIntensity}
+              min={1}
+              max={3}
+              step={1}
+              onChange={(v) => config.updateConfig('hapticIntensity', v)}
+            />
+          </SettingRow>
+        )}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.experimentalFeatures')}>
+        {config.labFeatures.map((feature) => (
+          <SettingRow key={feature.id} label={feature.label} description={feature.description}>
+            <Toggle checked={feature.enabled} onChange={() => config.toggleLabFeature(feature.id)} />
+          </SettingRow>
+        ))}
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Display Tab ──
+function DisplayTab() {
+  const { t, i18n } = useTranslation()
+  const config = useConfigStore()
+  const { themes, activeThemeName, setActiveTheme, colorTheme, setColorTheme } = useThemeStore()
+  const isZh = i18n.language?.startsWith('zh')
+  const [displays, setDisplays] = useState<BackendDisplayInfo[]>([])
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => {
+    listDisplays().then(setDisplays)
+    if (!isTauri()) return
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<BackendDisplayInfo[]>('display-changed', (e) => { setDisplays(e.payload) }).then((fn) => { unlisten = fn })
+    })
+    return () => { unlisten?.() }
+  }, [])
+
+  const previewLayout = useCallback((mode: 'micro' | 'compact' | 'expanded' | 'completion') => {
+    previewIslandLayout(mode).catch((e) => console.error('Failed to preview island layout:', e))
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
+    previewTimerRef.current = setTimeout(() => {
+      clearIslandLayoutPreview().catch(() => {})
+      previewTimerRef.current = undefined
+    }, 1800)
+  }, [])
+
+  useEffect(() => () => {
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
+    clearIslandLayoutPreview().catch(() => {})
+  }, [])
+
+  const costModelOptions = Object.entries(MODEL_PRICING).map(([id, m]) => ({ value: id, label: m.label }))
+  const themeOptions = themes.map((th) => ({
+    value: th.name,
+    label: th.displayName
+      ? th.isCodexPet ? `Codex Pet: ${th.displayName}` : th.displayName
+      : th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' '),
+  }))
+  const fontSizeOptions = [
+    { value: '11px', label: '11px — Small' }, { value: '12px', label: '12px — Compact' },
+    { value: '13px', label: '13px — Default' }, { value: '14px', label: '14px — Medium' },
+    { value: '16px', label: '16px — Large' },
+  ]
+  const hoverSpeedOptions = [
+    { value: 'instant', label: t('settings.hoverSpeedInstant') },
+    { value: 'normal', label: t('settings.hoverSpeedNormal') },
+    { value: 'slow', label: t('settings.hoverSpeedSlow') },
+  ]
+  const tokenDisplayOptions = [
+    { value: 'both', label: t('settings.tokensBoth') },
+    { value: 'tokens', label: t('settings.tokensOnly') },
+    { value: 'cost', label: t('settings.costOnly') },
+    { value: 'hidden', label: t('settings.hidden') },
+  ]
+  const monitorOptions = [
+    { value: 'primary', label: t('settings.mainDisplay') },
+    { value: 'auto', label: t('settings.autoFollowFocus') },
+    ...displays
+      .filter((d) => !d.isPrimary)
+      .map((d) => ({ value: d.id, label: d.label })),
+  ]
+  const displayMonitorValue = normalizeDisplayMonitorValue(config.displayMonitor, displays)
+
+  const islandPositionLabel = config.panelHorizontalOffset === 0
+    ? t('settings.islandPositionCenter', { defaultValue: 'Centered' })
+    : config.panelHorizontalOffset < 0
+      ? t('settings.islandPositionLeft', { defaultValue: '{{value}}px left', value: Math.abs(config.panelHorizontalOffset) })
+      : t('settings.islandPositionRight', { defaultValue: '{{value}}px right', value: config.panelHorizontalOffset })
+
+  return (
+    <>
+      <SettingGroup label={t('settings.colorTheme')}>
+        <div className="color-theme-cards">
+          {COLOR_THEMES.map((ct) => (
+            <div key={ct.id} className={`color-theme-card ${colorTheme === ct.id ? 'color-theme-card--active' : ''}`}
+              onClick={() => setColorTheme(ct.id)}>
+              <div className="color-theme-card__preview">
+                <div className="color-theme-card__swatch" style={{ background: ct.bg }}>
+                  <div className="color-theme-card__swatch-card" style={{ background: ct.card }} />
+                  <div className="color-theme-card__swatch-dot" style={{ background: ct.accent }} />
+                </div>
+              </div>
+              <div className="color-theme-card__label">{isZh ? ct.labelZh : ct.label}</div>
+              <div className="color-theme-card__tag">{ct.tag}</div>
+            </div>
+          ))}
+        </div>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.theme', { defaultValue: 'Theme' })}>
+        <SettingRow label={t('settings.activeTheme')} description={t('settings.activeThemeDesc')}>
+          <Dropdown value={activeThemeName} options={themeOptions}
+            onChange={(v) => {
+              setActiveTheme(v)
+              setActiveBackendTheme(v).catch((e) => console.error('Failed to persist active theme:', e))
+            }} minWidth={160} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.notchLayout')}>
+        <SettingRow label={t('settings.islandSurfaceMode', { defaultValue: '展示模式' })} description={t('settings.islandSurfaceModeDesc', { defaultValue: '在灵动岛和宠物状态面板之间切换。' })}>
+          <Dropdown
+            value={config.islandSurfaceMode}
+            options={[
+              { value: 'island', label: t('settings.surfaceIsland', { defaultValue: '灵动岛' }) },
+              { value: 'pet', label: t('settings.surfacePet', { defaultValue: '宠物' }) },
+            ]}
+            onChange={(v) => {
+              const mode = v as 'island' | 'pet'
+              config.updateConfig('islandSurfaceMode', mode)
+              persistIslandSurfaceOptions({ islandSurfaceMode: mode })
+              previewLayout(mode === 'pet' ? 'expanded' : 'compact')
+            }}
+            minWidth={150}
+          />
+        </SettingRow>
+        {config.islandSurfaceMode === 'pet' && (
+          <SettingRow label={t('settings.islandPetScale', { defaultValue: '宠物大小' })} description={`${config.islandPetScale}%`}>
+            <Slider
+              value={config.islandPetScale}
+              min={50}
+              max={120}
+              step={5}
+              onChange={(v) => {
+                config.updateConfig('islandPetScale', v)
+                persistIslandSurfaceOptions({ islandPetScale: v })
+                previewLayout('expanded')
+              }}
+              unit="%"
+            />
+          </SettingRow>
+        )}
+        <SettingRow label={t('settings.interactionMode')} description={t('settings.interactionModeDesc')}>
+          <Dropdown value={config.interactionMode}
+            options={[
+              { value: 'minimal', label: t('settings.interactionMinimal') },
+              { value: 'persistent', label: t('settings.interactionPersistent') },
+            ]}
+            onChange={(v) => {
+              config.updateConfig('interactionMode', v as 'persistent' | 'minimal')
+              previewLayout(v === 'minimal' ? 'micro' : 'compact')
+            }} minWidth={150} />
+        </SettingRow>
+        <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
+          <Dropdown value={displayMonitorValue} options={monitorOptions}
+            onChange={(v) => {
+              config.updateConfig('displayMonitor', v)
+              setDisplayId(v)
+                .then(() => repositionNotch(v))
+                .catch((e) => console.error('Failed to set display:', e))
+            }} minWidth={180} />
+        </SettingRow>
+        <SettingRow label={t('settings.collapsedWidthScale')} description={`${config.collapsedWidthScale}%`}>
+          <Slider value={config.collapsedWidthScale} min={50} max={150} step={5}
+            onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact') }} unit="%" />
+        </SettingRow>
+        <SettingRow label={t('settings.notchHeightMode')} description={t('settings.notchHeightModeDesc')}>
+          <Dropdown value={config.notchHeightMode}
+            options={[
+              { value: 'matchNotch', label: t('settings.heightMatchNotch') },
+              { value: 'matchMenuBar', label: t('settings.heightMatchMenuBar') },
+              { value: 'custom', label: t('settings.heightCustom') },
+            ]}
+            onChange={(v) => { config.updateConfig('notchHeightMode', v as 'matchNotch' | 'matchMenuBar' | 'custom'); previewLayout('compact') }} minWidth={160} />
+        </SettingRow>
+        {config.notchHeightMode === 'custom' && (
+          <SettingRow label={t('settings.customNotchHeight')} description={`${config.customNotchHeight}px`}>
+            <Slider value={config.customNotchHeight} min={24} max={60} step={1}
+              onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact') }} unit="px" />
+          </SettingRow>
+        )}
+        <SettingRow label={t('settings.allowHorizontalDrag')} description={t('settings.allowHorizontalDragDesc')}>
+          <Toggle checked={config.allowHorizontalDrag} onChange={(v) => config.updateConfig('allowHorizontalDrag', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.resetIslandPosition', { defaultValue: 'Reset Island Position' })} description={islandPositionLabel}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="settings-mini-button" type="button" onClick={() => config.updateConfig('panelHorizontalOffset', 0)}>
+              {t('settings.resetCenter', { defaultValue: 'Reset to Center' })}
+            </button>
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.panelSize')}>
+        <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Idle Pill Width' })} description={`${config.microPillWidth}px`}>
+          <Slider value={config.microPillWidth} min={84} max={180} step={4}
+            onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro') }} unit="px" />
+        </SettingRow>
+        <SettingRow label={t('settings.compactPillWidth', { defaultValue: 'Compact Island Width' })} description={`${Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))}px`}>
+          <Slider value={config.compactPillWidth} min={260} max={520} step={10}
+            onChange={(v) => { config.updateConfig('compactPillWidth', v); previewLayout('compact') }} unit="px" />
+        </SettingRow>
+        <SettingRow label={t('settings.panelMaxWidth', { defaultValue: 'Expanded Island Width' })} description={`${config.panelMaxWidth}px`}>
+          <Slider value={config.panelMaxWidth} min={480} max={760} step={10}
+            onChange={(v) => { config.updateConfig('panelMaxWidth', v); previewLayout('expanded') }} unit="px" />
+        </SettingRow>
+        <SettingRow label={t('settings.hoverSpeed')} description={t('settings.hoverSpeedDesc')}>
+          <Dropdown value={config.hoverSpeed} options={hoverSpeedOptions}
+            onChange={(v) => config.updateConfig('hoverSpeed', v as 'instant' | 'normal' | 'slow')} minWidth={160} />
+        </SettingRow>
+        <SettingRow label={t('settings.contentFontSize')}>
+          <Dropdown value={config.contentFontSize} options={fontSizeOptions}
+            onChange={(v) => config.updateConfig('contentFontSize', v)} minWidth={160} />
+        </SettingRow>
+        <SettingRow label={t('settings.completionCardHeight')} description={`${config.completionCardHeight}px`}>
+          <Slider value={config.completionCardHeight} min={80} max={200} step={10}
+            onChange={(v) => { config.updateConfig('completionCardHeight', v); previewLayout('completion') }} unit="px" />
+        </SettingRow>
+        <SettingRow label={t('settings.maxPanelHeight')} description={`${config.maxPanelHeight}px`}>
+          <Slider value={config.maxPanelHeight} min={300} max={800} step={20}
+            onChange={(v) => { config.updateConfig('maxPanelHeight', v); previewLayout('expanded') }} unit="px" />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.tokenCostDisplay')}>
+        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
+          <Toggle checked={config.showUsageQuota} onChange={(v) => config.updateConfig('showUsageQuota', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
+          <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.tokenDisplayMode')} description={t('settings.tokenDisplayModeDesc')}>
+          <Dropdown value={config.tokenDisplayMode} options={tokenDisplayOptions}
+            onChange={(v) => config.updateConfig('tokenDisplayMode', v as 'tokens' | 'cost' | 'both' | 'hidden')} minWidth={150} />
+        </SettingRow>
+        <SettingRow label={t('settings.costModel')} description={t('settings.costModelDesc')}>
+          <Dropdown value={config.costModel} options={costModelOptions}
+            onChange={(v) => config.updateConfig('costModel', v)} minWidth={170} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
+          <Slider value={config.maxVisibleSessions} min={2} max={15} step={1}
+            onChange={(v) => config.updateConfig('maxVisibleSessions', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
+          <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.aiMessageLines')} description={t('settings.aiMessageLinesDesc')}>
+          <Slider value={config.aiMessageLines} min={1} max={5} step={1}
+            onChange={(v) => config.updateConfig('aiMessageLines', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.agentActivity')} description={t('settings.agentActivityDesc')}>
+          <Toggle checked={config.showAgentActivityDetails} onChange={(v) => config.updateConfig('showAgentActivityDetails', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.pixelCursor')} description={t('settings.pixelCursorDesc')}>
+          <Toggle checked={config.pixelCursorEnabled} onChange={(v) => {
+            config.updateConfig('pixelCursorEnabled', v)
+            persistIslandFeatureFlags({ pixelCursorEnabled: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.confettiOnComplete')} description={t('settings.confettiOnCompleteDesc')}>
+          <Toggle checked={config.confettiEnabled} onChange={(v) => {
+            config.updateConfig('confettiEnabled', v)
+            persistIslandFeatureFlags({ confettiEnabled: v })
+          }} />
+        </SettingRow>
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Sound Tab ──
+function SoundTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
+  const sessionEvents = config.soundEvents.filter((e) => e.group === 'session')
+  const interactionEvents = config.soundEvents.filter((e) => e.group === 'interaction')
+  const systemEvents = config.soundEvents.filter((e) => e.group === 'system')
+  const resolveRule = (eventId: string): SoundRule => (
+    config.soundRules[eventId] ?? { enabled: config.soundEvents.find((e) => e.id === eventId)?.enabled ?? true, sound: 'default' }
+  )
+
+  const soundPackOptions = [
+    { value: 'eight-bit', label: t('settings.eightBitRetro') },
+    { value: 'subtle', label: t('settings.subtle') },
+    { value: 'synth', label: t('settings.soundPackSynth', { defaultValue: 'Synth' }) },
+    { value: 'system', label: t('settings.soundPackSystem', { defaultValue: 'System' }) },
+    { value: 'none', label: t('settings.soundPackNone', { defaultValue: 'None' }) },
+    { value: 'custom', label: t('settings.custom') },
+  ]
+  const soundChoiceOptions = [
+    { value: 'default', label: t('settings.soundDefault', { defaultValue: 'Default' }) },
+    { value: 'builtin:hero', label: 'Hero' },
+    { value: 'builtin:glass', label: 'Glass' },
+    { value: 'builtin:ping', label: 'Ping' },
+    { value: 'builtin:pop', label: 'Pop' },
+    { value: 'builtin:submarine', label: 'Submarine' },
+    { value: 'builtin:basso', label: 'Basso' },
+    { value: 'builtin:sosumi', label: 'Sosumi' },
+    { value: 'builtin:bottle', label: 'Bottle' },
+    { value: 'builtin:tink', label: 'Tink' },
+    { value: 'builtin:morse', label: 'Morse' },
+    { value: 'builtin:funk', label: 'Funk' },
+    { value: 'builtin:purr', label: 'Purr' },
+    { value: 'builtin:blow', label: 'Blow' },
+    { value: 'builtin:frog', label: 'Frog' },
+    { value: 'synth', label: t('settings.soundPackSynth', { defaultValue: 'Synth' }) },
+    { value: 'eight-bit', label: t('settings.eightBitRetro') },
+    { value: 'system', label: t('settings.soundPackSystem', { defaultValue: 'System' }) },
+    { value: 'off', label: t('settings.soundPackNone', { defaultValue: 'None' }) },
+    ...config.customSounds.map((sound) => ({ value: `custom:${sound.id}`, label: sound.name })),
+  ]
+  const toggleSoundEvent = (eventId: string, enabled: boolean) => {
+    const current = resolveRule(eventId)
+    const next = { ...current, enabled }
+    config.updateConfig('soundEvents', config.soundEvents.map((event) => (
+      event.id === eventId ? { ...event, enabled } : event
+    )))
+    config.updateConfig('soundRules', { ...config.soundRules, [eventId]: next })
+    setSoundEventRule(eventId, next.enabled, next.sound)
+      .catch((e) => console.error('Failed to set sound event rule:', e))
+  }
+  const updateSoundChoice = (eventId: string, sound: SoundChoice) => {
+    const current = resolveRule(eventId)
+    const next = { ...current, sound, enabled: sound === 'off' ? false : current.enabled }
+    config.updateConfig('soundEvents', config.soundEvents.map((event) => (
+      event.id === eventId ? { ...event, enabled: next.enabled } : event
+    )))
+    config.updateConfig('soundRules', { ...config.soundRules, [eventId]: next })
+    setSoundEventRule(eventId, next.enabled, next.sound)
+      .catch((e) => console.error('Failed to set sound event rule:', e))
+  }
+  const previewSoundEvent = (eventId: string) => {
+    const current = resolveRule(eventId)
+    setSoundEventRule(eventId, true, current.sound)
+      .then(() => invoke('play_sound', { event: eventId }))
+      .finally(() => setSoundEventRule(eventId, current.enabled, current.sound).catch(() => {}))
+      .catch((e) => console.error('Failed to preview sound:', e))
+  }
+  const importCustomSound = async () => {
+    let selected: string | null = null
+    if (isTauri()) {
+      const result = await openDialog({
+        multiple: false,
+        filters: [{
+          name: t('settings.audioFiles', { defaultValue: 'Audio Files' }),
+          extensions: ['mp3', 'wav', 'ogg', 'flac'],
+        }],
+      })
+      selected = Array.isArray(result) ? result[0] ?? null : result
+    } else {
+      selected = window.prompt('Audio file path')?.trim() || null
+    }
+    if (!selected) return
+    try {
+      const sound = await importCustomSoundFile(selected)
+      const next = [...config.customSounds, sound]
+      config.updateConfig('customSounds', next)
+      setCustomSounds(next).catch((e) => console.error('Failed to set custom sounds:', e))
+    } catch (e) {
+      console.error('Failed to import custom sound:', e)
+    }
+  }
+  const deleteCustomSound = (soundId: string) => {
+    const nextSounds = config.customSounds.filter((sound) => sound.id !== soundId)
+    const customChoice = `custom:${soundId}`
+    const nextRules = Object.fromEntries(Object.entries(config.soundRules).map(([eventId, rule]) => [
+      eventId,
+      rule.sound === customChoice ? { ...rule, sound: 'default' as const } : rule,
+    ]))
+    config.updateConfig('customSounds', nextSounds)
+    config.updateConfig('soundRules', nextRules)
+    setCustomSounds(nextSounds).catch((e) => console.error('Failed to set custom sounds:', e))
+    Object.entries(nextRules).forEach(([eventId, rule]) => {
+      setSoundEventRule(eventId, rule.enabled, rule.sound).catch(() => {})
+    })
+  }
+
+  const renderSoundEvent = (event: typeof config.soundEvents[number]) => {
+    const rule = resolveRule(event.id)
+    return (
+      <div key={event.id} className="sound-event-row">
+        <span className="sound-event-row__label">{event.label}</span>
+        <Dropdown value={rule.sound} options={soundChoiceOptions}
+          onChange={(v) => updateSoundChoice(event.id, v as SoundChoice)} minWidth={130} />
+        <button className="sound-event-row__play" onClick={() => previewSoundEvent(event.id)} title={t('settings.previewSound')}>
+          ▶
+        </button>
+        <Toggle checked={rule.enabled} onChange={() => toggleSoundEvent(event.id, !rule.enabled)} disabled={!config.soundEnabled} />
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <SettingGroup>
+        <SettingRow label={t('settings.enableSounds')} description={t('settings.enableSoundsDesc')}>
+          <Toggle checked={config.soundEnabled} onChange={(v) => { config.updateConfig('soundEnabled', v); setSoundEnabled(v) }} />
+        </SettingRow>
+        <SettingRow label={t('settings.volume')}>
+          <Slider value={config.volume} min={0} max={100}
+            onChange={(v) => { config.updateConfig('volume', v); setSoundVolume(v) }} unit="%" />
+        </SettingRow>
+        <SettingRow label={t('settings.soundPack')} description={t('settings.soundPackDesc')}>
+          <Dropdown value={config.soundPack} options={soundPackOptions}
+            onChange={(v) => {
+              config.updateConfig('soundPack', v as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom')
+              setSoundPack(v)
+            }} minWidth={130} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.sessionEvents')}>
+        {sessionEvents.map(renderSoundEvent)}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.interactionEvents')}>
+        {interactionEvents.map(renderSoundEvent)}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.systemEvents')}>
+        {systemEvents.map(renderSoundEvent)}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.customSounds', { defaultValue: 'Custom Sounds' })}>
+        {config.customSounds.map((sound) => (
+          <div key={sound.id} className="sound-event-row">
+            <span className="sound-event-row__label" title={sound.path}>{sound.name}</span>
+            <button className="settings-mini-button" type="button" onClick={() => deleteCustomSound(sound.id)}>
+              {t('settings.delete', { defaultValue: 'Delete' })}
+            </button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 8 }}>
+          <GlassButton variant="secondary" onClick={importCustomSound}>
+            {t('settings.add', { defaultValue: 'Add' })}
+          </GlassButton>
+        </div>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.quietHours', { defaultValue: 'Quiet Hours' })}>
+        <SettingRow label={t('settings.quietHoursEnabled', { defaultValue: 'Enable Quiet Hours' })}
+          description={t('settings.quietHoursEnabledDesc', { defaultValue: 'Suppress sounds during specified hours' })}>
+          <Toggle checked={config.quietHours.enabled}
+            onChange={(v) => {
+              const next = { ...config.quietHours, enabled: v }
+              config.updateConfig('quietHours', next)
+              setSoundQuietHours(next.enabled, next.start, next.end)
+                .catch((e) => console.error('Failed to set quiet hours:', e))
+            }} />
+        </SettingRow>
+        {config.quietHours.enabled && (
+          <>
+            <SettingRow label={t('settings.quietHoursStart', { defaultValue: 'Start Time' })} description={config.quietHours.start}>
+              <input type="time" className="glass-input" value={config.quietHours.start}
+                onChange={(e) => {
+                  const next = { ...config.quietHours, start: e.target.value }
+                  config.updateConfig('quietHours', next)
+                  setSoundQuietHours(next.enabled, next.start, next.end)
+                    .catch((err) => console.error('Failed to set quiet hours:', err))
+                }} style={{ minWidth: 120 }} />
+            </SettingRow>
+            <SettingRow label={t('settings.quietHoursEnd', { defaultValue: 'End Time' })} description={config.quietHours.end}>
+              <input type="time" className="glass-input" value={config.quietHours.end}
+                onChange={(e) => {
+                  const next = { ...config.quietHours, end: e.target.value }
+                  config.updateConfig('quietHours', next)
+                  setSoundQuietHours(next.enabled, next.start, next.end)
+                    .catch((err) => console.error('Failed to set quiet hours:', err))
+                }} style={{ minWidth: 120 }} />
+            </SettingRow>
+          </>
+        )}
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingRow label={t('settings.probeFilter')} description={t('settings.probeFilterDesc')}>
+          <Toggle checked={config.probeSessionFilter} onChange={(v) => {
+            config.updateConfig('probeSessionFilter', v)
+            setProbeSessionFilter(v)
+          }} />
+        </SettingRow>
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Shortcuts Tab ──
+function ShortcutsTab() {
+  const { t } = useTranslation()
+  const shortcuts = useConfigStore((s) => s.shortcuts)
+  const config = useConfigStore()
+  const syncGlobalActions = (patch: Partial<{
+    shortcutApprove: string
+    shortcutApproveEnabled: boolean
+    shortcutDeny: string
+    shortcutDenyEnabled: boolean
+    shortcutSkip: string
+    shortcutSkipEnabled: boolean
+  }>) => {
+    const next = {
+      approve: patch.shortcutApprove ?? config.shortcutApprove,
+      approveEnabled: patch.shortcutApproveEnabled ?? config.shortcutApproveEnabled,
+      deny: patch.shortcutDeny ?? config.shortcutDeny,
+      denyEnabled: patch.shortcutDenyEnabled ?? config.shortcutDenyEnabled,
+      skip: patch.shortcutSkip ?? config.shortcutSkip,
+      skipEnabled: patch.shortcutSkipEnabled ?? config.shortcutSkipEnabled,
+    }
+    setGlobalActionShortcuts(next).catch((e) => console.error('Failed to set global action shortcuts:', e))
+  }
+  const setShortcut = <K extends 'shortcutApprove' | 'shortcutDeny' | 'shortcutSkip'>(key: K, value: string) => {
+    config.updateConfig(key, value)
+    syncGlobalActions({ [key]: value })
+  }
+  const setShortcutEnabled = <K extends 'shortcutApproveEnabled' | 'shortcutDenyEnabled' | 'shortcutSkipEnabled'>(key: K, value: boolean) => {
+    config.updateConfig(key, value)
+    syncGlobalActions({ [key]: value })
+  }
+
+  return (
+    <>
+      <SettingGroup label={t('settings.globalShortcuts', { defaultValue: 'Global Shortcuts' })}>
+        <SettingRow
+          label={t('settings.shortcutApprove', { defaultValue: 'Approve current permission' })}
+          description={t('settings.shortcutApproveDesc', { defaultValue: 'Works even when the island is not focused' })}
+        >
+          <Toggle checked={config.shortcutApproveEnabled} onChange={(v) => setShortcutEnabled('shortcutApproveEnabled', v)} />
+          <GlassInput value={config.shortcutApprove} onChange={(e) => setShortcut('shortcutApprove', e.target.value)} placeholder="CommandOrControl+Shift+A" />
+        </SettingRow>
+        <SettingRow
+          label={t('settings.shortcutDeny', { defaultValue: 'Deny current permission' })}
+          description={t('settings.shortcutDenyDesc', { defaultValue: 'Sends a deny response to the oldest pending permission' })}
+        >
+          <Toggle checked={config.shortcutDenyEnabled} onChange={(v) => setShortcutEnabled('shortcutDenyEnabled', v)} />
+          <GlassInput value={config.shortcutDeny} onChange={(e) => setShortcut('shortcutDeny', e.target.value)} placeholder="CommandOrControl+Shift+D" />
+        </SettingRow>
+        <SettingRow
+          label={t('settings.shortcutSkip', { defaultValue: 'Skip current question' })}
+          description={t('settings.shortcutSkipDesc', { defaultValue: 'Selects the first answer for the oldest pending question' })}
+        >
+          <Toggle checked={config.shortcutSkipEnabled} onChange={(v) => setShortcutEnabled('shortcutSkipEnabled', v)} />
+          <GlassInput value={config.shortcutSkip} onChange={(e) => setShortcut('shortcutSkip', e.target.value)} placeholder="CommandOrControl+Shift+S" />
+        </SettingRow>
+      </SettingGroup>
+      <SettingGroup label={t('settings.inWindowShortcuts', { defaultValue: 'In-Window Shortcuts' })}>
+        <div className="shortcuts-table">
+          {shortcuts.map((s) => (
+            <ShortcutRow key={s.action} action={s.action} label={s.label} keys={s.keys} />
+          ))}
+        </div>
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Integration Tab ──
+function IntegrationTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
+  const [tools, setTools] = useState<ToolHookStatus[]>([])
+  const [loading, setLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState<Record<string, string>>({})
+  const [customToolId, setCustomToolId] = useState('')
+  const [customToolPath, setCustomToolPath] = useState('')
+  const [addingCustom, setAddingCustom] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true); setError(null)
+    try { const status = await invoke<ToolHookStatus[]>('get_all_hook_status'); setTools(status) }
+    catch (e) { setError(String(e)) }
+    setLoading(false)
+  }, [])
+
+  const detectTools = useCallback(async () => {
+    setLoading(true); setError(null)
+    try { await invoke('detect_tools'); await fetchStatus() }
+    catch (e) { setError(String(e)); setLoading(false) }
+  }, [fetchStatus])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { fetchStatus() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [fetchStatus])
+
+  const setToolAction = (toolId: string, action: string | null) =>
+    setActionLoading(prev => { const next = { ...prev }; if (action === null) delete next[toolId]; else next[toolId] = action; return next })
+
+  const install = async (toolId: string) => {
+    setToolAction(toolId, 'install')
+    try { await invoke('install_agent_hook', { toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    setToolAction(toolId, null)
+  }
+
+  const uninstall = async (toolId: string) => {
+    setToolAction(toolId, 'uninstall')
+    try { await invoke('uninstall_agent_hook', { toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    setToolAction(toolId, null)
+  }
+
+  const reinstallAll = async () => {
+    setLoading(true)
+    try { for (const tool of tools.filter(t => t.installStatus === 'installed')) { await invoke('install_agent_hook', { toolId: tool.toolId }) }; await fetchStatus() }
+    catch (e) { setError(String(e)); setLoading(false) }
+  }
+
+  const addCustomTool = async () => {
+    if (!customToolId.trim() || !customToolPath.trim()) return
+    try { await invoke('install_agent_hook', { toolId: customToolId.trim(), configPath: customToolPath.trim() }); setCustomToolId(''); setCustomToolPath(''); setAddingCustom(false); await fetchStatus() }
+    catch (e) { setError(String(e)) }
+  }
+
+  const installedCount = tools.filter(t => t.installStatus === 'installed').length
+
+  return (
+    <>
+      <SettingGroup label={t('settings.cliHooks')}>
+        <SettingRow label={t('settings.excludedCwd')} description={t('settings.excludedCwdDesc')}>
+          <input
+            type="text"
+            className="glass-input"
+            value={config.excludedHookCwdSubstrings}
+            placeholder="node_modules,.git"
+            onChange={(e) => config.updateConfig('excludedHookCwdSubstrings', e.target.value)}
+            style={{ minWidth: 200 }}
+          />
+        </SettingRow>
+        <div className="agent-hook-row">
+          <span className="agent-hook-row__status agent-hook-row__status--connected" />
+          <div style={{ flex: 1 }}>
+            <span className="agent-hook-row__label">Claude Code</span>
+            <span className="agent-hook-row__path">~/.claude</span>
+          </div>
+        </div>
+        {config.engineInstances.map((inst: EngineInstance) => (
+          <div key={inst.id} className="agent-hook-row">
+            <span className={`agent-hook-row__status ${inst.enabled ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
+            <div style={{ flex: 1 }}>
+              <span className="agent-hook-row__label">{inst.label}</span>
+              <span className="agent-hook-row__path">{inst.configRoot}</span>
+            </div>
+            <Toggle checked={inst.enabled} onChange={async (v) => {
+              const updated = config.engineInstances.map((i: EngineInstance) => i.id === inst.id ? { ...i, enabled: v } : i)
+              config.updateConfig('engineInstances', updated)
+              try {
+                await setEngineInstanceEnabled(inst.id, v)
+              } catch (e) {
+                console.error('Failed to update engine instance:', e)
+              }
+            }} />
+            <button className="agent-hook-row__remove"
+              onClick={async () => { try { await removeEngineInstance(inst.id); const updated = config.engineInstances.filter((i: EngineInstance) => i.id !== inst.id); config.updateConfig('engineInstances', updated) } catch (e) { console.error('Failed to remove engine instance:', e) } }}
+              title={t('settings.removeEngine')}>×</button>
+          </div>
+        ))}
+        <EngineInstanceAdder onAdd={(inst) => { config.updateConfig('engineInstances', [...config.engineInstances, inst]) }} />
+        <SettingRow label={t('settings.customHooksPath')} description={t('settings.customHooksPathDesc')}>
+          <input type="text" className="glass-input" value={config.customHooksPath} placeholder="~/.codefuse/engine/cc"
+            onChange={(e) => config.updateConfig('customHooksPath', e.target.value)} style={{ minWidth: 200 }} />
+        </SettingRow>
+        {config.agentHooks.filter(h => h.agentType !== 'claude-code').map((hook) => (
+          <div key={hook.agentType} className="agent-hook-row">
+            <span className={`agent-hook-row__status ${hook.connected ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
+            <span className="agent-hook-row__label">{hook.label}</span>
+            <Toggle checked={hook.enabled} onChange={() => {
+              config.toggleAgentHook(hook.agentType)
+              if (!hook.enabled) installHooks(hook.agentType); else removeHooks(hook.agentType)
+            }} />
+          </div>
+        ))}
+      </SettingGroup>
+
+      {/* Tool detection from HookSection */}
+      {error && <div className="hook-error-card">{error}</div>}
+
+      <div className="hook-actions-bar">
+        <GlassButton variant="secondary" onClick={detectTools} disabled={loading}>
+          {loading ? '...' : t('settings.detectTools')}
+        </GlassButton>
+        <GlassButton variant="secondary" onClick={reinstallAll} disabled={loading || installedCount === 0}>
+          {t('settings.reinstallAll')}
+        </GlassButton>
+      </div>
+
+      <SettingGroup label={t('settings.detectedTools')}>
+        {tools.length === 0 && !loading && <div className="hook-empty">{t('settings.noToolsDetected')}</div>}
+        {loading && tools.length === 0 && <div className="hook-empty">{t('settings.detectingTools')}</div>}
+        {tools.map((tool) => {
+          const busy = actionLoading[tool.toolId] !== undefined
+          return (
+            <div key={tool.toolId} className="hook-tool-row">
+              <div className="hook-tool-row__icon">{TOOL_ICONS[tool.toolId] ?? '🔧'}</div>
+              <div className="hook-tool-row__info">
+                <div className="hook-tool-row__name">{tool.name}</div>
+                <div className="hook-tool-row__path">{tool.configPath}</div>
+              </div>
+              <div className={`hook-status-badge hook-status-badge--${tool.installStatus}`}>
+                {tool.installStatus === 'installed' ? t('settings.hookInstalled') : tool.installStatus === 'error' ? t('settings.hookError') : t('settings.hookNotInstalled')}
+              </div>
+              <div className="hook-tool-row__actions">
+                {tool.installStatus === 'not_installed' && (
+                  <GlassButton variant="primary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.install')}</GlassButton>
+                )}
+                {tool.installStatus === 'installed' && (
+                  <>
+                    <GlassButton variant="secondary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.reinstall')}</GlassButton>
+                    <GlassButton variant="danger" onClick={() => uninstall(tool.toolId)} disabled={busy}>{t('settings.uninstall')}</GlassButton>
+                  </>
+                )}
+                {tool.installStatus === 'error' && (
+                  <GlassButton variant="primary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.retry')}</GlassButton>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.customCLI')}>
+        {!addingCustom ? (
+          <button className="engine-add-btn" onClick={() => setAddingCustom(true)}>+ {t('settings.addCustomTool')}</button>
+        ) : (
+          <div className="engine-add-form">
+            <div className="engine-add-form__row">
+              <label>{t('settings.toolId')}</label>
+              <GlassInput placeholder="e.g. my-ai-tool" value={customToolId}
+                onChange={(e) => setCustomToolId((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
+            </div>
+            <div className="engine-add-form__row">
+              <label>{t('settings.configPath')}</label>
+              <GlassInput placeholder="~/.my-tool" value={customToolPath}
+                onChange={(e) => setCustomToolPath((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
+            </div>
+            <div className="engine-add-form__actions">
+              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setCustomToolId(''); setCustomToolPath('') }}>{t('settings.cancel')}</button>
+              <button className="engine-add-form__submit" disabled={!customToolId.trim() || !customToolPath.trim()} onClick={addCustomTool}>{t('settings.install')}</button>
+            </div>
+          </div>
+        )}
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Advanced Tab ──
+function AdvancedTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
+  const [newHostName, setNewHostName] = useState('')
+  const [newHostAddr, setNewHostAddr] = useState('')
+  const [remoteHosts, setRemoteHosts] = useState<RemoteHost[]>([])
+  const [remoteStatuses, setRemoteStatuses] = useState<Record<string, ConnectionStatus>>({})
+  const [remoteBusyId, setRemoteBusyId] = useState<string | null>(null)
+  const [sshConfigHosts, setSshConfigHosts] = useState<SshConfigHost[]>([])
+
+  const refreshRemoteHosts = useCallback(async () => {
+    if (!isTauri()) return
+    const hosts = await listRemoteHosts()
+    setRemoteHosts(hosts)
+    const entries = await Promise.all(hosts.map(async (host) => {
+      try {
+        return [host.id, await getRemoteStatus(host.id)] as const
+      } catch {
+        return [host.id, { state: 'disconnected' } as ConnectionStatus] as const
+      }
+    }))
+    setRemoteStatuses(Object.fromEntries(entries))
+  }, [])
+
+  useEffect(() => {
+    refreshRemoteHosts().catch((err) => console.error('Failed to load remote hosts:', err))
+  }, [refreshRemoteHosts])
+
+  const refreshSshConfigHosts = useCallback(async () => {
+    if (!isTauri()) return
+    setSshConfigHosts(await listSshConfigHosts())
+  }, [])
+
+  useEffect(() => {
+    refreshSshConfigHosts().catch((err) => console.error('Failed to load SSH config hosts:', err))
+  }, [refreshSshConfigHosts])
+
+  function parseRemoteTarget(raw: string): { sshTarget: string; port: number | null } {
+    const trimmed = raw.trim()
+    const portMatch = trimmed.match(/^(.+):(\d+)$/)
+    if (!portMatch) return { sshTarget: trimmed, port: null }
+    return { sshTarget: portMatch[1], port: Number(portMatch[2]) }
+  }
+
+  async function addHost() {
+    if (!newHostName.trim() || !newHostAddr.trim()) return
+    if (!isTauri()) {
+      config.addSSHHost({ id: `ssh-${Date.now()}`, name: newHostName.trim(), host: newHostAddr.trim(), enabled: true })
+      setNewHostName(''); setNewHostAddr('')
+      return
+    }
+
+    const { sshTarget, port } = parseRemoteTarget(newHostAddr)
+    await addRemoteHost({
+      id: `remote-${Date.now()}`,
+      name: newHostName.trim(),
+      sshTarget,
+      port,
+      identityFile: null,
+      authSocket: null,
+      remoteSocketPath: '/tmp/agentbro-remote.sock',
+      autoConnect: false,
+    })
+    setNewHostName(''); setNewHostAddr('')
+    await refreshRemoteHosts()
+  }
+
+  async function importSshConfigHost(host: SshConfigHost) {
+    const hostname = host.hostname || host.name
+    const sshTarget = host.user ? `${host.user}@${hostname}` : hostname
+    await addRemoteHost({
+      id: `remote-${Date.now()}-${host.name}`,
+      name: host.name,
+      sshTarget,
+      port: host.port,
+      identityFile: host.identityFile,
+      authSocket: null,
+      remoteSocketPath: '/tmp/agentbro-remote.sock',
+      autoConnect: false,
+    })
+    await refreshRemoteHosts()
+  }
+
+  async function runRemoteAction(id: string, action: () => Promise<unknown>) {
+    setRemoteBusyId(id)
+    try {
+      await action()
+      await refreshRemoteHosts()
+    } catch (err) {
+      console.error('Remote host action failed:', err)
+      await refreshRemoteHosts().catch(() => {})
+    } finally {
+      setRemoteBusyId(null)
+    }
+  }
+
+  const displayedRemoteHosts = isTauri() ? remoteHosts : config.sshHosts.map((host) => ({
+    id: host.id,
+    name: host.name,
+    sshTarget: host.host,
+    port: null,
+    identityFile: null,
+    authSocket: null,
+    remoteSocketPath: '/tmp/agentbro-remote.sock',
+    autoConnect: false,
+  } satisfies RemoteHost))
+
+  function statusText(status: ConnectionStatus | undefined): string {
+    if (!status) return t('settings.disconnected', { defaultValue: 'Disconnected' })
+    if (status.state === 'failed') return t('settings.failed', { defaultValue: 'Failed' })
+    return t(`settings.${status.state}`, { defaultValue: status.state })
+  }
+
+  return (
+    <>
+      {/* SSH Remote */}
+      <div className="description-card">{t('settings.sshDescription')}</div>
+      <div className="warning-card">
+        <div className="warning-card__title">{t('settings.sshPrerequisites')}</div>
+        <div className="warning-card__text">{t('settings.sshPrerequisitesText')}</div>
+      </div>
+
+      <SettingGroup label={t('settings.tcpPort')}>
+        <SettingRow label={t('settings.listeningPort')} description={t('settings.listeningPortDesc')}>
+          <GlassInput type="number" value={config.tcpPort}
+            onChange={(e) => config.updateConfig('tcpPort', Number((e.target as HTMLInputElement).value))}
+            style={{ width: 100, textAlign: 'center' }} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.remoteHosts')}>
+        {displayedRemoteHosts.length === 0 && (
+          <div style={{ padding: 'var(--space-md) 0', color: '#aeaeb2', fontSize: 'var(--font-size-sm)' }}>
+            {t('settings.noRemoteHosts')}
+          </div>
+        )}
+        {displayedRemoteHosts.map((host) => {
+          const status = remoteStatuses[host.id]
+          const busy = remoteBusyId === host.id
+          const isConnected = status?.state === 'connected'
+          return (
+          <div key={host.id} className="ssh-host-card">
+            <div className="ssh-host-card__info">
+              <div className="ssh-host-card__name">{host.name}</div>
+              <div className="ssh-host-card__host">
+                {host.sshTarget}{host.port ? `:${host.port}` : ''}
+                {isTauri() && <span> · {statusText(status)}</span>}
+                {status?.state === 'failed' && <span title={status.message}> · {status.message}</span>}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {isTauri() && (
+                <>
+                  <button
+                    className="settings-mini-button"
+                    disabled={busy}
+                    onClick={() => runRemoteAction(host.id, () => isConnected ? disconnectRemote(host.id) : connectRemote(host.id))}
+                  >
+                    {isConnected ? t('settings.disconnect', { defaultValue: 'Disconnect' }) : t('settings.connect', { defaultValue: 'Connect' })}
+                  </button>
+                  <button
+                    className="settings-mini-button"
+                    disabled={busy}
+                    onClick={() => runRemoteAction(host.id, () => installRemoteHooks(host.id))}
+                  >
+                    {t('settings.installHooks', { defaultValue: 'Install hooks' })}
+                  </button>
+                </>
+              )}
+              <button
+                className="ssh-host-card__remove"
+                onClick={() => {
+                  if (isTauri()) {
+                    runRemoteAction(host.id, () => removeRemoteHost(host.id))
+                  } else {
+                    config.removeSSHHost(host.id)
+                  }
+                }}
+                title={t('settings.removeHost')}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          )
+        })}
+        <div style={{ display: 'flex', gap: 'var(--space-sm)', paddingTop: 'var(--space-md)' }}>
+          <GlassInput placeholder={t('settings.name')} value={newHostName}
+            onChange={(e) => setNewHostName((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
+          <GlassInput placeholder="user@host" value={newHostAddr}
+            onChange={(e) => setNewHostAddr((e.target as HTMLInputElement).value)}
+            style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 'var(--font-size-sm)' }} />
+          <GlassButton variant="primary" onClick={addHost}>{t('settings.add')}</GlassButton>
+        </div>
+        {isTauri() && sshConfigHosts.length > 0 && (
+          <div style={{ display: 'grid', gap: 6, paddingTop: 'var(--space-md)' }}>
+            <div style={{ color: '#aeaeb2', fontSize: 'var(--font-size-xs)' }}>
+              {t('settings.importFromSshConfig', { defaultValue: 'Import from ~/.ssh/config' })}
+            </div>
+            {sshConfigHosts
+              .filter((host) => !remoteHosts.some((remote) => remote.name === host.name))
+              .slice(0, 6)
+              .map((host) => (
+                <div key={host.name} className="ssh-host-card">
+                  <div className="ssh-host-card__info">
+                    <div className="ssh-host-card__name">{host.name}</div>
+                    <div className="ssh-host-card__host">
+                      {host.user ? `${host.user}@` : ''}{host.hostname || host.name}{host.port ? `:${host.port}` : ''}
+                    </div>
+                  </div>
+                  <button className="settings-mini-button" onClick={() => runRemoteAction(host.name, () => importSshConfigHost(host))}>
+                    {t('settings.import', { defaultValue: 'Import' })}
+                  </button>
+                </div>
+              ))}
+          </div>
+        )}
+      </SettingGroup>
+
+      {/* Webhooks */}
+      <div className="description-card">{t('settings.webhooksInfo')}</div>
+
+      <WebhookProviderSection provider="dingtalk" labelKey="settings.dingtalk" descKey="settings.dingtalkDesc"
+        urlPlaceholder="https://oapi.dingtalk.com/robot/send?access_token=..." iconEmoji="🔔" />
+
+      <WebhookProviderSection provider="feishu" labelKey="settings.feishu" descKey="settings.feishuDesc"
+        urlPlaceholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." iconEmoji="🪶" />
+    </>
+  )
+}

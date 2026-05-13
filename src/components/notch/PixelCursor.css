@@ -1,0 +1,15 @@
+.pixel-cursor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.pixel-cursor__dot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background-color: var(--island-accent, #3b82f6);
+  transform: translate(-50%, -50%);
+}

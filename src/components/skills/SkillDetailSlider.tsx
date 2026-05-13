@@ -4,21 +4,41 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useSkillStore } from '../../stores/skillStore'
 import { skillApi } from '../../services/skillApi'
 import { FileTreeViewer } from './FileTreeViewer'
+import { InlineConfirmAction } from './InlineConfirmAction'
+import { FrontmatterCard } from './FrontmatterCard'
+
+const ALL_AGENTS = ['claude-code', 'codex', 'gemini-cli', 'cursor', 'hermes']
 
 export function SkillDetailSlider() {
   const { t } = useTranslation()
   const {
-    skills, selectedSkillId, detailOpen, closeDetail,
+    skills, packs, selectedSkillId, detailOpen, closeDetail,
     fileTree, loadAll,
   } = useSkillStore()
-  const [confirmUninstall, setConfirmUninstall] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [viewingFile, setViewingFile] = useState(false)
 
   const skill = skills.find(s => s.id === selectedSkillId)
+  const installedAgents = skill ? skill.agents.map(a => a.agent) : []
+  const uninstalledAgents = ALL_AGENTS.filter(a => !installedAgents.includes(a))
+  const memberPacks = skill ? packs.filter(p => p.skills.includes(skill.id)) : []
 
   const handleToggleAgent = useCallback(async (agent: string, enabled: boolean) => {
     if (!skill) return
     await skillApi.toggle(skill.id, agent, enabled)
     loadAll()
+  }, [skill, loadAll])
+
+  const handleInstallToAgent = useCallback(async (agent: string) => {
+    if (!skill || !skill.filePath) return
+    setInstalling(true)
+    try {
+      await skillApi.install(skill.filePath, [{ agent, installMode: 'direct' }], 'direct')
+      loadAll()
+    } catch (e) {
+      console.error('Install to agent failed:', e)
+    }
+    setInstalling(false)
   }, [skill, loadAll])
 
   const handleUninstall = useCallback(async () => {
@@ -53,8 +73,8 @@ export function SkillDetailSlider() {
           <motion.div
             className="skill-detail-panel"
             initial={{ x: 420 }}
-            animate={{ x: 0 }}
-            exit={{ x: 420 }}
+            animate={{ x: 0, width: viewingFile ? 600 : 420 }}
+            exit={{ x: 600 }}
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
           >
             <button className="skill-detail-panel__close" onClick={closeDetail}>✕</button>
@@ -78,6 +98,42 @@ export function SkillDetailSlider() {
                 </div>
               ))}
             </div>
+
+            {uninstalledAgents.length > 0 && skill.filePath && (
+              <div className="skill-detail-section">
+                <div className="skill-detail-section__title">{t('skills.installToAgent')}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {uninstalledAgents.map(a => (
+                    <button
+                      key={a}
+                      className="skills-btn skills-btn--small"
+                      disabled={installing}
+                      onClick={() => handleInstallToAgent(a)}
+                    >
+                      + {a}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {memberPacks.length > 0 && (
+              <div className="skill-detail-section">
+                <div className="skill-detail-section__title">{t('skills.packMembership')}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {memberPacks.map(p => (
+                    <span key={p.id} className="skills-chip skills-chip--active">{p.name}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {skill.frontmatter && Object.keys(skill.frontmatter).length > 0 && (
+              <div className="skill-detail-section">
+                <div className="skill-detail-section__title">{t('skills.frontmatter')}</div>
+                <FrontmatterCard data={skill.frontmatter} />
+              </div>
+            )}
 
             <div className="skill-detail-section">
               <div className="skill-detail-section__title">{t('skills.basicInfo')}</div>
@@ -108,41 +164,18 @@ export function SkillDetailSlider() {
             {fileTree && (
               <div className="skill-detail-section">
                 <div className="skill-detail-section__title">{t('skills.fileViewer')}</div>
-                <FileTreeViewer tree={fileTree} />
+                <FileTreeViewer tree={fileTree} onViewingFileChange={setViewingFile} />
               </div>
             )}
 
             <div className="skill-detail-panel__footer">
-              <button
-                className="skills-btn skills-btn--danger"
-                onClick={() => setConfirmUninstall(true)}
-              >
-                {t('skills.uninstall')}
-              </button>
+              <InlineConfirmAction
+                label={t('skills.uninstall')}
+                confirmLabel={t('skills.confirmUninstall')}
+                onConfirm={handleUninstall}
+                icon={<span style={{ fontSize: 14 }}>🗑</span>}
+              />
             </div>
-
-            {confirmUninstall && (
-              <div className="skills-dialog-overlay" onClick={() => setConfirmUninstall(false)}>
-                <div className="skills-dialog" onClick={e => e.stopPropagation()}>
-                  <div className="skills-dialog__header">
-                    <div className="skills-dialog__title">{t('skills.confirmUninstall')}</div>
-                  </div>
-                  <div className="skills-dialog__body">
-                    <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>
-                      {t('skills.confirmUninstallMsg', { name: skill.name })}
-                    </p>
-                  </div>
-                  <div className="skills-dialog__footer">
-                    <button className="skills-btn" onClick={() => setConfirmUninstall(false)}>
-                      {t('skills.cancel')}
-                    </button>
-                    <button className="skills-btn skills-btn--danger" onClick={handleUninstall}>
-                      {t('skills.uninstall')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
           </motion.div>
         </div>
       )}

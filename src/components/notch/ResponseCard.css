@@ -12,14 +12,14 @@
 
 .response-card__user-prefix {
   font-size: 11px;
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-muted);
   font-weight: 500;
   flex-shrink: 0;
 }
 
 .response-card__user-text {
   font-size: 11px;
-  color: var(--vi-text-primary);
+  color: var(--island-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -30,7 +30,7 @@
 .response-card__done-badge {
   font-size: 10px;
   font-weight: 600;
-  color: var(--vi-accent-green);
+  color: #22c55e;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -51,7 +51,7 @@
 
 .response-card__text {
   font-size: 11px;
-  color: var(--vi-text-secondary);
+  color: var(--island-text-secondary);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;

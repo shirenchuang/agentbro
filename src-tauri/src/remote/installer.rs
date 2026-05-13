@@ -43,7 +43,7 @@ impl RemoteInstaller {
 
         let python = format!(
             r#"import base64, os, pathlib
-target = pathlib.Path.home() / ".agent-island" / "remote-hook.py"
+target = pathlib.Path.home() / ".agentbro" / "remote-hook.py"
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_bytes(base64.b64decode('{}'))
 os.chmod(target, 0o755)
@@ -56,11 +56,17 @@ print(target)
         let result = run_ssh(host, &cmd, 25).await;
 
         if result.exit_code == 0 {
-            InstallResult { ok: true, message: result.stdout.trim().to_string() }
+            InstallResult {
+                ok: true,
+                message: result.stdout.trim().to_string(),
+            }
         } else {
             InstallResult {
                 ok: false,
-                message: format!("Upload failed: {}", result.stderr.chars().take(200).collect::<String>()),
+                message: format!(
+                    "Upload failed: {}",
+                    result.stderr.chars().take(200).collect::<String>()
+                ),
             }
         }
     }
@@ -76,10 +82,10 @@ import json, pathlib, os
 
 home = pathlib.Path.home()
 hook_cmd = (
-    f"AGENT_ISLAND_SOCKET={socket:?} "
-    f"AGENT_ISLAND_HOST_ID={host_id:?} "
-    f"AGENT_ISLAND_HOST_NAME={host_name:?} "
-    "python3 ~/.agent-island/remote-hook.py"
+    f"AGENTBRO_SOCKET={socket:?} "
+    f"AGENTBRO_HOST_ID={host_id:?} "
+    f"AGENTBRO_HOST_NAME={host_name:?} "
+    "python3 ~/.agentbro/remote-hook.py"
 )
 
 # Claude Code hooks
@@ -110,11 +116,17 @@ if claude_settings.exists():
         let result = run_ssh(host, &cmd, 30).await;
 
         if result.exit_code == 0 {
-            InstallResult { ok: true, message: result.stdout.trim().to_string() }
+            InstallResult {
+                ok: true,
+                message: result.stdout.trim().to_string(),
+            }
         } else {
             InstallResult {
                 ok: false,
-                message: format!("Configure failed: {}", result.stderr.chars().take(200).collect::<String>()),
+                message: format!(
+                    "Configure failed: {}",
+                    result.stderr.chars().take(200).collect::<String>()
+                ),
             }
         }
     }
@@ -127,9 +139,9 @@ import json, os, socket, sys
 
 def main():
     payload = sys.stdin.read()
-    sock_path = os.environ.get("AGENT_ISLAND_SOCKET", "{socket}")
-    host_id = os.environ.get("AGENT_ISLAND_HOST_ID", "")
-    host_name = os.environ.get("AGENT_ISLAND_HOST_NAME", "")
+    sock_path = os.environ.get("AGENTBRO_SOCKET", "{socket}")
+    host_id = os.environ.get("AGENTBRO_HOST_ID", "")
+    host_name = os.environ.get("AGENTBRO_HOST_NAME", "")
 
     try:
         data = json.loads(payload)
@@ -167,9 +179,12 @@ async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResu
     use tokio::time::Duration;
 
     let mut args = vec![
-        "-o".to_string(), "BatchMode=yes".to_string(),
-        "-o".to_string(), "ConnectTimeout=10".to_string(),
-        "-o".to_string(), "StrictHostKeyChecking=accept-new".to_string(),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=10".to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
     ];
 
     if let Some(port) = host.port {
@@ -180,7 +195,7 @@ async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResu
         let t = identity.trim();
         if !t.is_empty() {
             args.push("-i".to_string());
-            args.push(t.to_string());
+            args.push(super::path::expand_tilde(t));
         }
     }
     args.push(host.ssh_target.clone());
@@ -222,13 +237,29 @@ fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[(n >> 18) & 63] as char);
         out.push(CHARS[(n >> 12) & 63] as char);
-        out.push(if chunk.len() > 1 { CHARS[(n >> 6) & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[n & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[(n >> 6) & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[n & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }

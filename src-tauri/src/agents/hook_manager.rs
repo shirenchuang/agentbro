@@ -3,9 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-const AGENT_ISLAND_MARKER: &str = "agent-island";
-const BLOCK_START: &str = "# [AGENT-ISLAND-START]";
-const BLOCK_END: &str = "# [AGENT-ISLAND-END]";
+const AGENTBRO_MARKER: &str = "agentbro";
+const BLOCK_START: &str = "# [AGENTBRO-START]";
+const BLOCK_END: &str = "# [AGENTBRO-END]";
 
 // ── JSON ─────────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,10 @@ pub fn read_json_config(path: &Path) -> serde_json::Value {
 }
 
 /// Write a JSON value to a file atomically (write to tmp, then rename).
-pub fn write_json_config(path: &Path, value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+pub fn write_json_config(
+    path: &Path,
+    value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -31,14 +34,10 @@ pub fn write_json_config(path: &Path, value: &serde_json::Value) -> Result<(), B
     Ok(())
 }
 
-/// Inject agent-island hook entries into a JSON "hooks" object.
+/// Inject agentbro hook entries into a JSON "hooks" object.
 /// Keys are event names; each value is an array of hook entries.
-/// Existing non-agent-island entries are preserved.
-pub fn inject_hooks_json(
-    settings: &mut serde_json::Value,
-    events: &[&str],
-    hook_command: &str,
-) {
+/// Existing non-agentbro entries are preserved.
+pub fn inject_hooks_json(settings: &mut serde_json::Value, events: &[&str], hook_command: &str) {
     if settings.get("hooks").is_none() {
         settings["hooks"] = serde_json::json!({});
     }
@@ -48,11 +47,11 @@ pub fn inject_hooks_json(
             .entry(event.to_string())
             .or_insert_with(|| serde_json::json!([]));
         if let Some(arr) = entry.as_array_mut() {
-            // Remove stale agent-island entries
+            // Remove stale agentbro entries
             arr.retain(|e| {
                 !e.get("command")
                     .and_then(|c| c.as_str())
-                    .map(|c| c.contains(AGENT_ISLAND_MARKER))
+                    .map(|c| c.contains(AGENTBRO_MARKER))
                     .unwrap_or(false)
             });
             arr.push(serde_json::json!({"type": "command", "command": hook_command}));
@@ -60,7 +59,7 @@ pub fn inject_hooks_json(
     }
 }
 
-/// Remove all agent-island hook entries from a JSON config.
+/// Remove all agentbro hook entries from a JSON config.
 pub fn remove_hooks_json(settings: &mut serde_json::Value) {
     if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         for (_, v) in hooks.iter_mut() {
@@ -68,7 +67,7 @@ pub fn remove_hooks_json(settings: &mut serde_json::Value) {
                 arr.retain(|e| {
                     !e.get("command")
                         .and_then(|c| c.as_str())
-                        .map(|c| c.contains(AGENT_ISLAND_MARKER))
+                        .map(|c| c.contains(AGENTBRO_MARKER))
                         .unwrap_or(false)
                 });
             }
@@ -78,7 +77,7 @@ pub fn remove_hooks_json(settings: &mut serde_json::Value) {
 
 // ── YAML ─────────────────────────────────────────────────────────────────────
 
-/// Inject agent-island hooks into a YAML config using sentinel block markers.
+/// Inject agentbro hooks into a YAML config using sentinel block markers.
 /// The user's existing YAML content is preserved outside the sentinel block.
 pub fn inject_hooks_yaml(
     config_path: &Path,
@@ -106,13 +105,13 @@ pub fn inject_hooks_yaml(
     Ok(())
 }
 
-/// Remove the agent-island sentinel block from a YAML config.
+/// Remove the agentbro sentinel block from a YAML config.
 pub fn remove_hooks_yaml(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !config_path.exists() {
         return Ok(());
     }
     let content = std::fs::read_to_string(config_path)?;
-    if !content.contains(AGENT_ISLAND_MARKER) {
+    if !content.contains(AGENTBRO_MARKER) {
         return Ok(());
     }
     let stripped = strip_sentinel_block(&content);
@@ -133,7 +132,7 @@ fn build_yaml_block(hook_command: &str, events: &[&str]) -> String {
 
 // ── TOML ─────────────────────────────────────────────────────────────────────
 
-/// Inject agent-island hooks into a TOML config using sentinel block markers.
+/// Inject agentbro hooks into a TOML config using sentinel block markers.
 pub fn inject_hooks_toml(
     config_path: &Path,
     hook_command: &str,
@@ -160,13 +159,13 @@ pub fn inject_hooks_toml(
     Ok(())
 }
 
-/// Remove the agent-island sentinel block from a TOML config.
+/// Remove the agentbro sentinel block from a TOML config.
 pub fn remove_hooks_toml(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !config_path.exists() {
         return Ok(());
     }
     let content = std::fs::read_to_string(config_path)?;
-    if !content.contains(AGENT_ISLAND_MARKER) {
+    if !content.contains(AGENTBRO_MARKER) {
         return Ok(());
     }
     let stripped = strip_sentinel_block(&content);
@@ -220,14 +219,14 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Erro
 }
 
 /// Check whether a config file (any format) already contains our hooks.
-pub fn has_agent_island_hooks(path: &Path) -> bool {
+pub fn has_agentbro_hooks(path: &Path) -> bool {
     std::fs::read_to_string(path)
-        .map(|s| s.contains(AGENT_ISLAND_MARKER))
+        .map(|s| s.contains(AGENTBRO_MARKER))
         .unwrap_or(false)
 }
 
 /// Return the bridge binary path for use in hook commands.
 pub fn bridge_binary_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-    home.join(".agent-island").join("bin").join("agent-island-bridge")
+    home.join(".agentbro").join("bin").join("agentbro-bridge")
 }

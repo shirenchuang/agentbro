@@ -1,9 +1,10 @@
-/* Agent Island — Main App */
-import { useEffect, useState } from 'react'
+/* AgentBro — Main App */
+import { useEffect, useRef, useState } from 'react'
 import { NotchPanel } from './components/notch/NotchPanel'
 import { SettingsApp } from './components/settings'
 import { useSessionStore } from './stores/sessionStore'
-import { useThemeStore } from './stores/themeStore'
+import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
+import { useConfigStore } from './stores/configStore'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { isTauri } from './services/tauriApi'
@@ -72,58 +73,60 @@ function loadMockSessions() {
   // Session 1: Claude with permission request + plan + tasks
   store.updateSession({ type: 'session_start', sessionId: 's1', project: 'app-layout', terminal: 'iTerm\u00B7tmux', agentType: 'claude-code' as AgentType })
   store.updateSession({ type: 'token_usage', sessionId: 's1', input: 12500, output: 3200, cacheRead: 8000, cacheCreate: 0 })
-  const s1 = store.sessions['s1']
-  if (s1) {
-    store.sessions['s1'] = {
-      ...s1,
-      chatHistory: mockChat1,
-      phase: 'waiting_approval',
-      pendingPermission: { toolName: 'Edit', toolInput: 'src/components/NavRail.tsx', diff: { filePath: 'src/components/NavRail.tsx', lines: mockDiffLines } },
-      tasks: mockTasks1,
-      lastUserMessage: 'Edit: app-layout.tsx',
-      sessionTitle: 'Edit: app-layout.tsx',
-      lastToolName: 'Edit',
-      lastToolStatus: 'running',
-      planTitle: 'Layout Optimization: Merge NavRail...',
-      planContent: mockPlanContent,
-    }
-    store.sessionList = Object.values(store.sessions)
-  }
 
   // Session 2: Claude processing with weather query + response
   store.updateSession({ type: 'session_start', sessionId: 's2', project: 'assistant', terminal: 'iTerm\u00B7tmux', agentType: 'claude-code' as AgentType })
   store.updateSession({ type: 'token_usage', sessionId: 's2', input: 45000, output: 12000, cacheRead: 20000, cacheCreate: 0 })
-  const s2 = store.sessions['s2']
-  if (s2) {
-    store.sessions['s2'] = {
-      ...s2,
-      chatHistory: mockChat2,
-      phase: 'done',
-      description: 'Weather query completed',
-      tasks: mockTasks2,
-      lastUserMessage: '\u4ECA\u5929\u4EC0\u4E48\u5929\u6C14\uFF1F',
-      sessionTitle: '\u4ECA\u5929\u4EC0\u4E48\u5929\u6C14\uFF1F',
-      lastToolName: 'WebSearch',
-      lastToolStatus: 'success',
-      responseText: '\u4ECA\u5929\u662F 2026\u5E744\u670815\u65E5 (\u661F\u671F\u4E09), \u4E3B\u8981\u57CE\u5E02\u5929\u6C14:\n- \u5317\u4EAC: \u6674, 14\u2103 ~ 26\u2103\n- \u4E0A\u6D77: \u591A\u4E91, 16\u2103 ~ 22\u2103\n- \u6DF1\u5733: \u96F7\u9635\u96E8, 22\u2103 ~ 28\u2103',
-    }
-    store.sessionList = Object.values(store.sessions)
-  }
 
   // Session 3: Gemini idle
   store.updateSession({ type: 'session_start', sessionId: 's3', project: 'optimize-queries', terminal: 'Ghostty', agentType: 'gemini-cli' as AgentType })
-  const s3 = store.sessions['s3']
-  if (s3) {
-    store.sessions['s3'] = {
-      ...s3,
-      lastUserMessage: 'Optimize the SQL queries for the dashboard',
-      sessionTitle: 'Dashboard SQL optimization',
-      lastToolName: 'Bash',
-      lastToolStatus: 'success',
-    }
-    store.sessionList = Object.values(store.sessions)
-  }
 
+  useSessionStore.setState((state) => {
+    const sessions = { ...state.sessions }
+
+    if (sessions.s1) {
+      sessions.s1 = {
+        ...sessions.s1,
+        chatHistory: mockChat1,
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Edit', toolInput: 'src/components/NavRail.tsx', diff: { filePath: 'src/components/NavRail.tsx', lines: mockDiffLines } },
+        tasks: mockTasks1,
+        lastUserMessage: 'Edit: app-layout.tsx',
+        sessionTitle: 'Edit: app-layout.tsx',
+        lastToolName: 'Edit',
+        lastToolStatus: 'running',
+        planTitle: 'Layout Optimization: Merge NavRail...',
+        planContent: mockPlanContent,
+      }
+    }
+
+    if (sessions.s2) {
+      sessions.s2 = {
+        ...sessions.s2,
+        chatHistory: mockChat2,
+        phase: 'done',
+        description: 'Weather query completed',
+        tasks: mockTasks2,
+        lastUserMessage: '\u4ECA\u5929\u4EC0\u4E48\u5929\u6C14\uFF1F',
+        sessionTitle: '\u4ECA\u5929\u4EC0\u4E48\u5929\u6C14\uFF1F',
+        lastToolName: 'WebSearch',
+        lastToolStatus: 'success',
+        responseText: '\u4ECA\u5929\u662F 2026\u5E744\u670815\u65E5 (\u661F\u671F\u4E09), \u4E3B\u8981\u57CE\u5E02\u5929\u6C14:\n- \u5317\u4EAC: \u6674, 14\u2103 ~ 26\u2103\n- \u4E0A\u6D77: \u591A\u4E91, 16\u2103 ~ 22\u2103\n- \u6DF1\u5733: \u96F7\u9635\u96E8, 22\u2103 ~ 28\u2103',
+      }
+    }
+
+    if (sessions.s3) {
+      sessions.s3 = {
+        ...sessions.s3,
+        lastUserMessage: 'Optimize the SQL queries for the dashboard',
+        sessionTitle: 'Dashboard SQL optimization',
+        lastToolName: 'Bash',
+        lastToolStatus: 'success',
+      }
+    }
+
+    return { sessions, sessionList: Object.values(sessions) }
+  })
   store.setPanelState('collapsed')
 }
 
@@ -158,13 +161,30 @@ function App() {
   // Apply color theme to DOM
   const colorTheme = useThemeStore((s) => s.colorTheme)
   useEffect(() => {
-    document.documentElement.setAttribute('data-island-color-theme', colorTheme)
+    const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'midnight'
+    document.documentElement.setAttribute('data-island-color-theme', normalizedTheme)
   }, [colorTheme])
 
   // Detect window on mount
   useEffect(() => {
     detectWindowLabel().then(setWindowLabel)
   }, [])
+
+  // Boot sound on startup
+  const bootSoundPlayed = useRef(false)
+  const soundEnabled = useConfigStore((s) => s.soundEnabled)
+  const soundEvents = useConfigStore((s) => s.soundEvents)
+  useEffect(() => {
+    if (bootSoundPlayed.current) return
+    if (!isTauri() || windowLabel !== 'notch') return
+    const bootEvent = soundEvents.find((e) => e.id === 'boot')
+    if (soundEnabled && bootEvent?.enabled) {
+      bootSoundPlayed.current = true
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('play_sound', { event: 'boot' }).catch(() => {})
+      }).catch(() => {})
+    }
+  }, [windowLabel, soundEnabled, soundEvents])
 
   // Load mocks only for notch in browser dev mode
   useEffect(() => {

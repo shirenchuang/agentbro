@@ -1,7 +1,7 @@
 // detection.rs — Auto-detection of installed AI coding CLI tools
 
-use std::path::PathBuf;
 use super::AdapterStatus;
+use std::path::PathBuf;
 
 /// Information about a detected tool installation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -89,11 +89,12 @@ fn detect_copilot() -> DetectedTool {
     let gh_path = find_binary(&["gh"]);
     let config_dir = find_config_dir(&[".config/github-copilot"]);
 
-    let copilot_available = gh_path.is_some() && std::process::Command::new("gh")
-        .args(["copilot", "--version"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let copilot_available = gh_path.is_some()
+        && std::process::Command::new("gh")
+            .args(["copilot", "--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
     let status = if copilot_available {
         AdapterStatus::Available

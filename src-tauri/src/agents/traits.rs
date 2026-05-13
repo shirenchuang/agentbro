@@ -1,7 +1,7 @@
 // AgentAdapter trait — implemented by each supported AI coding tool
 
-use std::path::PathBuf;
 use super::{AdapterStatus, AgentEvent};
+use std::path::PathBuf;
 
 pub trait AgentAdapter: Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -10,6 +10,9 @@ pub trait AgentAdapter: Send + Sync + 'static {
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>>;
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>>;
     fn status(&self) -> AdapterStatus;
-    fn parse_event(&self, raw: &serde_json::Value) -> Result<AgentEvent, Box<dyn std::error::Error>>;
+    fn parse_event(
+        &self,
+        raw: &serde_json::Value,
+    ) -> Result<AgentEvent, Box<dyn std::error::Error>>;
     fn hook_config_paths(&self) -> Vec<PathBuf>;
 }

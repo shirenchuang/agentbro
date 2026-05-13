@@ -7,9 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use notify::{
-    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
-};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter};
 
 use super::conversation_parser::{
@@ -60,9 +58,7 @@ impl ConversationWatcher {
         projects_dirs.extend(projects_dirs_from_roots(extra_roots));
 
         if projects_dirs.is_empty() {
-            log::info!(
-                "No projects directories found — conversation watcher disabled"
-            );
+            log::info!("No projects directories found — conversation watcher disabled");
             return None;
         }
 
@@ -144,11 +140,7 @@ impl ConversationWatcher {
                         match parser.parse_incremental() {
                             Ok(r) => r,
                             Err(e) => {
-                                log::warn!(
-                                    "Failed to parse {}: {}",
-                                    path.display(),
-                                    e
-                                );
+                                log::warn!("Failed to parse {}: {}", path.display(), e);
                                 continue;
                             }
                         }
@@ -161,9 +153,7 @@ impl ConversationWatcher {
                             result,
                         };
 
-                        if let Err(e) =
-                            handle_clone.emit(CONVERSATION_UPDATE_EVENT, &payload)
-                        {
+                        if let Err(e) = handle_clone.emit(CONVERSATION_UPDATE_EVENT, &payload) {
                             log::debug!(
                                 "Failed to emit conversation update for {}: {}",
                                 session_id,

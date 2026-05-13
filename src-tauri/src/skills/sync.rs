@@ -1,15 +1,19 @@
+use super::{agent_paths, installer, registry, scanner};
+use super::{InstallMode, SyncPreview, SyncResult, TargetConfig};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use super::{SyncResult, SyncPreview, TargetConfig, InstallMode};
-use super::{registry, scanner, installer, agent_paths};
 
 pub fn push_to_github() -> Result<SyncResult, String> {
     let meta = registry::load();
-    let repo = meta.sync.as_ref()
+    let repo = meta
+        .sync
+        .as_ref()
         .and_then(|s| s.github_repo.as_ref())
         .ok_or("No GitHub repo configured")?;
-    let token = meta.sync.as_ref()
+    let token = meta
+        .sync
+        .as_ref()
         .and_then(|s| s.github_token.as_ref())
         .ok_or("No GitHub token configured")?;
 
@@ -18,14 +22,28 @@ pub fn push_to_github() -> Result<SyncResult, String> {
 
     let repo_url = format!("https://{}@github.com/{}.git", token, repo);
     let clone_result = Command::new("git")
-        .args(["clone", "--depth", "1", &repo_url, &tmp_dir.display().to_string()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            &repo_url,
+            &tmp_dir.display().to_string(),
+        ])
         .output()
         .map_err(|e| e.to_string())?;
 
     if !clone_result.status.success() {
         fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-        Command::new("git").args(["init"]).current_dir(&tmp_dir).output().map_err(|e| e.to_string())?;
-        Command::new("git").args(["remote", "add", "origin", &repo_url]).current_dir(&tmp_dir).output().map_err(|e| e.to_string())?;
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&tmp_dir)
+            .output()
+            .map_err(|e| e.to_string())?;
+        Command::new("git")
+            .args(["remote", "add", "origin", &repo_url])
+            .current_dir(&tmp_dir)
+            .output()
+            .map_err(|e| e.to_string())?;
     }
 
     let meta_content = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
@@ -37,9 +55,22 @@ pub fn push_to_github() -> Result<SyncResult, String> {
         installer::copy_recursive_pub(&skills_src, &skills_dest)?;
     }
 
-    Command::new("git").args(["add", "."]).current_dir(&tmp_dir).output().map_err(|e| e.to_string())?;
-    Command::new("git").args(["commit", "-m", "AgentBro sync"]).current_dir(&tmp_dir).output().map_err(|e| e.to_string())?;
-    let push = Command::new("git").args(["push", "-u", "origin", "main"]).current_dir(&tmp_dir).output().map_err(|e| e.to_string())?;
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&tmp_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    Command::new("git")
+        .args(["commit", "-m", "AgentBro sync"])
+        .current_dir(&tmp_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let branch = detect_default_branch(&tmp_dir);
+    let push = Command::new("git")
+        .args(["push", "-u", "origin", &branch])
+        .current_dir(&tmp_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
@@ -50,19 +81,31 @@ pub fn push_to_github() -> Result<SyncResult, String> {
         }
         let _ = registry::save(&meta);
 
-        Ok(SyncResult { success: true, message: "推送成功".to_string(), conflicts: vec![] })
+        Ok(SyncResult {
+            success: true,
+            message: "推送成功".to_string(),
+            conflicts: vec![],
+        })
     } else {
         let stderr = String::from_utf8_lossy(&push.stderr).to_string();
-        Ok(SyncResult { success: false, message: format!("推送失败: {}", stderr), conflicts: vec![] })
+        Ok(SyncResult {
+            success: false,
+            message: format!("推送失败: {}", stderr),
+            conflicts: vec![],
+        })
     }
 }
 
 pub fn pull_from_github() -> Result<SyncResult, String> {
     let meta = registry::load();
-    let repo = meta.sync.as_ref()
+    let repo = meta
+        .sync
+        .as_ref()
         .and_then(|s| s.github_repo.as_ref())
         .ok_or("No GitHub repo configured")?;
-    let token = meta.sync.as_ref()
+    let token = meta
+        .sync
+        .as_ref()
         .and_then(|s| s.github_token.as_ref())
         .ok_or("No GitHub token configured")?;
 
@@ -71,18 +114,29 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
 
     let repo_url = format!("https://{}@github.com/{}.git", token, repo);
     let clone = Command::new("git")
-        .args(["clone", "--depth", "1", &repo_url, &tmp_dir.display().to_string()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            &repo_url,
+            &tmp_dir.display().to_string(),
+        ])
         .output()
         .map_err(|e| e.to_string())?;
 
     if !clone.status.success() {
-        return Ok(SyncResult { success: false, message: "拉取失败：无法克隆仓库".to_string(), conflicts: vec![] });
+        return Ok(SyncResult {
+            success: false,
+            message: "拉取失败：无法克隆仓库".to_string(),
+            conflicts: vec![],
+        });
     }
 
     let remote_meta_path = tmp_dir.join("metadata.json");
     if remote_meta_path.exists() {
         let content = fs::read_to_string(&remote_meta_path).map_err(|e| e.to_string())?;
-        let remote_meta: registry::Metadata = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let remote_meta: registry::Metadata =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
         let mut local_meta = registry::load();
         for pack in remote_meta.packs {
@@ -108,13 +162,18 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
-    Ok(SyncResult { success: true, message: "拉取成功".to_string(), conflicts: vec![] })
+    Ok(SyncResult {
+        success: true,
+        message: "拉取成功".to_string(),
+        conflicts: vec![],
+    })
 }
 
 pub fn sync_agent_to_agent(from: &str, to: &str) -> Result<SyncPreview, String> {
     let from_skills = scanner::scan_agent(from);
     let to_skills = scanner::scan_agent(to);
-    let to_ids: std::collections::HashSet<String> = to_skills.iter().map(|s| s.id.clone()).collect();
+    let to_ids: std::collections::HashSet<String> =
+        to_skills.iter().map(|s| s.id.clone()).collect();
 
     let mut to_copy = 0u32;
     let mut to_skip = 0u32;
@@ -130,13 +189,19 @@ pub fn sync_agent_to_agent(from: &str, to: &str) -> Result<SyncPreview, String> 
         }
     }
 
-    Ok(SyncPreview { to_copy, to_skip, to_update: 0, details })
+    Ok(SyncPreview {
+        to_copy,
+        to_skip,
+        to_update: 0,
+        details,
+    })
 }
 
 pub fn execute_agent_sync(from: &str, to: &str) -> Result<(), String> {
     let from_skills = scanner::scan_agent(from);
     let to_skills = scanner::scan_agent(to);
-    let to_ids: std::collections::HashSet<String> = to_skills.iter().map(|s| s.id.clone()).collect();
+    let to_ids: std::collections::HashSet<String> =
+        to_skills.iter().map(|s| s.id.clone()).collect();
 
     let targets = vec![TargetConfig {
         agent: to.to_string(),
@@ -161,7 +226,8 @@ pub fn export_backup(path: &str) -> Result<(), String> {
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default();
 
-    zip.start_file("metadata.json", options).map_err(|e| e.to_string())?;
+    zip.start_file("metadata.json", options)
+        .map_err(|e| e.to_string())?;
     std::io::Write::write_all(&mut zip, meta_json.as_bytes()).map_err(|e| e.to_string())?;
 
     let skills_dir = agent_paths::agentbro_skills_dir();
@@ -184,7 +250,8 @@ pub fn import_backup(path: &str) -> Result<(), String> {
     let meta_path = extract_dir.join("metadata.json");
     if meta_path.exists() {
         let content = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
-        let imported: registry::Metadata = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let imported: registry::Metadata =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
         let mut local = registry::load();
         for (k, v) in imported.sources {
             local.sources.entry(k).or_insert(v);
@@ -206,6 +273,28 @@ pub fn import_backup(path: &str) -> Result<(), String> {
 
     let _ = fs::remove_dir_all(&extract_dir);
     Ok(())
+}
+
+fn detect_default_branch(repo_dir: &std::path::Path) -> String {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
+        .current_dir(repo_dir)
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() {
+            let full = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(branch) = full.strip_prefix("origin/") {
+                return branch.to_string();
+            }
+            return full;
+        }
+    }
+    let head = repo_dir.join(".git/refs/heads/main");
+    if head.exists() {
+        "main".to_string()
+    } else {
+        "master".to_string()
+    }
 }
 
 fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(

@@ -1,20 +1,13 @@
 /* ToolCallDisplay — Green tool name with input preview */
+import { useTranslation } from 'react-i18next'
 import type { ToolStatus } from '../../types/agent'
-import { parseMcpTool } from '../../utils/mcp'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './ToolCallDisplay.css'
 
 interface ToolCallDisplayProps {
   toolName: string
   toolInput?: string
   status: ToolStatus
-}
-
-function getToolDisplay(toolName: string): { name: string } {
-  const parsed = parseMcpTool(toolName)
-  if (parsed.isMcp) {
-    return { name: `${parsed.displayServer}: ${parsed.displayTool}` }
-  }
-  return { name: toolName }
 }
 
 function truncateInput(input: string | undefined, maxLen = 50): string {
@@ -24,7 +17,8 @@ function truncateInput(input: string | undefined, maxLen = 50): string {
 }
 
 export function ToolCallDisplay({ toolName, toolInput, status }: ToolCallDisplayProps) {
-  const { name } = getToolDisplay(toolName)
+  const { t } = useTranslation()
+  const name = getToolActivityLabel(t, toolName)
 
   return (
     <div className="tool-call-display">

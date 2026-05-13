@@ -14,13 +14,13 @@ export interface ColorThemeInfo {
 }
 
 export const COLOR_THEMES: ColorThemeInfo[] = [
-  { id: 'classic', label: 'Classic', labelZh: '经典', tag: 'Default', isDark: true, bg: '#0a0a0a', card: '#111111', accent: '#3b82f6' },
-  { id: 'forest', label: 'Forest', labelZh: '森林', tag: 'Nature', isDark: true, bg: '#1a2e1a', card: '#243524', accent: '#22c55e' },
-  { id: 'neon-tokyo', label: 'Neon Tokyo', labelZh: '霓虹东京', tag: 'Cyber', isDark: true, bg: '#0a0a0f', card: '#12121a', accent: '#ff00ff' },
-  { id: 'sunset', label: 'Sunset', labelZh: '落日', tag: 'Warm', isDark: true, bg: '#1f1020', card: '#2a1a2e', accent: '#fbbf24' },
-  { id: 'retro-arcade', label: 'Retro Arcade', labelZh: '复古街机', tag: '8-bit', isDark: true, bg: '#0f0f23', card: '#1a1a30', accent: '#ff0040' },
-  { id: 'high-contrast', label: 'High Contrast', labelZh: '高对比', tag: 'A11y', isDark: true, bg: '#000000', card: '#111111', accent: '#00ffff' },
-  { id: 'sakura', label: 'Sakura', labelZh: '樱花', tag: 'Soft', isDark: true, bg: '#1a0f14', card: '#24131c', accent: '#ec4899' },
+  { id: 'midnight', label: 'Midnight', labelZh: '午夜', tag: 'Evolab', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#7b78ff' },
+  { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '磨砂玻璃', tag: 'Light', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#352eff' },
+  { id: 'apple', label: 'Apple', labelZh: '苹果', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
+  { id: 'smoke', label: 'Smoke', labelZh: '烟灰', tag: 'Neutral', isDark: false, bg: '#e8e8ec', card: '#f4f4f6', accent: '#64748b' },
+  { id: 'ocean-mist', label: 'Ocean Mist', labelZh: '海雾', tag: 'Cool', isDark: false, bg: '#e8eef5', card: '#f2f6fb', accent: '#0284c7' },
+  { id: 'warm-paper', label: 'Warm Paper', labelZh: '暖纸', tag: 'Warm', isDark: false, bg: '#f2efe8', card: '#faf7f0', accent: '#d97706' },
+  { id: 'soft-lavender', label: 'Soft Lavender', labelZh: '柔薰衣草', tag: 'Soft', isDark: false, bg: '#eeedf6', card: '#f8f7fc', accent: '#6366f1' },
 ]
 
 const DEFAULT_THEME: ThemeConfig = {
@@ -78,7 +78,7 @@ export const useThemeStore = create<ThemeStore>()(
       themes: [DEFAULT_THEME],
       activeThemeName: 'default',
       activeTheme: DEFAULT_THEME,
-      colorTheme: 'classic',
+      colorTheme: 'midnight',
 
       setActiveTheme: (name) => {
         const theme = get().themes.find((t) => t.name === name)
@@ -102,12 +102,15 @@ export const useThemeStore = create<ThemeStore>()(
       },
     }),
     {
-      name: 'agent-island-theme',
+      name: 'agentbro-theme',
       partialize: (state) => ({ activeThemeName: state.activeThemeName, colorTheme: state.colorTheme }),
       onRehydrateStorage: () => {
         return (state) => {
-          if (state?.colorTheme) {
+          if (state?.colorTheme && COLOR_THEMES.some((theme) => theme.id === state.colorTheme)) {
             applyColorTheme(state.colorTheme)
+          } else if (state) {
+            state.colorTheme = 'midnight'
+            applyColorTheme('midnight')
           }
         }
       },

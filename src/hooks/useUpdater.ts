@@ -1,4 +1,4 @@
-/* Agent Island — Auto-Update Hook
+/* AgentBro — Auto-Update Hook
  * Checks for updates on app start (with delay) and exposes manual check.
  */
 import { useState, useEffect, useCallback } from 'react'

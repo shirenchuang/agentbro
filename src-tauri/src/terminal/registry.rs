@@ -18,7 +18,7 @@ const TERMINAL_APP_NAMES: &[&str] = &[
     "st",
     "urxvt",
     "xterm",
-    "Code",            // VS Code
+    "Code", // VS Code
     "Code - Insiders",
     "Cursor",
     "Windsurf",

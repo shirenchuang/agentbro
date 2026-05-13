@@ -1,7 +1,10 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { OverlayCard } from './OverlayCard'
 import { DiffView } from '../notch/DiffView'
+import { setNotchFocusable, jumpToTerminal } from '../../services/tauriApi'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './PermissionCard.css'
 
 interface PermissionCardProps {
@@ -9,25 +12,257 @@ interface PermissionCardProps {
   session: SessionState
   onAllow: () => void
   onAllowAlways: () => void
-  onDeny: () => void
+  onDeny: (message?: string) => void
   onDismiss: () => void
+  queueLength?: number
+  queueNext?: string
 }
 
-export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDeny, onDismiss }: PermissionCardProps) {
+function shortenPath(filePath: string, maxSegments = 3): string {
+  const segments = filePath.split('/')
+  if (segments.length <= maxSegments) return filePath
+  return `.../${segments.slice(-maxSegments).join('/')}`
+}
+
+function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Record<string, unknown> }) {
+  switch (toolName) {
+    case 'Bash': {
+      const command = (toolInput.command as string) ?? ''
+      const lines = command.split('\n')
+      const maxLines = 5
+      const truncated = lines.length > maxLines
+      const displayLines = truncated ? lines.slice(0, maxLines) : lines
+
+      return (
+        <div>
+          {toolInput.description != null && (
+            <div className="perm-card__preview-desc">{String(toolInput.description)}</div>
+          )}
+          <pre className="perm-card__preview-code">
+            <span className="perm-card__preview-prompt">$ </span>
+            {displayLines.join('\n')}
+          </pre>
+          {truncated && (
+            <div className="perm-card__preview-more">+{lines.length - maxLines} lines</div>
+          )}
+        </div>
+      )
+    }
+
+    case 'Edit':
+    case 'MultiEdit': {
+      const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
+      const oldStr = toolInput.old_string as string | undefined
+      const newStr = toolInput.new_string as string | undefined
+
+      return (
+        <div>
+          <div className="perm-card__preview-file">
+            <span>{'✏️'}</span>
+            <span className="perm-card__preview-path">{shortenPath(filePath)}</span>
+          </div>
+          {oldStr != null && newStr != null && (
+            <div className="perm-card__preview-diff">
+              {oldStr && oldStr.split('\n').slice(0, 3).map((line, i) => (
+                <div key={`old-${i}`} className="perm-card__preview-diff--remove">- {line}</div>
+              ))}
+              {oldStr && oldStr.split('\n').length > 3 && (
+                <div className="perm-card__preview-more">{'…'}+{oldStr.split('\n').length - 3}</div>
+              )}
+              {newStr && newStr.split('\n').slice(0, 3).map((line, i) => (
+                <div key={`new-${i}`} className="perm-card__preview-diff--add">+ {line}</div>
+              ))}
+              {newStr && newStr.split('\n').length > 3 && (
+                <div className="perm-card__preview-more">{'…'}+{newStr.split('\n').length - 3}</div>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    case 'Write': {
+      const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
+      const content = toolInput.content as string | undefined
+
+      return (
+        <div>
+          <div className="perm-card__preview-file">
+            <span className="perm-card__preview-path">{shortenPath(filePath)}</span>
+            <span className="perm-card__preview-new-badge">new file</span>
+          </div>
+          {content && (
+            <pre className="perm-card__preview-code">
+              {content.split('\n').slice(0, 4).join('\n')}
+              {content.split('\n').length > 4 ? '\n…' : ''}
+            </pre>
+          )}
+        </div>
+      )
+    }
+
+    case 'Read': {
+      const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
+      return (
+        <div className="perm-card__preview-file">
+          <span>{'📄'}</span>
+          <span className="perm-card__preview-path">{shortenPath(filePath)}</span>
+        </div>
+      )
+    }
+
+    case 'Grep':
+    case 'Glob': {
+      const pattern = (toolInput.pattern as string) ?? ''
+      const path = toolInput.path as string | undefined
+      return (
+        <div className="perm-card__preview-file">
+          <span>{'🔍'}</span>
+          <code className="perm-card__preview-pattern">{pattern}</code>
+          {path && <span className="perm-card__preview-more">in {shortenPath(path)}</span>}
+        </div>
+      )
+    }
+
+    case 'WebSearch': {
+      const query = (toolInput.query as string) ?? ''
+      return (
+        <div className="perm-card__preview-file">
+          <span>{'🔍'}</span>
+          <span className="perm-card__preview-desc">"{query}"</span>
+        </div>
+      )
+    }
+
+    case 'WebFetch': {
+      const url = (toolInput.url as string) ?? ''
+      return (
+        <div className="perm-card__preview-file">
+          <span>{'🔗'}</span>
+          <span className="perm-card__preview-path">{url.length > 50 ? `${url.slice(0, 50)}…` : url}</span>
+        </div>
+      )
+    }
+
+    default: {
+      const entries = Object.entries(toolInput).filter(([, v]) => v != null && typeof v !== 'object')
+      if (entries.length > 0) {
+        return (
+          <div className="perm-card__preview-kv">
+            {entries.slice(0, 4).map(([key, val]) => (
+              <div key={key} className="perm-card__preview-kv-row">
+                <span className="perm-card__preview-kv-key">{key}:</span>
+                <span className="perm-card__preview-kv-val">{String(val)}</span>
+              </div>
+            ))}
+            {entries.length > 4 && (
+              <div className="perm-card__preview-more">+{entries.length - 4} more</div>
+            )}
+          </div>
+        )
+      }
+      return null
+    }
+  }
+}
+
+export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDeny, onDismiss, queueLength = 1, queueNext }: PermissionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
+  const [feedbackText, setFeedbackText] = useState('')
+  const [showFeedback, setShowFeedback] = useState(false)
+  const feedbackRef = useRef<HTMLInputElement>(null)
+
+  let parsedInput: Record<string, unknown> = {}
+  try {
+    parsedInput = typeof data.toolInput === 'string' ? JSON.parse(data.toolInput) : (data.toolInput as Record<string, unknown>) ?? {}
+  } catch {
+    parsedInput = data.toolInput ? { raw: data.toolInput } : {}
+  }
+  const toolLabel = getToolActivityLabel(t, data.toolName)
+
+  useEffect(() => {
+    setShowFeedback(false)
+    setFeedbackText('')
+  }, [overlay.id])
+
+  useEffect(() => {
+    if (showFeedback) feedbackRef.current?.focus()
+  }, [showFeedback])
+
+  const handleReject = useCallback(() => {
+    const msg = feedbackText.trim()
+    onDeny(msg || undefined)
+  }, [feedbackText, onDeny])
+
+  const handleJump = useCallback(() => {
+    jumpToTerminal(session.id)
+  }, [session.id])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isInput = (e.target as HTMLElement).tagName === 'INPUT'
+
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (showFeedback) {
+          setShowFeedback(false)
+          setNotchFocusable(false)
+        } else {
+          handleReject()
+        }
+        return
+      }
+
+      if (isInput) {
+        if (e.key === 'Enter' && showFeedback) {
+          e.preventDefault()
+          handleReject()
+        }
+        return
+      }
+
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); handleReject() }
+      if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); onAllow() }
+      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); onAllowAlways() }
+      if (e.key === 't' || e.key === 'T') { e.preventDefault(); handleJump() }
+    }
+
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump])
 
   return (
     <OverlayCard session={session} onDismiss={onDismiss}>
-      {/* Tool info */}
+      {/* Queue progress bar */}
+      {queueLength > 1 && (
+        <div className="perm-card__queue">
+          <div className="perm-card__queue-info">
+            <span className="perm-card__queue-text">1 / {queueLength}</span>
+            {queueNext && <span className="perm-card__queue-text">Next: {queueNext}</span>}
+          </div>
+          <div className="perm-card__queue-bar">
+            <div className="perm-card__queue-fill" style={{ width: `${(1 / queueLength) * 100}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Tool header */}
       <div className="perm-card__tool">
         <div className="perm-card__tool-header">
-          <span className="perm-card__tool-icon">{'\u26A0'}</span>
-          <span className="perm-card__tool-name">{data.toolName}</span>
+          <div className="perm-card__tool-icon-wrap">
+            <svg className="perm-card__tool-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <span className="perm-card__tool-name">{toolLabel}</span>
         </div>
-        {data.toolInput && (
-          <pre className="perm-card__tool-input">{data.toolInput}</pre>
-        )}
+      </div>
+
+      {/* Tool detail box with preview */}
+      <div className="perm-card__detail-box">
+        <div className="perm-card__detail-tool-label">{toolLabel}</div>
+        <ToolPreview toolName={data.toolName} toolInput={parsedInput} />
       </div>
 
       {/* Diff view */}
@@ -37,24 +272,57 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
         </div>
       )}
 
+      {/* Feedback input */}
+      {showFeedback && (
+        <div className="perm-card__feedback">
+          <input
+            ref={feedbackRef}
+            type="text"
+            className="perm-card__feedback-input"
+            placeholder="Tell Claude why (optional)..."
+            value={feedbackText}
+            onChange={(e) => setFeedbackText(e.target.value)}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              setNotchFocusable(true).then(() => feedbackRef.current?.focus())
+            }}
+            onFocus={() => setNotchFocusable(true)}
+            onBlur={() => setNotchFocusable(false)}
+          />
+        </div>
+      )}
+
       {/* Action buttons */}
       <div className="perm-card__actions">
-        <button className="perm-card__btn perm-card__btn--deny" onClick={onDeny}>
-          {t('notch.deny')}
+        <button
+          className="perm-card__btn perm-card__btn--deny"
+          onMouseDown={() => {
+            if (showFeedback) {
+              handleReject()
+            } else {
+              setShowFeedback(true)
+              setNotchFocusable(true)
+            }
+          }}
+        >
+          <span>{t('notch.deny')}</span>
+          <kbd className="perm-card__kbd">N</kbd>
         </button>
-        <button className="perm-card__btn perm-card__btn--allow" onClick={onAllow}>
-          {t('notch.allowOnce')}
+        <button className="perm-card__btn perm-card__btn--allow" onMouseDown={onAllow}>
+          <span>{t('notch.allowOnce')}</span>
+          <kbd className="perm-card__kbd">Y</kbd>
         </button>
-        <button className="perm-card__btn perm-card__btn--always" onClick={onAllowAlways}>
-          {t('notch.allowAlways')}
+        <button className="perm-card__btn perm-card__btn--always" onMouseDown={onAllowAlways}>
+          <span>{t('notch.allowAlways')}</span>
+          <kbd className="perm-card__kbd">A</kbd>
         </button>
       </div>
 
-      {/* Keyboard hints */}
-      <div className="perm-card__hints">
-        <kbd>{'\u2318'}Y</kbd> {t('notch.allowOnce')}
-        <span className="perm-card__hint-sep">&middot;</span>
-        <kbd>{'\u2318'}N</kbd> {t('notch.deny')}
+      {/* Secondary action: Jump to terminal */}
+      <div className="perm-card__secondary">
+        <button className="perm-card__jump-btn" onMouseDown={handleJump}>
+          Go to Terminal <kbd className="perm-card__kbd">T</kbd>
+        </button>
       </div>
     </OverlayCard>
   )

@@ -1,10 +1,9 @@
 // CursorAdapter — Agent adapter for Cursor IDE
 
-use std::path::PathBuf;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use std::path::PathBuf;
 
-const BRIDGE_BINARY_NAME: &str = "agent-island-bridge";
-const AGENT_ISLAND_MARKER: &str = "agent-island";
+const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
 
 pub struct CursorAdapter {
     config_root: PathBuf,
@@ -20,7 +19,10 @@ impl CursorAdapter {
         } else {
             AdapterStatus::Unavailable
         };
-        Self { config_root, status }
+        Self {
+            config_root,
+            status,
+        }
     }
 
     fn is_installed() -> bool {
@@ -39,7 +41,7 @@ impl CursorAdapter {
 
     fn bridge_binary_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-        home.join(".agent-island").join("bin").join(BRIDGE_BINARY_NAME)
+        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -66,9 +68,15 @@ impl CursorAdapter {
 }
 
 impl AgentAdapter for CursorAdapter {
-    fn name(&self) -> &str { "cursor" }
-    fn display_name(&self) -> &str { "Cursor" }
-    fn icon(&self) -> &str { "cursor" }
+    fn name(&self) -> &str {
+        "cursor"
+    }
+    fn display_name(&self) -> &str {
+        "Cursor"
+    }
+    fn icon(&self) -> &str {
+        "cursor"
+    }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let settings_path = self.settings_path();
@@ -93,7 +101,9 @@ impl AgentAdapter for CursorAdapter {
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let settings_path = self.settings_path();
-        if !settings_path.exists() { return Ok(()); }
+        if !settings_path.exists() {
+            return Ok(());
+        }
 
         let content = std::fs::read_to_string(&settings_path)?;
         let mut settings: serde_json::Value = serde_json::from_str(&content)?;
@@ -106,10 +116,16 @@ impl AgentAdapter for CursorAdapter {
         Ok(())
     }
 
-    fn status(&self) -> AdapterStatus { self.status.clone() }
+    fn status(&self) -> AdapterStatus {
+        self.status.clone()
+    }
 
-    fn parse_event(&self, raw: &serde_json::Value) -> Result<AgentEvent, Box<dyn std::error::Error>> {
-        let session_id = raw.get("session_id")
+    fn parse_event(
+        &self,
+        raw: &serde_json::Value,
+    ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
+        let session_id = raw
+            .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -117,10 +133,22 @@ impl AgentAdapter for CursorAdapter {
         match event {
             "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw.get("cwd").and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next()).unwrap_or("").to_string(),
-                cwd: raw.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                terminal: raw.get("tty").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                project: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .and_then(|p| p.rsplit('/').next())
+                    .unwrap_or("")
+                    .to_string(),
+                cwd: raw
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                terminal: raw
+                    .get("tty")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 agent_type: "cursor".to_string(),
             }),
             "session_end" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
@@ -141,16 +169,20 @@ impl CursorAdapter {
         Self::is_installed()
     }
 
-    pub fn has_agent_island_hooks(&self) -> bool {
+    pub fn has_agentbro_hooks(&self) -> bool {
         let settings_path = self.settings_path();
-        if !settings_path.exists() { return false; }
+        if !settings_path.exists() {
+            return false;
+        }
         std::fs::read_to_string(&settings_path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| v.get("agentIslandHooks")
-                .and_then(|h| h.get("enabled"))
-                .and_then(|e| e.as_bool())
-                .unwrap_or(false))
+            .map(|v| {
+                v.get("agentIslandHooks")
+                    .and_then(|h| h.get("enabled"))
+                    .and_then(|e| e.as_bool())
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
     }
 }

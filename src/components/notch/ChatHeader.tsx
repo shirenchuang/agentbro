@@ -4,7 +4,6 @@ import type { SessionState } from '../../types/agent'
 import { AgentIcon } from './AgentIcon'
 import { StatusDot } from '../shared'
 import { formatDuration } from '../../utils/time'
-import { useTick } from '../../hooks/useTick'
 import './ChatHeader.css'
 
 interface ChatHeaderProps {
@@ -13,9 +12,16 @@ interface ChatHeaderProps {
   onJump?: () => void
 }
 
+function getAgentName(session: SessionState): string {
+  if (session.agentType === 'claude-code' && session.engineLabel && session.engineLabel !== 'Claude Code') {
+    return session.engineLabel
+  }
+  return session.agentType === 'claude-code' ? 'Claude' : session.agentType
+}
+
 export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
   const { t } = useTranslation()
-  useTick(1000, true)
+  const isAntCC = getAgentName(session).toLowerCase() === 'antcc'
 
   return (
     <div className="chat-header">
@@ -31,12 +37,12 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
       </div>
 
       <div className="chat-header__badges">
-        <span className="chat-header__badge chat-header__badge--agent">
+        <span className={`chat-header__badge chat-header__badge--agent${isAntCC ? ' chat-header__badge--antcc' : ''}`}>
           <AgentIcon agentType={session.agentType} size={12} />
-          {session.agentType === 'claude-code' ? 'Claude' : session.agentType}
+          {getAgentName(session)}
         </span>
         <span className="chat-header__badge">{session.terminal}</span>
-        <span className="chat-header__badge chat-header__badge--time">{formatDuration(session.startedAt)}</span>
+        <span className="chat-header__badge chat-header__badge--time">{formatDuration(session.duration)}</span>
         {onJump && (
           <button className="chat-header__jump" onClick={onJump} aria-label={t('notch.jumpToTerminal')}>
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none">

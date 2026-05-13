@@ -1,9 +1,9 @@
 // Diagnostics — Ring buffer of the last 100 diagnostic events for observability
 
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
 
 const RING_BUFFER_CAPACITY: usize = 100;
 
@@ -111,10 +111,7 @@ impl DiagnosticRingBuffer {
         inner
             .events
             .iter()
-            .filter(|e| {
-                e.severity >= min_severity
-                    && component.map_or(true, |c| e.component == c)
-            })
+            .filter(|e| e.severity >= min_severity && component.map_or(true, |c| e.component == c))
             .cloned()
             .collect()
     }
@@ -164,10 +161,20 @@ fn now_ms() -> u64 {
 #[macro_export]
 macro_rules! diag_debug {
     ($buf:expr, $component:expr, $msg:expr) => {
-        $buf.push($crate::hooks::diagnostics::DiagnosticSeverity::Debug, $component, $msg, None)
+        $buf.push(
+            $crate::hooks::diagnostics::DiagnosticSeverity::Debug,
+            $component,
+            $msg,
+            None,
+        )
     };
     ($buf:expr, $component:expr, $msg:expr, $payload:expr) => {
-        $buf.push($crate::hooks::diagnostics::DiagnosticSeverity::Debug, $component, $msg, Some($payload))
+        $buf.push(
+            $crate::hooks::diagnostics::DiagnosticSeverity::Debug,
+            $component,
+            $msg,
+            Some($payload),
+        )
     };
 }
 
@@ -175,7 +182,12 @@ macro_rules! diag_debug {
 #[macro_export]
 macro_rules! diag_info {
     ($buf:expr, $component:expr, $msg:expr) => {
-        $buf.push($crate::hooks::diagnostics::DiagnosticSeverity::Info, $component, $msg, None)
+        $buf.push(
+            $crate::hooks::diagnostics::DiagnosticSeverity::Info,
+            $component,
+            $msg,
+            None,
+        )
     };
 }
 
@@ -183,7 +195,12 @@ macro_rules! diag_info {
 #[macro_export]
 macro_rules! diag_error {
     ($buf:expr, $component:expr, $msg:expr) => {
-        $buf.push($crate::hooks::diagnostics::DiagnosticSeverity::Error, $component, $msg, None)
+        $buf.push(
+            $crate::hooks::diagnostics::DiagnosticSeverity::Error,
+            $component,
+            $msg,
+            None,
+        )
     };
 }
 

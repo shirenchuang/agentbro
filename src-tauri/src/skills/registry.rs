@@ -1,8 +1,8 @@
-use std::fs;
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use super::{SkillPack, SyncConfig};
 use super::agent_paths;
+use super::{SkillPack, SyncConfig};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -41,10 +41,13 @@ pub fn save(metadata: &Metadata) -> Result<(), String> {
 
 pub fn add_source(skill_id: &str, origin: &str) -> Result<(), String> {
     let mut meta = load();
-    meta.sources.insert(skill_id.to_string(), SkillSourceEntry {
-        origin: origin.to_string(),
-        installed_via: "island".to_string(),
-    });
+    meta.sources.insert(
+        skill_id.to_string(),
+        SkillSourceEntry {
+            origin: origin.to_string(),
+            installed_via: "island".to_string(),
+        },
+    );
     save(&meta)
 }
 
@@ -66,9 +69,12 @@ pub fn create_pack(pack: SkillPack) -> Result<(), String> {
 
 pub fn update_pack(pack: SkillPack) -> Result<(), String> {
     let mut meta = load();
-    if let Some(existing) = meta.packs.iter_mut().find(|p| p.id == pack.id) {
-        *existing = pack;
-    }
+    let existing = meta
+        .packs
+        .iter_mut()
+        .find(|p| p.id == pack.id)
+        .ok_or_else(|| format!("Pack not found: {}", pack.id))?;
+    *existing = pack;
     save(&meta)
 }
 

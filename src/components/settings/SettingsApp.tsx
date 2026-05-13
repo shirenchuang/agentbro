@@ -4,28 +4,18 @@ import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SettingsSidebar } from './SettingsSidebar'
 import { GeneralSection } from './sections/GeneralSection'
-import { DisplaySection } from './sections/DisplaySection'
-import { SoundSection } from './sections/SoundSection'
-import { ShortcutsSection } from './sections/ShortcutsSection'
-import { SSHRemoteSection } from './sections/SSHRemoteSection'
-import { HookSection } from './sections/HookSection'
-import { WebhookSection } from './sections/WebhookSection'
-import { LabsSection } from './sections/LabsSection'
+import { IslandSection } from './sections/IslandSection'
+import { AgentsSection } from './sections/AgentsSection'
+import { SkillsSection } from './sections/SkillsSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
-import { SkillsSection } from './sections/SkillsSection'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
-  'display': DisplaySection,
-  'sound': SoundSection,
-  'shortcuts': ShortcutsSection,
-  'ssh-remote': SSHRemoteSection,
+  'island': IslandSection,
+  'agents': AgentsSection,
   'skills': SkillsSection,
-  'hooks': HookSection,
-  'webhooks': WebhookSection,
-  'labs': LabsSection,
   'license': LicenseSection,
   'about': AboutSection,
 }

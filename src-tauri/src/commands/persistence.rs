@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const SESSIONS_FILE: &str = "sessions.json";
-const APP_SUPPORT_DIR: &str = "agent-island";
+const APP_SUPPORT_DIR: &str = "agentbro";
 
 fn get_sessions_path() -> Option<PathBuf> {
     dirs::data_dir()

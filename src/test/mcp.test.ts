@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseMcpTool, humanize } from '../utils/mcp'
+import { getToolActivityLabel } from '../utils/toolLabels'
 
 describe('humanize', () => {
   it('capitalizes words separated by dashes', () => {
@@ -60,5 +61,27 @@ describe('parseMcpTool — MCP tools', () => {
   it('humanizes unknown server name', () => {
     const result = parseMcpTool('mcp__my-custom-server__tool')
     expect(result.displayServer).toBe('My Custom Server')
+  })
+})
+
+describe('getToolActivityLabel', () => {
+  const t = (key: string) => ({
+    'notch.tool.planning': 'Planning',
+    'notch.tool.waitingForAnswer': 'Waiting for answer',
+    'notch.tool.updatingTasks': 'Updating tasks',
+    'notch.tool.savingState': 'Saving state',
+  }[key] ?? key)
+
+  it('maps plan and question tools to activity labels', () => {
+    expect(getToolActivityLabel(t, 'ExitPlanMode')).toBe('Planning')
+    expect(getToolActivityLabel(t, 'AskUserQuestion')).toBe('Waiting for answer')
+  })
+
+  it('maps task tools to the shared task activity label', () => {
+    expect(getToolActivityLabel(t, 'TodoWrite')).toBe('Updating tasks')
+  })
+
+  it('maps MCP state tools while preserving the server label', () => {
+    expect(getToolActivityLabel(t, 'mcp__memory__state_write')).toBe('Memory — Saving state')
   })
 })

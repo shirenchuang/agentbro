@@ -2,6 +2,12 @@ import { create } from 'zustand'
 import type { ScannedSkill, SkillPack, SyncConfig, FileTreeNode } from '../services/skillApi'
 import { skillApi } from '../services/skillApi'
 
+interface SkillRegistryMetadata {
+  sources: Record<string, { origin: string }>
+  packs: SkillPack[]
+  sync: SyncConfig | null
+}
+
 interface SkillState {
   skills: ScannedSkill[]
   packs: SkillPack[]
@@ -12,8 +18,6 @@ interface SkillState {
   selectedSkillId: string | null
   detailOpen: boolean
   fileTree: FileTreeNode | null
-  fileContent: string
-  selectedFilePath: string
   searchQuery: string
   typeFilter: 'all' | 'skill' | 'mcp'
   agentFilter: string
@@ -27,7 +31,6 @@ interface SkillActions {
   selectSkill: (id: string) => void
   closeDetail: () => void
   loadFileTree: (skillPath: string) => Promise<void>
-  loadFileContent: (filePath: string) => Promise<void>
   setSearchQuery: (q: string) => void
   setTypeFilter: (f: SkillState['typeFilter']) => void
   setAgentFilter: (a: string) => void
@@ -46,8 +49,6 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
   selectedSkillId: null,
   detailOpen: false,
   fileTree: null,
-  fileContent: '',
-  selectedFilePath: '',
   searchQuery: '',
   typeFilter: 'all',
   agentFilter: 'all',
@@ -57,7 +58,7 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
   loadAll: async () => {
     set({ scanning: true })
     try {
-      const [scanResult, meta] = await Promise.all([
+      const [scanResult, meta]: [Record<string, ScannedSkill[]>, SkillRegistryMetadata] = await Promise.all([
         skillApi.scanAll(),
         skillApi.getMetadata(),
       ])
@@ -72,6 +73,26 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
             const source = meta.sources[skill.id] ? 'island' as const : skill.source
             merged.set(skill.id, { ...skill, source, originUrl: meta.sources[skill.id]?.origin ?? null })
           }
+        }
+      }
+
+      for (const [id, entry] of Object.entries(meta.sources)) {
+        if (!merged.has(id)) {
+          merged.set(id, {
+            id,
+            name: id,
+            description: '',
+            skillType: 'skill',
+            icon: null,
+            source: 'island',
+            originUrl: entry.origin ?? null,
+            hasUpdate: false,
+            filePath: '',
+            fileSize: 0,
+            modifiedAt: 0,
+            agents: [],
+            frontmatter: {},
+          })
         }
       }
 
@@ -90,7 +111,7 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
   setTab: (tab) => set({ activeTab: tab }),
 
   selectSkill: (id) => {
-    set({ selectedSkillId: id, detailOpen: true, fileTree: null, fileContent: '', selectedFilePath: '' })
+    set({ selectedSkillId: id, detailOpen: true, fileTree: null })
     const skill = get().skills.find(s => s.id === id)
     if (skill) {
       get().loadFileTree(skill.filePath)
@@ -106,12 +127,6 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
     } catch { /* ignore */ }
   },
 
-  loadFileContent: async (filePath) => {
-    try {
-      const content = await skillApi.readFileContent(filePath)
-      set({ fileContent: content, selectedFilePath: filePath })
-    } catch { /* ignore */ }
-  },
 
   setSearchQuery: (q) => set({ searchQuery: q }),
   setTypeFilter: (f) => set({ typeFilter: f }),

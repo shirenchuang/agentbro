@@ -43,7 +43,10 @@ impl HookRecovery {
         let count = self.restore_count.fetch_add(1, Ordering::Relaxed) + 1;
         if count > MAX_RESTORES_PER_MINUTE {
             self.disabled.store(1, Ordering::Relaxed);
-            log::warn!("Hook recovery disabled: too many restorations (>{}/min)", MAX_RESTORES_PER_MINUTE);
+            log::warn!(
+                "Hook recovery disabled: too many restorations (>{}/min)",
+                MAX_RESTORES_PER_MINUTE
+            );
             return false;
         }
 
@@ -98,10 +101,9 @@ pub fn start_hook_recovery(
                 let mut watcher = RecommendedWatcher::new(
                     move |res: Result<Event, notify::Error>| {
                         if let Ok(event) = res {
-                            let is_settings_change = matches!(
-                                event.kind,
-                                EventKind::Modify(_) | EventKind::Create(_)
-                            ) && event.paths.iter().any(|p| watched.contains(p));
+                            let is_settings_change =
+                                matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                                    && event.paths.iter().any(|p| watched.contains(p));
 
                             if is_settings_change {
                                 let _ = tx.blocking_send(());
@@ -144,7 +146,7 @@ pub fn start_hook_recovery(
                             Ok(c) => c,
                             Err(_) => return true,
                         };
-                        !content.contains("agent-island-bridge")
+                        !content.contains("agentbro-bridge")
                     })
                 });
 
@@ -165,7 +167,10 @@ pub fn start_hook_recovery(
                     if let Err(e) = adapter.install_hooks() {
                         log::warn!("Hook recovery failed for {}: {}", adapter.display_name(), e);
                     } else {
-                        log::info!("Hook recovery: restored hooks for {}", adapter.display_name());
+                        log::info!(
+                            "Hook recovery: restored hooks for {}",
+                            adapter.display_name()
+                        );
                     }
                 }
 

@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ChatMessage } from '../../types/agent'
 import { StatusDot } from '../shared'
 import { DiffView } from './DiffView'
-import { parseMcpTool } from '../../utils/mcp'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './CollapsedGroup.css'
 
 interface CollapsedGroupProps {
@@ -11,6 +12,7 @@ interface CollapsedGroupProps {
 
 export function CollapsedGroup({ messages }: CollapsedGroupProps) {
   const [expanded, setExpanded] = useState(false)
+  const { t } = useTranslation()
 
   const thinkingCount = messages.filter((m) => m.role === 'thinking').length
   const toolMessages = messages.filter((m) => m.role === 'tool_use')
@@ -49,8 +51,7 @@ export function CollapsedGroup({ messages }: CollapsedGroupProps) {
               )
             }
             if (msg.role === 'tool_use') {
-              const mcp = parseMcpTool(msg.toolName)
-              const displayName = mcp.isMcp ? `${mcp.displayServer} — ${mcp.displayTool}` : mcp.displayTool
+              const displayName = getToolActivityLabel(t, msg.toolName)
               const isEditTool = ['Edit', 'Write', 'NotebookEdit'].includes(msg.toolName)
 
               return (

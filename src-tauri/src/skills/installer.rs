@@ -1,7 +1,7 @@
+use super::agent_paths;
+use super::{InstallMode, TargetConfig};
 use std::fs;
 use std::path::{Path, PathBuf};
-use super::{InstallMode, TargetConfig};
-use super::agent_paths;
 
 pub fn install_skill(
     source_path: &str,
@@ -13,7 +13,8 @@ pub fn install_skill(
         return Err(format!("Source not found: {}", source_path));
     }
 
-    let skill_name = src.file_name()
+    let skill_name = src
+        .file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
@@ -30,7 +31,9 @@ pub fn install_skill(
 
     for target in targets {
         let paths = agent_paths::paths_for_agent(&target.agent);
-        let target_dir = paths.skill_dirs.first()
+        let target_dir = paths
+            .skill_dirs
+            .first()
             .ok_or_else(|| format!("No skill directory for agent: {}", target.agent))?;
 
         fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
@@ -43,12 +46,12 @@ pub fn install_skill(
             InstallMode::Symlink => {
                 if let Some(ref central) = central_path {
                     if dest.exists() || dest.symlink_metadata().is_ok() {
-                        fs::remove_file(&dest).or_else(|_| fs::remove_dir_all(&dest))
+                        fs::remove_file(&dest)
+                            .or_else(|_| fs::remove_dir_all(&dest))
                             .map_err(|e| e.to_string())?;
                     }
                     #[cfg(unix)]
-                    std::os::unix::fs::symlink(central, &dest)
-                        .map_err(|e| e.to_string())?;
+                    std::os::unix::fs::symlink(central, &dest).map_err(|e| e.to_string())?;
                     #[cfg(not(unix))]
                     copy_recursive(central, &dest)?;
                 }
@@ -84,8 +87,8 @@ pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), St
     }
 
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| e.to_string())?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
     let disabled = settings
         .as_object_mut()
@@ -128,6 +131,33 @@ fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+pub fn apply_pack(pack: &super::SkillPack) -> Result<(), String> {
+    let meta = super::registry::load();
+    for skill_id in &pack.skills {
+        let source_entry = meta.sources.get(skill_id.as_str());
+        let skill_path = source_entry
+            .map(|_| super::agent_paths::agentbro_skills_dir().join(skill_id))
+            .filter(|p| p.exists());
+
+        let src = match skill_path {
+            Some(p) => p.display().to_string(),
+            None => continue,
+        };
+
+        let targets: Vec<super::TargetConfig> = pack
+            .target_agents
+            .iter()
+            .map(|a| super::TargetConfig {
+                agent: a.clone(),
+                install_mode: super::InstallMode::Direct,
+            })
+            .collect();
+
+        install_skill(&src, &targets, &super::InstallMode::Direct)?;
+    }
     Ok(())
 }
 

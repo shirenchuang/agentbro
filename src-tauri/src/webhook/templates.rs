@@ -12,7 +12,11 @@ pub enum NotificationEvent {
 }
 
 /// Build DingTalk markdown message body
-pub fn dingtalk_markdown(event: &NotificationEvent, source: &str, session_id: &str) -> serde_json::Value {
+pub fn dingtalk_markdown(
+    event: &NotificationEvent,
+    source: &str,
+    session_id: &str,
+) -> serde_json::Value {
     let (title, text) = event_to_text(event, source, session_id);
     serde_json::json!({
         "msgtype": "markdown",
@@ -24,7 +28,11 @@ pub fn dingtalk_markdown(event: &NotificationEvent, source: &str, session_id: &s
 }
 
 /// Build Feishu interactive card message body
-pub fn feishu_interactive(event: &NotificationEvent, source: &str, session_id: &str) -> serde_json::Value {
+pub fn feishu_interactive(
+    event: &NotificationEvent,
+    source: &str,
+    session_id: &str,
+) -> serde_json::Value {
     let (title, body) = event_to_text(event, source, session_id);
     serde_json::json!({
         "msg_type": "interactive",
@@ -72,7 +80,10 @@ fn event_to_text(event: &NotificationEvent, source: &str, session_id: &str) -> (
         ),
         NotificationEvent::ToolUse { tool_name } => (
             format!("[{}] Tool: {}", source, tool_name),
-            format!("**[{}]** Using tool `{}` in session `{}`", source, tool_name, short_id),
+            format!(
+                "**[{}]** Using tool `{}` in session `{}`",
+                source, tool_name, short_id
+            ),
         ),
         NotificationEvent::Completion { summary } => (
             format!("[{}] Task complete", source),
@@ -80,11 +91,11 @@ fn event_to_text(event: &NotificationEvent, source: &str, session_id: &str) -> (
         ),
         NotificationEvent::Error { message } => (
             format!("[{}] Error", source),
-            format!("**[{}]** Error in session `{}`\n\n> {}", source, short_id, message),
+            format!(
+                "**[{}]** Error in session `{}`\n\n> {}",
+                source, short_id, message
+            ),
         ),
-        NotificationEvent::Custom { title, body } => (
-            title.clone(),
-            body.clone(),
-        ),
+        NotificationEvent::Custom { title, body } => (title.clone(), body.clone()),
     }
 }

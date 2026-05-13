@@ -64,11 +64,17 @@ impl ToolProcessor {
             active.remove(tool_use_id);
         }
 
-        self.store.complete_tool(session_id, tool_use_id, true, None);
+        self.store
+            .complete_tool(session_id, tool_use_id, true, None);
     }
 
     /// Called on PostToolUseFailure — mark tool as failed
-    pub fn on_post_tool_use_failure(&self, session_id: &str, tool_use_id: &str, error: Option<String>) {
+    pub fn on_post_tool_use_failure(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        error: Option<String>,
+    ) {
         if tool_use_id.is_empty() {
             return;
         }
@@ -78,7 +84,8 @@ impl ToolProcessor {
             active.remove(tool_use_id);
         }
 
-        self.store.complete_tool(session_id, tool_use_id, false, error);
+        self.store
+            .complete_tool(session_id, tool_use_id, false, error);
     }
 
     /// Look up the tool_use_id for a PermissionRequest correlation.
