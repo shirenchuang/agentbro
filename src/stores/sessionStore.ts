@@ -1,9 +1,10 @@
-/* Agent Island — Session State Management (Zustand) */
-import { create } from 'zustand'
+/* AgentBro — Session State Management (Zustand) */
+import { create, type StoreApi, type UseBoundStore } from 'zustand'
+import { useConfigStore } from './configStore'
 import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
-import { saveSessions as saveSessionsToBackend, loadSessions as loadSessionsFromBackend } from '../services/tauriApi'
+import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
 function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
@@ -20,34 +21,20 @@ const saveSessionsDebounced = debounce(() => {
   saveSessionsToBackend(sessions).catch((err) => console.warn('Failed to persist sessions:', err))
 }, 1000)
 
-// Load persisted sessions on init
-async function loadPersistedSessions() {
-  try {
-    const persisted = await loadSessionsFromBackend()
-    if (persisted && persisted.length > 0) {
-      useSessionStore.getState().replaceAllSessions(persisted)
-      console.log('Loaded', persisted.length, 'persisted sessions')
-    }
-  } catch (err) {
-    console.warn('Failed to load persisted sessions:', err)
-  }
-}
-
-// Trigger initial load
-loadPersistedSessions()
-
 interface SessionStore {
   sessions: Record<string, SessionState>
   sessionList: SessionState[]
   activeSessionId: string | null
   panelState: PanelState
   rateLimits?: RateLimitInfo
+  hookNotification: 'restored' | 'rate_limited' | null
   // Layered state machine
   baseLayer: BaseLayer
   overlayQueue: OverlayItem[]
   activeOverlay: OverlayItem | null
   // Session mute
   mutedSessions: Record<string, number>  // sessionId → mute expiry timestamp
+  wakeSilencedUntil: number
   // actions
   updateSession: (event: AgentEvent) => void
   setActiveSession: (id: string | null) => void
@@ -62,9 +49,16 @@ interface SessionStore {
   clearPermission: (sessionId: string) => void
   clearQuestion: (sessionId: string) => void
   setRateLimits: (limits: RateLimitInfo) => void
+  setHookNotification: (notification: 'restored' | 'rate_limited' | null) => void
+  applyIdleTimeout: (now?: number) => void
   muteSession: (id: string, durationMs?: number) => void
   unmuteSession: (id: string) => void
   isSessionMuted: (id: string) => boolean
+  setWakeSilencedUntil: (timestamp: number) => void
+  isWakeSilenced: () => boolean
+  // Follow-focus
+  focusedTerminal: string | null
+  setFocusedTerminal: (name: string | null) => void
 }
 
 function toList(sessions: Record<string, SessionState>): SessionState[] {
@@ -81,25 +75,37 @@ export const selectBaseLayer = (s: SessionStore) => s.baseLayer
 export const selectActiveOverlay = (s: SessionStore) => s.activeOverlay
 export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 
-export const useSessionStore = create<SessionStore>((set) => ({
+export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<SessionStore>((set) => ({
   sessions: {},
   sessionList: [],
   activeSessionId: null,
   panelState: 'collapsed',
   rateLimits: undefined,
+  hookNotification: null,
   baseLayer: 'compact',
   overlayQueue: [],
   activeOverlay: null,
   mutedSessions: {},
+  wakeSilencedUntil: 0,
+  focusedTerminal: null,
 
   updateSession: (event: AgentEvent) => {
     set((state) => {
       const sessions = { ...state.sessions }
-      let panelState = state.panelState
+      const panelState = state.panelState
       let activeSessionId = state.activeSessionId
 
       switch (event.type) {
         case 'session_start': {
+          // Check CWD exclusion list
+          const excludedStr = useConfigStore.getState().excludedHookCwdSubstrings
+          if (excludedStr && 'cwd' in event && (event as { cwd?: string }).cwd) {
+            const cwd = (event as { cwd?: string }).cwd!
+            const excluded = excludedStr.split(',').map(s => s.trim()).filter(Boolean)
+            if (excluded.some(sub => cwd.includes(sub))) {
+              return state
+            }
+          }
           sessions[event.sessionId] = {
             id: event.sessionId,
             agentType: event.agentType,
@@ -130,7 +136,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
         case 'processing': {
           const session = sessions[event.sessionId]
           if (session) {
-            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined, unattendedSince: undefined }
+            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined, unattendedSince: undefined, lastActivityAt: Date.now() }
           }
           break
         }
@@ -156,6 +162,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
               lastToolStatus: event.status,
               chatHistory: [...session.chatHistory, msg],
               idleSince: undefined,
+              lastActivityAt: Date.now(),
             }
 
             // Task tracking: detect TaskCreate/TaskUpdate tool calls
@@ -166,7 +173,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
                   const newTask = { id: `task-${Date.now()}`, name: parsed.subject, status: 'pending' as const }
                   updatedSession.tasks = [...(session.tasks || []), newTask]
                 }
-              } catch {}
+              } catch (error) {
+                console.warn('[session] ignore invalid TaskCreate payload:', error)
+              }
             } else if (event.toolName === 'TaskUpdate' && event.toolInput && event.status === 'success') {
               try {
                 const parsed = JSON.parse(event.toolInput)
@@ -175,7 +184,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
                     t.id === parsed.taskId ? { ...t, status: parsed.status } : t
                   )
                 }
-              } catch {}
+              } catch (error) {
+                console.warn('[session] ignore invalid TaskUpdate payload:', error)
+              }
             }
 
             // Subagent tracking: detect Agent tool calls
@@ -190,7 +201,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
                   tools: [],
                 }
                 updatedSession.subagents = [...session.subagents, subagent]
-              } catch {}
+              } catch (error) {
+                console.warn('[session] ignore invalid Agent payload:', error)
+              }
             }
 
             sessions[event.sessionId] = updatedSession
@@ -199,6 +212,18 @@ export const useSessionStore = create<SessionStore>((set) => ({
         }
 
         case 'permission_request': {
+          // Auto-approve if tool is in the auto-approve list
+          const autoApproveTools = useConfigStore.getState().autoApproveTools
+          if (autoApproveTools.includes(event.toolName)) {
+            const session = sessions[event.sessionId]
+            if (session) {
+              sessions[event.sessionId] = { ...session, phase: 'processing', lastActivityAt: Date.now() }
+            }
+            // Fire auto-approve response asynchronously
+            respondPermission(event.sessionId, true).catch(() => {})
+            break
+          }
+
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'permission', toolName: event.toolName, toolInput: event.toolInput, diff: event.diff, options: event.options, timestamp: Date.now() }
@@ -241,7 +266,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
             sessions[event.sessionId] = {
               ...session,
               phase: 'waiting_input',
-              pendingQuestion: { question: event.question, options: event.options },
+              pendingQuestion: {
+                question: event.question,
+                options: event.options,
+                descriptions: event.descriptions,
+                header: event.header,
+                multiSelect: event.multiSelect,
+                questions: event.questions,
+              },
               unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
@@ -249,7 +281,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
             id: `question-${event.sessionId}-${Date.now()}`,
             sessionId: event.sessionId,
             type: 'question',
-            data: { question: event.question, options: event.options },
+            data: {
+              question: event.question,
+              options: event.options,
+              descriptions: event.descriptions,
+              header: event.header,
+              multiSelect: event.multiSelect,
+              questions: event.questions,
+            },
             createdAt: Date.now(),
           }
           setTimeout(() => useSessionStore.getState().pushOverlay(qOverlay), 0)
@@ -393,15 +432,104 @@ export const useSessionStore = create<SessionStore>((set) => ({
   },
 
   replaceAllSessions: (newSessions) => {
+    const prevState = useSessionStore.getState()
+    const newOverlays: OverlayItem[] = []
+
     set((state) => {
       const sessions: Record<string, SessionState> = {}
       for (const s of newSessions) {
-        // Ensure new fields have defaults for backward compatibility
         sessions[s.id] = {
           ...s,
           chatHistory: state.sessions[s.id]?.chatHistory ?? s.chatHistory ?? [],
           subagents: s.subagents ?? [],
           activeTools: s.activeTools ?? [],
+        }
+
+        const prev = prevState.sessions[s.id]
+
+        // Detect new pendingQuestion — create question overlay
+        if (s.pendingQuestion && !prev?.pendingQuestion) {
+          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'question')
+          if (!existingOverlay) {
+            newOverlays.push({
+              id: `question-${s.id}-${Date.now()}`,
+              sessionId: s.id,
+              type: 'question',
+              data: {
+                question: s.pendingQuestion.question,
+                options: (s.pendingQuestion.options || []).map((label: string, i: number) => ({
+                  label,
+                  description: s.pendingQuestion?.descriptions?.[i],
+                })),
+                header: s.pendingQuestion.header,
+                multiSelect: s.pendingQuestion.multiSelect,
+                questions: s.pendingQuestion.questions,
+              },
+              createdAt: Date.now(),
+            })
+          }
+        }
+
+        // Detect new pendingPermission — create permission overlay
+        if (s.pendingPermission && !prev?.pendingPermission) {
+          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'permission')
+          if (!existingOverlay) {
+            newOverlays.push({
+              id: `permission-${s.id}-${Date.now()}`,
+              sessionId: s.id,
+              type: 'permission',
+              data: {
+                toolName: s.pendingPermission.toolName,
+                toolInput: s.pendingPermission.toolInput,
+                diff: s.pendingPermission.diff,
+              },
+              createdAt: Date.now(),
+            })
+          }
+        }
+
+        // Detect new pending plan approval from backend hook flow.
+        if ((s.planTitle || s.planContent) && (s.planContent !== prev?.planContent || s.planTitle !== prev?.planTitle)) {
+          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'plan')
+          if (!existingOverlay) {
+            newOverlays.push({
+              id: `plan-${s.id}-${Date.now()}`,
+              sessionId: s.id,
+              type: 'plan',
+              data: {
+                planTitle: s.planTitle,
+                planContent: s.planContent || '',
+                requestedPermissions: s.planPermissions || [],
+              },
+              createdAt: Date.now(),
+            })
+          }
+        }
+
+        // Detect a newly available assistant response and show the response overlay.
+        if (s.responseText && s.responseText !== prev?.responseText) {
+          newOverlays.push({
+            id: `response-${s.id}-${Date.now()}`,
+            sessionId: s.id,
+            type: 'response',
+            data: {
+              responseText: s.responseText,
+              userMessage: s.lastUserMessage,
+            },
+            createdAt: Date.now(),
+          })
+        }
+
+        // Backend session updates are the source of truth in Tauri mode, so
+        // synthesize completion overlays when a session transitions to done.
+        if (s.phase === 'done' && prev?.phase !== 'done') {
+          newOverlays.push({
+            id: `completion-${s.id}-${Date.now()}`,
+            sessionId: s.id,
+            type: 'completion',
+            data: { summary: s.description || s.sessionTitle || 'Task completed' },
+            createdAt: Date.now(),
+          })
         }
       }
       let activeSessionId = state.activeSessionId
@@ -410,6 +538,12 @@ export const useSessionStore = create<SessionStore>((set) => ({
       }
       return { sessions, sessionList: toList(sessions), activeSessionId }
     })
+    // Push new overlays after state update
+    if (newOverlays.length > 0) {
+      for (const overlay of newOverlays) {
+        useSessionStore.getState().pushOverlay(overlay)
+      }
+    }
     saveSessionsDebounced()
   },
 
@@ -455,6 +589,37 @@ export const useSessionStore = create<SessionStore>((set) => ({
     set({ rateLimits: limits })
   },
 
+  setHookNotification: (notification) => {
+    set({ hookNotification: notification })
+  },
+
+  applyIdleTimeout: (now = Date.now()) => {
+    const idleTimeoutMinutes = useConfigStore.getState().idleTimeoutMinutes
+    if (idleTimeoutMinutes <= 0) return
+    const timeoutMs = idleTimeoutMinutes * 60 * 1000
+    let changed = false
+
+    set((state) => {
+      const sessions = { ...state.sessions }
+      for (const session of Object.values(state.sessions)) {
+        if (session.phase !== 'processing' && session.phase !== 'compacting') continue
+        if (session.activeTools.some((tool) => tool.status === 'running')) continue
+        const lastActivityAt = session.lastActivityAt ?? session.startedAt
+        if (now - lastActivityAt <= timeoutMs) continue
+        sessions[session.id] = {
+          ...session,
+          phase: 'idle',
+          idleSince: session.idleSince ?? now,
+          description: session.description,
+        }
+        changed = true
+      }
+      return changed ? { sessions, sessionList: toList(sessions) } : state
+    })
+
+    if (changed) saveSessionsDebounced()
+  },
+
   setBaseLayer: (baseLayer) => {
     const panelMap: Record<BaseLayer, PanelState> = { compact: 'collapsed', expanded: 'hover', detail: 'expanded' }
     set({ baseLayer, panelState: panelMap[baseLayer] })
@@ -468,6 +633,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
     // During quiet hours, suppress non-blocking overlays (response/completion)
     const isNonBlocking = item.type === 'response' || item.type === 'completion'
     if (isNonBlocking && isQuietHours()) return
+    if (isNonBlocking && useSessionStore.getState().isWakeSilenced()) return
 
     set((state) => {
       const queue = [...state.overlayQueue, item].sort(
@@ -517,5 +683,17 @@ export const useSessionStore = create<SessionStore>((set) => ({
       return false
     }
     return true
+  },
+
+  setWakeSilencedUntil: (timestamp) => {
+    set({ wakeSilencedUntil: timestamp })
+  },
+
+  isWakeSilenced: (): boolean => {
+    return Date.now() < useSessionStore.getState().wakeSilencedUntil
+  },
+
+  setFocusedTerminal: (name) => {
+    useSessionStore.setState({ focusedTerminal: name })
   },
 }))

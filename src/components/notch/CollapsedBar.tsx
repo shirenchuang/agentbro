@@ -4,19 +4,21 @@ import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { PanelState, RateLimitInfo, SessionPhase, SessionState } from '../../types/agent'
 import { computePriority, PRIORITY } from '../../types/priority'
-import { RateLimitBar } from './RateLimitBar'
 import { MascotRouter } from './mascots'
+import { TipDisplay } from './TipDisplay'
 import { useTick } from '../../hooks/useTick'
-import { isTauri } from '../../services/tauriApi'
+import { isTauri, setSoundEnabled } from '../../services/tauriApi'
+import { useConfigStore } from '../../stores/configStore'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './CollapsedBar.css'
-
-const CAROUSEL_INTERVAL = 3000
 
 interface CollapsedBarProps {
   sessions: SessionState[]
   panelState: PanelState
   rateLimits?: RateLimitInfo
   onCollapse: () => void
+  isMicro?: boolean
+  focusFilteredEmpty?: boolean
 }
 
 function getLeadSession(sessions: SessionState[]): SessionState | undefined {
@@ -39,7 +41,7 @@ function getCarouselSlides(session: SessionState, t: (key: string) => string): s
 
   if (session.lastToolName) {
     const target = session.lastToolTarget ? `: ${session.lastToolTarget}` : ''
-    slides.push(`${session.lastToolName}${target}`)
+    slides.push(`${getToolActivityLabel(t, session.lastToolName)}${target}`)
   } else if (session.description) {
     slides.push(session.description.split('\n')[0])
   }
@@ -68,11 +70,14 @@ function formatElapsed(unattendedSince: number | undefined): string {
   return s > 0 ? `${m}m${s}s` : `${m}m`
 }
 
-export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: CollapsedBarProps) {
+export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusFilteredEmpty = false }: CollapsedBarProps) {
   const { t } = useTranslation()
-  useTick(1000, sessions.length > 0)
+  const showToolStatus = useConfigStore((s) => s.showToolStatus)
+  const defaultMascotSource = useConfigStore((s) => s.defaultMascotSource)
+  const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
 
   const lead = getLeadSession(sessions)
+  useTick(1000, Boolean(lead?.unattendedSince))
   const slides = lead ? getCarouselSlides(lead, t) : []
   const slidesCount = slides.length
 
@@ -84,21 +89,24 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
     setSlideIndex(0)
   }, [leadId])
 
-  // Cycle slides every 3s
-  useEffect(() => {
-    if (slidesCount <= 1) return
-    const timer = setInterval(() => {
-      setSlideIndex(prev => (prev + 1) % slidesCount)
-    }, CAROUSEL_INTERVAL)
-    return () => clearInterval(timer)
-  }, [slidesCount, leadId])
-
   const safeIndex = slidesCount > 0 ? slideIndex % slidesCount : 0
   const currentSlide = slides[safeIndex] ?? ''
 
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
   const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
+  const workingCount = sessions.filter(s => s.phase === 'processing' || s.phase === 'compacting').length
+  const waitingCount = sessions.filter(s => s.phase === 'waiting_approval' || s.phase === 'waiting_input').length
+  const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)
+  const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
+  const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')
+  const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
+  const isYolo = lead?.isYoloMode
+  const hasError = lead?.phase === 'error'
+  const ratePct = lead?.rateLimits?.fiveHourUsage
+  const rateColor = ratePct != null
+    ? ratePct > 80 ? '#ef4444' : ratePct > 50 ? '#f59e0b' : '#4ade80'
+    : undefined
 
   const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)
   const elapsedText = unattendedLevel !== 'none' ? formatElapsed(lead?.unattendedSince) : ''
@@ -120,33 +128,57 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
     }
   }
 
+  if (isMicro) {
+    return (
+      <div className="collapsed-bar collapsed-bar--micro">
+        <div className="collapsed-bar__micro-main">
+          <MascotRouter toolType={defaultMascotSource} phase="idle" size={22} />
+          <span className="collapsed-bar__micro-count">{count}</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
+    <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''} ${isThinking ? 'collapsed-bar--shimmer' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
       {/* Top row: rate limits (left) + icons (right) — only in expanded */}
       {isExpanded && (
         <div className="collapsed-bar__status-row">
-          <div className="collapsed-bar__rate-limits">
-            <RateLimitBar rateLimits={rateLimits} />
+          <div className="collapsed-bar__left" style={{ gap: 8 }}>
+            <MascotRouter toolType={lead?.agentType || defaultMascotSource} phase={lead?.phase || 'idle'} size={20} />
+            <div className="collapsed-bar__counter-pills">
+              <span className={`collapsed-bar__counter-pill${count > 0 ? ' collapsed-bar__counter-pill--active' : ''}`}>
+                <span>ALL</span><span className="collapsed-bar__counter-pill-val">{count}</span>
+              </span>
+              <span className={`collapsed-bar__counter-pill${workingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--act' : ''}`}>
+                <span>ACT</span><span className="collapsed-bar__counter-pill-val">{workingCount}</span>
+              </span>
+              <span className={`collapsed-bar__counter-pill${waitingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--wait' : ''}`}>
+                <span>WAIT</span><span className="collapsed-bar__counter-pill-val">{waitingCount}</span>
+              </span>
+            </div>
+            <span className="collapsed-bar__session-count-text">{count} sessions</span>
           </div>
           <div className="collapsed-bar__icons">
+            <span className="collapsed-bar__esc-hint">ESC</span>
             <button
               className="collapsed-bar__icon-btn"
               title="Toggle Sound"
               onClick={async (e) => {
                 e.stopPropagation()
-                const { useConfigStore } = await import('../../stores/configStore')
                 const config = useConfigStore.getState()
                 const newVal = !config.soundEnabled
                 config.updateConfig('soundEnabled', newVal)
                 try {
-                  const { setSoundEnabled } = await import('../../services/tauriApi')
                   setSoundEnabled(newVal)
-                } catch {}
+                } catch (error) {
+                  console.warn('[notch] setSoundEnabled failed:', error)
+                }
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                 <path d="M11 5L6 9H2v6h4l5 4V5z" fill="currentColor" opacity="0.8"/>
-                <path d="M15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
+                <path d="M15.54 8.46a5 5 0 010 7.07" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
               </svg>
             </button>
             <button
@@ -170,28 +202,62 @@ export function CollapsedBar({ sessions, panelState, rateLimits, onCollapse }: C
             <>
               <MascotRouter toolType={lead.agentType} phase={lead.phase} size={22} />
               <div className="collapsed-bar__carousel">
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.span
-                    key={`${leadId}-${safeIndex}`}
-                    className="collapsed-bar__info"
-                    initial={{ y: 8, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    exit={{ y: -8, opacity: 0 }}
-                    transition={{ duration: 0.18, ease: 'easeOut' }}
-                  >
-                    {currentSlide}
-                  </motion.span>
-                </AnimatePresence>
+                {showTips ? (
+                  <TipDisplay show />
+                ) : (
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.span
+                      key={`${leadId}-${safeIndex}`}
+                      className="collapsed-bar__info"
+                      initial={{ y: 8, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      exit={{ y: -8, opacity: 0 }}
+                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                    >
+                      {currentSlide}
+                    </motion.span>
+                  </AnimatePresence>
+                )}
               </div>
             </>
           ) : (
-            <span className="collapsed-bar__info collapsed-bar__info--empty">
-              {t('notch.waitingForSessions')}
-            </span>
+            <>
+              <MascotRouter toolType={defaultMascotSource} phase="idle" size={22} />
+              {showTips && !focusFilteredEmpty ? (
+                <div className="collapsed-bar__carousel">
+                  <TipDisplay show />
+                </div>
+              ) : (
+                <span className="collapsed-bar__info collapsed-bar__info--empty">
+                  {emptyText}
+                </span>
+              )}
+            </>
           )}
         </div>
 
         <div className="collapsed-bar__right">
+          {/* Tool status display */}
+          {showToolStatus && lead?.lastToolName && !isExpanded && (
+            <span className="collapsed-bar__tool-status">
+              {getToolActivityLabel(t, lead.lastToolName)}
+              {lead.lastToolTarget ? `: ${lead.lastToolTarget}` : ''}
+            </span>
+          )}
+          {/* Rate limit percentage */}
+          {ratePct != null && !isExpanded && (
+            <span className="collapsed-bar__rate-pct" style={{ color: rateColor }}>
+              {ratePct}%
+            </span>
+          )}
+          {/* Error warning badge */}
+          {hasError && (
+            <span className="collapsed-bar__error-badge">!</span>
+          )}
+          {/* YOLO mode badge */}
+          {isYolo && (
+            <span className="collapsed-bar__yolo-badge">YOLO</span>
+          )}
           {/* Unattended timer badge */}
           {unattendedLevel !== 'none' && (
             <span className={`collapsed-bar__unattended collapsed-bar__unattended--${unattendedLevel}`}>

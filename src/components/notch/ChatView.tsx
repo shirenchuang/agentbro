@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { getChatHistory } from '../../services/tauriApi'
+import { getChatHistory, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { ChatHeader } from './ChatHeader'
 import { SubagentList } from './SubagentList'
@@ -11,8 +11,8 @@ import { MessageBubble } from './MessageBubble'
 import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
-import type { ChatMessage } from '../../types/agent'
-import { respondPermission, sendMessage, jumpToTerminal, respondAutoApprove } from '../../services/tauriApi'
+import type { ChatMessage, SubagentInfo } from '../../types/agent'
+import { respondPermission, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
 import './ChatView.css'
 
 interface MessageGroup {
@@ -62,6 +62,18 @@ export function ChatView({ onBack }: ChatViewProps) {
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const contentRef = useRef<HTMLDivElement>(null)
   const [userScrolled, setUserScrolled] = useState(false)
+  const [subagentHistory, setSubagentHistory] = useState<{
+    agentId: string
+    title: string
+    subtitle?: string
+    messages: ChatMessage[]
+    loading: boolean
+    error?: string
+  } | null>(null)
+
+  useEffect(() => {
+    setSubagentHistory(null)
+  }, [activeSession?.id])
 
   // Auto-load chat history when ChatView mounts and history is empty
   useEffect(() => {
@@ -83,7 +95,7 @@ export function ChatView({ onBack }: ChatViewProps) {
     if (!userScrolled && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight
     }
-  }, [activeSession?.chatHistory.length, userScrolled])
+  }, [activeSession?.chatHistory.length, subagentHistory?.messages.length, userScrolled])
 
   const handleScroll = useCallback(() => {
     if (!contentRef.current) return
@@ -139,18 +151,75 @@ export function ChatView({ onBack }: ChatViewProps) {
   }
 
   const handleJump = () => {
+    setNotchFocusable(false).catch(() => {})
     jumpToTerminal(activeSession.id)
   }
 
+  const handleBack = useCallback(() => {
+    setNotchFocusable(false).catch(() => {})
+    onBack()
+  }, [onBack])
+
+  const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
+    if (!activeSession || !subagent.agentTranscriptPath) return
+    const title = subagent.agentType || 'Subagent'
+    const subtitle = subagent.description || subagent.lastAssistantMessage
+    setSubagentHistory({
+      agentId: subagent.agentId,
+      title,
+      subtitle,
+      messages: [],
+      loading: true,
+    })
+    getSubagentChatHistory(activeSession.id, subagent.agentTranscriptPath)
+      .then((parsed) => {
+        setSubagentHistory((current) => {
+          if (!current || current.agentId !== subagent.agentId) return current
+          return {
+            ...current,
+            messages: mapParsedMessages(parsed),
+            loading: false,
+          }
+        })
+      })
+      .catch((e) => {
+        setSubagentHistory((current) => {
+          if (!current || current.agentId !== subagent.agentId) return current
+          return {
+            ...current,
+            loading: false,
+            error: e instanceof Error ? e.message : String(e),
+          }
+        })
+      })
+  }, [activeSession?.id])
+
+  const displayedMessages = subagentHistory?.messages ?? activeSession.chatHistory
+
   return (
     <div className="chat-view">
-      <ChatHeader session={activeSession} onBack={onBack} onJump={handleJump} />
+      <ChatHeader session={activeSession} onBack={handleBack} onJump={handleJump} />
 
       {showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (
-        <SubagentList subagents={activeSession.subagents} />
+        <SubagentList subagents={activeSession.subagents} onOpenHistory={handleOpenSubagentHistory} />
       )}
 
       <div className="chat-view__messages glass-scroll" ref={contentRef} onScroll={handleScroll} style={{ fontSize: contentFontSize }}>
+        {subagentHistory && (
+          <div className="chat-view__subagent-history">
+            <button className="chat-view__subagent-back" onClick={() => setSubagentHistory(null)}>
+              ←
+            </button>
+            <div className="chat-view__subagent-copy">
+              <span className="chat-view__subagent-title">{subagentHistory.title}</span>
+              {subagentHistory.subtitle && (
+                <span className="chat-view__subagent-subtitle">{subagentHistory.subtitle}</span>
+              )}
+            </div>
+            <span className="chat-view__subagent-badge">readonly</span>
+          </div>
+        )}
+
         {/* Error state banner */}
         {activeSession.phase === 'error' && (
           <div className="chat-view__error-banner">
@@ -173,13 +242,21 @@ export function ChatView({ onBack }: ChatViewProps) {
           </div>
         )}
 
-        {activeSession.chatHistory.length === 0 ? (
+        {subagentHistory?.loading ? (
+          <div className="chat-view__empty">
+            <span>{t('notch.loadingHistory', 'Loading history...')}</span>
+          </div>
+        ) : subagentHistory?.error ? (
+          <div className="chat-view__empty">
+            <span>{subagentHistory.error}</span>
+          </div>
+        ) : displayedMessages.length === 0 ? (
           <div className="chat-view__empty">
             <span className="chat-view__empty-icon">💬</span>
             <span>{t('notch.waitingMessages')}</span>
           </div>
         ) : (
-          groupMessages(activeSession.chatHistory).map((group, i) =>
+          groupMessages(displayedMessages).map((group, i) =>
             group.type === 'collapsed' ? (
               <CollapsedGroup key={`g-${i}`} messages={group.messages} />
             ) : (

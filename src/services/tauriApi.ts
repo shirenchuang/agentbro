@@ -1,8 +1,9 @@
-/* Agent Island — Tauri IPC API Service
+/* AgentBro — Tauri IPC API Service
  * Typed wrappers for Tauri commands with graceful browser-dev-mode fallbacks.
  */
 
 import type { SessionState } from '../types/agent'
+import type { ThemeConfig } from '../types/theme'
 
 /** Returns true when running inside a Tauri webview. */
 export function isTauri(): boolean {
@@ -20,6 +21,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 export interface BackendSession {
   id: string
   agentType: string
+  engineLabel: string | null
+  engineConfigRoot: string | null
   project: string
   cwd: string
   terminal: string
@@ -27,13 +30,45 @@ export interface BackendSession {
   startedAt: number
   duration: number
   tokens: { input: number; output: number; cacheRead: number; cacheCreate: number }
+  rateLimits: {
+    fiveHourUsage: number
+    fiveHourRemaining: string
+    sevenDayUsage: number
+    sevenDayRemaining: string
+  } | null
+  statusLineText: string | null
+  contextWindow: {
+    totalInputTokens: number
+    totalOutputTokens: number
+    contextWindowSize: number
+    usedPercentage: number | null
+  } | null
+  lastMainAgentAt: number | null
+  cacheTtlMs: number | null
   pendingPermission: {
     toolName: string
     toolInput: string
     diff: string | null
     options: string[] | null
   } | null
-  pendingQuestion: { question: string; options: string[] } | null
+  pendingQuestion: {
+    question: string
+    options: string[]
+    descriptions: string[]
+    header: string | null
+    multiSelect: boolean
+    questions: Array<{
+      question: string
+      header: string | null
+      options: Array<{ label: string; description: string | null }>
+      multiSelect: boolean
+    }>
+  } | null
+  pendingPlan: {
+    title: string
+    content: string
+    permissions: string[]
+  } | null
   lastToolName: string | null
   lastToolTarget: string | null
   lastToolStatus: string | null
@@ -41,6 +76,35 @@ export interface BackendSession {
   sessionTitle: string | null
   pid: number | null
   tty: string | null
+  subagents: Array<{
+    agentId: string
+    agentType: string | null
+    description: string
+    transcriptPath: string | null
+    agentTranscriptPath: string | null
+    lastAssistantMessage: string | null
+    startedAt: number
+    completedAt: number | null
+    status: string
+    tools: string[]
+  }>
+  activeTools: Array<{
+    toolUseId: string
+    toolName: string
+    status: string
+    startedAt: number
+    completedAt: number | null
+    error: string | null
+  }>
+  tasks: Array<{
+    id: string
+    name: string
+    status: string
+  }>
+  isYoloMode: boolean
+  lastUserMessage: string | null
+  lastResponse: string | null
+  lastThought: string | null
 }
 
 export interface BackendConfig {
@@ -53,11 +117,34 @@ export interface BackendConfig {
   theme: string
   displayId: string
   autoHideNoSessions: boolean
-  hideInFullscreen: boolean
+  soundEvents: Record<string, boolean>
+  soundRules: Record<string, { enabled: boolean; sound: string }>
+  customSounds: Array<{ id: string; name: string; path: string; dataUrl?: string }>
+  soundPack: string
+  probeSessionFilter: boolean
+  tipsEnabled: boolean
+  pixelCursorEnabled: boolean
+  confettiEnabled: boolean
+  islandSurfaceMode: 'island' | 'pet'
+  islandPetScale: number
+  islandPetWindowOrigin: { x: number; y: number } | null
+  followFocus: boolean
+  quietHoursEnabled: boolean
+  quietHoursStart: string
+  quietHoursEnd: string
+  globalShortcut: string
+  shortcutApprove: string
+  shortcutApproveEnabled: boolean
+  shortcutDeny: string
+  shortcutDenyEnabled: boolean
+  shortcutSkip: string
+  shortcutSkipEnabled: boolean
 }
 
 export interface BackendDisplayInfo {
+  id: string
   name: string
+  label: string
   width: number
   height: number
   scaleFactor: number
@@ -84,6 +171,22 @@ export async function respondPermission(sessionId: string, allowed: boolean, alw
     return
   }
   return invoke('respond_permission', { sessionId, allowed, always: always ?? false })
+}
+
+export async function respondQuestion(sessionId: string, answer: string): Promise<void> {
+  if (!isTauri()) {
+    console.log(`[mock] respondQuestion(${sessionId}, "${answer}")`)
+    return
+  }
+  return invoke('respond_question', { sessionId, answer })
+}
+
+export async function respondPlan(sessionId: string, mode: string, message?: string): Promise<void> {
+  if (!isTauri()) {
+    console.log(`[mock] respondPlan(${sessionId}, "${mode}", "${message ?? ''}")`)
+    return
+  }
+  return invoke('respond_plan', { sessionId, mode, message: message ?? null })
 }
 
 export async function respondAutoApprove(sessionId: string): Promise<void> {
@@ -123,8 +226,29 @@ export async function getConfig(): Promise<BackendConfig> {
       showTokenUsage: true,
       theme: 'system',
       displayId: 'primary',
-      autoHideNoSessions: false,
-      hideInFullscreen: true,
+      autoHideNoSessions: true,
+      soundEvents: {},
+      soundRules: {},
+      customSounds: [],
+      soundPack: 'synth',
+      probeSessionFilter: false,
+      tipsEnabled: true,
+      pixelCursorEnabled: true,
+      confettiEnabled: true,
+      islandSurfaceMode: 'island',
+      islandPetScale: 72,
+      islandPetWindowOrigin: null,
+      followFocus: false,
+      quietHoursEnabled: false,
+      quietHoursStart: '22:00',
+      quietHoursEnd: '08:00',
+      globalShortcut: 'CommandOrControl+Shift+I',
+      shortcutApprove: 'CommandOrControl+Shift+A',
+      shortcutApproveEnabled: true,
+      shortcutDeny: 'CommandOrControl+Shift+D',
+      shortcutDenyEnabled: true,
+      shortcutSkip: 'CommandOrControl+Shift+S',
+      shortcutSkipEnabled: false,
     }
   }
   return invoke<BackendConfig>('get_config')
@@ -136,6 +260,25 @@ export async function updateConfig(config: BackendConfig): Promise<void> {
     return
   }
   return invoke('update_config', { config })
+}
+
+// ── Theme Commands ──────────────────────────────────────────────
+
+export async function listThemes(): Promise<ThemeConfig[]> {
+  if (!isTauri()) return []
+  return invoke<ThemeConfig[]>('list_themes')
+}
+
+export async function getActiveThemeBundle(name: string): Promise<ThemeConfig> {
+  if (!isTauri()) {
+    throw new Error(`Theme '${name}' not available in browser dev mode`)
+  }
+  return invoke<ThemeConfig>('get_active_theme_bundle', { name })
+}
+
+export async function setActiveBackendTheme(name: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_active_theme', { name })
 }
 
 // ── Hook Management ──────────────────────────────────────────────
@@ -180,6 +323,81 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
   return invoke('set_sound_enabled', { enabled })
 }
 
+export async function setSoundPack(pack: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_sound_pack', { pack })
+}
+
+export async function setProbeSessionFilter(enabled: boolean): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_probe_session_filter', { enabled })
+}
+
+export async function setIslandFeatureFlags(options: {
+  tipsEnabled: boolean
+  pixelCursorEnabled: boolean
+  confettiEnabled: boolean
+  followFocus: boolean
+}): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_island_feature_flags', options)
+}
+
+export async function setIslandSurfaceOptions(options: {
+  islandSurfaceMode: 'island' | 'pet'
+  islandPetScale: number
+}): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_island_surface_options', {
+    islandSurfaceMode: options.islandSurfaceMode,
+    islandPetScale: options.islandPetScale,
+  })
+}
+
+export async function setSoundQuietHours(enabled: boolean, start: string, end: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_sound_quiet_hours', { enabled, start, end })
+}
+
+export async function setSoundEventEnabled(eventId: string, enabled: boolean): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_sound_event_enabled', { eventId, enabled })
+}
+
+export async function setSoundEventRule(eventId: string, enabled: boolean, sound: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_sound_event_rule', { eventId, enabled, sound })
+}
+
+export async function importCustomSound(filePath: string): Promise<{ id: string; name: string; path: string; dataUrl?: string }> {
+  if (!isTauri()) {
+    const normalized = filePath.replace(/\\/g, '/')
+    return {
+      id: `${Date.now()}`,
+      name: normalized.split('/').pop() || 'Custom sound',
+      path: filePath,
+    }
+  }
+  return invoke('import_custom_sound', { filePath })
+}
+
+export async function setCustomSounds(sounds: Array<{ id: string; name: string; path: string; dataUrl?: string }>): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_custom_sounds', { sounds })
+}
+
+export async function setGlobalActionShortcuts(options: {
+  approve: string
+  approveEnabled: boolean
+  deny: string
+  denyEnabled: boolean
+  skip: string
+  skipEnabled: boolean
+}): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_global_action_shortcuts', options)
+}
+
 // ── Chat History Commands ────────────────────────────────────────
 
 /** Parsed message block from Rust ConversationParser */
@@ -188,6 +406,7 @@ export type ParsedMessageBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, string> }
   | { type: 'tool_result'; toolUseId: string; content: string | null; isError: boolean }
   | { type: 'thinking'; thinking: string }
+  | { type: 'image'; source: string }
   | { type: 'interrupted' }
 
 /** Parsed message from Rust ConversationParser */
@@ -204,11 +423,25 @@ export async function getChatHistory(sessionId: string): Promise<ParsedMessage[]
   return invoke<ParsedMessage[]>('get_chat_history', { sessionId })
 }
 
+/** Request a full parse of a completed subagent transcript JSONL file. */
+export async function getSubagentChatHistory(sessionId: string, transcriptPath: string): Promise<ParsedMessage[]> {
+  if (!isTauri()) return []
+  return invoke<ParsedMessage[]>('get_subagent_chat_history', { sessionId, transcriptPath })
+}
+
+export async function openImage(src: string): Promise<void> {
+  if (!isTauri()) {
+    window.open(src, '_blank', 'noopener,noreferrer')
+    return
+  }
+  return invoke('open_image', { src })
+}
+
 // ── Window Management ───────────────────────────────────────────
 
-export async function resizeNotch(width: number, height: number): Promise<void> {
+export async function resizeNotch(width: number, height: number, horizontalOffset = 0, displayId?: string): Promise<void> {
   if (!isTauri()) return
-  return invoke('resize_notch', { width, height })
+  return invoke('resize_notch', { width, height, horizontalOffset, displayId })
 }
 
 /**
@@ -221,6 +454,13 @@ export async function setNotchOpacity(opacity: number): Promise<void> {
   return invoke('set_notch_opacity', { opacity })
 }
 
+// ── Window Focus Commands ───────────────────────────────────────
+
+export async function setNotchFocusable(focusable: boolean): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_notch_focusable', { focusable })
+}
+
 // ── Suppression Commands ────────────────────────────────────────
 
 /** Check if a session's terminal is currently focused (smart suppression). */
@@ -229,10 +469,22 @@ export async function shouldSuppress(sessionId: string): Promise<boolean> {
   return invoke<boolean>('should_suppress', { sessionId })
 }
 
+/** Check if a session's owning terminal tab/window is currently focused. */
+export async function isTerminalFocused(sessionId: string): Promise<boolean> {
+  if (!isTauri()) return false
+  return invoke<boolean>('is_terminal_focused', { sessionId })
+}
+
 /** Get current cursor screen coordinates (macOS only). */
 export async function getCursorPosition(): Promise<[number, number]> {
   if (!isTauri()) return [0, 0]
   return invoke<[number, number]>('get_cursor_position')
+}
+
+/** Native fallback for transparent-window hover hit testing. */
+export async function isCursorOverNotch(): Promise<boolean> {
+  if (!isTauri()) return false
+  return invoke<boolean>('is_cursor_over_notch')
 }
 
 // ── Display Commands ────────────────────────────────────────────
@@ -240,6 +492,51 @@ export async function getCursorPosition(): Promise<[number, number]> {
 export async function listDisplays(): Promise<BackendDisplayInfo[]> {
   if (!isTauri()) return []
   return invoke<BackendDisplayInfo[]>('list_displays')
+}
+
+export async function setDisplayId(displayId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_display_id', { displayId })
+}
+
+export async function repositionNotch(displayId?: string, horizontalOffset?: number): Promise<void> {
+  if (!isTauri()) return
+  return invoke('reposition_notch', { displayId, horizontalOffset })
+}
+
+export async function previewIslandLayout(mode: 'micro' | 'compact' | 'expanded' | 'completion'): Promise<void> {
+  if (!isTauri()) return
+  return invoke('preview_island_layout', { mode })
+}
+
+export async function clearIslandLayoutPreview(): Promise<void> {
+  if (!isTauri()) return
+  return invoke('clear_island_layout_preview')
+}
+
+export async function startNotchDrag(
+  horizontalOffset: number,
+  width: number,
+  height: number,
+  displayId?: string,
+): Promise<boolean> {
+  if (!isTauri()) return false
+  return invoke<boolean>('start_notch_drag', { horizontalOffset, width, height, displayId })
+}
+
+export async function endNotchDrag(): Promise<number | null> {
+  if (!isTauri()) return null
+  return invoke<number | null>('end_notch_drag')
+}
+
+export async function startPetDrag(): Promise<boolean> {
+  if (!isTauri()) return false
+  return invoke<boolean>('start_pet_drag')
+}
+
+export async function endPetDrag(): Promise<{ x: number; y: number } | null> {
+  if (!isTauri()) return null
+  return invoke<{ x: number; y: number } | null>('end_pet_drag')
 }
 
 // ── License Commands ────────────────────────────────────────────
@@ -342,6 +639,11 @@ export async function removeEngineInstance(id: string): Promise<void> {
   await invoke('remove_engine_instance', { id })
 }
 
+export async function setEngineInstanceEnabled(id: string, enabled: boolean): Promise<void> {
+  if (!isTauri()) return
+  await invoke('set_engine_instance_enabled', { id, enabled })
+}
+
 export async function verifyEnginePath(path: string): Promise<boolean> {
   if (!isTauri()) return false
   return await invoke<boolean>('verify_engine_path', { path })
@@ -408,6 +710,14 @@ export type ConnectionStatus =
   | { state: 'connected' }
   | { state: 'failed'; message: string }
 
+export interface SshConfigHost {
+  name: string
+  hostname: string | null
+  user: string | null
+  port: number | null
+  identityFile: string | null
+}
+
 export async function listRemoteHosts(): Promise<RemoteHost[]> {
   if (!isTauri()) return []
   return invoke<RemoteHost[]>('list_remote_hosts')
@@ -441,6 +751,11 @@ export async function installRemoteHooks(id: string): Promise<string> {
 export async function getRemoteStatus(id: string): Promise<ConnectionStatus> {
   if (!isTauri()) return { state: 'disconnected' }
   return invoke<ConnectionStatus>('get_remote_status', { id })
+}
+
+export async function listSshConfigHosts(): Promise<SshConfigHost[]> {
+  if (!isTauri()) return []
+  return invoke<SshConfigHost[]>('list_ssh_config_hosts')
 }
 
 // ── Webhook Management ───────────────────────────────────────────
@@ -483,6 +798,13 @@ export async function testWebhook(id: string): Promise<string> {
 export async function getWebhookLogs(): Promise<DiagnosticEvent[]> {
   if (!isTauri()) return []
   return invoke<DiagnosticEvent[]>('get_webhook_logs')
+}
+
+// ── Haptic Feedback ─────────────────────────────────────────────
+
+export async function performHaptic(intensity: number): Promise<void> {
+  if (!isTauri()) return
+  return invoke('perform_haptic', { intensity })
 }
 
 // ── Diagnostic Events ────────────────────────────────────────────

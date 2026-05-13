@@ -1,18 +1,30 @@
 // Agent Adapter Trait & Registry
-pub mod traits;
-pub mod detection;
-pub mod hook_manager;
+pub mod antigravity;
 pub mod claude_code;
-pub mod codex;
-pub mod gemini;
-pub mod cursor;
-pub mod copilot;
-pub mod trae;
-pub mod qoder;
 pub mod codebuddy;
-pub mod qwen;
+pub mod codebuddycn;
+pub mod codex;
+pub mod copilot;
+pub mod cursor;
+pub mod cursor_cli;
+pub mod detection;
+pub mod droid;
+pub mod gemini;
+pub mod hermes;
+pub mod hook_manager;
 pub mod kimi;
+pub mod kiro;
 pub mod opencode;
+pub mod pi;
+pub mod programs;
+pub mod qoder;
+pub mod qoder_cli;
+pub mod qwen;
+pub mod stepfun;
+pub mod trae;
+pub mod trae_cn;
+pub mod traits;
+pub mod workbuddy;
 
 pub use traits::AgentAdapter;
 
@@ -59,10 +71,24 @@ pub enum AgentEvent {
         session_id: String,
         question: String,
         options: Vec<String>,
+        descriptions: Vec<String>,
+        header: Option<String>,
+        multi_select: bool,
+        questions: Vec<QuestionItem>,
+    },
+    PlanApproval {
+        session_id: String,
+        title: String,
+        content: String,
+        permissions: Vec<String>,
     },
     TaskComplete {
         session_id: String,
         summary: String,
+    },
+    AssistantResponseComplete {
+        session_id: String,
+        text: String,
     },
     Error {
         session_id: String,
@@ -78,15 +104,40 @@ pub enum AgentEvent {
         cache_read: u64,
         cache_create: u64,
     },
+    RateLimitUpdate {
+        session_id: String,
+        five_hour_usage: f64,
+        five_hour_remaining: String,
+        seven_day_usage: f64,
+        seven_day_remaining: String,
+        status_line_text: Option<String>,
+        total_input_tokens: Option<u64>,
+        total_output_tokens: Option<u64>,
+        context_window_size: Option<u64>,
+        context_used_percentage: Option<f64>,
+        last_main_agent_at: Option<i64>,
+        cache_ttl_ms: Option<i64>,
+    },
+    Notification {
+        session_id: String,
+        message: String,
+        status: Option<String>,
+    },
     SubagentStart {
         session_id: String,
         agent_id: String,
         description: String,
+        agent_type: Option<String>,
+        transcript_path: Option<String>,
     },
     SubagentStop {
         session_id: String,
         agent_id: String,
         status: String,
+        agent_type: Option<String>,
+        transcript_path: Option<String>,
+        agent_transcript_path: Option<String>,
+        last_assistant_message: Option<String>,
     },
     // Shell execution hooks
     ShellExecutionStart {
@@ -129,6 +180,20 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionItem {
+    pub question: String,
+    pub header: Option<String>,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: Option<String>,
+}
+
 /// Adapter info returned to the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,12 +211,23 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(codex::CodexAdapter::new()),
         Box::new(gemini::GeminiAdapter::new()),
         Box::new(cursor::CursorAdapter::new()),
+        Box::new(cursor_cli::CursorCliAdapter::new()),
         Box::new(copilot::CopilotAdapter::new()),
         Box::new(trae::TraeAdapter::new()),
+        Box::new(trae_cn::TraeCNAdapter::new()),
         Box::new(qoder::QoderAdapter::new()),
+        Box::new(qoder_cli::QoderCliAdapter::new()),
         Box::new(codebuddy::CodeBuddyAdapter::new()),
+        Box::new(codebuddycn::CodeBuddyCNAdapter::new()),
         Box::new(qwen::QwenAdapter::new()),
         Box::new(kimi::KimiAdapter::new()),
         Box::new(opencode::OpenCodeAdapter::new()),
+        Box::new(droid::DroidAdapter::new()),
+        Box::new(stepfun::StepFunAdapter::new()),
+        Box::new(antigravity::AntiGravityAdapter::new()),
+        Box::new(workbuddy::WorkBuddyAdapter::new()),
+        Box::new(hermes::HermesAdapter::new()),
+        Box::new(pi::PiAdapter::new()),
+        Box::new(kiro::KiroAdapter::new()),
     ]
 }

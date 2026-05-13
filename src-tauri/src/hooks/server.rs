@@ -7,18 +7,22 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixListener};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 use super::session_store::{
-    PendingPermission, PendingQuestion, SessionPhase, SessionStore,
+    ContextWindowInfo, PendingPermission, PendingPlan, PendingQuestion,
+    QuestionItem as PendingQuestionItem, QuestionOption as PendingQuestionOption, RateLimitInfo,
+    SessionPhase, SessionStore,
 };
-use crate::agents::{AgentEvent, AgentAdapter};
-use crate::hooks::conversation_parser::{discover_session_file, extract_session_title};
+use crate::agents::{AgentAdapter, AgentEvent};
+use crate::hooks::conversation_parser::{
+    discover_session_file, extract_cache_ttl_info, extract_session_title,
+};
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
 
 /// Socket path for Unix domain socket
-pub const UNIX_SOCKET_PATH: &str = "/tmp/agent-island.sock";
+pub const UNIX_SOCKET_PATH: &str = "/tmp/agentbro.sock";
 
 /// TCP port for hook connections
 pub const TCP_PORT: u16 = 17892;
@@ -28,6 +32,8 @@ pub const TCP_PORT: u16 = 17892;
 pub struct PermissionResponse {
     pub decision: String,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub always: Option<bool>,
 }
 
 /// A pending permission waiting for UI response
@@ -35,10 +41,37 @@ pub(crate) struct PendingPermissionEntry {
     pub(crate) tx: oneshot::Sender<PermissionResponse>,
 }
 
+/// Question response sent back to hook script
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QuestionResponse {
+    pub answer: String,
+}
+
+/// A pending question waiting for UI response
+pub(crate) struct PendingQuestionEntry {
+    pub(crate) tx: oneshot::Sender<QuestionResponse>,
+}
+
+/// Plan response sent back to hook script
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlanResponse {
+    pub mode: String,
+    pub message: Option<String>,
+}
+
+/// A pending plan waiting for UI response
+pub(crate) struct PendingPlanEntry {
+    pub(crate) tx: oneshot::Sender<PlanResponse>,
+}
+
 /// The HookServer manages incoming connections from agent hook scripts
 pub struct HookServer {
     /// Pending permission requests: session_id -> sender
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+    /// Pending question requests: session_id -> sender
+    pending_questions: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+    /// Pending plan approvals: session_id -> sender
+    pending_plans: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
     /// Session store reference
     session_store: Arc<SessionStore>,
     /// Registered adapters (shared with AppState to avoid duplication)
@@ -50,9 +83,14 @@ pub struct HookServer {
 }
 
 impl HookServer {
-    pub fn new(session_store: Arc<SessionStore>, adapters: Arc<Vec<Arc<dyn AgentAdapter>>>) -> Self {
+    pub fn new(
+        session_store: Arc<SessionStore>,
+        adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
+    ) -> Self {
         Self {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
+            pending_questions: Arc::new(Mutex::new(HashMap::new())),
+            pending_plans: Arc::new(Mutex::new(HashMap::new())),
             session_store,
             adapters,
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
@@ -75,7 +113,10 @@ impl HookServer {
     }
 
     /// Play a sound event if the engine is available
-    fn play_sound(sound_engine: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>, event: SoundEvent) {
+    fn play_sound(
+        sound_engine: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        event: SoundEvent,
+    ) {
         if let Ok(guard) = sound_engine.lock() {
             if let Some(ref engine) = *guard {
                 engine.play(event);
@@ -104,17 +145,49 @@ impl HookServer {
         }
     }
 
+    /// Detect if Cursor has YOLO mode enabled by reading its settings.json
+    fn detect_cursor_yolo_mode() -> bool {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let settings_path = format!(
+            "{}/Library/Application Support/Cursor/User/settings.json",
+            home
+        );
+        let content = match std::fs::read_to_string(&settings_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        json.get("cursor.general.yoloMode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Check if a session project name looks like an automated probe
     fn is_probe_session(project: &str) -> bool {
         let lower = project.to_lowercase();
-        ["health-check", "health_check", "probe", "ping", "codexbar", "healthcheck"]
-            .iter()
-            .any(|p| lower.contains(p))
+        [
+            "health-check",
+            "health_check",
+            "probe",
+            "ping",
+            "codexbar",
+            "healthcheck",
+        ]
+        .iter()
+        .any(|p| lower.contains(p))
     }
 
     /// Start listening on both Unix socket and TCP
     pub async fn start(&self) -> anyhow::Result<()> {
         let pending = self.pending_permissions.clone();
+        let pending_q = self.pending_questions.clone();
+        let pending_plan = self.pending_plans.clone();
         let store = self.session_store.clone();
         let adapters = self.adapters.clone();
         let sound = self.sound_engine.clone();
@@ -122,35 +195,65 @@ impl HookServer {
 
         // Start Unix socket listener
         let pending_unix = pending.clone();
+        let pending_q_unix = pending_q.clone();
+        let pending_plan_unix = pending_plan.clone();
         let store_unix = store.clone();
         let adapters_unix = adapters.clone();
         let sound_unix = sound.clone();
         let app_unix = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_unix(pending_unix, store_unix, adapters_unix, sound_unix, app_unix).await {
+            if let Err(e) = Self::listen_unix(
+                pending_unix,
+                pending_q_unix,
+                pending_plan_unix,
+                store_unix,
+                adapters_unix,
+                sound_unix,
+                app_unix,
+            )
+            .await
+            {
                 log::error!("Unix socket listener error: {}", e);
             }
         });
 
         // Start TCP listener
         let pending_tcp = pending.clone();
+        let pending_q_tcp = pending_q.clone();
+        let pending_plan_tcp = pending_plan.clone();
         let store_tcp = store.clone();
         let adapters_tcp = adapters.clone();
         let sound_tcp = sound.clone();
         let app_tcp = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_tcp(pending_tcp, store_tcp, adapters_tcp, sound_tcp, app_tcp).await {
+            if let Err(e) = Self::listen_tcp(
+                pending_tcp,
+                pending_q_tcp,
+                pending_plan_tcp,
+                store_tcp,
+                adapters_tcp,
+                sound_tcp,
+                app_tcp,
+            )
+            .await
+            {
                 log::error!("TCP listener error: {}", e);
             }
         });
 
-        log::info!("HookServer started on {} and 127.0.0.1:{}", UNIX_SOCKET_PATH, TCP_PORT);
+        log::info!(
+            "HookServer started on {} and 127.0.0.1:{}",
+            UNIX_SOCKET_PATH,
+            TCP_PORT
+        );
         Ok(())
     }
 
     /// Listen on Unix domain socket
     async fn listen_unix(
         pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
@@ -177,12 +280,25 @@ impl HookServer {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
                     let pending = pending.clone();
+                    let pending_q = pending_q.clone();
+                    let pending_plan = pending_plan.clone();
                     let store = store.clone();
                     let adapters = adapters.clone();
                     let sound = sound.clone();
                     let app = app.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound, app).await {
+                        if let Err(e) = Self::handle_connection(
+                            stream,
+                            pending,
+                            pending_q,
+                            pending_plan,
+                            store,
+                            adapters,
+                            sound,
+                            app,
+                        )
+                        .await
+                        {
                             log::debug!("Unix connection handler error: {}", e);
                         }
                     });
@@ -197,6 +313,8 @@ impl HookServer {
     /// Listen on TCP socket
     async fn listen_tcp(
         pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
@@ -210,12 +328,25 @@ impl HookServer {
                 Ok((stream, addr)) => {
                     log::debug!("TCP connection from: {}", addr);
                     let pending = pending.clone();
+                    let pending_q = pending_q.clone();
+                    let pending_plan = pending_plan.clone();
                     let store = store.clone();
                     let adapters = adapters.clone();
                     let sound = sound.clone();
                     let app = app.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, pending, store, adapters, sound, app).await {
+                        if let Err(e) = Self::handle_connection(
+                            stream,
+                            pending,
+                            pending_q,
+                            pending_plan,
+                            store,
+                            adapters,
+                            sound,
+                            app,
+                        )
+                        .await
+                        {
                             log::debug!("TCP connection handler error: {}", e);
                         }
                     });
@@ -231,6 +362,8 @@ impl HookServer {
     async fn handle_connection<S>(
         stream: S,
         pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
         store: Arc<SessionStore>,
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
@@ -258,13 +391,23 @@ impl HookServer {
         // Parse the raw JSON
         let raw: serde_json::Value = serde_json::from_str(line)?;
 
-        log::debug!("Received hook event: {}", raw.get("event").and_then(|v| v.as_str()).unwrap_or("unknown"));
+        log::debug!(
+            "Received hook event: {}",
+            raw.get("event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
 
         match event {
-            Some(AgentEvent::PermissionRequest { ref session_id, ref tool_name, ref diff, ref options }) => {
+            Some(AgentEvent::PermissionRequest {
+                ref session_id,
+                ref tool_name,
+                ref diff,
+                ref options,
+            }) => {
                 // Check smart suppression: is the agent's terminal focused?
                 let is_suppressed = Self::check_suppression(&store, session_id);
 
@@ -278,20 +421,24 @@ impl HookServer {
                     session_id,
                     Some(PendingPermission {
                         tool_name: tool_name.clone(),
-                        tool_input: raw.get("tool_input")
+                        tool_input: raw
+                            .get("tool_input")
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         diff: diff.clone(),
                         options: options.clone(),
                     }),
                 );
+                Self::update_session_metadata_from_raw(&store, &raw);
 
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
                     store.emit_update_suppressed(true);
                     if let Ok(guard) = app.lock() {
                         if let Some(ref handle) = *guard {
-                            crate::platform::notifications::send_permission_notification(handle, tool_name);
+                            crate::platform::notifications::send_permission_notification(
+                                handle, tool_name,
+                            );
                         }
                     }
                 }
@@ -300,16 +447,11 @@ impl HookServer {
                 let (tx, rx) = oneshot::channel();
                 {
                     let mut pending_map = pending.lock().await;
-                    pending_map.insert(session_id.clone(), PendingPermissionEntry {
-                        tx,
-                    });
+                    pending_map.insert(session_id.clone(), PendingPermissionEntry { tx });
                 }
 
                 // Wait for the UI to respond (with 5 minute timeout)
-                let response = tokio::time::timeout(
-                    std::time::Duration::from_secs(300),
-                    rx,
-                ).await;
+                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
 
                 match response {
                     Ok(Ok(resp)) => {
@@ -335,7 +477,15 @@ impl HookServer {
                     }
                 }
             }
-            Some(AgentEvent::AskQuestion { ref session_id, ref question, ref options }) => {
+            Some(AgentEvent::AskQuestion {
+                ref session_id,
+                ref question,
+                ref options,
+                ref descriptions,
+                ref header,
+                multi_select,
+                ref questions,
+            }) => {
                 // Check smart suppression: is the agent's terminal focused?
                 let is_suppressed = Self::check_suppression(&store, session_id);
 
@@ -349,16 +499,121 @@ impl HookServer {
                     Some(PendingQuestion {
                         question: question.clone(),
                         options: options.clone(),
+                        descriptions: descriptions.clone(),
+                        header: header.clone(),
+                        multi_select,
+                        questions: questions
+                            .iter()
+                            .map(|q| PendingQuestionItem {
+                                question: q.question.clone(),
+                                header: q.header.clone(),
+                                options: q
+                                    .options
+                                    .iter()
+                                    .map(|opt| PendingQuestionOption {
+                                        label: opt.label.clone(),
+                                        description: opt.description.clone(),
+                                    })
+                                    .collect(),
+                                multi_select: q.multi_select,
+                            })
+                            .collect(),
                     }),
                 );
+                Self::update_session_metadata_from_raw(&store, &raw);
 
                 // Re-emit with suppression flag so frontend knows not to auto-expand
                 if is_suppressed {
                     store.emit_update_suppressed(true);
                     if let Ok(guard) = app.lock() {
                         if let Some(ref handle) = *guard {
-                            crate::platform::notifications::send_question_notification(handle, question);
+                            crate::platform::notifications::send_question_notification(
+                                handle, question,
+                            );
                         }
+                    }
+                }
+
+                // Create a oneshot channel for the question response
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_q.lock().await;
+                    pending_map.insert(session_id.clone(), PendingQuestionEntry { tx });
+                }
+
+                // Wait for the UI to respond (with 5 minute timeout)
+                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+
+                match response {
+                    Ok(Ok(resp)) => {
+                        let json = serde_json::to_string(&resp)?;
+                        writer.write_all(json.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+
+                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+
+                        store.set_pending_question(session_id, None);
+                        store.update_phase(session_id, SessionPhase::Processing);
+                    }
+                    _ => {
+                        let mut pending_map = pending_q.lock().await;
+                        pending_map.remove(session_id);
+                        store.set_pending_question(session_id, None);
+                        log::warn!("Question request timed out for session {}", session_id);
+                    }
+                }
+            }
+            Some(AgentEvent::PlanApproval {
+                ref session_id,
+                ref title,
+                ref content,
+                ref permissions,
+            }) => {
+                let is_suppressed = Self::check_suppression(&store, session_id);
+
+                if !is_suppressed {
+                    Self::play_sound(&sound, SoundEvent::PlanApproval);
+                }
+
+                store.set_pending_plan(
+                    session_id,
+                    Some(PendingPlan {
+                        title: title.clone(),
+                        content: content.clone(),
+                        permissions: permissions.clone(),
+                    }),
+                );
+                Self::update_session_metadata_from_raw(&store, &raw);
+
+                if is_suppressed {
+                    store.emit_update_suppressed(true);
+                }
+
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_plan.lock().await;
+                    pending_map.insert(session_id.clone(), PendingPlanEntry { tx });
+                }
+
+                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+
+                match response {
+                    Ok(Ok(resp)) => {
+                        let json = serde_json::to_string(&resp)?;
+                        writer.write_all(json.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+
+                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                        store.set_pending_plan(session_id, None);
+                        store.update_phase(session_id, SessionPhase::Processing);
+                    }
+                    _ => {
+                        let mut pending_map = pending_plan.lock().await;
+                        pending_map.remove(session_id);
+                        store.set_pending_plan(session_id, None);
+                        log::warn!("Plan approval timed out for session {}", session_id);
                     }
                 }
             }
@@ -398,7 +653,13 @@ impl HookServer {
         app: &Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) {
         match event {
-            AgentEvent::SessionStart { session_id, project, cwd, terminal, agent_type } => {
+            AgentEvent::SessionStart {
+                session_id,
+                project,
+                cwd,
+                terminal,
+                agent_type,
+            } => {
                 store.get_or_create_session(session_id, agent_type, project, cwd, terminal);
                 store.update_phase(session_id, SessionPhase::Idle);
 
@@ -411,31 +672,74 @@ impl HookServer {
                     }
                 }
 
+                // Detect YOLO mode for Cursor sessions
+                if agent_type == "cursor" || agent_type == "cursor-cli" {
+                    let is_yolo = Self::detect_cursor_yolo_mode();
+                    if is_yolo {
+                        store.update_session(session_id, |s| {
+                            s.is_yolo_mode = true;
+                        });
+                    }
+                }
+
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::SessionStart);
             }
             AgentEvent::SessionEnd { session_id } => {
-                store.remove_session(session_id);
+                let summary = store
+                    .get_session(session_id)
+                    .and_then(|s| {
+                        s.session_title
+                            .or(s.description)
+                            .or_else(|| Some(s.project))
+                    })
+                    .unwrap_or_else(|| "Session ended".to_string());
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Done;
+                    s.description = Some(summary.clone());
+                    s.last_response = Some(summary.clone());
+                });
+                Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+
+                let store_for_cleanup = store.clone();
+                let session_id_for_cleanup = session_id.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    store_for_cleanup.remove_session(&session_id_for_cleanup);
+                });
             }
-            AgentEvent::Processing { session_id, description } => {
+            AgentEvent::Processing {
+                session_id,
+                description,
+            } => {
                 // If this is a UserPromptSubmit and session has no title yet,
                 // try to extract the user prompt as session title
                 let event_name = _raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
                 if event_name == "UserPromptSubmit" {
-                    let has_title = store.get_session(session_id)
+                    if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
+                        store.set_last_user_message(session_id, Some(prompt));
+                    }
+                    store.update_session(session_id, |s| {
+                        s.last_response = None;
+                        s.last_thought = None;
+                        s.last_tool_name = None;
+                        s.last_tool_target = None;
+                        s.last_tool_status = None;
+                        s.description = None;
+                    });
+
+                    let has_title = store
+                        .get_session(session_id)
                         .map(|s| s.session_title.is_some())
                         .unwrap_or(false);
                     if !has_title {
                         // Try to get prompt from the raw event data
-                        let prompt = _raw.get("prompt")
+                        let prompt = _raw
+                            .get("prompt")
                             .or_else(|| _raw.get("user_prompt"))
                             .and_then(|v| v.as_str())
                             .map(|s| {
                                 let first_line = s.lines().next().unwrap_or(s).trim();
-                                if first_line.len() > 80 {
-                                    format!("{}...", &first_line[..77])
-                                } else {
-                                    first_line.to_string()
-                                }
+                                Self::truncate_preview(first_line, 80)
                             });
                         if let Some(title) = prompt {
                             if !title.is_empty() {
@@ -451,9 +755,16 @@ impl HookServer {
                     s.description = Some(description.clone());
                 });
             }
-            AgentEvent::ToolUse { session_id, tool_name, tool_target, status, .. } => {
+            AgentEvent::ToolUse {
+                session_id,
+                tool_name,
+                tool_input,
+                tool_target,
+                status,
+            } => {
                 // Extract tool_use_id from raw event for tool tracking
-                let tool_use_id = _raw.get("tool_use_id")
+                let tool_use_id = _raw
+                    .get("tool_use_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -465,6 +776,40 @@ impl HookServer {
                     s.phase = SessionPhase::Processing;
                 });
 
+                // Track TaskCreate/TaskUpdate tool payloads so the island task
+                // summary survives backend-driven session-update refreshes.
+                if matches!(tool_name.as_str(), "TaskCreate" | "TaskUpdate") {
+                    let parsed_input = serde_json::from_str::<serde_json::Value>(tool_input)
+                        .ok()
+                        .or_else(|| _raw.get("tool_input").cloned())
+                        .unwrap_or(serde_json::Value::Null);
+                    let field = |name: &str| {
+                        parsed_input
+                            .get(name)
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                    };
+
+                    let subject = field("subject")
+                        .or_else(|| field("name"))
+                        .or_else(|| field("title"));
+                    let task_id = field("taskId")
+                        .or_else(|| field("task_id"))
+                        .or_else(|| field("id"))
+                        .or_else(|| subject.clone());
+                    let task_status = field("status").unwrap_or_else(|| {
+                        if tool_name == "TaskCreate" {
+                            "pending".to_string()
+                        } else {
+                            "in_progress".to_string()
+                        }
+                    });
+
+                    if let (Some(task_id), Some(subject)) = (task_id, subject) {
+                        store.upsert_task(session_id, &task_id, &subject, &task_status);
+                    }
+                }
+
                 // Track tool lifecycle
                 if !tool_use_id.is_empty() {
                     match status.as_str() {
@@ -475,7 +820,9 @@ impl HookServer {
                             store.complete_tool(session_id, &tool_use_id, true, None);
                         }
                         "error" => {
-                            let error_msg = _raw.get("tool_error")
+                            let error_msg = _raw
+                                .get("tool_error")
+                                .or_else(|| _raw.get("denial_reason"))
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
                             store.complete_tool(session_id, &tool_use_id, false, error_msg);
@@ -484,40 +831,177 @@ impl HookServer {
                     }
                 }
             }
-            AgentEvent::TaskComplete { session_id, .. } => {
-                store.update_phase(session_id, SessionPhase::Done);
+            AgentEvent::TaskComplete {
+                session_id,
+                summary,
+            } => {
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Done;
+                    s.description = Some(summary.clone());
+                    s.last_response = Some(summary.clone());
+                });
+                Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
                 let is_suppressed = Self::check_suppression(&store, session_id);
                 if is_suppressed {
                     if let Ok(guard) = app.lock() {
                         if let Some(ref handle) = *guard {
-                            let summary = store.get_session(session_id)
+                            let summary = store
+                                .get_session(session_id)
                                 .and_then(|s| s.session_title.clone())
                                 .unwrap_or_else(|| "Task completed".to_string());
-                            crate::platform::notifications::send_completion_notification(handle, &summary);
+                            crate::platform::notifications::send_completion_notification(
+                                handle, &summary,
+                            );
                         }
                     }
                 }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
             }
-            AgentEvent::Error { session_id, .. } => {
-                store.update_phase(session_id, SessionPhase::Error);
+            AgentEvent::AssistantResponseComplete { session_id, text } => {
+                let truncated = Self::truncate_preview(text, 2000);
+                store.update_session(session_id, |s| {
+                    s.phase = if s.has_unfinished_tasks() {
+                        SessionPhase::WaitingInput
+                    } else {
+                        SessionPhase::Idle
+                    };
+                    s.description = Some(truncated.clone());
+                    s.last_response = Some(truncated.clone());
+                    s.last_tool_name = None;
+                    s.last_tool_target = None;
+                    s.last_tool_status = None;
+                    for subagent in &mut s.subagents {
+                        if subagent.status == "running" {
+                            subagent.status = "completed".to_string();
+                        }
+                    }
+                });
+                Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
+                Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+            }
+            AgentEvent::Error {
+                session_id,
+                message,
+            } => {
+                store.update_session(session_id, |s| {
+                    s.phase = SessionPhase::Error;
+                    s.description = Some(message.clone());
+                    s.last_response = None;
+                });
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskError);
             }
             AgentEvent::Interrupt { session_id } => {
                 store.update_phase(session_id, SessionPhase::Interrupted);
             }
-            AgentEvent::TokenUsage { session_id, input, output, cache_read, cache_create } => {
+            AgentEvent::TokenUsage {
+                session_id,
+                input,
+                output,
+                cache_read,
+                cache_create,
+            } => {
                 store.add_tokens(session_id, *input, *output, *cache_read, *cache_create);
             }
-            AgentEvent::SubagentStart { session_id, agent_id, description } => {
-                log::info!("Subagent started: {} ({}) for session {}", agent_id, description, session_id);
-                store.add_subagent(session_id, agent_id, description);
+            AgentEvent::RateLimitUpdate {
+                session_id,
+                five_hour_usage,
+                five_hour_remaining,
+                seven_day_usage,
+                seven_day_remaining,
+                status_line_text,
+                total_input_tokens,
+                total_output_tokens,
+                context_window_size,
+                context_used_percentage,
+                last_main_agent_at,
+                cache_ttl_ms,
+            } => {
+                store.set_rate_limits(
+                    session_id,
+                    RateLimitInfo {
+                        five_hour_usage: *five_hour_usage,
+                        five_hour_remaining: five_hour_remaining.clone(),
+                        seven_day_usage: *seven_day_usage,
+                        seven_day_remaining: seven_day_remaining.clone(),
+                    },
+                    status_line_text.clone(),
+                );
+                let context_window =
+                    match (total_input_tokens, total_output_tokens, context_window_size) {
+                        (Some(input), Some(output), Some(size)) => Some(ContextWindowInfo {
+                            total_input_tokens: *input,
+                            total_output_tokens: *output,
+                            context_window_size: *size,
+                            used_percentage: *context_used_percentage,
+                        }),
+                        _ => None,
+                    };
+                store.set_statusline_metadata(
+                    session_id,
+                    context_window,
+                    status_line_text.clone(),
+                    *last_main_agent_at,
+                    *cache_ttl_ms,
+                );
             }
-            AgentEvent::SubagentStop { session_id, agent_id, status } => {
-                log::info!("Subagent stopped: {} (status={}) for session {}", agent_id, status, session_id);
-                store.stop_subagent(session_id, agent_id, status);
+            AgentEvent::Notification {
+                session_id,
+                message,
+                status,
+            } => {
+                Self::process_notification(store, session_id, message, status, sound);
             }
-            AgentEvent::ShellExecutionStart { session_id, command, cwd } => {
+            AgentEvent::SubagentStart {
+                session_id,
+                agent_id,
+                description,
+                agent_type,
+                transcript_path,
+            } => {
+                log::info!(
+                    "Subagent started: {} ({}) for session {}",
+                    agent_id,
+                    description,
+                    session_id
+                );
+                store.add_subagent(
+                    session_id,
+                    agent_id,
+                    description,
+                    agent_type.clone(),
+                    transcript_path.clone(),
+                );
+            }
+            AgentEvent::SubagentStop {
+                session_id,
+                agent_id,
+                status,
+                agent_type,
+                transcript_path,
+                agent_transcript_path,
+                last_assistant_message,
+            } => {
+                log::info!(
+                    "Subagent stopped: {} (status={}) for session {}",
+                    agent_id,
+                    status,
+                    session_id
+                );
+                store.stop_subagent(
+                    session_id,
+                    agent_id,
+                    status,
+                    agent_type.clone(),
+                    transcript_path.clone(),
+                    agent_transcript_path.clone(),
+                    last_assistant_message.clone(),
+                );
+            }
+            AgentEvent::ShellExecutionStart {
+                session_id,
+                command,
+                cwd,
+            } => {
                 log::debug!("Shell starting: {} in {}", command, cwd);
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Processing;
@@ -525,18 +1009,38 @@ impl HookServer {
                     s.last_tool_status = Some("running".to_string());
                 });
             }
-            AgentEvent::ShellExecutionEnd { session_id, command, exit_code, duration_ms, .. } => {
-                log::debug!("Shell completed: {} (exit={:?}, {}ms)", command, exit_code, duration_ms);
+            AgentEvent::ShellExecutionEnd {
+                session_id,
+                command,
+                exit_code,
+                duration_ms,
+                ..
+            } => {
+                log::debug!(
+                    "Shell completed: {} (exit={:?}, {}ms)",
+                    command,
+                    exit_code,
+                    duration_ms
+                );
                 let is_error = matches!(exit_code, Some(c) if *c != 0);
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Processing;
-                    s.last_tool_status = Some(if is_error { "error".to_string() } else { "success".to_string() });
+                    s.last_tool_status = Some(if is_error {
+                        "error".to_string()
+                    } else {
+                        "success".to_string()
+                    });
                 });
                 if is_error {
                     Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskError);
                 }
             }
-            AgentEvent::MCPExecutionStart { session_id, server_name, tool_name, .. } => {
+            AgentEvent::MCPExecutionStart {
+                session_id,
+                server_name,
+                tool_name,
+                ..
+            } => {
                 log::debug!("MCP {}:{} starting", server_name, tool_name);
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Processing;
@@ -544,15 +1048,39 @@ impl HookServer {
                     s.last_tool_status = Some("running".to_string());
                 });
             }
-            AgentEvent::MCPExecutionEnd { session_id, server_name, tool_name, error, duration_ms, .. } => {
-                log::debug!("MCP {}:{} completed ({}ms)", server_name, tool_name, duration_ms);
+            AgentEvent::MCPExecutionEnd {
+                session_id,
+                server_name,
+                tool_name,
+                error,
+                duration_ms,
+                ..
+            } => {
+                log::debug!(
+                    "MCP {}:{} completed ({}ms)",
+                    server_name,
+                    tool_name,
+                    duration_ms
+                );
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Processing;
-                    s.last_tool_status = Some(if error.is_none() { "success".to_string() } else { "error".to_string() });
+                    s.last_tool_status = Some(if error.is_none() {
+                        "success".to_string()
+                    } else {
+                        "error".to_string()
+                    });
                 });
             }
-            AgentEvent::AgentResponse { session_id, content, content_type } => {
-                log::debug!("Agent response received: {} bytes, type={}", content.len(), content_type);
+            AgentEvent::AgentResponse {
+                session_id,
+                content,
+                content_type,
+            } => {
+                log::debug!(
+                    "Agent response received: {} bytes, type={}",
+                    content.len(),
+                    content_type
+                );
                 let truncated = if content.len() > 2000 {
                     let mut end = 1997;
                     while !content.is_char_boundary(end) {
@@ -567,7 +1095,10 @@ impl HookServer {
                     s.last_response = Some(truncated);
                 });
             }
-            AgentEvent::AgentThought { session_id, thought } => {
+            AgentEvent::AgentThought {
+                session_id,
+                thought,
+            } => {
                 log::debug!("Agent thought: {} chars", thought.len());
                 let truncated = if thought.len() > 2000 {
                     let mut end = 1997;
@@ -585,6 +1116,8 @@ impl HookServer {
             // PermissionRequest and AskQuestion are handled in handle_connection
             _ => {}
         }
+
+        Self::update_session_metadata_from_raw(store, _raw);
     }
 
     /// Process raw event when no adapter matched (generic fallback)
@@ -606,23 +1139,34 @@ impl HookServer {
 
         // Ensure session exists
         store.get_or_create_session(session_id, "claude-code", project, cwd, "");
+        Self::update_session_metadata_from_raw(store, raw);
 
         // Extract session title from UserPromptSubmit if no title yet
         if _event_name == "UserPromptSubmit" {
-            let has_title = store.get_session(session_id)
+            if let Some(prompt) = Self::extract_user_prompt_preview(raw, 100) {
+                store.set_last_user_message(session_id, Some(prompt));
+            }
+            store.update_session(session_id, |s| {
+                s.last_response = None;
+                s.last_thought = None;
+                s.last_tool_name = None;
+                s.last_tool_target = None;
+                s.last_tool_status = None;
+                s.description = None;
+            });
+
+            let has_title = store
+                .get_session(session_id)
                 .map(|s| s.session_title.is_some())
                 .unwrap_or(false);
             if !has_title {
-                let prompt = raw.get("prompt")
+                let prompt = raw
+                    .get("prompt")
                     .or_else(|| raw.get("user_prompt"))
                     .and_then(|v| v.as_str())
                     .map(|s| {
                         let first_line = s.lines().next().unwrap_or(s).trim();
-                        if first_line.len() > 80 {
-                            format!("{}...", &first_line[..77])
-                        } else {
-                            first_line.to_string()
-                        }
+                        Self::truncate_preview(first_line, 80)
                     });
                 if let Some(title) = prompt {
                     if !title.is_empty() {
@@ -677,6 +1221,161 @@ impl HookServer {
         store.update_phase(session_id, phase);
     }
 
+    fn process_notification(
+        store: &SessionStore,
+        session_id: &str,
+        message: &str,
+        status: &Option<String>,
+        sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+    ) {
+        let lower = message.to_lowercase();
+
+        if lower.contains("clear") || lower.contains("compact") {
+            store.update_session(session_id, |s| {
+                s.last_user_message = None;
+                s.last_response = None;
+                s.last_thought = None;
+                s.last_tool_name = None;
+                s.last_tool_target = None;
+                s.last_tool_status = None;
+                s.description = None;
+            });
+            return;
+        }
+
+        if Self::looks_like_error_message(&lower) {
+            let text = Self::truncate_preview(message, 200);
+            store.update_session(session_id, |s| {
+                s.phase = SessionPhase::Error;
+                s.description = Some(text.clone());
+                s.last_response = None;
+            });
+            Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskError);
+            return;
+        }
+
+        if lower.contains("complete") || lower.contains("done") {
+            let summary = if message.trim().is_empty() {
+                "Task complete".to_string()
+            } else {
+                Self::truncate_preview(message.trim(), 2000)
+            };
+            store.update_session(session_id, |s| {
+                s.phase = SessionPhase::Done;
+                s.description = Some(summary.clone());
+                s.last_response = Some(summary.clone());
+            });
+            Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+            return;
+        }
+
+        if status.as_deref() == Some("waiting_for_input") {
+            store.update_session(session_id, |s| {
+                s.phase = SessionPhase::Idle;
+                s.description = Some("Waiting for input".to_string());
+            });
+        }
+    }
+
+    fn looks_like_error_message(lower: &str) -> bool {
+        lower.starts_with("api error")
+            || lower.starts_with("error:")
+            || lower.starts_with("error -")
+            || (lower.contains("quota") && lower.contains("exceeded"))
+    }
+
+    fn extract_user_prompt_preview(raw: &serde_json::Value, max_chars: usize) -> Option<String> {
+        raw.get("prompt")
+            .or_else(|| raw.get("user_prompt"))
+            .or_else(|| raw.get("message"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| Self::truncate_preview(s, max_chars))
+    }
+
+    fn truncate_preview(text: &str, max_chars: usize) -> String {
+        let mut chars = text.chars();
+        let truncated: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            format!("{truncated}...")
+        } else {
+            truncated
+        }
+    }
+
+    fn update_session_metadata_from_raw(store: &SessionStore, raw: &serde_json::Value) {
+        let Some(session_id) = raw.get("session_id").and_then(|v| v.as_str()) else {
+            return;
+        };
+
+        let pid = raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let tty = raw
+            .get("tty")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty());
+        let engine_label = raw
+            .get("engine_label")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty());
+        let engine_config_root = raw
+            .get("engine_config_root")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty());
+
+        if pid.is_none() && tty.is_none() && engine_label.is_none() && engine_config_root.is_none()
+        {
+            return;
+        }
+
+        store.update_session(session_id, |s| {
+            if let Some(pid) = pid {
+                s.pid = Some(pid);
+            }
+            if let Some(tty) = tty {
+                s.tty = Some(tty.to_string());
+            }
+            if let Some(label) = engine_label {
+                s.engine_label = Some(label.to_string());
+            }
+            if let Some(root) = engine_config_root {
+                s.engine_config_root = Some(root.to_string());
+            }
+        });
+    }
+
+    fn refresh_cache_ttl_from_transcript(
+        store: &SessionStore,
+        session_id: &str,
+        raw: &serde_json::Value,
+    ) {
+        let transcript_path = raw
+            .get("transcript_path")
+            .or_else(|| raw.get("transcriptPath"))
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                let session = store.get_session(session_id)?;
+                discover_session_file(session_id, &session.cwd)
+            });
+
+        let Some(path) = transcript_path else {
+            return;
+        };
+        let Some(info) = extract_cache_ttl_info(&path) else {
+            return;
+        };
+
+        store.set_statusline_metadata(
+            session_id,
+            None,
+            None,
+            Some(info.timestamp_ms),
+            Some(info.ttl_ms),
+        );
+    }
+
     /// Check if a session's terminal is focused (smart suppression).
     /// Returns true if the user is already looking at the terminal, meaning
     /// the panel should NOT auto-expand.
@@ -696,12 +1395,22 @@ impl HookServer {
         &self,
         session_id: &str,
         allowed: bool,
+        always: bool,
     ) -> anyhow::Result<()> {
         let mut pending_map = self.pending_permissions.lock().await;
         if let Some(entry) = pending_map.remove(session_id) {
             let response = PermissionResponse {
-                decision: if allowed { "allow".to_string() } else { "deny".to_string() },
-                reason: if allowed { None } else { Some("Denied by user via Agent Island".to_string()) },
+                decision: if allowed {
+                    "allow".to_string()
+                } else {
+                    "deny".to_string()
+                },
+                reason: if allowed {
+                    None
+                } else {
+                    Some("Denied by user via AgentBro".to_string())
+                },
+                always: if allowed && always { Some(true) } else { None },
             };
             // Ignore send error — receiver may have already dropped
             let _ = entry.tx.send(response);
@@ -711,15 +1420,42 @@ impl HookServer {
         }
     }
 
-    pub async fn respond_auto_approve(
+    /// Respond to a pending question from the UI
+    pub async fn respond_question(&self, session_id: &str, answer: String) -> anyhow::Result<()> {
+        let mut pending_map = self.pending_questions.lock().await;
+        if let Some(entry) = pending_map.remove(session_id) {
+            let response = QuestionResponse { answer };
+            let _ = entry.tx.send(response);
+            Ok(())
+        } else {
+            anyhow::bail!("No pending question for session {}", session_id)
+        }
+    }
+
+    /// Respond to a pending plan approval from the UI
+    pub async fn respond_plan(
         &self,
         session_id: &str,
+        mode: String,
+        message: Option<String>,
     ) -> anyhow::Result<()> {
+        let mut pending_map = self.pending_plans.lock().await;
+        if let Some(entry) = pending_map.remove(session_id) {
+            let response = PlanResponse { mode, message };
+            let _ = entry.tx.send(response);
+            Ok(())
+        } else {
+            anyhow::bail!("No pending plan for session {}", session_id)
+        }
+    }
+
+    pub async fn respond_auto_approve(&self, session_id: &str) -> anyhow::Result<()> {
         let mut pending_map = self.pending_permissions.lock().await;
         if let Some(entry) = pending_map.remove(session_id) {
             let response = PermissionResponse {
                 decision: "auto".to_string(),
                 reason: None,
+                always: None,
             };
             let _ = entry.tx.send(response);
             Ok(())
@@ -727,7 +1463,6 @@ impl HookServer {
             anyhow::bail!("No pending permission for session {}", session_id)
         }
     }
-
 }
 
 impl Drop for HookServer {

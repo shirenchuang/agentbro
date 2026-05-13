@@ -1,39 +1,78 @@
 // AgentBro — Rust Backend Library
-pub mod commands;
 pub mod agents;
-pub mod hooks;
+pub mod commands;
 pub mod config;
-pub mod terminal;
-pub mod remote;
-pub mod webhook;
+pub mod hooks;
 pub mod license;
-pub mod sound;
 pub mod platform;
-pub mod theme;
+pub mod remote;
 pub mod skills;
+pub mod sound;
+pub mod terminal;
+pub mod theme;
+pub mod webhook;
 
-use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager};
 
 use agents::claude_code::ClaudeCodeAdapter;
 use agents::AgentAdapter;
-use commands::persistence::{save_sessions, load_sessions};
+use commands::persistence::{load_sessions, save_sessions};
 use commands::AppState;
-use config::ConfigStore;
-use hooks::conversation_parser::discover_active_sessions;
+use config::{ConfigStore, CustomSoundConfig, SoundRuleConfig};
+use hooks::conversation_parser::{
+    all_projects_dirs, discover_active_sessions_in_dirs, projects_dirs_from_roots,
+};
 use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
-use hooks::session_store::SessionStore;
+use hooks::session_store::{SessionPhase, SessionState, SessionStore};
 use license::LicenseManager;
-use platform::display::{DisplayInfo, list_displays_inner, find_target_monitor};
-use sound::{SoundEngine, SoundEvent};
+use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
+use sound::{SoundEngine, SoundEvent, SoundPack};
+
+#[derive(Debug, Clone, Copy)]
+struct NotchDragState {
+    start_x: f64,
+    start_offset: f64,
+    current_offset: f64,
+    width: f64,
+    y: f64,
+    base_center: f64,
+    min_center: f64,
+    max_center: f64,
+    last_window_x: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PetDragState {
+    start_cursor_x: f64,
+    start_cursor_y: f64,
+    start_window_x: f64,
+    start_window_y: f64,
+    current_x: f64,
+    current_y: f64,
+}
+
+static NOTCH_DRAG_STATE: OnceLock<Mutex<Option<NotchDragState>>> = OnceLock::new();
+static PET_DRAG_STATE: OnceLock<Mutex<Option<PetDragState>>> = OnceLock::new();
+
+fn notch_drag_state() -> &'static Mutex<Option<NotchDragState>> {
+    NOTCH_DRAG_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn pet_drag_state() -> &'static Mutex<Option<PetDragState>> {
+    PET_DRAG_STATE.get_or_init(|| Mutex::new(None))
+}
 
 // ── Display Controller Commands ─────────────────────────────────
 
 #[tauri::command]
-async fn get_display_level(state: tauri::State<'_, commands::AppState>) -> Result<platform::display_controller::DisplayLevel, String> {
+async fn get_display_level(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<platform::display_controller::DisplayLevel, String> {
     Ok(state.display_controller.current_level())
 }
 
@@ -61,34 +100,111 @@ async fn notify_expand(state: tauri::State<'_, commands::AppState>) -> Result<()
     Ok(())
 }
 
-/// Toggle the notch window's focusable / key-window state.
-/// When `focusable` is true, the window becomes key window to accept keyboard input.
-/// When false, it resigns key window so it doesn't steal focus from the terminal.
 #[tauri::command]
 async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("notch") {
-        #[cfg(target_os = "macos")]
-        {
-            use objc2_app_kit::NSWindow;
-            if let Ok(ptr) = window.ns_window() {
-                unsafe {
-                    let ns_window = ptr as *const NSWindow;
-                    if focusable {
-                        (*ns_window).makeKeyWindow();
-                    } else {
-                        (*ns_window).resignKeyWindow();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("notch") {
+            #[cfg(target_os = "macos")]
+            {
+                use objc2_app_kit::NSWindow;
+                if let Ok(ptr) = window.ns_window() {
+                    unsafe {
+                        let ns_window = ptr as *const NSWindow;
+                        if focusable {
+                            (*ns_window).makeKeyWindow();
+                        } else {
+                            (*ns_window).resignKeyWindow();
+                        }
                     }
                 }
             }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            if focusable {
-                let _ = window.set_focus();
+            #[cfg(not(target_os = "macos"))]
+            {
+                if focusable {
+                    let _ = window.set_focus();
+                }
             }
         }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_image(src: String) -> Result<(), String> {
+    let target = if src.starts_with("data:") {
+        persist_data_url_image(&src)?
+    } else {
+        src
+    };
+    open_system_target(&target)
+}
+
+fn persist_data_url_image(src: &str) -> Result<String, String> {
+    let (header, data) = src
+        .split_once(',')
+        .ok_or_else(|| "Invalid image data URL".to_string())?;
+    if !header.contains(";base64") {
+        return Err("Only base64 image data URLs can be opened".to_string());
     }
-    Ok(())
+
+    let media_type = header
+        .strip_prefix("data:")
+        .unwrap_or("image/png")
+        .split(';')
+        .next()
+        .unwrap_or("image/png");
+    let bytes = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| format!("Invalid image data: {}", e))?
+    };
+    let ext = image_extension(media_type);
+    let path =
+        std::env::temp_dir().join(format!("agentbro-image-{}.{}", uuid::Uuid::new_v4(), ext));
+    std::fs::write(&path, bytes).map_err(|e| format!("Failed to write temp image: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn image_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        "image/heic" => "heic",
+        _ => "png",
+    }
+}
+
+fn open_system_target(target: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(target);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", "", target]);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open image: {}", e))
 }
 
 // ── Agent Detection & Hook Management Commands ──────────────────
@@ -99,35 +215,57 @@ async fn detect_tools() -> Vec<agents::detection::DetectedTool> {
 }
 
 #[tauri::command]
-async fn install_agent_hook(state: tauri::State<'_, commands::AppState>, tool_name: String) -> Result<(), String> {
-    let adapter = state.adapters.iter().find(|a| a.name() == tool_name)
+async fn install_agent_hook(
+    state: tauri::State<'_, commands::AppState>,
+    tool_name: String,
+) -> Result<(), String> {
+    let adapter = state
+        .adapters
+        .iter()
+        .find(|a| a.name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.install_hooks().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn uninstall_agent_hook(state: tauri::State<'_, commands::AppState>, tool_name: String) -> Result<(), String> {
-    let adapter = state.adapters.iter().find(|a| a.name() == tool_name)
+async fn uninstall_agent_hook(
+    state: tauri::State<'_, commands::AppState>,
+    tool_name: String,
+) -> Result<(), String> {
+    let adapter = state
+        .adapters
+        .iter()
+        .find(|a| a.name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.remove_hooks().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn get_all_hook_status(state: tauri::State<'_, commands::AppState>) -> Result<Vec<serde_json::Value>, String> {
-    Ok(state.adapters.iter().map(|a| {
-        let paths = a.hook_config_paths();
-        let installed = paths.iter().any(|p| agents::hook_manager::has_agentbro_hooks(p));
-        serde_json::json!({
-            "name": a.name(),
-            "displayName": a.display_name(),
-            "installed": installed,
-            "status": format!("{:?}", a.status()),
+async fn get_all_hook_status(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state
+        .adapters
+        .iter()
+        .map(|a| {
+            let paths = a.hook_config_paths();
+            let installed = paths
+                .iter()
+                .any(|p| agents::hook_manager::has_agentbro_hooks(p));
+            serde_json::json!({
+                "name": a.name(),
+                "displayName": a.display_name(),
+                "installed": installed,
+                "status": format!("{:?}", a.status()),
+            })
         })
-    }).collect())
+        .collect())
 }
 
 #[tauri::command]
-async fn reinstall_all_hooks(state: tauri::State<'_, commands::AppState>) -> Result<Vec<String>, String> {
+async fn reinstall_all_hooks(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<String>, String> {
     let mut errors = Vec::new();
     for adapter in &state.adapters {
         if let Err(e) = adapter.install_hooks() {
@@ -140,12 +278,17 @@ async fn reinstall_all_hooks(state: tauri::State<'_, commands::AppState>) -> Res
 // ── Remote SSH Commands ─────────────────────────────────────────
 
 #[tauri::command]
-async fn list_remote_hosts(state: tauri::State<'_, commands::AppState>) -> Result<Vec<remote::RemoteHost>, String> {
+async fn list_remote_hosts(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<remote::RemoteHost>, String> {
     Ok(state.remote_manager.hosts())
 }
 
 #[tauri::command]
-async fn add_remote_host(state: tauri::State<'_, commands::AppState>, host: remote::RemoteHost) -> Result<(), String> {
+async fn add_remote_host(
+    state: tauri::State<'_, commands::AppState>,
+    host: remote::RemoteHost,
+) -> Result<(), String> {
     state.remote_manager.add_host(host.clone());
     let mut cfg = state.config_store.get();
     cfg.remote_hosts.push(host);
@@ -153,7 +296,10 @@ async fn add_remote_host(state: tauri::State<'_, commands::AppState>, host: remo
 }
 
 #[tauri::command]
-async fn remove_remote_host(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+async fn remove_remote_host(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<(), String> {
     state.remote_manager.remove_host(&id);
     let mut cfg = state.config_store.get();
     cfg.remote_hosts.retain(|h| h.id != id);
@@ -161,54 +307,89 @@ async fn remove_remote_host(state: tauri::State<'_, commands::AppState>, id: Str
 }
 
 #[tauri::command]
-async fn connect_remote(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+async fn connect_remote(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<(), String> {
     state.remote_manager.connect(&id);
     Ok(())
 }
 
 #[tauri::command]
-async fn disconnect_remote(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+async fn disconnect_remote(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<(), String> {
     state.remote_manager.disconnect(&id);
     Ok(())
 }
 
 #[tauri::command]
-async fn install_remote_hooks(state: tauri::State<'_, commands::AppState>, id: String) -> Result<String, String> {
+async fn install_remote_hooks(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<String, String> {
     let hosts = state.remote_manager.hosts();
-    let host = hosts.iter().find(|h| h.id == id)
-        .ok_or_else(|| format!("Host {} not found", id))?.clone();
+    let host = hosts
+        .iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| format!("Host {} not found", id))?
+        .clone();
     let result = remote::installer::RemoteInstaller::install_hooks(&host).await;
-    if result.ok { Ok(result.message) } else { Err(result.message) }
+    if result.ok {
+        Ok(result.message)
+    } else {
+        Err(result.message)
+    }
 }
 
 #[tauri::command]
-async fn get_remote_status(state: tauri::State<'_, commands::AppState>, id: String) -> Result<remote::ConnectionStatus, String> {
+async fn get_remote_status(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<remote::ConnectionStatus, String> {
     Ok(state.remote_manager.status(&id))
+}
+
+#[tauri::command]
+async fn list_ssh_config_hosts() -> Result<Vec<remote::SshConfigHost>, String> {
+    Ok(remote::ssh_config::read_ssh_config_hosts())
 }
 
 // ── Webhook Commands ────────────────────────────────────────────
 
 #[tauri::command]
-async fn list_webhooks(state: tauri::State<'_, commands::AppState>) -> Result<Vec<webhook::WebhookConfig>, String> {
+async fn list_webhooks(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<webhook::WebhookConfig>, String> {
     Ok(state.config_store.get().webhook_configs)
 }
 
 #[tauri::command]
-async fn add_webhook(state: tauri::State<'_, commands::AppState>, config: webhook::WebhookConfig) -> Result<(), String> {
+async fn add_webhook(
+    state: tauri::State<'_, commands::AppState>,
+    config: webhook::WebhookConfig,
+) -> Result<(), String> {
     let mut cfg = state.config_store.get();
     cfg.webhook_configs.push(config);
     state.config_store.update(cfg)
 }
 
 #[tauri::command]
-async fn remove_webhook(state: tauri::State<'_, commands::AppState>, id: String) -> Result<(), String> {
+async fn remove_webhook(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<(), String> {
     let mut cfg = state.config_store.get();
     cfg.webhook_configs.retain(|w| w.id != id);
     state.config_store.update(cfg)
 }
 
 #[tauri::command]
-async fn update_webhook(state: tauri::State<'_, commands::AppState>, config: webhook::WebhookConfig) -> Result<(), String> {
+async fn update_webhook(
+    state: tauri::State<'_, commands::AppState>,
+    config: webhook::WebhookConfig,
+) -> Result<(), String> {
     let mut cfg = state.config_store.get();
     let id = config.id.clone();
     match cfg.webhook_configs.iter_mut().find(|w| w.id == id) {
@@ -221,10 +402,17 @@ async fn update_webhook(state: tauri::State<'_, commands::AppState>, config: web
 }
 
 #[tauri::command]
-async fn test_webhook(state: tauri::State<'_, commands::AppState>, id: String) -> Result<String, String> {
+async fn test_webhook(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<String, String> {
     let cfg = state.config_store.get();
-    let wh = cfg.webhook_configs.iter().find(|w| w.id == id)
-        .ok_or_else(|| format!("Webhook {} not found", id))?.clone();
+    let wh = cfg
+        .webhook_configs
+        .iter()
+        .find(|w| w.id == id)
+        .ok_or_else(|| format!("Webhook {} not found", id))?
+        .clone();
     let event = webhook::templates::NotificationEvent::Custom {
         title: "AgentBro Test".to_string(),
         body: "This is a test notification from AgentBro.".to_string(),
@@ -232,17 +420,26 @@ async fn test_webhook(state: tauri::State<'_, commands::AppState>, id: String) -
     let results = webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session").await;
     for (_, result) in &results {
         match result {
-            webhook::WebhookResult::Success => return Ok("Test notification sent successfully".to_string()),
+            webhook::WebhookResult::Success => {
+                return Ok("Test notification sent successfully".to_string())
+            }
             webhook::WebhookResult::Failed(msg) => return Err(msg.clone()),
-            webhook::WebhookResult::Skipped => return Ok("Webhook skipped (disabled or source filter)".to_string()),
+            webhook::WebhookResult::Skipped => {
+                return Ok("Webhook skipped (disabled or source filter)".to_string())
+            }
         }
     }
     Ok("No webhooks matched".to_string())
 }
 
 #[tauri::command]
-async fn get_webhook_logs(state: tauri::State<'_, commands::AppState>) -> Result<Vec<hooks::diagnostics::DiagnosticEvent>, String> {
-    Ok(state.diagnostic_buffer.query(hooks::diagnostics::DiagnosticSeverity::Debug, Some("webhook")))
+async fn get_webhook_logs(
+    state: tauri::State<'_, commands::AppState>,
+) -> Result<Vec<hooks::diagnostics::DiagnosticEvent>, String> {
+    Ok(state.diagnostic_buffer.query(
+        hooks::diagnostics::DiagnosticSeverity::Debug,
+        Some("webhook"),
+    ))
 }
 
 // ── Diagnostic Event Commands ───────────────────────────────────
@@ -282,8 +479,7 @@ async fn list_themes() -> Result<Vec<serde_json::Value>, String> {
 
 #[tauri::command]
 async fn get_active_theme_bundle(name: String) -> Result<serde_json::Value, String> {
-    theme::scanner::get_theme_bundle(&name)
-        .ok_or_else(|| format!("Theme '{}' not found", name))
+    theme::scanner::get_theme_bundle(&name).ok_or_else(|| format!("Theme '{}' not found", name))
 }
 
 #[tauri::command]
@@ -293,7 +489,10 @@ async fn import_theme(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn set_active_theme(state: tauri::State<'_, commands::AppState>, name: String) -> Result<(), String> {
+async fn set_active_theme(
+    state: tauri::State<'_, commands::AppState>,
+    name: String,
+) -> Result<(), String> {
     let mut config = state.config_store.get();
     config.theme = name;
     state.config_store.update(config)
@@ -302,8 +501,12 @@ async fn set_active_theme(state: tauri::State<'_, commands::AppState>, name: Str
 // ── Suppression Commands ────────────────────────────────────────
 
 #[tauri::command]
-async fn should_suppress(state: tauri::State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    let session = state.session_store
+async fn should_suppress(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, String> {
+    let session = state
+        .session_store
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     let pid = session.pid.unwrap_or(0);
@@ -321,21 +524,28 @@ async fn get_cursor_position() -> Result<(f64, f64), String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("osascript")
-            .args(["-e", r#"
+            .args([
+                "-e",
+                r#"
                 use framework "AppKit"
                 set mouseLoc to current application's NSEvent's mouseLocation()
                 set x to mouseLoc's x as real
                 set y to mouseLoc's y as real
                 return (x as text) & "," & (y as text)
-            "#])
+            "#,
+            ])
             .output()
             .map_err(|e| e.to_string())?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parts: Vec<&str> = stdout.trim().split(',').collect();
         if parts.len() == 2 {
-            let x: f64 = parts[0].parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
-            let y: f64 = parts[1].parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
+            let x: f64 = parts[0]
+                .parse()
+                .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+            let y: f64 = parts[1]
+                .parse()
+                .map_err(|e: std::num::ParseFloatError| e.to_string())?;
             Ok((x, y))
         } else {
             Err("Failed to parse cursor position".to_string())
@@ -347,82 +557,34 @@ async fn get_cursor_position() -> Result<(f64, f64), String> {
     }
 }
 
-/// Start a background task that polls cursor position and emits hot-zone events.
-/// Hot zone = top-center of screen, +/-300px horizontally from center, within
-/// menu bar height + 6px vertically.
-fn start_cursor_hotzone_poller(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut in_zone = false;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+#[tauri::command]
+async fn is_cursor_over_notch(app: tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(false);
+    };
 
-            // Get screen dimensions from the notch window's monitor
-            let screen_width = {
-                if let Some(window) = app_handle.get_webview_window("notch") {
-                    let monitor = window.current_monitor()
-                        .ok()
-                        .flatten()
-                        .or_else(|| window.primary_monitor().ok().flatten());
-                    if let Some(m) = monitor {
-                        m.size().width as f64 / m.scale_factor()
-                    } else {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            };
+    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
 
-            // Get cursor position via osascript+AppKit (no pyobjc dependency)
-            #[cfg(target_os = "macos")]
-            let cursor = {
-                let output = std::process::Command::new("osascript")
-                    .args(["-e", r#"
-                        use framework "AppKit"
-                        set mouseLoc to current application's NSEvent's mouseLocation()
-                        set x to mouseLoc's x as real
-                        set y to mouseLoc's y as real
-                        return (x as text) & "," & (y as text)
-                    "#])
-                    .output();
-                match output {
-                    Ok(o) if o.status.success() => {
-                        let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        let parts: Vec<&str> = text.split(',').collect();
-                        if parts.len() == 2 {
-                            match (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                                (Ok(x), Ok(y)) => Some((x, y)),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            };
+    let left = position.x as f64;
+    let top = position.y as f64;
+    let right = left + size.width as f64;
+    let bottom = top + size.height as f64;
 
-            #[cfg(not(target_os = "macos"))]
-            let cursor: Option<(f64, f64)> = None;
+    Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
+}
 
-            let (cx, cy) = match cursor {
-                Some(pos) => pos,
-                None => continue,
-            };
+#[cfg(target_os = "macos")]
+fn get_cursor_position_sync() -> Result<(f64, f64), String> {
+    use objc2_app_kit::NSEvent;
+    let point = NSEvent::mouseLocation();
+    Ok((point.x, point.y))
+}
 
-            // Hot zone: top center, +/-300px horizontal, top 31px (menu bar 25 + 6) vertical
-            let center_x = screen_width / 2.0;
-            let now_in_zone = (cx - center_x).abs() <= 300.0 && cy <= 31.0;
-
-            if now_in_zone && !in_zone {
-                in_zone = true;
-                let _ = app_handle.emit("cursor-in-zone", true);
-            } else if !now_in_zone && in_zone {
-                in_zone = false;
-                let _ = app_handle.emit("cursor-in-zone", false);
-            }
-        }
-    });
+#[cfg(not(target_os = "macos"))]
+fn get_cursor_position_sync() -> Result<(f64, f64), String> {
+    Err("Cursor position not supported on this platform".to_string())
 }
 
 // ── Path Validation Command ─────────────────────────────────────
@@ -434,31 +596,207 @@ async fn validate_path(path: String) -> Result<bool, String> {
 
 // ── Global Shortcut Commands ────────────────────────────────────
 
+fn toggle_notch_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("notch") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            configure_notch_window_for_spaces(app);
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
+    let mut sessions: Vec<_> = store
+        .get_all_sessions()
+        .into_iter()
+        .filter(|session| session.pending_permission.is_some())
+        .collect();
+    sessions.sort_by_key(|session| session.started_at);
+    sessions.into_iter().next()
+}
+
+fn first_pending_question(store: &SessionStore) -> Option<SessionState> {
+    let mut sessions: Vec<_> = store
+        .get_all_sessions()
+        .into_iter()
+        .filter(|session| session.pending_question.is_some())
+        .collect();
+    sessions.sort_by_key(|session| session.started_at);
+    sessions.into_iter().next()
+}
+
+fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
+    let state = app.state::<AppState>();
+    let Some(session) = first_pending_permission(&state.session_store) else {
+        return;
+    };
+    let session_id = session.id.clone();
+    let hook_server = state.hook_server.clone();
+    let session_store = state.session_store.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let hook_result = hook_server
+            .respond_permission(&session_id, allowed, false)
+            .await;
+        if let Err(err) = hook_result {
+            log::warn!(
+                "Global permission shortcut hook response failed for {}: {}. Falling back to tmux.",
+                session_id,
+                err
+            );
+            let fallback_result = (|| -> Result<(), String> {
+                let pid = session
+                    .pid
+                    .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
+                let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
+                    .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
+                if allowed {
+                    crate::terminal::approval::approve_once(&tmux_target)
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    crate::terminal::approval::reject(
+                        &tmux_target,
+                        Some("Denied via keyboard shortcut"),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            })();
+            if let Err(fallback_err) = fallback_result {
+                log::warn!(
+                    "Global permission shortcut tmux fallback failed for {}: {}",
+                    session_id,
+                    fallback_err
+                );
+                return;
+            }
+        }
+        session_store.set_pending_permission(&session_id, None);
+        session_store.update_phase(&session_id, SessionPhase::Processing);
+    });
+}
+
+fn handle_question_skip_shortcut(app: tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let Some(session) = first_pending_question(&state.session_store) else {
+        return;
+    };
+    let session_id = session.id.clone();
+    let answer = session
+        .pending_question
+        .as_ref()
+        .and_then(|question| question.options.first().cloned())
+        .unwrap_or_default();
+    let hook_server = state.hook_server.clone();
+    let session_store = state.session_store.clone();
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = hook_server.respond_question(&session_id, answer).await {
+            log::warn!(
+                "Global question skip shortcut failed for {}: {}",
+                session_id,
+                err
+            );
+            return;
+        }
+        session_store.set_pending_question(&session_id, None);
+        session_store.update_phase(&session_id, SessionPhase::Processing);
+    });
+}
+
+fn register_one_global_shortcut<F>(app: &tauri::AppHandle, accelerator: &str, action: F)
+where
+    F: Fn(tauri::AppHandle) + Send + Sync + 'static,
+{
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let accelerator = accelerator.trim();
+    if accelerator.is_empty() {
+        return;
+    }
+    let app_handle = app.clone();
+    let result = app
+        .global_shortcut()
+        .on_shortcut(accelerator, move |_app, _shortcut, _event| {
+            action(app_handle.clone());
+        });
+    if let Err(err) = result {
+        log::warn!(
+            "Failed to register global shortcut {}: {}",
+            accelerator,
+            err
+        );
+    }
+}
+
+fn register_island_global_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| format!("{e}"))?;
+
+    let config = app.state::<AppState>().config_store.get();
+    register_one_global_shortcut(app, &config.global_shortcut, |app| {
+        toggle_notch_window(&app)
+    });
+    if config.shortcut_approve_enabled {
+        register_one_global_shortcut(app, &config.shortcut_approve, |app| {
+            handle_permission_shortcut(app, true)
+        });
+    }
+    if config.shortcut_deny_enabled {
+        register_one_global_shortcut(app, &config.shortcut_deny, |app| {
+            handle_permission_shortcut(app, false)
+        });
+    }
+    if config.shortcut_skip_enabled {
+        register_one_global_shortcut(app, &config.shortcut_skip, handle_question_skip_shortcut);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn register_global_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let app_clone = app.clone();
-    app.global_shortcut().on_shortcut(
-        shortcut.as_str(),
-        move |_app, _shortcut, _event| {
-            if let Some(window) = app_clone.get_webview_window("notch") {
-                if window.is_visible().unwrap_or(false) {
-                    let _ = window.hide();
-                } else {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-        },
-    ).map_err(|e| format!("{e}"))?;
-    Ok(())
+    let state = app.state::<AppState>();
+    let mut config = state.config_store.get();
+    config.global_shortcut = shortcut;
+    state.config_store.update(config)?;
+    register_island_global_shortcuts(&app)
 }
 
 #[tauri::command]
 async fn unregister_global_shortcut(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    app.global_shortcut().unregister_all().map_err(|e| format!("{e}"))?;
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| format!("{e}"))?;
     Ok(())
+}
+
+#[tauri::command]
+async fn set_global_action_shortcuts(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    approve: String,
+    approve_enabled: bool,
+    deny: String,
+    deny_enabled: bool,
+    skip: String,
+    skip_enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.shortcut_approve = approve;
+    config.shortcut_approve_enabled = approve_enabled;
+    config.shortcut_deny = deny;
+    config.shortcut_deny_enabled = deny_enabled;
+    config.shortcut_skip = skip;
+    config.shortcut_skip_enabled = skip_enabled;
+    state.config_store.update(config)?;
+    register_island_global_shortcuts(&app)
 }
 
 // ── Quit Command ────────────────────────────────────────────────
@@ -471,8 +809,32 @@ async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
 
 // ── Sound Commands ───────────────────────────────────────────────
 
+fn custom_sounds_dir() -> PathBuf {
+    let base = dirs::data_dir()
+        .or_else(|| dirs::config_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("agentbro").join("sounds")
+}
+
+fn supported_audio_extension(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => Some("mp3"),
+        Some("wav") => Some("wav"),
+        Some("ogg") => Some("ogg"),
+        Some("flac") => Some("flac"),
+        _ => None,
+    }
+}
+
 #[tauri::command]
-async fn play_sound(state: tauri::State<'_, AppState>, event: SoundEvent) -> Result<(), String> {
+async fn play_sound(state: tauri::State<'_, AppState>, event: String) -> Result<(), String> {
+    let event =
+        SoundEvent::from_id(&event).ok_or_else(|| format!("Unknown sound event: {event}"))?;
     if let Some(ref engine) = state.sound_engine {
         engine.play(event);
     }
@@ -481,9 +843,14 @@ async fn play_sound(state: tauri::State<'_, AppState>, event: SoundEvent) -> Res
 
 #[tauri::command]
 async fn set_sound_volume(state: tauri::State<'_, AppState>, volume: f32) -> Result<(), String> {
+    let normalized = if volume > 1.0 { volume / 100.0 } else { volume }.clamp(0.0, 1.0);
     if let Some(ref engine) = state.sound_engine {
-        engine.set_volume(volume);
+        engine.set_volume(normalized);
     }
+    let mut config = state.config_store.get();
+    config.sound_volume = normalized;
+    config.volume = (normalized * 100.0).round() as u8;
+    state.config_store.update(config)?;
     Ok(())
 }
 
@@ -492,6 +859,159 @@ async fn set_sound_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> 
     if let Some(ref engine) = state.sound_engine {
         engine.set_enabled(enabled);
     }
+    let mut config = state.config_store.get();
+    config.sound_enabled = enabled;
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_sound_pack(state: tauri::State<'_, AppState>, pack: String) -> Result<(), String> {
+    let sound_pack =
+        SoundPack::from_id(&pack).ok_or_else(|| format!("Unknown sound pack: {pack}"))?;
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_sound_pack(sound_pack);
+    }
+    let mut config = state.config_store.get();
+    config.sound_pack = sound_pack.to_string();
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_probe_session_filter(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_probe_filter(enabled);
+    }
+    let mut config = state.config_store.get();
+    config.probe_session_filter = enabled;
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_sound_quiet_hours(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+    start: String,
+    end: String,
+) -> Result<(), String> {
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_quiet_hours(enabled, start.clone(), end.clone());
+    }
+    let mut config = state.config_store.get();
+    config.quiet_hours_enabled = enabled;
+    config.quiet_hours_start = start;
+    config.quiet_hours_end = end;
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_sound_event_enabled(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let event =
+        SoundEvent::from_id(&event_id).ok_or_else(|| format!("Unknown sound event: {event_id}"))?;
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_event_enabled(event, enabled);
+    }
+    let mut config = state.config_store.get();
+    config.sound_events.insert(event_id, enabled);
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_sound_event_rule(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    enabled: bool,
+    sound: String,
+) -> Result<(), String> {
+    let event =
+        SoundEvent::from_id(&event_id).ok_or_else(|| format!("Unknown sound event: {event_id}"))?;
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_event_rule(event, enabled, sound.clone());
+    }
+    let mut config = state.config_store.get();
+    config.sound_events.insert(event_id.clone(), enabled);
+    config
+        .sound_rules
+        .insert(event_id, SoundRuleConfig { enabled, sound });
+    state.config_store.update(config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_custom_sound(
+    state: tauri::State<'_, AppState>,
+    file_path: String,
+) -> Result<CustomSoundConfig, String> {
+    let source = PathBuf::from(&file_path);
+    if !source.exists() {
+        return Err("Sound file not found".to_string());
+    }
+    if !source.is_file() {
+        return Err("Sound path is not a file".to_string());
+    }
+    let ext = supported_audio_extension(&source)
+        .ok_or_else(|| "Unsupported sound file type. Use mp3, wav, ogg, or flac.".to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let dest_dir = custom_sounds_dir();
+    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("Failed to create sounds dir: {e}"))?;
+    let dest = dest_dir.join(format!("{id}.{ext}"));
+    std::fs::copy(&source, &dest).map_err(|e| format!("Failed to import sound: {e}"))?;
+
+    let name = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(|name| name.replace(['-', '_'], " "))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Custom Sound".to_string());
+    let sound = CustomSoundConfig {
+        id,
+        name,
+        path: dest.to_string_lossy().to_string(),
+        data_url: None,
+    };
+
+    if let Some(ref engine) = state.sound_engine {
+        let mut sounds = state.config_store.get().custom_sounds;
+        sounds.push(sound.clone());
+        engine.set_custom_sounds(
+            sounds
+                .iter()
+                .map(|sound| (sound.id.clone(), sound.path.clone()))
+                .collect(),
+        );
+    }
+
+    Ok(sound)
+}
+
+#[tauri::command]
+async fn set_custom_sounds(
+    state: tauri::State<'_, AppState>,
+    sounds: Vec<CustomSoundConfig>,
+) -> Result<(), String> {
+    if let Some(ref engine) = state.sound_engine {
+        engine.set_custom_sounds(
+            sounds
+                .iter()
+                .map(|sound| (sound.id.clone(), sound.path.clone()))
+                .collect(),
+        );
+    }
+    let mut config = state.config_store.get();
+    config.custom_sounds = sounds;
+    state.config_store.update(config)?;
     Ok(())
 }
 
@@ -528,7 +1048,8 @@ async fn perform_haptic(intensity: u8) -> Result<(), String> {
 // ── Skill Management Commands ───────────────────────────────────
 
 #[tauri::command]
-async fn scan_all_skills() -> Result<std::collections::HashMap<String, Vec<skills::ScannedSkill>>, String> {
+async fn scan_all_skills(
+) -> Result<std::collections::HashMap<String, Vec<skills::ScannedSkill>>, String> {
     Ok(skills::scanner::scan_all())
 }
 
@@ -546,7 +1067,8 @@ async fn install_skill_cmd(
     skills::installer::install_skill(&source, &targets, &mode)?;
     skills::registry::add_source(
         &std::path::PathBuf::from(&source)
-            .file_name().unwrap_or_default()
+            .file_name()
+            .unwrap_or_default()
             .to_string_lossy(),
         &source,
     )?;
@@ -591,6 +1113,11 @@ async fn update_pack_cmd(pack: skills::SkillPack) -> Result<(), String> {
 #[tauri::command]
 async fn delete_pack_cmd(id: String) -> Result<(), String> {
     skills::registry::delete_pack(&id)
+}
+
+#[tauri::command]
+async fn apply_pack_cmd(pack: skills::SkillPack) -> Result<(), String> {
+    skills::installer::apply_pack(&pack)
 }
 
 #[tauri::command]
@@ -652,12 +1179,53 @@ fn set_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
 #[cfg(not(target_os = "macos"))]
 fn set_window_alpha(_window: &tauri::WebviewWindow, _alpha: f64) {}
 
+#[cfg(target_os = "macos")]
+fn apply_notch_window_for_spaces(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    let _ = window.set_visible_on_all_workspaces(true);
+    if let Ok(ptr) = window.ns_window() {
+        unsafe {
+            let ns_window = ptr as *const NSWindow;
+            let mut behavior = (*ns_window).collectionBehavior();
+            behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle;
+            behavior &= !NSWindowCollectionBehavior::FullScreenNone;
+            (*ns_window).setCollectionBehavior(behavior);
+            (*ns_window).setCanHide(false);
+            // Match evolab's native notch level (27): above status/menu bar,
+            // while avoiding transient menu levels that can behave oddly in fullscreen Spaces.
+            (*ns_window).setLevel(NSStatusWindowLevel + 2);
+            (*ns_window).orderFrontRegardless();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_notch_window_for_spaces(_window: &tauri::WebviewWindow) {}
+
+fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("notch") {
+            apply_notch_window_for_spaces(&window);
+        }
+    });
+}
+
 #[tauri::command]
 async fn set_notch_opacity(app: tauri::AppHandle, opacity: f64) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("notch") {
-        set_window_alpha(&window, opacity);
-    }
-    Ok(())
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("notch") {
+            if opacity > 0.0 {
+                apply_notch_window_for_spaces(&window);
+            }
+            set_window_alpha(&window, opacity);
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 // ── Display Commands ────────────────────────────────────────────
@@ -665,6 +1233,368 @@ async fn set_notch_opacity(app: tauri::AppHandle, opacity: f64) -> Result<(), St
 #[tauri::command]
 async fn list_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
     Ok(list_displays_inner(&app))
+}
+
+#[tauri::command]
+async fn set_display_id(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    display_id: String,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.display_id = display_id.clone();
+    state.config_store.update(config)?;
+    reposition_notch_to_display(&app, Some(display_id), None)
+}
+
+fn reposition_notch_to_display(
+    app: &tauri::AppHandle,
+    display_id: Option<String>,
+    horizontal_offset: Option<f64>,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(());
+    };
+
+    let config_store = app.state::<AppState>();
+    let configured_display_id = config_store.config_store.get().display_id;
+    let display_id = display_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .unwrap_or(configured_display_id.as_str());
+    let monitor = find_target_monitor(app, display_id)
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let current_scale = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.scale_factor())
+            .unwrap_or_else(|| monitor.scale_factor());
+        let width = window
+            .outer_size()
+            .map(|size| size.width as f64 / current_scale)
+            .unwrap_or(420.0);
+        position_notch_window(
+            app,
+            &window,
+            &monitor,
+            width,
+            horizontal_offset.unwrap_or(0.0),
+        );
+    }
+    configure_notch_window_for_spaces(app);
+
+    Ok(())
+}
+
+fn position_notch_window(
+    _app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+    width: f64,
+    horizontal_offset: f64,
+) {
+    let scale = monitor.scale_factor();
+    let screen_width = monitor.size().width as f64 / scale;
+    let monitor_x = monitor.position().x as f64 / scale;
+    let monitor_y = monitor.position().y as f64 / scale;
+    let margin = 8.0;
+    let base_x = monitor_x + (screen_width - width) / 2.0;
+    let desired_x = base_x + horizontal_offset;
+    let min_x = monitor_x + margin;
+    let max_x = monitor_x + screen_width - width - margin;
+    let x = if min_x <= max_x {
+        desired_x.clamp(min_x, max_x)
+    } else {
+        base_x
+    };
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        x, monitor_y,
+    )));
+}
+
+fn notch_drag_geometry(
+    monitor: &tauri::Monitor,
+    width: f64,
+    offset: f64,
+) -> (f64, f64, f64, f64, f64) {
+    let scale = monitor.scale_factor();
+    let screen_width = monitor.size().width as f64 / scale;
+    let monitor_x = monitor.position().x as f64 / scale;
+    let monitor_y = monitor.position().y as f64 / scale;
+    let margin = 8.0;
+    let base_center = monitor_x + screen_width / 2.0;
+    let min_center = monitor_x + margin + width / 2.0;
+    let max_center = monitor_x + screen_width - margin - width / 2.0;
+    let clamped_offset = if min_center > max_center {
+        0.0
+    } else {
+        (base_center + offset).clamp(min_center, max_center) - base_center
+    };
+    let window_x = base_center + clamped_offset - width / 2.0;
+    (base_center, min_center, max_center, monitor_y, window_x)
+}
+
+#[tauri::command]
+async fn reposition_notch(
+    app: tauri::AppHandle,
+    display_id: Option<String>,
+    horizontal_offset: Option<f64>,
+) -> Result<(), String> {
+    reposition_notch_to_display(&app, display_id, horizontal_offset)
+}
+
+#[tauri::command]
+async fn preview_island_layout(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    if !matches!(
+        mode.as_str(),
+        "micro" | "compact" | "expanded" | "completion"
+    ) {
+        return Err(format!("Unknown island layout preview mode: {mode}"));
+    }
+    if let Some(window) = app.get_webview_window("notch") {
+        window
+            .emit("island-layout-preview", serde_json::json!({ "mode": mode }))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_island_layout_preview(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("notch") {
+        window
+            .emit("island-layout-preview-clear", ())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_notch_drag(
+    app: tauri::AppHandle,
+    horizontal_offset: f64,
+    width: f64,
+    height: f64,
+    display_id: Option<String>,
+) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(false);
+    };
+    let (cursor_x, _) = get_cursor_position_sync()?;
+    let config_store = app.state::<AppState>();
+    let configured_display_id = config_store.config_store.get().display_id;
+    let display_id = display_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .unwrap_or(configured_display_id.as_str());
+    let monitor = find_target_monitor(&app, display_id)
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return Ok(false);
+    };
+    let (base_center, min_center, max_center, y, window_x) =
+        notch_drag_geometry(&monitor, width, horizontal_offset);
+    let start_offset = if min_center > max_center {
+        0.0
+    } else {
+        (window_x + width / 2.0) - base_center
+    };
+
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        window_x.round(),
+        y,
+    )));
+    configure_notch_window_for_spaces(&app);
+
+    {
+        let mut drag = notch_drag_state()
+            .lock()
+            .map_err(|e| format!("Drag lock error: {}", e))?;
+        *drag = Some(NotchDragState {
+            start_x: cursor_x,
+            start_offset,
+            current_offset: start_offset,
+            width,
+            y,
+            base_center,
+            min_center,
+            max_center,
+            last_window_x: window_x.round(),
+        });
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let started_at = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            if started_at.elapsed() > std::time::Duration::from_secs(30) {
+                if let Ok(mut drag) = notch_drag_state().lock() {
+                    *drag = None;
+                }
+                break;
+            }
+            let keep_dragging = update_notch_drag_position(&app_handle).unwrap_or(false);
+            if !keep_dragging {
+                break;
+            }
+        }
+    });
+
+    Ok(true)
+}
+
+fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(false);
+    };
+    let (cursor_x, _) = get_cursor_position_sync()?;
+
+    let next_position = {
+        let mut drag = notch_drag_state()
+            .lock()
+            .map_err(|e| format!("Drag lock error: {}", e))?;
+        let Some(state) = drag.as_mut() else {
+            return Ok(false);
+        };
+        let desired_offset = state.start_offset + cursor_x - state.start_x;
+        let next_offset = if state.min_center > state.max_center {
+            0.0
+        } else {
+            (state.base_center + desired_offset).clamp(state.min_center, state.max_center)
+                - state.base_center
+        };
+        let window_x = (state.base_center + next_offset - state.width / 2.0).round();
+        if (window_x - state.last_window_x).abs() < 1.0 {
+            return Ok(true);
+        }
+        state.current_offset = next_offset;
+        state.last_window_x = window_x;
+        (window_x, state.y)
+    };
+
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        next_position.0,
+        next_position.1,
+    )));
+    Ok(true)
+}
+
+#[tauri::command]
+async fn end_notch_drag(app: tauri::AppHandle) -> Result<Option<f64>, String> {
+    let final_offset = {
+        let mut drag = notch_drag_state()
+            .lock()
+            .map_err(|e| format!("Drag lock error: {}", e))?;
+        drag.take().map(|state| state.current_offset.round())
+    };
+
+    if let Some(offset) = final_offset {
+        reposition_notch_to_display(&app, None, Some(offset))?;
+    }
+
+    Ok(final_offset)
+}
+
+#[tauri::command]
+async fn start_pet_drag(app: tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(false);
+    };
+    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    {
+        let mut drag = pet_drag_state()
+            .lock()
+            .map_err(|e| format!("Pet drag lock error: {}", e))?;
+        *drag = Some(PetDragState {
+            start_cursor_x: cursor.x,
+            start_cursor_y: cursor.y,
+            start_window_x: position.x as f64,
+            start_window_y: position.y as f64,
+            current_x: position.x as f64,
+            current_y: position.y as f64,
+        });
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let started_at = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            if started_at.elapsed() > std::time::Duration::from_secs(30) {
+                if let Ok(mut drag) = pet_drag_state().lock() {
+                    *drag = None;
+                }
+                break;
+            }
+            let keep_dragging = update_pet_drag_position(&app_handle).unwrap_or(false);
+            if !keep_dragging {
+                break;
+            }
+        }
+    });
+
+    Ok(true)
+}
+
+fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("notch") else {
+        return Ok(false);
+    };
+    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let next_position = {
+        let mut drag = pet_drag_state()
+            .lock()
+            .map_err(|e| format!("Pet drag lock error: {}", e))?;
+        let Some(state) = drag.as_mut() else {
+            return Ok(false);
+        };
+        let x = (state.start_window_x + cursor.x - state.start_cursor_x).round();
+        let y = (state.start_window_y + cursor.y - state.start_cursor_y).round();
+        if (x - state.current_x).abs() < 1.0 && (y - state.current_y).abs() < 1.0 {
+            return Ok(true);
+        }
+        state.current_x = x;
+        state.current_y = y;
+        (x, y)
+    };
+
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        next_position.0 as i32,
+        next_position.1 as i32,
+    )));
+    Ok(true)
+}
+
+#[tauri::command]
+async fn end_pet_drag(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::config::WindowOrigin>, String> {
+    let final_origin = {
+        let mut drag = pet_drag_state()
+            .lock()
+            .map_err(|e| format!("Pet drag lock error: {}", e))?;
+        drag.take().map(|state| crate::config::WindowOrigin {
+            x: state.current_x.round(),
+            y: state.current_y.round(),
+        })
+    };
+
+    if let Some(origin) = final_origin.clone() {
+        let state = app.state::<AppState>();
+        let mut config = state.config_store.get();
+        config.island_pet_window_origin = Some(origin);
+        state.config_store.update(config)?;
+    }
+
+    Ok(final_origin)
 }
 
 /// Resize the notch window dynamically from the frontend and re-center
@@ -675,36 +1605,43 @@ async fn resize_notch(
     width: f64,
     height: f64,
     horizontal_offset: Option<f64>,
+    display_id: Option<String>,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("notch") {
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
 
         // Determine which monitor to center on from config
         let config_store = app.state::<AppState>();
-        let display_id = config_store.config_store.get().display_id;
+        let config = config_store.config_store.get();
+        if config.island_surface_mode == "pet" {
+            if let Some(origin) = config.island_pet_window_origin {
+                let _ = window.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition::new(origin.x.round() as i32, origin.y.round() as i32),
+                ));
+                configure_notch_window_for_spaces(&app);
+                return Ok(());
+            }
+        }
+        let configured_display_id = config.display_id;
+        let display_id = display_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(configured_display_id.as_str());
 
         let monitor = find_target_monitor(&app, &display_id)
             .or_else(|| window.current_monitor().ok().flatten())
             .or_else(|| window.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {
-            let scale = monitor.scale_factor();
-            let screen_width = monitor.size().width as f64 / scale;
-            let monitor_x = monitor.position().x as f64 / scale;
-            let margin = 8.0;
-            let base_x = monitor_x + (screen_width - width) / 2.0;
-            let desired_x = base_x + horizontal_offset.unwrap_or(0.0);
-            let min_x = monitor_x + margin;
-            let max_x = monitor_x + screen_width - width - margin;
-            let x = if min_x <= max_x {
-                desired_x.clamp(min_x, max_x)
-            } else {
-                base_x
-            };
-            let _ = window.set_position(tauri::Position::Logical(
-                tauri::LogicalPosition::new(x, -6.0),
-            ));
+            position_notch_window(
+                &app,
+                &window,
+                &monitor,
+                width,
+                horizontal_offset.unwrap_or(0.0),
+            );
         }
+        configure_notch_window_for_spaces(&app);
     }
     Ok(())
 }
@@ -715,13 +1652,15 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Position notch window at top center
             if let Some(window) = app.get_webview_window("notch") {
-                let monitor = window.current_monitor()
+                let monitor = window
+                    .current_monitor()
                     .ok()
                     .flatten()
                     .or_else(|| window.primary_monitor().ok().flatten());
@@ -736,23 +1675,13 @@ pub fn run() {
                 }
 
                 // Set initial compact size (will be dynamically resized by frontend)
-                let _ = window.set_size(tauri::Size::Logical(
-                    tauri::LogicalSize::new(420.0, 52.0),
-                ));
+                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(420.0, 52.0)));
 
                 // Force shadow off for clean transparent look
                 let _ = window.set_shadow(false);
 
-                // Set window level to overlap menu bar (same as Vibe Island)
-                #[cfg(target_os = "macos")]
-                {
-                    use objc2_app_kit::NSWindow;
-                    let ns_win = window.ns_window().unwrap() as *mut NSWindow;
-                    unsafe {
-                        // NSMainMenuWindowLevel (24) + 3 = 27, same as Vibe Island
-                        ns_win.as_ref().unwrap().setLevel(27);
-                    }
-                }
+                // Keep the island above the menu bar and present in fullscreen Spaces.
+                apply_notch_window_for_spaces(&window);
             }
 
             // Ensure settings window is hidden on startup
@@ -765,12 +1694,45 @@ pub fn run() {
             session_store.set_app_handle(app.handle().clone());
             let session_store = Arc::new(session_store);
 
+            // Initialize config store
+            let mut config_store = ConfigStore::new();
+            config_store.set_app_handle(app.handle().clone());
+
             // Bootstrap: discover sessions that were already running before we launched
             {
-                let discovered = discover_active_sessions(std::time::Duration::from_secs(7200));
+                let config = config_store.get();
+                let extra_roots: Vec<std::path::PathBuf> = config
+                    .engine_instances
+                    .iter()
+                    .filter(|i| i.enabled)
+                    .map(|i| agents::claude_code::expand_tilde(&i.config_root))
+                    .collect();
+                let mut projects_dirs = all_projects_dirs();
+                projects_dirs.extend(projects_dirs_from_roots(&extra_roots));
+
+                let discovered = discover_active_sessions_in_dirs(
+                    std::time::Duration::from_secs(7200),
+                    &projects_dirs,
+                );
                 if !discovered.is_empty() {
-                    log::info!("Startup bootstrap: discovered {} active session(s)", discovered.len());
+                    log::info!(
+                        "Startup bootstrap: discovered {} active session(s)",
+                        discovered.len()
+                    );
                     for ds in &discovered {
+                        let matched_instance = config.engine_instances.iter().find(|inst| {
+                            if !inst.enabled {
+                                return false;
+                            }
+                            let expected = agents::claude_code::expand_tilde(&inst.config_root)
+                                .join("projects");
+                            let expected = expected.canonicalize().unwrap_or(expected);
+                            let actual = ds
+                                .projects_dir
+                                .canonicalize()
+                                .unwrap_or_else(|_| ds.projects_dir.clone());
+                            expected == actual
+                        });
                         let _session = session_store.get_or_create_session(
                             &ds.session_id,
                             "claude-code",
@@ -784,6 +1746,12 @@ pub fn run() {
                                 s.session_title = Some(title.clone());
                             });
                         }
+                        if let Some(inst) = matched_instance {
+                            session_store.update_session(&ds.session_id, |s| {
+                                s.engine_label = Some(inst.label.clone());
+                                s.engine_config_root = Some(inst.config_root.clone());
+                            });
+                        }
                         log::info!(
                             "  session {}: project={}, title={:?}",
                             &ds.session_id[..8.min(ds.session_id.len())],
@@ -793,10 +1761,6 @@ pub fn run() {
                     }
                 }
             }
-
-            // Initialize config store
-            let mut config_store = ConfigStore::new();
-            config_store.set_app_handle(app.handle().clone());
 
             // Initialize themes: ensure built-in themes exist in user dir
             if let Some(resource_path) = app.path().resource_dir().ok() {
@@ -811,9 +1775,10 @@ pub fn run() {
                 for inst in &config.engine_instances {
                     if inst.enabled {
                         let root = agents::claude_code::expand_tilde(&inst.config_root);
-                        cc_adapters.push(
-                            ClaudeCodeAdapter::with_config_root(root, inst.label.clone()),
-                        );
+                        cc_adapters.push(ClaudeCodeAdapter::with_config_root(
+                            root,
+                            inst.label.clone(),
+                        ));
                     }
                 }
             }
@@ -824,9 +1789,7 @@ pub fn run() {
             }
 
             // Build the shared adapter list
-            let mut adapter_list: Vec<Arc<dyn AgentAdapter>> = vec![
-                Arc::new(default_cc),
-            ];
+            let mut adapter_list: Vec<Arc<dyn AgentAdapter>> = vec![Arc::new(default_cc)];
             for cc in cc_adapters {
                 adapter_list.push(Arc::new(cc));
             }
@@ -835,7 +1798,11 @@ pub fn run() {
             // Auto-install hooks on startup
             for adapter in adapters.iter() {
                 if let Err(e) = adapter.install_hooks() {
-                    log::warn!("Failed to install hooks for {}: {}", adapter.display_name(), e);
+                    log::warn!(
+                        "Failed to install hooks for {}: {}",
+                        adapter.display_name(),
+                        e
+                    );
                 } else {
                     log::info!("Hooks installed for {}", adapter.display_name());
                 }
@@ -868,105 +1835,34 @@ pub fn run() {
                 let cfg = config_store.get();
                 engine.set_volume(cfg.sound_volume);
                 engine.set_enabled(cfg.sound_enabled);
+                if let Some(pack) = SoundPack::from_id(&cfg.sound_pack) {
+                    engine.set_sound_pack(pack);
+                }
+                engine.set_probe_filter(cfg.probe_session_filter);
+                engine.set_quiet_hours(
+                    cfg.quiet_hours_enabled,
+                    cfg.quiet_hours_start.clone(),
+                    cfg.quiet_hours_end.clone(),
+                );
+                for (event_id, enabled) in cfg.sound_events.iter() {
+                    if let Some(event) = SoundEvent::from_id(event_id) {
+                        engine.set_event_enabled(event, *enabled);
+                    }
+                }
+                for (event_id, rule) in cfg.sound_rules.iter() {
+                    if let Some(event) = SoundEvent::from_id(event_id) {
+                        engine.set_event_rule(event, rule.enabled, rule.sound.clone());
+                    }
+                }
+                engine.set_custom_sounds(
+                    cfg.custom_sounds
+                        .iter()
+                        .map(|sound| (sound.id.clone(), sound.path.clone()))
+                        .collect(),
+                );
                 hook_server.set_sound_engine(engine.clone());
             } else {
                 log::warn!("Sound engine failed to initialize (no audio output)");
-            }
-
-            // ── Background: display change listener ─────────────────
-            {
-                let app_handle = app.handle().clone();
-                let cfg_store = config_store.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut prev_count: usize = 0;
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let displays = list_displays_inner(&app_handle);
-                        let count = displays.len();
-                        if count != prev_count {
-                            prev_count = count;
-                            log::info!("Display configuration changed: {} monitors", count);
-
-                            // Check if selected display is still connected
-                            let display_id = cfg_store.get().display_id;
-                            if display_id != "primary"
-                                && !displays.iter().any(|d| d.name == display_id)
-                            {
-                                log::warn!(
-                                    "Selected display '{}' disconnected, falling back to primary",
-                                    display_id
-                                );
-                            }
-
-                            // Emit event so frontend can react
-                            let _ = app_handle.emit("display-changed", &displays);
-                        }
-                    }
-                });
-            }
-
-            // ── Background: cursor hot-zone detection ─────────────────
-            start_cursor_hotzone_poller(app.handle().clone());
-
-            // ── Background: fullscreen detection ────────────────────
-            {
-                let app_handle = app.handle().clone();
-                let cfg_store = config_store.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut was_fullscreen = false;
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                        let cfg = cfg_store.get();
-                        if !cfg.hide_in_fullscreen {
-                            if was_fullscreen {
-                                // Config changed — restore opacity
-                                if let Some(w) = app_handle.get_webview_window("notch") {
-                                    set_window_alpha(&w, 1.0);
-                                }
-                                was_fullscreen = false;
-                            }
-                            continue;
-                        }
-
-                        let is_fs = platform::fullscreen::check_fullscreen();
-                        if is_fs != was_fullscreen {
-                            was_fullscreen = is_fs;
-                            // Emit event so frontend can also react
-                            let _ = app_handle.emit("fullscreen-changed", is_fs);
-                            if let Some(w) = app_handle.get_webview_window("notch") {
-                                let opacity = if is_fs { 0.0 } else { 1.0 };
-                                set_window_alpha(&w, opacity);
-                                log::info!(
-                                    "Fullscreen {}: notch opacity -> {}",
-                                    if is_fs { "entered" } else { "exited" },
-                                    if is_fs { 0.0 } else { 1.0 }
-                                );
-                            }
-                        }
-                    }
-                });
-            }
-
-            // ── Background: focused terminal detection ───────────────
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let output = tokio::process::Command::new("osascript")
-                            .args(["-e", "tell application \"System Events\" to get name of first process whose frontmost is true"])
-                            .output()
-                            .await;
-                        if let Ok(output) = output {
-                            let app_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                            let is_terminal = matches!(app_name.as_str(),
-                                "iTerm2" | "Terminal" | "Ghostty" | "kitty" | "WezTerm" | "Alacritty" | "tmux");
-                            if is_terminal {
-                                let _ = app_handle.emit("focused-terminal-changed", &app_name);
-                            }
-                        }
-                    }
-                });
             }
 
             // Build system tray icon with menu
@@ -983,41 +1879,45 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::new()
                 .menu(&tray_menu)
-                .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
-                    tauri::image::Image::new(&[], 0, 0)
-                }))
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .unwrap_or_else(|| tauri::image::Image::new(&[], 0, 0)),
+                )
                 .icon_as_template(true)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("notch") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("notch") {
+                            let _ = window.show();
+                            configure_notch_window_for_spaces(app);
+                            let _ = window.set_focus();
                         }
-                        "settings" => {
-                            if let Some(window) = app.get_webview_window("settings") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "quit" => {
-                            std::process::exit(0);
-                        }
-                        _ => {}
                     }
+                    "settings" => {
+                        if let Some(window) = app.get_webview_window("settings") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        std::process::exit(0);
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 
             // Start conversation file watcher (watches projects dirs for JSONL changes)
             let extra_roots: Vec<std::path::PathBuf> = {
                 let config = config_store.get();
-                config.engine_instances.iter()
+                config
+                    .engine_instances
+                    .iter()
                     .filter(|i| i.enabled)
                     .map(|i| agents::claude_code::expand_tilde(&i.config_root))
                     .collect()
             };
-            let conversation_watcher = ConversationWatcher::start_with_roots(app.handle().clone(), &extra_roots);
+            let conversation_watcher =
+                ConversationWatcher::start_with_roots(app.handle().clone(), &extra_roots);
             if conversation_watcher.is_some() {
                 log::info!("Conversation watcher started");
             }
@@ -1025,7 +1925,8 @@ pub fn run() {
 
             // Store shared state for Tauri commands
             // Initialize display controller
-            let display_controller = Arc::new(platform::display_controller::DisplayController::new());
+            let display_controller =
+                Arc::new(platform::display_controller::DisplayController::new());
             display_controller.set_app_handle(app.handle().clone());
 
             // Initialize remote manager with persisted hosts
@@ -1061,24 +1962,8 @@ pub fn run() {
             };
             app.manage(app_state);
 
-            // Register global shortcut from config
-            {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let app_state = app.state::<AppState>();
-                let shortcut_str = app_state.config_store.get().global_shortcut.clone();
-                if !shortcut_str.is_empty() {
-                    let app_handle = app.handle().clone();
-                    let _ = app.global_shortcut().on_shortcut(shortcut_str.as_str(), move |_app, _sc, _event| {
-                        if let Some(window) = app_handle.get_webview_window("notch") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                    });
-                }
+            if let Err(err) = register_island_global_shortcuts(app.handle()) {
+                log::warn!("Failed to register island global shortcuts: {}", err);
             }
 
             log::info!("AgentBro started");
@@ -1089,10 +1974,14 @@ pub fn run() {
             commands::get_sessions,
             commands::respond_permission,
             commands::respond_auto_approve,
+            commands::respond_question,
+            commands::respond_plan,
             commands::send_message,
             commands::jump_to_terminal,
             commands::get_config,
             commands::update_config,
+            commands::set_island_feature_flags,
+            commands::set_island_surface_options,
             commands::install_hooks,
             commands::remove_hooks,
             commands::get_adapter_status,
@@ -1102,18 +1991,36 @@ pub fn run() {
             commands::activate_license,
             commands::deactivate_license,
             commands::get_chat_history,
+            commands::get_subagent_chat_history,
             commands::export_diagnostics,
             commands::add_engine_instance,
             commands::remove_engine_instance,
+            commands::set_engine_instance_enabled,
             commands::verify_engine_path,
             resize_notch,
             play_sound,
             set_sound_volume,
             set_sound_enabled,
+            set_sound_pack,
+            set_probe_session_filter,
+            set_sound_quiet_hours,
+            set_sound_event_enabled,
+            set_sound_event_rule,
+            import_custom_sound,
+            set_custom_sounds,
             set_notch_opacity,
             list_displays,
+            set_display_id,
+            reposition_notch,
+            preview_island_layout,
+            clear_island_layout_preview,
+            start_notch_drag,
+            end_notch_drag,
+            start_pet_drag,
+            end_pet_drag,
             should_suppress,
             get_cursor_position,
+            is_cursor_over_notch,
             save_sessions,
             load_sessions,
             get_themes,
@@ -1135,6 +2042,7 @@ pub fn run() {
             disconnect_remote,
             install_remote_hooks,
             get_remote_status,
+            list_ssh_config_hosts,
             list_webhooks,
             add_webhook,
             remove_webhook,
@@ -1146,8 +2054,10 @@ pub fn run() {
             validate_path,
             register_global_shortcut,
             unregister_global_shortcut,
+            set_global_action_shortcuts,
             perform_haptic,
             set_notch_focusable,
+            open_image,
             list_themes,
             get_active_theme_bundle,
             import_theme,
@@ -1162,6 +2072,7 @@ pub fn run() {
             create_pack_cmd,
             update_pack_cmd,
             delete_pack_cmd,
+            apply_pack_cmd,
             configure_sync_cmd,
             push_sync_cmd,
             pull_sync_cmd,
@@ -1170,6 +2081,13 @@ pub fn run() {
             export_backup_cmd,
             import_backup_cmd,
             get_registry_metadata,
+            agents::programs::agent_list,
+            agents::programs::agent_refresh,
+            agents::programs::agent_install,
+            agents::programs::agent_update,
+            agents::programs::agent_uninstall,
+            agents::programs::agent_open_download,
+            agents::programs::agent_open_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");

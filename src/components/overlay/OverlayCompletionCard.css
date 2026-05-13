@@ -1,20 +1,64 @@
 .overlay-completion__body {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
 .overlay-completion__icon {
   flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .overlay-completion__summary {
+  min-width: 0;
+  max-height: 92px;
+  overflow: auto;
   font-size: 12px;
-  color: var(--vi-text-primary, #fff);
+  color: var(--island-text);
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  scrollbar-width: none;
+}
+
+.overlay-completion__summary::-webkit-scrollbar {
+  display: none;
+}
+
+.overlay-completion__summary p,
+.overlay-completion__summary ul,
+.overlay-completion__summary ol {
+  margin: 0 0 6px;
+}
+
+.overlay-completion__summary p:last-child,
+.overlay-completion__summary ul:last-child,
+.overlay-completion__summary ol:last-child {
+  margin-bottom: 0;
+}
+
+.overlay-completion__summary ul,
+.overlay-completion__summary ol {
+  padding-left: 16px;
+}
+
+.overlay-completion__summary code {
+  border-radius: 4px;
+  background: var(--island-subtle);
+  color: var(--island-text);
+  font-size: 10px;
+  padding: 1px 4px;
+}
+
+.overlay-completion__summary pre {
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--island-subtle);
+  padding: 6px;
+}
+
+.overlay-completion__summary pre code {
+  background: transparent;
+  padding: 0;
 }
 
 .overlay-completion__progress {
@@ -26,7 +70,19 @@
 
 .overlay-completion__progress-bar {
   height: 100%;
-  background: #30D158;
+  width: 100%;
+  background: #22c55e;
   border-radius: 1px;
-  transition: width 0.1s linear;
+  transform-origin: left center;
+  animation: overlay-completion-countdown linear forwards;
+}
+
+.overlay-completion__timer:hover .overlay-completion__progress-bar {
+  animation-play-state: paused;
+}
+
+@keyframes overlay-completion-countdown {
+  to {
+    transform: scaleX(0);
+  }
 }

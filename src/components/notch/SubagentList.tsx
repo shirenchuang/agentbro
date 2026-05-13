@@ -7,9 +7,10 @@ import './SubagentList.css'
 
 interface SubagentListProps {
   subagents: SubagentInfo[]
+  onOpenHistory?: (subagent: SubagentInfo) => void
 }
 
-export function SubagentList({ subagents }: SubagentListProps) {
+export function SubagentList({ subagents, onOpenHistory }: SubagentListProps) {
   const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
 
@@ -39,7 +40,7 @@ export function SubagentList({ subagents }: SubagentListProps) {
       {!collapsed && (
         <div className="subagent-list__items">
           {subagents.map((agent) => (
-            <SubagentRow key={agent.agentId} agent={agent} />
+            <SubagentRow key={agent.agentId} agent={agent} onOpenHistory={onOpenHistory} />
           ))}
         </div>
       )}
@@ -47,18 +48,29 @@ export function SubagentList({ subagents }: SubagentListProps) {
   )
 }
 
-function SubagentRow({ agent }: { agent: SubagentInfo }) {
+function SubagentRow({ agent, onOpenHistory }: { agent: SubagentInfo; onOpenHistory?: (subagent: SubagentInfo) => void }) {
   const phaseForDot = agent.status === 'running' ? 'processing'
     : agent.status === 'completed' ? 'done'
     : 'error'
 
   const lastTool = agent.tools.length > 0 ? agent.tools[agent.tools.length - 1] : null
+  const canOpenHistory = Boolean(agent.agentTranscriptPath && onOpenHistory)
+  const title = agent.agentType
+    ? `${agent.agentType}: ${agent.description || agent.agentId.slice(0, 8)}`
+    : agent.description || `Agent ${agent.agentId.slice(0, 8)}`
+  const summary = agent.status !== 'running' ? agent.lastAssistantMessage : null
 
   return (
-    <div className="subagent-row">
+    <button
+      className={`subagent-row${canOpenHistory ? ' subagent-row--button' : ''}`}
+      type="button"
+      onClick={() => canOpenHistory && onOpenHistory?.(agent)}
+      disabled={!canOpenHistory}
+      title={canOpenHistory ? 'Open subagent history' : undefined}
+    >
       <StatusDot phase={phaseForDot} size={6} />
       <span className="subagent-row__desc">
-        {agent.description || `Agent ${agent.agentId.slice(0, 8)}`}
+        {summary || title}
       </span>
       {agent.status === 'running' && lastTool && (
         <span className="subagent-row__tool">
@@ -66,6 +78,9 @@ function SubagentRow({ agent }: { agent: SubagentInfo }) {
           {lastTool}
         </span>
       )}
-    </div>
+      {agent.status === 'completed' && agent.agentTranscriptPath && (
+        <span className="subagent-row__history">历史</span>
+      )}
+    </button>
   )
 }
