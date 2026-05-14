@@ -143,6 +143,34 @@ fn is_codex_desktop_session(session: &SessionState) -> bool {
         && (session.tty.is_none() || session.terminal.to_ascii_lowercase().contains("codex"))
 }
 
+fn open_codex_desktop_session(session_id: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Codex Desktop session jumping is only supported on macOS".to_string());
+    }
+
+    let opened_thread = std::process::Command::new("/usr/bin/open")
+        .arg(format!("codex://threads/{}", session_id))
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if opened_thread {
+        return Ok(());
+    }
+
+    let opened_app = std::process::Command::new("/usr/bin/open")
+        .args(["-a", "Codex"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if opened_app {
+        Ok(())
+    } else {
+        Err("Failed to activate Codex Desktop".to_string())
+    }
+}
+
 fn send_message_to_codex_desktop(session_id: &str, message: &str) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         return Err("Codex Desktop message sending is only supported on macOS".to_string());
@@ -343,6 +371,19 @@ pub async fn jump_to_terminal(
         .session_store
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
+
+    if is_codex_desktop_session(&session) {
+        match open_codex_desktop_session(&session.id) {
+            Ok(()) => return Ok(()),
+            Err(err) if session.pid.is_some() || session.tty.is_some() => {
+                log::warn!(
+                    "Codex Desktop jump failed, falling back to terminal: {}",
+                    err
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
 
     let pid = session.pid.unwrap_or(0);
     if pid == 0 && session.tty.as_deref().unwrap_or("").is_empty() {

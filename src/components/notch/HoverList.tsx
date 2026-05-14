@@ -124,6 +124,10 @@ function formatCacheTtl(session: SessionState): string | null {
   return `cache ${minutes}m`
 }
 
+function isCodexDesktopSession(session: SessionState): boolean {
+  return session.agentType === 'codex' && (!session.tty || session.terminal.toLowerCase().includes('codex'))
+}
+
 /* ── Subagent Row ── */
 function SubagentRow({ subagents }: { subagents: SubagentInfo[] }) {
   if (subagents.length === 0) return null
@@ -327,7 +331,7 @@ function SessionCard({
   const showInlinePermission = !isAlertActive && !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
-  const canJumpToTerminal = Boolean(session.pid || session.tty)
+  const canJumpToTerminal = Boolean(session.pid || session.tty || isCodexDesktopSession(session))
   const handleOpen = () => onSessionClick(session.id)
   const shouldIgnoreOpen = (target: EventTarget | null): boolean => {
     return target instanceof Element && Boolean(

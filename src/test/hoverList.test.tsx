@@ -71,7 +71,7 @@ describe('HoverList interactions', () => {
     const onJumpToTerminal = vi.fn()
     render(
       <HoverList
-        sessions={[session({ pid: undefined, tty: undefined })]}
+        sessions={[session({ agentType: 'claude-code', pid: undefined, tty: undefined })]}
         onSessionClick={onSessionClick}
         onJumpToTerminal={onJumpToTerminal}
       />,
@@ -80,6 +80,23 @@ describe('HoverList interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: '等待终端信息' }))
 
     expect(onJumpToTerminal).not.toHaveBeenCalled()
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('allows Codex Desktop sessions without terminal metadata to jump', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({ pid: undefined, tty: undefined, terminal: 'Codex' })]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'notch.jumpToTerminal' }))
+
+    expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
