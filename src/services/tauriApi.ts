@@ -660,9 +660,13 @@ export interface DetectedTool {
 }
 
 export interface HookStatus {
+  toolId?: string
+  adapterId?: string
   name: string
   displayName: string
   installed: boolean
+  installStatus?: 'installed' | 'not_installed' | 'error' | string
+  configPath?: string
   status: string
 }
 

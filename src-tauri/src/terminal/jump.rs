@@ -171,6 +171,22 @@ pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
     }
 }
 
+/// Best-effort jump when a session does not have enough metadata for tab-level targeting.
+/// This intentionally activates the terminal app instead of failing the user action outright.
+pub fn jump_to_terminal_app(terminal_name: &str) -> JumpResult {
+    let trimmed = terminal_name.trim();
+    if trimmed.is_empty() {
+        return JumpResult::TerminalNotFound;
+    }
+
+    let normalized = normalized_app_name(trimmed);
+    if let Some(app_name) = registry::applescript_app_name(normalized) {
+        return jump_via_applescript(app_name);
+    }
+
+    jump_via_app_activation(normalized)
+}
+
 // ─── iTerm2 ──────────────────────────────────────────────────────────────────
 
 fn jump_iterm_by_session(session_id: &str) -> JumpResult {
@@ -543,6 +559,28 @@ fn activate_app(app_name: &str) -> Result<(), String> {
     }
 }
 
+fn normalized_app_name(name: &str) -> &str {
+    let lower = name.to_ascii_lowercase();
+
+    if lower.contains("iterm") {
+        "iTerm2"
+    } else if lower.contains("ghostty") {
+        "Ghostty"
+    } else if lower.contains("wezterm") || lower.contains("wez") {
+        "WezTerm"
+    } else if lower.contains("kitty") {
+        "kitty"
+    } else if lower.contains("warp") {
+        "Warp"
+    } else if lower.contains("alacritty") {
+        "Alacritty"
+    } else if lower.contains("terminal") && !lower.contains("ghostty") {
+        "Terminal"
+    } else {
+        name
+    }
+}
+
 /// Find which terminal app owns a given TTY device using lsof
 fn find_terminal_app_for_tty(tty: &str) -> Option<String> {
     let tty_path = tty_to_dev_path(tty);
@@ -587,5 +625,19 @@ fn tty_to_dev_path(tty: &str) -> String {
         tty.to_string()
     } else {
         format!("/dev/tty{}", tty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_app_name;
+
+    #[test]
+    fn normalizes_session_terminal_labels_for_app_activation() {
+        assert_eq!(normalized_app_name("iTerm·tmux"), "iTerm2");
+        assert_eq!(normalized_app_name("Apple Terminal"), "Terminal");
+        assert_eq!(normalized_app_name("WezTerm CLI"), "WezTerm");
+        assert_eq!(normalized_app_name("Ghostty"), "Ghostty");
+        assert_eq!(normalized_app_name("custom-term"), "custom-term");
     }
 }

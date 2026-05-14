@@ -32,16 +32,12 @@
         "label": "settings",
         "title": "AgentBro Settings",
         "visible": false,
-        "width": 960,
-        "height": 680,
+        "width": 1280,
+        "height": 840,
         "center": true,
         "backgroundColor": "#00000000"
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
-    },
     "security": {
       "csp": null
     }

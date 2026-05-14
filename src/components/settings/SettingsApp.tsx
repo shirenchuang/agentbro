@@ -6,16 +6,13 @@ import { SettingsSidebar } from './SettingsSidebar'
 import { GeneralSection } from './sections/GeneralSection'
 import { IslandSection } from './sections/IslandSection'
 import { AgentsSection } from './sections/AgentsSection'
-import { SkillsSection } from './sections/SkillsSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
+import type { CapabilityView, IslandSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
-  'island': IslandSection,
-  'agents': AgentsSection,
-  'skills': SkillsSection,
   'license': LicenseSection,
   'about': AboutSection,
 }
@@ -27,11 +24,27 @@ interface SettingsAppProps {
 export function SettingsApp({ onClose }: SettingsAppProps) {
   const { t } = useTranslation()
   const [activeSection, setActiveSection] = useState('general')
+  const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
+  const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
+  const [customAgentDialogOpen, setCustomAgentDialogOpen] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
+  const openCustomAgentDialog = () => {
+    setActiveSection('agents')
+    setActiveCapabilityView('agent')
+    setCustomAgentDialogOpen(true)
+  }
 
   return (
     <div className="settings-app">
-      <SettingsSidebar activeSection={activeSection} onSelect={setActiveSection} />
+      <SettingsSidebar
+        activeSection={activeSection}
+        activeCapabilityView={activeCapabilityView}
+        activeIslandView={activeIslandView}
+        onSelect={setActiveSection}
+        onCapabilityViewChange={setActiveCapabilityView}
+        onIslandViewChange={setActiveIslandView}
+        onAddCustomAgent={openCustomAgentDialog}
+      />
       <div className="settings-content settings-scroll">
         <button
           className="settings-close-btn"
@@ -47,7 +60,18 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.15 }}
           >
-            <SectionComponent />
+            {activeSection === 'island' ? (
+              <IslandSection activeView={activeIslandView} />
+            ) : activeSection === 'agents' ? (
+              <AgentsSection
+                activeView={activeCapabilityView}
+                onViewChange={setActiveCapabilityView}
+                customAgentDialogOpen={customAgentDialogOpen}
+                onCustomAgentDialogOpenChange={setCustomAgentDialogOpen}
+              />
+            ) : (
+              <SectionComponent />
+            )}
           </motion.div>
         </AnimatePresence>
       </div>

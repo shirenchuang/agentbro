@@ -24,8 +24,7 @@ import { Toggle } from '../Toggle'
 import { Dropdown } from '../Dropdown'
 import { Slider } from '../Slider'
 import { GlassButton, GlassInput } from '../../shared'
-
-type IslandTab = 'overview' | 'display' | 'sound' | 'shortcuts' | 'integration' | 'advanced'
+import type { IslandSettingsView } from '../../../types/capability'
 
 function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInfo[]): string {
   if (value === 'primary' || value === 'auto' || !value) return value
@@ -34,7 +33,7 @@ function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInf
   return display.isPrimary ? 'primary' : display.id
 }
 
-type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled' | 'followFocus'
+type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled'
 
 function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boolean>>) {
   const state = useConfigStore.getState()
@@ -42,7 +41,7 @@ function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boole
     tipsEnabled: next.tipsEnabled ?? state.tipsEnabled,
     pixelCursorEnabled: next.pixelCursorEnabled ?? state.pixelCursorEnabled,
     confettiEnabled: next.confettiEnabled ?? state.confettiEnabled,
-    followFocus: next.followFocus ?? state.followFocus,
+    followFocus: false,
   }).catch((err) => console.error('Failed to persist island feature flags:', err))
 }
 
@@ -52,6 +51,68 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
     islandSurfaceMode: next.islandSurfaceMode ?? state.islandSurfaceMode,
     islandPetScale: next.islandPetScale ?? state.islandPetScale,
   }).catch((err) => console.error('Failed to persist island surface options:', err))
+}
+
+function SurfaceModeSegmentedControl({
+  onChange,
+  value,
+}: {
+  value: 'island' | 'pet'
+  onChange: (value: 'island' | 'pet') => void
+}) {
+  const { t } = useTranslation()
+  const options = [
+    { value: 'island' as const, label: t('settings.surfaceIsland', { defaultValue: '灵动岛' }) },
+    { value: 'pet' as const, label: t('settings.surfacePet', { defaultValue: '宠物' }) },
+  ]
+
+  return (
+    <div className="surface-mode-segmented" role="radiogroup" aria-label={t('settings.islandSurfaceMode', { defaultValue: '展示模式' })}>
+      {options.map((option) => (
+        <button
+          aria-checked={value === option.value}
+          className={`surface-mode-segmented__option ${value === option.value ? 'surface-mode-segmented__option--active' : ''}`}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+          role="radio"
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function InteractionModeSegmentedControl({
+  onChange,
+  value,
+}: {
+  value: 'persistent' | 'minimal'
+  onChange: (value: 'persistent' | 'minimal') => void
+}) {
+  const { t } = useTranslation()
+  const options = [
+    { value: 'minimal' as const, label: t('settings.interactionMinimal') },
+    { value: 'persistent' as const, label: t('settings.interactionPersistent') },
+  ]
+
+  return (
+    <div className="interaction-mode-segmented" role="radiogroup" aria-label={t('settings.interactionMode')}>
+      {options.map((option) => (
+        <button
+          aria-checked={value === option.value}
+          className={`interaction-mode-segmented__option ${value === option.value ? 'interaction-mode-segmented__option--active' : ''}`}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+          role="radio"
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 // ── Shortcuts helpers ──
@@ -142,10 +203,13 @@ function ShortcutRow({ action, label, keys }: { action: string; label: string; k
 
 // ── Hook helpers ──
 interface ToolHookStatus {
-  toolId: string
+  toolId?: string
   name: string
-  installStatus: 'installed' | 'not_installed' | 'error'
-  configPath: string
+  displayName?: string
+  installed?: boolean
+  installStatus?: 'installed' | 'not_installed' | 'error'
+  configPath?: string
+  status?: string
   version?: string
 }
 
@@ -154,6 +218,15 @@ const TOOL_ICONS: Record<string, string> = {
   'copilot': '🔷', 'trae': '🩵', 'qoder': '🟡', 'codebuddy': '🔴',
   'qwen': '🟣', 'kimi': '🌸', 'opencode': '🌿', 'droid': '🤖',
   'kiro': '🔵', 'aider': '💚', 'continue': '🔵', 'amp': '🟠',
+}
+
+function hookToolId(tool: ToolHookStatus) {
+  return tool.toolId || tool.name
+}
+
+function hookInstallStatus(tool: ToolHookStatus): 'installed' | 'not_installed' | 'error' {
+  if (tool.installStatus) return tool.installStatus
+  return tool.installed ? 'installed' : 'not_installed'
 }
 
 // ── Webhook helpers ──
@@ -312,40 +385,22 @@ function EngineInstanceAdder({ onAdd }: { onAdd: (inst: EngineInstance) => void 
 // Main IslandSection
 // ═══════════════════════════════════════════════
 
-export function IslandSection() {
-  const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useState<IslandTab>('overview')
+interface IslandSectionProps {
+  activeView: IslandSettingsView
+}
 
-  const tabs: { id: IslandTab; labelKey: string; icon: string }[] = [
-    { id: 'overview', labelKey: 'settings.island.tabs.overview', icon: '✧' },
-    { id: 'display', labelKey: 'settings.island.tabs.display', icon: '◎' },
-    { id: 'sound', labelKey: 'settings.island.tabs.sound', icon: '⌁' },
-    { id: 'shortcuts', labelKey: 'settings.island.tabs.shortcuts', icon: '⌘' },
-    { id: 'integration', labelKey: 'settings.island.tabs.integration', icon: '◌' },
-    { id: 'advanced', labelKey: 'settings.island.tabs.advanced', icon: '⌁' },
-  ]
+export function IslandSection({ activeView }: IslandSectionProps) {
+  const { t } = useTranslation()
 
   return (
-    <SettingSection title={t('settings.island.title')} description={t('settings.island.desc')}>
-      <div className="island-tabs">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`island-tab ${activeTab === tab.id ? 'island-tab--active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span className="island-tab__icon" aria-hidden="true">{tab.icon}</span>
-            {t(tab.labelKey)}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'overview' && <OverviewTab />}
-      {activeTab === 'display' && <DisplayTab />}
-      {activeTab === 'sound' && <SoundTab />}
-      {activeTab === 'shortcuts' && <ShortcutsTab />}
-      {activeTab === 'integration' && <IntegrationTab />}
-      {activeTab === 'advanced' && <AdvancedTab />}
+    <SettingSection className="setting-section--compact island-settings-section" title={t('settings.island.title')} description={t('settings.island.desc')}>
+      {activeView === 'overview' && <OverviewTab />}
+      {activeView === 'display' && <DisplayTab />}
+      {activeView === 'behavior' && <BehaviorTab />}
+      {activeView === 'integration' && <IntegrationTab />}
+      {activeView === 'notify' && <SoundTab />}
+      {activeView === 'keys' && <ShortcutsTab />}
+      {activeView === 'advanced' && <AdvancedTab />}
     </SettingSection>
   )
 }
@@ -354,48 +409,6 @@ export function IslandSection() {
 function OverviewTab() {
   const { t } = useTranslation()
   const config = useConfigStore()
-  const [displays, setDisplays] = useState<BackendDisplayInfo[]>([])
-
-  useEffect(() => {
-    listDisplays().then(setDisplays)
-    if (!isTauri()) return
-    let unlisten: (() => void) | undefined
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<BackendDisplayInfo[]>('display-changed', (e) => { setDisplays(e.payload) }).then((fn) => { unlisten = fn })
-    })
-    return () => { unlisten?.() }
-  }, [])
-
-  const monitorOptions = [
-    { value: 'primary', label: t('settings.mainDisplay') },
-    { value: 'auto', label: t('settings.autoFollowFocus') },
-    ...displays
-      .filter((d) => !d.isPrimary)
-      .map((d) => ({ value: d.id, label: d.label })),
-  ]
-  const displayMonitorValue = normalizeDisplayMonitorValue(config.displayMonitor, displays)
-
-  const idleTimeoutOptions = [
-    { value: '0', label: t('settings.idleTimeoutDisabled') },
-    { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
-    { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
-    { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
-    { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
-  ]
-
-  const defaultMascotOptions = [
-    { value: 'claude-code', label: 'Claude Code' },
-    { value: 'codex', label: 'Codex' },
-    { value: 'gemini-cli', label: 'Gemini CLI' },
-    { value: 'cursor', label: 'Cursor' },
-    { value: 'copilot', label: 'GitHub Copilot' },
-  ]
-
-  const pluginSessionOptions = [
-    { value: 'separate', label: t('settings.pluginSessionSeparate') },
-    { value: 'merge', label: t('settings.pluginSessionMerge') },
-    { value: 'hide', label: t('settings.pluginSessionHide') },
-  ]
 
   const resetIslandDefaults = () => {
     config.resetIslandDefaults()
@@ -433,7 +446,11 @@ function OverviewTab() {
           <button
             className={`overview-mode-card ${config.interactionMode === 'minimal' ? 'overview-mode-card--active' : ''}`}
             type="button"
-            onClick={() => config.updateConfig('interactionMode', 'minimal')}
+            onClick={() => {
+              config.updateConfig('interactionMode', 'minimal')
+              config.updateConfig('smartSuppression', true)
+              config.updateConfig('autoHideNoSessions', true)
+            }}
           >
             <span className="overview-mode-card__island" />
             <strong>{t('settings.island.overview.quietAssistant', { defaultValue: 'Quiet Assistant' })}</strong>
@@ -442,7 +459,11 @@ function OverviewTab() {
           <button
             className={`overview-mode-card ${config.interactionMode === 'persistent' ? 'overview-mode-card--active' : ''}`}
             type="button"
-            onClick={() => config.updateConfig('interactionMode', 'persistent')}
+            onClick={() => {
+              config.updateConfig('interactionMode', 'persistent')
+              config.updateConfig('smartSuppression', true)
+              config.updateConfig('autoHideNoSessions', false)
+            }}
           >
             <span className="overview-mode-card__island" />
             <strong>{t('settings.island.overview.persistentMonitor', { defaultValue: 'Persistent Monitor' })}</strong>
@@ -453,7 +474,7 @@ function OverviewTab() {
 
       <div className="overview-section-heading">
         <h3>{t('settings.island.overview.coreSwitches', { defaultValue: 'Core Switches' })}</h3>
-        <p>{t('settings.island.overview.coreSwitchesDesc', { defaultValue: 'Primary controls for visibility, focus behavior, suppression, mascots, and plugin sessions.' })}</p>
+        <p>{t('settings.island.overview.coreSwitchesDesc', { defaultValue: 'Primary controls for visibility, suppression, mascots, and plugin sessions.' })}</p>
       </div>
 
       <SettingGroup>
@@ -465,20 +486,20 @@ function OverviewTab() {
       </SettingGroup>
 
       <SettingGroup>
-        <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
-          <Dropdown value={displayMonitorValue} options={monitorOptions}
-            onChange={(v) => {
-              config.updateConfig('displayMonitor', v)
-              setDisplayId(v)
-                .then(() => repositionNotch(v))
-                .catch((e) => console.error('Failed to set display:', e))
-            }} minWidth={160} />
-        </SettingRow>
-        <SettingRow label={t('settings.followFocus')} description={t('settings.followFocusDesc')}>
-          <Toggle checked={config.followFocus} onChange={(v) => {
-            config.updateConfig('followFocus', v)
-            persistIslandFeatureFlags({ followFocus: v })
+        <SettingRow label={t('settings.islandEnabled', { defaultValue: 'Enable Island' })} description={t('settings.islandEnabledDesc', { defaultValue: 'Show AgentBro status, approvals, questions, and completions in the floating island.' })}>
+          <Toggle checked={config.islandEnabled} onChange={(v) => {
+            config.updateConfig('islandEnabled', v)
+            if (v) {
+              config.updateConfig('interactionMode', 'persistent')
+              config.updateConfig('autoHideNoSessions', false)
+            }
           }} />
+        </SettingRow>
+        <SettingRow label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })} description={t('settings.islandExternalEnabledDesc', { defaultValue: 'Track supported AI CLI sessions through installed hooks.' })}>
+          <Toggle checked={config.islandExternalEnabled} onChange={(v) => config.updateConfig('islandExternalEnabled', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.islandMonitorSubagents', { defaultValue: 'Monitor subagents' })} description={t('settings.islandMonitorSubagentsDesc', { defaultValue: 'Surface subagent activity and completion history in the island.' })}>
+          <Toggle checked={config.islandMonitorSubagents} onChange={(v) => config.updateConfig('islandMonitorSubagents', v)} />
         </SettingRow>
         <SettingRow label={t('settings.smartSuppression')} description={t('settings.smartSuppressionDesc')}>
           <Toggle checked={config.smartSuppression} onChange={(v) => config.updateConfig('smartSuppression', v)} />
@@ -486,6 +507,87 @@ function OverviewTab() {
         <SettingRow label={t('settings.autoCollapse')} description={t('settings.autoCollapseDesc')}>
           <Toggle checked={config.autoCollapse} onChange={(v) => config.updateConfig('autoCollapse', v)} />
         </SettingRow>
+        <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
+          <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
+        </SettingRow>
+      </SettingGroup>
+    </>
+  )
+}
+
+// ── Behavior Tab ──
+function BehaviorTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
+
+  const idleTimeoutOptions = [
+    { value: '0', label: t('settings.idleTimeoutDisabled') },
+    { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
+    { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
+    { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
+    { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
+  ]
+
+  const defaultMascotOptions = [
+    { value: 'claude-code', label: 'Claude Code' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'gemini-cli', label: 'Gemini CLI' },
+    { value: 'cursor', label: 'Cursor' },
+    { value: 'copilot', label: 'GitHub Copilot' },
+  ]
+
+  const pluginSessionOptions = [
+    { value: 'separate', label: t('settings.pluginSessionSeparate') },
+    { value: 'merge', label: t('settings.pluginSessionMerge') },
+    { value: 'hide', label: t('settings.pluginSessionHide') },
+  ]
+
+  return (
+    <>
+      <SettingGroup label={t('settings.island.section.expand', { defaultValue: 'Expand' })}>
+        <SettingRow label={t('settings.hoverExpandDelay')} description={t('settings.hoverExpandDelayDesc')}>
+          <Slider value={config.hoverExpandDelay} min={0} max={1000} step={50}
+            onChange={(v) => config.updateConfig('hoverExpandDelay', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.microHoverExpandDelay')} description={t('settings.microHoverExpandDelayDesc')}>
+          <Slider value={config.microHoverExpandDelay} min={0} max={1000} step={50}
+            onChange={(v) => config.updateConfig('microHoverExpandDelay', v)} unit="ms" />
+        </SettingRow>
+        <SettingRow label={t('settings.collapseDelay')} description={t('settings.collapseDelayDesc')}>
+          <Slider value={config.collapseDelay} min={100} max={1000} step={50}
+            onChange={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.hide', { defaultValue: 'Hide and Collapse' })}>
+        <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
+          <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
+          <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
+            onChange={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
+        </SettingRow>
+        <SettingRow label={t('settings.dismissOnOutsideClick', { defaultValue: 'Dismiss on Outside Click' })} description={t('settings.dismissOnOutsideClickDesc', { defaultValue: 'Close expanded island panels when clicking outside the panel.' })}>
+          <Toggle checked={config.dismissOnOutsideClick} onChange={(v) => config.updateConfig('dismissOnOutsideClick', v)} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.dwell', { defaultValue: 'Dwell Time' })}>
+        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
+          <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
+            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
+        </SettingRow>
+        <SettingRow label={t('settings.taskCompleteDwell')} description={t('settings.taskCompleteDwellDesc')}>
+          <Slider value={config.taskCompleteDwellSeconds} min={1} max={30} step={1}
+            onChange={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
+        </SettingRow>
+        <SettingRow label={t('settings.escSilenceDuration')} description={t('settings.escSilenceDurationDesc')}>
+          <Slider value={config.escSilenceDuration} min={10} max={300} step={10}
+            onChange={(v) => config.updateConfig('escSilenceDuration', v)} unit="s" />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.sessionHandling', { defaultValue: 'Session Handling' })}>
         <SettingRow label={t('settings.defaultMascot')} description={t('settings.defaultMascotDesc')}>
           <Dropdown value={config.defaultMascotSource} options={defaultMascotOptions}
             onChange={(v) => config.updateConfig('defaultMascotSource', v)} minWidth={150} />
@@ -497,13 +599,6 @@ function OverviewTab() {
             onChange={(v) => config.updateConfig('pluginSessionMode', v as 'separate' | 'merge' | 'hide')}
             minWidth={140}
           />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.island.overview.timing')}>
-        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
-          <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
-            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
         </SettingRow>
         <SettingRow label={t('settings.carouselInterval')} description={t('settings.carouselIntervalDesc')}>
           <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
@@ -517,75 +612,6 @@ function OverviewTab() {
           <Slider value={config.sessionTimeoutMinutes} min={5} max={120} step={5}
             onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
         </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.islandInteraction')}>
-        <SettingRow label={t('settings.interactionMode')} description={t('settings.interactionModeDesc')}>
-          <Dropdown value={config.interactionMode}
-            options={[
-              { value: 'minimal', label: t('settings.interactionMinimal') },
-              { value: 'persistent', label: t('settings.interactionPersistent') },
-            ]}
-            onChange={(v) => config.updateConfig('interactionMode', v as 'persistent' | 'minimal')} minWidth={150} />
-        </SettingRow>
-        <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
-          <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
-            onChange={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
-        </SettingRow>
-        <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
-          <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.taskCompleteDwell')} description={t('settings.taskCompleteDwellDesc')}>
-          <Slider value={config.taskCompleteDwellSeconds} min={1} max={30} step={1}
-            onChange={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
-        </SettingRow>
-        <SettingRow label={t('settings.escSilenceDuration')} description={t('settings.escSilenceDurationDesc')}>
-          <Slider value={config.escSilenceDuration} min={10} max={300} step={10}
-            onChange={(v) => config.updateConfig('escSilenceDuration', v)} unit="s" />
-        </SettingRow>
-        <SettingRow label={t('settings.hoverExpandDelay')} description={t('settings.hoverExpandDelayDesc')}>
-          <Slider value={config.hoverExpandDelay} min={0} max={1000} step={50}
-            onChange={(v) => config.updateConfig('hoverExpandDelay', v)} unit="ms" />
-        </SettingRow>
-        <SettingRow label={t('settings.microHoverExpandDelay')} description={t('settings.microHoverExpandDelayDesc')}>
-          <Slider value={config.microHoverExpandDelay} min={0} max={1000} step={50}
-            onChange={(v) => config.updateConfig('microHoverExpandDelay', v)} unit="ms" />
-        </SettingRow>
-        <SettingRow label={t('settings.collapseDelay')} description={t('settings.collapseDelayDesc')}>
-          <Slider value={config.collapseDelay} min={100} max={1000} step={50}
-            onChange={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
-        </SettingRow>
-        <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
-          <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.tipsEnabled')} description={t('settings.tipsEnabledDesc')}>
-          <Toggle checked={config.tipsEnabled} onChange={(v) => {
-            config.updateConfig('tipsEnabled', v)
-            persistIslandFeatureFlags({ tipsEnabled: v })
-          }} />
-        </SettingRow>
-        <SettingRow label={t('settings.hapticFeedback')} description={t('settings.hapticFeedbackDesc')}>
-          <Toggle checked={config.hapticOnHover} onChange={(v) => config.updateConfig('hapticOnHover', v)} />
-        </SettingRow>
-        {config.hapticOnHover && (
-          <SettingRow label={t('settings.hapticIntensity')} description={t('settings.hapticIntensityDesc')}>
-            <Slider
-              value={config.hapticIntensity}
-              min={1}
-              max={3}
-              step={1}
-              onChange={(v) => config.updateConfig('hapticIntensity', v)}
-            />
-          </SettingRow>
-        )}
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.experimentalFeatures')}>
-        {config.labFeatures.map((feature) => (
-          <SettingRow key={feature.id} label={feature.label} description={feature.description}>
-            <Toggle checked={feature.enabled} onChange={() => config.toggleLabFeature(feature.id)} />
-          </SettingRow>
-        ))}
       </SettingGroup>
     </>
   )
@@ -624,7 +650,6 @@ function DisplayTab() {
     clearIslandLayoutPreview().catch(() => {})
   }, [])
 
-  const costModelOptions = Object.entries(MODEL_PRICING).map(([id, m]) => ({ value: id, label: m.label }))
   const themeOptions = themes.map((th) => ({
     value: th.name,
     label: th.displayName
@@ -641,14 +666,13 @@ function DisplayTab() {
     { value: 'normal', label: t('settings.hoverSpeedNormal') },
     { value: 'slow', label: t('settings.hoverSpeedSlow') },
   ]
-  const tokenDisplayOptions = [
-    { value: 'both', label: t('settings.tokensBoth') },
-    { value: 'tokens', label: t('settings.tokensOnly') },
-    { value: 'cost', label: t('settings.costOnly') },
-    { value: 'hidden', label: t('settings.hidden') },
-  ]
   const monitorOptions = [
-    { value: 'primary', label: t('settings.mainDisplay') },
+    {
+      value: 'primary',
+      label: displays.find((d) => d.isPrimary)?.label
+        ? `${t('settings.mainDisplay')} · ${displays.find((d) => d.isPrimary)?.label}`
+        : t('settings.mainDisplay'),
+    },
     { value: 'auto', label: t('settings.autoFollowFocus') },
     ...displays
       .filter((d) => !d.isPrimary)
@@ -664,50 +688,24 @@ function DisplayTab() {
 
   return (
     <>
-      <SettingGroup label={t('settings.colorTheme')}>
-        <div className="color-theme-cards">
-          {COLOR_THEMES.map((ct) => (
-            <div key={ct.id} className={`color-theme-card ${colorTheme === ct.id ? 'color-theme-card--active' : ''}`}
-              onClick={() => setColorTheme(ct.id)}>
-              <div className="color-theme-card__preview">
-                <div className="color-theme-card__swatch" style={{ background: ct.bg }}>
-                  <div className="color-theme-card__swatch-card" style={{ background: ct.card }} />
-                  <div className="color-theme-card__swatch-dot" style={{ background: ct.accent }} />
-                </div>
-              </div>
-              <div className="color-theme-card__label">{isZh ? ct.labelZh : ct.label}</div>
-              <div className="color-theme-card__tag">{ct.tag}</div>
-            </div>
-          ))}
-        </div>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.theme', { defaultValue: 'Theme' })}>
+      <SettingGroup label={t('settings.island.section.surface', { defaultValue: '展示形态' })}>
+        <SettingRow label={t('settings.islandSurfaceMode', { defaultValue: '展示模式' })} description={t('settings.islandSurfaceModeDesc', { defaultValue: '在灵动岛和宠物状态面板之间切换。' })}>
+          <SurfaceModeSegmentedControl
+            value={config.islandSurfaceMode}
+            onChange={(mode) => {
+              config.updateConfig('islandSurfaceMode', mode)
+              config.updateConfig('islandPetWindowOrigin', null)
+              persistIslandSurfaceOptions({ islandSurfaceMode: mode })
+              previewLayout(mode === 'pet' ? 'expanded' : 'compact')
+            }}
+          />
+        </SettingRow>
         <SettingRow label={t('settings.activeTheme')} description={t('settings.activeThemeDesc')}>
           <Dropdown value={activeThemeName} options={themeOptions}
             onChange={(v) => {
               setActiveTheme(v)
               setActiveBackendTheme(v).catch((e) => console.error('Failed to persist active theme:', e))
             }} minWidth={160} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.notchLayout')}>
-        <SettingRow label={t('settings.islandSurfaceMode', { defaultValue: '展示模式' })} description={t('settings.islandSurfaceModeDesc', { defaultValue: '在灵动岛和宠物状态面板之间切换。' })}>
-          <Dropdown
-            value={config.islandSurfaceMode}
-            options={[
-              { value: 'island', label: t('settings.surfaceIsland', { defaultValue: '灵动岛' }) },
-              { value: 'pet', label: t('settings.surfacePet', { defaultValue: '宠物' }) },
-            ]}
-            onChange={(v) => {
-              const mode = v as 'island' | 'pet'
-              config.updateConfig('islandSurfaceMode', mode)
-              persistIslandSurfaceOptions({ islandSurfaceMode: mode })
-              previewLayout(mode === 'pet' ? 'expanded' : 'compact')
-            }}
-            minWidth={150}
-          />
         </SettingRow>
         {config.islandSurfaceMode === 'pet' && (
           <SettingRow label={t('settings.islandPetScale', { defaultValue: '宠物大小' })} description={`${config.islandPetScale}%`}>
@@ -725,17 +723,34 @@ function DisplayTab() {
             />
           </SettingRow>
         )}
-        <SettingRow label={t('settings.interactionMode')} description={t('settings.interactionModeDesc')}>
-          <Dropdown value={config.interactionMode}
-            options={[
-              { value: 'minimal', label: t('settings.interactionMinimal') },
-              { value: 'persistent', label: t('settings.interactionPersistent') },
-            ]}
-            onChange={(v) => {
-              config.updateConfig('interactionMode', v as 'persistent' | 'minimal')
-              previewLayout(v === 'minimal' ? 'micro' : 'compact')
-            }} minWidth={150} />
-        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.colorTheme')}>
+        <div className="color-theme-cards">
+          {COLOR_THEMES.map((ct) => (
+            <button
+              key={ct.id}
+              type="button"
+              className={`color-theme-card ${colorTheme === ct.id ? 'color-theme-card--active' : ''}`}
+              onClick={() => {
+                setColorTheme(ct.id)
+                previewLayout('compact')
+              }}
+            >
+              <div className="color-theme-card__preview">
+                <div className="color-theme-card__swatch" style={{ background: ct.bg }}>
+                  <div className="color-theme-card__swatch-card" style={{ background: ct.card }} />
+                  <div className="color-theme-card__swatch-dot" style={{ background: ct.accent }} />
+                </div>
+              </div>
+              <div className="color-theme-card__label">{isZh ? ct.labelZh : ct.label}</div>
+              <div className="color-theme-card__tag">{ct.tag}</div>
+            </button>
+          ))}
+        </div>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.displayPlacement', { defaultValue: '显示器位置' })}>
         <SettingRow label={t('settings.displayMonitor')} description={t('settings.displayMonitorDesc')}>
           <Dropdown value={displayMonitorValue} options={monitorOptions}
             onChange={(v) => {
@@ -745,6 +760,43 @@ function DisplayTab() {
                 .catch((e) => console.error('Failed to set display:', e))
             }} minWidth={180} />
         </SettingRow>
+        <SettingRow label={t('settings.allowHorizontalDrag')} description={t('settings.allowHorizontalDragDesc')}>
+          <Toggle checked={config.allowHorizontalDrag} onChange={(v) => config.updateConfig('allowHorizontalDrag', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.resetIslandPosition', { defaultValue: 'Reset Island Position' })} description={islandPositionLabel}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="settings-mini-button" type="button" onClick={() => config.updateConfig('panelHorizontalOffset', 0)}>
+              {t('settings.resetCenter', { defaultValue: 'Reset to Center' })}
+            </button>
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <div className="notch-layout-settings">
+        <div className="notch-layout-settings__header">
+          <div className="notch-layout-settings__title">{t('settings.notchLayout')}</div>
+          <div className="notch-layout-settings__hint">
+            {t('settings.layoutPreviewHint', { defaultValue: '调整时会临时预览真实灵动岛' })}
+          </div>
+        </div>
+        <div className="notch-layout-card">
+          <div className="notch-layout-row">
+            <div className="notch-layout-row__copy">
+              <div className="notch-layout-row__label">{t('settings.interactionMode')}</div>
+              <div className="notch-layout-row__description">{t('settings.interactionModeDesc')}</div>
+            </div>
+            <InteractionModeSegmentedControl
+              value={config.interactionMode}
+              onChange={(mode) => {
+                config.updateConfig('interactionMode', mode)
+                previewLayout(mode === 'minimal' ? 'micro' : 'compact')
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <SettingGroup label={t('settings.panelSize')}>
         <SettingRow label={t('settings.collapsedWidthScale')} description={`${config.collapsedWidthScale}%`}>
           <Slider value={config.collapsedWidthScale} min={50} max={150} step={5}
             onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact') }} unit="%" />
@@ -764,19 +816,6 @@ function DisplayTab() {
               onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact') }} unit="px" />
           </SettingRow>
         )}
-        <SettingRow label={t('settings.allowHorizontalDrag')} description={t('settings.allowHorizontalDragDesc')}>
-          <Toggle checked={config.allowHorizontalDrag} onChange={(v) => config.updateConfig('allowHorizontalDrag', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.resetIslandPosition', { defaultValue: 'Reset Island Position' })} description={islandPositionLabel}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button className="settings-mini-button" type="button" onClick={() => config.updateConfig('panelHorizontalOffset', 0)}>
-              {t('settings.resetCenter', { defaultValue: 'Reset to Center' })}
-            </button>
-          </div>
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.panelSize')}>
         <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Idle Pill Width' })} description={`${config.microPillWidth}px`}>
           <Slider value={config.microPillWidth} min={84} max={180} step={4}
             onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro') }} unit="px" />
@@ -807,51 +846,6 @@ function DisplayTab() {
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroup label={t('settings.tokenCostDisplay')}>
-        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
-          <Toggle checked={config.showUsageQuota} onChange={(v) => config.updateConfig('showUsageQuota', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
-          <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.tokenDisplayMode')} description={t('settings.tokenDisplayModeDesc')}>
-          <Dropdown value={config.tokenDisplayMode} options={tokenDisplayOptions}
-            onChange={(v) => config.updateConfig('tokenDisplayMode', v as 'tokens' | 'cost' | 'both' | 'hidden')} minWidth={150} />
-        </SettingRow>
-        <SettingRow label={t('settings.costModel')} description={t('settings.costModelDesc')}>
-          <Dropdown value={config.costModel} options={costModelOptions}
-            onChange={(v) => config.updateConfig('costModel', v)} minWidth={170} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup>
-        <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
-          <Slider value={config.maxVisibleSessions} min={2} max={15} step={1}
-            onChange={(v) => config.updateConfig('maxVisibleSessions', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
-          <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.aiMessageLines')} description={t('settings.aiMessageLinesDesc')}>
-          <Slider value={config.aiMessageLines} min={1} max={5} step={1}
-            onChange={(v) => config.updateConfig('aiMessageLines', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.agentActivity')} description={t('settings.agentActivityDesc')}>
-          <Toggle checked={config.showAgentActivityDetails} onChange={(v) => config.updateConfig('showAgentActivityDetails', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.pixelCursor')} description={t('settings.pixelCursorDesc')}>
-          <Toggle checked={config.pixelCursorEnabled} onChange={(v) => {
-            config.updateConfig('pixelCursorEnabled', v)
-            persistIslandFeatureFlags({ pixelCursorEnabled: v })
-          }} />
-        </SettingRow>
-        <SettingRow label={t('settings.confettiOnComplete')} description={t('settings.confettiOnCompleteDesc')}>
-          <Toggle checked={config.confettiEnabled} onChange={(v) => {
-            config.updateConfig('confettiEnabled', v)
-            persistIslandFeatureFlags({ confettiEnabled: v })
-          }} />
-        </SettingRow>
-      </SettingGroup>
     </>
   )
 }
@@ -1166,41 +1160,62 @@ function IntegrationTab() {
   }, [fetchStatus])
 
   useEffect(() => {
+    if (!config.islandExternalEnabled) return
     const timer = window.setTimeout(() => { fetchStatus() }, 0)
     return () => window.clearTimeout(timer)
-  }, [fetchStatus])
+  }, [fetchStatus, config.islandExternalEnabled])
 
   const setToolAction = (toolId: string, action: string | null) =>
     setActionLoading(prev => { const next = { ...prev }; if (action === null) delete next[toolId]; else next[toolId] = action; return next })
 
   const install = async (toolId: string) => {
     setToolAction(toolId, 'install')
-    try { await invoke('install_agent_hook', { toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    try { await invoke('install_agent_hook', { toolName: toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
     setToolAction(toolId, null)
   }
 
   const uninstall = async (toolId: string) => {
     setToolAction(toolId, 'uninstall')
-    try { await invoke('uninstall_agent_hook', { toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    try { await invoke('uninstall_agent_hook', { toolName: toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
     setToolAction(toolId, null)
   }
 
   const reinstallAll = async () => {
     setLoading(true)
-    try { for (const tool of tools.filter(t => t.installStatus === 'installed')) { await invoke('install_agent_hook', { toolId: tool.toolId }) }; await fetchStatus() }
+    try { for (const tool of tools.filter(t => hookInstallStatus(t) === 'installed')) { await invoke('install_agent_hook', { toolName: hookToolId(tool) }) }; await fetchStatus() }
     catch (e) { setError(String(e)); setLoading(false) }
   }
 
   const addCustomTool = async () => {
     if (!customToolId.trim() || !customToolPath.trim()) return
-    try { await invoke('install_agent_hook', { toolId: customToolId.trim(), configPath: customToolPath.trim() }); setCustomToolId(''); setCustomToolPath(''); setAddingCustom(false); await fetchStatus() }
+    try { await invoke('install_agent_hook', { toolName: customToolId.trim() }); setCustomToolId(''); setCustomToolPath(''); setAddingCustom(false); await fetchStatus() }
     catch (e) { setError(String(e)) }
   }
 
-  const installedCount = tools.filter(t => t.installStatus === 'installed').length
+  const installedCount = tools.filter(t => hookInstallStatus(t) === 'installed').length
+  const visibleTools = config.islandExternalEnabled ? tools : []
+  const defaultClaudeHook = config.agentHooks.find((hook) => hook.agentType === 'claude-code')
+  const defaultClaudeEnabled = defaultClaudeHook?.enabled ?? true
+
+  const toggleDefaultClaude = async (enabled: boolean) => {
+    config.toggleAgentHook('claude-code')
+    try {
+      if (enabled) await installHooks('claude-code')
+      else await removeHooks('claude-code')
+      await fetchStatus()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   return (
     <>
+      <SettingGroup label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })}>
+        <SettingRow label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })} description={t('settings.islandExternalEnabledDesc', { defaultValue: 'Track supported AI CLI sessions through installed hooks.' })}>
+          <Toggle checked={config.islandExternalEnabled} onChange={(v) => config.updateConfig('islandExternalEnabled', v)} />
+        </SettingRow>
+      </SettingGroup>
+
       <SettingGroup label={t('settings.cliHooks')}>
         <SettingRow label={t('settings.excludedCwd')} description={t('settings.excludedCwdDesc')}>
           <input
@@ -1213,11 +1228,12 @@ function IntegrationTab() {
           />
         </SettingRow>
         <div className="agent-hook-row">
-          <span className="agent-hook-row__status agent-hook-row__status--connected" />
+          <span className={`agent-hook-row__status ${defaultClaudeEnabled ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
           <div style={{ flex: 1 }}>
             <span className="agent-hook-row__label">Claude Code</span>
             <span className="agent-hook-row__path">~/.claude</span>
           </div>
+          <Toggle checked={defaultClaudeEnabled} onChange={toggleDefaultClaude} />
         </div>
         {config.engineInstances.map((inst: EngineInstance) => (
           <div key={inst.id} className="agent-hook-row">
@@ -1245,58 +1261,44 @@ function IntegrationTab() {
           <input type="text" className="glass-input" value={config.customHooksPath} placeholder="~/.codefuse/engine/cc"
             onChange={(e) => config.updateConfig('customHooksPath', e.target.value)} style={{ minWidth: 200 }} />
         </SettingRow>
-        {config.agentHooks.filter(h => h.agentType !== 'claude-code').map((hook) => (
-          <div key={hook.agentType} className="agent-hook-row">
-            <span className={`agent-hook-row__status ${hook.connected ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
-            <span className="agent-hook-row__label">{hook.label}</span>
-            <Toggle checked={hook.enabled} onChange={() => {
-              config.toggleAgentHook(hook.agentType)
-              if (!hook.enabled) installHooks(hook.agentType); else removeHooks(hook.agentType)
-            }} />
-          </div>
-        ))}
       </SettingGroup>
 
       {/* Tool detection from HookSection */}
       {error && <div className="hook-error-card">{error}</div>}
 
       <div className="hook-actions-bar">
-        <GlassButton variant="secondary" onClick={detectTools} disabled={loading}>
+        <GlassButton variant="secondary" onClick={detectTools} disabled={loading || !config.islandExternalEnabled}>
           {loading ? '...' : t('settings.detectTools')}
         </GlassButton>
-        <GlassButton variant="secondary" onClick={reinstallAll} disabled={loading || installedCount === 0}>
+        <GlassButton variant="secondary" onClick={reinstallAll} disabled={loading || installedCount === 0 || !config.islandExternalEnabled}>
           {t('settings.reinstallAll')}
         </GlassButton>
       </div>
 
       <SettingGroup label={t('settings.detectedTools')}>
-        {tools.length === 0 && !loading && <div className="hook-empty">{t('settings.noToolsDetected')}</div>}
-        {loading && tools.length === 0 && <div className="hook-empty">{t('settings.detectingTools')}</div>}
-        {tools.map((tool) => {
-          const busy = actionLoading[tool.toolId] !== undefined
+        {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
+        {config.islandExternalEnabled && visibleTools.length === 0 && !loading && <div className="hook-empty">{t('settings.noToolsDetected')}</div>}
+        {config.islandExternalEnabled && loading && visibleTools.length === 0 && <div className="hook-empty">{t('settings.detectingTools')}</div>}
+        {visibleTools.map((tool) => {
+          const toolId = hookToolId(tool)
+          const installStatus = hookInstallStatus(tool)
+          const busy = actionLoading[toolId] !== undefined
           return (
-            <div key={tool.toolId} className="hook-tool-row">
-              <div className="hook-tool-row__icon">{TOOL_ICONS[tool.toolId] ?? '🔧'}</div>
+            <div key={toolId} className="hook-tool-row">
+              <div className="hook-tool-row__icon">{TOOL_ICONS[toolId] ?? '🔧'}</div>
               <div className="hook-tool-row__info">
-                <div className="hook-tool-row__name">{tool.name}</div>
-                <div className="hook-tool-row__path">{tool.configPath}</div>
+                <div className="hook-tool-row__name">{tool.displayName || tool.name}</div>
+                <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>
               </div>
-              <div className={`hook-status-badge hook-status-badge--${tool.installStatus}`}>
-                {tool.installStatus === 'installed' ? t('settings.hookInstalled') : tool.installStatus === 'error' ? t('settings.hookError') : t('settings.hookNotInstalled')}
+              <div className={`hook-status-badge hook-status-badge--${installStatus}`}>
+                {installStatus === 'installed' ? t('settings.hookInstalled') : installStatus === 'error' ? t('settings.hookError') : t('settings.hookNotInstalled')}
               </div>
               <div className="hook-tool-row__actions">
-                {tool.installStatus === 'not_installed' && (
-                  <GlassButton variant="primary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.install')}</GlassButton>
-                )}
-                {tool.installStatus === 'installed' && (
-                  <>
-                    <GlassButton variant="secondary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.reinstall')}</GlassButton>
-                    <GlassButton variant="danger" onClick={() => uninstall(tool.toolId)} disabled={busy}>{t('settings.uninstall')}</GlassButton>
-                  </>
-                )}
-                {tool.installStatus === 'error' && (
-                  <GlassButton variant="primary" onClick={() => install(tool.toolId)} disabled={busy}>{busy ? '...' : t('settings.retry')}</GlassButton>
-                )}
+                <Toggle
+                  checked={installStatus === 'installed'}
+                  disabled={busy}
+                  onChange={(checked) => { if (checked) install(toolId); else uninstall(toolId) }}
+                />
               </div>
             </div>
           )
@@ -1339,6 +1341,7 @@ function AdvancedTab() {
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, ConnectionStatus>>({})
   const [remoteBusyId, setRemoteBusyId] = useState<string | null>(null)
   const [sshConfigHosts, setSshConfigHosts] = useState<SshConfigHost[]>([])
+  const [autoApproveToolsDraft, setAutoApproveToolsDraft] = useState(config.autoApproveTools.join(', '))
 
   const refreshRemoteHosts = useCallback(async () => {
     if (!isTauri()) return
@@ -1366,6 +1369,10 @@ function AdvancedTab() {
   useEffect(() => {
     refreshSshConfigHosts().catch((err) => console.error('Failed to load SSH config hosts:', err))
   }, [refreshSshConfigHosts])
+
+  useEffect(() => {
+    setAutoApproveToolsDraft(config.autoApproveTools.join(', '))
+  }, [config.autoApproveTools])
 
   function parseRemoteTarget(raw: string): { sshTarget: string; port: number | null } {
     const trimmed = raw.trim()
@@ -1443,8 +1450,107 @@ function AdvancedTab() {
     return t(`settings.${status.state}`, { defaultValue: status.state })
   }
 
+  const costModelOptions = Object.entries(MODEL_PRICING).map(([id, m]) => ({ value: id, label: m.label }))
+  const tokenDisplayOptions = [
+    { value: 'both', label: t('settings.tokensBoth') },
+    { value: 'tokens', label: t('settings.tokensOnly') },
+    { value: 'cost', label: t('settings.costOnly') },
+    { value: 'hidden', label: t('settings.hidden') },
+  ]
+  const updateAutoApproveTools = (value: string) => {
+    config.updateConfig('autoApproveTools', value.split(',').map((item) => item.trim()).filter(Boolean))
+  }
+
   return (
     <>
+      <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
+        <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
+          <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
+          <Toggle checked={config.showUsageQuota} onChange={(v) => config.updateConfig('showUsageQuota', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
+          <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.tipsEnabled')} description={t('settings.tipsEnabledDesc')}>
+          <Toggle checked={config.tipsEnabled} onChange={(v) => {
+            config.updateConfig('tipsEnabled', v)
+            persistIslandFeatureFlags({ tipsEnabled: v })
+          }} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.tokenCostDisplay')}>
+        <SettingRow label={t('settings.tokenDisplayMode')} description={t('settings.tokenDisplayModeDesc')}>
+          <Dropdown value={config.tokenDisplayMode} options={tokenDisplayOptions}
+            onChange={(v) => config.updateConfig('tokenDisplayMode', v as 'tokens' | 'cost' | 'both' | 'hidden')} minWidth={150} />
+        </SettingRow>
+        <SettingRow label={t('settings.costModel')} description={t('settings.costModelDesc')}>
+          <Dropdown value={config.costModel} options={costModelOptions}
+            onChange={(v) => config.updateConfig('costModel', v)} minWidth={170} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.visualSignals', { defaultValue: 'Visual Signals' })}>
+        <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
+          <Slider value={config.maxVisibleSessions} min={2} max={15} step={1}
+            onChange={(v) => config.updateConfig('maxVisibleSessions', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
+          <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.aiMessageLines')} description={t('settings.aiMessageLinesDesc')}>
+          <Slider value={config.aiMessageLines} min={1} max={5} step={1}
+            onChange={(v) => config.updateConfig('aiMessageLines', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.agentActivity')} description={t('settings.agentActivityDesc')}>
+          <Toggle checked={config.showAgentActivityDetails} onChange={(v) => config.updateConfig('showAgentActivityDetails', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.pixelCursor')} description={t('settings.pixelCursorDesc')}>
+          <Toggle checked={config.pixelCursorEnabled} onChange={(v) => {
+            config.updateConfig('pixelCursorEnabled', v)
+            persistIslandFeatureFlags({ pixelCursorEnabled: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.confettiOnComplete')} description={t('settings.confettiOnCompleteDesc')}>
+          <Toggle checked={config.confettiEnabled} onChange={(v) => {
+            config.updateConfig('confettiEnabled', v)
+            persistIslandFeatureFlags({ confettiEnabled: v })
+          }} />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.island.section.debug', { defaultValue: 'Debug and Paths' })}>
+        <SettingRow label={t('settings.autoApproveTools', { defaultValue: 'Auto-approve tools' })} description={t('settings.autoApproveToolsDesc', { defaultValue: 'Comma-separated tool names that can be approved without prompting.' })}>
+          <GlassInput
+            value={autoApproveToolsDraft}
+            onChange={(e) => setAutoApproveToolsDraft((e.target as HTMLInputElement).value)}
+            onBlur={() => updateAutoApproveTools(autoApproveToolsDraft)}
+            style={{ minWidth: 260, fontSize: 12 }}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.hapticFeedback')} description={t('settings.hapticFeedbackDesc')}>
+          <Toggle checked={config.hapticOnHover} onChange={(v) => config.updateConfig('hapticOnHover', v)} />
+        </SettingRow>
+        {config.hapticOnHover && (
+          <SettingRow label={t('settings.hapticIntensity')} description={t('settings.hapticIntensityDesc')}>
+            <Slider
+              value={config.hapticIntensity}
+              min={1}
+              max={3}
+              step={1}
+              onChange={(v) => config.updateConfig('hapticIntensity', v)}
+            />
+          </SettingRow>
+        )}
+        {config.labFeatures.map((feature) => (
+          <SettingRow key={feature.id} label={feature.label} description={feature.description}>
+            <Toggle checked={feature.enabled} onChange={() => config.toggleLabFeature(feature.id)} />
+          </SettingRow>
+        ))}
+      </SettingGroup>
+
       {/* SSH Remote */}
       <div className="description-card">{t('settings.sshDescription')}</div>
       <div className="warning-card">

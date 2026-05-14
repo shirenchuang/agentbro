@@ -15,7 +15,7 @@ pub mod webhook;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
 use agents::claude_code::ClaudeCodeAdapter;
@@ -140,6 +140,11 @@ async fn open_image(src: String) -> Result<(), String> {
     open_system_target(&target)
 }
 
+#[tauri::command]
+async fn open_system_path(path: String) -> Result<(), String> {
+    open_system_target(&path)
+}
+
 fn persist_data_url_image(src: &str) -> Result<String, String> {
     let (header, data) = src
         .split_once(',')
@@ -222,7 +227,7 @@ async fn install_agent_hook(
     let adapter = state
         .adapters
         .iter()
-        .find(|a| a.name() == tool_name)
+        .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.install_hooks().map_err(|e| e.to_string())
 }
@@ -235,7 +240,7 @@ async fn uninstall_agent_hook(
     let adapter = state
         .adapters
         .iter()
-        .find(|a| a.name() == tool_name)
+        .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.remove_hooks().map_err(|e| e.to_string())
 }
@@ -248,18 +253,45 @@ async fn get_all_hook_status(
         .adapters
         .iter()
         .map(|a| {
+            let tool_id = if a.name() == "claude-code" && a.display_name() != "Claude Code" {
+                a.display_name().to_string()
+            } else {
+                a.name().to_string()
+            };
             let paths = a.hook_config_paths();
             let installed = paths
                 .iter()
                 .any(|p| agents::hook_manager::has_agentbro_hooks(p));
+            let config_path = paths
+                .first()
+                .map(|path| display_path_with_home(path))
+                .unwrap_or_default();
+            let install_status = if installed {
+                "installed"
+            } else {
+                "not_installed"
+            };
             serde_json::json!({
+                "toolId": tool_id,
+                "adapterId": a.name(),
                 "name": a.name(),
                 "displayName": a.display_name(),
                 "installed": installed,
+                "installStatus": install_status,
+                "configPath": config_path,
                 "status": format!("{:?}", a.status()),
             })
         })
         .collect())
+}
+
+fn display_path_with_home(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return format!("~/{}", rest.display());
+        }
+    }
+    path.display().to_string()
 }
 
 #[tauri::command]
@@ -606,6 +638,56 @@ fn toggle_notch_window(app: &tauri::AppHandle) {
             let _ = window.set_focus();
         }
     }
+}
+
+fn show_notch_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("notch") {
+        let _ = window.show();
+        configure_notch_window_for_spaces(app);
+        let _ = window.set_focus();
+        let _ = app.emit("tray-open-agentbro", ());
+    }
+}
+
+fn menu_bar_icon() -> tauri::image::Image<'static> {
+    const SIZE: u32 = 32;
+    let mut rgba = vec![0_u8; (SIZE * SIZE * 4) as usize];
+
+    let mut set_pixel = |x: u32, y: u32| {
+        let idx = ((y * SIZE + x) * 4) as usize;
+        rgba[idx] = 0;
+        rgba[idx + 1] = 0;
+        rgba[idx + 2] = 0;
+        rgba[idx + 3] = 255;
+    };
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let xf = x as f32 + 0.5;
+            let yf = y as f32 + 0.5;
+
+            let stem = (7.0..=12.0).contains(&xf) && (6.0..=26.0).contains(&yf);
+            let top_outer = ((xf - 17.0).powi(2) / 9.8_f32.powi(2))
+                + ((yf - 11.0).powi(2) / 6.5_f32.powi(2))
+                <= 1.0;
+            let top_inner = ((xf - 17.0).powi(2) / 5.5_f32.powi(2))
+                + ((yf - 11.0).powi(2) / 3.0_f32.powi(2))
+                <= 1.0;
+            let bottom_outer = ((xf - 17.5).powi(2) / 10.5_f32.powi(2))
+                + ((yf - 21.0).powi(2) / 7.0_f32.powi(2))
+                <= 1.0;
+            let bottom_inner = ((xf - 17.5).powi(2) / 5.8_f32.powi(2))
+                + ((yf - 21.0).powi(2) / 3.3_f32.powi(2))
+                <= 1.0;
+            let node = (xf - 26.0).powi(2) + (yf - 8.0).powi(2) <= 2.2_f32.powi(2);
+
+            if stem || (top_outer && !top_inner) || (bottom_outer && !bottom_inner) || node {
+                set_pixel(x, y);
+            }
+        }
+    }
+
+    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
 }
 
 fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
@@ -1064,20 +1146,41 @@ async fn install_skill_cmd(
     targets: Vec<skills::TargetConfig>,
     mode: skills::InstallMode,
 ) -> Result<(), String> {
-    skills::installer::install_skill(&source, &targets, &mode)?;
-    skills::registry::add_source(
-        &std::path::PathBuf::from(&source)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-        &source,
-    )?;
+    for skill_id in skills::installer::install_skill(&source, &targets, &mode)? {
+        skills::registry::add_source(&skill_id, &source)?;
+    }
     Ok(())
+}
+
+#[tauri::command]
+async fn install_plugin_cmd(request: skills::PluginInstallRequest) -> Result<String, String> {
+    skills::installer::install_plugin(&request)
 }
 
 #[tauri::command]
 async fn uninstall_skill_cmd(skill_path: String) -> Result<(), String> {
     skills::installer::uninstall_skill(&skill_path)
+}
+
+#[tauri::command]
+async fn upsert_mcp_server_cmd(
+    agent: String,
+    server: skills::McpServerConfig,
+) -> Result<(), String> {
+    skills::installer::upsert_mcp_server(&agent, &server)
+}
+
+#[tauri::command]
+async fn remove_mcp_server_cmd(agent: String, server_name: String) -> Result<(), String> {
+    skills::installer::remove_mcp_server(&agent, &server_name)
+}
+
+#[tauri::command]
+async fn validate_mcp_server_cmd(
+    agent: String,
+    server_name: String,
+) -> Result<skills::McpValidationResult, String> {
+    skills::installer::validate_mcp_server(&agent, &server_name)
 }
 
 #[tauri::command]
@@ -1136,6 +1239,11 @@ async fn pull_sync_cmd() -> Result<skills::SyncResult, String> {
 }
 
 #[tauri::command]
+async fn resolve_conflicts_cmd(resolutions: Vec<skills::ConflictResolution>) -> Result<(), String> {
+    skills::sync::resolve_conflicts(resolutions)
+}
+
+#[tauri::command]
 async fn sync_agent_to_agent_cmd(from: String, to: String) -> Result<skills::SyncPreview, String> {
     skills::sync::sync_agent_to_agent(&from, &to)
 }
@@ -1160,6 +1268,26 @@ async fn get_registry_metadata() -> Result<skills::registry::Metadata, String> {
     Ok(skills::registry::load())
 }
 
+#[tauri::command]
+async fn list_marketplace_items_cmd() -> Result<Vec<skills::MarketplaceItem>, String> {
+    skills::marketplace::list_items()
+}
+
+#[tauri::command]
+async fn list_marketplace_sources_cmd() -> Result<Vec<skills::MarketplaceSource>, String> {
+    Ok(skills::registry::list_marketplace_sources())
+}
+
+#[tauri::command]
+async fn upsert_marketplace_source_cmd(source: skills::MarketplaceSource) -> Result<(), String> {
+    skills::registry::upsert_marketplace_source(source)
+}
+
+#[tauri::command]
+async fn remove_marketplace_source_cmd(id: String) -> Result<(), String> {
+    skills::registry::remove_marketplace_source(&id)
+}
+
 // ── Opacity helpers ─────────────────────────────────────────────
 // macOS breaks transparent window compositing after a hide()/show() cycle,
 // so we manage visibility via opacity instead.
@@ -1181,22 +1309,33 @@ fn set_window_alpha(_window: &tauri::WebviewWindow, _alpha: f64) {}
 
 #[cfg(target_os = "macos")]
 fn apply_notch_window_for_spaces(window: &tauri::WebviewWindow) {
-    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
     let _ = window.set_visible_on_all_workspaces(true);
     if let Ok(ptr) = window.ns_window() {
         unsafe {
             let ns_window = ptr as *const NSWindow;
             let mut behavior = (*ns_window).collectionBehavior();
+
+            // Keep only one option from each AppKit mutual-exclusion group before
+            // adding the overlay behaviors required for fullscreen Spaces.
+            behavior &= !(NSWindowCollectionBehavior::Primary
+                | NSWindowCollectionBehavior::Auxiliary
+                | NSWindowCollectionBehavior::Managed
+                | NSWindowCollectionBehavior::Transient
+                | NSWindowCollectionBehavior::MoveToActiveSpace
+                | NSWindowCollectionBehavior::ParticipatesInCycle
+                | NSWindowCollectionBehavior::FullScreenPrimary
+                | NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenAllowsTiling
+                | NSWindowCollectionBehavior::FullScreenDisallowsTiling);
             behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::CanJoinAllApplications
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary
                 | NSWindowCollectionBehavior::IgnoresCycle;
-            behavior &= !NSWindowCollectionBehavior::FullScreenNone;
             (*ns_window).setCollectionBehavior(behavior);
             (*ns_window).setCanHide(false);
-            // Match evolab's native notch level (27): above status/menu bar,
-            // while avoiding transient menu levels that can behave oddly in fullscreen Spaces.
-            (*ns_window).setLevel(NSStatusWindowLevel + 2);
+            (*ns_window).setLevel(NSScreenSaverWindowLevel + 1);
             (*ns_window).orderFrontRegardless();
         }
     }
@@ -1242,6 +1381,9 @@ async fn set_display_id(
     display_id: String,
 ) -> Result<(), String> {
     let mut config = state.config_store.get();
+    if config.display_id != display_id {
+        config.island_pet_window_origin = None;
+    }
     config.display_id = display_id.clone();
     state.config_store.update(config)?;
     reposition_notch_to_display(&app, Some(display_id), None)
@@ -1267,6 +1409,26 @@ fn reposition_notch_to_display(
         .or_else(|| window.primary_monitor().ok().flatten());
 
     if let Some(monitor) = monitor {
+        let config = config_store.config_store.get();
+        if config.island_surface_mode == "pet" {
+            if let Ok(size) = window.outer_size() {
+                let use_saved_origin = display_id != "auto";
+                position_pet_window(
+                    &window,
+                    &monitor,
+                    size.width as f64,
+                    size.height as f64,
+                    if use_saved_origin {
+                        config.island_pet_window_origin.as_ref()
+                    } else {
+                        None
+                    },
+                );
+                configure_notch_window_for_spaces(app);
+                return Ok(());
+            }
+        }
+
         let current_scale = window
             .current_monitor()
             .ok()
@@ -1313,6 +1475,55 @@ fn position_notch_window(
     };
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
         x, monitor_y,
+    )));
+}
+
+const PET_HIT_SIZE: f64 = 160.0;
+const PET_HIT_RIGHT_INSET: f64 = 112.0;
+const PET_HIT_BOTTOM_INSET: f64 = 44.0;
+const PET_DEFAULT_TRAILING_INSET: f64 = 24.0;
+const PET_DEFAULT_BOTTOM_INSET: f64 = 36.0;
+
+fn position_pet_window(
+    window: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+    width: f64,
+    height: f64,
+    saved_origin: Option<&config::WindowOrigin>,
+) {
+    if let Some(origin) = saved_origin {
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            origin.x.round() as i32,
+            origin.y.round() as i32,
+        )));
+        return;
+    }
+
+    let pos = monitor.position();
+    let size = monitor.size();
+    let monitor_x = pos.x as f64;
+    let monitor_y = pos.y as f64;
+    let monitor_width = size.width as f64;
+    let monitor_height = size.height as f64;
+    let scale = monitor.scale_factor();
+    let hit_size = PET_HIT_SIZE * scale;
+    let hit_right_inset = PET_HIT_RIGHT_INSET * scale;
+    let hit_bottom_inset = PET_HIT_BOTTOM_INSET * scale;
+    let trailing_inset = PET_DEFAULT_TRAILING_INSET * scale;
+    let bottom_inset = PET_DEFAULT_BOTTOM_INSET * scale;
+    let hit_left = width - hit_right_inset - hit_size;
+    let hit_top = height - hit_bottom_inset - hit_size;
+    let margin = 8.0 * scale;
+    let desired_x = monitor_x + monitor_width - trailing_inset - hit_left - hit_size;
+    let desired_y = monitor_y + monitor_height - bottom_inset - hit_top - hit_size;
+    let min_x = monitor_x + margin - hit_left;
+    let max_x = monitor_x + monitor_width - margin - hit_left - hit_size;
+    let min_y = monitor_y + margin - hit_top;
+    let max_y = monitor_y + monitor_height - margin - hit_top - hit_size;
+    let x = desired_x.clamp(min_x, max_x.max(min_x)).round();
+    let y = desired_y.clamp(min_y, max_y.max(min_y)).round();
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        x as i32, y as i32,
     )));
 }
 
@@ -1613,15 +1824,6 @@ async fn resize_notch(
         // Determine which monitor to center on from config
         let config_store = app.state::<AppState>();
         let config = config_store.config_store.get();
-        if config.island_surface_mode == "pet" {
-            if let Some(origin) = config.island_pet_window_origin {
-                let _ = window.set_position(tauri::Position::Physical(
-                    tauri::PhysicalPosition::new(origin.x.round() as i32, origin.y.round() as i32),
-                ));
-                configure_notch_window_for_spaces(&app);
-                return Ok(());
-            }
-        }
         let configured_display_id = config.display_id;
         let display_id = display_id
             .as_deref()
@@ -1633,6 +1835,23 @@ async fn resize_notch(
             .or_else(|| window.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {
+            if config.island_surface_mode == "pet" {
+                if let Ok(size) = window.outer_size() {
+                    position_pet_window(
+                        &window,
+                        &monitor,
+                        size.width as f64,
+                        size.height as f64,
+                        if display_id == "auto" {
+                            None
+                        } else {
+                            config.island_pet_window_origin.as_ref()
+                        },
+                    );
+                    configure_notch_window_for_spaces(&app);
+                    return Ok(());
+                }
+            }
             position_notch_window(
                 &app,
                 &window,
@@ -1657,6 +1876,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Position notch window at top center
             if let Some(window) = app.get_webview_window("notch") {
                 let monitor = window
@@ -1788,15 +2010,25 @@ pub fn run() {
                 log::info!("Hook script was updated to match new app version");
             }
 
-            // Build the shared adapter list
+            // Build the shared adapter list. Claude Code instances are expanded
+            // from config roots; other tools come from the standard adapter set.
             let mut adapter_list: Vec<Arc<dyn AgentAdapter>> = vec![Arc::new(default_cc)];
             for cc in cc_adapters {
                 adapter_list.push(Arc::new(cc));
             }
+            for adapter in agents::all_adapters() {
+                if adapter.name() != "claude-code" {
+                    adapter_list.push(Arc::from(adapter));
+                }
+            }
             let adapters: Arc<Vec<Arc<dyn AgentAdapter>>> = Arc::new(adapter_list);
 
-            // Auto-install hooks on startup
+            // Auto-install Claude hooks on startup; other tools are controlled
+            // explicitly from the Integration tab.
             for adapter in adapters.iter() {
+                if adapter.name() != "claude-code" {
+                    continue;
+                }
                 if let Err(e) = adapter.install_hooks() {
                     log::warn!(
                         "Failed to install hooks for {}: {}",
@@ -1813,11 +2045,13 @@ pub fn run() {
             let hook_server = Arc::new(hook_server);
             hook_server.set_app_handle(app.handle().clone());
 
-            // Start hook server in background
+            // Start hook server — exit if port is already in use (another instance running)
             let server = hook_server.clone();
+            let app_handle_for_server = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = server.start().await {
                     log::error!("Failed to start HookServer: {}", e);
+                    app_handle_for_server.exit(1);
                 }
             });
 
@@ -1865,8 +2099,8 @@ pub fn run() {
                 log::warn!("Sound engine failed to initialize (no audio output)");
             }
 
-            // Build system tray icon with menu
-            let show_item = MenuItemBuilder::with_id("show", "Show Panel").build(app)?;
+            // Build macOS menu bar / system tray shortcut with menu.
+            let show_item = MenuItemBuilder::with_id("show", "Open AgentBro").build(app)?;
             let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -1879,19 +2113,23 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::new()
                 .menu(&tray_menu)
-                .icon(
-                    app.default_window_icon()
-                        .cloned()
-                        .unwrap_or_else(|| tauri::image::Image::new(&[], 0, 0)),
-                )
+                .show_menu_on_left_click(false)
+                .tooltip("AgentBro")
+                .icon(menu_bar_icon())
                 .icon_as_template(true)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_notch_window(tray.app_handle());
+                    }
+                })
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
-                        if let Some(window) = app.get_webview_window("notch") {
-                            let _ = window.show();
-                            configure_notch_window_for_spaces(app);
-                            let _ = window.set_focus();
-                        }
+                        show_notch_window(app);
                     }
                     "settings" => {
                         if let Some(window) = app.get_webview_window("settings") {
@@ -2058,13 +2296,18 @@ pub fn run() {
             perform_haptic,
             set_notch_focusable,
             open_image,
+            open_system_path,
             list_themes,
             get_active_theme_bundle,
             import_theme,
             scan_all_skills,
             scan_agent_skills,
             install_skill_cmd,
+            install_plugin_cmd,
             uninstall_skill_cmd,
+            upsert_mcp_server_cmd,
+            remove_mcp_server_cmd,
+            validate_mcp_server_cmd,
             toggle_skill_cmd,
             read_skill_files,
             read_skill_file_content,
@@ -2076,11 +2319,16 @@ pub fn run() {
             configure_sync_cmd,
             push_sync_cmd,
             pull_sync_cmd,
+            resolve_conflicts_cmd,
             sync_agent_to_agent_cmd,
             execute_agent_sync_cmd,
             export_backup_cmd,
             import_backup_cmd,
             get_registry_metadata,
+            list_marketplace_items_cmd,
+            list_marketplace_sources_cmd,
+            upsert_marketplace_source_cmd,
+            remove_marketplace_source_cmd,
             agents::programs::agent_list,
             agents::programs::agent_refresh,
             agents::programs::agent_install,
@@ -2088,6 +2336,9 @@ pub fn run() {
             agents::programs::agent_uninstall,
             agents::programs::agent_open_download,
             agents::programs::agent_open_app,
+            agents::programs::add_custom_agent,
+            agents::programs::update_custom_agent,
+            agents::programs::remove_custom_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");

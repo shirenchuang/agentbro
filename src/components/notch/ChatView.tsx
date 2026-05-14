@@ -12,7 +12,7 @@ import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
 import type { ChatMessage, SubagentInfo } from '../../types/agent'
-import { respondPermission, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
 import './ChatView.css'
 
 interface MessageGroup {
@@ -60,8 +60,11 @@ export function ChatView({ onBack }: ChatViewProps) {
   const activeSession = useSessionStore(selectActiveSession)
   const contentFontSize = useConfigStore((s) => s.contentFontSize)
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
+  const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const contentRef = useRef<HTMLDivElement>(null)
   const [userScrolled, setUserScrolled] = useState(false)
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [subagentHistory, setSubagentHistory] = useState<{
     agentId: string
     title: string
@@ -75,11 +78,12 @@ export function ChatView({ onBack }: ChatViewProps) {
     setSubagentHistory(null)
   }, [activeSession?.id])
 
-  // Auto-load chat history when ChatView mounts and history is empty
+  // Auto-load chat history when ChatView mounts, and refresh it as hook
+  // metadata changes so detail view does not look empty while a run is active.
   useEffect(() => {
     if (!activeSession) return
-    if (activeSession.chatHistory.length > 0) return
 
+    setLoadingHistory(activeSession.chatHistory.length === 0)
     getChatHistory(activeSession.id)
       .then((parsed) => {
         if (parsed.length > 0) {
@@ -88,7 +92,15 @@ export function ChatView({ onBack }: ChatViewProps) {
         }
       })
       .catch((e) => console.warn('[ChatView] getChatHistory:', e))
-  }, [activeSession?.id])
+      .finally(() => setLoadingHistory(false))
+  }, [
+    activeSession?.id,
+    activeSession?.lastUserMessage,
+    activeSession?.responseText,
+    activeSession?.description,
+    activeSession?.lastToolName,
+    activeSession?.phase,
+  ])
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -112,51 +124,83 @@ export function ChatView({ onBack }: ChatViewProps) {
 
   const { t } = useTranslation()
 
-  if (!activeSession) {
-    return null
-  }
-
   const handleAllow = () => {
+    if (!activeSession) return
+    if (activeSession.planContent) {
+      respondPlan(activeSession.id, 'acceptEdits')
+      useSessionStore.getState().clearPlan(activeSession.id)
+      return
+    }
     respondPermission(activeSession.id, true, false)
     useSessionStore.getState().clearPermission(activeSession.id)
   }
 
   const handleAllowAlways = () => {
+    if (!activeSession) return
+    if (activeSession.planContent) {
+      respondPlan(activeSession.id, 'bypassPermissions')
+      useSessionStore.getState().clearPlan(activeSession.id)
+      return
+    }
     respondPermission(activeSession.id, true, true)
     useSessionStore.getState().clearPermission(activeSession.id)
   }
 
   const handleDeny = () => {
+    if (!activeSession) return
+    if (activeSession.planContent) {
+      respondPlan(activeSession.id, 'manual')
+      useSessionStore.getState().clearPlan(activeSession.id)
+      return
+    }
     respondPermission(activeSession.id, false)
     useSessionStore.getState().clearPermission(activeSession.id)
   }
 
   const handleAutoApprove = () => {
+    if (!activeSession) return
+    if (activeSession.planContent) {
+      respondPlan(activeSession.id, 'bypassPermissions')
+      useSessionStore.getState().clearPlan(activeSession.id)
+      return
+    }
     respondAutoApprove(activeSession.id)
     useSessionStore.getState().clearPermission(activeSession.id)
   }
 
-  const handleSend = (msg: string) => {
+  const handleSend = async (msg: string) => {
+    if (!activeSession) return
     if (!msg.trim()) return
-    sendMessage(activeSession.id, msg)
-    // Add user message to local chat
-    useSessionStore.getState().updateSession({
-      type: 'user_message',
-      sessionId: activeSession.id,
-      content: msg,
-    })
-    if (activeSession.pendingQuestion) {
-      useSessionStore.getState().clearQuestion(activeSession.id)
+    setSendError(null)
+    try {
+      if (activeSession.pendingQuestion) {
+        await respondQuestion(activeSession.id, msg)
+        useSessionStore.getState().clearQuestion(activeSession.id)
+      } else if (activeSession.planContent) {
+        await respondPlan(activeSession.id, 'feedback', msg)
+        useSessionStore.getState().clearPlan(activeSession.id)
+      } else {
+        await sendMessage(activeSession.id, msg)
+      }
+      // Add user message to local chat
+      useSessionStore.getState().updateSession({
+        type: 'user_message',
+        sessionId: activeSession.id,
+        content: msg,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setSendError(message || t('notch.sendFailed', '发送失败'))
     }
   }
 
   const handleJump = () => {
+    if (!activeSession) return
     setNotchFocusable(false).catch(() => {})
-    jumpToTerminal(activeSession.id)
+    jumpToTerminal(activeSession.id).catch((error) => console.warn('[ChatView] jumpToTerminal:', error))
   }
 
   const handleBack = useCallback(() => {
-    setNotchFocusable(false).catch(() => {})
     onBack()
   }, [onBack])
 
@@ -181,7 +225,7 @@ export function ChatView({ onBack }: ChatViewProps) {
             loading: false,
           }
         })
-      })
+    })
       .catch((e) => {
         setSubagentHistory((current) => {
           if (!current || current.agentId !== subagent.agentId) return current
@@ -194,13 +238,17 @@ export function ChatView({ onBack }: ChatViewProps) {
       })
   }, [activeSession?.id])
 
+  if (!activeSession) {
+    return null
+  }
+
   const displayedMessages = subagentHistory?.messages ?? activeSession.chatHistory
 
   return (
     <div className="chat-view">
       <ChatHeader session={activeSession} onBack={handleBack} onJump={handleJump} />
 
-      {showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (
+      {islandMonitorSubagents && showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (
         <SubagentList subagents={activeSession.subagents} onOpenHistory={handleOpenSubagentHistory} />
       )}
 
@@ -253,7 +301,7 @@ export function ChatView({ onBack }: ChatViewProps) {
         ) : displayedMessages.length === 0 ? (
           <div className="chat-view__empty">
             <span className="chat-view__empty-icon">💬</span>
-            <span>{t('notch.waitingMessages')}</span>
+            <span>{loadingHistory ? t('notch.loadingHistory', 'Loading history...') : t('notch.waitingMessages')}</span>
           </div>
         ) : (
           groupMessages(displayedMessages).map((group, i) =>
@@ -277,6 +325,15 @@ export function ChatView({ onBack }: ChatViewProps) {
         >
           ↓
         </button>
+      )}
+
+      {sendError && (
+        <div className="chat-view__send-error">
+          <span>{sendError}</span>
+          <button type="button" onClick={() => setSendError(null)}>
+            {t('notch.dismiss', '关闭')}
+          </button>
+        </div>
       )}
 
       <ApprovalBar

@@ -1,4 +1,10 @@
 import { useTranslation } from 'react-i18next'
+import type { AgentProgramInfo } from '../../services/agentApi'
+import { useAgentStore } from '../../stores/agentStore'
+import { useSkillStore } from '../../stores/skillStore'
+import type { CapabilityView, IslandSettingsView } from '../../types/capability'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { displayVersionValue } from '../../utils/versions'
 
 interface SidebarItem {
   id: string
@@ -17,8 +23,7 @@ const sidebarGroups: SidebarGroup[] = [
     items: [
       { id: 'general', labelKey: 'settings.general', icon: '⚙', iconBg: '#8E8E93' },
       { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
-      { id: 'agents', labelKey: 'settings.agents', icon: '⌘', iconBg: '#34C759' },
-      { id: 'skills', labelKey: 'settings.skills', icon: '🧩', iconBg: '#AF52DE' },
+      { id: 'agents', labelKey: 'settings.agents', icon: '🧩', iconBg: '#007AFF' },
     ],
   },
   {
@@ -32,11 +37,183 @@ const sidebarGroups: SidebarGroup[] = [
 
 interface SettingsSidebarProps {
   activeSection: string
+  activeCapabilityView: CapabilityView
+  activeIslandView: IslandSettingsView
   onSelect: (section: string) => void
+  onCapabilityViewChange: (view: CapabilityView) => void
+  onIslandViewChange: (view: IslandSettingsView) => void
+  onAddCustomAgent: () => void
 }
 
-export function SettingsSidebar({ activeSection, onSelect }: SettingsSidebarProps) {
+function isInstalled(agent: AgentProgramInfo) {
+  return isAgentProgramInstalled(agent)
+}
+
+function displayVersion(agent: AgentProgramInfo) {
+  const installed = displayVersionValue(agent.installedVersion)
+  const latest = displayVersionValue(agent.latestVersion)
+  if (agent.status === 'updateAvailable' && latest && installed) {
+    return `${installed} → ${latest}`
+  }
+  if (agent.status === 'updateAvailable' && latest) {
+    return `最新 ${latest}`
+  }
+  return installed
+}
+
+function agentStatusClass(agent: AgentProgramInfo) {
+  if (agent.status === 'installed') return 'settings-capability-agent--installed'
+  if (agent.status === 'updateAvailable') return 'settings-capability-agent--update'
+  return 'settings-capability-agent--available'
+}
+
+export function SettingsSidebar({
+  activeSection,
+  activeCapabilityView,
+  activeIslandView,
+  onSelect,
+  onCapabilityViewChange,
+  onIslandViewChange,
+  onAddCustomAgent,
+}: SettingsSidebarProps) {
   const { t } = useTranslation()
+  const {
+    agents,
+    selectedAgentId,
+    focusAgent,
+  } = useAgentStore()
+  const { skills, packs } = useSkillStore()
+
+  if (activeSection === 'island') {
+    const navItems: Array<{ id: IslandSettingsView; label: string; icon: string }> = [
+      { id: 'overview', label: t('settings.island.tabs.overview', { defaultValue: 'Overview' }), icon: '✧' },
+      { id: 'display', label: t('settings.island.tabs.display', { defaultValue: 'Display' }), icon: '◎' },
+      { id: 'behavior', label: t('settings.island.tabs.behavior', { defaultValue: 'Behavior' }), icon: '▣' },
+      { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '◌' },
+      { id: 'notify', label: t('settings.island.tabs.notify', { defaultValue: 'Notifications' }), icon: '⌁' },
+      { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌘' },
+      { id: 'advanced', label: t('settings.island.tabs.advanced', { defaultValue: 'Advanced' }), icon: '▤' },
+    ]
+
+    return (
+      <nav className="settings-sidebar settings-sidebar--capability settings-scroll">
+        <button
+          type="button"
+          className="settings-sidebar__back"
+          onClick={() => onSelect('general')}
+        >
+          ‹ {t('settings.title')}
+        </button>
+
+        <div className="settings-sidebar__group-label">{t('settings.island.title')}</div>
+        <div className="settings-capability-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={activeIslandView === item.id ? 'active' : ''}
+              onClick={() => onIslandViewChange(item.id)}
+            >
+              <span className="settings-capability-nav__icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+    )
+  }
+
+  if (activeSection === 'agents') {
+    const installedAgents = agents.filter(isInstalled)
+    const availableAgents = agents.filter((agent) => !isInstalled(agent))
+    const skillCount = skills.filter((skill) => skill.skillType === 'skill').length
+    const pluginCount = packs.length + skills.filter((skill) => skill.skillType === 'plugin' || skill.skillType === 'mcp').length
+    const profileCount = packs.length
+
+    const navItems: Array<{ id: CapabilityView; label: string; icon: string; count?: number }> = [
+      { id: 'agent', label: 'Agent 管理', icon: '🤖', count: agents.length },
+      { id: 'skills', label: '全部 Skills', icon: '🧩', count: skillCount },
+      { id: 'plugins', label: '插件与 MCP', icon: '🔌', count: pluginCount },
+      { id: 'profiles', label: '技能包', icon: '📦', count: profileCount },
+      { id: 'market', label: '市场', icon: '🏪' },
+      { id: 'sync', label: '同步', icon: '☁' },
+    ]
+
+    const chooseAgent = (agentId: string) => {
+      focusAgent(agentId)
+      onCapabilityViewChange('agent')
+    }
+
+    return (
+      <nav className="settings-sidebar settings-sidebar--capability settings-scroll">
+        <button
+          type="button"
+          className="settings-sidebar__back"
+          onClick={() => onSelect('general')}
+        >
+          ‹ 设置
+        </button>
+
+        <div className="settings-capability-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={activeCapabilityView === item.id ? 'active' : ''}
+              onClick={() => onCapabilityViewChange(item.id)}
+            >
+              <span className="settings-capability-nav__icon">{item.icon}</span>
+              <span>{item.label}</span>
+              {typeof item.count === 'number' && <em>{item.count}</em>}
+            </button>
+          ))}
+        </div>
+
+        <div className="settings-sidebar__separator" />
+
+        <div className="settings-sidebar__group-label">已安装 AGENTS</div>
+        <div className="settings-capability-agent-list">
+          {installedAgents.map((agent) => (
+            <button
+              key={agent.id}
+              type="button"
+              className={`settings-capability-agent ${agentStatusClass(agent)} ${selectedAgentId === agent.id && activeCapabilityView === 'agent' ? 'active' : ''}`}
+              onClick={() => chooseAgent(agent.id)}
+            >
+              <i />
+              <span>{agent.displayName}</span>
+              <em>{displayVersion(agent)}</em>
+            </button>
+          ))}
+          {installedAgents.length === 0 && <div className="settings-capability-empty">暂无已安装 Agent</div>}
+        </div>
+
+        <div className="settings-sidebar__group-label">未安装</div>
+        <div className="settings-capability-agent-list">
+          {availableAgents.map((agent) => (
+            <button
+              key={agent.id}
+              type="button"
+              className={`settings-capability-agent ${agentStatusClass(agent)} ${selectedAgentId === agent.id && activeCapabilityView === 'agent' ? 'active' : ''}`}
+              onClick={() => chooseAgent(agent.id)}
+            >
+              <i />
+              <span>{agent.displayName}</span>
+              <em>{agent.kind === 'cli' ? 'CLI' : 'APP'}</em>
+            </button>
+          ))}
+          {availableAgents.length === 0 && <div className="settings-capability-empty">暂无可安装 Agent</div>}
+          <button
+            type="button"
+            className="settings-capability-more"
+            onClick={onAddCustomAgent}
+          >
+            + 添加自定义
+          </button>
+        </div>
+      </nav>
+    )
+  }
 
   return (
     <nav className="settings-sidebar settings-scroll">

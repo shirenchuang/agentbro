@@ -21,6 +21,7 @@ export const COLOR_THEMES: ColorThemeInfo[] = [
   { id: 'ocean-mist', label: 'Ocean Mist', labelZh: '海雾', tag: 'Cool', isDark: false, bg: '#e8eef5', card: '#f2f6fb', accent: '#0284c7' },
   { id: 'warm-paper', label: 'Warm Paper', labelZh: '暖纸', tag: 'Warm', isDark: false, bg: '#f2efe8', card: '#faf7f0', accent: '#d97706' },
   { id: 'soft-lavender', label: 'Soft Lavender', labelZh: '柔薰衣草', tag: 'Soft', isDark: false, bg: '#eeedf6', card: '#f8f7fc', accent: '#6366f1' },
+  { id: 'system', label: 'System', labelZh: '跟随系统', tag: 'Auto', isDark: false, bg: 'linear-gradient(135deg, #0b0c0f 0 50%, #f5f5f7 50% 100%)', card: '#ffffff', accent: '#007aff' },
 ]
 
 const DEFAULT_THEME: ThemeConfig = {

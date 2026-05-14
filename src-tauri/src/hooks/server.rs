@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{oneshot, Mutex};
@@ -95,6 +96,20 @@ impl HookServer {
             adapters,
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    async fn backoff_after_accept_error(protocol: &str, error: &std::io::Error) {
+        if error.raw_os_error() == Some(24) {
+            log::error!(
+                "{} accept error: {}. Backing off before retrying.",
+                protocol,
+                error
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        } else {
+            log::error!("{} accept error: {}", protocol, error);
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -217,7 +232,9 @@ impl HookServer {
             }
         });
 
-        // Start TCP listener
+        // Start TCP listener — bind eagerly so port conflicts are detected at startup
+        let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", TCP_PORT)).await?;
+        log::info!("Listening on TCP: 127.0.0.1:{}", TCP_PORT);
         let pending_tcp = pending.clone();
         let pending_q_tcp = pending_q.clone();
         let pending_plan_tcp = pending_plan.clone();
@@ -226,7 +243,8 @@ impl HookServer {
         let sound_tcp = sound.clone();
         let app_tcp = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_tcp(
+            Self::accept_tcp(
+                tcp_listener,
                 pending_tcp,
                 pending_q_tcp,
                 pending_plan_tcp,
@@ -236,9 +254,6 @@ impl HookServer {
                 app_tcp,
             )
             .await
-            {
-                log::error!("TCP listener error: {}", e);
-            }
         });
 
         log::info!(
@@ -304,14 +319,15 @@ impl HookServer {
                     });
                 }
                 Err(e) => {
-                    log::error!("Unix accept error: {}", e);
+                    Self::backoff_after_accept_error("Unix", &e).await;
                 }
             }
         }
     }
 
-    /// Listen on TCP socket
-    async fn listen_tcp(
+    /// Accept connections on an already-bound TCP listener
+    async fn accept_tcp(
+        listener: TcpListener,
         pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
         pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
         pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
@@ -319,10 +335,7 @@ impl HookServer {
         adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
         sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
-    ) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", TCP_PORT)).await?;
-        log::info!("Listening on TCP: 127.0.0.1:{}", TCP_PORT);
-
+    ) {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -352,7 +365,7 @@ impl HookServer {
                     });
                 }
                 Err(e) => {
-                    log::error!("TCP accept error: {}", e);
+                    Self::backoff_after_accept_error("TCP", &e).await;
                 }
             }
         }
@@ -699,13 +712,7 @@ impl HookServer {
                     s.last_response = Some(summary.clone());
                 });
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
-
-                let store_for_cleanup = store.clone();
-                let session_id_for_cleanup = session_id.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    store_for_cleanup.remove_session(&session_id_for_cleanup);
-                });
+                Self::schedule_done_session_cleanup(store, session_id, 5);
             }
             AgentEvent::Processing {
                 session_id,
@@ -856,6 +863,7 @@ impl HookServer {
                     }
                 }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+                Self::schedule_done_session_cleanup(store, session_id, 30);
             }
             AgentEvent::AssistantResponseComplete { session_id, text } => {
                 let truncated = Self::truncate_preview(text, 2000);
@@ -1266,6 +1274,7 @@ impl HookServer {
                 s.last_response = Some(summary.clone());
             });
             Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
+            Self::schedule_done_session_cleanup(store, session_id, 30);
             return;
         }
 
@@ -1275,6 +1284,26 @@ impl HookServer {
                 s.description = Some("Waiting for input".to_string());
             });
         }
+    }
+
+    fn schedule_done_session_cleanup(store: &SessionStore, session_id: &str, delay_secs: u64) {
+        let store_for_cleanup = store.clone();
+        let session_id_for_cleanup = session_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            let should_remove = store_for_cleanup
+                .get_session(&session_id_for_cleanup)
+                .map(|session| {
+                    session.phase == SessionPhase::Done
+                        && session.pending_permission.is_none()
+                        && session.pending_question.is_none()
+                        && session.pending_plan.is_none()
+                })
+                .unwrap_or(false);
+            if should_remove {
+                store_for_cleanup.remove_session(&session_id_for_cleanup);
+            }
+        });
     }
 
     fn looks_like_error_message(lower: &str) -> bool {

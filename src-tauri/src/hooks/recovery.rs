@@ -60,17 +60,28 @@ pub fn start_hook_recovery(
     adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
     app_handle: tauri::AppHandle,
 ) {
-    // Collect all settings paths and their parent directories from all adapters
+    // Collect all settings paths from all adapters. Prefer watching the file
+    // itself: watching the config root directory for AntCC/CodeFuse opens a
+    // descriptor for every task/plugin/cache entry on macOS kqueue.
     let mut watch_paths: Vec<PathBuf> = Vec::new();
-    let mut watch_dirs: Vec<PathBuf> = Vec::new();
+    let mut watch_targets: Vec<PathBuf> = Vec::new();
     for adapter in adapters.iter() {
         for path in adapter.hook_config_paths() {
-            if let Some(parent) = path.parent() {
-                if !watch_dirs.contains(&parent.to_path_buf()) {
-                    watch_dirs.push(parent.to_path_buf());
-                }
+            if !watch_paths.contains(&path) {
+                watch_paths.push(path.clone());
             }
-            watch_paths.push(path);
+
+            let target = if path.exists() {
+                path.clone()
+            } else if let Some(parent) = path.parent() {
+                parent.to_path_buf()
+            } else {
+                continue;
+            };
+
+            if !watch_targets.contains(&target) {
+                watch_targets.push(target);
+            }
         }
     }
 
@@ -114,10 +125,14 @@ pub fn start_hook_recovery(
                 )
                 .expect("Failed to create file watcher for hook recovery");
 
-                for dir in &watch_dirs {
-                    if dir.exists() {
-                        if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
-                            log::warn!("Hook recovery: failed to watch {}: {}", dir.display(), e);
+                for target in &watch_targets {
+                    if target.exists() {
+                        if let Err(e) = watcher.watch(target, RecursiveMode::NonRecursive) {
+                            log::warn!(
+                                "Hook recovery: failed to watch {}: {}",
+                                target.display(),
+                                e
+                            );
                         }
                     }
                 }

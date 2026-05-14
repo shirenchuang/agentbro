@@ -48,6 +48,7 @@ interface SessionStore {
   setChatHistory: (sessionId: string, messages: ChatMessage[]) => void
   clearPermission: (sessionId: string) => void
   clearQuestion: (sessionId: string) => void
+  clearPlan: (sessionId: string) => void
   setRateLimits: (limits: RateLimitInfo) => void
   setHookNotification: (notification: 'restored' | 'rate_limited' | null) => void
   applyIdleTimeout: (now?: number) => void
@@ -110,6 +111,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             id: event.sessionId,
             agentType: event.agentType,
             project: event.project,
+            cwd: 'cwd' in event ? (event as { cwd?: string }).cwd : undefined,
             terminal: event.terminal,
             phase: 'idle',
             startedAt: Date.now(),
@@ -581,6 +583,26 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         [sessionId]: { ...session, phase: 'processing' as const, pendingQuestion: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'question'))
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+    })
+  },
+
+  clearPlan: (sessionId) => {
+    set((state) => {
+      const session = state.sessions[sessionId]
+      if (!session) return state
+      const sessions = {
+        ...state.sessions,
+        [sessionId]: {
+          ...session,
+          phase: 'processing' as const,
+          planTitle: undefined,
+          planContent: undefined,
+          planPermissions: undefined,
+          unattendedSince: undefined,
+        },
+      }
+      const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'plan'))
       return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
   },

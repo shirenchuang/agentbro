@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 export interface AgentSkillState {
   agent: string
   installPath: string
+  linkTarget?: string | null
   installMode: 'direct' | 'symlink'
   enabled: boolean
 }
@@ -11,7 +12,7 @@ export interface ScannedSkill {
   id: string
   name: string
   description: string
-  skillType: 'skill' | 'mcp'
+  skillType: 'skill' | 'plugin' | 'mcp'
   icon: string | null
   source: 'island' | 'local'
   originUrl: string | null
@@ -52,6 +53,11 @@ export interface SyncResult {
   conflicts: { skillId: string; localModified: string; remoteModified: string }[]
 }
 
+export interface ConflictResolution {
+  skillId: string
+  action: 'keep_local' | 'use_remote' | 'keep_both'
+}
+
 export interface SyncPreview {
   toCopy: number
   toSkip: number
@@ -62,6 +68,51 @@ export interface SyncPreview {
 export interface TargetConfig {
   agent: string
   installMode: 'direct' | 'symlink'
+}
+
+export interface McpServerConfig {
+  name: string
+  command: string
+  args: string[]
+  env: Record<string, string>
+}
+
+export interface McpValidationResult {
+  valid: boolean
+  message: string
+  warnings: string[]
+}
+
+export interface PluginInstallRequest {
+  source: string
+  agent: string
+}
+
+export interface MarketplaceSource {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+}
+
+export interface MarketplaceItem {
+  id: string
+  name: string
+  description: string
+  category: 'skill' | 'plugin' | 'mcp'
+  sourceType: 'github' | 'url'
+  source: string
+  subPath?: string | null
+  author: string
+  accent: string
+  mcp?: {
+    command: string
+    args: string[]
+    env: Record<string, string>
+  } | null
+  plugin?: {
+    agents: string[]
+  } | null
 }
 
 const isTauri = '__TAURI_INTERNALS__' in window
@@ -79,9 +130,25 @@ export const skillApi = {
     ? invoke('install_skill_cmd', { source, targets, mode })
     : Promise.resolve(),
 
+  installPlugin: (request: PluginInstallRequest) => isTauri
+    ? invoke<string>('install_plugin_cmd', { request })
+    : Promise.resolve(''),
+
   uninstall: (skillPath: string) => isTauri
     ? invoke('uninstall_skill_cmd', { skillPath })
     : Promise.resolve(),
+
+  upsertMcpServer: (agent: string, server: McpServerConfig) => isTauri
+    ? invoke('upsert_mcp_server_cmd', { agent, server })
+    : Promise.resolve(),
+
+  removeMcpServer: (agent: string, serverName: string) => isTauri
+    ? invoke('remove_mcp_server_cmd', { agent, serverName })
+    : Promise.resolve(),
+
+  validateMcpServer: (agent: string, serverName: string) => isTauri
+    ? invoke<McpValidationResult>('validate_mcp_server_cmd', { agent, serverName })
+    : Promise.resolve({ valid: true, message: '', warnings: [] }),
 
   toggle: (skillId: string, agent: string, enabled: boolean) => isTauri
     ? invoke('toggle_skill_cmd', { skillId, agent, enabled })
@@ -94,6 +161,10 @@ export const skillApi = {
   readFileContent: (filePath: string) => isTauri
     ? invoke<string>('read_skill_file_content', { filePath })
     : Promise.resolve(''),
+
+  openPath: (path: string) => isTauri
+    ? invoke('open_system_path', { path })
+    : Promise.resolve(),
 
   listPacks: () => isTauri
     ? invoke<SkillPack[]>('list_packs_cmd')
@@ -127,6 +198,10 @@ export const skillApi = {
     ? invoke<SyncResult>('pull_sync_cmd')
     : Promise.resolve({ success: true, message: '', conflicts: [] }),
 
+  resolveConflicts: (resolutions: ConflictResolution[]) => isTauri
+    ? invoke('resolve_conflicts_cmd', { resolutions })
+    : Promise.resolve(),
+
   syncAgentPreview: (from: string, to: string) => isTauri
     ? invoke<SyncPreview>('sync_agent_to_agent_cmd', { from, to })
     : Promise.resolve({ toCopy: 0, toSkip: 0, toUpdate: 0, details: [] }),
@@ -144,6 +219,22 @@ export const skillApi = {
     : Promise.resolve(),
 
   getMetadata: () => isTauri
-    ? invoke<{ sources: Record<string, { origin: string }>; packs: SkillPack[]; sync: SyncConfig | null }>('get_registry_metadata')
-    : Promise.resolve({ sources: {}, packs: [], sync: null }),
+    ? invoke<{ sources: Record<string, { origin: string }>; packs: SkillPack[]; sync: SyncConfig | null; marketplaceSources: MarketplaceSource[] }>('get_registry_metadata')
+    : Promise.resolve({ sources: {}, packs: [], sync: null, marketplaceSources: [] }),
+
+  listMarketplaceItems: () => isTauri
+    ? invoke<MarketplaceItem[]>('list_marketplace_items_cmd')
+    : Promise.resolve([]),
+
+  listMarketplaceSources: () => isTauri
+    ? invoke<MarketplaceSource[]>('list_marketplace_sources_cmd')
+    : Promise.resolve([]),
+
+  upsertMarketplaceSource: (source: MarketplaceSource) => isTauri
+    ? invoke('upsert_marketplace_source_cmd', { source })
+    : Promise.resolve(),
+
+  removeMarketplaceSource: (id: string) => isTauri
+    ? invoke('remove_marketplace_source_cmd', { id })
+    : Promise.resolve(),
 }

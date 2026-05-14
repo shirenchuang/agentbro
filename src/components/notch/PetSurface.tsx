@@ -27,6 +27,7 @@ interface PetSurfaceProps {
   activeOverlay: OverlayItem | null
   scale: number
   hidden: boolean
+  expanded: boolean
   onCollapse: () => void
   onDismissOverlay: (id: string) => void
 }
@@ -44,12 +45,14 @@ function disablePetTextInput() {
 export function PetSurface({
   sessions,
   activeOverlay,
+  expanded,
   scale,
   hidden,
   onCollapse,
   onDismissOverlay,
 }: PetSurfaceProps) {
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
+  const [petOpen, setPetOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
@@ -64,6 +67,7 @@ export function PetSurface({
   const actionKind = getActionKind(activeOverlay)
   const activeSession = activeOverlay ? sessions.find((session) => session.id === activeOverlay.sessionId) : undefined
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
+  const showSessionState = expanded || petOpen || Boolean(activeOverlay) || Boolean(expandedSessionId)
 
   const finishDrag = useCallback(async (pointerId?: number) => {
     if (dragPointerIdRef.current == null) {
@@ -123,12 +127,14 @@ export function PetSurface({
       style={{ '--pet-scale': displayScale } as CSSProperties}
     >
       <div className="pet-surface__stage">
-        <SessionFan
-          expandedSessionId={expandedSessionId}
-          sessions={sortedSessions}
-          onCollapse={onCollapse}
-          onOpenSession={setExpandedSessionId}
-        />
+        {showSessionState && (
+          <SessionFan
+            expandedSessionId={expandedSessionId}
+            sessions={sortedSessions}
+            onCollapse={onCollapse}
+            onOpenSession={setExpandedSessionId}
+          />
+        )}
 
         {activeOverlay && activeSession && (
           <ActionToast
@@ -139,7 +145,7 @@ export function PetSurface({
           />
         )}
 
-        {!activeOverlay && topSession && topSession.phase === 'done' && (
+        {showSessionState && !activeOverlay && topSession && topSession.phase === 'done' && (
           <MessageToast session={topSession} onDismiss={onCollapse} />
         )}
 
@@ -154,11 +160,14 @@ export function PetSurface({
               suppressClickRef.current = false
               return
             }
-            if (expandedSessionId || activeOverlay) {
+            if (expandedSessionId || activeOverlay || expanded || petOpen) {
               setExpandedSessionId(null)
+              setPetOpen(false)
               onCollapse()
             } else if (topSession) {
               setExpandedSessionId(topSession.id)
+            } else {
+              setPetOpen(true)
             }
           }}
           onPointerDown={handlePointerDown}

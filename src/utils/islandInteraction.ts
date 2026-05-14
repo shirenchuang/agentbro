@@ -79,6 +79,19 @@ export function deriveIslandInteraction(input: IslandInteractionInput): IslandIn
     }
   }
 
+  if (wakeSilenced && !hasBlockingSignal) {
+    return {
+      outerState: 'hidden',
+      hasActiveSession,
+      hasBlockingSignal,
+      hasRunningSession,
+      hasErrorSession,
+      hasNonBlockingOverlay,
+      isMicro: false,
+      isHidden: true,
+    }
+  }
+
   const isHidden = persistentIdleHidden && !hasActiveSession && !hasNonBlockingOverlay && !hasBlockingSignal
   const isMicro = !isHidden && !hasRunningSession && !hasErrorSession && !hasBlockingSignal && !hasNonBlockingOverlay
 

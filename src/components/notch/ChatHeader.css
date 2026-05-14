@@ -68,6 +68,11 @@
   background: rgba(123, 120, 255, 0.1);
 }
 
+.chat-header__badge--source {
+  color: #00d184;
+  background: rgba(16, 185, 129, 0.16);
+}
+
 .chat-header__badge--antcc {
   color: #ff2f81;
   background: rgba(255, 47, 129, 0.14);

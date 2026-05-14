@@ -85,6 +85,34 @@ describe('deriveIslandInteraction', () => {
     expect(state.outerState).toBe('compact')
   })
 
+  it('lets ESC silence hide persistent mode while work is running', () => {
+    const state = deriveIslandInteraction({
+      sessions: [session({ phase: 'processing' })],
+      panelState: 'collapsed',
+      activeOverlay: null,
+      interactionMode: 'persistent',
+      persistentIdleHidden: false,
+      wakeSilenced: true,
+    })
+
+    expect(state.outerState).toBe('hidden')
+    expect(state.isHidden).toBe(true)
+  })
+
+  it('keeps blocking requests visible while ESC silence is active', () => {
+    const state = deriveIslandInteraction({
+      sessions: [session({ phase: 'waiting_input' })],
+      panelState: 'collapsed',
+      activeOverlay: overlay('question'),
+      interactionMode: 'persistent',
+      persistentIdleHidden: false,
+      wakeSilenced: true,
+    })
+
+    expect(state.outerState).toBe('compact')
+    expect(state.hasBlockingSignal).toBe(true)
+  })
+
   it('hides persistent mode after the idle hide timer fires', () => {
     const state = deriveIslandInteraction({
       sessions: [session({ phase: 'done' })],

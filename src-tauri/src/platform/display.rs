@@ -15,28 +15,111 @@ pub struct DisplayInfo {
     pub is_primary: bool,
 }
 
+#[derive(Debug, Clone)]
+struct SystemDisplayLabel {
+    product_id: Option<String>,
+    label: String,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
 fn parse_monitor_product_id(name: &str) -> Option<String> {
     name.strip_prefix("Monitor #")
         .and_then(|id| id.trim().parse::<u32>().ok())
         .map(|id| id.to_string())
 }
 
+fn is_generic_monitor_name(name: &str) -> bool {
+    name.trim().is_empty() || parse_monitor_product_id(name).is_some()
+}
+
+fn parse_resolution(raw: &str) -> Option<(u32, u32)> {
+    let numbers: Vec<u32> = raw
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect();
+    if numbers.len() >= 2 {
+        Some((numbers[0], numbers[1]))
+    } else {
+        None
+    }
+}
+
+fn size_matches(label: &SystemDisplayLabel, width: u32, height: u32) -> bool {
+    let (Some(label_width), Some(label_height)) = (label.width, label.height) else {
+        return false;
+    };
+
+    (label_width == width && label_height == height)
+        || (label_width == height && label_height == width)
+        || (label_width == width.saturating_mul(2) && label_height == height.saturating_mul(2))
+        || (label_width.saturating_mul(2) == width && label_height.saturating_mul(2) == height)
+}
+
+fn consume_system_label(
+    labels: &[SystemDisplayLabel],
+    used_labels: &mut [bool],
+    predicate: impl Fn(&SystemDisplayLabel) -> bool,
+) -> Option<String> {
+    let index = labels
+        .iter()
+        .enumerate()
+        .find_map(|(index, label)| (!used_labels[index] && predicate(label)).then_some(index))?;
+    used_labels[index] = true;
+    Some(labels[index].label.clone())
+}
+
+fn resolve_display_label(
+    id: &str,
+    name: &str,
+    width: u32,
+    height: u32,
+    labels: &[SystemDisplayLabel],
+    used_labels: &mut [bool],
+) -> String {
+    if !id.is_empty() {
+        if let Some(label) = consume_system_label(labels, used_labels, |label| {
+            label.product_id.as_deref() == Some(id)
+        }) {
+            return label;
+        }
+    }
+
+    if is_generic_monitor_name(name) {
+        if let Some(label) = consume_system_label(labels, used_labels, |label| {
+            size_matches(label, width, height)
+        }) {
+            return label;
+        }
+        if let Some(label) = consume_system_label(labels, used_labels, |_| true) {
+            return label;
+        }
+    }
+
+    if name.is_empty() {
+        "Display".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn system_display_labels() -> std::collections::HashMap<String, String> {
+fn system_display_labels() -> Vec<SystemDisplayLabel> {
     let output = match std::process::Command::new("system_profiler")
         .args(["SPDisplaysDataType", "-json"])
         .output()
     {
         Ok(output) if output.status.success() => output,
-        _ => return std::collections::HashMap::new(),
+        _ => return Vec::new(),
     };
 
     let root: serde_json::Value = match serde_json::from_slice(&output.stdout) {
         Ok(root) => root,
-        Err(_) => return std::collections::HashMap::new(),
+        Err(_) => return Vec::new(),
     };
 
-    let mut labels = std::collections::HashMap::new();
+    let mut labels = Vec::new();
     let Some(gpus) = root.get("SPDisplaysDataType").and_then(|v| v.as_array()) else {
         return labels;
     };
@@ -46,31 +129,37 @@ fn system_display_labels() -> std::collections::HashMap<String, String> {
             continue;
         };
         for display in displays {
-            let Some(product_hex) = display
+            let product_id = display
                 .get("_spdisplays_display-product-id")
                 .and_then(|v| v.as_str())
-            else {
-                continue;
-            };
-            let Ok(product_id) = u32::from_str_radix(product_hex, 16) else {
-                continue;
-            };
+                .and_then(|product_hex| u32::from_str_radix(product_hex, 16).ok())
+                .map(|id| id.to_string());
             let name = display
                 .get("_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Display");
-            let resolution = display
+            let resolution_raw = display
                 .get("spdisplays_resolution")
                 .or_else(|| display.get("_spdisplays_resolution"))
-                .and_then(|v| v.as_str())
+                .and_then(|v| v.as_str());
+            let resolution = resolution_raw
                 .and_then(|raw| raw.split('@').next())
-                .map(|raw| raw.replace(' ', ""))
+                .map(|raw| raw.trim().replace(" x ", "x"))
                 .filter(|raw| !raw.is_empty());
 
             let label = resolution
                 .map(|resolution| format!("{name} ({resolution})"))
                 .unwrap_or_else(|| name.to_string());
-            labels.insert(product_id.to_string(), label);
+            let (width, height) = resolution_raw
+                .and_then(parse_resolution)
+                .map(|(width, height)| (Some(width), Some(height)))
+                .unwrap_or((None, None));
+            labels.push(SystemDisplayLabel {
+                product_id,
+                label,
+                width,
+                height,
+            });
         }
     }
 
@@ -78,8 +167,8 @@ fn system_display_labels() -> std::collections::HashMap<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn system_display_labels() -> std::collections::HashMap<String, String> {
-    std::collections::HashMap::new()
+fn system_display_labels() -> Vec<SystemDisplayLabel> {
+    Vec::new()
 }
 
 /// List all connected displays.
@@ -95,17 +184,22 @@ pub fn list_displays_inner(app: &tauri::AppHandle) -> Vec<DisplayInfo> {
         .and_then(|p| p.name())
         .map(|s| s.to_string());
     let display_labels = system_display_labels();
+    let mut used_display_labels = vec![false; display_labels.len()];
 
     monitors
         .into_iter()
         .map(|m| {
             let name = m.name().map(|s| s.to_string()).unwrap_or_default();
             let id = parse_monitor_product_id(&name).unwrap_or_else(|| name.clone());
-            let label = display_labels
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| name.clone());
             let size = m.size();
+            let label = resolve_display_label(
+                &id,
+                &name,
+                size.width,
+                size.height,
+                &display_labels,
+                &mut used_display_labels,
+            );
             let is_primary = primary_name.as_deref() == Some(name.as_str());
             DisplayInfo {
                 id,
@@ -153,6 +247,22 @@ fn cursor_position() -> Option<(f64, f64)> {
 }
 
 fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    if let Ok(cursor) = app.cursor_position() {
+        if let Ok(monitors) = app.available_monitors() {
+            if let Some(monitor) = monitors.iter().find(|m| {
+                let pos = m.position();
+                let size = m.size();
+                let x = pos.x as f64;
+                let y = pos.y as f64;
+                let width = size.width as f64;
+                let height = size.height as f64;
+                cursor.x >= x && cursor.x <= x + width && cursor.y >= y && cursor.y <= y + height
+            }) {
+                return Some(monitor.clone());
+            }
+        }
+    }
+
     let (cursor_x, cursor_y) = cursor_position()?;
     let monitors = app.available_monitors().ok()?;
 

@@ -1,5 +1,6 @@
 use super::agent_paths;
-use super::{AgentSkillState, InstallMode, ScannedSkill, SkillSource, SkillType};
+use super::{AgentSkillState, InstallMode, McpServerConfig, ScannedSkill, SkillSource, SkillType};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,16 +19,28 @@ pub fn scan_agent(agent: &str) -> Vec<ScannedSkill> {
         scan_mcp_config(mcp_path, agent, &mut results);
     }
 
+    if matches!(agent, "claude-code" | "codex") {
+        scan_plugins(agent, &mut results);
+    }
+
     results
 }
 
 pub fn scan_all() -> std::collections::HashMap<String, Vec<ScannedSkill>> {
-    let agents = ["claude-code", "codex", "gemini-cli", "cursor", "hermes"];
     let mut map = std::collections::HashMap::new();
-    for agent in &agents {
+    for agent in agent_paths::known_agent_ids() {
         let skills = scan_agent(agent);
         if !skills.is_empty() {
-            map.insert(agent.to_string(), skills);
+            map.insert((*agent).to_string(), skills);
+        }
+    }
+    for agent in super::registry::list_custom_agents() {
+        if !agent.is_enabled {
+            continue;
+        }
+        let skills = scan_agent(&agent.id);
+        if !skills.is_empty() {
+            map.insert(agent.id, skills);
         }
     }
     map
@@ -38,6 +51,7 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
         Ok(e) => e,
         Err(_) => return,
     };
+    let disabled_skills = disabled_skill_ids(agent);
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -58,10 +72,15 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                     .symlink_metadata()
                     .map(|m| m.file_type().is_symlink())
                     .unwrap_or(false);
+                let link_target = if is_symlink {
+                    symlink_target(&path)
+                } else {
+                    None
+                };
 
                 results.push(ScannedSkill {
                     id: skill_name.clone(),
-                    name: skill_name,
+                    name: skill_name.clone(),
                     description: desc,
                     skill_type: SkillType::Skill,
                     icon: None,
@@ -78,12 +97,13 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                     agents: vec![AgentSkillState {
                         agent: agent.to_string(),
                         install_path: path.display().to_string(),
+                        link_target,
                         install_mode: if is_symlink {
                             InstallMode::Symlink
                         } else {
                             InstallMode::Direct
                         },
-                        enabled: true,
+                        enabled: !disabled_skills.contains(&skill_name),
                     }],
                     frontmatter: fm,
                 });
@@ -101,7 +121,7 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
 
             results.push(ScannedSkill {
                 id: skill_name.clone(),
-                name: skill_name,
+                name: skill_name.clone(),
                 description: desc,
                 skill_type: SkillType::Skill,
                 icon: None,
@@ -118,13 +138,35 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                 agents: vec![AgentSkillState {
                     agent: agent.to_string(),
                     install_path: path.display().to_string(),
+                    link_target: None,
                     install_mode: InstallMode::Direct,
-                    enabled: true,
+                    enabled: !disabled_skills.contains(&skill_name),
                 }],
                 frontmatter: fm,
             });
         }
     }
+}
+
+fn disabled_skill_ids(agent: &str) -> HashSet<String> {
+    let Some(settings_path) = agent_paths::paths_for_agent(agent).settings_file else {
+        return HashSet::new();
+    };
+    let Ok(content) = fs::read_to_string(settings_path) else {
+        return HashSet::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return HashSet::new();
+    };
+    json.get("disabledSkills")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
@@ -146,6 +188,17 @@ fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSki
         Some(s) => s,
         None => return,
     };
+    let disabled: HashSet<String> = json
+        .get("disabledMcpServers")
+        .or_else(|| json.get("disabled_mcp_servers"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let meta = fs::metadata(config_path).ok();
     let modified_at = meta
@@ -156,25 +209,37 @@ fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSki
 
     for (name, value) in servers {
         let command = value.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let args_vec: Vec<String> = value
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         let desc = if command.is_empty() {
             format!("MCP server: {}", name)
         } else {
-            let args = value
-                .get("args")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default();
-            format!("{} {}", command, args)
+            format!("{} {}", command, args_vec.join(" "))
         };
 
         let id = format!("mcp:{}", name);
         if results.iter().any(|s| s.id == id) {
             continue;
+        }
+
+        let mut frontmatter = std::collections::HashMap::new();
+        frontmatter.insert("command".to_string(), command.to_string());
+        if !args_vec.is_empty() {
+            frontmatter.insert("args".to_string(), args_vec.join(" "));
+        }
+        if let Some(env) = value.get("env").and_then(|v| v.as_object()) {
+            let mut keys: Vec<&str> = env.keys().map(|key| key.as_str()).collect();
+            keys.sort();
+            if !keys.is_empty() {
+                frontmatter.insert("envKeys".to_string(), keys.join(", "));
+            }
         }
 
         results.push(ScannedSkill {
@@ -192,16 +257,228 @@ fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSki
             agents: vec![AgentSkillState {
                 agent: agent.to_string(),
                 install_path: config_path.display().to_string(),
+                link_target: None,
                 install_mode: InstallMode::Direct,
-                enabled: true,
+                enabled: !disabled.contains(name),
             }],
-            frontmatter: std::collections::HashMap::new(),
+            frontmatter,
         });
     }
 }
 
+pub fn read_mcp_server_config(agent: &str, server_name: &str) -> Option<McpServerConfig> {
+    let config_path = agent_paths::paths_for_agent(agent).mcp_config?;
+    let content = fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let server = json
+        .get("mcpServers")
+        .or_else(|| json.get("mcp_servers"))?
+        .get(server_name)?;
+    let command = server.get("command")?.as_str()?.to_string();
+    let args = server
+        .get("args")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = server
+        .get("env")
+        .and_then(|value| value.as_object())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(McpServerConfig {
+        name: server_name.to_string(),
+        command,
+        args,
+        env,
+    })
+}
+
+fn scan_plugins(agent: &str, results: &mut Vec<ScannedSkill>) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let roots = match agent {
+        "claude-code" => vec![
+            home.join(".claude").join("plugins").join("marketplaces"),
+            home.join(".claude").join("plugins").join("cache"),
+        ],
+        "codex" => vec![
+            home.join(".codex").join("plugins").join("marketplaces"),
+            home.join(".codex").join("plugins").join("cache"),
+        ],
+        _ => Vec::new(),
+    };
+    for root in roots {
+        scan_plugin_root(&root, agent, results);
+    }
+}
+
+fn scan_plugin_root(root: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "dist" | "build"
+        ) {
+            continue;
+        }
+        if !path.is_dir() {
+            continue;
+        }
+        scan_plugin_candidate(&path, agent, results);
+        scan_plugin_root(&path, agent, results);
+    }
+}
+
+fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
+    let manifest_path = path
+        .join(".claude-plugin")
+        .join("plugin.json")
+        .exists()
+        .then(|| path.join(".claude-plugin").join("plugin.json"))
+        .or_else(|| {
+            path.join(".codex-plugin")
+                .join("plugin.json")
+                .exists()
+                .then(|| path.join(".codex-plugin").join("plugin.json"))
+        });
+
+    let marker_path = path.join(".codex-plugin");
+    if manifest_path.is_none() && !marker_path.exists() {
+        return;
+    }
+
+    let manifest = manifest_path
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+    let name = manifest
+        .as_ref()
+        .and_then(|json| {
+            json.pointer("/interface/displayName")
+                .or_else(|| json.get("displayName"))
+                .or_else(|| json.get("name"))
+                .and_then(|v| v.as_str())
+        })
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    let plugin_id = manifest
+        .as_ref()
+        .and_then(|json| json.get("name").and_then(|v| v.as_str()))
+        .map(ToString::to_string)
+        .unwrap_or_else(|| name.clone());
+    let description = manifest
+        .as_ref()
+        .and_then(|json| {
+            json.pointer("/interface/shortDescription")
+                .or_else(|| json.get("description"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let version = manifest
+        .as_ref()
+        .and_then(|json| json.get("version").and_then(|v| v.as_str()));
+    let mut frontmatter = std::collections::HashMap::new();
+    frontmatter.insert("pluginId".to_string(), plugin_id.clone());
+    if let Some(version) = version {
+        frontmatter.insert("version".to_string(), version.to_string());
+    }
+
+    let id = format!("plugin:{}", plugin_id);
+    if results.iter().any(|skill| skill.id == id) {
+        return;
+    }
+
+    let meta = fs::metadata(path).ok();
+    results.push(ScannedSkill {
+        id,
+        name,
+        description,
+        skill_type: SkillType::Plugin,
+        icon: None,
+        source: SkillSource::Local,
+        origin_url: manifest
+            .as_ref()
+            .and_then(|json| {
+                json.get("repository")
+                    .or_else(|| json.get("homepage"))
+                    .and_then(|v| v.as_str())
+            })
+            .map(ToString::to_string),
+        has_update: false,
+        file_path: path.display().to_string(),
+        file_size: dir_size(path),
+        modified_at: meta
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        agents: vec![AgentSkillState {
+            agent: agent.to_string(),
+            install_path: path.display().to_string(),
+            link_target: None,
+            install_mode: InstallMode::Direct,
+            enabled: plugin_enabled(agent, &plugin_id),
+        }],
+        frontmatter,
+    });
+}
+
+fn plugin_enabled(agent: &str, plugin_id: &str) -> bool {
+    let Some(settings_path) = agent_paths::paths_for_agent(agent).settings_file else {
+        return true;
+    };
+    let Ok(content) = fs::read_to_string(settings_path) else {
+        return true;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return true;
+    };
+    json.get("enabledPlugins")
+        .and_then(|value| value.as_object())
+        .and_then(|plugins| plugins.get(plugin_id))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true)
+}
+
+fn symlink_target(path: &Path) -> Option<String> {
+    let target = fs::read_link(path).ok()?;
+    let absolute = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    };
+    Some(absolute.display().to_string())
+}
+
 fn find_index_file(dir: &Path) -> Option<PathBuf> {
-    for name in &["index.md", "README.md", "main.md"] {
+    for name in &["SKILL.md", "index.md", "README.md", "main.md"] {
         let p = dir.join(name);
         if p.exists() {
             return Some(p);

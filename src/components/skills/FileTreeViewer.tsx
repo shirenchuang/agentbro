@@ -47,49 +47,52 @@ export function FileTreeViewer({ tree, onViewingFileChange }: FileTreeViewerProp
   }, [onViewingFileChange])
 
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      {selectedFile === null ? (
-        <motion.div
-          key="tree"
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -20 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
-        >
-          <div className="file-tree-container">
-            {tree.children?.map(child => (
-              <TreeRow
-                key={child.path}
-                node={child}
-                depth={0}
-                onFileClick={handleFileClick}
-              />
-            )) ?? (
-              <TreeRow node={tree} depth={0} onFileClick={handleFileClick} />
-            )}
-          </div>
-          {binaryNotice && (
-            <div className="file-viewer-warning" style={{ marginTop: 8 }}>
-              {binaryNotice} — {t('skills.binaryFile')}
-            </div>
+    <div className={`file-browser ${selectedFile ? 'file-browser--inspecting' : ''}`}>
+      <motion.div
+        className="file-browser__tree"
+        initial={{ opacity: 0, x: -14 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+      >
+        <div className="file-tree-container">
+          {tree.children?.map(child => (
+            <TreeRow
+              key={child.path}
+              node={child}
+              depth={0}
+              onFileClick={handleFileClick}
+              selectedPath={selectedFile?.path ?? null}
+            />
+          )) ?? (
+            <TreeRow node={tree} depth={0} onFileClick={handleFileClick} selectedPath={selectedFile?.path ?? null} />
           )}
-        </motion.div>
-      ) : (
-        <motion.div
-          key="viewer"
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: 20 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
-        >
-          <FileContentViewer
-            fileName={selectedFile.name}
-            filePath={selectedFile.path}
-            onBack={handleBack}
-          />
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
+        {binaryNotice && (
+          <div className="file-viewer-warning" style={{ marginTop: 8 }}>
+            {binaryNotice} — {t('skills.binaryFile')}
+          </div>
+        )}
+      </motion.div>
+
+      <AnimatePresence initial={false}>
+        {selectedFile && (
+          <motion.div
+            key={selectedFile.path}
+            className="file-inspector-panel"
+            initial={{ opacity: 0, x: 42 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 42 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+          >
+            <FileContentViewer
+              fileName={selectedFile.name}
+              filePath={selectedFile.path}
+              onBack={handleBack}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -97,10 +100,12 @@ function TreeRow({
   node,
   depth,
   onFileClick,
+  selectedPath,
 }: {
   node: FileTreeNode
   depth: number
   onFileClick: (node: FileTreeNode) => void
+  selectedPath: string | null
 }) {
   const [expanded, setExpanded] = useState(depth < 1)
   const isDir = node.nodeType === 'dir'
@@ -128,6 +133,7 @@ function TreeRow({
             node={child}
             depth={depth + 1}
             onFileClick={onFileClick}
+            selectedPath={selectedPath}
           />
         ))}
       </>
@@ -136,7 +142,7 @@ function TreeRow({
 
   return (
     <button
-      className="file-tree-row"
+      className={`file-tree-row ${selectedPath === node.path ? 'file-tree-row--selected' : ''}`}
       style={{ paddingLeft: paddingLeft + 18 }}
       onClick={() => onFileClick(node)}
     >

@@ -6,6 +6,7 @@ interface AgentDetailSliderProps {
   agent: AgentProgramInfo | null
   open: boolean
   onClose: () => void
+  onRefresh: () => void
   onRun: (agentId: string, operation: 'install' | 'update' | 'uninstall' | 'open') => void
 }
 
@@ -20,13 +21,13 @@ function InfoRow({ label, value }: { label: string; value: string | null | undef
 }
 
 function statusText(status: AgentProgramInfo['status']) {
-  if (status === 'installed') return 'Installed'
-  if (status === 'updateAvailable') return 'Update Available'
-  if (status === 'notInstalled') return 'Not Installed'
-  return 'Unavailable'
+  if (status === 'installed') return '已安装'
+  if (status === 'updateAvailable') return '可更新'
+  if (status === 'notInstalled') return '未安装'
+  return '不可用'
 }
 
-export function AgentDetailSlider({ agent, open, onClose, onRun }: AgentDetailSliderProps) {
+export function AgentDetailSlider({ agent, open, onClose, onRefresh, onRun }: AgentDetailSliderProps) {
   const installed = agent?.status === 'installed' || agent?.status === 'updateAvailable'
 
   return (
@@ -52,30 +53,30 @@ export function AgentDetailSlider({ agent, open, onClose, onRun }: AgentDetailSl
               <div>
                 <div className="agent-detail-panel__title">{agent.displayName}</div>
                 <div className="agent-detail-panel__desc">
-                  {agent.kind === 'cli' ? 'Command-line agent' : 'Desktop application'} · {statusText(agent.status)}
+                  {agent.kind === 'cli' ? '命令行 Agent' : '桌面应用'} · {statusText(agent.status)}
                 </div>
               </div>
             </div>
 
             <section className="agent-detail-section">
-              <div className="agent-detail-section__title">Program</div>
-              <InfoRow label="Package Manager" value={agent.packageManager} />
-              <InfoRow label="Package" value={agent.packageName} />
-              <InfoRow label="Installed Version" value={agent.installedVersion} />
-              <InfoRow label="Latest Version" value={agent.latestVersion} />
-              <InfoRow label="Binary Path" value={agent.binaryPath} />
-              <InfoRow label="App Path" value={agent.appPath} />
-              <InfoRow label="Config Dir" value={agent.configDir} />
-              <InfoRow label="Download URL" value={agent.downloadUrl} />
+              <div className="agent-detail-section__title">程序信息</div>
+              <InfoRow label="包管理器" value={agent.packageManager} />
+              <InfoRow label="包名" value={agent.packageName} />
+              <InfoRow label="已安装版本" value={agent.installedVersion} />
+              <InfoRow label="最新版本" value={agent.latestVersion} />
+              <InfoRow label="执行文件" value={agent.binaryPath} />
+              <InfoRow label="应用路径" value={agent.appPath} />
+              <InfoRow label="配置目录" value={agent.configDir} />
+              <InfoRow label="下载地址" value={agent.downloadUrl} />
             </section>
 
             <section className="agent-detail-section">
-              <div className="agent-detail-section__title">Commands</div>
-              <InfoRow label="Install" value={agent.installCommand} />
-              <InfoRow label="Update" value={agent.updateCommand} />
-              <InfoRow label="Uninstall" value={agent.uninstallCommand} />
+              <div className="agent-detail-section__title">命令</div>
+              <InfoRow label="安装" value={agent.installCommand} />
+              <InfoRow label="更新" value={agent.updateCommand} />
+              <InfoRow label="卸载" value={agent.uninstallCommand} />
               {!agent.installCommand && !agent.updateCommand && !agent.uninstallCommand && (
-                <div className="agent-detail-empty">No direct command is configured for this agent.</div>
+                <div className="agent-detail-empty">当前 Agent 未配置可直接执行的命令。</div>
               )}
             </section>
 
@@ -83,27 +84,32 @@ export function AgentDetailSlider({ agent, open, onClose, onRun }: AgentDetailSl
               <div className="agent-detail-section__title">AgentBro Hooks</div>
               <div className="agent-detail-hook-state">
                 <span className={`agent-detail-hook-dot ${agent.hooksInstalled ? 'agent-detail-hook-dot--on' : ''}`} />
-                {agent.hooksInstalled ? 'Hooks installed' : 'Hooks not installed'}
+                {agent.hooksInstalled ? 'Hooks 已安装' : 'Hooks 未安装'}
               </div>
             </section>
 
             <div className="agent-detail-panel__footer">
-              {installed && agent.updateCommand && (
-                <button className="settings-mini-button" onClick={() => onRun(agent.id, 'update')}>Update</button>
+              {installed && agent.status !== 'updateAvailable' && (
+                <button className="settings-mini-button" onClick={onRefresh}>检查更新</button>
+              )}
+              {agent.status === 'updateAvailable' && (
+                <button className="settings-mini-button" onClick={() => agent.updateCommand ? onRun(agent.id, 'update') : onRefresh()}>
+                  ⬆ 更新版本
+                </button>
               )}
               {!installed && agent.installCommand && (
-                <button className="settings-mini-button agent-detail-primary" onClick={() => onRun(agent.id, 'install')}>Install</button>
+                <button className="settings-mini-button agent-detail-primary" onClick={() => onRun(agent.id, 'install')}>安装</button>
               )}
               {!installed && !agent.installCommand && agent.downloadUrl && (
-                <button className="settings-mini-button agent-detail-primary" onClick={() => onRun(agent.id, 'open')}>Download</button>
+                <button className="settings-mini-button agent-detail-primary" onClick={() => onRun(agent.id, 'open')}>下载</button>
               )}
               {installed && agent.kind === 'app' && (
-                <button className="settings-mini-button" onClick={() => onRun(agent.id, 'open')}>Open</button>
+                <button className="settings-mini-button" onClick={() => onRun(agent.id, 'open')}>打开</button>
               )}
               {installed && agent.uninstallCommand && (
                 <InlineConfirmAction
-                  label="Uninstall"
-                  confirmLabel="Confirm"
+                  label="卸载"
+                  confirmLabel="确认"
                   icon="−"
                   onConfirm={() => onRun(agent.id, 'uninstall')}
                 />

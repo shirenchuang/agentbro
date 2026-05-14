@@ -1,5 +1,5 @@
 // FileWatcher — Watches Claude Code JSONL conversation files for changes
-// Uses the `notify` crate to monitor ~/.claude/projects/ recursively.
+// Uses the `notify` crate to monitor the top-level projects directories.
 // On file modification, triggers incremental re-parse and emits Tauri events.
 
 use std::collections::HashMap;
@@ -29,9 +29,10 @@ pub struct ConversationUpdatePayload {
 
 /// Manages file watching for JSONL conversation files.
 ///
-/// Watches `~/.claude/projects/` recursively and triggers incremental
-/// re-parsing when `.jsonl` files are modified. Uses a 100ms debounce
-/// to avoid parsing partial writes.
+/// Watches top-level projects directories and triggers incremental re-parsing
+/// when `.jsonl` files are reported. We intentionally avoid recursive watching:
+/// Claude/AntCC project stores can contain thousands of historical files, and
+/// kqueue-backed recursive watches keep one descriptor per file on macOS.
 pub struct ConversationWatcher {
     /// The underlying notify watcher (kept alive to maintain the watch).
     _watcher: RecommendedWatcher,
@@ -172,10 +173,12 @@ impl ConversationWatcher {
             }
         };
 
-        // Watch all projects directories recursively
+        // Watch only the top-level project roots. Recursive kqueue watches keep
+        // thousands of historical transcript descriptors open and can starve
+        // the hook socket server with EMFILE ("Too many open files").
         let mut watching_any = false;
         for dir in &projects_dirs {
-            if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
+            if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
                 log::warn!("Failed to watch {}: {}", dir.display(), e);
             } else {
                 log::info!("Conversation watcher started on {}", dir.display());

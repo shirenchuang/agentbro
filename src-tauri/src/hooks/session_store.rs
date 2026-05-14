@@ -659,6 +659,7 @@ impl SessionStore {
 
     /// Get all sessions as a vector
     pub fn get_all_sessions(&self) -> Vec<SessionState> {
+        self.prune_dead_process_sessions();
         self.sessions
             .iter()
             .map(|entry| {
@@ -667,6 +668,31 @@ impl SessionStore {
                 s
             })
             .collect()
+    }
+
+    fn prune_dead_process_sessions(&self) {
+        let tree = crate::terminal::process_tree::build_tree();
+        let stale_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter_map(|entry| {
+                let session = entry.value();
+                let pid = session.pid?;
+                if tree.contains_key(&pid) || session.phase.needs_attention() {
+                    None
+                } else {
+                    Some(session.id.clone())
+                }
+            })
+            .collect();
+
+        for id in stale_ids {
+            log::info!(
+                "Removing stale session {} because PID is no longer alive",
+                id
+            );
+            self.sessions.remove(&id);
+        }
     }
 
     /// Get a specific session
@@ -813,5 +839,29 @@ mod tests {
 
         session.tasks[0].status = "completed".to_string();
         assert!(!session.has_unfinished_tasks());
+    }
+
+    #[test]
+    fn get_all_sessions_prunes_dead_pid_sessions() {
+        let store = seeded_store();
+        store.update_session("s1", |session| {
+            session.pid = Some(u32::MAX);
+            session.phase = SessionPhase::Done;
+        });
+
+        assert!(store.get_all_sessions().is_empty());
+        assert!(store.get_session("s1").is_none());
+    }
+
+    #[test]
+    fn get_all_sessions_keeps_attention_sessions_even_when_pid_is_dead() {
+        let store = seeded_store();
+        store.update_session("s1", |session| {
+            session.pid = Some(u32::MAX);
+            session.phase = SessionPhase::WaitingInput;
+        });
+
+        assert_eq!(store.get_all_sessions().len(), 1);
+        assert!(store.get_session("s1").is_some());
     }
 }

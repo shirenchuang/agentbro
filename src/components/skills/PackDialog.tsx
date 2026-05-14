@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SkillPack } from '../../services/skillApi'
 import { skillApi } from '../../services/skillApi'
 import { useSkillStore } from '../../stores/skillStore'
-
-const AGENTS = ['claude-code', 'codex', 'gemini-cli', 'cursor', 'hermes']
+import { useAgentStore } from '../../stores/agentStore'
+import { detectedAgentOptions } from '../../utils/agentPrograms'
 
 interface PackDialogProps {
   pack?: SkillPack
@@ -14,10 +14,19 @@ interface PackDialogProps {
 export function PackDialog({ pack, onClose }: PackDialogProps) {
   const { t } = useTranslation()
   const { skills, loadAll } = useSkillStore()
+  const { agents, loadAgents } = useAgentStore()
+  const targetAgents = useMemo(() => {
+    const installed = detectedAgentOptions(agents)
+    return installed.length > 0 ? installed : agents
+  }, [agents])
   const [name, setName] = useState(pack?.name || '')
   const [description, setDescription] = useState(pack?.description || '')
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set(pack?.skills || []))
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set(pack?.targetAgents || []))
+
+  useEffect(() => {
+    if (agents.length === 0) loadAgents()
+  }, [agents.length, loadAgents])
 
   const toggleSkill = useCallback((id: string) => {
     setSelectedSkills(prev => {
@@ -99,13 +108,13 @@ export function PackDialog({ pack, onClose }: PackDialogProps) {
           <div className="install-form-row">
             <label className="install-form-label">{t('skills.targetAgents')}</label>
             <div className="install-targets">
-              {AGENTS.map(a => (
+              {targetAgents.map(a => (
                 <div
-                  key={a}
-                  className={`install-target-chip ${selectedAgents.has(a) ? 'install-target-chip--selected' : ''}`}
-                  onClick={() => toggleAgent(a)}
+                  key={a.id}
+                  className={`install-target-chip ${selectedAgents.has(a.id) ? 'install-target-chip--selected' : ''}`}
+                  onClick={() => toggleAgent(a.id)}
                 >
-                  {a}
+                  {a.displayName}
                 </div>
               ))}
             </div>

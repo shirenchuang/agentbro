@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState, useMemo, type CSSProperties, 
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, startNotchDrag, endNotchDrag, isCursorOverNotch, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState } from '../../types/agent'
-import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay } from '../../utils/islandInteraction'
+import { deriveIslandInteraction, isBlockingOverlay, isNonBlockingOverlay } from '../../utils/islandInteraction'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
@@ -20,14 +20,6 @@ import { Confetti } from './Confetti'
 import { PixelCursor } from './PixelCursor'
 import { PetSurface } from './PetSurface'
 import './NotchPanel.css'
-
-function sameStringSet(a: Set<string> | null, b: Set<string>): boolean {
-  if (!a || a.size !== b.size) return false
-  for (const item of b) {
-    if (!a.has(item)) return false
-  }
-  return true
-}
 
 const morphTransition = {
   type: 'spring' as const,
@@ -182,6 +174,8 @@ export function NotchPanel() {
   const collapseDelay = useConfigStore((s) => s.collapseDelay)
   const clickToDetail = useConfigStore((s) => s.clickToDetail)
   const dismissOnOutsideClick = useConfigStore((s) => s.dismissOnOutsideClick)
+  const islandEnabled = useConfigStore((s) => s.islandEnabled)
+  const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const autoHideNoSessions = useConfigStore((s) => s.autoHideNoSessions)
   const noSessionsHideDelay = useConfigStore((s) => s.noSessionsHideDelay)
   const idleTimeoutMinutes = useConfigStore((s) => s.idleTimeoutMinutes)
@@ -190,12 +184,10 @@ export function NotchPanel() {
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const confettiEnabled = useConfigStore((s) => s.confettiEnabled)
   const pixelCursorEnabled = useConfigStore((s) => s.pixelCursorEnabled)
-  const followFocus = useConfigStore((s) => s.followFocus)
   const islandSurfaceMode = useConfigStore((s) => s.islandSurfaceMode)
   const islandPetScale = useConfigStore((s) => s.islandPetScale)
   const wakeSilencedUntil = useSessionStore((s) => s.wakeSilencedUntil)
   const setWakeSilencedUntil = useSessionStore((s) => s.setWakeSilencedUntil)
-  const setFocusedTerminal = useSessionStore((s) => s.setFocusedTerminal)
   const applyIdleTimeout = useSessionStore((s) => s.applyIdleTimeout)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const idleHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -204,67 +196,8 @@ export function NotchPanel() {
   const [displayChanging, setDisplayChanging] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [layoutPreview, setLayoutPreview] = useState<IslandLayoutPreview | null>(null)
-  const [focusedSessionIds, setFocusedSessionIds] = useState<Set<string> | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
-  const focusSessionKey = useMemo(
-    () => sessions.map((session) => `${session.id}:${session.pid ?? ''}:${session.terminal}`).join('|'),
-    [sessions],
-  )
-
-  useEffect(() => {
-    if (!followFocus || !isTauri()) {
-      setFocusedSessionIds(null)
-      if (useSessionStore.getState().focusedTerminal !== null) setFocusedTerminal(null)
-      return
-    }
-
-    let disposed = false
-    let pollInFlight = false
-    const pollFocusedSessions = async () => {
-      if (pollInFlight) return
-      pollInFlight = true
-      try {
-        const snapshot = useSessionStore.getState().sessionList
-        if (snapshot.length === 0) {
-          if (!disposed) {
-            setFocusedSessionIds((prev) => (prev && prev.size === 0 ? prev : new Set()))
-            if (useSessionStore.getState().focusedTerminal !== null) setFocusedTerminal(null)
-          }
-          return
-        }
-
-        const results = await Promise.all(snapshot.map(async (session) => {
-          if (!session.pid) return [session.id, false] as const
-          try {
-            return [session.id, await isTerminalFocused(session.id)] as const
-          } catch (err) {
-            console.warn('[notch] followFocus check failed:', err)
-            return [session.id, false] as const
-          }
-        }))
-
-        if (disposed) return
-        const nextFocusedIds = new Set(results.filter(([, focused]) => focused).map(([id]) => id))
-        setFocusedSessionIds((prev) => sameStringSet(prev, nextFocusedIds) ? prev : nextFocusedIds)
-
-        const focusedSession = snapshot.find((session) => nextFocusedIds.has(session.id))
-        const focusedTerminal = focusedSession?.terminal ?? null
-        if (useSessionStore.getState().focusedTerminal !== focusedTerminal) {
-          setFocusedTerminal(focusedTerminal)
-        }
-      } finally {
-        pollInFlight = false
-      }
-    }
-
-    pollFocusedSessions()
-    const timer = window.setInterval(pollFocusedSessions, 1000)
-    return () => {
-      disposed = true
-      window.clearInterval(timer)
-    }
-  }, [followFocus, focusSessionKey, setFocusedTerminal])
 
   useEffect(() => {
     if (idleTimeoutMinutes <= 0) return
@@ -273,10 +206,13 @@ export function NotchPanel() {
     return () => window.clearInterval(timer)
   }, [applyIdleTimeout, idleTimeoutMinutes])
 
-  const visibleSessions = useMemo(() => {
-    return getFollowFocusVisibleSessions(sessions, followFocus, focusedSessionIds)
-  }, [followFocus, focusedSessionIds, sessions])
-  const focusFilteredEmpty = followFocus && focusedSessionIds !== null && sessions.length > 0 && visibleSessions.length === 0
+  const visibleSessions = sessions
+  const displayedSessions = useMemo(() => (
+    islandMonitorSubagents
+      ? visibleSessions
+      : visibleSessions.map((session) => ({ ...session, subagents: [] }))
+  ), [islandMonitorSubagents, visibleSessions])
+  const focusFilteredEmpty = false
 
   // Display-change listener: fade-out → pause → fade-in
   useEffect(() => {
@@ -319,6 +255,41 @@ export function NotchPanel() {
       unlistenClear?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!isTauri()) return
+    let unlisten: (() => void) | undefined
+
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('tray-open-agentbro', () => {
+        detailModeRef.current = false
+        detailBackGuardUntilRef.current = 0
+        nativeHoverInsideRef.current = true
+        interactionLockUntilRef.current = Date.now() + 700
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current)
+          leaveTimerRef.current = undefined
+        }
+        if (expandTimerRef.current) {
+          clearTimeout(expandTimerRef.current)
+          expandTimerRef.current = undefined
+        }
+        if (pendingDetailOpenTimerRef.current) {
+          clearTimeout(pendingDetailOpenTimerRef.current)
+          pendingDetailOpenTimerRef.current = undefined
+        }
+        setPersistentIdleHidden(false)
+        setWakeSilencedUntil(0)
+        setNotchOpacity(1).catch(() => {})
+        useSessionStore.getState().setActiveSession(null)
+        setPanelState('hover')
+      }).then((fn) => { unlisten = fn }).catch(() => {})
+    }).catch(() => {})
+
+    return () => {
+      unlisten?.()
+    }
+  }, [setPanelState, setWakeSilencedUntil])
 
   // Track sessions needing blocking attention.
   const blockingAttentionCount = useMemo(
@@ -405,8 +376,8 @@ export function NotchPanel() {
     // Keep the native transparent window alive for hover hit-testing. Minimal
     // mode hides the visual shell with CSS opacity; setting the whole NSWindow
     // to alpha 0 makes later pointer entry unreliable on macOS.
-    setNotchOpacity(1).catch(() => {})
-  }, [])
+    setNotchOpacity(islandEnabled ? 1 : 0).catch(() => {})
+  }, [islandEnabled])
 
   // Non-blocking overlays still need to expire while the island is collapsed.
   useEffect(() => {
@@ -435,8 +406,18 @@ export function NotchPanel() {
   const detailBackGuardUntilRef = useRef(0)
   const pendingDetailOpenTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
+  const focusNotchForHover = useCallback(() => {
+    setNotchFocusable(true).catch(() => {})
+  }, [])
+
+  const showHoverPanel = useCallback(() => {
+    focusNotchForHover()
+    setPanelState('hover')
+  }, [focusNotchForHover, setPanelState])
+
   // Mouse enter
-  const handleMouseEnter = () => {
+  const handleMouseEnter = useCallback(() => {
+    if (!islandEnabled) return
     const wakeSilenced = useSessionStore.getState().isWakeSilenced()
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current)
@@ -444,6 +425,10 @@ export function NotchPanel() {
     }
     if (wakeSilenced) return
     nativeHoverInsideRef.current = true
+    if (panelState !== 'collapsed') {
+      focusNotchForHover()
+      return
+    }
     if (panelState === 'collapsed') {
       const delay = interaction.isMicro ? microHoverExpandDelay : hoverExpandDelay
       if (delay > 0) {
@@ -451,22 +436,20 @@ export function NotchPanel() {
           const current = useSessionStore.getState().panelState
           const silenced = useSessionStore.getState().isWakeSilenced()
           if (current === 'collapsed' && !silenced) {
-            setPanelState('hover')
+            showHoverPanel()
             if (hapticOnHover) performHaptic(hapticIntensity).catch(() => {})
           }
         }, delay)
       } else {
-        setPanelState('hover')
+        showHoverPanel()
         if (hapticOnHover) performHaptic(hapticIntensity).catch(() => {})
       }
     }
-  }
+  }, [focusNotchForHover, hapticIntensity, hapticOnHover, hoverExpandDelay, interaction.isMicro, islandEnabled, microHoverExpandDelay, panelState, showHoverPanel])
 
   // Mouse leave
-  const handleMouseLeave = () => {
-    if (detailModeRef.current) return
+  const handleMouseLeave = useCallback(() => {
     if (Date.now() < interactionLockUntilRef.current) return
-    if (useSessionStore.getState().panelState === 'expanded') return
     nativeHoverInsideRef.current = false
     if (isDragging) return
     if (expandTimerRef.current) {
@@ -474,17 +457,20 @@ export function NotchPanel() {
       expandTimerRef.current = undefined
     }
     if (!autoCollapse) return
-    if (panelState === 'hover') {
+    const currentPanelState = useSessionStore.getState().panelState
+    if (currentPanelState === 'hover' || currentPanelState === 'expanded') {
       const delay = collapseDelay > 0 ? collapseDelay : dwellDuration
       leaveTimerRef.current = setTimeout(() => {
         const current = useSessionStore.getState().panelState
-        if (current === 'hover') {
+        if (current === 'hover' || current === 'expanded') {
+          detailModeRef.current = false
+          detailBackGuardUntilRef.current = 0
           setNotchFocusable(false).catch(() => {})
           setPanelState('collapsed')
         }
       }, delay)
     }
-  }
+  }, [autoCollapse, collapseDelay, dwellDuration, isDragging, setPanelState])
 
   useEffect(() => {
     return () => {
@@ -510,9 +496,7 @@ export function NotchPanel() {
         if (isOver && !wasOver) {
           handleMouseEnter()
         } else if (!isOver && wasOver) {
-          if (!detailModeRef.current && useSessionStore.getState().panelState !== 'expanded') {
-            handleMouseLeave()
-          }
+          handleMouseLeave()
         }
       } catch {
         // Pointer events remain the primary path if the native probe is not
@@ -529,7 +513,7 @@ export function NotchPanel() {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [isDragging, interaction.isMicro, hoverExpandDelay, microHoverExpandDelay, hapticOnHover, hapticIntensity, panelState, autoCollapse, collapseDelay, dwellDuration])
+  }, [handleMouseEnter, handleMouseLeave, isDragging])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -694,6 +678,13 @@ export function NotchPanel() {
   const updateConfig = useConfigStore((s) => s.updateConfig)
   const effectiveHorizontalOffset = allowHorizontalDrag ? panelHorizontalOffset : 0
   const isPetMode = islandSurfaceMode === 'pet'
+  const overlayPresentationOpen = Boolean(
+    !layoutPreview
+    && panelState === 'collapsed'
+    && activeOverlay
+    && isNonBlockingOverlay(activeOverlay)
+    && !interaction.isHidden,
+  )
 
   // Sizing
   const isCompact = notchStyle === 'compact'
@@ -704,7 +695,9 @@ export function NotchPanel() {
     ? 'expanded'
     : previewMode === 'completion'
       ? 'hover'
-      : panelState
+      : overlayPresentationOpen
+        ? 'hover'
+        : panelState
   const collapsedHeight = notchHeightMode === 'custom'
     ? customNotchHeight
     : notchHeightMode === 'matchMenuBar'
@@ -720,7 +713,7 @@ export function NotchPanel() {
         ? Math.round(compactPillWidth * (collapsedWidthScale / 100))
         : previewMode === 'expanded' || previewMode === 'completion'
           ? (isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50))
-          : panelState === 'collapsed'
+          : effectivePanelState === 'collapsed'
             ? isMicro
               ? microPillWidth
               : Math.round(compactPillWidth * (collapsedWidthScale / 100))
@@ -728,8 +721,8 @@ export function NotchPanel() {
 
   const statusBarHeight = effectivePanelState !== 'collapsed' ? 32 : 0
   const overlayExtraHeight = hasOverlay ? 120 : 0
-  const projectCount = new Set(visibleSessions.map((session) => session.project)).size
-  const hoverListHeight = 96 + Math.max(visibleSessions.length, 1) * 76 + Math.max(projectCount, 1) * 32
+  const projectCount = new Set(displayedSessions.map((session) => session.project)).size
+  const hoverListHeight = 96 + Math.max(displayedSessions.length, 1) * 76 + Math.max(projectCount, 1) * 32
   const panelHeight =
     isPetMode
       ? 360
@@ -741,11 +734,13 @@ export function NotchPanel() {
           ? Math.min(Math.max(statusBarHeight + completionCardHeight + 72, 220), maxPanelHeight || 600)
           : previewMode === 'expanded'
             ? (maxPanelHeight || 560)
-            : panelState === 'collapsed'
-              ? collapsedHeight
-              : panelState === 'hover'
-                ? Math.min(Math.max(statusBarHeight + hoverListHeight + overlayExtraHeight, 260), maxPanelHeight || 600)
-                : (maxPanelHeight || 560)
+            : overlayPresentationOpen
+              ? Math.min(Math.max(statusBarHeight + completionCardHeight + 72, 220), maxPanelHeight || 600)
+              : effectivePanelState === 'collapsed'
+                ? collapsedHeight
+                : effectivePanelState === 'hover'
+                  ? Math.min(Math.max(statusBarHeight + hoverListHeight + overlayExtraHeight, 260), maxPanelHeight || 600)
+                  : (maxPanelHeight || 560)
 
   const visualState = isPetMode
     ? 'pet'
@@ -760,18 +755,18 @@ export function NotchPanel() {
           : previewMode === 'expanded'
             ? 'expanded'
             : activeOverlay?.type === 'permission'
-      ? 'alert_permission'
-      : activeOverlay?.type === 'question'
-        ? 'alert_question'
-        : activeOverlay?.type === 'plan'
-          ? 'alert_plan'
-          : activeOverlay?.type === 'completion' || activeOverlay?.type === 'response'
-            ? 'feedback'
-            : panelState === 'collapsed'
-              ? (isMicro ? 'micro' : 'compact')
-              : panelState === 'expanded'
-                ? 'expanded'
-                : 'hover'
+              ? 'alert_permission'
+              : activeOverlay?.type === 'question'
+                ? 'alert_question'
+                : activeOverlay?.type === 'plan'
+                  ? 'alert_plan'
+                  : activeOverlay?.type === 'completion' || activeOverlay?.type === 'response'
+                    ? 'feedback'
+                    : effectivePanelState === 'collapsed'
+                      ? (isMicro ? 'micro' : 'compact')
+                      : effectivePanelState === 'expanded'
+                        ? 'expanded'
+                        : 'hover'
   const usesNotchShell = !isPetMode
   const shellSideExtension = usesNotchShell ? NOTCH_SHELL_SIDE_EXTENSION : 0
   const shellWidth = contentWidth + shellSideExtension * 2
@@ -781,14 +776,15 @@ export function NotchPanel() {
     visualState,
     shellSideExtension,
   )
-  const hitSlopX = panelState === 'collapsed' || isDragging
+  const hitSlopX = effectivePanelState === 'collapsed' || isDragging
     ? NOTCH_HIT_SLOP_X_COLLAPSED
     : NOTCH_HIT_SLOP_X_EXPANDED
-  const hitSlopY = panelState === 'collapsed' || isDragging
+  const hitSlopY = effectivePanelState === 'collapsed' || isDragging
     ? NOTCH_HIT_SLOP_Y_COLLAPSED
     : NOTCH_HIT_SLOP_Y_EXPANDED
   const hitboxWidth = shellWidth + hitSlopX * 2
   const hitboxHeight = panelHeight + hitSlopY
+  const islandHidden = !islandEnabled || (!layoutPreview && interaction.isHidden)
 
   // Debounce IPC resize to avoid jitter during spring animation
   useEffect(() => {
@@ -798,6 +794,21 @@ export function NotchPanel() {
     }, 50)
     return () => clearTimeout(timer)
   }, [hitboxWidth, hitboxHeight, effectiveHorizontalOffset, displayMonitor, isDragging])
+
+  useEffect(() => {
+    if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
+    let inFlight = false
+    const repositionToCursorDisplay = () => {
+      if (inFlight) return
+      inFlight = true
+      resizeNotch(hitboxWidth, hitboxHeight, effectiveHorizontalOffset, 'auto')
+        .catch((error) => console.warn('[notch] follow cursor display:', error))
+        .finally(() => { inFlight = false })
+    }
+    const interval = window.setInterval(repositionToCursorDisplay, 500)
+    repositionToCursorDisplay()
+    return () => window.clearInterval(interval)
+  }, [displayMonitor, effectiveHorizontalOffset, hitboxHeight, hitboxWidth, isDragging])
 
   const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {
     const activePointerId = dragPointerIdRef.current
@@ -909,11 +920,12 @@ export function NotchPanel() {
         '--notch-hitbox-width': `${hitboxWidth}px`,
         '--notch-hitbox-height': `${hitboxHeight}px`,
         '--notch-hitbox-pad-x': `${hitSlopX}px`,
+        pointerEvents: islandEnabled ? 'auto' : 'none',
       } as CSSProperties}
     >
       <div
         className="notch-hitbox"
-        data-island-hidden={!layoutPreview && interaction.isHidden ? 'true' : 'false'}
+        data-island-hidden={islandHidden ? 'true' : 'false'}
         onPointerEnter={handleMouseEnter}
         onPointerLeave={handleMouseLeave}
       >
@@ -927,7 +939,7 @@ export function NotchPanel() {
           animate={{
             width: shellWidth,
             height: panelHeight,
-            opacity: layoutPreview ? 1 : displayChanging || interaction.isHidden ? 0 : 1,
+            opacity: layoutPreview ? 1 : displayChanging || islandHidden ? 0 : 1,
           }}
           transition={morphTransition}
           onPointerDown={handlePointerDown}
@@ -947,11 +959,12 @@ export function NotchPanel() {
           {isPetMode ? (
             <PetSurface
               activeOverlay={activeOverlay}
-              hidden={!layoutPreview && interaction.isHidden}
+              expanded={effectivePanelState !== 'collapsed'}
+              hidden={islandHidden}
               onCollapse={handleCollapse}
               onDismissOverlay={dismissOverlay}
               scale={islandPetScale}
-              sessions={visibleSessions}
+              sessions={displayedSessions}
             />
           ) : (
             <>
@@ -960,7 +973,7 @@ export function NotchPanel() {
 
               {/* Header — always visible */}
               <CollapsedBar
-                sessions={visibleSessions}
+                sessions={displayedSessions}
                 panelState={effectivePanelState}
                 rateLimits={rateLimits}
                 onCollapse={handleCollapse}
@@ -982,7 +995,7 @@ export function NotchPanel() {
                 )}
 
                 {/* Base layer: session list */}
-                {!isDragging && !layoutPreview && panelState === 'hover' && (
+                {!isDragging && !layoutPreview && panelState === 'hover' && !(activeOverlay && isBlockingOverlay(activeOverlay)) && (
                   <motion.div
                     key="hover"
                     initial={{ opacity: 0 }}
@@ -991,11 +1004,11 @@ export function NotchPanel() {
                     transition={contentTransition}
                   >
                     <HoverList
-                      sessions={visibleSessions}
+                      sessions={displayedSessions}
                       onSessionClick={handleSessionClick}
                       onJumpToTerminal={(id) => {
                         setNotchFocusable(false).catch(() => {})
-                        jumpToTerminal(id)
+                        jumpToTerminal(id).catch((error) => console.warn('[notch] jumpToTerminal:', error))
                       }}
                       focusFilteredEmpty={focusFilteredEmpty}
                     />
@@ -1016,13 +1029,14 @@ export function NotchPanel() {
                       if (Date.now() < detailBackGuardUntilRef.current) return
                       detailModeRef.current = false
                       detailBackGuardUntilRef.current = 0
+                      useSessionStore.getState().setActiveSession(null)
                       setPanelState('hover')
                     }} />
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && dismissOnOutsideClick && panelState !== 'collapsed' && (
+              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && dismissOnOutsideClick && effectivePanelState !== 'collapsed' && (
                 <button
                   type="button"
                   className="notch-panel__outside-dismiss"
@@ -1037,7 +1051,7 @@ export function NotchPanel() {
 
               {/* Overlay layer — renders on top of base layer */}
               <AnimatePresence>
-                {!isDragging && !layoutPreview && activeOverlay && panelState !== 'collapsed' && (
+                {!isDragging && !layoutPreview && activeOverlay && effectivePanelState !== 'collapsed' && (
                   <motion.div
                     key={`overlay-${activeOverlay.id}`}
                     className="notch-panel__overlay"

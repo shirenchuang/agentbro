@@ -113,6 +113,7 @@ export interface SessionState {
   engineLabel?: string
   engineConfigRoot?: string
   project: string
+  cwd?: string
   terminal: string
   phase: SessionPhase
   startedAt: number
@@ -211,7 +212,7 @@ export type ChatMessage =
   | { role: 'error'; message: string; timestamp: number }
 
 export type AgentEvent =
-  | { type: 'session_start'; sessionId: string; project: string; terminal: string; agentType: AgentType }
+  | { type: 'session_start'; sessionId: string; project: string; terminal: string; agentType: AgentType; cwd?: string }
   | { type: 'session_end'; sessionId: string }
   | { type: 'processing'; sessionId: string; description: string }
   | { type: 'tool_use'; sessionId: string; toolName: string; toolInput: string; toolTarget?: string; status: ToolStatus }

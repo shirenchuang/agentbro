@@ -387,7 +387,7 @@ pub async fn jump_to_terminal(
 
     let pid = session.pid.unwrap_or(0);
     if pid == 0 && session.tty.as_deref().unwrap_or("").is_empty() {
-        return Err("Session has no PID or TTY".to_string());
+        return jump_to_terminal_fallback(&session.terminal, &session.cwd);
     }
 
     let tree = crate::terminal::process_tree::build_tree();
@@ -415,9 +415,110 @@ pub async fn jump_to_terminal(
         crate::terminal::jump::JumpResult::Success => Ok(()),
         crate::terminal::jump::JumpResult::SessionNotFound => Err("Session not found".to_string()),
         crate::terminal::jump::JumpResult::TerminalNotFound => {
+            log::warn!(
+                "Terminal not found in process tree for session {}. Falling back to app activation.",
+                session_id
+            );
+            jump_to_terminal_fallback(&session.terminal, &session.cwd)
+        }
+        crate::terminal::jump::JumpResult::Failed(msg) => {
+            log::warn!(
+                "Precise terminal jump failed for session {}: {}. Falling back to app activation.",
+                session_id,
+                msg
+            );
+            jump_to_terminal_fallback(&session.terminal, &session.cwd)
+        }
+    }
+}
+
+fn jump_to_terminal_fallback(terminal: &str, cwd: &str) -> Result<(), String> {
+    match jump_to_terminal_app_fallback(terminal) {
+        Ok(()) => Ok(()),
+        Err(app_err) => {
+            log::warn!(
+                "Terminal app fallback failed for {:?}: {}. Trying cwd fallback.",
+                terminal,
+                app_err
+            );
+            open_terminal_at_cwd(terminal, cwd).map_err(|cwd_err| {
+                if cwd.trim().is_empty() {
+                    app_err
+                } else {
+                    format!("{}; cwd fallback failed: {}", app_err, cwd_err)
+                }
+            })
+        }
+    }
+}
+
+fn jump_to_terminal_app_fallback(terminal: &str) -> Result<(), String> {
+    if terminal.trim().is_empty() {
+        return Err("Session has no PID, TTY, or terminal app".to_string());
+    }
+    if !can_fallback_to_terminal_app(terminal) {
+        return Err(format!(
+            "Session target {:?} is not a recognized terminal app",
+            terminal
+        ));
+    }
+
+    match crate::terminal::jump::jump_to_terminal_app(terminal) {
+        crate::terminal::jump::JumpResult::Success => Ok(()),
+        crate::terminal::jump::JumpResult::SessionNotFound => Err("Session not found".to_string()),
+        crate::terminal::jump::JumpResult::TerminalNotFound => {
             Err("Terminal not found in process tree".to_string())
         }
         crate::terminal::jump::JumpResult::Failed(msg) => Err(format!("Jump failed: {}", msg)),
+    }
+}
+
+fn can_fallback_to_terminal_app(terminal: &str) -> bool {
+    crate::terminal::registry::is_terminal(terminal)
+}
+
+fn open_terminal_at_cwd(terminal: &str, cwd: &str) -> Result<(), String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("Session has no working directory".to_string());
+    }
+    let path = std::path::Path::new(cwd);
+    if !path.is_dir() {
+        return Err(format!("Working directory {:?} does not exist", cwd));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app = fallback_terminal_app_name(terminal);
+        let output = std::process::Command::new("/usr/bin/open")
+            .args(["-a", app, cwd])
+            .output()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Opening a terminal at the session cwd is only supported on macOS".to_string())
+    }
+}
+
+fn fallback_terminal_app_name(terminal: &str) -> &'static str {
+    let lower = terminal.to_ascii_lowercase();
+    if lower.contains("iterm") {
+        "iTerm"
+    } else if lower.contains("ghostty") {
+        "Ghostty"
+    } else if lower.contains("wezterm") || lower.contains("wez") {
+        "WezTerm"
+    } else if lower.contains("kitty") {
+        "kitty"
+    } else {
+        "Terminal"
     }
 }
 
@@ -480,6 +581,9 @@ pub async fn set_island_surface_options(
         ));
     }
     let mut config = state.config_store.get();
+    if config.island_surface_mode != island_surface_mode {
+        config.island_pet_window_origin = None;
+    }
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(50, 120);
     state.config_store.update(config)
@@ -742,7 +846,8 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apple_script_string, build_codex_desktop_send_message_script, is_codex_desktop_session,
+        apple_script_string, build_codex_desktop_send_message_script, can_fallback_to_terminal_app,
+        fallback_terminal_app_name, is_codex_desktop_session,
         parse_subagent_chat_history_for_session,
     };
     use crate::hooks::session_store::{SessionState, SubagentInfo};
@@ -799,6 +904,22 @@ mod tests {
             "Codex",
             None
         )));
+    }
+
+    #[test]
+    fn terminal_app_fallback_rejects_agent_app_labels() {
+        assert!(can_fallback_to_terminal_app("iTerm2"));
+        assert!(can_fallback_to_terminal_app("Terminal"));
+        assert!(!can_fallback_to_terminal_app("Claude"));
+        assert!(!can_fallback_to_terminal_app("AntCC"));
+    }
+
+    #[test]
+    fn cwd_fallback_uses_real_terminal_app_names() {
+        assert_eq!(fallback_terminal_app_name("iTerm·tmux"), "iTerm");
+        assert_eq!(fallback_terminal_app_name("Ghostty"), "Ghostty");
+        assert_eq!(fallback_terminal_app_name("AntCC"), "Terminal");
+        assert_eq!(fallback_terminal_app_name(""), "Terminal");
     }
 
     #[test]

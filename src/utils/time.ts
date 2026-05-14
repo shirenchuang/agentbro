@@ -23,3 +23,13 @@ export function formatDuration(seconds: number): string {
   const remainMins = mins % 60
   return `${hours}:${pad2(remainMins)}:${pad2(secs)}`
 }
+
+export function formatDurationShort(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(seconds))
+  const mins = Math.floor(totalSeconds / 60)
+  if (mins < 1) return '<1m'
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  const remainMins = mins % 60
+  return `${hours}h${remainMins > 0 ? `${remainMins}m` : ''}`
+}

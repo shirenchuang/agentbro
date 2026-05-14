@@ -120,6 +120,9 @@ interface ConfigState {
   soundPack: 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom'
 
   // Display toggles
+  islandEnabled: boolean
+  islandExternalEnabled: boolean
+  islandMonitorSubagents: boolean
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
@@ -315,7 +318,7 @@ const defaultLabFeatures: LabFeature[] = [
 function createIslandDefaults(): Partial<ConfigState> {
   return {
     displayMonitor: 'auto',
-    autoHideNoSessions: true,
+    autoHideNoSessions: false,
     smartSuppression: true,
     autoCollapse: true,
     dwellDuration: 300,
@@ -335,6 +338,9 @@ function createIslandDefaults(): Partial<ConfigState> {
     customSounds: [],
     probeSessionFilter: false,
     soundPack: 'synth',
+    islandEnabled: true,
+    islandExternalEnabled: true,
+    islandMonitorSubagents: true,
     tipsEnabled: true,
     pixelCursorEnabled: true,
     confettiEnabled: true,
@@ -381,7 +387,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     collapseDelay: 400,
     noSessionsHideDelay: 10,
     escSilenceDuration: 30,
-    interactionMode: 'minimal',
+    interactionMode: 'persistent',
   }
 }
 
@@ -392,7 +398,7 @@ export const useConfigStore = create<ConfigStore>()(
   launchAtLogin: false,
   displayMonitor: 'auto',
   autoHide: false,
-  autoHideNoSessions: true,
+  autoHideNoSessions: false,
   smartSuppression: true,
   autoCollapse: true,
   completionPopupDuration: '5s',
@@ -422,6 +428,9 @@ export const useConfigStore = create<ConfigStore>()(
   soundPack: 'synth',
 
   // Display toggles
+  islandEnabled: true,
+  islandExternalEnabled: true,
+  islandMonitorSubagents: true,
   tipsEnabled: true,
   pixelCursorEnabled: true,
   confettiEnabled: true,
@@ -527,7 +536,7 @@ export const useConfigStore = create<ConfigStore>()(
   collapseDelay: 400,
   noSessionsHideDelay: 10,
   escSilenceDuration: 30,
-  interactionMode: 'minimal',
+  interactionMode: 'persistent',
 
   // Actions
   updateConfig: (key, value) => {

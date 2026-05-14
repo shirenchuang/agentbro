@@ -14,12 +14,12 @@ interface SkillState {
   syncConfig: SyncConfig | null
   loading: boolean
   scanning: boolean
-  activeTab: 'skills' | 'packs' | 'sync'
+  activeTab: 'skills' | 'plugins' | 'packs' | 'market' | 'sync'
   selectedSkillId: string | null
   detailOpen: boolean
   fileTree: FileTreeNode | null
   searchQuery: string
-  typeFilter: 'all' | 'skill' | 'mcp'
+  typeFilter: 'all' | 'skill' | 'plugin' | 'mcp'
   agentFilter: string
   batchMode: boolean
   batchSelected: Set<string>
@@ -68,10 +68,24 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
         for (const skill of agentSkills) {
           if (merged.has(skill.id)) {
             const existing = merged.get(skill.id)!
-            existing.agents.push(...skill.agents)
+            const seenAgents = new Set(existing.agents.map(agentKey))
+            for (const agent of skill.agents) {
+              const key = agentKey(agent)
+              if (!seenAgents.has(key)) {
+                existing.agents.push(agent)
+                seenAgents.add(key)
+              }
+            }
           } else {
             const source = meta.sources[skill.id] ? 'island' as const : skill.source
-            merged.set(skill.id, { ...skill, source, originUrl: meta.sources[skill.id]?.origin ?? null })
+            const originUrl = meta.sources[skill.id]?.origin ?? null
+            merged.set(skill.id, {
+              ...skill,
+              agents: uniqueAgents(skill.agents),
+              source,
+              originUrl,
+              hasUpdate: skill.hasUpdate || Boolean(originUrl),
+            })
           }
         }
       }
@@ -139,3 +153,17 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
   }),
   clearBatch: () => set({ batchSelected: new Set() }),
 }))
+
+function agentKey(agent: ScannedSkill['agents'][number]) {
+  return `${agent.agent}:${agent.installPath}:${agent.linkTarget ?? ''}`
+}
+
+function uniqueAgents(agents: ScannedSkill['agents']) {
+  const seen = new Set<string>()
+  return agents.filter((agent) => {
+    const key = agentKey(agent)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { AgentOutputEvent, AgentProgramInfo } from '../services/agentApi'
-import { agentApi } from '../services/agentApi'
+import { agentApi, seedAgentPrograms } from '../services/agentApi'
 
 export type AgentFilter = 'all' | 'installed' | 'available' | 'updates'
 export type AgentOperationName = 'install' | 'update' | 'uninstall' | 'open'
@@ -29,6 +29,7 @@ interface AgentActions {
   refreshAgents: () => Promise<void>
   setSearchQuery: (query: string) => void
   setFilter: (filter: AgentFilter) => void
+  focusAgent: (id: string) => void
   selectAgent: (id: string) => void
   closeDetail: () => void
   runOperation: (agentId: string, operation: AgentOperationName) => Promise<void>
@@ -44,6 +45,40 @@ const emptyOperation = (name: AgentOperationName): AgentOperationState => ({
   expanded: true,
 })
 
+const AGENT_CACHE_KEY = 'agentbro.agentPrograms.cache.v1'
+
+function readCachedAgents() {
+  if (typeof window === 'undefined') return []
+  try {
+    const value = window.localStorage.getItem(AGENT_CACHE_KEY)
+    return value ? JSON.parse(value) as AgentProgramInfo[] : []
+  } catch {
+    return []
+  }
+}
+
+function writeCachedAgents(agents: AgentProgramInfo[]) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(AGENT_CACHE_KEY, JSON.stringify(agents))
+  } catch {
+    // Cache failure should never block the settings UI.
+  }
+}
+
+function mergeAgentLists(base: AgentProgramInfo[], detected: AgentProgramInfo[]) {
+  const merged = new Map<string, AgentProgramInfo>()
+  for (const agent of base) merged.set(agent.id, agent)
+  for (const agent of detected) {
+    merged.set(agent.id, { ...(merged.get(agent.id) ?? {} as AgentProgramInfo), ...agent })
+  }
+  return Array.from(merged.values())
+}
+
+function instantAgents() {
+  return mergeAgentLists(seedAgentPrograms(), readCachedAgents())
+}
+
 export const useAgentStore = create<AgentState & AgentActions>()((set, get) => ({
   agents: [],
   loading: false,
@@ -54,9 +89,13 @@ export const useAgentStore = create<AgentState & AgentActions>()((set, get) => (
   operations: {},
 
   loadAgents: async () => {
-    set({ loading: true })
+    set((state) => {
+      if (state.agents.length > 0) return { loading: false }
+      return { agents: instantAgents(), loading: false }
+    })
     try {
-      const agents = await agentApi.list()
+      const agents = mergeAgentLists(seedAgentPrograms(), await agentApi.list())
+      writeCachedAgents(agents)
       set({ agents, loading: false })
     } catch (e) {
       console.error('Failed to load agents:', e)
@@ -65,9 +104,10 @@ export const useAgentStore = create<AgentState & AgentActions>()((set, get) => (
   },
 
   refreshAgents: async () => {
-    set({ loading: true })
+    set((state) => state.agents.length > 0 ? { loading: false } : { agents: instantAgents(), loading: false })
     try {
-      const agents = await agentApi.refresh()
+      const agents = mergeAgentLists(seedAgentPrograms(), await agentApi.refresh())
+      writeCachedAgents(agents)
       set({ agents, loading: false })
     } catch (e) {
       console.error('Failed to refresh agents:', e)
@@ -77,8 +117,9 @@ export const useAgentStore = create<AgentState & AgentActions>()((set, get) => (
 
   setSearchQuery: (searchQuery) => set({ searchQuery }),
   setFilter: (filter) => set({ filter }),
+  focusAgent: (id) => set({ selectedAgentId: id }),
   selectAgent: (id) => set({ selectedAgentId: id, detailOpen: true }),
-  closeDetail: () => set({ selectedAgentId: null, detailOpen: false }),
+  closeDetail: () => set({ detailOpen: false }),
 
   runOperation: async (agentId, operation) => {
     set((state) => ({

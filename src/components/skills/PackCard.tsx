@@ -50,7 +50,7 @@ export function PackCard({ pack, onEdit, onRefresh }: PackCardProps) {
       </div>
       <div className="pack-card__agents">
         {pack.targetAgents.map(a => (
-          <span key={a} className="skill-card__agent-tag">{a}</span>
+          <span key={a} className="pack-card__agent-chip">{a}</span>
         ))}
       </div>
     </div>

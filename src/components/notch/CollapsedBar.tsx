@@ -9,7 +9,9 @@ import { TipDisplay } from './TipDisplay'
 import { useTick } from '../../hooks/useTick'
 import { isTauri, setSoundEnabled } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
+import { useThemeStore } from '../../stores/themeStore'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { SpriteCanvas } from './SpriteCanvas'
 import './CollapsedBar.css'
 
 interface CollapsedBarProps {
@@ -75,6 +77,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const showToolStatus = useConfigStore((s) => s.showToolStatus)
   const defaultMascotSource = useConfigStore((s) => s.defaultMascotSource)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
+  const activeTheme = useThemeStore((s) => s.activeTheme)
 
   const lead = getLeadSession(sessions)
   useTick(1000, Boolean(lead?.unattendedSince))
@@ -110,6 +113,21 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
 
   const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)
   const elapsedText = unattendedLevel !== 'none' ? formatElapsed(lead?.unattendedSince) : ''
+  const renderMascot = (session: SessionState | undefined, size: number) => {
+    if (activeTheme.character) {
+      return (
+        <span className="collapsed-bar__theme-avatar" style={{ width: size, height: size }}>
+          <SpriteCanvas
+            priority={session ? computePriority(session) : PRIORITY.idle}
+            size={size}
+            theme={activeTheme}
+          />
+        </span>
+      )
+    }
+
+    return <MascotRouter toolType={session?.agentType || defaultMascotSource} phase={session?.phase || 'idle'} size={size} />
+  }
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
   async function openSettings(e: React.MouseEvent) {
@@ -132,7 +150,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
     return (
       <div className="collapsed-bar collapsed-bar--micro">
         <div className="collapsed-bar__micro-main">
-          <MascotRouter toolType={defaultMascotSource} phase="idle" size={22} />
+          {renderMascot(lead, 22)}
           <span className="collapsed-bar__micro-count">{count}</span>
         </div>
       </div>
@@ -145,7 +163,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
       {isExpanded && (
         <div className="collapsed-bar__status-row">
           <div className="collapsed-bar__left" style={{ gap: 8 }}>
-            <MascotRouter toolType={lead?.agentType || defaultMascotSource} phase={lead?.phase || 'idle'} size={20} />
+            {renderMascot(lead, 20)}
             <div className="collapsed-bar__counter-pills">
               <span className={`collapsed-bar__counter-pill${count > 0 ? ' collapsed-bar__counter-pill--active' : ''}`}>
                 <span>ALL</span><span className="collapsed-bar__counter-pill-val">{count}</span>
@@ -157,8 +175,12 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
                 <span>WAIT</span><span className="collapsed-bar__counter-pill-val">{waitingCount}</span>
               </span>
             </div>
-            <span className="collapsed-bar__session-count-text">{count} sessions</span>
           </div>
+          {showTips && !focusFilteredEmpty && (
+            <div className="collapsed-bar__header-tip">
+              <TipDisplay show />
+            </div>
+          )}
           <div className="collapsed-bar__icons">
             <span className="collapsed-bar__esc-hint">ESC</span>
             <button
@@ -196,11 +218,12 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
       )}
 
       {/* Main row: mascot + carousel info + unattended + count */}
+      {!isExpanded && (
       <div className="collapsed-bar__main">
         <div className="collapsed-bar__left">
           {lead ? (
             <>
-              <MascotRouter toolType={lead.agentType} phase={lead.phase} size={22} />
+              {renderMascot(lead, 22)}
               <div className="collapsed-bar__carousel">
                 {showTips ? (
                   <TipDisplay show />
@@ -222,7 +245,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
             </>
           ) : (
             <>
-              <MascotRouter toolType={defaultMascotSource} phase="idle" size={22} />
+              {renderMascot(undefined, 22)}
               {showTips && !focusFilteredEmpty ? (
                 <div className="collapsed-bar__carousel">
                   <TipDisplay show />
@@ -286,6 +309,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }

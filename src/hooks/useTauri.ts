@@ -42,6 +42,7 @@ function transformSession(bs: BackendSession): SessionState {
     engineLabel: bs.engineLabel ?? undefined,
     engineConfigRoot: bs.engineConfigRoot ?? undefined,
     project: bs.project,
+    cwd: bs.cwd,
     terminal: bs.terminal,
     phase: bs.phase as SessionState['phase'],
     startedAt: bs.startedAt,
@@ -159,7 +160,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('islandSurfaceMode', config.islandSurfaceMode ?? 'island')
   store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
   store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
-  store.updateConfig('followFocus', config.followFocus)
+  store.updateConfig('followFocus', false)
   store.updateConfig('quietHours', {
     enabled: config.quietHoursEnabled,
     start: config.quietHoursStart,

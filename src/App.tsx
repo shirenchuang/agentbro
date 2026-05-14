@@ -7,7 +7,7 @@ import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
-import { isTauri } from './services/tauriApi'
+import { getActiveThemeBundle, isTauri } from './services/tauriApi'
 import type { AgentType, DiffLine, ChatMessage, TaskInfo } from './types/agent'
 import './styles/globals.css'
 
@@ -130,6 +130,18 @@ function loadMockSessions() {
   store.setPanelState('collapsed')
 }
 
+function applyPersistedConfig(raw: string | null) {
+  if (!raw) return
+  try {
+    const persisted = JSON.parse(raw) as { state?: Partial<ReturnType<typeof useConfigStore.getState>> }
+    if (persisted.state) {
+      useConfigStore.setState({ ...persisted.state, followFocus: false })
+    }
+  } catch {
+    // Ignore malformed persisted config payloads.
+  }
+}
+
 // ── Detect which Tauri window we're in ────────────────────────
 
 async function detectWindowLabel(): Promise<string> {
@@ -164,6 +176,66 @@ function App() {
     const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'midnight'
     document.documentElement.setAttribute('data-island-color-theme', normalizedTheme)
   }, [colorTheme])
+
+  useEffect(() => {
+    const applyPersistedTheme = (raw: string | null) => {
+      if (!raw) return
+      try {
+        const persisted = JSON.parse(raw) as { state?: { activeThemeName?: string; colorTheme?: string } }
+        const nextTheme = persisted.state?.colorTheme
+        if (nextTheme && COLOR_THEMES.some((theme) => theme.id === nextTheme)) {
+          document.documentElement.setAttribute('data-island-color-theme', nextTheme)
+          useThemeStore.setState({ colorTheme: nextTheme })
+        }
+        const activeThemeName = persisted.state?.activeThemeName
+        if (activeThemeName) {
+          const store = useThemeStore.getState()
+          const theme = store.themes.find((candidate) => candidate.name === activeThemeName)
+          if (theme) {
+            store.setActiveTheme(activeThemeName)
+          } else if (isTauri()) {
+            getActiveThemeBundle(activeThemeName)
+              .then((bundle) => {
+                const latest = useThemeStore.getState()
+                latest.loadThemes([...latest.themes, bundle])
+                latest.setActiveTheme(activeThemeName)
+              })
+              .catch(() => {})
+          }
+        }
+      } catch {
+        // Ignore malformed persisted theme payloads.
+      }
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'agentbro-theme') applyPersistedTheme(event.newValue)
+    }
+    const handleFocus = () => applyPersistedTheme(window.localStorage.getItem('agentbro-theme'))
+
+    handleFocus()
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('focus', handleFocus)
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'agentbro-config') applyPersistedConfig(event.newValue)
+    }
+    const handleFocus = () => applyPersistedConfig(window.localStorage.getItem('agentbro-config'))
+
+    handleFocus()
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('focus', handleFocus)
+    return () => {
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [])
 
   // Detect window on mount
   useEffect(() => {

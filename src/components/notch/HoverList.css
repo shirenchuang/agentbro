@@ -50,6 +50,16 @@
   background: var(--island-card-hover);
 }
 
+.hover-list__card--selected {
+  background: var(--island-card-hover);
+  box-shadow: inset 0 0 0 1px var(--island-border);
+}
+
+.hover-list__card--selected .hover-list__jump,
+.hover-list__card--selected .hover-list__mute-btn {
+  opacity: 1;
+}
+
 /* Multi-row layout */
 .hover-list__row-layout {
   display: flex;
@@ -111,6 +121,11 @@
   font-weight: 500;
   line-height: 1.4;
   white-space: nowrap;
+}
+
+.hover-list__source-badge {
+  background: rgba(16, 185, 129, 0.16);
+  color: #00d184;
 }
 
 .hover-list__yolo-badge {
@@ -192,14 +207,39 @@
   color: var(--island-text);
 }
 
-.hover-list__jump--disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-.hover-list__jump--disabled:hover {
+.hover-list__mute-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   color: var(--island-text-muted);
   background: var(--island-subtle, rgba(255, 255, 255, 0.05));
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.hover-list__card:hover .hover-list__mute-btn {
+  opacity: 1;
+}
+
+.hover-list__mute-btn--active {
+  opacity: 1;
+  color: #f59e0b;
+}
+
+.hover-list__mute-btn:hover {
+  background: var(--island-button-hover);
+  color: var(--island-text);
+}
+
+.hover-list__card--muted {
+  opacity: 0.5;
 }
 
 /* Row 2: user message */

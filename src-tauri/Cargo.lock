@@ -29,6 +29,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "env_logger",
+ "libc",
  "log",
  "notify",
  "objc2-app-kit",

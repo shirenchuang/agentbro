@@ -5,6 +5,18 @@ import { useConfigStore } from '../stores/configStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { SessionState } from '../types/agent'
 
+const tauriMocks = vi.hoisted(() => ({
+  respondPermission: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('../services/tauriApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/tauriApi')>()
+  return {
+    ...actual,
+    respondPermission: tauriMocks.respondPermission,
+  }
+})
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string | { defaultValue?: string }) => {
@@ -36,6 +48,7 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
 
 describe('HoverList interactions', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     useSessionStore.setState({ activeOverlay: null })
     useConfigStore.setState({ hoverSpeed: 'instant', maxVisibleSessions: 5, showCacheTTL: false })
   })
@@ -44,7 +57,7 @@ describe('HoverList interactions', () => {
     const onSessionClick = vi.fn()
     render(<HoverList sessions={[session()]} onSessionClick={onSessionClick} />)
 
-    fireEvent.click(screen.getByText('Fix island interactions'))
+    fireEvent.click(screen.getByText('agent-island · Fix island interactions'))
 
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
@@ -66,7 +79,7 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
-  it('does not treat an unavailable jump arrow as a session click', () => {
+  it('still jumps from the arrow when terminal metadata is not ready', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
     render(
@@ -77,9 +90,9 @@ describe('HoverList interactions', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '等待终端信息' }))
+    fireEvent.click(screen.getByRole('button', { name: 'notch.jumpToTerminal' }))
 
-    expect(onJumpToTerminal).not.toHaveBeenCalled()
+    expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
@@ -97,6 +110,50 @@ describe('HoverList interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'notch.jumpToTerminal' }))
 
     expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('supports keyboard navigation and Enter jump like the island panel', () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    render(
+      <HoverList
+        sessions={[
+          session({ id: 's1', phase: 'idle', sessionTitle: 'Idle session' }),
+          session({ id: 's2', phase: 'waiting_approval', sessionTitle: 'Approval needed' }),
+          session({ id: 's3', phase: 'processing', sessionTitle: 'Working session' }),
+        ]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(onJumpToTerminal).toHaveBeenCalledWith('s2')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('routes inline permission actions without opening the row', () => {
+    const onSessionClick = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('允许'))
+    fireEvent.click(screen.getByText('始终允许'))
+    fireEvent.click(screen.getByText('拒绝'))
+
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 

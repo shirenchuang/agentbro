@@ -1,14 +1,18 @@
 use super::agent_paths;
-use super::{InstallMode, TargetConfig};
+use super::{
+    InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest, TargetConfig,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn install_skill(
     source_path: &str,
     targets: &[TargetConfig],
     mode: &InstallMode,
-) -> Result<(), String> {
-    let src = PathBuf::from(source_path);
+) -> Result<Vec<String>, String> {
+    let (src, temp_root) = resolve_install_source(source_path)?;
     if !src.exists() {
         return Err(format!("Source not found: {}", source_path));
     }
@@ -18,6 +22,7 @@ pub fn install_skill(
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
+    let installed_ids = skill_id_candidates(&src, &skill_name);
 
     let central_path = if matches!(mode, InstallMode::Symlink) {
         let central_dir = agent_paths::agentbro_skills_dir();
@@ -38,6 +43,9 @@ pub fn install_skill(
 
         fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
         let dest = target_dir.join(&skill_name);
+        if same_location(&src, &dest) {
+            continue;
+        }
 
         match mode {
             InstallMode::Direct => {
@@ -59,7 +67,271 @@ pub fn install_skill(
         }
     }
 
-    Ok(())
+    if let Some(root) = temp_root {
+        let _ = fs::remove_dir_all(root);
+    }
+
+    Ok(installed_ids)
+}
+
+fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let local = PathBuf::from(source);
+    if local.exists() {
+        return Ok((local, None));
+    }
+
+    if let Some(spec) = source.strip_prefix("github:") {
+        return clone_github_spec(spec);
+    }
+
+    if source.starts_with("https://github.com/") || source.starts_with("http://github.com/") {
+        return clone_github_url(source);
+    }
+
+    if source.starts_with("http://") || source.starts_with("https://") {
+        if source.ends_with(".zip") {
+            return download_zip(source);
+        }
+        return Err(
+            "Only GitHub repository URLs and .zip skill archives are supported for remote installs"
+                .to_string(),
+        );
+    }
+
+    Err(format!("Source not found: {}", source))
+}
+
+pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> {
+    let (src, temp_root) = resolve_install_source(&request.source)?;
+    if !src.exists() {
+        return Err(format!("Plugin source not found: {}", request.source));
+    }
+    let manifest = read_plugin_manifest(&src).ok_or_else(|| {
+        "Plugin source must contain .claude-plugin/plugin.json or .codex-plugin/plugin.json"
+            .to_string()
+    })?;
+    let plugin_id = manifest
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "Plugin manifest missing name".to_string())?;
+    let version = manifest
+        .get("version")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("local");
+    let dest = plugin_install_root(&request.agent)?
+        .join("agentbro")
+        .join(&plugin_id)
+        .join(version);
+    copy_recursive(&src, &dest)?;
+    super::registry::add_source(&format!("plugin:{plugin_id}"), &request.source)?;
+    if let Some(root) = temp_root {
+        let _ = fs::remove_dir_all(root);
+    }
+    Ok(format!("plugin:{plugin_id}"))
+}
+
+fn plugin_install_root(agent: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    match agent {
+        "claude-code" => Ok(home.join(".claude").join("plugins").join("cache")),
+        "codex" => Ok(home.join(".codex").join("plugins").join("cache")),
+        _ => Err(format!("Plugin install is not supported for {agent}")),
+    }
+}
+
+fn read_plugin_manifest(path: &Path) -> Option<serde_json::Value> {
+    [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]
+        .iter()
+        .map(|relative| path.join(relative))
+        .find(|candidate| candidate.exists())
+        .and_then(|candidate| fs::read_to_string(candidate).ok())
+        .and_then(|content| serde_json::from_str(&content).ok())
+}
+
+fn temp_install_dir() -> Result<PathBuf, String> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let dir = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".agentbro")
+        .join("tmp")
+        .join(format!("install-{millis}"));
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn clone_github_spec(spec: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let parts: Vec<&str> = spec
+        .trim_matches('/')
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return Err("GitHub source must be owner/repo or owner/repo/path".to_string());
+    }
+
+    let repo_url = format!(
+        "https://github.com/{}/{}.git",
+        parts[0],
+        parts[1].trim_end_matches(".git")
+    );
+    let subpath = if parts.len() > 2 {
+        Some(parts[2..].join("/"))
+    } else {
+        None
+    };
+    clone_repo(&repo_url, None, subpath.as_deref())
+}
+
+fn clone_github_url(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let trimmed = source.trim_end_matches('/');
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .ok_or_else(|| format!("Invalid GitHub URL: {source}"))?;
+    let parts: Vec<&str> = without_scheme
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return Err(format!("Invalid GitHub URL: {source}"));
+    }
+
+    let repo = parts[1].trim_end_matches(".git");
+    let repo_url = format!("https://github.com/{}/{}.git", parts[0], repo);
+    if parts.len() >= 5 && parts[2] == "tree" {
+        let branch = parts[3];
+        let subpath = parts[4..].join("/");
+        clone_repo(&repo_url, Some(branch), Some(&subpath))
+    } else {
+        clone_repo(&repo_url, None, None)
+    }
+}
+
+fn clone_repo(
+    repo_url: &str,
+    branch: Option<&str>,
+    subpath: Option<&str>,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let root = temp_install_dir()?;
+    let repo_dir = root.join("repo");
+    let mut cmd = Command::new("git");
+    cmd.arg("clone").arg("--depth").arg("1");
+    if let Some(branch) = branch {
+        cmd.arg("--branch").arg(branch);
+    }
+    let output = cmd
+        .arg(repo_url)
+        .arg(&repo_dir)
+        .output()
+        .map_err(|e| format!("Failed to run git clone: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&root);
+        return Err(format!("Failed to clone {repo_url}: {stderr}"));
+    }
+
+    let src = match subpath {
+        Some(path) if !path.is_empty() => repo_dir.join(path),
+        _ => repo_dir,
+    };
+    if !src.exists() {
+        let _ = fs::remove_dir_all(&root);
+        return Err(format!("GitHub path not found: {}", src.display()));
+    }
+    Ok((src, Some(root)))
+}
+
+fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let root = temp_install_dir()?;
+    let archive = root.join("skill.zip");
+    let extract_dir = root.join("unzipped");
+    fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+
+    let output = Command::new("curl")
+        .arg("-L")
+        .arg("--fail")
+        .arg(source)
+        .arg("-o")
+        .arg(&archive)
+        .output()
+        .map_err(|e| format!("Failed to run curl: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&root);
+        return Err(format!("Failed to download {source}: {stderr}"));
+    }
+
+    let file = fs::File::open(&archive).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    archive.extract(&extract_dir).map_err(|e| e.to_string())?;
+
+    let src = single_child_dir(&extract_dir).unwrap_or(extract_dir);
+    Ok((src, Some(root)))
+}
+
+fn single_child_dir(dir: &Path) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(dir).ok()?.flatten();
+    let first = entries.next()?.path();
+    if entries.next().is_some() {
+        return None;
+    }
+    if first.is_dir() {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn skill_id_candidates(src: &Path, fallback: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(name) = frontmatter_name(src) {
+        ids.push(name);
+    }
+    if !ids.iter().any(|id| id == fallback) {
+        ids.push(fallback.to_string());
+    }
+    ids
+}
+
+fn frontmatter_name(src: &Path) -> Option<String> {
+    let index = if src.is_file() {
+        Some(src.to_path_buf())
+    } else {
+        ["SKILL.md", "index.md", "README.md", "main.md"]
+            .iter()
+            .map(|name| src.join(name))
+            .find(|path| path.exists())
+            .or_else(|| {
+                fs::read_dir(src)
+                    .ok()?
+                    .flatten()
+                    .find(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
+                    .map(|entry| entry.path())
+            })
+    }?;
+    let content = fs::read_to_string(index).ok()?;
+    if !content.starts_with("---") {
+        return None;
+    }
+    let frontmatter = content.splitn(3, "---").nth(1)?;
+    frontmatter.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim() != "name" {
+            return None;
+        }
+        let value = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        (!value.is_empty()).then_some(value)
+    })
 }
 
 pub fn uninstall_skill(skill_path: &str) -> Result<(), String> {
@@ -76,6 +348,13 @@ pub fn uninstall_skill(skill_path: &str) -> Result<(), String> {
 }
 
 pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), String> {
+    if let Some(server_name) = skill_id.strip_prefix("mcp:") {
+        return toggle_mcp_server(server_name, agent, enabled);
+    }
+    if let Some(plugin_id) = skill_id.strip_prefix("plugin:") {
+        return toggle_plugin(plugin_id, agent, enabled);
+    }
+
     let paths = agent_paths::paths_for_agent(agent);
     let settings_path = match paths.settings_file {
         Some(p) => p,
@@ -83,7 +362,10 @@ pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), St
     };
 
     if !settings_path.exists() {
-        return Ok(());
+        if let Some(parent) = settings_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&settings_path, "{}").map_err(|e| e.to_string())?;
     }
 
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
@@ -107,6 +389,169 @@ pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), St
 
     let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&settings_path, content).map_err(|e| e.to_string())
+}
+
+fn toggle_plugin(plugin_id: &str, agent: &str, enabled: bool) -> Result<(), String> {
+    let settings_path = agent_paths::paths_for_agent(agent)
+        .settings_file
+        .ok_or_else(|| format!("Agent {} has no settings file", agent))?;
+    let mut json = read_json_object(&settings_path)?;
+    let enabled_plugins = json
+        .as_object_mut()
+        .ok_or("Settings is not an object")?
+        .entry("enabledPlugins")
+        .or_insert_with(|| serde_json::json!({}));
+    enabled_plugins
+        .as_object_mut()
+        .ok_or("enabledPlugins is not an object")?
+        .insert(plugin_id.to_string(), serde_json::Value::Bool(enabled));
+    write_json_object(&settings_path, &json)
+}
+
+pub fn upsert_mcp_server(agent: &str, server: &McpServerConfig) -> Result<(), String> {
+    if server.name.trim().is_empty() {
+        return Err("MCP server name cannot be empty".to_string());
+    }
+    if server.command.trim().is_empty() {
+        return Err("MCP command cannot be empty".to_string());
+    }
+
+    let config_path = agent_paths::paths_for_agent(agent)
+        .mcp_config
+        .ok_or_else(|| format!("Agent {} has no MCP config file", agent))?;
+    let mut json = read_json_object(&config_path)?;
+    let servers = json
+        .as_object_mut()
+        .ok_or("MCP config is not an object")?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    let servers = servers
+        .as_object_mut()
+        .ok_or("mcpServers is not an object")?;
+    let mut value = serde_json::json!({
+        "command": server.command,
+        "args": server.args,
+    });
+    if !server.env.is_empty() {
+        value["env"] = serde_json::to_value(&server.env).map_err(|e| e.to_string())?;
+    }
+    servers.insert(server.name.clone(), value);
+    write_json_object(&config_path, &json)
+}
+
+pub fn validate_mcp_server(agent: &str, server_name: &str) -> Result<McpValidationResult, String> {
+    let server = super::scanner::read_mcp_server_config(agent, server_name)
+        .ok_or_else(|| format!("MCP server not found: {server_name}"))?;
+    validate_mcp_config(&server)
+}
+
+pub fn validate_mcp_config(server: &McpServerConfig) -> Result<McpValidationResult, String> {
+    let mut warnings = Vec::new();
+    let command = server.command.trim();
+    if command.is_empty() {
+        return Ok(McpValidationResult {
+            valid: false,
+            message: "MCP command is empty".to_string(),
+            warnings,
+        });
+    }
+    if !command_available(command) {
+        return Ok(McpValidationResult {
+            valid: false,
+            message: format!("Command not found: {command}"),
+            warnings,
+        });
+    }
+    if command == "docker" && !server.args.iter().any(|arg| arg == "run") {
+        warnings.push("Docker MCP 配置通常需要包含 run 参数。".to_string());
+    }
+    if (command == "npx" || command == "npm") && server.args.is_empty() {
+        warnings.push("Node MCP 配置缺少包名参数。".to_string());
+    }
+    for (key, value) in &server.env {
+        if value.trim().is_empty() {
+            warnings.push(format!("环境变量 {key} 为空。"));
+        }
+    }
+    Ok(McpValidationResult {
+        valid: true,
+        message: "MCP 配置可被本机启动器解析。".to_string(),
+        warnings,
+    })
+}
+
+fn command_available(command: &str) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.exists();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(command))
+                .any(|candidate| candidate.exists())
+        })
+        .unwrap_or(false)
+}
+
+pub fn remove_mcp_server(agent: &str, server_name: &str) -> Result<(), String> {
+    let config_path = agent_paths::paths_for_agent(agent)
+        .mcp_config
+        .ok_or_else(|| format!("Agent {} has no MCP config file", agent))?;
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let mut json = read_json_object(&config_path)?;
+    for key in ["mcpServers", "mcp_servers"] {
+        if let Some(servers) = json.get_mut(key).and_then(|value| value.as_object_mut()) {
+            servers.remove(server_name);
+        }
+    }
+    write_json_object(&config_path, &json)
+}
+
+fn toggle_mcp_server(server_name: &str, agent: &str, enabled: bool) -> Result<(), String> {
+    let config_path = agent_paths::paths_for_agent(agent)
+        .mcp_config
+        .ok_or_else(|| format!("Agent {} has no MCP config file", agent))?;
+    let mut json = read_json_object(&config_path)?;
+    let disabled = json
+        .as_object_mut()
+        .ok_or("MCP config is not an object")?
+        .entry("disabledMcpServers")
+        .or_insert_with(|| serde_json::json!([]));
+    let server = serde_json::Value::String(server_name.to_string());
+    if let Some(list) = disabled.as_array_mut() {
+        if enabled {
+            list.retain(|item| item != &server);
+        } else if !list.contains(&server) {
+            list.push(server);
+        }
+    }
+    write_json_object(&config_path, &json)
+}
+
+fn read_json_object(path: &Path) -> Result<serde_json::Value, String> {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        return Ok(serde_json::json!({}));
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if content.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+fn write_json_object(path: &Path, json: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
 }
 
 fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
@@ -134,6 +579,13 @@ fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn same_location(src: &Path, dest: &Path) -> bool {
+    match (src.canonicalize(), dest.canonicalize()) {
+        (Ok(src), Ok(dest)) => src == dest,
+        _ => false,
+    }
+}
+
 pub fn apply_pack(pack: &super::SkillPack) -> Result<(), String> {
     let meta = super::registry::load();
     for skill_id in &pack.skills {
@@ -144,7 +596,10 @@ pub fn apply_pack(pack: &super::SkillPack) -> Result<(), String> {
 
         let src = match skill_path {
             Some(p) => p.display().to_string(),
-            None => continue,
+            None => match source_entry {
+                Some(entry) if !entry.origin.trim().is_empty() => entry.origin.clone(),
+                _ => continue,
+            },
         };
 
         let targets: Vec<super::TargetConfig> = pack

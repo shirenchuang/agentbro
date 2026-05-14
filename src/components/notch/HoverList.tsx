@@ -1,5 +1,5 @@
 /* Hover List — Flat session list sorted by priority */
-import { useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
@@ -9,7 +9,7 @@ import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { respondPermission } from '../../services/tauriApi'
-import { formatDuration } from '../../utils/time'
+import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import './HoverList.css'
 
@@ -74,6 +74,16 @@ function getAgentName(session: SessionState): string {
   }
 }
 
+function isEvolabSession(session: SessionState): boolean {
+  const cwd = session.cwd || ''
+  return (
+    cwd.includes('.evolab-desktop')
+    || cwd.endsWith('/evolab')
+    || cwd.includes('/evolab/')
+    || session.project === 'free-chat'
+  )
+}
+
 function getAgentBadge(session: SessionState): { bg: string; text: string } {
   const label = getAgentName(session).toLowerCase()
   if (label === 'antcc') {
@@ -83,7 +93,12 @@ function getAgentBadge(session: SessionState): { bg: string; text: string } {
 }
 
 function getSessionTitle(session: SessionState): string {
-  return session.sessionTitle || session.project || 'Session'
+  const title = (session.sessionTitle || '').trim()
+  const project = (session.project || '').trim()
+  if (title && project && title !== project && !title.startsWith(`${project} ·`)) {
+    return `${project} · ${title}`
+  }
+  return title || project || 'Session'
 }
 
 function stripMarkdown(text: string): string {
@@ -122,10 +137,6 @@ function formatCacheTtl(session: SessionState): string | null {
   if (minutes <= 0) return 'cache expired'
   if (minutes >= 60) return `cache ${Math.floor(minutes / 60)}h${minutes % 60}m`
   return `cache ${minutes}m`
-}
-
-function isCodexDesktopSession(session: SessionState): boolean {
-  return session.agentType === 'codex' && (!session.tty || session.terminal.toLowerCase().includes('codex'))
 }
 
 /* ── Subagent Row ── */
@@ -221,12 +232,12 @@ function TaskStatusIcon({ status }: { status: TaskInfo['status'] }) {
 
 /* ── Inline Permission Preview ── */
 function InlinePermissionPreview({ session }: { session: SessionState }) {
+  const { t } = useTranslation()
   const perm = session.pendingPermission
   if (!perm) return null
 
   const filePath = perm.toolInput ? (typeof perm.toolInput === 'string' ? perm.toolInput : '') : ''
   const param = filePath
-  const { t } = useTranslation()
 
   return (
     <div className="hover-list__inline-perm" onClick={(e) => e.stopPropagation()}>
@@ -310,6 +321,7 @@ function SessionCard({
   animDuration,
   index,
   isAlertActive,
+  selected,
 }: {
   session: SessionState
   onSessionClick: (id: string) => void
@@ -317,21 +329,26 @@ function SessionCard({
   animDuration: number
   index: number
   isAlertActive: boolean
+  selected: boolean
 }) {
   const { t } = useTranslation()
   const badge = getAgentBadge(session)
   const agentName = getAgentName(session)
   const termBadge = session.terminal ? (TERMINAL_BADGE_COLORS[session.terminal] || null) : null
   const title = getSessionTitle(session)
+  const assistantPreview = session.responseText || (session.description && session.phase !== 'processing' ? session.description : undefined)
   const priority = computePriority(session)
   const showCacheTTL = useConfigStore((s) => s.showCacheTTL)
   const cacheTtl = showCacheTTL ? formatCacheTtl(session) : null
+  const mutedSessions = useSessionStore((s) => s.mutedSessions)
+  const muteSession = useSessionStore((s) => s.muteSession)
+  const unmuteSession = useSessionStore((s) => s.unmuteSession)
+  const isMuted = Boolean(mutedSessions[session.id])
 
   const isStatic = session.phase === 'idle' || session.phase === 'done'
   const showInlinePermission = !isAlertActive && !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
-  const canJumpToTerminal = Boolean(session.pid || session.tty || isCodexDesktopSession(session))
   const handleOpen = () => onSessionClick(session.id)
   const shouldIgnoreOpen = (target: EventTarget | null): boolean => {
     return target instanceof Element && Boolean(
@@ -352,7 +369,6 @@ function SessionCard({
   const handleJump = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    if (!canJumpToTerminal) return
     onJumpToTerminal?.(session.id)
   }
 
@@ -368,7 +384,8 @@ function SessionCard({
         data-no-drag
         role="button"
         tabIndex={0}
-        className={`hover-list__card${session.phase === 'done' ? ' hover-list__card--done' : ''}`}
+        aria-selected={selected}
+        className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
         onClickCapture={handleClickCapture}
         onKeyDown={handleKeyDown}
       >
@@ -384,11 +401,16 @@ function SessionCard({
 
           {/* Right: multi-row content */}
           <div className="hover-list__content-col">
-            {/* Row 1: title + badges + duration + jump */}
+            {/* Row 1: title + badges + duration + mute + jump */}
             <div className="hover-list__row1">
               <span className="hover-list__session-title">{title}</span>
 
               <div className="hover-list__meta">
+                {isEvolabSession(session) && (
+                  <span className="hover-list__agent-badge hover-list__source-badge">
+                    Evolab
+                  </span>
+                )}
                 <span className="hover-list__agent-badge" style={{ background: badge.bg, color: badge.text }}>
                   {agentName}
                 </span>
@@ -400,16 +422,40 @@ function SessionCard({
                 {session.isYoloMode && (
                   <span className="hover-list__yolo-badge">YOLO</span>
                 )}
-                <span className="hover-list__duration">{formatDuration(session.duration)}</span>
+                <span className="hover-list__duration">{formatDurationShort(session.duration)}</span>
                 <button
                   type="button"
                   data-no-drag
-                  className={`hover-list__jump${canJumpToTerminal ? '' : ' hover-list__jump--disabled'}`}
-                  aria-disabled={!canJumpToTerminal}
+                  className={`hover-list__mute-btn${isMuted ? ' hover-list__mute-btn--active' : ''}`}
+                  title={isMuted ? t('notch.unmuteSession', 'Unmute session') : t('notch.muteSession', 'Mute notifications (30 min)')}
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    if (isMuted) unmuteSession(session.id)
+                    else muteSession(session.id)
+                  }}
+                >
+                  {isMuted ? (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 5 6 9H2v6h4l5 4V5Z"/>
+                      <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+                    </svg>
+                  ) : (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 5 6 9H2v6h4l5 4V5Z"/>
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  data-no-drag
+                  className="hover-list__jump"
                   onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
                   onClick={handleJump}
-                  title={canJumpToTerminal ? t('notch.jumpToTerminal') : t('notch.terminalUnavailable', '等待终端信息')}
-                  aria-label={canJumpToTerminal ? t('notch.jumpToTerminal') : t('notch.terminalUnavailable', '等待终端信息')}
+                  title={t('notch.jumpToTerminal')}
+                  aria-label={t('notch.jumpToTerminal')}
                 >
                   ↗
                 </button>
@@ -438,8 +484,8 @@ function SessionCard({
               <div className="hover-list__row3">
                 <span className="hover-list__tool-label">{t('notch.working')}...</span>
               </div>
-            ) : session.description ? (
-              <div className="hover-list__row3-preview">{truncateText(stripMarkdown(session.description), 100)}</div>
+            ) : assistantPreview ? (
+              <div className="hover-list__row3-preview">{truncateText(stripMarkdown(assistantPreview), 100)}</div>
             ) : null}
 
             {(session.statusLineText || session.contextWindow || cacheTtl) && (
@@ -502,6 +548,13 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   const animDuration = HOVER_SPEED_MS[hoverSpeed] ?? 0.2
 
   const [showAll, setShowAll] = useState(false)
+  const [selectedIndex, setSelectedIndexState] = useState(-1)
+  const selectedIndexRef = useRef(-1)
+  const setSelectedIndex = useCallback((next: number | ((index: number) => number)) => {
+    const resolved = typeof next === 'function' ? next(selectedIndexRef.current) : next
+    selectedIndexRef.current = resolved
+    setSelectedIndexState(resolved)
+  }, [])
 
   const activeOverlay = useSessionStore((s) => s.activeOverlay)
   const hookNotification = useSessionStore((s) => s.hookNotification)
@@ -510,6 +563,42 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => computePriority(b) - computePriority(a))
   }, [sessions])
+
+  const totalSessions = sorted.length
+  const isLimited = !showAll && totalSessions > maxVisibleSessions
+  const visibleSessions = isLimited ? sorted.slice(0, maxVisibleSessions) : sorted
+
+  useEffect(() => {
+    if (visibleSessions.length === 0) return
+
+    const handler = (event: globalThis.KeyboardEvent) => {
+      const target = event.target
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSelectedIndex((index) => Math.min(index + 1, visibleSessions.length - 1))
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSelectedIndex((index) => index < 0 ? 0 : Math.max(index - 1, 0))
+        return
+      }
+
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        const session = visibleSessions[selectedIndexRef.current]
+        if (!session) return
+        if (onJumpToTerminal) onJumpToTerminal(session.id)
+        else onSessionClick(session.id)
+      }
+    }
+
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onJumpToTerminal, onSessionClick, setSelectedIndex, visibleSessions])
 
   if (sorted.length === 0) {
     return (
@@ -526,10 +615,6 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
       </div>
     )
   }
-
-  const totalSessions = sorted.length
-  const isLimited = !showAll && totalSessions > maxVisibleSessions
-  const visibleSessions = isLimited ? sorted.slice(0, maxVisibleSessions) : sorted
 
   return (
     <div className="hover-list">
@@ -553,6 +638,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
             animDuration={animDuration}
             index={index}
             isAlertActive={isAlertActive}
+            selected={index === selectedIndex}
           />
         ))}
       </AnimatePresence>

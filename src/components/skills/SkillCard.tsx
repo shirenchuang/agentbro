@@ -2,6 +2,9 @@ import { useCallback } from 'react'
 import type { ScannedSkill } from '../../services/skillApi'
 import { skillApi } from '../../services/skillApi'
 import { useSkillStore } from '../../stores/skillStore'
+import { useAgentStore } from '../../stores/agentStore'
+import { agentColor, agentMatchesId, detectedAgentOptions, displayAgentName, shortAgentName } from '../../utils/agentPrograms'
+import { displayVersionValue } from '../../utils/versions'
 
 interface SkillCardProps {
   skill: ScannedSkill
@@ -10,23 +13,20 @@ interface SkillCardProps {
 
 const TYPE_ICONS: Record<string, string> = {
   skill: '📝',
+  plugin: '🔌',
   mcp: '🔌',
-}
-
-const ALL_AGENTS = ['claude-code', 'codex', 'gemini-cli', 'cursor', 'hermes']
-
-const AGENT_LABELS: Record<string, { short: string; color: string }> = {
-  'claude-code': { short: 'C', color: '#d97706' },
-  'codex':       { short: 'X', color: '#10b981' },
-  'gemini-cli':  { short: 'G', color: '#3b82f6' },
-  'cursor':      { short: 'U', color: '#8b5cf6' },
-  'hermes':      { short: 'H', color: '#ef4444' },
 }
 
 export function SkillCard({ skill, onRefresh }: SkillCardProps) {
   const { selectSkill, batchMode, batchSelected, toggleBatchItem } = useSkillStore()
+  const { agents } = useAgentStore()
+  const detectedAgents = detectedAgentOptions(agents)
   const allEnabled = skill.agents.every(a => a.enabled)
   const installedAgents = new Set(skill.agents.map(a => a.agent))
+  const isAgentInstalled = (agent: string) => {
+    return Array.from(installedAgents).some(id => agentMatchesId(id, agent))
+  }
+  const version = displayVersionValue(skill.frontmatter.version || skill.frontmatter.versionName)
 
   const handleToggle = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -54,27 +54,45 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
           onClick={e => e.stopPropagation()}
         />
       )}
-      <div className="skill-card__icon">
-        {TYPE_ICONS[skill.skillType] || '📦'}
+      <div className={`skill-card__icon skill-card__icon--${skill.skillType}`}>
+        <span>{TYPE_ICONS[skill.skillType] || '📦'}</span>
       </div>
       <div className="skill-card__info">
-        <div className="skill-card__name">{skill.name}</div>
+        <div className="skill-card__name-row">
+          <div className="skill-card__name">{skill.name}</div>
+          {version && <span className="skill-card__version">{version}</span>}
+          {skill.hasUpdate && <span className="skill-card__update">可更新</span>}
+        </div>
         {skill.description && (
           <div className="skill-card__desc">{skill.description}</div>
         )}
+        <div className="skill-card__agent-tags">
+          {skill.agents.map((agent) => {
+            const color = agentColor(agent.agent)
+            return (
+              <span
+                key={`${skill.id}-${agent.agent}-${agent.installPath}-${agent.linkTarget ?? ''}`}
+                style={{ '--platform-color': color } as React.CSSProperties}
+              >
+                <i />
+                {displayAgentName(agent.agent, agents)}
+              </span>
+            )
+          })}
+        </div>
       </div>
       <div className="skill-card__platforms">
-        {ALL_AGENTS.map(agent => {
-          const installed = installedAgents.has(agent)
-          const cfg = AGENT_LABELS[agent] ?? { short: agent[0].toUpperCase(), color: '#888' }
+        {detectedAgents.map(agent => {
+          const installed = isAgentInstalled(agent.id)
+          const color = agentColor(agent.id)
           return (
             <span
-              key={agent}
+              key={agent.id}
               className={`skill-card__platform-icon ${installed ? 'skill-card__platform-icon--active' : ''}`}
-              style={{ '--platform-color': cfg.color } as React.CSSProperties}
-              title={agent}
+              style={{ '--platform-color': color } as React.CSSProperties}
+              title={agent.displayName}
             >
-              {cfg.short}
+              {shortAgentName(agent.id, agents)}
             </span>
           )
         })}
@@ -83,6 +101,10 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
         className={`skill-card__toggle ${allEnabled ? 'skill-card__toggle--on' : ''}`}
         onClick={handleToggle}
       />
+      <div className="skill-card__bottom">
+        <span>{skill.source} · {skill.skillType.toUpperCase()}</span>
+        <span>{skill.fileSize > 0 ? `${Math.max(1, Math.round(skill.fileSize / 1024))} KB` : '本地扫描'}</span>
+      </div>
     </div>
   )
 }

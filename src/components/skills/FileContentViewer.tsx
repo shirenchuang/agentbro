@@ -131,14 +131,46 @@ function FileContentArea({ content, fileName, mode }: { content: string; fileNam
   }
 
   if (isMarkdownFile(fileName)) {
+    const fm = parseFrontmatter(content)
+    const bodyContent = fm ? content.split('\n').slice(fm.endLine + 1).join('\n').trimStart() : content
     return (
       <div className="file-viewer-preview">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        {fm && (
+          <div className="file-viewer-frontmatter">
+            {fm.fields.name && <div className="file-viewer-frontmatter__name">{fm.fields.name}</div>}
+            {fm.fields.description && <div className="file-viewer-frontmatter__desc">{fm.fields.description}</div>}
+            {Object.entries(fm.fields).filter(([k]) => k !== 'name' && k !== 'description').length > 0 && (
+              <div className="file-viewer-frontmatter__chips">
+                {Object.entries(fm.fields)
+                  .filter(([k]) => k !== 'name' && k !== 'description')
+                  .map(([k, v]) => (
+                    <span key={k} className="file-viewer-frontmatter__chip">
+                      <em>{k}</em>{v}
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyContent}</ReactMarkdown>
       </div>
     )
   }
 
   return <SourceView content={content} />
+}
+
+function parseFrontmatter(content: string): { fields: Record<string, string>; endLine: number } | null {
+  const lines = content.split('\n')
+  if (lines[0]?.trim() !== '---') return null
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---')
+  if (end === -1) return null
+  const fields: Record<string, string> = {}
+  for (let i = 1; i < end; i++) {
+    const m = lines[i].match(/^(\w+):\s*(.*)$/)
+    if (m) fields[m[1]] = m[2]
+  }
+  return { fields, endLine: end }
 }
 
 function SourceView({ content }: { content: string }) {

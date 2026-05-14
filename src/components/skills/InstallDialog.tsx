@@ -1,46 +1,74 @@
-import { useState, useCallback } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { skillApi } from '../../services/skillApi'
 import type { TargetConfig } from '../../services/skillApi'
+import { useAgentStore } from '../../stores/agentStore'
 import { useSkillStore } from '../../stores/skillStore'
+import { detectedAgentOptions, isAgentProgramInstalled } from '../../utils/agentPrograms'
 
-const AGENTS = ['claude-code', 'codex', 'gemini-cli', 'cursor', 'hermes']
 type SourceType = 'url' | 'github' | 'local' | 'skillsh'
 
 interface InstallDialogProps {
   onClose: () => void
+  initialSourceType?: SourceType
+  initialUrl?: string
+  initialGithubRepo?: string
+  initialGithubPath?: string
+  initialLocalPath?: string
 }
 
-export function InstallDialog({ onClose }: InstallDialogProps) {
+export function InstallDialog({
+  onClose,
+  initialSourceType = 'url',
+  initialUrl = '',
+  initialGithubRepo = '',
+  initialGithubPath = '',
+  initialLocalPath = '',
+}: InstallDialogProps) {
   const { t } = useTranslation()
   const { loadAll } = useSkillStore()
-  const [sourceType, setSourceType] = useState<SourceType>('url')
-  const [url, setUrl] = useState('')
-  const [githubRepo, setGithubRepo] = useState('')
-  const [githubPath, setGithubPath] = useState('')
-  const [localPath, setLocalPath] = useState('')
-  const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set(['claude-code']))
-  const [installMode, setInstallMode] = useState<'direct' | 'symlink'>('direct')
+  const { agents, loadAgents } = useAgentStore()
+  const [sourceType, setSourceType] = useState<SourceType>(initialSourceType)
+  const [url, setUrl] = useState(initialUrl)
+  const [githubRepo, setGithubRepo] = useState(initialGithubRepo)
+  const [githubPath, setGithubPath] = useState(initialGithubPath)
+  const [localPath, setLocalPath] = useState(initialLocalPath)
+  const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
+  const [installMode, setInstallMode] = useState<'direct' | 'symlink'>('symlink')
   const [installing, setInstalling] = useState(false)
+  const targetAgents = useMemo(() => {
+    const installed = detectedAgentOptions(agents)
+    return installed.length > 0 ? installed : agents
+  }, [agents])
 
-  const toggleAgent = useCallback((a: string) => {
+  useEffect(() => {
+    if (agents.length === 0) loadAgents()
+  }, [agents.length, loadAgents])
+
+  useEffect(() => {
+    if (selectedAgents.size > 0 || targetAgents.length === 0) return
+    const preferred = targetAgents.find(isAgentProgramInstalled) ?? targetAgents[0]
+    setSelectedAgents(new Set([preferred.id]))
+  }, [selectedAgents.size, targetAgents])
+
+  const toggleAgent = (a: string) => {
     setSelectedAgents(prev => {
       const next = new Set(prev)
       if (next.has(a)) next.delete(a); else next.add(a)
       return next
     })
-  }, [])
+  }
 
   const getSource = (): string => {
     switch (sourceType) {
       case 'url': return url
-      case 'github': return githubPath ? `${githubRepo}/${githubPath}` : githubRepo
+      case 'github': return githubPath ? `github:${githubRepo}/${githubPath}` : `github:${githubRepo}`
       case 'local': return localPath
       case 'skillsh': return url
     }
   }
 
-  const handleInstall = useCallback(async () => {
+  const handleInstall = async () => {
     const source = getSource()
     if (!source || selectedAgents.size === 0) return
 
@@ -57,7 +85,7 @@ export function InstallDialog({ onClose }: InstallDialogProps) {
       console.error('Install failed:', e)
     }
     setInstalling(false)
-  }, [sourceType, url, githubRepo, githubPath, localPath, selectedAgents, installMode, loadAll, onClose])
+  }
 
   return (
     <div className="skills-dialog-overlay" onClick={onClose}>
@@ -140,13 +168,13 @@ export function InstallDialog({ onClose }: InstallDialogProps) {
           <div className="install-form-row">
             <label className="install-form-label">{t('skills.targetAgents')}</label>
             <div className="install-targets">
-              {AGENTS.map(a => (
+              {targetAgents.map(agent => (
                 <div
-                  key={a}
-                  className={`install-target-chip ${selectedAgents.has(a) ? 'install-target-chip--selected' : ''}`}
-                  onClick={() => toggleAgent(a)}
+                  key={agent.id}
+                  className={`install-target-chip ${selectedAgents.has(agent.id) ? 'install-target-chip--selected' : ''}`}
+                  onClick={() => toggleAgent(agent.id)}
                 >
-                  {a}
+                  {agent.displayName}
                 </div>
               ))}
             </div>

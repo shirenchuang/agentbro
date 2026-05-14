@@ -44,6 +44,7 @@ describe('PetSurface', () => {
     render(
       <PetSurface
         activeOverlay={null}
+        expanded
         hidden={false}
         onCollapse={vi.fn()}
         onDismissOverlay={vi.fn()}
@@ -70,6 +71,7 @@ describe('PetSurface', () => {
     render(
       <PetSurface
         activeOverlay={overlay}
+        expanded={false}
         hidden={false}
         onCollapse={vi.fn()}
         onDismissOverlay={vi.fn()}
@@ -109,6 +111,7 @@ describe('PetSurface', () => {
     const { container } = render(
       <PetSurface
         activeOverlay={null}
+        expanded
         hidden={false}
         onCollapse={vi.fn()}
         onDismissOverlay={vi.fn()}
@@ -118,5 +121,23 @@ describe('PetSurface', () => {
     )
 
     expect(container.querySelector('.pet-surface__pet canvas')).toBeInTheDocument()
+  })
+
+  it('keeps session cards hidden until the island state expands', () => {
+    render(
+      <PetSurface
+        activeOverlay={null}
+        expanded={false}
+        hidden={false}
+        onCollapse={vi.fn()}
+        onDismissOverlay={vi.fn()}
+        scale={72}
+        sessions={[session()]}
+      />,
+    )
+
+    expect(screen.queryByText('Build pet surface')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open pet status' }))
+    expect(screen.getByText('返回')).toBeInTheDocument()
   })
 })

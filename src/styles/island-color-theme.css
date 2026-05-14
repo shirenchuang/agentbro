@@ -264,3 +264,84 @@ html[data-island-color-theme="soft-lavender"] {
   --badge-bg: var(--island-btn-bg);
   --badge-text: var(--island-text);
 }
+
+html[data-island-color-theme="system"] {
+  --island-bg: #f5f5f7;
+  --island-card: #ffffff;
+  --island-card-hover: #f0f0f2;
+  --island-border: rgba(0, 0, 0, 0.08);
+  --island-text: #1d1d1f;
+  --island-text-secondary: #6e6e73;
+  --island-text-muted: #aeaeb2;
+  --island-code-bg: #1c1c1e;
+  --island-input-bg: #f5f5f7;
+  --island-btn-bg: #e8e8ed;
+  --island-btn-hover: #dddde2;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 8px 32px rgba(0, 0, 0, 0.08);
+  --island-pill-shadow: 0 16px 36px rgba(0, 0, 0, 0.13);
+  --island-accent: #007aff;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.05);
+  --island-subtle-hover: rgba(0, 0, 0, 0.08);
+  --island-scrollbar: rgba(0, 0, 0, 0.16);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(255, 255, 255, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #eaf2ff;
+  --chat-assistant-bg: #ffffff;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-island-color-theme="system"] {
+    --island-bg: #000000;
+    --island-card: #0a0a0a;
+    --island-card-hover: #18181c;
+    --island-border: #1a1a1a;
+    --island-text: #e0e0e0;
+    --island-text-secondary: #888888;
+    --island-text-muted: #666666;
+    --island-code-bg: #1a1a1a;
+    --island-input-bg: #0d0d0d;
+    --island-btn-bg: #2a2a2e;
+    --island-btn-hover: #333333;
+    --island-button-bg: var(--island-btn-bg);
+    --island-button-hover: var(--island-btn-hover);
+    --island-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --island-pill-shadow: 0 2px 12px rgba(0, 0, 0, 0.42);
+    --island-accent: #7b78ff;
+    --island-border-style: none;
+    --island-subtle: rgba(255, 255, 255, 0.05);
+    --island-subtle-hover: rgba(255, 255, 255, 0.08);
+    --island-scrollbar: rgba(255, 255, 255, 0.15);
+    --island-scrollbar-hover: rgba(255, 255, 255, 0.25);
+    --bg-primary: var(--island-bg);
+    --bg-secondary: var(--island-card);
+    --bg-glass: rgba(0, 0, 0, 0.9);
+    --text-primary: var(--island-text);
+    --text-secondary: var(--island-text-secondary);
+    --text-muted: var(--island-text-muted);
+    --accent: var(--island-accent);
+    --border: var(--island-border);
+    --shadow: var(--island-shadow);
+    --chat-user-bg: #111827;
+    --chat-assistant-bg: var(--island-card);
+    --badge-bg: var(--island-btn-bg);
+    --badge-text: var(--island-text);
+    --status-idle: #666666;
+    --status-working: #60a5fa;
+    --status-error: #ef4444;
+    --status-done: #4ade80;
+    --status-thinking: #a78bfa;
+  }
+}
