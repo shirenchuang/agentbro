@@ -169,9 +169,10 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
 export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDeny, onDismiss, queueLength = 1, queueNext }: PermissionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
-  const [feedbackText, setFeedbackText] = useState('')
-  const [showFeedback, setShowFeedback] = useState(false)
+  const [feedbackState, setFeedbackState] = useState({ overlayId: overlay.id, text: '', show: false })
   const feedbackRef = useRef<HTMLInputElement>(null)
+  const feedbackText = feedbackState.overlayId === overlay.id ? feedbackState.text : ''
+  const showFeedback = feedbackState.overlayId === overlay.id && feedbackState.show
 
   let parsedInput: Record<string, unknown> = {}
   try {
@@ -180,11 +181,6 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
     parsedInput = data.toolInput ? { raw: data.toolInput } : {}
   }
   const toolLabel = getToolActivityLabel(t, data.toolName)
-
-  useEffect(() => {
-    setShowFeedback(false)
-    setFeedbackText('')
-  }, [overlay.id])
 
   useEffect(() => {
     if (showFeedback) feedbackRef.current?.focus()
@@ -206,10 +202,8 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
       if (e.key === 'Escape') {
         e.preventDefault()
         if (showFeedback) {
-          setShowFeedback(false)
+          setFeedbackState(current => ({ overlayId: overlay.id, text: current.overlayId === overlay.id ? current.text : '', show: false }))
           setNotchFocusable(false)
-        } else {
-          handleReject()
         }
         return
       }
@@ -230,7 +224,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
 
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump])
+  }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump, overlay.id])
 
   return (
     <OverlayCard session={session} onDismiss={onDismiss}>
@@ -281,7 +275,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
             className="perm-card__feedback-input"
             placeholder="Tell Claude why (optional)..."
             value={feedbackText}
-            onChange={(e) => setFeedbackText(e.target.value)}
+            onChange={(e) => setFeedbackState({ overlayId: overlay.id, text: e.target.value, show: true })}
             onMouseDown={(e) => {
               e.stopPropagation()
               setNotchFocusable(true).then(() => feedbackRef.current?.focus())
@@ -300,7 +294,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
             if (showFeedback) {
               handleReject()
             } else {
-              setShowFeedback(true)
+              setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
               setNotchFocusable(true)
             }
           }}

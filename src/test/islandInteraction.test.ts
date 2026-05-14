@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OverlayItem, SessionState } from '../types/agent'
-import { deriveIslandInteraction, getFollowFocusVisibleSessions } from '../utils/islandInteraction'
+import { deriveIslandInteraction, getFollowFocusVisibleSessions, sessionNeedsAttention } from '../utils/islandInteraction'
 
 function session(overrides: Partial<SessionState>): SessionState {
   return {
@@ -111,6 +111,35 @@ describe('deriveIslandInteraction', () => {
 
     expect(state.outerState).toBe('compact')
     expect(state.hasBlockingSignal).toBe(true)
+  })
+
+  it('treats plan approval metadata as attention even before phase catches up', () => {
+    const state = deriveIslandInteraction({
+      sessions: [session({ phase: 'processing', planContent: '1. Ship the fix' })],
+      panelState: 'collapsed',
+      activeOverlay: null,
+      interactionMode: 'persistent',
+      persistentIdleHidden: false,
+      wakeSilenced: false,
+    })
+
+    expect(sessionNeedsAttention(session({ phase: 'processing', planContent: '1. Ship the fix' }))).toBe(true)
+    expect(state.hasBlockingSignal).toBe(true)
+    expect(state.outerState).toBe('compact')
+  })
+
+  it('treats unfinished tasks as attention like evolab needs_attention sessions', () => {
+    const state = deriveIslandInteraction({
+      sessions: [session({ phase: 'idle', tasks: [{ id: '1', name: 'Finish parity', status: 'in_progress' }] })],
+      panelState: 'collapsed',
+      activeOverlay: null,
+      interactionMode: 'persistent',
+      persistentIdleHidden: false,
+      wakeSilenced: false,
+    })
+
+    expect(state.hasBlockingSignal).toBe(true)
+    expect(state.isMicro).toBe(false)
   })
 
   it('hides persistent mode after the idle hide timer fires', () => {

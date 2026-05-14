@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import type { AgentProgramInfo } from '../../../services/agentApi'
+import { PlatformIcon } from '../../platform/PlatformIcon'
 import { InlineConfirmAction } from '../../skills/InlineConfirmAction'
 
 interface AgentDetailSliderProps {
@@ -49,7 +50,9 @@ export function AgentDetailSlider({ agent, open, onClose, onRefresh, onRun }: Ag
           >
             <button className="agent-detail-panel__close" onClick={onClose}>×</button>
             <div className="agent-detail-panel__header">
-              <div className="agent-detail-panel__icon">{agent.displayName.slice(0, 2).toUpperCase()}</div>
+              <div className="agent-detail-panel__icon">
+                <PlatformIcon agentId={agent.icon || agent.id} displayName={agent.displayName} size={34} />
+              </div>
               <div>
                 <div className="agent-detail-panel__title">{agent.displayName}</div>
                 <div className="agent-detail-panel__desc">

@@ -1,5 +1,8 @@
 use super::agent_paths;
-use super::{AgentSkillState, InstallMode, McpServerConfig, ScannedSkill, SkillSource, SkillType};
+use super::{
+    AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ScannedSkill, SkillSource,
+    SkillType,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,6 +47,143 @@ pub fn scan_all() -> std::collections::HashMap<String, Vec<ScannedSkill>> {
         }
     }
     map
+}
+
+pub fn discover_project_skills(roots: &[String]) -> Vec<DiscoveredSkill> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots {
+        let path = expand_user_path(root);
+        if path.is_dir() {
+            discover_in_dir(&path, &path, 0, &mut seen, &mut results);
+        }
+        if results.len() >= 400 {
+            break;
+        }
+    }
+    results
+}
+
+fn discover_in_dir(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    seen: &mut HashSet<String>,
+    results: &mut Vec<DiscoveredSkill>,
+) {
+    if depth > 8 || results.len() >= 400 {
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !path.is_dir() {
+            continue;
+        }
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "dist" | "build" | ".next" | ".turbo"
+        ) {
+            continue;
+        }
+
+        let skill_file = path.join("SKILL.md");
+        if skill_file.exists() && is_project_skill_dir(&path) {
+            let key = path.display().to_string();
+            if seen.insert(key) {
+                results.push(discovered_skill(root, &path, &skill_file));
+            }
+        }
+        discover_in_dir(root, &path, depth + 1, seen, results);
+        if results.len() >= 400 {
+            break;
+        }
+    }
+}
+
+fn is_project_skill_dir(path: &Path) -> bool {
+    let text = path.display().to_string();
+    text.contains("/.skills/")
+        || text.ends_with("/.skills")
+        || text.contains("/.agents/skills/")
+        || text.ends_with("/.agents/skills")
+        || text.contains("/.claude/skills/")
+        || text.ends_with("/.claude/skills")
+}
+
+fn discovered_skill(root: &Path, dir_path: &Path, skill_file: &Path) -> DiscoveredSkill {
+    let fm = parse_frontmatter(skill_file);
+    let name = fm.get("name").cloned().unwrap_or_else(|| {
+        dir_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
+    let project_path = project_path_for(root, dir_path);
+    let project_name = project_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    DiscoveredSkill {
+        id: format!("{}:{}", project_path.display(), name),
+        name,
+        description: fm.get("description").cloned().unwrap_or_default(),
+        file_path: skill_file.display().to_string(),
+        dir_path: dir_path.display().to_string(),
+        project_path: project_path.display().to_string(),
+        project_name,
+        source_kind: discover_source_kind(dir_path),
+    }
+}
+
+fn project_path_for(root: &Path, dir_path: &Path) -> PathBuf {
+    let components = dir_path.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        let value = component.as_os_str().to_string_lossy();
+        if matches!(value.as_ref(), ".skills" | ".agents" | ".claude") {
+            let mut project = PathBuf::new();
+            for part in &components[..index] {
+                project.push(part.as_os_str());
+            }
+            return project;
+        }
+    }
+    root.to_path_buf()
+}
+
+fn discover_source_kind(dir_path: &Path) -> String {
+    let text = dir_path.display().to_string();
+    let prefix = if is_obsidian_vault_skill(dir_path) {
+        "obsidian/"
+    } else {
+        ""
+    };
+    if text.contains("/.agents/skills") {
+        format!("{prefix}.agents/skills")
+    } else if text.contains("/.claude/skills") {
+        format!("{prefix}.claude/skills")
+    } else {
+        format!("{prefix}.skills")
+    }
+}
+
+fn is_obsidian_vault_skill(dir_path: &Path) -> bool {
+    for ancestor in dir_path.ancestors() {
+        if ancestor.join(".obsidian").is_dir() {
+            return true;
+        }
+        let text = ancestor.display().to_string();
+        if text.ends_with(".obsidian") {
+            return true;
+        }
+    }
+    false
 }
 
 fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
@@ -525,6 +665,15 @@ fn parse_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
     }
 
     map
+}
+
+fn expand_user_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 fn dir_size(path: &Path) -> u64 {

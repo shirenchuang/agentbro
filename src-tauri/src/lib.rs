@@ -1141,6 +1141,13 @@ async fn scan_agent_skills(agent: String) -> Result<Vec<skills::ScannedSkill>, S
 }
 
 #[tauri::command]
+async fn discover_project_skills_cmd(
+    roots: Vec<String>,
+) -> Result<Vec<skills::DiscoveredSkill>, String> {
+    Ok(skills::scanner::discover_project_skills(&roots))
+}
+
+#[tauri::command]
 async fn install_skill_cmd(
     source: String,
     targets: Vec<skills::TargetConfig>,
@@ -1150,6 +1157,13 @@ async fn install_skill_cmd(
         skills::registry::add_source(&skill_id, &source)?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn preview_github_skills_cmd(
+    source: String,
+) -> Result<Vec<skills::GitHubSkillPreview>, String> {
+    skills::installer::preview_github_skills(&source)
 }
 
 #[tauri::command]
@@ -1196,6 +1210,24 @@ async fn read_skill_files(skill_path: String) -> Result<skills::FileTreeNode, St
 #[tauri::command]
 async fn read_skill_file_content(file_path: String) -> Result<String, String> {
     std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_skill_explanation_cmd(
+    skill_id: String,
+    lang: String,
+) -> Result<Option<skills::explanation::SkillExplanation>, String> {
+    Ok(skills::explanation::get_cached(&skill_id, &lang))
+}
+
+#[tauri::command]
+async fn generate_skill_explanation_cmd(
+    skill_id: String,
+    skill_path: String,
+    lang: String,
+    refresh: bool,
+) -> Result<skills::explanation::SkillExplanation, String> {
+    skills::explanation::generate(&skill_id, &skill_path, &lang, refresh)
 }
 
 #[tauri::command]
@@ -2302,7 +2334,9 @@ pub fn run() {
             import_theme,
             scan_all_skills,
             scan_agent_skills,
+            discover_project_skills_cmd,
             install_skill_cmd,
+            preview_github_skills_cmd,
             install_plugin_cmd,
             uninstall_skill_cmd,
             upsert_mcp_server_cmd,
@@ -2311,6 +2345,8 @@ pub fn run() {
             toggle_skill_cmd,
             read_skill_files,
             read_skill_file_content,
+            get_skill_explanation_cmd,
+            generate_skill_explanation_cmd,
             list_packs_cmd,
             create_pack_cmd,
             update_pack_cmd,

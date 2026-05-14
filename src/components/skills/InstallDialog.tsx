@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { skillApi } from '../../services/skillApi'
-import type { TargetConfig } from '../../services/skillApi'
+import type { GitHubSkillPreview, TargetConfig } from '../../services/skillApi'
 import { useAgentStore } from '../../stores/agentStore'
 import { useSkillStore } from '../../stores/skillStore'
 import { detectedAgentOptions, isAgentProgramInstalled } from '../../utils/agentPrograms'
@@ -36,6 +36,10 @@ export function InstallDialog({
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
   const [installMode, setInstallMode] = useState<'direct' | 'symlink'>('symlink')
   const [installing, setInstalling] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewMessage, setPreviewMessage] = useState('')
+  const [githubPreview, setGithubPreview] = useState<GitHubSkillPreview[]>([])
+  const [selectedGithubPaths, setSelectedGithubPaths] = useState<Set<string>>(new Set())
   const targetAgents = useMemo(() => {
     const installed = detectedAgentOptions(agents)
     return installed.length > 0 ? installed : agents
@@ -78,13 +82,46 @@ export function InstallDialog({
         agent: a,
         installMode,
       }))
-      await skillApi.install(source, targets, installMode)
+      if (sourceType === 'github' && selectedGithubPaths.size > 0) {
+        for (const path of selectedGithubPaths) {
+          const subPath = [githubPath.trim(), path].filter(Boolean).join('/')
+          await skillApi.install(`github:${githubRepo}/${subPath}`, targets, installMode)
+        }
+      } else {
+        await skillApi.install(source, targets, installMode)
+      }
       loadAll()
       onClose()
     } catch (e) {
       console.error('Install failed:', e)
+      setPreviewMessage(String(e))
     }
     setInstalling(false)
+  }
+
+  const handlePreviewGitHub = async () => {
+    if (!githubRepo.trim()) return
+    setPreviewing(true)
+    setPreviewMessage('')
+    try {
+      const result = await skillApi.previewGitHubSkills(githubPath ? `${githubRepo}/${githubPath}` : githubRepo)
+      setGithubPreview(result)
+      setSelectedGithubPaths(new Set(result.map(item => item.sourcePath)))
+      setPreviewMessage(result.length > 0 ? `发现 ${result.length} 个 Skill。` : '仓库中没有发现 SKILL.md。')
+    } catch (error) {
+      setPreviewMessage(String(error))
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const toggleGithubPath = (path: string) => {
+    setSelectedGithubPaths(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
   }
 
   return (
@@ -137,6 +174,39 @@ export function InstallDialog({
                   onChange={e => setGithubPath(e.target.value)}
                   placeholder="skills/my-skill"
                 />
+              </div>
+              <div className="install-form-row">
+                <div className="github-preview-head">
+                  <label className="install-form-label">仓库 Skill 预览</label>
+                  <button
+                    type="button"
+                    className="skills-btn skills-btn--small"
+                    onClick={handlePreviewGitHub}
+                    disabled={previewing || !githubRepo.trim()}
+                  >
+                    {previewing ? '预览中...' : '预览仓库'}
+                  </button>
+                </div>
+                {previewMessage && <div className="github-preview-message">{previewMessage}</div>}
+                {githubPreview.length > 0 && (
+                  <div className="github-preview-list">
+                    {githubPreview.map(item => (
+                      <button
+                        key={item.sourcePath}
+                        type="button"
+                        className={`github-preview-item ${selectedGithubPaths.has(item.sourcePath) ? 'github-preview-item--selected' : ''}`}
+                        onClick={() => toggleGithubPath(item.sourcePath)}
+                      >
+                        <span>{selectedGithubPaths.has(item.sourcePath) ? '✓' : ''}</span>
+                        <div>
+                          <strong>{item.name}</strong>
+                          <em>{item.description || item.sourcePath || '仓库根目录'}</em>
+                          <code>{item.sourcePath || '仓库根目录'}</code>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </>
           )}

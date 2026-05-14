@@ -9,6 +9,9 @@ export function isAgentProgramInstalled(agent: AgentProgramInfo) {
 export function agentAliasIds(agentId: string) {
   if (agentId === 'gemini' || agentId === 'gemini-cli') return ['gemini', 'gemini-cli']
   if (agentId === 'cursor' || agentId === 'cursor-cli') return ['cursor', 'cursor-cli']
+  if (agentId === 'droid' || agentId === 'factory-droid') return ['droid', 'factory-droid']
+  if (agentId === 'traecn' || agentId === 'trae-cn') return ['traecn', 'trae-cn']
+  if (agentId === 'qoder' || agentId === 'qoder-cli') return ['qoder', 'qoder-cli']
   return [agentId]
 }
 
@@ -17,6 +20,8 @@ export function agentMatchesId(installedAgentId: string, filterAgentId: string) 
 }
 
 export function displayAgentName(agentId: string, agents: AgentProgramInfo[]) {
+  if (agentId === 'central') return '中央技能库'
+
   const exact = agents.find((agent) => agent.id === agentId)
   if (exact) return exact.displayName
 
@@ -37,12 +42,16 @@ export function shortAgentName(agentId: string, agents: AgentProgramInfo[]) {
 }
 
 export function agentColor(agentId: string) {
+  if (agentId === 'central') return '#1d1d1f'
   if (agentId === 'claude-code') return '#5856d6'
   if (agentId === 'codex') return '#34c759'
   if (agentId === 'gemini' || agentId === 'gemini-cli') return '#ff9500'
   if (agentId === 'cursor' || agentId === 'cursor-cli') return '#007aff'
   if (agentId === 'hermes') return '#ff2d55'
   if (agentId === 'opencode') return '#0a84ff'
+  if (agentId === 'openclaw' || agentId === 'qclaw' || agentId === 'easyclaw' || agentId === 'autoclaw') return '#30b0c7'
+  if (agentId === 'windsurf') return '#5ac8fa'
+  if (agentId === 'workbuddy') return '#af52de'
   return '#8e8e93'
 }
 

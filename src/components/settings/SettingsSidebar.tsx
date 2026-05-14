@@ -126,15 +126,18 @@ export function SettingsSidebar({
   if (activeSection === 'agents') {
     const installedAgents = agents.filter(isInstalled)
     const availableAgents = agents.filter((agent) => !isInstalled(agent))
+    const centralCount = skills.filter((skill) => skill.source === 'island' || skill.agents.some((agent) => agent.agent === 'central')).length
     const skillCount = skills.filter((skill) => skill.skillType === 'skill').length
     const pluginCount = packs.length + skills.filter((skill) => skill.skillType === 'plugin' || skill.skillType === 'mcp').length
     const profileCount = packs.length
 
     const navItems: Array<{ id: CapabilityView; label: string; icon: string; count?: number }> = [
       { id: 'agent', label: 'Agent 管理', icon: '🤖', count: agents.length },
+      { id: 'central', label: '中央技能库', icon: '▣', count: centralCount },
       { id: 'skills', label: '全部 Skills', icon: '🧩', count: skillCount },
       { id: 'plugins', label: '插件与 MCP', icon: '🔌', count: pluginCount },
       { id: 'profiles', label: '技能包', icon: '📦', count: profileCount },
+      { id: 'discover', label: '项目发现', icon: '🔎' },
       { id: 'market', label: '市场', icon: '🏪' },
       { id: 'sync', label: '同步', icon: '☁' },
     ]

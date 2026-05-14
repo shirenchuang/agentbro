@@ -8,6 +8,7 @@ import type { OverlayItem, SessionState } from '../types/agent'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
+  isTerminalFocused: vi.fn((sessionId?: string) => Promise.resolve(Boolean(sessionId && false))),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
   respondPermission: vi.fn(() => Promise.resolve()),
   respondPlan: vi.fn(() => Promise.resolve()),
@@ -21,6 +22,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     getChatHistory: tauriMocks.getChatHistory,
+    isTerminalFocused: tauriMocks.isTerminalFocused,
     jumpToTerminal: tauriMocks.jumpToTerminal,
     respondPermission: tauriMocks.respondPermission,
     respondPlan: tauriMocks.respondPlan,
@@ -81,6 +83,7 @@ describe('NotchPanel island shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     tauriMocks.getChatHistory.mockResolvedValue([])
+    tauriMocks.isTerminalFocused.mockResolvedValue(false)
     tauriMocks.jumpToTerminal.mockResolvedValue(undefined)
     tauriMocks.respondPermission.mockResolvedValue(undefined)
     tauriMocks.respondPlan.mockResolvedValue(undefined)
@@ -108,6 +111,7 @@ describe('NotchPanel island shell', () => {
       taskCompleteDwellSeconds: 3,
       tipsEnabled: false,
     })
+    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
   it('renders the expanded island shell with the active session', () => {
@@ -286,6 +290,77 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
   })
 
+  it('renders blocking permission as the primary island content instead of over the session list', () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+    })
+
+    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'alert_permission')
+    expect(document.querySelector('.notch-panel__alert-content')).toBeInTheDocument()
+    expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
+    expect(document.querySelector('.hover-list')).not.toBeInTheDocument()
+    expect(screen.queryByText('agent-island · Port dynamic island')).not.toBeInTheDocument()
+  })
+
+  it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
+    const activeOverlay: OverlayItem = {
+      id: 'permission-s1-suppressed',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+      createdAt: Date.now(),
+      suppressed: true,
+    }
+    const currentSession = session({
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+    })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'compact')
+    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+  })
+
+  it('collapses a permission alert on Escape without denying the request', () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+    })
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
+  })
+
   it('routes question overlay answers to respondQuestion and clears the pending question', () => {
     mountIsland({
       id: 'question-s1',
@@ -301,6 +376,89 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+  })
+
+  it('routes multi-select question answers as a joined answer string', () => {
+    mountIsland({
+      id: 'question-multi-s1',
+      sessionId: 's1',
+      type: 'question',
+      data: { question: 'Pick targets', options: ['Preview', 'Production', 'Docs'], multiSelect: true },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_input',
+      pendingQuestion: { question: 'Pick targets', options: ['Preview', 'Production', 'Docs'], multiSelect: true },
+    })
+
+    fireEvent.mouseDown(screen.getByText('Preview').closest('.question-card__option-row')!)
+    fireEvent.mouseDown(screen.getByText('Docs').closest('.question-card__option-row')!)
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Confirm (2)' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Docs')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+  })
+
+  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', () => {
+    mountIsland({
+      id: 'question-batch-s1',
+      sessionId: 's1',
+      type: 'question',
+      data: {
+        question: '[Deploy] Choose options',
+        options: ['Preview', 'Ship'],
+        questions: [
+          {
+            header: 'Deploy',
+            question: 'Which target?',
+            options: [
+              { label: 'Preview', description: 'Open staging' },
+              { label: 'Ship', description: 'Release now' },
+            ],
+            multiSelect: true,
+          },
+          {
+            question: 'Notify channel?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_input',
+      pendingQuestion: {
+        question: '[Deploy] Choose options',
+        options: ['Preview', 'Ship'],
+        questions: [
+          {
+            header: 'Deploy',
+            question: 'Which target?',
+            options: [
+              { label: 'Preview', description: 'Open staging' },
+              { label: 'Ship', description: 'Release now' },
+            ],
+            multiSelect: true,
+          },
+          {
+            question: 'Notify channel?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Preview' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Ship' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'No' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: '✓ Submit All' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith(
+      's1',
+      JSON.stringify({
+        'Which target?': 'Preview, Ship',
+        'Notify channel?': 'No',
+      }),
+    )
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
   })
 
@@ -320,6 +478,8 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
     expect(useSessionStore.getState().activeOverlay).toBeNull()
+    expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()
+    expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')
   })
 
   it('routes response overlay jump and reply actions to terminal APIs', async () => {
@@ -392,5 +552,29 @@ describe('NotchPanel island shell', () => {
 
     expect(useSessionStore.getState().activeOverlay).toBeNull()
     expect(useSessionStore.getState().overlayQueue).toEqual([])
+  })
+
+  it('filters the session list to focused terminal sessions when follow focus is enabled', async () => {
+    useConfigStore.setState({ followFocus: true })
+    tauriMocks.isTerminalFocused.mockImplementation((sessionId?: string) => Promise.resolve(sessionId === 's2'))
+    const focused = session({ id: 's2', sessionTitle: 'Focused terminal', project: 'focused', pid: 2222, terminal: 'iTerm' })
+    const background = session({ id: 's1', sessionTitle: 'Background terminal', project: 'background', pid: 1111, terminal: 'Terminal' })
+    useSessionStore.setState({
+      sessions: { s1: background, s2: focused },
+      sessionList: [background, focused],
+      activeSessionId: 's2',
+      panelState: 'hover',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => expect(screen.queryByText('background · Background terminal')).not.toBeInTheDocument())
+    expect(screen.getByText('focused · Focused terminal')).toBeInTheDocument()
   })
 })

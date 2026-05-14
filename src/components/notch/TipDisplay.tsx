@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-export const TIPS = [
+const TIPS = [
   '⌘⇧I 切换灵动岛可见性',
   '⌘K 打开命令面板',
   '⌘J 切换终端面板',
@@ -25,7 +25,7 @@ function shuffleTips(tips: string[]): string[] {
 }
 
 function useTipRotation(active: boolean): string | null {
-  const [tip, setTip] = useState<string | null>(null)
+  const [tip, setTip] = useState<string | null>(() => TIPS[0] ?? null)
   const shuffledRef = useRef<string[]>([])
   const indexRef = useRef(0)
 
@@ -40,11 +40,9 @@ function useTipRotation(active: boolean): string | null {
   }, [])
 
   useEffect(() => {
-    if (!active) {
-      setTip(null)
-      return
-    }
-    setTip(nextTip())
+    if (!active) return
+    const id = window.setTimeout(() => setTip(nextTip()), 0)
+    return () => window.clearTimeout(id)
   }, [active, nextTip])
 
   useEffect(() => {

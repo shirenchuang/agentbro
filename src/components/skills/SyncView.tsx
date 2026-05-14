@@ -21,16 +21,14 @@ export function SyncView() {
   const [toAgent, setToAgent] = useState('')
   const [previewDetails, setPreviewDetails] = useState<string[]>([])
   const [conflicts, setConflicts] = useState<SyncResult['conflicts']>([])
+  const defaultFromAgent = syncAgents[0]?.id || ''
+  const defaultToAgent = syncAgents.find((agent) => agent.id !== defaultFromAgent)?.id || defaultFromAgent
+  const selectedFromAgent = syncAgents.some(agent => agent.id === fromAgent) ? fromAgent : defaultFromAgent
+  const selectedToAgent = syncAgents.some(agent => agent.id === toAgent) ? toAgent : defaultToAgent
 
   useEffect(() => {
     if (agents.length === 0) loadAgents()
   }, [agents.length, loadAgents])
-
-  useEffect(() => {
-    if (syncAgents.length === 0) return
-    setFromAgent((current) => current || syncAgents[0]?.id || '')
-    setToAgent((current) => current || syncAgents.find((agent) => agent.id !== syncAgents[0]?.id)?.id || syncAgents[0]?.id || '')
-  }, [syncAgents])
 
   const handleSaveConfig = useCallback(async () => {
     await skillApi.configureSyncConfig({
@@ -73,20 +71,20 @@ export function SyncView() {
   }, [loadAll])
 
   const handleAgentPreview = useCallback(async () => {
-    if (!fromAgent || !toAgent) return
+    if (!selectedFromAgent || !selectedToAgent) return
     try {
-      const preview = await skillApi.syncAgentPreview(fromAgent, toAgent)
+      const preview = await skillApi.syncAgentPreview(selectedFromAgent, selectedToAgent)
       setPreviewDetails(preview.details)
     } catch (e) {
       setPreviewDetails([String(e)])
     }
-  }, [fromAgent, toAgent])
+  }, [selectedFromAgent, selectedToAgent])
 
   const handleAgentSync = useCallback(async () => {
-    if (!fromAgent || !toAgent) return
+    if (!selectedFromAgent || !selectedToAgent) return
     setSyncing(true)
     try {
-      await skillApi.executeAgentSync(fromAgent, toAgent)
+      await skillApi.executeAgentSync(selectedFromAgent, selectedToAgent)
       setSyncMessage(t('skills.agentSyncDone'))
       setPreviewDetails([])
     } catch (e) {
@@ -94,7 +92,7 @@ export function SyncView() {
     }
     setSyncing(false)
     loadAll()
-  }, [fromAgent, toAgent, loadAll, t])
+  }, [selectedFromAgent, selectedToAgent, loadAll, t])
 
   const handleExport = useCallback(async () => {
     const path = prompt(t('skills.importPathPrompt'), '~/Desktop/agentbro-backup.zip')
@@ -197,11 +195,11 @@ export function SyncView() {
             <div className="sync-section__title">{t('skills.agentSync')}</div>
             <div className="sync-section__desc">{t('skills.agentSyncDesc')}</div>
             <div className="sync-input-row sync-agent-row">
-              <select className="sync-agent-select" value={fromAgent} onChange={e => setFromAgent(e.target.value)}>
+              <select className="sync-agent-select" value={selectedFromAgent} onChange={e => setFromAgent(e.target.value)}>
                 {syncAgents.map(a => <option key={a.id} value={a.id}>{a.displayName}</option>)}
               </select>
               <span className="sync-arrow">→</span>
-              <select className="sync-agent-select" value={toAgent} onChange={e => setToAgent(e.target.value)}>
+              <select className="sync-agent-select" value={selectedToAgent} onChange={e => setToAgent(e.target.value)}>
                 {syncAgents.map(a => <option key={a.id} value={a.id}>{a.displayName}</option>)}
               </select>
               <button className="skills-btn skills-btn--small" onClick={handleAgentPreview}>

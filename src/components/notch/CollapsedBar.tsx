@@ -10,6 +10,7 @@ import { useTick } from '../../hooks/useTick'
 import { isTauri, setSoundEnabled } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
 import { useThemeStore } from '../../stores/themeStore'
+import { sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { SpriteCanvas } from './SpriteCanvas'
 import './CollapsedBar.css'
@@ -99,7 +100,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const isExpanded = panelState !== 'collapsed'
   const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
   const workingCount = sessions.filter(s => s.phase === 'processing' || s.phase === 'compacting').length
-  const waitingCount = sessions.filter(s => s.phase === 'waiting_approval' || s.phase === 'waiting_input').length
+  const waitingCount = sessions.filter(sessionNeedsAttention).length
   const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)
   const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
   const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')

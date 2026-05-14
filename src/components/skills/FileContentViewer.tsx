@@ -11,6 +11,12 @@ interface FileContentViewerProps {
 }
 
 type RenderMode = 'source' | 'preview'
+interface FileLoadState {
+  filePath: string
+  content: string | null
+  loading: boolean
+  error: string | null
+}
 
 const LARGE_FILE_THRESHOLD = 500 * 1024
 
@@ -36,21 +42,33 @@ function formatSize(bytes: number): string {
 
 export function FileContentViewer({ fileName, filePath, onBack }: FileContentViewerProps) {
   const { t } = useTranslation()
-  const [content, setContent] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [fileState, setFileState] = useState<FileLoadState>({ filePath, content: null, loading: true, error: null })
   const [mode, setMode] = useState<RenderMode>(
     hasRenderablePreview(fileName) ? 'preview' : 'source'
   )
 
   useEffect(() => {
-    setLoading(true)
-    setError(null)
-    skillApi.readFileContent(filePath)
-      .then(result => setContent(result))
-      .catch(() => setError(t('skills.fileReadError')))
-      .finally(() => setLoading(false))
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      setFileState({ filePath, content: null, loading: true, error: null })
+      skillApi.readFileContent(filePath)
+        .then(result => {
+          if (!cancelled) setFileState({ filePath, content: result, loading: false, error: null })
+        })
+        .catch(() => {
+          if (!cancelled) setFileState({ filePath, content: null, loading: false, error: t('skills.fileReadError') })
+        })
+    })
+    return () => {
+      cancelled = true
+    }
   }, [filePath, t])
+
+  const isCurrentFile = fileState.filePath === filePath
+  const content = isCurrentFile ? fileState.content : null
+  const loading = !isCurrentFile || fileState.loading
+  const error = isCurrentFile ? fileState.error : null
 
   const pathParts = useMemo(() => {
     const parts = filePath.split('/')
@@ -121,13 +139,13 @@ export function FileContentViewer({ fileName, filePath, onBack }: FileContentVie
 
 function FileContentArea({ content, fileName, mode }: { content: string; fileName: string; mode: RenderMode }) {
   if (mode === 'source') {
+    let sourceContent = content
     if (isJsonFile(fileName)) {
       try {
-        const formatted = JSON.stringify(JSON.parse(content), null, 2)
-        return <SourceView content={formatted} />
+        sourceContent = JSON.stringify(JSON.parse(content), null, 2)
       } catch { /* use raw */ }
     }
-    return <SourceView content={content} />
+    return <SourceView content={sourceContent} />
   }
 
   if (isMarkdownFile(fileName)) {

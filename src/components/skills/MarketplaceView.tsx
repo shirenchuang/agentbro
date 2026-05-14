@@ -3,6 +3,7 @@ import { InstallDialog } from './InstallDialog'
 import { useAgentStore } from '../../stores/agentStore'
 import { skillApi, type MarketplaceItem, type MarketplaceSource } from '../../services/skillApi'
 import { detectedAgentOptions } from '../../utils/agentPrograms'
+import { OFFICIAL_PUBLISHERS, RECOMMENDED_SKILLS } from '../../data/officialSources'
 
 type MarketCategory = 'all' | 'skill' | 'plugin' | 'mcp'
 type MarketItem = MarketplaceItem
@@ -13,6 +14,50 @@ const categories: { id: MarketCategory; label: string }[] = [
   { id: 'plugin', label: '插件' },
   { id: 'mcp', label: 'MCP 服务' },
 ]
+
+const officialSkillItems: MarketplaceItem[] = [
+  ...RECOMMENDED_SKILLS.map((skill, index) => ({
+    id: `official:${skill.publisher.toLowerCase()}:${skill.name}`,
+    name: skill.name,
+    description: skill.description,
+    category: 'skill' as const,
+    sourceType: 'url' as const,
+    source: skill.downloadUrl,
+    subPath: null,
+    author: skill.publisher,
+    accent: officialAccent(index),
+    mcp: null,
+    plugin: null,
+  })),
+  ...OFFICIAL_PUBLISHERS.flatMap((publisher, publisherIndex) =>
+    publisher.repos.map((repo, repoIndex) => ({
+      id: `official-repo:${repo.fullName}`,
+      name: repo.fullName,
+      description: repo.description ?? `${publisher.name} 官方 Skill 仓库，包含 ${repo.skillCount} 个能力条目。`,
+      category: 'skill' as const,
+      sourceType: 'github' as const,
+      source: repo.fullName,
+      subPath: null,
+      author: publisher.name,
+      accent: officialAccent(publisherIndex + repoIndex),
+      mcp: null,
+      plugin: null,
+    }))
+  ),
+]
+
+function officialAccent(index: number) {
+  const palette = ['#1d1d1f', '#007aff', '#34c759', '#ff9500', '#5856d6', '#ff2d55', '#5ac8fa', '#af52de']
+  return palette[index % palette.length]
+}
+
+function mergeMarketplaceItems(items: MarketplaceItem[]) {
+  const merged = new Map<string, MarketplaceItem>()
+  for (const item of [...items, ...officialSkillItems]) {
+    if (!merged.has(item.id)) merged.set(item.id, item)
+  }
+  return Array.from(merged.values())
+}
 
 export function MarketplaceView() {
   const { agents, loadAgents } = useAgentStore()
@@ -47,7 +92,7 @@ export function MarketplaceView() {
         skillApi.listMarketplaceItems(),
         skillApi.listMarketplaceSources(),
       ])
-      setItems(marketItems)
+      setItems(mergeMarketplaceItems(marketItems))
       setSources(marketSources)
       setMarketMessage('')
     } catch (error) {
@@ -56,7 +101,23 @@ export function MarketplaceView() {
   }
 
   useEffect(() => {
-    loadMarketplace()
+    let cancelled = false
+    Promise.all([
+      skillApi.listMarketplaceItems(),
+      skillApi.listMarketplaceSources(),
+    ])
+      .then(([marketItems, marketSources]) => {
+        if (cancelled) return
+        setItems(mergeMarketplaceItems(marketItems))
+        setSources(marketSources)
+        setMarketMessage('')
+      })
+      .catch((error) => {
+        if (!cancelled) setMarketMessage(String(error))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const filtered = useMemo(() => {
@@ -64,7 +125,7 @@ export function MarketplaceView() {
     return items
       .filter((item) => category === 'all' || item.category === category)
       .filter((item) => !q || item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q) || item.author.toLowerCase().includes(q))
-  }, [category, query])
+  }, [category, items, query])
 
   const openMcpInstall = (item: MarketItem) => {
     setMcpInstalling(item)
@@ -184,7 +245,7 @@ export function MarketplaceView() {
         <div className="market-hero">
           <div>
             <h3>可安装能力</h3>
-            <p>按分类筛选市场条目，安装后会进入本机 Skill 仓库并关联到目标 Agent。</p>
+            <p>包含本地市场源、MCP 服务、插件，以及 skills-manage 官方/推荐 Skill 仓库。</p>
           </div>
           <div className="market-hero__count">{filtered.length}</div>
         </div>

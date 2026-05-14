@@ -5,15 +5,18 @@ import { useSkillStore } from '../../../stores/skillStore'
 import { skillApi, type ScannedSkill, type SkillPack } from '../../../services/skillApi'
 import { AgentDetailSlider } from './AgentDetailSlider'
 import { SkillListView } from '../../skills/SkillListView'
+import { CentralSkillListView } from '../../skills/CentralSkillListView'
 import { PluginListView } from '../../skills/PluginListView'
 import { PackListView } from '../../skills/PackListView'
+import { DiscoverView } from '../../skills/DiscoverView'
 import { MarketplaceView } from '../../skills/MarketplaceView'
 import { SyncView } from '../../skills/SyncView'
 import { InstallDialog } from '../../skills/InstallDialog'
 import { SkillDetailSlider } from '../../skills/SkillDetailSlider'
 import type { CapabilityView } from '../../../types/capability'
-import { isAgentProgramInstalled } from '../../../utils/agentPrograms'
+import { agentColor, isAgentProgramInstalled } from '../../../utils/agentPrograms'
 import { displayVersionValue } from '../../../utils/versions'
+import { PlatformIcon } from '../../platform/PlatformIcon'
 import { CustomAgentDialog } from './CustomAgentDialog'
 import {
   getAllHookStatus,
@@ -43,7 +46,7 @@ function isInstalled(agent: AgentProgramInfo) {
 }
 
 function visualFor(agent: AgentProgramInfo) {
-  return agentVisuals[agent.id] ?? { accent: '#8e8e93', icon: agent.displayName.slice(0, 2).toUpperCase(), emoji: '🤖' }
+  return agentVisuals[agent.id] ?? { accent: agentColor(agent.id), icon: agent.displayName.slice(0, 2).toUpperCase(), emoji: '' }
 }
 
 function skillAgentMatches(skill: ScannedSkill, agentId: string) {
@@ -576,7 +579,7 @@ export function AgentsSection({
         <div className="demo-agent-header">
           <div className="demo-agent-title">
             <div className="demo-agent-avatar" style={{ background: `linear-gradient(135deg, ${selectedVisual.accent}, color-mix(in srgb, ${selectedVisual.accent} 62%, #fff))` }}>
-              {selectedVisual.icon}
+              <PlatformIcon agentId={selectedAgent.icon || selectedAgent.id} displayName={selectedAgent.displayName} size={34} />
             </div>
             <div>
               <h3>{selectedAgent.displayName}</h3>
@@ -702,9 +705,11 @@ export function AgentsSection({
       <div className="capability-manager">
         <div className="capability-content">
           {activeView === 'agent' && renderAgentView()}
+          {activeView === 'central' && <CentralSkillListView />}
           {activeView === 'skills' && <SkillListView />}
           {activeView === 'plugins' && <PluginListView />}
           {activeView === 'profiles' && <PackListView />}
+          {activeView === 'discover' && <DiscoverView />}
           {activeView === 'market' && <MarketplaceView />}
           {activeView === 'sync' && <SyncView />}
         </div>

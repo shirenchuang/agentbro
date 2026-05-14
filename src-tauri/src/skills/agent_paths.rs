@@ -13,6 +13,11 @@ fn home() -> PathBuf {
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
     match agent {
+        "central" | "agentbro" => SkillPaths {
+            skill_dirs: vec![agentbro_skills_dir()],
+            mcp_config: None,
+            settings_file: None,
+        },
         "claude-code" => SkillPaths {
             skill_dirs: vec![h.join(".claude").join("skills")],
             mcp_config: Some(h.join(".claude").join("settings.json")),
@@ -58,6 +63,25 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "copilot" => basic_skill_paths(&h, ".copilot/skills"),
         "kiro" => basic_skill_paths(&h, ".kiro/skills"),
         "pi" => basic_skill_paths(&h, ".pi/agent/skills"),
+        "junie" => basic_skill_paths(&h, ".junie/skills"),
+        "windsurf" => SkillPaths {
+            skill_dirs: vec![
+                h.join(".windsurf").join("skills"),
+                h.join(".codeium").join("windsurf").join("skills"),
+            ],
+            mcp_config: None,
+            settings_file: None,
+        },
+        "augment" => basic_skill_paths(&h, ".augment/skills"),
+        "kilocode" => basic_skill_paths(&h, ".kilocode/skills"),
+        "ob1" => basic_skill_paths(&h, ".ob1/skills"),
+        "amp" => basic_skill_paths(&h, ".amp/skills"),
+        "aider" => basic_skill_paths(&h, ".aider/skills"),
+        "openclaw" => basic_skill_paths(&h, ".openclaw/skills"),
+        "qclaw" => basic_skill_paths(&h, ".qclaw/skills"),
+        "easyclaw" => basic_skill_paths(&h, ".easyclaw/skills"),
+        "easyclaw-v2" => basic_skill_paths(&h, ".easyclaw-20260322-01/skills"),
+        "autoclaw" => basic_skill_paths(&h, ".openclaw-autoclaw/skills"),
         "hermes" => SkillPaths {
             skill_dirs: vec![h.join(".hermes").join("skills")],
             mcp_config: None,
@@ -81,6 +105,7 @@ fn basic_skill_paths(home: &PathBuf, relative: &str) -> SkillPaths {
 
 pub fn known_agent_ids() -> &'static [&'static str] {
     &[
+        "central",
         "claude-code",
         "codex",
         "gemini",
@@ -104,6 +129,19 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "workbuddy",
         "kiro",
         "pi",
+        "factory-droid",
+        "junie",
+        "windsurf",
+        "augment",
+        "kilocode",
+        "ob1",
+        "amp",
+        "aider",
+        "openclaw",
+        "qclaw",
+        "easyclaw",
+        "easyclaw-v2",
+        "autoclaw",
     ]
 }
 

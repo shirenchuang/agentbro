@@ -44,7 +44,7 @@ interface SessionStore {
   dismissOverlay: (id: string) => void
   clearSessionOverlays: (sessionId: string) => void
   removeSession: (id: string) => void
-  replaceAllSessions: (sessions: SessionState[]) => void
+  replaceAllSessions: (sessions: SessionState[], options?: { suppressed?: boolean }) => void
   setChatHistory: (sessionId: string, messages: ChatMessage[]) => void
   clearPermission: (sessionId: string) => void
   clearQuestion: (sessionId: string) => void
@@ -333,8 +333,11 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           if (session) {
             sessions[event.sessionId] = {
               ...session,
+              phase: 'waiting_approval',
               planTitle: event.planTitle,
               planContent: event.planContent,
+              planPermissions: event.requestedPermissions,
+              unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
           const planOverlay: OverlayItem = {
@@ -433,9 +436,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     saveSessionsDebounced()
   },
 
-  replaceAllSessions: (newSessions) => {
+  replaceAllSessions: (newSessions, options) => {
     const prevState = useSessionStore.getState()
     const newOverlays: OverlayItem[] = []
+    const suppressed = options?.suppressed === true
 
     set((state) => {
       const sessions: Record<string, SessionState> = {}
@@ -468,6 +472,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
                 questions: s.pendingQuestion.questions,
               },
               createdAt: Date.now(),
+              suppressed,
             })
           }
         }
@@ -486,6 +491,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
                 diff: s.pendingPermission.diff,
               },
               createdAt: Date.now(),
+              suppressed,
             })
           }
         }
@@ -504,6 +510,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
                 requestedPermissions: s.planPermissions || [],
               },
               createdAt: Date.now(),
+              suppressed,
             })
           }
         }
@@ -538,7 +545,15 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       if (activeSessionId && !sessions[activeSessionId]) {
         activeSessionId = Object.keys(sessions)[0] ?? null
       }
-      return { sessions, sessionList: toList(sessions), activeSessionId }
+      const overlayQueue = state.overlayQueue.filter((overlay) => {
+        const session = sessions[overlay.sessionId]
+        if (!session) return false
+        if (overlay.type === 'permission') return Boolean(session.pendingPermission)
+        if (overlay.type === 'question') return Boolean(session.pendingQuestion)
+        if (overlay.type === 'plan') return Boolean(session.planTitle || session.planContent)
+        return true
+      })
+      return { sessions, sessionList: toList(sessions), activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {

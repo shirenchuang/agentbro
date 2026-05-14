@@ -24,6 +24,33 @@ export interface ScannedSkill {
   frontmatter: Record<string, string>
 }
 
+export interface DiscoveredSkill {
+  id: string
+  name: string
+  description: string
+  filePath: string
+  dirPath: string
+  projectPath: string
+  projectName: string
+  sourceKind: string
+}
+
+export interface SkillExplanation {
+  skillId: string
+  lang: string
+  model: string
+  text: string
+  cachedAt: string
+  fromCache: boolean
+}
+
+export interface GitHubSkillPreview {
+  sourcePath: string
+  name: string
+  description: string
+  directoryName: string
+}
+
 export interface SkillPack {
   id: string
   name: string
@@ -126,9 +153,17 @@ export const skillApi = {
     ? invoke<ScannedSkill[]>('scan_agent_skills', { agent })
     : Promise.resolve([]),
 
+  discoverProjectSkills: (roots: string[]) => isTauri
+    ? invoke<DiscoveredSkill[]>('discover_project_skills_cmd', { roots })
+    : Promise.resolve([]),
+
   install: (source: string, targets: TargetConfig[], mode: 'direct' | 'symlink') => isTauri
     ? invoke('install_skill_cmd', { source, targets, mode })
     : Promise.resolve(),
+
+  previewGitHubSkills: (source: string) => isTauri
+    ? invoke<GitHubSkillPreview[]>('preview_github_skills_cmd', { source })
+    : Promise.resolve([]),
 
   installPlugin: (request: PluginInstallRequest) => isTauri
     ? invoke<string>('install_plugin_cmd', { request })
@@ -161,6 +196,21 @@ export const skillApi = {
   readFileContent: (filePath: string) => isTauri
     ? invoke<string>('read_skill_file_content', { filePath })
     : Promise.resolve(''),
+
+  getSkillExplanation: (skillId: string, lang: string) => isTauri
+    ? invoke<SkillExplanation | null>('get_skill_explanation_cmd', { skillId, lang })
+    : Promise.resolve(null),
+
+  generateSkillExplanation: (skillId: string, skillPath: string, lang: string, refresh = false) => isTauri
+    ? invoke<SkillExplanation>('generate_skill_explanation_cmd', { skillId, skillPath, lang, refresh })
+    : Promise.resolve({
+      skillId,
+      lang,
+      model: 'browser-demo',
+      text: 'AI explanation requires the Tauri desktop runtime.',
+      cachedAt: new Date().toISOString(),
+      fromCache: false,
+    }),
 
   openPath: (path: string) => isTauri
     ? invoke('open_system_path', { path })

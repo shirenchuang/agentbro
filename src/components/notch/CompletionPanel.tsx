@@ -1,5 +1,5 @@
 /* CompletionPanel — 3-variant task completion UI with auto-dismiss */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SubagentInfo } from '../../types/agent'
 import { getToolActivityLabel } from '../../utils/toolLabels'
@@ -150,7 +150,12 @@ function SubagentDoneVariant({ subagents, onDismiss }: SubagentDoneProps) {
 
 function PendingToolVariant({ toolName, startedAt, onDismiss }: PendingToolProps) {
   const { t } = useTranslation()
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+  const elapsed = Math.floor((now - startedAt) / 1000)
   const fmt = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 
   return (

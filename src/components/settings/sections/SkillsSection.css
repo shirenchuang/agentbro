@@ -543,6 +543,10 @@
   background: color-mix(in srgb, var(--settings-accent) 8%, var(--settings-card-bg));
 }
 
+.skill-location-row--disabled {
+  opacity: 0.72;
+}
+
 .skill-location-row__check {
   width: 21px;
   height: 21px;
@@ -554,6 +558,11 @@
   color: #00c853;
   font-size: 13px;
   font-weight: 800;
+}
+
+.skill-location-row--disabled .skill-location-row__check {
+  border-color: var(--settings-text-muted);
+  color: var(--settings-text-muted);
 }
 
 .skill-location-row:hover .skill-location-row__path {
@@ -618,6 +627,18 @@
   color: #956400;
 }
 
+.skill-location-row__disabled-tag {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--settings-text-muted) 12%, transparent);
+  color: var(--settings-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .skill-location-row__path {
   display: block;
   width: 100%;
@@ -642,6 +663,13 @@
   outline: none;
 }
 
+.skill-location-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-location-row__toggle,
 .skill-location-row__remove {
   min-height: 28px;
   padding: 0 9px;
@@ -653,6 +681,15 @@
   font: inherit;
   font-size: 11px;
   font-weight: 750;
+}
+
+.skill-location-row__toggle {
+  color: var(--settings-text-secondary);
+}
+
+.skill-location-row__toggle:hover {
+  border-color: color-mix(in srgb, var(--settings-accent) 34%, var(--settings-card-border));
+  color: var(--settings-accent);
 }
 
 .skill-location-row__remove:hover {
@@ -751,6 +788,61 @@
   color: var(--settings-text-primary);
   font: inherit;
   font-size: 12px;
+}
+
+.skill-explanation {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-explanation__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.skill-explanation__meta {
+  margin-top: 3px;
+  color: var(--settings-text-tertiary);
+  font-size: 11px;
+}
+
+.skill-explanation__actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.skill-explanation__body {
+  padding: 11px 12px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #f7f7f8;
+  color: var(--settings-text-primary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.skill-explanation__body p,
+.skill-explanation__body ul,
+.skill-explanation__body ol {
+  margin: 0 0 8px;
+}
+
+.skill-explanation__body h3 {
+  margin: 10px 0 6px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.skill-explanation__body h3:first-child {
+  margin-top: 0;
+}
+
+.skill-explanation__body li {
+  margin: 3px 0;
 }
 
 .skill-detail-info-row {
@@ -1336,6 +1428,116 @@
   color: var(--settings-text-secondary);
 }
 
+.discover-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.discover-config {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.discover-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.discover-config textarea,
+.discover-config select {
+  width: 100%;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #f7f7f8;
+  color: var(--settings-text-primary);
+  font: inherit;
+}
+
+.discover-config textarea {
+  min-height: 92px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.discover-config select {
+  min-height: 36px;
+  padding: 0 9px;
+}
+
+.discover-config__actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.discover-list {
+  display: grid;
+  gap: 10px;
+}
+
+.discover-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 14px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.discover-card__title {
+  color: var(--settings-text-primary);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.discover-card__desc {
+  margin-top: 4px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.discover-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.discover-card__meta span,
+.discover-card__meta code {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: #f2f2f7;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.discover-card__meta code {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sync-view {
   display: flex;
   flex-direction: column;
@@ -1656,6 +1858,90 @@
   background: rgba(0, 122, 255, 0.1);
   border-color: rgba(0, 122, 255, 0.25);
   color: var(--settings-accent);
+}
+
+.github-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.github-preview-message {
+  margin-top: 7px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+}
+
+.github-preview-list {
+  max-height: 220px;
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  overflow: auto;
+}
+
+.github-preview-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.github-preview-item--selected {
+  border-color: color-mix(in srgb, var(--settings-accent) 44%, var(--settings-card-border));
+  background: color-mix(in srgb, var(--settings-accent) 7%, #fff);
+}
+
+.github-preview-item > span {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 5px;
+  color: var(--settings-accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.github-preview-item strong,
+.github-preview-item em,
+.github-preview-item code {
+  display: block;
+  min-width: 0;
+}
+
+.github-preview-item strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.github-preview-item em {
+  margin-top: 2px;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.github-preview-item code {
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--settings-text-tertiary);
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Batch bar */
@@ -2401,6 +2687,11 @@
   }
 
   .market-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .discover-config,
+  .discover-card {
     grid-template-columns: 1fr;
   }
 }

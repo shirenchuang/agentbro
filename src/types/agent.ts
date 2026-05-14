@@ -44,6 +44,7 @@ export interface OverlayItem {
   type: OverlayType
   data: unknown
   createdAt: number
+  suppressed?: boolean
 }
 
 export interface TokenUsage {

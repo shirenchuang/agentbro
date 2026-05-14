@@ -37,14 +37,14 @@ export function PixelIndicator({ priority, phase, size = 14 }: PixelIndicatorPro
   const isAnimated = p >= PRIORITY.thinking
   const isAttention = p === PRIORITY.attention
 
-  const colors = themeColor
-    ? [themeColor, themeColor, themeColor, themeColor]
-    : FALLBACK_COLORS[p] ?? FALLBACK_COLORS[PRIORITY.idle]
   const speed = themeSpeed ?? 1500
 
   const pixels = useMemo(() => {
+    const colors = themeColor
+      ? [themeColor, themeColor, themeColor, themeColor]
+      : FALLBACK_COLORS[p] ?? FALLBACK_COLORS[PRIORITY.idle]
     return [0, 1, 2, 3].map(i => colors[i % colors.length])
-  }, [colors])
+  }, [p, themeColor])
 
   const pixelSize = Math.floor(size / 2)
   const gap = 1

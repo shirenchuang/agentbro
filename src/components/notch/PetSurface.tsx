@@ -537,9 +537,10 @@ function MultiQuestionToast({
 }
 
 function PlanToast({ overlay, onDismiss, session }: { overlay: OverlayItem; onDismiss: () => void; session: SessionState }) {
-  const data = overlay.data as { planTitle?: string; planContent?: string; requestedPermissions?: string[] }
+  const data = overlay.data as { planTitle?: string; planContent?: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
   const respond = async (mode: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'feedback') => {
     await respondPlan(session.id, mode)
+    useSessionStore.getState().clearPlan(session.id)
     onDismiss()
   }
 
@@ -548,7 +549,13 @@ function PlanToast({ overlay, onDismiss, session }: { overlay: OverlayItem; onDi
       <div className="pet-toast__title">{data.planTitle || '计划确认'}</div>
       <div className="pet-toast__text">{data.planContent || session.planContent || 'Review the plan before continuing.'}</div>
       {data.requestedPermissions && data.requestedPermissions.length > 0 && (
-        <div className="pet-toast__chips">{data.requestedPermissions.map((item) => <span key={item}>{item}</span>)}</div>
+        <div className="pet-toast__chips">
+          {data.requestedPermissions.map((item, index) => (
+            <span key={typeof item === 'string' ? item : `${item.tool}-${index}`}>
+              {typeof item === 'string' ? item : `${item.tool}: ${item.prompt}`}
+            </span>
+          ))}
+        </div>
       )}
       <div className="pet-toast__actions">
         <button type="button" onClick={() => void respond('manual')}>手动</button>

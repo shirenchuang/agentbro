@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useSkillStore } from '../../stores/skillStore'
 import { useAgentStore } from '../../stores/agentStore'
 import { skillApi } from '../../services/skillApi'
@@ -13,7 +15,7 @@ import { displayVersionValue } from '../../utils/versions'
 type DetailTab = 'overview' | 'files' | 'locations'
 
 export function SkillDetailSlider() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { skills, packs, selectedSkillId, detailOpen, closeDetail, fileTree, loadAll } = useSkillStore()
   const { agents, loadAgents } = useAgentStore()
   const [tab, setTab] = useState<DetailTab>('overview')
@@ -24,8 +26,13 @@ export function SkillDetailSlider() {
   const [mcpValidation, setMcpValidation] = useState('')
   const [installModeByAgent, setInstallModeByAgent] = useState<Record<string, 'direct' | 'symlink'>>({})
   const [packToJoin, setPackToJoin] = useState('')
+  const [explanation, setExplanation] = useState('')
+  const [explanationMeta, setExplanationMeta] = useState('')
+  const [explanationLoading, setExplanationLoading] = useState(false)
+  const [explanationError, setExplanationError] = useState('')
 
   const skill = skills.find(s => s.id === selectedSkillId)
+  const skillId = skill?.id
   const skillVersion = displayVersionValue(skill?.frontmatter.version || skill?.frontmatter.versionName)
   const skillOwner = skill?.frontmatter.author || skill?.frontmatter.owner || skill?.frontmatter.maintainer
   const skillCategory = skill?.frontmatter.category || skill?.frontmatter.tags || skill?.skillType
@@ -46,8 +53,24 @@ export function SkillDetailSlider() {
     if (tab !== 'files') setViewingFile(false)
   }, [tab])
 
+  useEffect(() => {
+    setExplanation('')
+    setExplanationMeta('')
+    setExplanationError('')
+    if (!skillId) return
+    const lang = i18n.language?.startsWith('zh') ? 'zh' : 'en'
+    skillApi.getSkillExplanation(skillId, lang)
+      .then((cached) => {
+        if (!cached) return
+        setExplanation(cached.text)
+        setExplanationMeta(`${cached.model} · ${new Date(cached.cachedAt).toLocaleString()}`)
+      })
+      .catch(() => {})
+  }, [i18n.language, skillId])
+
   const handleToggleAgent = async (agent: string, enabled: boolean) => {
     if (!skill) return
+    if (agent === 'central') return
     setNotice('')
     try {
       await skillApi.toggle(skill.id, agent, enabled)
@@ -99,7 +122,11 @@ export function SkillDetailSlider() {
       await loadAll()
       return
     }
-    await skillApi.uninstall(skill.filePath)
+    const paths = Array.from(new Set(skill.agents.map(agent => agent.installPath).filter(Boolean)))
+    if (paths.length === 0 && skill.filePath) paths.push(skill.filePath)
+    for (const path of paths) {
+      await skillApi.uninstall(path)
+    }
     closeDetail()
     loadAll()
   }
@@ -144,6 +171,22 @@ export function SkillDetailSlider() {
       setMcpValidation(`${result.valid ? '通过' : '失败'}：${result.message}${warnings}`)
     } catch (error) {
       setMcpValidation(String(error))
+    }
+  }
+
+  const handleGenerateExplanation = async (refresh = false) => {
+    if (!skill?.filePath) return
+    const lang = i18n.language?.startsWith('zh') ? 'zh' : 'en'
+    setExplanationLoading(true)
+    setExplanationError('')
+    try {
+      const result = await skillApi.generateSkillExplanation(skill.id, skill.filePath, lang, refresh)
+      setExplanation(result.text)
+      setExplanationMeta(`${result.model}${result.fromCache ? ' · cached' : ''} · ${new Date(result.cachedAt).toLocaleString()}`)
+    } catch (error) {
+      setExplanationError(String(error))
+    } finally {
+      setExplanationLoading(false)
     }
   }
 
@@ -236,6 +279,41 @@ export function SkillDetailSlider() {
                     </div>
                   )}
 
+                  <div className="skill-detail-section skill-explanation">
+                    <div className="skill-explanation__head">
+                      <div>
+                        <div className="skill-detail-section__title">AI 解释</div>
+                        {explanationMeta && <div className="skill-explanation__meta">{explanationMeta}</div>}
+                      </div>
+                      <div className="skill-explanation__actions">
+                        <button
+                          className="skills-btn skills-btn--small"
+                          disabled={explanationLoading || !skill.filePath}
+                          onClick={() => handleGenerateExplanation(false)}
+                        >
+                          {explanation ? '读取缓存' : '生成'}
+                        </button>
+                        <button
+                          className="skills-btn skills-btn--small"
+                          disabled={explanationLoading || !skill.filePath}
+                          onClick={() => handleGenerateExplanation(true)}
+                        >
+                          刷新
+                        </button>
+                      </div>
+                    </div>
+                    {explanationLoading && <div className="skill-detail-empty">正在生成解释...</div>}
+                    {explanationError && <div className="skill-detail-notice">{explanationError}</div>}
+                    {explanation && (
+                      <div className="skill-explanation__body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{explanation}</ReactMarkdown>
+                      </div>
+                    )}
+                    {!explanation && !explanationLoading && !explanationError && (
+                      <div className="skill-detail-empty">生成后可查看用途、适用场景、依赖和风险。</div>
+                    )}
+                  </div>
+
                   {skill.skillType === 'mcp' && (
                     <div className="skill-detail-section">
                       <div className="skill-detail-section__title">MCP 可用性</div>
@@ -311,7 +389,7 @@ export function SkillDetailSlider() {
                           mode={a.installMode || 'direct'}
                           enabled={a.enabled}
                           primary={index === 0}
-                          onToggle={() => handleToggleAgent(a.agent, !a.enabled)}
+                          onToggle={a.agent === 'central' ? undefined : () => handleToggleAgent(a.agent, !a.enabled)}
                           onOpen={handleOpenPath}
                           onUninstall={() => handleUninstallPath(a.installPath, a.agent)}
                         />
@@ -401,7 +479,7 @@ function LocationPathRow({
   const open = () => onOpen(path)
   return (
     <div
-      className={`skill-location-row ${primary ? 'skill-location-row--primary' : ''}`}
+      className={`skill-location-row ${primary ? 'skill-location-row--primary' : ''} ${enabled === false ? 'skill-location-row--disabled' : ''}`}
       role="button"
       tabIndex={0}
       onKeyDown={(event) => {
@@ -412,22 +490,37 @@ function LocationPathRow({
       }}
       title="Enter 或 Cmd+O 打开文件夹"
     >
-      <span className="skill-location-row__check">✓</span>
+      <span className="skill-location-row__check">{enabled === false ? '·' : '✓'}</span>
       <div className="skill-location-row__main">
         <div className="skill-location-row__title-line">
           <span className="skill-location-row__label">{label}</span>
           {primary && <em className="skill-location-row__primary-tag">主安装</em>}
           <span className={`skill-location-row__mode-tag skill-location-row__mode-tag--${mode}`}>{mode}</span>
+          {enabled === false && <span className="skill-location-row__disabled-tag">已停用</span>}
         </div>
         <button type="button" className="skill-location-row__path" onClick={open}>
           {path}
         </button>
       </div>
-      {onUninstall && (
-        <button type="button" className="skill-location-row__remove" onClick={onUninstall}>
-          卸载
-        </button>
-      )}
+      <div className="skill-location-row__actions">
+        {onToggle && (
+          <button
+            type="button"
+            className="skill-location-row__toggle"
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggle()
+            }}
+          >
+            {enabled === false ? '启用' : '停用'}
+          </button>
+        )}
+        {onUninstall && (
+          <button type="button" className="skill-location-row__remove" onClick={onUninstall}>
+            卸载
+          </button>
+        )}
+      </div>
     </div>
   )
 }

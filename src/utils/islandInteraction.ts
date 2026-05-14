@@ -33,6 +33,20 @@ export function isNonBlockingOverlay(overlay: OverlayItem | null): boolean {
   return overlay?.type === 'completion' || overlay?.type === 'response'
 }
 
+export function hasUnfinishedTasks(session: SessionState): boolean {
+  return Boolean(session.tasks?.some((task) => task.status !== 'completed'))
+}
+
+export function sessionNeedsAttention(session: SessionState): boolean {
+  return session.phase === 'waiting_approval'
+    || session.phase === 'waiting_input'
+    || session.phase === 'error'
+    || Boolean(session.pendingPermission)
+    || Boolean(session.pendingQuestion)
+    || Boolean(session.planTitle || session.planContent)
+    || hasUnfinishedTasks(session)
+}
+
 export function getFollowFocusVisibleSessions(
   sessions: SessionState[],
   followFocus: boolean,
@@ -45,7 +59,7 @@ export function getFollowFocusVisibleSessions(
 export function deriveIslandInteraction(input: IslandInteractionInput): IslandInteractionSnapshot {
   const { sessions, panelState, activeOverlay, interactionMode, persistentIdleHidden, wakeSilenced } = input
   const hasRunningSession = sessions.some((session) => session.phase === 'processing' || session.phase === 'compacting')
-  const hasWaitingSession = sessions.some((session) => session.phase === 'waiting_approval' || session.phase === 'waiting_input')
+  const hasWaitingSession = sessions.some(sessionNeedsAttention)
   const hasErrorSession = sessions.some((session) => session.phase === 'error')
   const hasBlockingSignal = hasWaitingSession || hasErrorSession || isBlockingOverlay(activeOverlay)
   const hasNonBlockingOverlay = isNonBlockingOverlay(activeOverlay)

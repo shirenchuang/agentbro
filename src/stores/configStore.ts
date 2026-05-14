@@ -326,7 +326,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     notchStyle: 'compact',
     hoverSpeed: 'normal',
     contentFontSize: '13px',
-    completionCardHeight: 120,
+    completionCardHeight: 200,
     maxPanelHeight: 600,
     showAgentActivityDetails: true,
     showUsageQuota: true,
@@ -368,7 +368,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     excludedHookCwdSubstrings: '',
     autoApproveTools: [
       'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
-      'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode',
+      'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode', 'Read',
     ],
     hapticOnHover: false,
     hapticIntensity: 1,
@@ -380,8 +380,8 @@ function createIslandDefaults(): Partial<ConfigState> {
     sessionTimeoutMinutes: 30,
     aiMessageLines: 1,
     clickToDetail: true,
-    dismissOnOutsideClick: false,
-    showCacheTTL: false,
+    dismissOnOutsideClick: true,
+    showCacheTTL: true,
     hoverExpandDelay: 350,
     microHoverExpandDelay: 500,
     collapseDelay: 400,
@@ -410,7 +410,7 @@ export const useConfigStore = create<ConfigStore>()(
   notchStyle: 'compact',
   hoverSpeed: 'normal',
   contentFontSize: '13px',
-  completionCardHeight: 120,
+  completionCardHeight: 200,
   maxPanelHeight: 600,
   showAgentActivityDetails: true,
 
@@ -513,7 +513,7 @@ export const useConfigStore = create<ConfigStore>()(
   excludedHookCwdSubstrings: '',
   autoApproveTools: [
     'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
-    'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode',
+    'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode', 'Read',
   ],
   hapticOnHover: false,
   hapticIntensity: 1,
@@ -529,8 +529,8 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Evolab parity — interaction timing
   clickToDetail: true,
-  dismissOnOutsideClick: false,
-  showCacheTTL: false,
+  dismissOnOutsideClick: true,
+  showCacheTTL: true,
   hoverExpandDelay: 350,
   microHoverExpandDelay: 500,
   collapseDelay: 400,

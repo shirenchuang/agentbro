@@ -66,6 +66,7 @@ export function ChatView({ onBack }: ChatViewProps) {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [subagentHistory, setSubagentHistory] = useState<{
+    sessionId: string
     agentId: string
     title: string
     subtitle?: string
@@ -73,28 +74,38 @@ export function ChatView({ onBack }: ChatViewProps) {
     loading: boolean
     error?: string
   } | null>(null)
-
-  useEffect(() => {
-    setSubagentHistory(null)
-  }, [activeSession?.id])
+  const activeSessionId = activeSession?.id
+  const activeSessionChatLength = activeSession?.chatHistory.length ?? 0
+  const subagentHistoryLength = subagentHistory?.sessionId === activeSessionId ? subagentHistory?.messages.length : undefined
 
   // Auto-load chat history when ChatView mounts, and refresh it as hook
   // metadata changes so detail view does not look empty while a run is active.
   useEffect(() => {
-    if (!activeSession) return
+    if (!activeSessionId) return
 
-    setLoadingHistory(activeSession.chatHistory.length === 0)
-    getChatHistory(activeSession.id)
-      .then((parsed) => {
-        if (parsed.length > 0) {
-          const messages = mapParsedMessages(parsed)
-          useSessionStore.getState().setChatHistory(activeSession.id, messages)
-        }
-      })
-      .catch((e) => console.warn('[ChatView] getChatHistory:', e))
-      .finally(() => setLoadingHistory(false))
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      setLoadingHistory(activeSessionChatLength === 0)
+      getChatHistory(activeSessionId)
+        .then((parsed) => {
+          if (cancelled) return
+          if (parsed.length > 0) {
+            const messages = mapParsedMessages(parsed)
+            useSessionStore.getState().setChatHistory(activeSessionId, messages)
+          }
+        })
+        .catch((e) => console.warn('[ChatView] getChatHistory:', e))
+        .finally(() => {
+          if (!cancelled) setLoadingHistory(false)
+        })
+    })
+    return () => {
+      cancelled = true
+    }
   }, [
-    activeSession?.id,
+    activeSessionId,
+    activeSessionChatLength,
     activeSession?.lastUserMessage,
     activeSession?.responseText,
     activeSession?.description,
@@ -107,7 +118,7 @@ export function ChatView({ onBack }: ChatViewProps) {
     if (!userScrolled && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight
     }
-  }, [activeSession?.chatHistory.length, subagentHistory?.messages.length, userScrolled])
+  }, [activeSessionChatLength, subagentHistoryLength, userScrolled])
 
   const handleScroll = useCallback(() => {
     if (!contentRef.current) return
@@ -205,30 +216,31 @@ export function ChatView({ onBack }: ChatViewProps) {
   }, [onBack])
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
-    if (!activeSession || !subagent.agentTranscriptPath) return
+    if (!activeSessionId || !subagent.agentTranscriptPath) return
     const title = subagent.agentType || 'Subagent'
     const subtitle = subagent.description || subagent.lastAssistantMessage
     setSubagentHistory({
+      sessionId: activeSessionId,
       agentId: subagent.agentId,
       title,
       subtitle,
       messages: [],
       loading: true,
     })
-    getSubagentChatHistory(activeSession.id, subagent.agentTranscriptPath)
+    getSubagentChatHistory(activeSessionId, subagent.agentTranscriptPath)
       .then((parsed) => {
         setSubagentHistory((current) => {
-          if (!current || current.agentId !== subagent.agentId) return current
+          if (!current || current.sessionId !== activeSessionId || current.agentId !== subagent.agentId) return current
           return {
             ...current,
             messages: mapParsedMessages(parsed),
             loading: false,
           }
         })
-    })
+      })
       .catch((e) => {
         setSubagentHistory((current) => {
-          if (!current || current.agentId !== subagent.agentId) return current
+          if (!current || current.sessionId !== activeSessionId || current.agentId !== subagent.agentId) return current
           return {
             ...current,
             loading: false,
@@ -236,13 +248,14 @@ export function ChatView({ onBack }: ChatViewProps) {
           }
         })
       })
-  }, [activeSession?.id])
+  }, [activeSessionId])
 
   if (!activeSession) {
     return null
   }
 
-  const displayedMessages = subagentHistory?.messages ?? activeSession.chatHistory
+  const currentSubagentHistory = subagentHistory?.sessionId === activeSession.id ? subagentHistory : null
+  const displayedMessages = currentSubagentHistory?.messages ?? activeSession.chatHistory
 
   return (
     <div className="chat-view">
@@ -253,15 +266,15 @@ export function ChatView({ onBack }: ChatViewProps) {
       )}
 
       <div className="chat-view__messages glass-scroll" ref={contentRef} onScroll={handleScroll} style={{ fontSize: contentFontSize }}>
-        {subagentHistory && (
+        {currentSubagentHistory && (
           <div className="chat-view__subagent-history">
             <button className="chat-view__subagent-back" onClick={() => setSubagentHistory(null)}>
               ←
             </button>
             <div className="chat-view__subagent-copy">
-              <span className="chat-view__subagent-title">{subagentHistory.title}</span>
-              {subagentHistory.subtitle && (
-                <span className="chat-view__subagent-subtitle">{subagentHistory.subtitle}</span>
+              <span className="chat-view__subagent-title">{currentSubagentHistory.title}</span>
+              {currentSubagentHistory.subtitle && (
+                <span className="chat-view__subagent-subtitle">{currentSubagentHistory.subtitle}</span>
               )}
             </div>
             <span className="chat-view__subagent-badge">readonly</span>
@@ -290,13 +303,13 @@ export function ChatView({ onBack }: ChatViewProps) {
           </div>
         )}
 
-        {subagentHistory?.loading ? (
+        {currentSubagentHistory?.loading ? (
           <div className="chat-view__empty">
             <span>{t('notch.loadingHistory', 'Loading history...')}</span>
           </div>
-        ) : subagentHistory?.error ? (
+        ) : currentSubagentHistory?.error ? (
           <div className="chat-view__empty">
-            <span>{subagentHistory.error}</span>
+            <span>{currentSubagentHistory.error}</span>
           </div>
         ) : displayedMessages.length === 0 ? (
           <div className="chat-view__empty">

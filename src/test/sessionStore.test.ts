@@ -73,6 +73,65 @@ describe('sessionStore backend overlays', () => {
     expect(overlay?.data).toMatchObject({ summary: 'All checks passed' })
   })
 
+  it('marks blocking overlays from suppressed backend updates', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+      }),
+    ], { suppressed: true })
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('permission')
+    expect(overlay?.suppressed).toBe(true)
+  })
+
+  it('marks plan requests as waiting for approval', async () => {
+    useSessionStore.getState().updateSession({
+      type: 'session_start',
+      sessionId: 's1',
+      project: 'project',
+      terminal: 'iTerm',
+      agentType: 'claude-code',
+    })
+
+    useSessionStore.getState().updateSession({
+      type: 'plan_request',
+      sessionId: 's1',
+      planTitle: 'Implementation plan',
+      planContent: '1. Align details',
+      requestedPermissions: ['Edit'],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.phase).toBe('waiting_approval')
+    expect(state.sessions.s1.planPermissions).toEqual(['Edit'])
+    expect(state.sessions.s1.unattendedSince).toEqual(expect.any(Number))
+    expect(state.activeOverlay?.type).toBe('plan')
+  })
+
+  it('removes stale blocking overlays when backend clears pending state', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+        pendingQuestion: { question: 'Continue?', options: ['Yes'] },
+        planTitle: 'Plan',
+        planContent: '1. Fix',
+      }),
+    ])
+    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.type)).toEqual([
+      'permission',
+      'plan',
+      'question',
+    ])
+
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+
+    expect(useSessionStore.getState().overlayQueue).toEqual([])
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+  })
+
   it('marks inactive processing sessions idle after the configured idle timeout', () => {
     const now = Date.now()
     useConfigStore.setState({ idleTimeoutMinutes: 5 })

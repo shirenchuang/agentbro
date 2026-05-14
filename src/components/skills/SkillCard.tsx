@@ -21,7 +21,8 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
   const { selectSkill, batchMode, batchSelected, toggleBatchItem } = useSkillStore()
   const { agents } = useAgentStore()
   const detectedAgents = detectedAgentOptions(agents)
-  const allEnabled = skill.agents.every(a => a.enabled)
+  const toggleableAgents = skill.agents.filter(agent => agent.agent !== 'central')
+  const allEnabled = toggleableAgents.length > 0 && toggleableAgents.every(a => a.enabled)
   const installedAgents = new Set(skill.agents.map(a => a.agent))
   const isAgentInstalled = (agent: string) => {
     return Array.from(installedAgents).some(id => agentMatchesId(id, agent))
@@ -30,11 +31,11 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
 
   const handleToggle = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
-    for (const agent of skill.agents) {
+    for (const agent of toggleableAgents) {
       await skillApi.toggle(skill.id, agent.agent, !allEnabled)
     }
     onRefresh()
-  }, [skill, allEnabled, onRefresh])
+  }, [skill.id, toggleableAgents, allEnabled, onRefresh])
 
   const handleClick = useCallback(() => {
     if (batchMode) {
@@ -100,6 +101,7 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
       <button
         className={`skill-card__toggle ${allEnabled ? 'skill-card__toggle--on' : ''}`}
         onClick={handleToggle}
+        disabled={toggleableAgents.length === 0}
       />
       <div className="skill-card__bottom">
         <span>{skill.source} · {skill.skillType.toUpperCase()}</span>

@@ -1,6 +1,7 @@
 use super::agent_paths;
 use super::{
-    InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest, TargetConfig,
+    GitHubSkillPreview, InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest,
+    TargetConfig,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,6 +75,25 @@ pub fn install_skill(
     Ok(installed_ids)
 }
 
+pub fn preview_github_skills(source: &str) -> Result<Vec<GitHubSkillPreview>, String> {
+    let normalized = if source.starts_with("github:")
+        || source.starts_with("https://github.com/")
+        || source.starts_with("http://github.com/")
+    {
+        source.to_string()
+    } else {
+        format!("github:{source}")
+    };
+    let (src, temp_root) = resolve_install_source(&normalized)?;
+    let mut previews = Vec::new();
+    collect_skill_previews(&src, &src, &mut previews)?;
+    if let Some(root) = temp_root {
+        let _ = fs::remove_dir_all(root);
+    }
+    previews.sort_by(|a, b| a.source_path.cmp(&b.source_path));
+    Ok(previews)
+}
+
 fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
     let local = PathBuf::from(source);
     if local.exists() {
@@ -92,13 +112,155 @@ fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), St
         if source.ends_with(".zip") {
             return download_zip(source);
         }
-        return Err(
-            "Only GitHub repository URLs and .zip skill archives are supported for remote installs"
-                .to_string(),
-        );
+        if source.ends_with(".md")
+            || source.contains("/raw/")
+            || source.contains("raw.githubusercontent.com")
+        {
+            return download_markdown_skill(source);
+        }
+        return Err("Only GitHub repository URLs, raw Markdown skills, and .zip skill archives are supported for remote installs".to_string());
     }
 
     Err(format!("Source not found: {}", source))
+}
+
+fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let root = temp_install_dir()?;
+    let skill_dir = root.join(skill_dir_name_from_url(source));
+    fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
+    let dest = skill_dir.join("SKILL.md");
+
+    let output = Command::new("curl")
+        .args(authenticated_curl_args())
+        .arg("-L")
+        .arg("--fail")
+        .arg(source)
+        .arg("-o")
+        .arg(&dest)
+        .output()
+        .map_err(|e| format!("Failed to run curl: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&root);
+        return Err(format!("Failed to download {source}: {stderr}"));
+    }
+
+    Ok((skill_dir, Some(root)))
+}
+
+fn skill_dir_name_from_url(source: &str) -> String {
+    let trimmed = source.trim_end_matches('/');
+    let mut parts = trimmed
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts
+        .last()
+        .is_some_and(|part| part.eq_ignore_ascii_case("SKILL.md"))
+    {
+        parts.pop();
+    }
+    parts
+        .last()
+        .map(|part| sanitize_file_name(part.trim_end_matches(".md")))
+        .filter(|part| !part.is_empty())
+        .unwrap_or_else(|| "downloaded-skill".to_string())
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "downloaded-skill".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn collect_skill_previews(
+    root: &Path,
+    dir: &Path,
+    previews: &mut Vec<GitHubSkillPreview>,
+) -> Result<(), String> {
+    if previews.len() >= 500 {
+        return Ok(());
+    }
+    let skill_file = dir.join("SKILL.md");
+    if skill_file.exists() {
+        let frontmatter = parse_frontmatter_from_file(&skill_file);
+        let directory_name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let source_path = dir.strip_prefix(root).unwrap_or(dir).display().to_string();
+        previews.push(GitHubSkillPreview {
+            source_path,
+            name: frontmatter
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| directory_name.clone()),
+            description: frontmatter.get("description").cloned().unwrap_or_default(),
+            directory_name,
+        });
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            ".git" | "node_modules" | "target" | "dist" | "build" | ".next"
+        ) {
+            continue;
+        }
+        collect_skill_previews(root, &path, previews)?;
+    }
+    Ok(())
+}
+
+fn parse_frontmatter_from_file(path: &Path) -> std::collections::HashMap<String, String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| parse_frontmatter_text(&content))
+        .unwrap_or_default()
+}
+
+fn parse_frontmatter_text(content: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if !content.starts_with("---") {
+        return map;
+    }
+    let Some(frontmatter) = content.splitn(3, "---").nth(1) else {
+        return map;
+    };
+    for line in frontmatter.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if !key.trim().is_empty() && !value.is_empty() {
+            map.insert(key.trim().to_string(), value.to_string());
+        }
+    }
+    map
 }
 
 pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> {
@@ -220,20 +382,28 @@ fn clone_repo(
 ) -> Result<(PathBuf, Option<PathBuf>), String> {
     let root = temp_install_dir()?;
     let repo_dir = root.join("repo");
-    let mut cmd = Command::new("git");
-    cmd.arg("clone").arg("--depth").arg("1");
-    if let Some(branch) = branch {
-        cmd.arg("--branch").arg(branch);
+    let mut last_error = String::new();
+    for clone_url in github_clone_urls(repo_url) {
+        let mut attempt = Command::new("git");
+        attempt.arg("clone").arg("--depth").arg("1");
+        if let Some(branch) = branch {
+            attempt.arg("--branch").arg(branch);
+        }
+        let output = attempt
+            .arg(&clone_url)
+            .arg(&repo_dir)
+            .output()
+            .map_err(|e| format!("Failed to run git clone: {e}"))?;
+        if output.status.success() {
+            last_error.clear();
+            break;
+        }
+        last_error = redact_token(&String::from_utf8_lossy(&output.stderr));
+        let _ = fs::remove_dir_all(&repo_dir);
     }
-    let output = cmd
-        .arg(repo_url)
-        .arg(&repo_dir)
-        .output()
-        .map_err(|e| format!("Failed to run git clone: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !last_error.is_empty() {
         let _ = fs::remove_dir_all(&root);
-        return Err(format!("Failed to clone {repo_url}: {stderr}"));
+        return Err(format!("Failed to clone {repo_url}: {last_error}"));
     }
 
     let src = match subpath {
@@ -254,6 +424,7 @@ fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
     let output = Command::new("curl")
+        .args(authenticated_curl_args())
         .arg("-L")
         .arg("--fail")
         .arg(source)
@@ -273,6 +444,52 @@ fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
 
     let src = single_child_dir(&extract_dir).unwrap_or(extract_dir);
     Ok((src, Some(root)))
+}
+
+fn github_token() -> Option<String> {
+    std::env::var("AGENTBRO_GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            super::registry::get_sync_config()
+                .and_then(|config| config.github_token)
+                .filter(|value| !value.trim().is_empty())
+        })
+}
+
+fn authenticated_curl_args() -> Vec<String> {
+    github_token()
+        .map(|token| vec!["-H".to_string(), format!("Authorization: Bearer {token}")])
+        .unwrap_or_default()
+}
+
+fn authenticated_github_url(repo_url: &str) -> String {
+    let Some(token) = github_token() else {
+        return repo_url.to_string();
+    };
+    if let Some(rest) = repo_url.strip_prefix("https://github.com/") {
+        return format!("https://x-access-token:{token}@github.com/{rest}");
+    }
+    repo_url.to_string()
+}
+
+fn github_clone_urls(repo_url: &str) -> Vec<String> {
+    let mut urls = vec![authenticated_github_url(repo_url)];
+    if repo_url.starts_with("https://github.com/") {
+        urls.push(format!("https://ghfast.top/{repo_url}"));
+        urls.push(format!("https://ghproxy.net/{repo_url}"));
+        urls.push(format!("https://mirror.ghproxy.com/{repo_url}"));
+    }
+    urls
+}
+
+fn redact_token(value: &str) -> String {
+    if let Some(token) = github_token() {
+        value.replace(&token, "***")
+    } else {
+        value.to_string()
+    }
 }
 
 fn single_child_dir(dir: &Path) -> Option<PathBuf> {
@@ -618,4 +835,53 @@ pub fn apply_pack(pack: &super::SkillPack) -> Result<(), String> {
 
 pub fn copy_recursive_pub(src: &Path, dest: &Path) -> Result<(), String> {
     copy_recursive(src, dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        std::env::temp_dir().join(format!("agent-island-{name}-{millis}"))
+    }
+
+    #[test]
+    fn collect_skill_previews_includes_root_and_nested_skills() {
+        let root = temp_test_dir("preview-root");
+        let nested = root.join("skills").join("nested-skill");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nname: Root Skill\ndescription: root description\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            nested.join("SKILL.md"),
+            "---\nname: Nested Skill\ndescription: nested description\n---\n",
+        )
+        .unwrap();
+
+        let mut previews = Vec::new();
+        collect_skill_previews(&root, &root, &mut previews).unwrap();
+
+        let root_preview = previews
+            .iter()
+            .find(|preview| preview.name == "Root Skill")
+            .expect("root skill should be included");
+        assert_eq!(root_preview.source_path, "");
+        assert_eq!(root_preview.description, "root description");
+
+        let nested_preview = previews
+            .iter()
+            .find(|preview| preview.name == "Nested Skill")
+            .expect("nested skill should be included");
+        assert_eq!(nested_preview.source_path, "skills/nested-skill");
+        assert_eq!(nested_preview.description, "nested description");
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

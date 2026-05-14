@@ -134,11 +134,7 @@ pub async fn agent_open_download(
 
 #[tauri::command]
 pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Result<(), String> {
-    let _ = state
-        .adapters
-        .iter()
-        .find(|a| a.name() == agent_id)
-        .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    let _ = state;
     let meta = metadata_for(&agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let path = meta
         .app_path
@@ -433,14 +429,10 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
 
 async fn run_agent_command(
     app: AppHandle,
-    adapters: &[std::sync::Arc<dyn AgentAdapter>],
+    _adapters: &[std::sync::Arc<dyn AgentAdapter>],
     agent_id: &str,
     operation: &str,
 ) -> Result<(), String> {
-    let _ = adapters
-        .iter()
-        .find(|a| a.name() == agent_id)
-        .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let command = match operation {
         "install" => meta.install_command,
@@ -656,6 +648,18 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "workbuddy" => "WorkBuddy",
         "kiro" => "Kiro",
         "pi" => "Pi",
+        "junie" => "Junie",
+        "windsurf" => "Windsurf",
+        "augment" => "Augment",
+        "kilocode" => "KiloCode",
+        "ob1" => "OB1",
+        "amp" => "Amp",
+        "aider" => "Aider",
+        "openclaw" => "OpenClaw",
+        "qclaw" => "QClaw",
+        "easyclaw" => "EasyClaw",
+        "easyclaw-v2" => "EasyClaw V2",
+        "autoclaw" => "AutoClaw",
         _ => "Custom Agent",
     }
 }
@@ -667,6 +671,8 @@ fn icon_for_agent(id: &str) -> String {
         "gemini-cli" => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
         "qoder-cli" => "qoder".to_string(),
+        "factory-droid" => "factory-droid".to_string(),
+        "easyclaw-v2" => "easyclaw".to_string(),
         other => other.to_string(),
     }
 }
@@ -824,6 +830,101 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "/Applications/Kiro.app",
             "~/.kiro",
             "https://kiro.dev",
+        ),
+        "factory-droid" => app(
+            "droid",
+            "/Applications/Factory.app",
+            "~/.factory",
+            "https://www.factory.ai",
+        ),
+        "junie" => cli_no_uninstall(
+            "junie",
+            "vendor",
+            "junie",
+            None,
+            None,
+            "~/.junie",
+            "https://www.jetbrains.com/junie/",
+        ),
+        "windsurf" => app(
+            "windsurf",
+            "/Applications/Windsurf.app",
+            "~/.codeium/windsurf",
+            "https://windsurf.com",
+        ),
+        "augment" => app(
+            "augment",
+            "/Applications/Augment.app",
+            "~/.augment",
+            "https://www.augmentcode.com",
+        ),
+        "kilocode" => cli_no_uninstall(
+            "kilocode",
+            "vendor",
+            "kilocode",
+            None,
+            None,
+            "~/.kilocode",
+            "https://kilocode.ai",
+        ),
+        "ob1" => cli_no_uninstall(
+            "ob1",
+            "vendor",
+            "ob1",
+            None,
+            None,
+            "~/.ob1",
+            "https://ob1.ai",
+        ),
+        "amp" => cli(
+            "amp",
+            "npm",
+            "@sourcegraph/amp",
+            "npm install -g @sourcegraph/amp",
+            "npm update -g @sourcegraph/amp",
+            "npm uninstall -g @sourcegraph/amp",
+            "~/.amp",
+            "https://ampcode.com",
+        ),
+        "aider" => cli(
+            "aider",
+            "pipx",
+            "aider-chat",
+            "pipx install aider-chat",
+            "pipx upgrade aider-chat",
+            "pipx uninstall aider-chat",
+            "~/.aider",
+            "https://aider.chat",
+        ),
+        "openclaw" => app(
+            "openclaw",
+            "/Applications/OpenClaw.app",
+            "~/.openclaw",
+            "https://github.com/openclaw-ai/openclaw",
+        ),
+        "qclaw" => app(
+            "qclaw",
+            "/Applications/QClaw.app",
+            "~/.qclaw",
+            "https://github.com/openclaw-ai/qclaw",
+        ),
+        "easyclaw" => app(
+            "easyclaw",
+            "/Applications/EasyClaw.app",
+            "~/.easyclaw",
+            "https://github.com/openclaw-ai/easyclaw",
+        ),
+        "easyclaw-v2" => app(
+            "easyclaw",
+            "/Applications/EasyClaw.app",
+            "~/.easyclaw-20260322-01",
+            "https://github.com/openclaw-ai/easyclaw",
+        ),
+        "autoclaw" => app(
+            "autoclaw",
+            "/Applications/AutoClaw.app",
+            "~/.openclaw-autoclaw",
+            "https://github.com/openclaw-ai/autoclaw",
         ),
         _ => return None,
     };

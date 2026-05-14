@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { agentApi, type AgentProgramInfo } from '../../../services/agentApi'
 import { useAgentStore } from '../../../stores/agentStore'
 
@@ -25,8 +25,11 @@ export function CustomAgentDialog({ agent, onClose, onSaved }: CustomAgentDialog
   const { agents } = useAgentStore()
 
   // Filter out already-added custom agents (same base id)
-  const existingCustomIds = agents.filter(a => a.isCustom).map(a => a.id.replace(/-custom-\d+$/, ''))
-  const availableAgents = KNOWN_AGENTS.filter(a => !existingCustomIds.includes(a.id) || (editing && agent?.id === a.id))
+  const existingCustomIds = useMemo(() => agents.filter(a => a.isCustom).map(a => a.id.replace(/-custom-\d+$/, '')), [agents])
+  const availableAgents = useMemo(
+    () => KNOWN_AGENTS.filter(a => !existingCustomIds.includes(a.id) || (editing && agent?.id === a.id)),
+    [agent?.id, editing, existingCustomIds],
+  )
 
   const [selectedId, setSelectedId] = useState(KNOWN_AGENTS[0].id)
   const [displayName, setDisplayName] = useState('')
@@ -46,7 +49,7 @@ export function CustomAgentDialog({ agent, onClose, onSaved }: CustomAgentDialog
       setSkillsDir(first.defaultDir)
     }
     setError('')
-  }, [agent, editing])
+  }, [agent, availableAgents, editing])
 
   const handleAgentChange = (id: string) => {
     setSelectedId(id)

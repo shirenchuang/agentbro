@@ -1,9 +1,22 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PetSurface } from '../components/notch/PetSurface'
+import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { OverlayItem, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
+
+const tauriMocks = vi.hoisted(() => ({
+  respondPlan: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('../services/tauriApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/tauriApi')>()
+  return {
+    ...actual,
+    respondPlan: tauriMocks.respondPlan,
+  }
+})
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -36,6 +49,15 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
 describe('PetSurface', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useSessionStore.setState({
+      sessions: {},
+      sessionList: [],
+      activeSessionId: null,
+      panelState: 'collapsed',
+      overlayQueue: [],
+      activeOverlay: null,
+      wakeSilencedUntil: 0,
+    })
     useThemeStore.getState().loadThemes([])
     useThemeStore.getState().setActiveTheme('default')
   })
@@ -139,5 +161,50 @@ describe('PetSurface', () => {
     expect(screen.queryByText('Build pet surface')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open pet status' }))
     expect(screen.getByText('返回')).toBeInTheDocument()
+  })
+
+  it('clears plan state after a pet plan approval action', async () => {
+    const currentSession = session({
+      phase: 'waiting_approval',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix pet approval',
+      planPermissions: ['Edit'],
+    })
+    const overlay: OverlayItem = {
+      id: 'plan-s1',
+      sessionId: 's1',
+      type: 'plan',
+      data: {
+        planTitle: 'Implementation plan',
+        planContent: '1. Fix pet approval',
+        requestedPermissions: [{ tool: 'Edit', prompt: 'Update source' }],
+      },
+      createdAt: Date.now(),
+    }
+    const onDismissOverlay = vi.fn()
+    useSessionStore.setState({
+      sessions: { s1: currentSession },
+      sessionList: [currentSession],
+      overlayQueue: [overlay],
+      activeOverlay: overlay,
+    })
+
+    render(
+      <PetSurface
+        activeOverlay={overlay}
+        expanded={false}
+        hidden={false}
+        onCollapse={vi.fn()}
+        onDismissOverlay={onDismissOverlay}
+        scale={72}
+        sessions={[currentSession]}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('接受编辑'))
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined())
+    expect(onDismissOverlay).toHaveBeenCalledWith('plan-s1')
   })
 })

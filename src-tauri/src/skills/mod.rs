@@ -1,4 +1,5 @@
 pub mod agent_paths;
+pub mod explanation;
 pub mod installer;
 pub mod marketplace;
 pub mod registry;
@@ -55,6 +56,28 @@ pub struct ScannedSkill {
     pub modified_at: u64,
     pub agents: Vec<AgentSkillState>,
     pub frontmatter: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub file_path: String,
+    pub dir_path: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub source_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSkillPreview {
+    pub source_path: String,
+    pub name: String,
+    pub description: String,
+    pub directory_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,6 +337,26 @@ mod tests {
         assert!(
             installed_path.symlink_metadata().is_err(),
             "installed symlink should be removed"
+        );
+    }
+
+    #[test]
+    fn scans_central_agentbro_skills_dir() {
+        let _guard = lock_home();
+        let home = TempHome::new("central-scan");
+        write_skill(&home.path.join(".agentbro/skills"), "central-dir", "central-fixture");
+
+        let scanned = scanner::scan_agent("central");
+        let skill = scanned
+            .iter()
+            .find(|skill| skill.id == "central-fixture")
+            .expect("central skill should be scanned");
+
+        assert!(matches!(skill.skill_type, SkillType::Skill));
+        assert_eq!(skill.agents[0].agent, "central");
+        assert!(
+            skill.file_path.contains(".agentbro/skills/central-dir"),
+            "central scan should point at canonical AgentBro skill path"
         );
     }
 

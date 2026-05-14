@@ -25,6 +25,18 @@ pub struct Metadata {
     pub custom_agents: Vec<CustomAgentEntry>,
     #[serde(default)]
     pub marketplace_sources: Vec<MarketplaceSource>,
+    #[serde(default)]
+    pub explanations: HashMap<String, SkillExplanationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillExplanationEntry {
+    pub skill_id: String,
+    pub lang: String,
+    pub model: String,
+    pub text: String,
+    pub cached_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +100,24 @@ pub fn remove_source(skill_id: &str) -> Result<(), String> {
     let mut meta = load();
     meta.sources.remove(skill_id);
     save(&meta)
+}
+
+pub fn get_skill_explanation(skill_id: &str, lang: &str) -> Option<SkillExplanationEntry> {
+    load()
+        .explanations
+        .get(&explanation_key(skill_id, lang))
+        .cloned()
+}
+
+pub fn cache_skill_explanation(entry: SkillExplanationEntry) -> Result<(), String> {
+    let mut meta = load();
+    meta.explanations
+        .insert(explanation_key(&entry.skill_id, &entry.lang), entry);
+    save(&meta)
+}
+
+fn explanation_key(skill_id: &str, lang: &str) -> String {
+    format!("{}::{}", skill_id, lang)
 }
 
 pub fn list_packs() -> Vec<SkillPack> {

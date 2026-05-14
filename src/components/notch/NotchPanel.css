@@ -163,6 +163,18 @@
 }
 
 /* Overlay layer — floats above base content */
+.notch-panel__alert-content {
+  display: block;
+  min-height: 0;
+  padding: 12px 14px 14px;
+  box-sizing: border-box;
+}
+
+.notch-panel__alert-content > .overlay-card {
+  width: 100%;
+  min-height: 0;
+}
+
 .notch-panel__outside-dismiss {
   position: absolute;
   inset: 0;

@@ -46,4 +46,18 @@ describe('CollapsedBar idle tips', () => {
     expect(screen.getByText('notch.noSessionInFocus')).toBeInTheDocument()
     expect(screen.queryByText('Tips:')).not.toBeInTheDocument()
   })
+
+  it('counts unfinished task sessions in WAIT like evolab', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[
+          session({ tasks: [{ id: '1', name: 'Finish parity', status: 'pending' }] }),
+        ]}
+        panelState="hover"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('.collapsed-bar__counter-pill--wait')?.textContent).toBe('WAIT1')
+  })
 })

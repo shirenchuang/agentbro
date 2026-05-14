@@ -188,15 +188,16 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
   const options = (data.options || []).map(normalizeOption)
   const isMulti = data.multiSelect ?? false
 
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [showCustom, setShowCustom] = useState(false)
-  const [customText, setCustomText] = useState('')
-
-  useEffect(() => {
-    setSelected(new Set())
-    setShowCustom(false)
-    setCustomText('')
-  }, [overlay.id])
+  const [responseState, setResponseState] = useState<{
+    overlayId: string
+    selected: Set<number>
+    showCustom: boolean
+    customText: string
+  }>({ overlayId: overlay.id, selected: new Set(), showCustom: false, customText: '' })
+  const isCurrentOverlay = responseState.overlayId === overlay.id
+  const selected = isCurrentOverlay ? responseState.selected : new Set<number>()
+  const showCustom = isCurrentOverlay && responseState.showCustom
+  const customText = isCurrentOverlay ? responseState.customText : ''
 
   useEffect(() => {
     return () => { setNotchFocusable(false) }
@@ -213,11 +214,12 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
   const { tag, text } = parseQuestionTag(data.question)
 
   const toggleIndex = (index: number) => {
-    setSelected(prev => {
-      const next = new Set(prev)
+    setResponseState(prev => {
+      const current = prev.overlayId === overlay.id ? prev : { overlayId: overlay.id, selected: new Set<number>(), showCustom: false, customText: '' }
+      const next = new Set(current.selected)
       if (next.has(index)) next.delete(index)
       else next.add(index)
-      return next
+      return { ...current, selected: next }
     })
   }
 
@@ -232,8 +234,7 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
     const val = customText.trim()
     if (val) {
       onAnswer(val)
-      setShowCustom(false)
-      setCustomText('')
+      setResponseState({ overlayId: overlay.id, selected, showCustom: false, customText: '' })
       setNotchFocusable(false)
     }
   }
@@ -290,7 +291,7 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
             animate={{ opacity: 1, y: 0 }}
             transition={{ type: 'spring', duration: 0.3, bounce: 0.15, delay: options.length * 0.04 }}
             onMouseDown={async () => {
-              setShowCustom(true)
+              setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText })
               await setNotchFocusable(true)
             }}
           >
@@ -303,12 +304,11 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
               type="text"
               className="question-card__input"
               value={customText}
-              onChange={(e) => setCustomText(e.target.value)}
+              onChange={(e) => setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText: e.target.value })}
               placeholder={t('notch.typePlaceholder', { defaultValue: 'Type your response...' })}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
-                  setShowCustom(false)
-                  setCustomText('')
+                  setResponseState({ overlayId: overlay.id, selected, showCustom: false, customText: '' })
                   setNotchFocusable(false)
                 }
               }}

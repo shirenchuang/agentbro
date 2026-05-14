@@ -160,7 +160,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('islandSurfaceMode', config.islandSurfaceMode ?? 'island')
   store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
   store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
-  store.updateConfig('followFocus', false)
+  store.updateConfig('followFocus', config.followFocus)
   store.updateConfig('quietHours', {
     enabled: config.quietHoursEnabled,
     start: config.quietHoursStart,
@@ -223,7 +223,7 @@ export function useSessionEvents() {
       listen<{ sessions: BackendSession[]; suppressed?: boolean }>('session-update', (event) => {
         const store = useSessionStore.getState()
         const sessions = event.payload.sessions.map(transformSession)
-        store.replaceAllSessions(sessions)
+        store.replaceAllSessions(sessions, { suppressed: event.payload.suppressed === true })
         const rateLimitSession = sessions.find((session) => session.rateLimits)
         if (rateLimitSession?.rateLimits) {
           store.setRateLimits(rateLimitSession.rateLimits)
