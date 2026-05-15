@@ -533,6 +533,100 @@ fn fallback_terminal_app_name(terminal: &str) -> &'static str {
     }
 }
 
+fn osascript_ok(script: &str) -> bool {
+    std::process::Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn find_binary(name: &str) -> Option<String> {
+    let home = dirs::home_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    [
+        format!("/opt/homebrew/bin/{name}"),
+        format!("/usr/local/bin/{name}"),
+        format!("/usr/bin/{name}"),
+        format!("{home}/.local/bin/{name}"),
+        format!("/Applications/cmux.app/Contents/Resources/bin/{name}"),
+        format!("{home}/Applications/cmux.app/Contents/Resources/bin/{name}"),
+        format!("/Applications/Kaku.app/Contents/MacOS/{name}"),
+        format!("{home}/Applications/Kaku.app/Contents/MacOS/{name}"),
+    ]
+    .into_iter()
+    .find(|path| std::path::Path::new(path).exists())
+    .or_else(|| {
+        std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+    })
+}
+
+fn agent_launch_command(agent_id: &str) -> Option<&'static str> {
+    match agent_id {
+        "claude-code" | "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "gemini" | "gemini-cli" => Some("gemini"),
+        "cursor-cli" => Some("cursor-agent"),
+        "copilot" => Some("gh copilot suggest"),
+        "traecli" => Some("traecli"),
+        "qoder-cli" => Some("qoder"),
+        "qwen" => Some("qwen"),
+        "kimi" => Some("kimi"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn launch_in_terminal(terminal: &str, cwd: &str, command: &str) -> Result<(), String> {
+    let shell_command = format!("cd {} && {}", shell_quote(cwd), command);
+    let lower = terminal.to_ascii_lowercase();
+
+    let script = if lower.contains("iterm") {
+        format!(
+            r#"tell application "iTerm2"
+    activate
+    create window with default profile command "{}"
+end tell"#,
+            applescript_escape(&shell_command)
+        )
+    } else {
+        format!(
+            r#"tell application "Terminal"
+    activate
+    do script "{}"
+end tell"#,
+            applescript_escape(&shell_command)
+        )
+    };
+
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("Failed to run osascript: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn applescript_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[tauri::command]
 pub async fn is_terminal_focused(
     state: State<'_, AppState>,
@@ -592,6 +686,9 @@ return "false"
 pub async fn list_custom_hook_templates(
     state: State<'_, AppState>,
 ) -> Result<Vec<CustomHookTemplate>, String> {
+    if !state.config_store.get().custom_hook_templates_enabled {
+        return Err("Custom hook templates are disabled in settings".to_string());
+    }
     Ok(state.config_store.get().custom_hook_templates)
 }
 
@@ -600,6 +697,9 @@ pub async fn upsert_custom_hook_template(
     state: State<'_, AppState>,
     template: CustomHookTemplate,
 ) -> Result<Vec<CustomHookTemplate>, String> {
+    if !state.config_store.get().custom_hook_templates_enabled {
+        return Err("Custom hook templates are disabled in settings".to_string());
+    }
     let mut config = state.config_store.get();
     if let Some(existing) = config
         .custom_hook_templates
@@ -620,6 +720,9 @@ pub async fn remove_custom_hook_template(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<CustomHookTemplate>, String> {
+    if !state.config_store.get().custom_hook_templates_enabled {
+        return Err("Custom hook templates are disabled in settings".to_string());
+    }
     let mut config = state.config_store.get();
     config.custom_hook_templates.retain(|item| item.id != id);
     let templates = config.custom_hook_templates.clone();
@@ -628,7 +731,13 @@ pub async fn remove_custom_hook_template(
 }
 
 #[tauri::command]
-pub async fn install_custom_hook_template(template: CustomHookTemplate) -> Result<(), String> {
+pub async fn install_custom_hook_template(
+    state: State<'_, AppState>,
+    template: CustomHookTemplate,
+) -> Result<(), String> {
+    if !state.config_store.get().custom_hook_templates_enabled {
+        return Err("Custom hook templates are disabled in settings".to_string());
+    }
     let events: Vec<&str> = template.events.iter().map(String::as_str).collect();
     let path = crate::agents::claude_code::expand_tilde(&template.config_path);
     let command = if template.command.trim().is_empty() {
@@ -657,7 +766,13 @@ pub async fn install_custom_hook_template(template: CustomHookTemplate) -> Resul
 }
 
 #[tauri::command]
-pub async fn remove_custom_hook_template_hooks(template: CustomHookTemplate) -> Result<(), String> {
+pub async fn remove_custom_hook_template_hooks(
+    state: State<'_, AppState>,
+    template: CustomHookTemplate,
+) -> Result<(), String> {
+    if !state.config_store.get().custom_hook_templates_enabled {
+        return Err("Custom hook templates are disabled in settings".to_string());
+    }
     let path = crate::agents::claude_code::expand_tilde(&template.config_path);
     match template.format.as_str() {
         "json" => {
@@ -672,6 +787,156 @@ pub async fn remove_custom_hook_template_hooks(template: CustomHookTemplate) -> 
         "toml" => crate::agents::hook_manager::remove_hooks_toml(&path).map_err(|e| e.to_string()),
         other => Err(format!("Unsupported hook template format: {other}")),
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookDoctorCheck {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookDoctorReport {
+    pub generated_at: i64,
+    pub checks: Vec<HookDoctorCheck>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchAgentSessionRequest {
+    pub agent_id: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub terminal: String,
+    #[serde(default)]
+    pub extra_args: String,
+}
+
+#[tauri::command]
+pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorReport, String> {
+    if !state.config_store.get().hook_doctor_enabled {
+        return Err("Hook Doctor is disabled in settings".to_string());
+    }
+
+    let mut checks = Vec::new();
+    let bridge = crate::agents::hook_manager::bridge_binary_path();
+    checks.push(HookDoctorCheck {
+        id: "bridge-binary".to_string(),
+        label: "Bridge binary".to_string(),
+        status: if bridge.exists() { "ok" } else { "error" }.to_string(),
+        detail: bridge.display().to_string(),
+    });
+
+    checks.push(HookDoctorCheck {
+        id: "hook-server".to_string(),
+        label: "Hook server socket".to_string(),
+        status: if std::path::Path::new(crate::hooks::server::UNIX_SOCKET_PATH).exists() {
+            "ok"
+        } else {
+            "warn"
+        }
+        .to_string(),
+        detail: crate::hooks::server::UNIX_SOCKET_PATH.to_string(),
+    });
+
+    let adapters = state
+        .adapters
+        .iter()
+        .filter(|adapter| {
+            adapter
+                .hook_config_paths()
+                .iter()
+                .any(|path| crate::agents::hook_manager::has_agentbro_hooks(path))
+        })
+        .count();
+    checks.push(HookDoctorCheck {
+        id: "installed-hooks".to_string(),
+        label: "Installed hooks".to_string(),
+        status: if adapters > 0 { "ok" } else { "warn" }.to_string(),
+        detail: format!("{adapters} adapter configs contain AgentBro hooks"),
+    });
+
+    checks.push(HookDoctorCheck {
+        id: "automation-permission".to_string(),
+        label: "macOS automation".to_string(),
+        status: if osascript_ok(r#"tell application "System Events" to get name of first application process whose frontmost is true"#) {
+            "ok"
+        } else {
+            "warn"
+        }
+        .to_string(),
+        detail: "Required for terminal focus and fullscreen detection".to_string(),
+    });
+
+    for binary in [
+        "tmux", "zellij", "cmux", "wezterm", "kaku", "kitten", "sqlite3",
+    ] {
+        checks.push(HookDoctorCheck {
+            id: format!("binary-{binary}"),
+            label: format!("{binary} binary"),
+            status: if find_binary(binary).is_some() {
+                "ok"
+            } else {
+                "warn"
+            }
+            .to_string(),
+            detail: find_binary(binary).unwrap_or_else(|| "not found in common paths".to_string()),
+        });
+    }
+
+    checks.push(HookDoctorCheck {
+        id: "custom-templates".to_string(),
+        label: "Custom hook templates".to_string(),
+        status: "ok".to_string(),
+        detail: format!(
+            "{} templates configured",
+            state.config_store.get().custom_hook_templates.len()
+        ),
+    });
+
+    Ok(HookDoctorReport {
+        generated_at: chrono::Utc::now().timestamp(),
+        checks,
+    })
+}
+
+#[tauri::command]
+pub async fn launch_agent_session(
+    state: State<'_, AppState>,
+    request: LaunchAgentSessionRequest,
+) -> Result<(), String> {
+    if !state.config_store.get().session_launcher_enabled {
+        return Err("Session Launcher is disabled in settings".to_string());
+    }
+
+    let cwd = request.cwd.trim();
+    if cwd.is_empty() {
+        return Err("Working directory is required".to_string());
+    }
+    if !std::path::Path::new(cwd).is_dir() {
+        return Err(format!("Working directory does not exist: {cwd}"));
+    }
+
+    let base = agent_launch_command(&request.agent_id)
+        .ok_or_else(|| format!("Unsupported launch agent: {}", request.agent_id))?;
+    let command = if request.extra_args.trim().is_empty() {
+        base.to_string()
+    } else {
+        format!("{} {}", base, request.extra_args.trim())
+    };
+    launch_in_terminal(
+        if request.terminal.trim().is_empty() {
+            "Terminal"
+        } else {
+            request.terminal.trim()
+        },
+        cwd,
+        &command,
+    )
 }
 
 // ── Config Commands ───────────────────────────────────────────────
@@ -720,6 +985,20 @@ pub async fn set_island_surface_options(
     }
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(50, 120);
+    state.config_store.update(config)
+}
+
+#[tauri::command]
+pub async fn set_advanced_tool_flags(
+    state: State<'_, AppState>,
+    hook_doctor_enabled: bool,
+    session_launcher_enabled: bool,
+    custom_hook_templates_enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    config.hook_doctor_enabled = hook_doctor_enabled;
+    config.session_launcher_enabled = session_launcher_enabled;
+    config.custom_hook_templates_enabled = custom_hook_templates_enabled;
     state.config_store.update(config)
 }
 

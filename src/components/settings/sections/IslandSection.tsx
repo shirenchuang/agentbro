@@ -13,10 +13,13 @@ import {
   previewIslandLayout, clearIslandLayoutPreview,
   setSoundQuietHours, setSoundEventRule, importCustomSound as importCustomSoundFile, setCustomSounds,
   setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
+  setAdvancedToolFlags,
   setActiveBackendTheme, listRemoteHosts, addRemoteHost, removeRemoteHost, connectRemote,
   disconnectRemote, installRemoteHooks, getRemoteStatus, listSshConfigHosts,
+  runHookDoctor, launchAgentSession, listCustomHookTemplates, upsertCustomHookTemplate,
+  removeCustomHookTemplate, installCustomHookTemplate, removeCustomHookTemplateHooks,
 } from '../../../services/tauriApi'
-import type { BackendDisplayInfo, ConnectionStatus, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
@@ -51,6 +54,19 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
     islandSurfaceMode: next.islandSurfaceMode ?? state.islandSurfaceMode,
     islandPetScale: next.islandPetScale ?? state.islandPetScale,
   }).catch((err) => console.error('Failed to persist island surface options:', err))
+}
+
+function persistAdvancedToolFlags(next: Partial<{
+  hookDoctorEnabled: boolean
+  sessionLauncherEnabled: boolean
+  customHookTemplatesEnabled: boolean
+}>) {
+  const state = useConfigStore.getState()
+  setAdvancedToolFlags({
+    hookDoctorEnabled: next.hookDoctorEnabled ?? state.hookDoctorEnabled,
+    sessionLauncherEnabled: next.sessionLauncherEnabled ?? state.sessionLauncherEnabled,
+    customHookTemplatesEnabled: next.customHookTemplatesEnabled ?? state.customHookTemplatesEnabled,
+  }).catch((err) => console.error('Failed to persist advanced tool flags:', err))
 }
 
 function SurfaceModeSegmentedControl({
@@ -1342,6 +1358,24 @@ function AdvancedTab() {
   const [remoteBusyId, setRemoteBusyId] = useState<string | null>(null)
   const [sshConfigHosts, setSshConfigHosts] = useState<SshConfigHost[]>([])
   const [autoApproveToolsDraft, setAutoApproveToolsDraft] = useState(config.autoApproveTools.join(', '))
+  const [hookDoctorReport, setHookDoctorReport] = useState<HookDoctorReport | null>(null)
+  const [hookDoctorBusy, setHookDoctorBusy] = useState(false)
+  const [launcherCwd, setLauncherCwd] = useState('')
+  const [launcherAgent, setLauncherAgent] = useState('claude-code')
+  const [launcherTerminal, setLauncherTerminal] = useState('Terminal')
+  const [launcherArgs, setLauncherArgs] = useState('')
+  const [launcherMessage, setLauncherMessage] = useState('')
+  const [customTemplates, setCustomTemplates] = useState<CustomHookTemplate[]>([])
+  const [templateDraft, setTemplateDraft] = useState<CustomHookTemplate>({
+    id: `custom-${Date.now()}`,
+    label: '',
+    agent: '',
+    configPath: '',
+    format: 'json',
+    events: ['PreToolUse', 'PostToolUse', 'Stop'],
+    command: '',
+    enabled: true,
+  })
 
   const refreshRemoteHosts = useCallback(async () => {
     if (!isTauri()) return
@@ -1373,6 +1407,68 @@ function AdvancedTab() {
   useEffect(() => {
     setAutoApproveToolsDraft(config.autoApproveTools.join(', '))
   }, [config.autoApproveTools])
+
+  const loadCustomTemplates = useCallback(async () => {
+    if (!isTauri() || !config.customHookTemplatesEnabled) return
+    setCustomTemplates(await listCustomHookTemplates())
+  }, [config.customHookTemplatesEnabled])
+
+  useEffect(() => {
+    loadCustomTemplates().catch((err) => console.error('Failed to load custom hook templates:', err))
+  }, [loadCustomTemplates])
+
+  async function runDoctor() {
+    setHookDoctorBusy(true)
+    try {
+      setHookDoctorReport(await runHookDoctor())
+    } catch (err) {
+      setHookDoctorReport({
+        generatedAt: Math.floor(Date.now() / 1000),
+        checks: [{ id: 'doctor-error', label: 'Hook Doctor', status: 'error', detail: String(err) }],
+      })
+    } finally {
+      setHookDoctorBusy(false)
+    }
+  }
+
+  async function launchSession() {
+    setLauncherMessage('')
+    try {
+      await launchAgentSession({
+        agentId: launcherAgent,
+        cwd: launcherCwd,
+        terminal: launcherTerminal,
+        extraArgs: launcherArgs,
+      })
+      setLauncherMessage(t('settings.launcherStarted', { defaultValue: 'Session launched.' }))
+    } catch (err) {
+      setLauncherMessage(String(err))
+    }
+  }
+
+  async function saveTemplate() {
+    if (!templateDraft.label.trim() || !templateDraft.agent.trim() || !templateDraft.configPath.trim()) return
+    const saved = await upsertCustomHookTemplate({
+      ...templateDraft,
+      id: templateDraft.id || `custom-${Date.now()}`,
+      events: templateDraft.events.filter(Boolean),
+    })
+    setCustomTemplates(saved)
+    setTemplateDraft({
+      id: `custom-${Date.now()}`,
+      label: '',
+      agent: '',
+      configPath: '',
+      format: 'json',
+      events: ['PreToolUse', 'PostToolUse', 'Stop'],
+      command: '',
+      enabled: true,
+    })
+  }
+
+  async function deleteTemplate(id: string) {
+    setCustomTemplates(await removeCustomHookTemplate(id))
+  }
 
   function parseRemoteTarget(raw: string): { sshTarget: string; port: number | null } {
     const trimmed = raw.trim()
@@ -1463,6 +1559,121 @@ function AdvancedTab() {
 
   return (
     <>
+      <SettingGroup label={t('settings.advancedTools', { defaultValue: 'Advanced Tools' })}>
+        <SettingRow label={t('settings.hookDoctorEnabled', { defaultValue: 'Hook Doctor' })} description={t('settings.hookDoctorEnabledDesc', { defaultValue: 'Run local diagnostics for bridge, hooks, permissions, and terminal targeting.' })}>
+          <Toggle checked={config.hookDoctorEnabled} onChange={(v) => {
+            config.updateConfig('hookDoctorEnabled', v)
+            persistAdvancedToolFlags({ hookDoctorEnabled: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.sessionLauncherEnabled', { defaultValue: 'Session Launcher' })} description={t('settings.sessionLauncherEnabledDesc', { defaultValue: 'Start supported CLI sessions from AgentBro using an explicit working directory.' })}>
+          <Toggle checked={config.sessionLauncherEnabled} onChange={(v) => {
+            config.updateConfig('sessionLauncherEnabled', v)
+            persistAdvancedToolFlags({ sessionLauncherEnabled: v })
+          }} />
+        </SettingRow>
+        <SettingRow label={t('settings.customHookTemplatesEnabled', { defaultValue: 'Custom CLI Hook Templates' })} description={t('settings.customHookTemplatesEnabledDesc', { defaultValue: 'Manage JSON, YAML, and TOML hook templates for unsupported CLIs.' })}>
+          <Toggle checked={config.customHookTemplatesEnabled} onChange={(v) => {
+            config.updateConfig('customHookTemplatesEnabled', v)
+            persistAdvancedToolFlags({ customHookTemplatesEnabled: v })
+          }} />
+        </SettingRow>
+      </SettingGroup>
+
+      {config.hookDoctorEnabled && (
+        <SettingGroup label={t('settings.hookDoctor', { defaultValue: 'Hook Doctor' })}>
+          <SettingRow label={t('settings.runDiagnostics', { defaultValue: 'Run diagnostics' })} description={t('settings.runDiagnosticsDesc', { defaultValue: 'Checks bridge binary, hook server, installed hooks, macOS automation, and terminal helper binaries.' })}>
+            <GlassButton variant="secondary" onClick={runDoctor} disabled={hookDoctorBusy}>
+              {hookDoctorBusy ? t('settings.running', { defaultValue: 'Running...' }) : t('settings.run', { defaultValue: 'Run' })}
+            </GlassButton>
+          </SettingRow>
+          {hookDoctorReport && (
+            <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
+              {hookDoctorReport.checks.map((check) => (
+                <div key={check.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, alignItems: 'start', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
+                  <strong style={{ color: check.status === 'ok' ? 'var(--settings-status-active)' : check.status === 'warn' ? '#f59e0b' : 'var(--settings-danger)', textTransform: 'uppercase', fontSize: 11 }}>{check.status}</strong>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>{check.label}</div>
+                    <div style={{ fontSize: 11, color: 'var(--settings-text-secondary)', wordBreak: 'break-all' }}>{check.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </SettingGroup>
+      )}
+
+      {config.sessionLauncherEnabled && (
+        <SettingGroup label={t('settings.sessionLauncher', { defaultValue: 'Session Launcher' })}>
+          <SettingRow label={t('settings.launchAgent', { defaultValue: 'Agent' })} description={t('settings.launchAgentDesc', { defaultValue: 'Choose a supported CLI and terminal target.' })}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Dropdown value={launcherAgent} options={[
+                { value: 'claude-code', label: 'Claude Code' },
+                { value: 'codex', label: 'Codex' },
+                { value: 'gemini-cli', label: 'Gemini CLI' },
+                { value: 'cursor-cli', label: 'Cursor CLI' },
+                { value: 'traecli', label: 'TraeCli' },
+                { value: 'qwen', label: 'Qwen' },
+                { value: 'opencode', label: 'OpenCode' },
+              ]} onChange={setLauncherAgent} minWidth={140} />
+              <Dropdown value={launcherTerminal} options={[
+                { value: 'Terminal', label: 'Terminal' },
+                { value: 'iTerm2', label: 'iTerm2' },
+              ]} onChange={setLauncherTerminal} minWidth={120} />
+            </div>
+          </SettingRow>
+          <SettingRow label={t('settings.launchCwd', { defaultValue: 'Working directory' })}>
+            <GlassInput value={launcherCwd} placeholder="/path/to/project" onChange={(e) => setLauncherCwd((e.target as HTMLInputElement).value)} style={{ minWidth: 320 }} />
+          </SettingRow>
+          <SettingRow label={t('settings.launchArgs', { defaultValue: 'Extra args' })} description={t('settings.launchArgsDesc', { defaultValue: 'Optional arguments appended to the launch command.' })}>
+            <GlassInput value={launcherArgs} placeholder="--continue" onChange={(e) => setLauncherArgs((e.target as HTMLInputElement).value)} style={{ minWidth: 220 }} />
+          </SettingRow>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            {launcherMessage && <span style={{ alignSelf: 'center', color: 'var(--settings-text-secondary)', fontSize: 12 }}>{launcherMessage}</span>}
+            <GlassButton variant="primary" onClick={launchSession} disabled={!launcherCwd.trim()}>
+              {t('settings.launch', { defaultValue: 'Launch' })}
+            </GlassButton>
+          </div>
+        </SettingGroup>
+      )}
+
+      {config.customHookTemplatesEnabled && (
+        <SettingGroup label={t('settings.customHookTemplates', { defaultValue: 'Custom CLI Hook Templates' })}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <GlassInput value={templateDraft.label} placeholder={t('settings.templateLabel', { defaultValue: 'Label' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, label: (e.target as HTMLInputElement).value }))} />
+            <GlassInput value={templateDraft.agent} placeholder={t('settings.templateAgent', { defaultValue: 'source id, e.g. mycli' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, agent: (e.target as HTMLInputElement).value }))} />
+            <GlassInput value={templateDraft.configPath} placeholder="~/.mycli/settings.json" onChange={(e) => setTemplateDraft((v) => ({ ...v, configPath: (e.target as HTMLInputElement).value }))} />
+            <Dropdown value={templateDraft.format} options={[
+              { value: 'json', label: 'JSON' },
+              { value: 'yaml', label: 'YAML' },
+              { value: 'toml', label: 'TOML' },
+            ]} onChange={(format) => setTemplateDraft((v) => ({ ...v, format: format as CustomHookTemplate['format'] }))} minWidth={120} />
+            <GlassInput value={templateDraft.events.join(', ')} placeholder="PreToolUse, PostToolUse, Stop" onChange={(e) => setTemplateDraft((v) => ({ ...v, events: (e.target as HTMLInputElement).value.split(',').map((item) => item.trim()).filter(Boolean) }))} />
+            <GlassInput value={templateDraft.command} placeholder={t('settings.templateCommand', { defaultValue: 'Optional custom command' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, command: (e.target as HTMLInputElement).value }))} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 8 }}>
+            <GlassButton variant="secondary" onClick={saveTemplate} disabled={!templateDraft.label.trim() || !templateDraft.agent.trim() || !templateDraft.configPath.trim()}>
+              {t('settings.saveTemplate', { defaultValue: 'Save Template' })}
+            </GlassButton>
+          </div>
+          <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
+            {customTemplates.map((template) => (
+              <div key={template.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'center', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{template.label} · {template.agent}</div>
+                  <div style={{ fontSize: 11, color: 'var(--settings-text-secondary)', wordBreak: 'break-all' }}>{template.format.toUpperCase()} · {template.configPath}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="settings-mini-button" onClick={() => installCustomHookTemplate(template)}>{t('settings.install', { defaultValue: 'Install' })}</button>
+                  <button className="settings-mini-button" onClick={() => removeCustomHookTemplateHooks(template)}>{t('settings.uninstall', { defaultValue: 'Uninstall' })}</button>
+                  <button className="settings-mini-button" onClick={() => deleteTemplate(template.id)}>{t('settings.delete', { defaultValue: 'Delete' })}</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </SettingGroup>
+      )}
+
       <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
         <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
           <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />

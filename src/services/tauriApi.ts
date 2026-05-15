@@ -129,6 +129,9 @@ export interface BackendConfig {
   customSounds: Array<{ id: string; name: string; path: string; dataUrl?: string }>
   soundPack: string
   probeSessionFilter: boolean
+  hookDoctorEnabled: boolean
+  sessionLauncherEnabled: boolean
+  customHookTemplatesEnabled: boolean
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
@@ -241,6 +244,9 @@ export async function getConfig(): Promise<BackendConfig> {
       customSounds: [],
       soundPack: 'synth',
       probeSessionFilter: false,
+      hookDoctorEnabled: false,
+      sessionLauncherEnabled: false,
+      customHookTemplatesEnabled: false,
       tipsEnabled: true,
       pixelCursorEnabled: true,
       confettiEnabled: true,
@@ -311,6 +317,45 @@ export async function installCustomHookTemplate(template: CustomHookTemplate): P
 export async function removeCustomHookTemplateHooks(template: CustomHookTemplate): Promise<void> {
   if (!isTauri()) return
   return invoke('remove_custom_hook_template_hooks', { template })
+}
+
+export interface HookDoctorCheck {
+  id: string
+  label: string
+  status: 'ok' | 'warn' | 'error'
+  detail: string
+}
+
+export interface HookDoctorReport {
+  generatedAt: number
+  checks: HookDoctorCheck[]
+}
+
+export interface LaunchAgentSessionRequest {
+  agentId: string
+  cwd: string
+  terminal: string
+  extraArgs: string
+}
+
+export async function runHookDoctor(): Promise<HookDoctorReport> {
+  if (!isTauri()) {
+    return {
+      generatedAt: Math.floor(Date.now() / 1000),
+      checks: [
+        { id: 'browser', label: 'Browser mode', status: 'warn', detail: 'Hook Doctor runs inside the Tauri app.' },
+      ],
+    }
+  }
+  return invoke<HookDoctorReport>('run_hook_doctor')
+}
+
+export async function launchAgentSession(request: LaunchAgentSessionRequest): Promise<void> {
+  if (!isTauri()) {
+    console.log('[mock] launchAgentSession:', request)
+    return
+  }
+  return invoke('launch_agent_session', { request })
 }
 
 export interface BuddyDeviceConfig {
@@ -451,6 +496,15 @@ export async function setIslandSurfaceOptions(options: {
     islandSurfaceMode: options.islandSurfaceMode,
     islandPetScale: options.islandPetScale,
   })
+}
+
+export async function setAdvancedToolFlags(options: {
+  hookDoctorEnabled: boolean
+  sessionLauncherEnabled: boolean
+  customHookTemplatesEnabled: boolean
+}): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_advanced_tool_flags', options)
 }
 
 export async function setSoundQuietHours(enabled: boolean, start: string, end: string): Promise<void> {

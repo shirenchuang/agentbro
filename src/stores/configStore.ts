@@ -141,6 +141,9 @@ interface ConfigState {
   shortcutSkip: string
   shortcutSkipEnabled: boolean
   customHooksPath: string
+  hookDoctorEnabled: boolean
+  sessionLauncherEnabled: boolean
+  customHookTemplatesEnabled: boolean
 
   // Shortcuts
   shortcuts: ShortcutBinding[]
@@ -450,6 +453,9 @@ export const useConfigStore = create<ConfigStore>()(
   shortcutSkip: 'CommandOrControl+Shift+S',
   shortcutSkipEnabled: false,
   customHooksPath: '',
+  hookDoctorEnabled: false,
+  sessionLauncherEnabled: false,
+  customHookTemplatesEnabled: false,
 
   // Shortcuts
   shortcuts: defaultShortcuts,

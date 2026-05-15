@@ -205,6 +205,9 @@ function applyBackendConfig(config: BackendConfig) {
   }
   store.updateConfig('soundPack', config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom')
   store.updateConfig('probeSessionFilter', config.probeSessionFilter)
+  store.updateConfig('hookDoctorEnabled', config.hookDoctorEnabled ?? false)
+  store.updateConfig('sessionLauncherEnabled', config.sessionLauncherEnabled ?? false)
+  store.updateConfig('customHookTemplatesEnabled', config.customHookTemplatesEnabled ?? false)
   store.updateConfig('tipsEnabled', config.tipsEnabled)
   store.updateConfig('pixelCursorEnabled', config.pixelCursorEnabled)
   store.updateConfig('confettiEnabled', config.confettiEnabled)
