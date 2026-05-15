@@ -92,6 +92,7 @@ interface ConfigState {
   autoHide: boolean
   autoHideNoSessions: boolean
   smartSuppression: boolean
+  hideInFullscreen: boolean
   autoCollapse: boolean
   completionPopupDuration: string
   dwellDuration: number // ms delay before expanding on hover (100-1000)
@@ -215,7 +216,6 @@ interface ConfigState {
 
   // Evolab parity — interaction timing
   clickToDetail: boolean
-  dismissOnOutsideClick: boolean
   showCacheTTL: boolean
   hoverExpandDelay: number // ms before expanding on hover (0 = instant)
   microHoverExpandDelay: number // ms before expanding micro pill on hover
@@ -255,11 +255,12 @@ const defaultAgentHooks: AgentHook[] = [
   { agentType: 'cursor-cli', label: 'Cursor CLI', enabled: false, connected: false },
   { agentType: 'copilot', label: 'GitHub Copilot', enabled: false, connected: false },
   { agentType: 'trae', label: 'Trae', enabled: false, connected: false },
+  { agentType: 'traecli', label: 'TraeCli', enabled: false, connected: false },
   { agentType: 'traecn', label: 'Trae CN', enabled: false, connected: false },
   { agentType: 'qoder', label: 'Qoder', enabled: false, connected: false },
   { agentType: 'qoder-cli', label: 'Qoder CLI', enabled: false, connected: false },
   { agentType: 'codebuddy', label: 'CodeBuddy', enabled: false, connected: false },
-  { agentType: 'codebuddycn', label: 'CodeBuddy CN', enabled: false, connected: false },
+  { agentType: 'codebuddycn', label: 'CodyBuddyCN', enabled: false, connected: false },
   { agentType: 'qwen', label: 'Qwen', enabled: false, connected: false },
   { agentType: 'kimi', label: 'Kimi', enabled: false, connected: false },
   { agentType: 'opencode', label: 'OpenCode', enabled: false, connected: false },
@@ -322,7 +323,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     smartSuppression: true,
     autoCollapse: true,
     dwellDuration: 300,
-    taskCompleteDwellSeconds: 10,
+    taskCompleteDwellSeconds: 5,
     notchStyle: 'compact',
     hoverSpeed: 'normal',
     contentFontSize: '13px',
@@ -332,7 +333,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     showUsageQuota: true,
     tokenDisplayMode: 'both',
     soundEnabled: true,
-    volume: 80,
+    volume: 70,
     soundEvents: defaultSoundEvents.map((event) => ({ ...event })),
     soundRules: Object.fromEntries(Object.entries(defaultSoundRules).map(([id, rule]) => [id, { ...rule }])),
     customSounds: [],
@@ -356,6 +357,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     shortcutSkip: 'CommandOrControl+Shift+S',
     shortcutSkipEnabled: false,
     quietHours: { enabled: false, start: '22:00', end: '08:00' },
+    idleTimeoutMinutes: 5,
     allowHorizontalDrag: true,
     panelHorizontalOffset: 0,
     collapsedWidthScale: 118,
@@ -380,7 +382,6 @@ function createIslandDefaults(): Partial<ConfigState> {
     sessionTimeoutMinutes: 30,
     aiMessageLines: 1,
     clickToDetail: true,
-    dismissOnOutsideClick: true,
     showCacheTTL: true,
     hoverExpandDelay: 350,
     microHoverExpandDelay: 500,
@@ -400,10 +401,11 @@ export const useConfigStore = create<ConfigStore>()(
   autoHide: false,
   autoHideNoSessions: false,
   smartSuppression: true,
+  hideInFullscreen: false,
   autoCollapse: true,
   completionPopupDuration: '5s',
   dwellDuration: 300,
-  taskCompleteDwellSeconds: 10,
+  taskCompleteDwellSeconds: 5,
   agentHooks: defaultAgentHooks,
 
   // Display
@@ -420,7 +422,7 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Sound
   soundEnabled: true,
-  volume: 80,
+  volume: 70,
   soundEvents: defaultSoundEvents,
   soundRules: defaultSoundRules,
   customSounds: [],
@@ -484,7 +486,7 @@ export const useConfigStore = create<ConfigStore>()(
   quietHours: { enabled: false, start: '22:00', end: '08:00' },
 
   // Idle Timeout
-  idleTimeoutMinutes: 0,
+  idleTimeoutMinutes: 5,
 
   // Notification Mode
   notificationMode: 'turnEnd',
@@ -529,7 +531,6 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Evolab parity — interaction timing
   clickToDetail: true,
-  dismissOnOutsideClick: true,
   showCacheTTL: true,
   hoverExpandDelay: 350,
   microHoverExpandDelay: 500,

@@ -8,9 +8,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 /// Session phase — mirrors frontend SessionPhase type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionPhase {
+    #[default]
     Idle,
     Processing,
     WaitingApproval,
@@ -65,12 +66,6 @@ impl SessionPhase {
             self,
             Self::Processing | Self::WaitingApproval | Self::WaitingInput | Self::Compacting
         )
-    }
-}
-
-impl Default for SessionPhase {
-    fn default() -> Self {
-        Self::Idle
     }
 }
 
@@ -175,6 +170,15 @@ pub struct SubagentInfo {
     pub tools: Vec<String>, // last few tool names used by this subagent
 }
 
+#[derive(Debug, Clone)]
+pub struct SubagentStopUpdate {
+    pub status: String,
+    pub agent_type: Option<String>,
+    pub transcript_path: Option<String>,
+    pub agent_transcript_path: Option<String>,
+    pub last_assistant_message: Option<String>,
+}
+
 /// Aggregated task item from TaskCreate/TaskUpdate tool calls
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,6 +230,12 @@ pub struct SessionState {
     pub session_title: Option<String>,
     pub pid: Option<u32>,
     pub tty: Option<String>,
+    pub term_bundle_id: Option<String>,
+    pub wezterm_pane: Option<String>,
+    pub zellij_pane_id: Option<String>,
+    pub zellij_session_name: Option<String>,
+    pub cmux_surface_id: Option<String>,
+    pub cmux_workspace_id: Option<String>,
     pub subagents: Vec<SubagentInfo>,
     pub active_tools: Vec<ToolResult>,
     pub tasks: Vec<TaskInfo>,
@@ -271,6 +281,12 @@ impl SessionState {
             session_title: None,
             pid: None,
             tty: None,
+            term_bundle_id: None,
+            wezterm_pane: None,
+            zellij_pane_id: None,
+            zellij_session_name: None,
+            cmux_surface_id: None,
+            cmux_workspace_id: None,
             subagents: Vec::new(),
             active_tools: Vec::new(),
             tasks: Vec::new(),
@@ -526,35 +542,26 @@ impl SessionStore {
     }
 
     /// Stop a subagent (mark as completed, keep in list for frontend display)
-    pub fn stop_subagent(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        status: &str,
-        agent_type: Option<String>,
-        transcript_path: Option<String>,
-        agent_transcript_path: Option<String>,
-        last_assistant_message: Option<String>,
-    ) {
+    pub fn stop_subagent(&self, session_id: &str, agent_id: &str, update: SubagentStopUpdate) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             if let Some(existing) = session
                 .subagents
                 .iter_mut()
                 .find(|s| s.agent_id == agent_id)
             {
-                existing.status = status.to_string();
+                existing.status = update.status;
                 existing.completed_at = Some(Utc::now().timestamp());
-                if agent_type.is_some() {
-                    existing.agent_type = agent_type;
+                if update.agent_type.is_some() {
+                    existing.agent_type = update.agent_type;
                 }
-                if transcript_path.is_some() {
-                    existing.transcript_path = transcript_path;
+                if update.transcript_path.is_some() {
+                    existing.transcript_path = update.transcript_path;
                 }
-                if agent_transcript_path.is_some() {
-                    existing.agent_transcript_path = agent_transcript_path;
+                if update.agent_transcript_path.is_some() {
+                    existing.agent_transcript_path = update.agent_transcript_path;
                 }
-                if last_assistant_message.is_some() {
-                    existing.last_assistant_message = last_assistant_message;
+                if update.last_assistant_message.is_some() {
+                    existing.last_assistant_message = update.last_assistant_message;
                 }
             }
             session.update_duration();
@@ -730,6 +737,12 @@ impl SessionStore {
     }
 }
 
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,11 +787,13 @@ mod tests {
         store.stop_subagent(
             "s1",
             "agent-1",
-            "completed",
-            None,
-            None,
-            Some("/tmp/agent.jsonl".to_string()),
-            Some("Subagent completed its audit".to_string()),
+            SubagentStopUpdate {
+                status: "completed".to_string(),
+                agent_type: None,
+                transcript_path: None,
+                agent_transcript_path: Some("/tmp/agent.jsonl".to_string()),
+                last_assistant_message: Some("Subagent completed its audit".to_string()),
+            },
         );
         store.start_tool("s1", "tool-1", "Read");
         store.complete_tool("s1", "tool-1", true, None);

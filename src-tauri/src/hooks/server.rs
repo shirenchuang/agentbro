@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, Mutex};
 use super::session_store::{
     ContextWindowInfo, PendingPermission, PendingPlan, PendingQuestion,
     QuestionItem as PendingQuestionItem, QuestionOption as PendingQuestionOption, RateLimitInfo,
-    SessionPhase, SessionStore,
+    SessionPhase, SessionStore, SubagentStopUpdate,
 };
 use crate::agents::{AgentAdapter, AgentEvent};
 use crate::hooks::conversation_parser::{
@@ -81,6 +81,17 @@ pub struct HookServer {
     sound_engine: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
     /// App handle for sending notifications
     app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
+}
+
+#[derive(Clone)]
+struct HookConnectionContext {
+    pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+    pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+    pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
+    store: Arc<SessionStore>,
+    adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
+    sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+    app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
 }
 
 impl HookServer {
@@ -200,34 +211,20 @@ impl HookServer {
 
     /// Start listening on both Unix socket and TCP
     pub async fn start(&self) -> anyhow::Result<()> {
-        let pending = self.pending_permissions.clone();
-        let pending_q = self.pending_questions.clone();
-        let pending_plan = self.pending_plans.clone();
-        let store = self.session_store.clone();
-        let adapters = self.adapters.clone();
-        let sound = self.sound_engine.clone();
-        let app = self.app_handle.clone();
+        let context = HookConnectionContext {
+            pending: self.pending_permissions.clone(),
+            pending_q: self.pending_questions.clone(),
+            pending_plan: self.pending_plans.clone(),
+            store: self.session_store.clone(),
+            adapters: self.adapters.clone(),
+            sound: self.sound_engine.clone(),
+            app: self.app_handle.clone(),
+        };
 
         // Start Unix socket listener
-        let pending_unix = pending.clone();
-        let pending_q_unix = pending_q.clone();
-        let pending_plan_unix = pending_plan.clone();
-        let store_unix = store.clone();
-        let adapters_unix = adapters.clone();
-        let sound_unix = sound.clone();
-        let app_unix = app.clone();
+        let unix_context = context.clone();
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_unix(
-                pending_unix,
-                pending_q_unix,
-                pending_plan_unix,
-                store_unix,
-                adapters_unix,
-                sound_unix,
-                app_unix,
-            )
-            .await
-            {
+            if let Err(e) = Self::listen_unix(unix_context).await {
                 log::error!("Unix socket listener error: {}", e);
             }
         });
@@ -235,26 +232,8 @@ impl HookServer {
         // Start TCP listener — bind eagerly so port conflicts are detected at startup
         let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", TCP_PORT)).await?;
         log::info!("Listening on TCP: 127.0.0.1:{}", TCP_PORT);
-        let pending_tcp = pending.clone();
-        let pending_q_tcp = pending_q.clone();
-        let pending_plan_tcp = pending_plan.clone();
-        let store_tcp = store.clone();
-        let adapters_tcp = adapters.clone();
-        let sound_tcp = sound.clone();
-        let app_tcp = app.clone();
-        tokio::spawn(async move {
-            Self::accept_tcp(
-                tcp_listener,
-                pending_tcp,
-                pending_q_tcp,
-                pending_plan_tcp,
-                store_tcp,
-                adapters_tcp,
-                sound_tcp,
-                app_tcp,
-            )
-            .await
-        });
+        let tcp_context = context.clone();
+        tokio::spawn(async move { Self::accept_tcp(tcp_listener, tcp_context).await });
 
         log::info!(
             "HookServer started on {} and 127.0.0.1:{}",
@@ -265,15 +244,7 @@ impl HookServer {
     }
 
     /// Listen on Unix domain socket
-    async fn listen_unix(
-        pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
-        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
-        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
-        store: Arc<SessionStore>,
-        adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
-        sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
-        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
-    ) -> anyhow::Result<()> {
+    async fn listen_unix(context: HookConnectionContext) -> anyhow::Result<()> {
         // Remove stale socket file
         let socket_path = Path::new(UNIX_SOCKET_PATH);
         if socket_path.exists() {
@@ -294,26 +265,9 @@ impl HookServer {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    let pending = pending.clone();
-                    let pending_q = pending_q.clone();
-                    let pending_plan = pending_plan.clone();
-                    let store = store.clone();
-                    let adapters = adapters.clone();
-                    let sound = sound.clone();
-                    let app = app.clone();
+                    let context = context.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(
-                            stream,
-                            pending,
-                            pending_q,
-                            pending_plan,
-                            store,
-                            adapters,
-                            sound,
-                            app,
-                        )
-                        .await
-                        {
+                        if let Err(e) = Self::handle_connection(stream, context).await {
                             log::debug!("Unix connection handler error: {}", e);
                         }
                     });
@@ -326,40 +280,14 @@ impl HookServer {
     }
 
     /// Accept connections on an already-bound TCP listener
-    async fn accept_tcp(
-        listener: TcpListener,
-        pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
-        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
-        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
-        store: Arc<SessionStore>,
-        adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
-        sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
-        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
-    ) {
+    async fn accept_tcp(listener: TcpListener, context: HookConnectionContext) {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
                     log::debug!("TCP connection from: {}", addr);
-                    let pending = pending.clone();
-                    let pending_q = pending_q.clone();
-                    let pending_plan = pending_plan.clone();
-                    let store = store.clone();
-                    let adapters = adapters.clone();
-                    let sound = sound.clone();
-                    let app = app.clone();
+                    let context = context.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(
-                            stream,
-                            pending,
-                            pending_q,
-                            pending_plan,
-                            store,
-                            adapters,
-                            sound,
-                            app,
-                        )
-                        .await
-                        {
+                        if let Err(e) = Self::handle_connection(stream, context).await {
                             log::debug!("TCP connection handler error: {}", e);
                         }
                     });
@@ -372,19 +300,17 @@ impl HookServer {
     }
 
     /// Handle a single connection (works with both Unix and TCP streams via AsyncRead+AsyncWrite)
-    async fn handle_connection<S>(
-        stream: S,
-        pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
-        pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
-        pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
-        store: Arc<SessionStore>,
-        adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
-        sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
-        app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
-    ) -> anyhow::Result<()>
+    async fn handle_connection<S>(stream: S, context: HookConnectionContext) -> anyhow::Result<()>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        let pending = context.pending;
+        let pending_q = context.pending_q;
+        let pending_plan = context.pending_plan;
+        let store = context.store;
+        let adapters = context.adapters;
+        let sound = context.sound;
+        let app = context.app;
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
@@ -413,6 +339,9 @@ impl HookServer {
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
+        if let Some(ref agent_event) = event {
+            Self::ensure_session_for_event(&store, agent_event, &raw);
+        }
 
         match event {
             Some(AgentEvent::PermissionRequest {
@@ -648,7 +577,15 @@ impl HookServer {
         adapters: &[Arc<dyn AgentAdapter>],
         raw: &serde_json::Value,
     ) -> Option<AgentEvent> {
-        // Default to claude-code adapter for now
+        if let Some(agent) = raw.get("agent").and_then(|v| v.as_str()) {
+            let agent = canonical_agent_id(agent);
+            if let Some(adapter) = adapters.iter().find(|adapter| adapter.name() == agent) {
+                if let Ok(event) = adapter.parse_event(raw) {
+                    return Some(event);
+                }
+            }
+        }
+
         for adapter in adapters.iter() {
             if let Ok(event) = adapter.parse_event(raw) {
                 return Some(event);
@@ -700,11 +637,7 @@ impl HookServer {
             AgentEvent::SessionEnd { session_id } => {
                 let summary = store
                     .get_session(session_id)
-                    .and_then(|s| {
-                        s.session_title
-                            .or(s.description)
-                            .or_else(|| Some(s.project))
-                    })
+                    .and_then(|s| s.session_title.or(s.description).or(Some(s.project)))
                     .unwrap_or_else(|| "Session ended".to_string());
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Done;
@@ -848,7 +781,7 @@ impl HookServer {
                     s.last_response = Some(summary.clone());
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
-                let is_suppressed = Self::check_suppression(&store, session_id);
+                let is_suppressed = Self::check_suppression(store, session_id);
                 if is_suppressed {
                     if let Ok(guard) = app.lock() {
                         if let Some(ref handle) = *guard {
@@ -998,11 +931,13 @@ impl HookServer {
                 store.stop_subagent(
                     session_id,
                     agent_id,
-                    status,
-                    agent_type.clone(),
-                    transcript_path.clone(),
-                    agent_transcript_path.clone(),
-                    last_assistant_message.clone(),
+                    SubagentStopUpdate {
+                        status: status.clone(),
+                        agent_type: agent_type.clone(),
+                        transcript_path: transcript_path.clone(),
+                        agent_transcript_path: agent_transcript_path.clone(),
+                        last_assistant_message: last_assistant_message.clone(),
+                    },
                 );
             }
             AgentEvent::ShellExecutionStart {
@@ -1286,6 +1221,64 @@ impl HookServer {
         }
     }
 
+    fn ensure_session_for_event(store: &SessionStore, event: &AgentEvent, raw: &serde_json::Value) {
+        let session_id = match event {
+            AgentEvent::SessionStart { session_id, .. }
+            | AgentEvent::SessionEnd { session_id }
+            | AgentEvent::Processing { session_id, .. }
+            | AgentEvent::ToolUse { session_id, .. }
+            | AgentEvent::PermissionRequest { session_id, .. }
+            | AgentEvent::AskQuestion { session_id, .. }
+            | AgentEvent::PlanApproval { session_id, .. }
+            | AgentEvent::TaskComplete { session_id, .. }
+            | AgentEvent::AssistantResponseComplete { session_id, .. }
+            | AgentEvent::Error { session_id, .. }
+            | AgentEvent::Interrupt { session_id }
+            | AgentEvent::TokenUsage { session_id, .. }
+            | AgentEvent::RateLimitUpdate { session_id, .. }
+            | AgentEvent::Notification { session_id, .. }
+            | AgentEvent::SubagentStart { session_id, .. }
+            | AgentEvent::SubagentStop { session_id, .. }
+            | AgentEvent::ShellExecutionStart { session_id, .. }
+            | AgentEvent::ShellExecutionEnd { session_id, .. }
+            | AgentEvent::MCPExecutionStart { session_id, .. }
+            | AgentEvent::MCPExecutionEnd { session_id, .. }
+            | AgentEvent::AgentResponse { session_id, .. }
+            | AgentEvent::AgentThought { session_id, .. } => session_id,
+        };
+
+        if session_id.is_empty()
+            || session_id == "unknown"
+            || store.get_session(session_id).is_some()
+        {
+            return;
+        }
+
+        let cwd = raw
+            .get("cwd")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let project = cwd
+            .rsplit('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Unknown");
+        let terminal = raw
+            .get("tty")
+            .or_else(|| raw.get("terminal"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let agent_type = match event {
+            AgentEvent::SessionStart { agent_type, .. } => agent_type.as_str(),
+            _ => raw
+                .get("agent")
+                .and_then(|value| value.as_str())
+                .unwrap_or("claude-code"),
+        };
+
+        store.get_or_create_session(session_id, agent_type, project, cwd, terminal);
+    }
+
     fn schedule_done_session_cleanup(store: &SessionStore, session_id: &str, delay_secs: u64) {
         let store_for_cleanup = store.clone();
         let session_id_for_cleanup = session_id.to_string();
@@ -1351,8 +1344,23 @@ impl HookServer {
             .get("engine_config_root")
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty());
+        let term_bundle_id = optional_nonempty_string(raw, "_term_bundle_id");
+        let wezterm_pane = optional_nonempty_string(raw, "_wezterm_pane");
+        let zellij_pane_id = optional_nonempty_string(raw, "_zellij_pane_id");
+        let zellij_session_name = optional_nonempty_string(raw, "_zellij_session_name");
+        let cmux_surface_id = optional_nonempty_string(raw, "_cmux_surface_id");
+        let cmux_workspace_id = optional_nonempty_string(raw, "_cmux_workspace_id");
 
-        if pid.is_none() && tty.is_none() && engine_label.is_none() && engine_config_root.is_none()
+        if pid.is_none()
+            && tty.is_none()
+            && engine_label.is_none()
+            && engine_config_root.is_none()
+            && term_bundle_id.is_none()
+            && wezterm_pane.is_none()
+            && zellij_pane_id.is_none()
+            && zellij_session_name.is_none()
+            && cmux_surface_id.is_none()
+            && cmux_workspace_id.is_none()
         {
             return;
         }
@@ -1369,6 +1377,24 @@ impl HookServer {
             }
             if let Some(root) = engine_config_root {
                 s.engine_config_root = Some(root.to_string());
+            }
+            if let Some(value) = term_bundle_id {
+                s.term_bundle_id = Some(value.to_string());
+            }
+            if let Some(value) = wezterm_pane {
+                s.wezterm_pane = Some(value.to_string());
+            }
+            if let Some(value) = zellij_pane_id {
+                s.zellij_pane_id = Some(value.to_string());
+            }
+            if let Some(value) = zellij_session_name {
+                s.zellij_session_name = Some(value.to_string());
+            }
+            if let Some(value) = cmux_surface_id {
+                s.cmux_surface_id = Some(value.to_string());
+            }
+            if let Some(value) = cmux_workspace_id {
+                s.cmux_workspace_id = Some(value.to_string());
             }
         });
     }
@@ -1494,9 +1520,76 @@ impl HookServer {
     }
 }
 
+fn canonical_agent_id(agent: &str) -> &str {
+    match agent {
+        "codybuddycn" => "codebuddycn",
+        other => other,
+    }
+}
+
+fn optional_nonempty_string<'a>(raw: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    raw.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+}
+
 impl Drop for HookServer {
     fn drop(&mut self) {
         // Clean up Unix socket file
         let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_session_creates_codex_session_without_session_start() {
+        let store = SessionStore::new();
+        let raw = serde_json::json!({
+            "agent": "codex",
+            "session_id": "codex-mid-session",
+            "cwd": "/tmp/my-project",
+            "tty": "/dev/ttys001"
+        });
+        let event = AgentEvent::Processing {
+            session_id: "codex-mid-session".to_string(),
+            description: "Processing user input".to_string(),
+        };
+
+        HookServer::ensure_session_for_event(&store, &event, &raw);
+
+        let session = store
+            .get_session("codex-mid-session")
+            .expect("session should be created");
+        assert_eq!(session.agent_type, "codex");
+        assert_eq!(session.project, "my-project");
+        assert_eq!(session.cwd, "/tmp/my-project");
+        assert_eq!(session.terminal, "/dev/ttys001");
+    }
+
+    #[test]
+    fn ensure_session_creates_session_for_first_permission_request() {
+        let store = SessionStore::new();
+        let raw = serde_json::json!({
+            "agent": "codex",
+            "session_id": "codex-approval",
+            "cwd": "/tmp/my-project"
+        });
+        let event = AgentEvent::PermissionRequest {
+            session_id: "codex-approval".to_string(),
+            tool_name: "Bash".to_string(),
+            diff: None,
+            options: None,
+        };
+
+        HookServer::ensure_session_for_event(&store, &event, &raw);
+
+        let session = store
+            .get_session("codex-approval")
+            .expect("permission request should create a session");
+        assert_eq!(session.agent_type, "codex");
+        assert_eq!(session.project, "my-project");
     }
 }

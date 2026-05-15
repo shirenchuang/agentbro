@@ -38,6 +38,7 @@ const imageIcons: Record<string, string> = {
   qoder: qoderIcon,
   'qoder-cli': qoderIcon,
   trae: traeIcon,
+  traecli: traeIcon,
   traecn: traeIcon,
   'trae-cn': traeIcon,
   windsurf: windsurfIcon,

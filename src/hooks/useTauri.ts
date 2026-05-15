@@ -10,6 +10,50 @@ import { useThemeStore } from '../stores/themeStore'
 import type { SoundChoice } from '../stores/configStore'
 import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage } from '../types/agent'
 
+let lastBackendThemeName: string | null = null
+let pendingBackendThemeName: string | null = null
+let pendingBackendThemeTimer: ReturnType<typeof setTimeout> | null = null
+
+function normalizeBackendThemeName(theme?: string | null): string | null {
+  return theme && theme !== 'system' ? theme : null
+}
+
+function markPendingBackendTheme(name: string) {
+  pendingBackendThemeName = name
+  if (pendingBackendThemeTimer) clearTimeout(pendingBackendThemeTimer)
+  pendingBackendThemeTimer = setTimeout(() => {
+    pendingBackendThemeName = null
+    pendingBackendThemeTimer = null
+  }, 5000)
+}
+
+function clearPendingBackendTheme(name?: string) {
+  if (name && pendingBackendThemeName !== name) return
+  pendingBackendThemeName = null
+  if (pendingBackendThemeTimer) {
+    clearTimeout(pendingBackendThemeTimer)
+    pendingBackendThemeTimer = null
+  }
+}
+
+function applyBackendThemeChange(theme?: string | null) {
+  const backendThemeName = normalizeBackendThemeName(theme)
+  if (!backendThemeName) return
+
+  lastBackendThemeName = backendThemeName
+
+  if (pendingBackendThemeName && pendingBackendThemeName !== backendThemeName) {
+    return
+  }
+
+  clearPendingBackendTheme(backendThemeName)
+
+  const store = useThemeStore.getState()
+  if (store.activeThemeName !== backendThemeName) {
+    store.setActiveTheme(backendThemeName)
+  }
+}
+
 // ── Transform Backend → Frontend ─────────────────────────────────
 
 function parseDiff(raw: string | null): DiffContent | undefined {
@@ -74,6 +118,12 @@ function transformSession(bs: BackendSession): SessionState {
     sessionTitle: bs.sessionTitle ?? undefined,
     pid: bs.pid ?? undefined,
     tty: bs.tty ?? undefined,
+    termBundleId: bs.termBundleId ?? undefined,
+    weztermPane: bs.weztermPane ?? undefined,
+    zellijPaneId: bs.zellijPaneId ?? undefined,
+    zellijSessionName: bs.zellijSessionName ?? undefined,
+    cmuxSurfaceId: bs.cmuxSurfaceId ?? undefined,
+    cmuxWorkspaceId: bs.cmuxWorkspaceId ?? undefined,
     chatHistory: existing?.chatHistory ?? [],
     subagents: (bs.subagents ?? existing?.subagents ?? []).map((subagent) => ({
       agentId: subagent.agentId,
@@ -125,6 +175,7 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('volume', Math.round(config.soundVolume * 100))
   store.updateConfig('autoHide', config.autoHide)
   store.updateConfig('smartSuppression', config.smartSuppression)
+  store.updateConfig('hideInFullscreen', config.hideInFullscreen ?? false)
   store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)
   store.updateConfig('displayMonitor', config.displayId)
   store.updateConfig('globalShortcut', config.globalShortcut)
@@ -166,6 +217,7 @@ function applyBackendConfig(config: BackendConfig) {
     start: config.quietHoursStart,
     end: config.quietHoursEnd,
   })
+  store.updateConfig('idleTimeoutMinutes', config.idleTimeoutMinutes ?? 5)
 }
 
 function syncSoundEventSettingsToBackend() {
@@ -191,11 +243,21 @@ function syncCustomSoundsToBackend() {
 }
 
 function syncThemesFromBackend(configTheme?: string) {
+  const backendThemeName = normalizeBackendThemeName(configTheme)
+  const activeThemeNameAtSyncStart = useThemeStore.getState().activeThemeName
+  if (backendThemeName) {
+    lastBackendThemeName = backendThemeName
+  }
+
   listThemes().then((themes) => {
     const store = useThemeStore.getState()
     store.loadThemes(themes)
-    if (configTheme && configTheme !== 'system') {
-      store.setActiveTheme(configTheme)
+    if (
+      backendThemeName &&
+      backendThemeName === lastBackendThemeName &&
+      store.activeThemeName === activeThemeNameAtSyncStart
+    ) {
+      store.setActiveTheme(backendThemeName)
     }
   }).catch(e => console.error('[tauri] listThemes:', e))
 }
@@ -268,14 +330,26 @@ export function useConfigSync() {
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<BackendConfig>('config-changed', (event) => {
         applyBackendConfig(event.payload)
-        if (event.payload.theme && event.payload.theme !== 'system') {
-          useThemeStore.getState().setActiveTheme(event.payload.theme)
-        }
+        applyBackendThemeChange(event.payload.theme)
       }).then(fn => { unlisten = fn })
         .catch(e => console.error('[tauri] listen config-changed:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
-    return () => { unlisten?.() }
+    const handleThemeSync = (event: Event) => {
+      const detail = (event as CustomEvent<{ status?: string; name?: string }>).detail
+      if (!detail?.name) return
+      if (detail.status === 'pending') {
+        markPendingBackendTheme(detail.name)
+      } else if (detail.status === 'failed') {
+        clearPendingBackendTheme(detail.name)
+      }
+    }
+    window.addEventListener('agentbro-theme-sync', handleThemeSync)
+
+    return () => {
+      unlisten?.()
+      window.removeEventListener('agentbro-theme-sync', handleThemeSync)
+    }
   }, [])
 }
 

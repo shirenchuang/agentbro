@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, useMemo, type CSSProperties, 
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState } from '../../types/agent'
@@ -173,10 +173,10 @@ export function NotchPanel() {
   const microHoverExpandDelay = useConfigStore((s) => s.microHoverExpandDelay)
   const collapseDelay = useConfigStore((s) => s.collapseDelay)
   const clickToDetail = useConfigStore((s) => s.clickToDetail)
-  const dismissOnOutsideClick = useConfigStore((s) => s.dismissOnOutsideClick)
   const islandEnabled = useConfigStore((s) => s.islandEnabled)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const autoHideNoSessions = useConfigStore((s) => s.autoHideNoSessions)
+  const hideInFullscreen = useConfigStore((s) => s.hideInFullscreen)
   const noSessionsHideDelay = useConfigStore((s) => s.noSessionsHideDelay)
   const idleTimeoutMinutes = useConfigStore((s) => s.idleTimeoutMinutes)
   const escSilenceDuration = useConfigStore((s) => s.escSilenceDuration)
@@ -425,6 +425,35 @@ export function NotchPanel() {
     setNotchOpacity(islandEnabled ? 1 : 0).catch(() => {})
   }, [islandEnabled])
 
+  useEffect(() => {
+    if (!hideInFullscreen || !islandEnabled || !isTauri()) {
+      setNotchOpacity(islandEnabled ? 1 : 0).catch(() => {})
+      return
+    }
+
+    let cancelled = false
+    let inFlight = false
+    const refresh = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      try {
+        const fullscreen = await isFrontmostAppFullscreen()
+        if (!cancelled) setNotchOpacity(fullscreen ? 0 : 1).catch(() => {})
+      } catch {
+        if (!cancelled) setNotchOpacity(1).catch(() => {})
+      } finally {
+        inFlight = false
+      }
+    }
+
+    refresh()
+    const timer = window.setInterval(refresh, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [hideInFullscreen, islandEnabled])
+
   // Non-blocking overlays still need to expire while the island is collapsed.
   useEffect(() => {
     if (overlayDismissTimerRef.current) {
@@ -591,9 +620,6 @@ export function NotchPanel() {
 
       // Progressive ESC
       if (e.key === 'Escape') {
-        const escDuration = useConfigStore.getState().escSilenceDuration
-        const silenceUntil = Date.now() + escDuration * 1000
-        useSessionStore.getState().setWakeSilencedUntil(silenceUntil)
         const overlay = store.activeOverlay
         if (overlay) {
           if (overlay.type === 'completion' || overlay.type === 'response') {
@@ -611,6 +637,9 @@ export function NotchPanel() {
           detailModeRef.current = false
           setNotchFocusable(false).catch(() => {})
           setPanelState('collapsed')
+        } else if (store.panelState === 'collapsed') {
+          const escDuration = useConfigStore.getState().escSilenceDuration
+          useSessionStore.getState().setWakeSilencedUntil(Date.now() + escDuration * 1000)
         }
         return
       }
@@ -758,13 +787,6 @@ export function NotchPanel() {
     && isBlockingOverlay(activeOverlay)
     && effectivePanelState !== 'collapsed',
   )
-  const suppressedBlockingPresentation = Boolean(
-    !layoutPreview
-    && activeOverlay?.suppressed
-    && activeOverlay
-    && isBlockingOverlay(activeOverlay)
-    && effectivePanelState === 'collapsed',
-  )
   const collapsedHeight = notchHeightMode === 'custom'
     ? customNotchHeight
     : notchHeightMode === 'matchMenuBar'
@@ -828,11 +850,11 @@ export function NotchPanel() {
           ? 'feedback'
           : previewMode === 'expanded'
             ? 'expanded'
-            : !suppressedBlockingPresentation && activeOverlay?.type === 'permission'
+            : hasBlockingOverlayContent && activeOverlay?.type === 'permission'
               ? 'alert_permission'
-              : !suppressedBlockingPresentation && activeOverlay?.type === 'question'
+              : hasBlockingOverlayContent && activeOverlay?.type === 'question'
                 ? 'alert_question'
-                : !suppressedBlockingPresentation && activeOverlay?.type === 'plan'
+                : hasBlockingOverlayContent && activeOverlay?.type === 'plan'
                   ? 'alert_plan'
                   : activeOverlay?.type === 'completion' || activeOverlay?.type === 'response'
                     ? 'feedback'
@@ -1153,7 +1175,7 @@ export function NotchPanel() {
                 )}
               </AnimatePresence>
 
-              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && dismissOnOutsideClick && effectivePanelState !== 'collapsed' && (
+              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && (
                 <button
                   type="button"
                   className="notch-panel__outside-dismiss"

@@ -33,7 +33,7 @@ function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInf
   return display.isPrimary ? 'primary' : display.id
 }
 
-type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled'
+type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled' | 'followFocus'
 
 function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boolean>>) {
   const state = useConfigStore.getState()
@@ -41,7 +41,7 @@ function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boole
     tipsEnabled: next.tipsEnabled ?? state.tipsEnabled,
     pixelCursorEnabled: next.pixelCursorEnabled ?? state.pixelCursorEnabled,
     confettiEnabled: next.confettiEnabled ?? state.confettiEnabled,
-    followFocus: false,
+    followFocus: next.followFocus ?? state.followFocus,
   }).catch((err) => console.error('Failed to persist island feature flags:', err))
 }
 
@@ -510,6 +510,9 @@ function OverviewTab() {
         <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
           <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
         </SettingRow>
+        <SettingRow label={t('settings.hideInFullscreen')} description={t('settings.hideInFullscreenDesc')}>
+          <Toggle checked={config.hideInFullscreen} onChange={(v) => config.updateConfig('hideInFullscreen', v)} />
+        </SettingRow>
       </SettingGroup>
     </>
   )
@@ -566,9 +569,6 @@ function BehaviorTab() {
         <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
           <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
             onChange={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
-        </SettingRow>
-        <SettingRow label={t('settings.dismissOnOutsideClick', { defaultValue: 'Dismiss on Outside Click' })} description={t('settings.dismissOnOutsideClickDesc', { defaultValue: 'Close expanded island panels when clicking outside the panel.' })}>
-          <Toggle checked={config.dismissOnOutsideClick} onChange={(v) => config.updateConfig('dismissOnOutsideClick', v)} />
         </SettingRow>
       </SettingGroup>
 

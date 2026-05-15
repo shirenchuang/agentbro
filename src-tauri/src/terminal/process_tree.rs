@@ -22,17 +22,36 @@ pub struct TerminalEnv {
     pub kitty_window_id: Option<String>,
     pub cf_bundle_identifier: Option<String>,
     pub wezterm_pane: Option<String>,
+    pub zellij_pane_id: Option<String>,
+    pub zellij_session_name: Option<String>,
+    pub cmux_surface_id: Option<String>,
+    pub cmux_workspace_id: Option<String>,
 }
 
 /// Terminal type classification derived from process environment + process tree
 #[derive(Debug, Clone, PartialEq)]
 pub enum TerminalType {
-    ITerm2 { session_id: Option<String> },
+    ITerm2 {
+        session_id: Option<String>,
+    },
     Ghostty,
     TerminalApp,
     WezTerm,
-    Kitty { window_id: Option<String> },
-    Tmux { env: Option<String> },
+    Zellij {
+        pane_id: Option<String>,
+        session_name: Option<String>,
+    },
+    Cmux {
+        surface_id: Option<String>,
+        workspace_id: Option<String>,
+    },
+    Kaku,
+    Kitty {
+        window_id: Option<String>,
+    },
+    Tmux {
+        env: Option<String>,
+    },
     Other(String),
     Unknown,
 }
@@ -44,6 +63,9 @@ impl TerminalType {
             TerminalType::Ghostty => "Ghostty",
             TerminalType::TerminalApp => "Terminal",
             TerminalType::WezTerm => "WezTerm",
+            TerminalType::Zellij { .. } => "Zellij",
+            TerminalType::Cmux { .. } => "cmux",
+            TerminalType::Kaku => "Kaku",
             TerminalType::Kitty { .. } => "kitty",
             TerminalType::Tmux { .. } => "tmux",
             TerminalType::Other(s) => s.as_str(),
@@ -193,6 +215,18 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
     if env.tmux.is_some() {
         return TerminalType::Tmux { env: env.tmux };
     }
+    if env.zellij_pane_id.is_some() || env.zellij_session_name.is_some() {
+        return TerminalType::Zellij {
+            pane_id: env.zellij_pane_id,
+            session_name: env.zellij_session_name,
+        };
+    }
+    if env.cmux_surface_id.is_some() || env.cmux_workspace_id.is_some() {
+        return TerminalType::Cmux {
+            surface_id: env.cmux_surface_id,
+            workspace_id: env.cmux_workspace_id,
+        };
+    }
 
     // Fall back to process tree command name matching
     if let Some(cmd) = find_terminal_app_name(pid, tree) {
@@ -206,6 +240,9 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
         if lower.contains("wezterm") {
             return TerminalType::WezTerm;
         }
+        if lower == "kaku" {
+            return TerminalType::Kaku;
+        }
         if lower.contains("kitty") {
             return TerminalType::Kitty { window_id: None };
         }
@@ -214,6 +251,21 @@ pub fn detect_terminal_type(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Termi
         }
         if lower.contains("tmux") {
             return TerminalType::Tmux { env: None };
+        }
+        if lower.contains("zellij") {
+            return TerminalType::Zellij {
+                pane_id: None,
+                session_name: None,
+            };
+        }
+        if lower.contains("cmux") {
+            return TerminalType::Cmux {
+                surface_id: None,
+                workspace_id: None,
+            };
+        }
+        if lower.contains("kaku") {
+            return TerminalType::Kaku;
         }
         return TerminalType::Other(cmd);
     }
@@ -296,6 +348,26 @@ fn merge_terminal_env(text: &str, env: &mut TerminalEnv) {
         if env.wezterm_pane.is_none() {
             if let Some(v) = line.strip_prefix("WEZTERM_PANE=") {
                 env.wezterm_pane = Some(v.to_string());
+            }
+        }
+        if env.zellij_pane_id.is_none() {
+            if let Some(v) = line.strip_prefix("ZELLIJ_PANE_ID=") {
+                env.zellij_pane_id = Some(v.to_string());
+            }
+        }
+        if env.zellij_session_name.is_none() {
+            if let Some(v) = line.strip_prefix("ZELLIJ_SESSION_NAME=") {
+                env.zellij_session_name = Some(v.to_string());
+            }
+        }
+        if env.cmux_surface_id.is_none() {
+            if let Some(v) = line.strip_prefix("CMUX_SURFACE_ID=") {
+                env.cmux_surface_id = Some(v.to_string());
+            }
+        }
+        if env.cmux_workspace_id.is_none() {
+            if let Some(v) = line.strip_prefix("CMUX_WORKSPACE_ID=") {
+                env.cmux_workspace_id = Some(v.to_string());
             }
         }
     }

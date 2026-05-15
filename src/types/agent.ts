@@ -4,7 +4,7 @@ export type AgentType =
   | 'claude-code' | 'codex' | 'gemini-cli'
   | 'cursor' | 'cursor-cli'
   | 'copilot'
-  | 'trae' | 'traecn'
+  | 'trae' | 'traecli' | 'traecn'
   | 'qoder' | 'qoder-cli'
   | 'codebuddy' | 'codebuddycn'
   | 'qwen' | 'kimi' | 'opencode'
@@ -141,6 +141,12 @@ export interface SessionState {
   sessionTitle?: string
   pid?: number
   tty?: string
+  termBundleId?: string
+  weztermPane?: string
+  zellijPaneId?: string
+  zellijSessionName?: string
+  cmuxSurfaceId?: string
+  cmuxWorkspaceId?: string
   planTitle?: string
   planContent?: string
   planPermissions?: string[]

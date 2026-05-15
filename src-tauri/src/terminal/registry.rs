@@ -23,6 +23,11 @@ const TERMINAL_APP_NAMES: &[&str] = &[
     "Cursor",
     "Windsurf",
     "zed",
+    "cmux",
+    "Kaku",
+    "kaku",
+    "Zellij",
+    "zellij",
 ];
 
 /// Bundle identifiers for terminal apps (macOS)
@@ -41,6 +46,9 @@ const TERMINAL_BUNDLE_IDS: &[&str] = &[
     "com.todesktop.230313mzl4w4u92", // Cursor
     "com.exafunction.windsurf",
     "dev.zed.Zed",
+    "com.kapeli.kaku",
+    "com.cmuxterm.app",
+    "fun.tw93.kaku",
 ];
 
 /// Check if a command/app name belongs to a known terminal

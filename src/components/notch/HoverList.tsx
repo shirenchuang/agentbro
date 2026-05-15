@@ -8,9 +8,10 @@ import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
 import { useSessionStore } from '../../stores/sessionStore'
-import { respondPermission } from '../../services/tauriApi'
+import { respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -35,6 +36,7 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'copilot': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
   'kiro': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'trae': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
+  'traecli': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
   'traecn': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
   'kimi': { bg: 'rgba(168, 85, 247, 0.15)', text: '#a855f7' },
   'qwen': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
@@ -63,42 +65,12 @@ const HOVER_SPEED_MS: Record<string, number> = {
   slow: 0.4,
 }
 
-function getAgentName(session: SessionState): string {
-  if (session.agentType === 'claude-code' && session.engineLabel && session.engineLabel !== 'Claude Code') {
-    return session.engineLabel
-  }
-  switch (session.agentType) {
-    case 'claude-code': return 'Claude'
-    case 'gemini-cli': return 'Gemini'
-    default: return session.agentType.charAt(0).toUpperCase() + session.agentType.slice(1)
-  }
-}
-
-function isEvolabSession(session: SessionState): boolean {
-  const cwd = session.cwd || ''
-  return (
-    cwd.includes('.evolab-desktop')
-    || cwd.endsWith('/evolab')
-    || cwd.includes('/evolab/')
-    || session.project === 'free-chat'
-  )
-}
-
 function getAgentBadge(session: SessionState): { bg: string; text: string } {
-  const label = getAgentName(session).toLowerCase()
+  const label = getAgentDisplayName(session).toLowerCase()
   if (label === 'antcc') {
     return { bg: 'rgba(255, 47, 129, 0.16)', text: '#ff2f81' }
   }
   return AGENT_BADGE_COLORS[session.agentType] || DEFAULT_BADGE
-}
-
-function getSessionTitle(session: SessionState): string {
-  const title = (session.sessionTitle || '').trim()
-  const project = (session.project || '').trim()
-  if (title && project && title !== project && !title.startsWith(`${project} ·`)) {
-    return `${project} · ${title}`
-  }
-  return title || project || 'Session'
 }
 
 function stripMarkdown(text: string): string {
@@ -267,7 +239,97 @@ function InlinePermissionPreview({ session }: { session: SessionState }) {
 /* ── Inline Question Preview ── */
 function InlineQuestionPreview({ session }: { session: SessionState }) {
   const q = session.pendingQuestion
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
+  const [multiAnswers, setMultiAnswers] = useState<Record<string, string>>({})
   if (!q) return null
+
+  const submitAnswer = (answer: string) => {
+    respondQuestion(session.id, answer)
+      .then(() => useSessionStore.getState().clearQuestion(session.id))
+      .catch((error) => console.warn('[notch] inline respondQuestion:', error))
+  }
+
+  const nestedQuestions = q.questions || []
+  const allNestedAnswered = nestedQuestions.length > 0 && nestedQuestions.every((item) => multiAnswers[item.question])
+
+  if (nestedQuestions.length > 1) {
+    return (
+      <div className="hover-list__inline-question" onClick={(e) => e.stopPropagation()}>
+        <div className="hover-list__inline-question-header">
+          <span>💬</span>
+          <span className="hover-list__inline-question-title">Claude 的提问</span>
+          <span className="hover-list__inline-question-count">({nestedQuestions.length})</span>
+        </div>
+        <div className="hover-list__inline-question-multi">
+          {nestedQuestions.map((item, questionIndex) => (
+            <div key={`${questionIndex}-${item.question}`} className="hover-list__inline-question-group">
+              <p className="hover-list__inline-question-text">
+                <span className="hover-list__inline-question-num">{questionIndex + 1}</span>
+                {item.question.length > 100 ? `${item.question.slice(0, 100)}…` : item.question}
+              </p>
+              <div className="hover-list__inline-question-chips">
+                {item.options.map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    className={`hover-list__inline-chip${(item.multiSelect ? multiAnswers[item.question]?.split(', ').includes(opt.label) : multiAnswers[item.question] === opt.label) ? ' hover-list__inline-chip--selected' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setMultiAnswers((prev) => {
+                        if (!item.multiSelect) return { ...prev, [item.question]: opt.label }
+                        const current = prev[item.question]?.split(', ').filter(Boolean) ?? []
+                        const next = current.includes(opt.label)
+                          ? current.filter((label) => label !== opt.label)
+                          : [...current, opt.label]
+                        const updated = { ...prev }
+                        if (next.length > 0) updated[item.question] = next.join(', ')
+                        else delete updated[item.question]
+                        return updated
+                      })
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="hover-list__inline-submit"
+          disabled={!allNestedAnswered}
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (!allNestedAnswered) return
+            submitAnswer(JSON.stringify(multiAnswers))
+          }}
+        >
+          提交所有回答
+        </button>
+      </div>
+    )
+  }
+
+  const toggleMultiSelect = (index: number) => {
+    setSelectedIndices((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
+
+  const submitMultiSelect = () => {
+    const answer = Array.from(selectedIndices)
+      .sort((a, b) => a - b)
+      .map((index) => q.options[index])
+      .filter(Boolean)
+      .join(', ')
+    if (answer) submitAnswer(answer)
+  }
 
   return (
     <div className="hover-list__inline-question" onClick={(e) => e.stopPropagation()}>
@@ -281,11 +343,37 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
       {q.options && q.options.length > 0 && (
         <div className="hover-list__inline-question-options">
           {q.options.slice(0, 4).map((opt, i) => (
-            <div key={i} className="hover-list__inline-question-opt">
-              <span className="hover-list__inline-question-num">{i + 1}</span>
+            <button
+              key={i}
+              type="button"
+              className={`hover-list__inline-question-opt${selectedIndices.has(i) ? ' hover-list__inline-question-opt--selected' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (q.multiSelect) toggleMultiSelect(i)
+                else submitAnswer(typeof opt === 'string' ? opt : opt)
+              }}
+            >
+              <span className="hover-list__inline-question-num">
+                {q.multiSelect && selectedIndices.has(i) ? '✓' : i + 1}
+              </span>
               <span>{typeof opt === 'string' ? opt : opt}</span>
-            </div>
+            </button>
           ))}
+          {q.multiSelect && (
+            <button
+              type="button"
+              className="hover-list__inline-submit"
+              disabled={selectedIndices.size === 0}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                submitMultiSelect()
+              }}
+            >
+              确认 ({selectedIndices.size})
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -294,7 +382,14 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
 
 /* ── Inline Plan Preview ── */
 function InlinePlanPreview({ session }: { session: SessionState }) {
+  const [feedback, setFeedback] = useState('')
   if (!session.planTitle && !session.planContent) return null
+
+  const submitPlan = (mode: string, message?: string) => {
+    respondPlan(session.id, mode, message)
+      .then(() => useSessionStore.getState().clearPlan(session.id))
+      .catch((error) => console.warn('[notch] inline respondPlan:', error))
+  }
 
   return (
     <div className="hover-list__inline-plan" onClick={(e) => e.stopPropagation()}>
@@ -309,6 +404,62 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           {truncateText(stripMarkdown(session.planContent), 200)}
         </div>
       )}
+      <div className="hover-list__inline-plan-feedback">
+        <input
+          className="hover-list__inline-plan-input"
+          placeholder="Tell Claude what to change..."
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && feedback.trim()) {
+              submitPlan('feedback', feedback.trim())
+              setFeedback('')
+            }
+          }}
+        />
+      </div>
+      <div className="hover-list__inline-plan-actions">
+        <button
+          type="button"
+          className="hover-list__inline-btn hover-list__inline-btn--deny"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const trimmed = feedback.trim()
+            if (trimmed) {
+              submitPlan('feedback', trimmed)
+              setFeedback('')
+            } else {
+              submitPlan('manual')
+            }
+          }}
+        >
+          {feedback.trim() ? 'Send Feedback' : 'Manual Review'}
+        </button>
+        <button
+          type="button"
+          className="hover-list__inline-btn hover-list__inline-btn--allow"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            submitPlan('acceptEdits')
+          }}
+        >
+          Accept Edits
+        </button>
+        <button
+          type="button"
+          className="hover-list__inline-btn hover-list__inline-btn--always"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            submitPlan('bypassPermissions')
+          }}
+        >
+          Auto
+        </button>
+      </div>
     </div>
   )
 }
@@ -333,8 +484,10 @@ function SessionCard({
 }) {
   const { t } = useTranslation()
   const badge = getAgentBadge(session)
-  const agentName = getAgentName(session)
-  const termBadge = session.terminal ? (TERMINAL_BADGE_COLORS[session.terminal] || null) : null
+  const agentName = getAgentDisplayName(session)
+  const appLabel = getSessionAppLabel(session)
+  const terminalLabel = getSessionTerminalLabel(session)
+  const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || null) : null
   const title = getSessionTitle(session)
   const assistantPreview = session.responseText || (session.description && session.phase !== 'processing' ? session.description : undefined)
   const priority = computePriority(session)
@@ -406,17 +559,17 @@ function SessionCard({
               <span className="hover-list__session-title">{title}</span>
 
               <div className="hover-list__meta">
-                {isEvolabSession(session) && (
+                {appLabel && (
                   <span className="hover-list__agent-badge hover-list__source-badge">
-                    Evolab
+                    {appLabel}
                   </span>
                 )}
                 <span className="hover-list__agent-badge" style={{ background: badge.bg, color: badge.text }}>
                   {agentName}
                 </span>
-                {termBadge && (
+                {terminalLabel && termBadge && (
                   <span className="hover-list__agent-badge" style={{ background: termBadge.bg, color: termBadge.text }}>
-                    {session.terminal}
+                    {terminalLabel}
                   </span>
                 )}
                 {session.isYoloMode && (

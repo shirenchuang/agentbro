@@ -638,13 +638,14 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "hermes" => "Hermes",
         "antigravity" => "Antigravity",
         "trae" => "Trae",
+        "traecli" => "TraeCli",
         "traecn" | "trae-cn" => "Trae CN",
         "qwen" => "Qwen Code",
         "kimi" => "Kimi",
         "droid" | "factory-droid" => "Factory Droid",
         "stepfun" => "StepFun",
         "codebuddy" => "CodeBuddy",
-        "codebuddycn" => "CodeBuddy CN",
+        "codebuddycn" | "codybuddycn" => "CodyBuddyCN",
         "workbuddy" => "WorkBuddy",
         "kiro" => "Kiro",
         "pi" => "Pi",
@@ -666,8 +667,8 @@ fn display_name_for_agent(id: &str) -> &'static str {
 
 fn icon_for_agent(id: &str) -> String {
     match id {
-        "traecn" | "trae-cn" => "trae".to_string(),
-        "codebuddycn" => "codebuddy".to_string(),
+        "traecli" | "traecn" | "trae-cn" => "trae".to_string(),
+        "codebuddycn" | "codybuddycn" => "codebuddy".to_string(),
         "gemini-cli" => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
         "qoder-cli" => "qoder".to_string(),
@@ -758,6 +759,15 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.trae",
             "https://www.trae.ai",
         ),
+        "traecli" => cli_no_uninstall(
+            "traecli",
+            "vendor",
+            "traecli",
+            None,
+            None,
+            "~/.trae",
+            "https://www.trae.ai",
+        ),
         "traecn" => app(
             "trae",
             "/Applications/Trae CN.app",
@@ -776,10 +786,10 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.codebuddy",
             "https://codebuddy.ai",
         ),
-        "codebuddycn" => app(
+        "codebuddycn" | "codybuddycn" => app(
             "codebuddy",
-            "/Applications/CodeBuddy CN.app",
-            "~/.codebuddy",
+            "/Applications/CodyBuddyCN.app",
+            "~/.codybuddycn",
             "https://www.codebuddy.ai",
         ),
         "qwen" => app(
@@ -931,6 +941,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
     Some(meta)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cli(
     binary: &'static str,
     manager: &'static str,

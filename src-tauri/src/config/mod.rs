@@ -40,6 +40,33 @@ pub struct WindowOrigin {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomHookTemplate {
+    pub id: String,
+    pub label: String,
+    pub agent: String,
+    pub config_path: String,
+    pub format: String,
+    pub events: Vec<String>,
+    pub command: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuddyDeviceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_buddy_device_transport")]
+    pub transport: String,
+    #[serde(default = "default_buddy_device_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub shared_secret: String,
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +75,8 @@ pub struct AppConfig {
     pub sound_volume: f32,
     pub auto_hide: bool,
     pub smart_suppression: bool,
+    #[serde(default)]
+    pub hide_in_fullscreen: bool,
     pub completion_timeout: u32,
     pub show_token_usage: bool,
     pub theme: String,
@@ -80,7 +109,7 @@ pub struct AppConfig {
     #[serde(default = "default_quiet_hours_end")]
     pub quiet_hours_end: String,
     /// Minutes of inactivity before auto-hiding (0 = disabled)
-    #[serde(default)]
+    #[serde(default = "default_idle_timeout_minutes")]
     pub idle_timeout_minutes: u32,
     /// Notification mode: "turnEnd" or "every"
     #[serde(default = "default_notification_mode")]
@@ -100,6 +129,12 @@ pub struct AppConfig {
     /// Custom hooks path override
     #[serde(default)]
     pub custom_hooks_path: String,
+    /// User-defined hook templates for unsupported CLIs.
+    #[serde(default)]
+    pub custom_hook_templates: Vec<CustomHookTemplate>,
+    /// External Buddy device bridge for Apple Watch / ESP32 companion devices.
+    #[serde(default)]
+    pub buddy_device: BuddyDeviceConfig,
     /// Show tips when all sessions are idle
     #[serde(default = "default_true")]
     pub tips_enabled: bool,
@@ -158,7 +193,11 @@ fn default_notification_mode() -> String {
 }
 
 fn default_volume() -> u8 {
-    80
+    70
+}
+
+fn default_idle_timeout_minutes() -> u32 {
+    5
 }
 
 fn default_quiet_hours_start() -> String {
@@ -200,6 +239,7 @@ impl Default for AppConfig {
             sound_volume: 0.7,
             auto_hide: true,
             smart_suppression: true,
+            hide_in_fullscreen: false,
             completion_timeout: 5,
             show_token_usage: true,
             theme: "system".to_string(),
@@ -213,13 +253,15 @@ impl Default for AppConfig {
             quiet_hours_enabled: false,
             quiet_hours_start: default_quiet_hours_start(),
             quiet_hours_end: default_quiet_hours_end(),
-            idle_timeout_minutes: 0,
+            idle_timeout_minutes: default_idle_timeout_minutes(),
             notification_mode: "turnEnd".to_string(),
             engine_instances: Vec::new(),
             webhook_configs: Vec::new(),
             remote_hosts: Vec::new(),
-            volume: 80,
+            volume: default_volume(),
             custom_hooks_path: String::new(),
+            custom_hook_templates: Vec::new(),
+            buddy_device: BuddyDeviceConfig::default(),
             tips_enabled: true,
             pixel_cursor_enabled: true,
             confetti_enabled: true,
@@ -234,6 +276,25 @@ impl Default for AppConfig {
             shortcut_deny_enabled: true,
             shortcut_skip: default_shortcut_skip(),
             shortcut_skip_enabled: false,
+        }
+    }
+}
+
+fn default_buddy_device_transport() -> String {
+    "http".to_string()
+}
+
+fn default_buddy_device_port() -> u16 {
+    17893
+}
+
+impl Default for BuddyDeviceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            transport: default_buddy_device_transport(),
+            port: default_buddy_device_port(),
+            shared_secret: String::new(),
         }
     }
 }
@@ -267,8 +328,8 @@ impl ConfigStore {
     /// Get the platform-appropriate config file path
     fn config_file_path() -> PathBuf {
         let base = dirs::config_dir()
-            .or_else(|| dirs::data_local_dir())
-            .unwrap_or_else(|| std::env::temp_dir());
+            .or_else(dirs::data_local_dir)
+            .unwrap_or_else(std::env::temp_dir);
         base.join("agentbro").join("config.json")
     }
 
@@ -321,5 +382,26 @@ impl ConfigStore {
 
         log::info!("Config updated and saved");
         Ok(())
+    }
+}
+
+impl Default for ConfigStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn defaults_match_evolab_island_behavior() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.completion_timeout, 5);
+        assert_eq!(config.idle_timeout_minutes, 5);
+        assert_eq!(config.sound_volume, 0.7);
+        assert_eq!(config.volume, 70);
     }
 }

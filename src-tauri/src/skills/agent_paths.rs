@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct SkillPaths {
     pub skill_dirs: Vec<PathBuf>,
@@ -7,14 +7,14 @@ pub struct SkillPaths {
 }
 
 fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| std::env::temp_dir())
+    dirs::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
     match agent {
         "central" | "agentbro" => SkillPaths {
-            skill_dirs: vec![agentbro_skills_dir()],
+            skill_dirs: central_skill_dirs(),
             mcp_config: None,
             settings_file: None,
         },
@@ -56,8 +56,17 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".agents/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),
-        "codebuddy" | "codebuddycn" => basic_skill_paths(&h, ".codebuddy/skills"),
-        "trae" => basic_skill_paths(&h, ".trae/skills"),
+        "codebuddy" => basic_skill_paths(&h, ".codebuddy/skills"),
+        "codebuddycn" | "codybuddycn" => SkillPaths {
+            skill_dirs: vec![
+                h.join(".codybuddycn").join("skills"),
+                h.join(".codebuddycn").join("skills"),
+                h.join(".codebuddy").join("skills"),
+            ],
+            mcp_config: None,
+            settings_file: None,
+        },
+        "trae" | "traecli" => basic_skill_paths(&h, ".trae/skills"),
         "traecn" | "trae-cn" => basic_skill_paths(&h, ".trae-cn/skills"),
         "workbuddy" => basic_skill_paths(&h, ".workbuddy/skills-marketplace/skills"),
         "copilot" => basic_skill_paths(&h, ".copilot/skills"),
@@ -95,7 +104,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
     }
 }
 
-fn basic_skill_paths(home: &PathBuf, relative: &str) -> SkillPaths {
+fn basic_skill_paths(home: &Path, relative: &str) -> SkillPaths {
     SkillPaths {
         skill_dirs: vec![home.join(relative)],
         mcp_config: None,
@@ -119,6 +128,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "copilot",
         "antigravity",
         "trae",
+        "traecli",
         "traecn",
         "qwen",
         "kimi",
@@ -126,6 +136,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "stepfun",
         "codebuddy",
         "codebuddycn",
+        "codybuddycn",
         "workbuddy",
         "kiro",
         "pi",
@@ -146,7 +157,19 @@ pub fn known_agent_ids() -> &'static [&'static str] {
 }
 
 pub fn agentbro_skills_dir() -> PathBuf {
+    central_skills_dir()
+}
+
+pub fn central_skills_dir() -> PathBuf {
+    home().join(".agents").join("skills")
+}
+
+pub fn legacy_agentbro_skills_dir() -> PathBuf {
     home().join(".agentbro").join("skills")
+}
+
+pub fn central_skill_dirs() -> Vec<PathBuf> {
+    vec![central_skills_dir(), legacy_agentbro_skills_dir()]
 }
 
 pub fn agentbro_metadata_path() -> PathBuf {

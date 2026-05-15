@@ -4,9 +4,10 @@ pub mod buddy;
 pub mod persistence;
 
 use crate::agents::{AdapterInfo, AgentAdapter};
+use crate::config::CustomHookTemplate;
 use crate::config::{AppConfig, ConfigStore};
 use crate::hooks::conversation_parser::{
-    all_projects_dirs, discover_session_file_in_dirs, ParsedMessage,
+    all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs, ParsedMessage,
 };
 use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
@@ -405,10 +406,20 @@ pub async fn jump_to_terminal(
         pid,
         iterm_session_id: terminal_env.iterm_session_id,
         kitty_window_id: terminal_env.kitty_window_id,
+        wezterm_pane: session.wezterm_pane.or(terminal_env.wezterm_pane),
+        zellij_pane_id: session.zellij_pane_id.or(terminal_env.zellij_pane_id),
+        zellij_session_name: session
+            .zellij_session_name
+            .or(terminal_env.zellij_session_name),
+        cmux_surface_id: session.cmux_surface_id.or(terminal_env.cmux_surface_id),
+        cmux_workspace_id: session.cmux_workspace_id.or(terminal_env.cmux_workspace_id),
         tmux_pane,
         tmux_env: terminal_env.tmux,
         cwd: Some(session.cwd.clone()).filter(|cwd| !cwd.is_empty()),
         tty_path: session.tty.clone(),
+        terminal_app: Some(session.terminal.clone()).filter(|terminal| !terminal.is_empty()),
+        term_bundle_id: session.term_bundle_id.or(terminal_env.cf_bundle_identifier),
+        agent_type: Some(session.agent_type.clone()),
     };
 
     match crate::terminal::jump::jump_to_terminal_with_context(&jump_context) {
@@ -537,7 +548,130 @@ pub async fn is_terminal_focused(
         return Ok(false);
     }
 
-    Ok(crate::terminal::suppression::is_terminal_focused(pid))
+    Ok(
+        crate::terminal::suppression::is_terminal_focused_with_session(
+            pid,
+            session.term_bundle_id.as_deref(),
+            session.wezterm_pane.as_deref(),
+            session.zellij_pane_id.as_deref(),
+            session.cmux_surface_id.as_deref(),
+            session.tty.as_deref(),
+        ),
+    )
+}
+
+#[tauri::command]
+pub async fn is_frontmost_app_fullscreen() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"
+tell application "System Events"
+    set frontApp to first application process whose frontmost is true
+    try
+        set frontWindow to first window of frontApp
+        set fullScreenValue to value of attribute "AXFullScreen" of frontWindow
+        if fullScreenValue is true then return "true"
+    end try
+end tell
+return "false"
+"#;
+        let output = std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn list_custom_hook_templates(
+    state: State<'_, AppState>,
+) -> Result<Vec<CustomHookTemplate>, String> {
+    Ok(state.config_store.get().custom_hook_templates)
+}
+
+#[tauri::command]
+pub async fn upsert_custom_hook_template(
+    state: State<'_, AppState>,
+    template: CustomHookTemplate,
+) -> Result<Vec<CustomHookTemplate>, String> {
+    let mut config = state.config_store.get();
+    if let Some(existing) = config
+        .custom_hook_templates
+        .iter_mut()
+        .find(|item| item.id == template.id)
+    {
+        *existing = template;
+    } else {
+        config.custom_hook_templates.push(template);
+    }
+    let templates = config.custom_hook_templates.clone();
+    state.config_store.update(config)?;
+    Ok(templates)
+}
+
+#[tauri::command]
+pub async fn remove_custom_hook_template(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<CustomHookTemplate>, String> {
+    let mut config = state.config_store.get();
+    config.custom_hook_templates.retain(|item| item.id != id);
+    let templates = config.custom_hook_templates.clone();
+    state.config_store.update(config)?;
+    Ok(templates)
+}
+
+#[tauri::command]
+pub async fn install_custom_hook_template(template: CustomHookTemplate) -> Result<(), String> {
+    let events: Vec<&str> = template.events.iter().map(String::as_str).collect();
+    let path = crate::agents::claude_code::expand_tilde(&template.config_path);
+    let command = if template.command.trim().is_empty() {
+        format!(
+            "{} --source {}",
+            crate::agents::hook_manager::bridge_binary_path().display(),
+            template.agent
+        )
+    } else {
+        template.command
+    };
+
+    match template.format.as_str() {
+        "json" => {
+            let mut settings = crate::agents::hook_manager::read_json_config(&path);
+            crate::agents::hook_manager::inject_hooks_json(&mut settings, &events, &command);
+            crate::agents::hook_manager::write_json_config(&path, &settings)
+                .map_err(|e| e.to_string())
+        }
+        "yaml" | "yml" => crate::agents::hook_manager::inject_hooks_yaml(&path, &command, &events)
+            .map_err(|e| e.to_string()),
+        "toml" => crate::agents::hook_manager::inject_hooks_toml(&path, &command, &events)
+            .map_err(|e| e.to_string()),
+        other => Err(format!("Unsupported hook template format: {other}")),
+    }
+}
+
+#[tauri::command]
+pub async fn remove_custom_hook_template_hooks(template: CustomHookTemplate) -> Result<(), String> {
+    let path = crate::agents::claude_code::expand_tilde(&template.config_path);
+    match template.format.as_str() {
+        "json" => {
+            let mut settings = crate::agents::hook_manager::read_json_config(&path);
+            crate::agents::hook_manager::remove_hooks_json(&mut settings);
+            crate::agents::hook_manager::write_json_config(&path, &settings)
+                .map_err(|e| e.to_string())
+        }
+        "yaml" | "yml" => {
+            crate::agents::hook_manager::remove_hooks_yaml(&path).map_err(|e| e.to_string())
+        }
+        "toml" => crate::agents::hook_manager::remove_hooks_toml(&path).map_err(|e| e.to_string()),
+        other => Err(format!("Unsupported hook template format: {other}")),
+    }
 }
 
 // ── Config Commands ───────────────────────────────────────────────
@@ -651,9 +785,14 @@ pub async fn get_chat_history(
         }
     }
 
-    // Try to discover the JSONL file for this session
-    let file_path = discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs)
-        .ok_or_else(|| format!("No JSONL file found for session {}", session_id))?;
+    // Try to discover the JSONL file for this session.
+    let file_path = if session.as_ref().is_some_and(|s| s.agent_type == "codex") {
+        discover_codex_session_file(&session_id)
+            .or_else(|| discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs))
+    } else {
+        discover_session_file_in_dirs(&session_id, &cwd, &projects_dirs)
+    }
+    .ok_or_else(|| format!("No JSONL file found for session {}", session_id))?;
 
     // Try the watcher's parser first (it may already have state)
     if let Ok(watcher_guard) = state.conversation_watcher.lock() {
@@ -689,7 +828,7 @@ fn parse_subagent_chat_history_for_session(
     session: &SessionState,
     transcript_path: &str,
 ) -> Result<Vec<ParsedMessage>, String> {
-    let requested_path = crate::agents::claude_code::expand_tilde(&transcript_path);
+    let requested_path = crate::agents::claude_code::expand_tilde(transcript_path);
     let requested_path = requested_path
         .canonicalize()
         .map_err(|e| format!("Subagent transcript not found: {}", e))?;

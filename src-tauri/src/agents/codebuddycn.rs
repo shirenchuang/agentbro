@@ -11,8 +11,8 @@ pub struct CodeBuddyCNAdapter {
 
 impl CodeBuddyCNAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
-        let config_root = home.join(".codebuddy-cn");
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        let config_root = preferred_config_root(&home);
         let status = if Self::is_installed() {
             AdapterStatus::Available
         } else {
@@ -26,6 +26,7 @@ impl CodeBuddyCNAdapter {
 
     fn is_installed() -> bool {
         std::path::Path::new("/Applications/CodyBuddyCN.app").exists()
+            || std::path::Path::new("/Applications/CodeBuddy CN.app").exists()
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -38,7 +39,7 @@ impl AgentAdapter for CodeBuddyCNAdapter {
         "codebuddycn"
     }
     fn display_name(&self) -> &str {
-        "CodeBuddy CN"
+        "CodyBuddyCN"
     }
     fn icon(&self) -> &str {
         "codebuddy"
@@ -46,9 +47,18 @@ impl AgentAdapter for CodeBuddyCNAdapter {
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = self.settings_path();
-        let hook_command = hook_manager::bridge_binary_path().display().to_string();
+        let hook_command = format!(
+            "{} --source codybuddycn",
+            hook_manager::bridge_binary_path().display()
+        );
         let mut settings = hook_manager::read_json_config(&path);
-        let events = &["PreToolUse", "PostToolUse", "Notification", "Stop"];
+        let events = &[
+            "SessionStart",
+            "PreToolUse",
+            "PostToolUse",
+            "Notification",
+            "Stop",
+        ];
         hook_manager::inject_hooks_json(&mut settings, events, &hook_command);
         hook_manager::write_json_config(&path, &settings)?;
         log::info!("CodeBuddy CN hooks installed");
@@ -81,6 +91,10 @@ impl AgentAdapter for CodeBuddyCNAdapter {
             .unwrap_or("unknown")
             .to_string();
         let event = raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        let agent = raw.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+        if !agent.is_empty() && agent != "codebuddycn" && agent != "codybuddycn" {
+            return Err("not a CodeBuddy CN event".into());
+        }
         match event {
             "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
@@ -107,6 +121,28 @@ impl AgentAdapter for CodeBuddyCNAdapter {
     }
 
     fn hook_config_paths(&self) -> Vec<PathBuf> {
-        vec![self.settings_path()]
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        vec![
+            self.settings_path(),
+            home.join(".codybuddycn").join("settings.json"),
+            home.join(".codebuddycn").join("settings.json"),
+            home.join(".codebuddy-cn").join("settings.json"),
+            home.join(".codebuddy").join("settings.json"),
+        ]
     }
+}
+
+fn preferred_config_root(home: &std::path::Path) -> PathBuf {
+    for name in [
+        ".codybuddycn",
+        ".codebuddycn",
+        ".codebuddy-cn",
+        ".codebuddy",
+    ] {
+        let path = home.join(name);
+        if path.exists() {
+            return path;
+        }
+    }
+    home.join(".codybuddycn")
 }

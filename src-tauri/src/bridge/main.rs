@@ -114,7 +114,43 @@ fn copy_optional_field(
     }
 }
 
+fn arg_value(flag: &str) -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == flag {
+            return args.next();
+        }
+    }
+    None
+}
+
+fn string_field<'a>(data: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| data.get(key).and_then(|value| value.as_str()))
+}
+
+fn normalize_hook_event(event: &str) -> &str {
+    match event {
+        "session_start" => "SessionStart",
+        "session_end" => "SessionEnd",
+        "user_prompt_submit" => "UserPromptSubmit",
+        "pre_tool_use" => "PreToolUse",
+        "post_tool_use" => "PostToolUse",
+        "post_tool_use_failure" => "PostToolUseFailure",
+        "permission_request" => "PermissionRequest",
+        "permission_denied" => "PermissionDenied",
+        "stop" => "Stop",
+        "stop_failure" => "StopFailure",
+        other => other,
+    }
+}
+
 fn main() {
+    let source = arg_value("--source")
+        .or_else(|| std::env::var("AGENTBRO_AGENT").ok())
+        .unwrap_or_else(|| "claude-code".to_string());
+    let forced_event = arg_value("--event");
+
     // Read all stdin
     let mut input = String::new();
     if io::stdin().read_to_string(&mut input).is_err() {
@@ -127,21 +163,33 @@ fn main() {
         Err(_) => return,
     };
 
-    let session_id = data["session_id"].as_str().unwrap_or("unknown");
-    let hook_event = data["hook_event_name"].as_str().unwrap_or("");
-    let cwd = data["cwd"].as_str().unwrap_or("");
+    let session_id = string_field(&data, &["session_id", "sessionId"]).unwrap_or("unknown");
+    let hook_event = forced_event
+        .as_deref()
+        .or_else(|| string_field(&data, &["hook_event_name", "event", "hookType"]))
+        .map(normalize_hook_event)
+        .unwrap_or("");
+    let cwd = string_field(&data, &["cwd"]).unwrap_or("");
     let tool_input = data
         .get("tool_input")
+        .or_else(|| data.get("toolInput"))
         .cloned()
         .unwrap_or(serde_json::json!({}));
     let claude_pid = std::os::unix::process::parent_id();
     let tty = get_tty();
     let engine_label = std::env::var("AGENTBRO_ENGINE_LABEL").ok();
     let engine_config_root = std::env::var("AGENTBRO_CONFIG_ROOT").ok();
+    let term_bundle_id = std::env::var("__CFBundleIdentifier").ok();
+    let wezterm_pane = std::env::var("WEZTERM_PANE").ok();
+    let zellij = std::env::var("ZELLIJ").ok();
+    let zellij_pane_id = std::env::var("ZELLIJ_PANE_ID").ok();
+    let zellij_session_name = std::env::var("ZELLIJ_SESSION_NAME").ok();
+    let cmux_surface_id = std::env::var("CMUX_SURFACE_ID").ok();
+    let cmux_workspace_id = std::env::var("CMUX_WORKSPACE_ID").ok();
 
     // Build event state matching what the Python script produced
     let mut state = serde_json::json!({
-        "agent": "claude-code",
+        "agent": source,
         "session_id": session_id,
         "cwd": cwd,
         "event": hook_event,
@@ -155,6 +203,27 @@ fn main() {
     }
     if let Some(root) = engine_config_root {
         obj.insert("engine_config_root".into(), root.into());
+    }
+    if let Some(bundle_id) = term_bundle_id {
+        obj.insert("_term_bundle_id".into(), bundle_id.into());
+    }
+    if let Some(pane) = wezterm_pane {
+        obj.insert("_wezterm_pane".into(), pane.into());
+    }
+    if let Some(value) = zellij {
+        obj.insert("_zellij".into(), value.into());
+    }
+    if let Some(pane_id) = zellij_pane_id {
+        obj.insert("_zellij_pane_id".into(), pane_id.into());
+    }
+    if let Some(session_name) = zellij_session_name {
+        obj.insert("_zellij_session_name".into(), session_name.into());
+    }
+    if let Some(surface_id) = cmux_surface_id {
+        obj.insert("_cmux_surface_id".into(), surface_id.into());
+    }
+    if let Some(workspace_id) = cmux_workspace_id {
+        obj.insert("_cmux_workspace_id".into(), workspace_id.into());
     }
     if let Some(transcript_path) = data
         .get("transcript_path")
@@ -238,40 +307,40 @@ fn main() {
         }
         "PreToolUse" => {
             obj.insert("status".into(), "running_tool".into());
-            if let Some(t) = data.get("tool_name") {
+            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(id) = data.get("tool_use_id") {
+            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
                 obj.insert("tool_use_id".into(), id.clone());
             }
         }
         "PostToolUse" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name") {
+            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(id) = data.get("tool_use_id") {
+            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
                 obj.insert("tool_use_id".into(), id.clone());
             }
         }
         "PostToolUseFailure" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name") {
+            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
             if let Some(e) = data.get("error").or_else(|| data.get("message")) {
                 obj.insert("tool_error".into(), e.clone());
             }
-            if let Some(id) = data.get("tool_use_id") {
+            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
                 obj.insert("tool_use_id".into(), id.clone());
             }
         }
         "PermissionDenied" => {
             obj.insert("status".into(), "processing".into());
-            if let Some(t) = data.get("tool_name") {
+            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
@@ -280,7 +349,11 @@ fn main() {
             }
         }
         "PermissionRequest" => {
-            let tool_name_str = data.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+            let tool_name_str = data
+                .get("tool_name")
+                .or_else(|| data.get("tool"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             // AskUserQuestion: route as interactive question card instead of permission dialog
             if tool_name_str == "AskUserQuestion" {
@@ -291,13 +364,13 @@ fn main() {
                 let first_q = questions.as_array().and_then(|arr| arr.first());
 
                 let question_text = first_q
-                    .and_then(|q| {
+                    .map(|q| {
                         let header = q.get("header").and_then(|h| h.as_str()).unwrap_or("");
                         let text = q.get("question").and_then(|t| t.as_str()).unwrap_or("");
                         if header.is_empty() {
-                            Some(text.to_string())
+                            text.to_string()
                         } else {
-                            Some(format!("[{}] {}", header, text))
+                            format!("[{}] {}", header, text)
                         }
                     })
                     .unwrap_or_default();
@@ -488,7 +561,7 @@ fn main() {
 
             // Regular permission request
             obj.insert("status".into(), "waiting_for_approval".into());
-            if let Some(t) = data.get("tool_name") {
+            if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);

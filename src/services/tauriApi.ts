@@ -76,6 +76,12 @@ export interface BackendSession {
   sessionTitle: string | null
   pid: number | null
   tty: string | null
+  termBundleId: string | null
+  weztermPane: string | null
+  zellijPaneId: string | null
+  zellijSessionName: string | null
+  cmuxSurfaceId: string | null
+  cmuxWorkspaceId: string | null
   subagents: Array<{
     agentId: string
     agentType: string | null
@@ -112,6 +118,7 @@ export interface BackendConfig {
   soundVolume: number
   autoHide: boolean
   smartSuppression: boolean
+  hideInFullscreen: boolean
   completionTimeout: number
   showTokenUsage: boolean
   theme: string
@@ -132,6 +139,7 @@ export interface BackendConfig {
   quietHoursEnabled: boolean
   quietHoursStart: string
   quietHoursEnd: string
+  idleTimeoutMinutes: number
   globalShortcut: string
   shortcutApprove: string
   shortcutApproveEnabled: boolean
@@ -222,6 +230,7 @@ export async function getConfig(): Promise<BackendConfig> {
       soundVolume: 0.7,
       autoHide: true,
       smartSuppression: true,
+      hideInFullscreen: false,
       completionTimeout: 5,
       showTokenUsage: true,
       theme: 'system',
@@ -242,6 +251,7 @@ export async function getConfig(): Promise<BackendConfig> {
       quietHoursEnabled: false,
       quietHoursStart: '22:00',
       quietHoursEnd: '08:00',
+      idleTimeoutMinutes: 5,
       globalShortcut: 'CommandOrControl+Shift+I',
       shortcutApprove: 'CommandOrControl+Shift+A',
       shortcutApproveEnabled: true,
@@ -262,6 +272,89 @@ export async function updateConfig(config: BackendConfig): Promise<void> {
   return invoke('update_config', { config })
 }
 
+export interface CustomHookTemplate {
+  id: string
+  label: string
+  agent: string
+  configPath: string
+  format: 'json' | 'yaml' | 'yml' | 'toml'
+  events: string[]
+  command: string
+  enabled: boolean
+}
+
+export async function isFrontmostAppFullscreen(): Promise<boolean> {
+  if (!isTauri()) return false
+  return invoke<boolean>('is_frontmost_app_fullscreen')
+}
+
+export async function listCustomHookTemplates(): Promise<CustomHookTemplate[]> {
+  if (!isTauri()) return []
+  return invoke<CustomHookTemplate[]>('list_custom_hook_templates')
+}
+
+export async function upsertCustomHookTemplate(template: CustomHookTemplate): Promise<CustomHookTemplate[]> {
+  if (!isTauri()) return [template]
+  return invoke<CustomHookTemplate[]>('upsert_custom_hook_template', { template })
+}
+
+export async function removeCustomHookTemplate(id: string): Promise<CustomHookTemplate[]> {
+  if (!isTauri()) return []
+  return invoke<CustomHookTemplate[]>('remove_custom_hook_template', { id })
+}
+
+export async function installCustomHookTemplate(template: CustomHookTemplate): Promise<void> {
+  if (!isTauri()) return
+  return invoke('install_custom_hook_template', { template })
+}
+
+export async function removeCustomHookTemplateHooks(template: CustomHookTemplate): Promise<void> {
+  if (!isTauri()) return
+  return invoke('remove_custom_hook_template_hooks', { template })
+}
+
+export interface BuddyDeviceConfig {
+  enabled: boolean
+  transport: string
+  port: number
+  sharedSecret: string
+}
+
+export interface BuddyDeviceSnapshot {
+  protocolVersion: number
+  sessions: Array<{
+    id: string
+    agentType: string
+    sourceSlot: number
+    project: string
+    phase: string
+    statusCode: number
+    needsAttention: boolean
+    lastToolName?: string | null
+  }>
+  focusAction: string
+}
+
+export async function buddyDeviceSnapshot(): Promise<BuddyDeviceSnapshot> {
+  if (!isTauri()) return { protocolVersion: 1, sessions: [], focusAction: 'buddy_reverse_focus' }
+  return invoke<BuddyDeviceSnapshot>('buddy_device_snapshot')
+}
+
+export async function getBuddyDeviceConfig(): Promise<BuddyDeviceConfig> {
+  if (!isTauri()) return { enabled: false, transport: 'http', port: 17893, sharedSecret: '' }
+  return invoke<BuddyDeviceConfig>('get_buddy_device_config')
+}
+
+export async function setBuddyDeviceConfig(config: BuddyDeviceConfig): Promise<BuddyDeviceConfig> {
+  if (!isTauri()) return config
+  return invoke<BuddyDeviceConfig>('set_buddy_device_config', { config })
+}
+
+export async function buddyReverseFocus(sessionId: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('buddy_reverse_focus', { sessionId })
+}
+
 // ── Theme Commands ──────────────────────────────────────────────
 
 export async function listThemes(): Promise<ThemeConfig[]> {
@@ -278,7 +371,13 @@ export async function getActiveThemeBundle(name: string): Promise<ThemeConfig> {
 
 export async function setActiveBackendTheme(name: string): Promise<void> {
   if (!isTauri()) return
-  return invoke('set_active_theme', { name })
+  window.dispatchEvent(new CustomEvent('agentbro-theme-sync', { detail: { status: 'pending', name } }))
+  try {
+    return await invoke('set_active_theme', { name })
+  } catch (error) {
+    window.dispatchEvent(new CustomEvent('agentbro-theme-sync', { detail: { status: 'failed', name } }))
+    throw error
+  }
 }
 
 // ── Hook Management ──────────────────────────────────────────────
@@ -395,7 +494,7 @@ export async function setGlobalActionShortcuts(options: {
   skipEnabled: boolean
 }): Promise<void> {
   if (!isTauri()) return
-  return invoke('set_global_action_shortcuts', options)
+  return invoke('set_global_action_shortcuts', { shortcuts: options })
 }
 
 // ── Chat History Commands ────────────────────────────────────────
