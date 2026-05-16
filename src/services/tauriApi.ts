@@ -592,9 +592,13 @@ export async function openImage(src: string): Promise<void> {
 
 // ── Window Management ───────────────────────────────────────────
 
-export async function resizeNotch(width: number, height: number, horizontalOffset = 0, displayId?: string): Promise<void> {
-  if (!isTauri()) return
-  return invoke('resize_notch', { width, height, horizontalOffset, displayId })
+export type ResizeNotchResult = {
+  anchorOffsetX: number
+}
+
+export async function resizeNotch(width: number, height: number, horizontalOffset = 0, displayId?: string): Promise<ResizeNotchResult> {
+  if (!isTauri()) return { anchorOffsetX: 0 }
+  return invoke<ResizeNotchResult>('resize_notch', { width, height, horizontalOffset, displayId })
 }
 
 /**
@@ -635,9 +639,9 @@ export async function getCursorPosition(): Promise<[number, number]> {
 }
 
 /** Native fallback for transparent-window hover hit testing. */
-export async function isCursorOverNotch(): Promise<boolean> {
+export async function isCursorOverNotch(width?: number, height?: number): Promise<boolean> {
   if (!isTauri()) return false
-  return invoke<boolean>('is_cursor_over_notch')
+  return invoke<boolean>('is_cursor_over_notch', { width, height })
 }
 
 // ── Display Commands ────────────────────────────────────────────

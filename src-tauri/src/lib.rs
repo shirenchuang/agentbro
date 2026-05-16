@@ -590,7 +590,11 @@ async fn get_cursor_position() -> Result<(f64, f64), String> {
 }
 
 #[tauri::command]
-async fn is_cursor_over_notch(app: tauri::AppHandle) -> Result<bool, String> {
+async fn is_cursor_over_notch(
+    app: tauri::AppHandle,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("notch") else {
         return Ok(false);
     };
@@ -598,11 +602,20 @@ async fn is_cursor_over_notch(app: tauri::AppHandle) -> Result<bool, String> {
     let cursor = app.cursor_position().map_err(|e| e.to_string())?;
     let position = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let hit_width = width
+        .filter(|value| *value > 0.0)
+        .map(|value| value * scale)
+        .unwrap_or(size.width as f64);
+    let hit_height = height
+        .filter(|value| *value > 0.0)
+        .map(|value| value * scale)
+        .unwrap_or(size.height as f64);
 
-    let left = position.x as f64;
+    let left = position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0);
     let top = position.y as f64;
-    let right = left + size.width as f64;
-    let bottom = top + size.height as f64;
+    let right = left + hit_width.min(size.width as f64);
+    let bottom = top + hit_height.min(size.height as f64);
 
     Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
 }
@@ -2088,7 +2101,7 @@ fn position_notch_window(
     monitor: &tauri::Monitor,
     width: f64,
     horizontal_offset: f64,
-) {
+) -> f64 {
     let scale = monitor.scale_factor();
     let screen_width = monitor.size().width as f64 / scale;
     let monitor_x = monitor.position().x as f64 / scale;
@@ -2106,6 +2119,7 @@ fn position_notch_window(
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
         x, monitor_y,
     )));
+    desired_x - x
 }
 
 const PET_HIT_SIZE: f64 = 160.0;
@@ -2440,6 +2454,12 @@ async fn end_pet_drag(
 
 /// Resize the notch window dynamically from the frontend and re-center
 /// on the display selected in config (falls back to primary).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResizeNotchResult {
+    anchor_offset_x: f64,
+}
+
 #[tauri::command]
 async fn resize_notch(
     app: tauri::AppHandle,
@@ -2447,7 +2467,7 @@ async fn resize_notch(
     height: f64,
     horizontal_offset: Option<f64>,
     display_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<ResizeNotchResult, String> {
     if let Some(window) = app.get_webview_window("notch") {
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
 
@@ -2479,20 +2499,22 @@ async fn resize_notch(
                         },
                     );
                     configure_notch_window_for_spaces(&app);
-                    return Ok(());
+                    return Ok(ResizeNotchResult { anchor_offset_x: 0.0 });
                 }
             }
-            position_notch_window(
+            let anchor_offset_x = position_notch_window(
                 &app,
                 &window,
                 &monitor,
                 width,
                 horizontal_offset.unwrap_or(0.0),
             );
+            configure_notch_window_for_spaces(&app);
+            return Ok(ResizeNotchResult { anchor_offset_x });
         }
         configure_notch_window_for_spaces(&app);
     }
-    Ok(())
+    Ok(ResizeNotchResult { anchor_offset_x: 0.0 })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
