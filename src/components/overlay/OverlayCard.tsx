@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import type { SessionState } from '../../types/agent'
 import { SessionContextHeader } from './SessionContextHeader'
 import './OverlayCard.css'
@@ -7,11 +7,12 @@ interface OverlayCardProps {
   session: SessionState
   children: ReactNode
   onDismiss?: () => void
+  maxHeight?: number
 }
 
-export function OverlayCard({ session, children, onDismiss }: OverlayCardProps) {
+export function OverlayCard({ session, children, onDismiss, maxHeight }: OverlayCardProps) {
   return (
-    <div className="overlay-card">
+    <div className="overlay-card" style={maxHeight ? ({ maxHeight } as CSSProperties) : undefined}>
       <div className="overlay-card__header">
         <SessionContextHeader session={session} />
         {onDismiss && (

@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentBro - 技能管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro','PingFang SC',sans-serif;background:#0d0d0d;color:#e0e0e0;font-size:13px;}
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#333;border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:#555;}
+.container{display:flex;height:100vh;}
+
+/* Sidebar */
+.sidebar{width:172px;background:#131313;border-right:1px solid #1e1e1e;padding:12px 0;flex-shrink:0;}
+.sidebar h2{font-size:10px;color:#444;padding:8px 14px;text-transform:uppercase;letter-spacing:1px;}
+.nav-item{padding:7px 14px;font-size:12px;color:#666;cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .12s;}
+.nav-item:hover{background:#1a1a1a;color:#aaa;}
+.nav-item.active{background:linear-gradient(90deg,#0a1f0a,transparent);color:#4ade80;border-left:2px solid #4ade80;padding-left:12px;}
+
+/* Main */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid #1e1e1e;background:#111;}
+.tabs{display:flex;}
+.tab{padding:6px 16px;font-size:12px;color:#666;cursor:pointer;border:1px solid #252525;background:#141414;transition:all .12s;user-select:none;}
+.tab:first-child{border-radius:6px 0 0 6px;}
+.tab:last-child{border-radius:0 6px 6px 0;}
+.tab.active{background:#4ade80;color:#000;border-color:#4ade80;font-weight:600;}
+.tab:not(.active):hover{background:#1a1a1a;color:#999;}
+.topbar-right{display:flex;gap:6px;align-items:center;}
+
+/* Buttons */
+.btn{padding:5px 11px;border-radius:5px;border:1px solid #2a2a2a;background:#161616;color:#aaa;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .12s;font-family:inherit;white-space:nowrap;}
+.btn:hover{background:#222;color:#fff;border-color:#444;}
+.btn-p{background:#4ade80;color:#000;border-color:#4ade80;font-weight:600;}
+.btn-p:hover{background:#22c55e;}
+.btn-d{color:#f87171;border-color:#331818;}
+.btn-d:hover{background:#221111;border-color:#f87171;}
+.btn-sm{padding:3px 8px;font-size:10px;}
+.btn-ghost{border:none;background:none;color:#666;cursor:pointer;padding:4px;border-radius:4px;}
+.btn-ghost:hover{color:#fff;background:#222;}
+.btn:disabled{opacity:.35;pointer-events:none;}
+
+/* Content */
+.content-wrap{display:flex;flex:1;overflow:hidden;}
+.content{flex:1;overflow-y:auto;padding:14px 18px;}
+
+/* Filter */
+.filter-bar{display:flex;gap:8px;margin-bottom:10px;align-items:center;}
+.search-wrap{flex:1;position:relative;}
+.search-wrap::before{content:'🔍';position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:11px;z-index:1;pointer-events:none;}
+.search{width:100%;padding:6px 10px 6px 28px;border-radius:5px;border:1px solid #252525;background:#111;color:#ddd;font-size:12px;font-family:inherit;}
+.search::placeholder{color:#444;}
+.search:focus{outline:none;border-color:#4ade80;}
+.chip{padding:3px 10px;border-radius:10px;border:1px solid #252525;background:#111;color:#666;font-size:11px;cursor:pointer;transition:all .12s;user-select:none;}
+.chip.active{background:#0f1f0f;color:#4ade80;border-color:#1a3a1a;}
+.chip:hover:not(.active){color:#aaa;border-color:#444;}
+.pills{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap;}
+.pill{padding:2px 8px;border-radius:8px;font-size:10px;border:1px solid #252525;background:#111;color:#555;cursor:pointer;transition:all .12s;user-select:none;}
+.pill.active{border-color:#6366f1;color:#a5b4fc;background:#0f0f1f;}
+.pill:hover:not(.active){color:#999;border-color:#444;}
+
+/* Batch bar */
+.batch-bar{display:none;align-items:center;gap:8px;padding:8px 12px;background:#111;border:1px solid #252525;border-radius:6px;margin-bottom:10px;}
+.batch-bar.show{display:flex;}
+.batch-count{font-size:11px;color:#4ade80;font-weight:600;}
+
+/* Section */
+.section-hd{font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.6px;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #181818;display:flex;justify-content:space-between;align-items:center;}
+.section-hd:first-child{margin-top:0;}
+.badge{background:#1a1a1a;padding:1px 6px;border-radius:8px;font-size:9px;color:#777;}
+
+/* Skill card */
+.sk{display:flex;align-items:center;padding:9px 10px;border-radius:6px;border:1px solid #1a1a1a;background:#131313;cursor:pointer;transition:all .12s;margin-bottom:3px;position:relative;}
+.sk:hover{border-color:#2a2a2a;background:#171717;}
+.sk.selected{border-color:#4ade80;background:#0a150a;}
+.sk.disabled{opacity:.45;}
+.sk-check{width:16px;height:16px;border:1px solid #333;border-radius:3px;margin-right:8px;display:none;align-items:center;justify-content:center;font-size:9px;color:#000;flex-shrink:0;cursor:pointer;}
+.sk-check.checked{background:#4ade80;border-color:#4ade80;}
+.batch-mode .sk-check{display:flex;}
+.sk-icon{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:15px;margin-right:10px;flex-shrink:0;}
+.sk-icon.skill{background:#0f1f0f;}
+.sk-icon.mcp{background:#0f0f2f;}
+.sk-info{flex:1;min-width:0;}
+.sk-name{font-size:12px;font-weight:500;color:#ccc;display:flex;align-items:center;gap:6px;}
+.sk-desc{font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;}
+.update-dot{width:7px;height:7px;border-radius:50%;background:#fbbf24;display:inline-block;title:有新版本;}
+.sk-tags{display:flex;gap:2px;margin-left:6px;flex-shrink:0;}
+.tag{padding:1px 5px;border-radius:3px;font-size:9px;font-weight:500;}
+.t-cc{background:#0f0f1f;color:#a5b4fc;}
+.t-cx{background:#1f0f0f;color:#fca5a5;}
+.t-gm{background:#0f1f1f;color:#a5f0fc;}
+.t-cs{background:#1f1f0f;color:#fcd34d;}
+.t-hm{background:#1f0f1f;color:#d8b4fe;}
+.tog{width:34px;height:18px;border-radius:9px;background:#2a2a2a;position:relative;cursor:pointer;transition:background .2s;margin-left:6px;flex-shrink:0;}
+.tog.on{background:#4ade80;}
+.tog .d{width:14px;height:14px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .15s;}
+.tog.on .d{left:18px;}
+.sk-acts{display:flex;gap:3px;margin-left:6px;opacity:0;transition:opacity .12s;}
+.sk:hover .sk-acts{opacity:1;}
+.act{width:24px;height:24px;border-radius:4px;border:1px solid #222;background:#161616;color:#555;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:10px;transition:all .12s;}
+.act:hover{border-color:#444;color:#fff;}
+.act.del:hover{border-color:#f87171;color:#f87171;}
+
+/* Empty state */
+.empty{text-align:center;padding:40px 20px;color:#444;}
+.empty-icon{font-size:32px;margin-bottom:10px;}
+.empty-title{font-size:14px;color:#666;margin-bottom:4px;}
+.empty-desc{font-size:11px;color:#444;margin-bottom:14px;}
+
+/* Detail panel */
+.detail{width:330px;border-left:1px solid #1e1e1e;background:#101010;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;transition:width .15s;}
+.detail.hidden{width:0;border:none;overflow:hidden;}
+.dt-head{padding:12px 14px;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:flex-start;}
+.dt-title{font-size:14px;font-weight:600;}
+.dt-src{font-size:10px;color:#4ade80;margin-top:2px;word-break:break-all;}
+.dt-body{flex:1;overflow-y:auto;padding:12px 14px;}
+.dt-label{font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;margin-top:12px;}
+.dt-label:first-child{margin-top:0;}
+.ag-row{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;background:#141414;border-radius:4px;font-size:11px;margin-bottom:2px;}
+.ag-row.add{opacity:.35;border:1px dashed #252525;background:transparent;}
+.ag-row.add:hover{opacity:.65;}
+
+/* Tree */
+.tree{font-size:11px;font-family:'SF Mono','Fira Code',monospace;user-select:none;}
+.tree-dir{cursor:pointer;color:#a5b4fc;display:flex;align-items:center;gap:3px;padding:2px 4px;border-radius:3px;}
+.tree-dir:hover{background:#111128;}
+.tree-dir .arr{display:inline-block;width:10px;font-size:8px;color:#555;transition:transform .1s;}
+.tree-dir.open .arr{transform:rotate(90deg);}
+.tree-file{padding:2px 4px 2px 18px;color:#888;cursor:pointer;display:flex;align-items:center;gap:4px;border-radius:3px;font-size:10px;}
+.tree-file:hover{background:#1a1a1a;color:#ddd;}
+.tree-file.active{background:#0a150a;color:#4ade80;}
+.tree-ch{padding-left:12px;}
+.tree-ch.collapsed{display:none;}
+
+/* File viewer */
+.fv{background:#0a0a0a;border:1px solid #1a1a1a;border-radius:5px;overflow:hidden;margin-top:6px;}
+.fv-head{background:#111;padding:5px 8px;font-size:10px;color:#666;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:center;}
+.fv-body{padding:8px;font-family:'SF Mono','Fira Code',monospace;font-size:10px;color:#999;line-height:1.7;max-height:380px;overflow-y:auto;white-space:pre-wrap;}
+.fv-body .ln{color:#333;display:inline-block;width:22px;text-align:right;margin-right:8px;user-select:none;}
+.fv-body .hl{color:#4ade80;}
+.fv-body .cm{color:#444;}
+.fv-body .kw{color:#fcd34d;}
+
+.dt-foot{padding:8px 14px;border-top:1px solid #1a1a1a;display:flex;gap:4px;}
+
+/* Pack */
+.pk{padding:12px;border-radius:7px;border:1px solid #1a1a1a;background:#131313;margin-bottom:6px;transition:all .12s;}
+.pk:hover{border-color:#2a2a2a;}
+.pk-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+.pk-name{font-size:13px;font-weight:600;}
+.pk-desc{font-size:11px;color:#666;margin-bottom:8px;}
+.pk-chips{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px;}
+.pk-chip{padding:2px 7px;border-radius:3px;font-size:10px;background:#161616;border:1px solid #1e1e1e;color:#888;}
+.pk-foot{display:flex;align-items:center;justify-content:space-between;}
+.pk-status{font-size:10px;color:#4ade80;}
+
+/* Sync */
+.sync-box{padding:12px;border-radius:7px;border:1px solid #1a1a1a;background:#131313;margin-bottom:8px;}
+.sync-title{font-size:12px;font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:6px;}
+.sync-desc{font-size:11px;color:#555;margin-bottom:8px;}
+.sync-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+.sync-input{flex:1;padding:5px 8px;border-radius:4px;border:1px solid #252525;background:#0d0d0d;color:#ddd;font-size:11px;font-family:inherit;min-width:120px;}
+.sync-input:focus{outline:none;border-color:#4ade80;}
+.sync-status{font-size:10px;color:#444;margin-top:5px;}
+.agent-sync-row{display:flex;align-items:center;gap:8px;padding:8px;background:#0d0d0d;border-radius:5px;}
+.agent-sel{padding:5px 8px;border-radius:4px;border:1px solid #252525;background:#131313;color:#ddd;font-size:11px;font-family:inherit;}
+.sync-arrow{color:#4ade80;font-weight:bold;}
+.scanner-row{display:flex;justify-content:space-between;padding:3px 0;font-size:11px;}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(3px);}
+.modal-bg.show{display:flex;}
+.modal{background:#151515;border:1px solid #252525;border-radius:10px;width:500px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.5);}
+.modal-lg{width:560px;}
+.modal-sm{width:380px;}
+.m-head{padding:14px 18px;border-bottom:1px solid #1e1e1e;display:flex;justify-content:space-between;align-items:center;}
+.m-title{font-size:14px;font-weight:600;}
+.m-body{padding:16px 18px;overflow-y:auto;flex:1;}
+.m-foot{padding:12px 18px;border-top:1px solid #1e1e1e;display:flex;justify-content:flex-end;gap:6px;}
+
+/* Form */
+.fg{margin-bottom:12px;}
+.fl{display:block;font-size:11px;color:#777;margin-bottom:4px;}
+.fi{width:100%;padding:6px 9px;border-radius:5px;border:1px solid #252525;background:#0d0d0d;color:#ddd;font-size:12px;font-family:inherit;}
+.fi:focus{outline:none;border-color:#4ade80;}
+textarea.fi{resize:vertical;min-height:50px;}
+.fhint{font-size:10px;color:#444;margin-top:2px;}
+
+/* Radio group */
+.rg{display:flex;gap:0;margin-top:3px;}
+.r{padding:5px 12px;border:1px solid #252525;background:#111;color:#666;font-size:11px;cursor:pointer;transition:all .12s;}
+.r:first-child{border-radius:4px 0 0 4px;}
+.r:last-child{border-radius:0 4px 4px 0;}
+.r.active{background:#0f1f0f;color:#4ade80;border-color:#1a3a1a;}
+
+/* Checkbox */
+.ck{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .1s;font-size:12px;color:#bbb;}
+.ck:hover{background:#1a1a1a;}
+.ck-b{width:15px;height:15px;border:1px solid #333;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#000;flex-shrink:0;transition:all .12s;}
+.ck.on .ck-b{background:#4ade80;border-color:#4ade80;}
+
+/* Skill picker */
+.sk-picker{max-height:160px;overflow-y:auto;border:1px solid #1e1e1e;border-radius:5px;background:#0d0d0d;padding:3px;}
+.sp-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:3px;cursor:pointer;font-size:11px;transition:background .1s;}
+.sp-item:hover{background:#1a1a1a;}
+.sp-item.on{background:#0a150a;}
+.sp-chk{width:13px;height:13px;border:1px solid #333;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;}
+.sp-item.on .sp-chk{background:#4ade80;border-color:#4ade80;color:#000;}
+
+/* Confirm dialog */
+.confirm-body{text-align:center;padding:10px 0;}
+.confirm-icon{font-size:36px;margin-bottom:10px;}
+.confirm-msg{font-size:13px;color:#ccc;margin-bottom:6px;}
+.confirm-sub{font-size:11px;color:#666;}
+
+/* Loading spinner */
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #333;border-top-color:#4ade80;border-radius:50%;animation:spin .6s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.loading-row{display:flex;align-items:center;gap:8px;padding:12px;color:#666;font-size:12px;}
+
+/* Progress */
+.progress{height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;margin-top:6px;}
+.progress-bar{height:100%;background:#4ade80;border-radius:2px;transition:width .3s;width:0%;}
+
+/* Toast */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:8px 16px;background:#111;border:1px solid #252525;color:#ccc;border-radius:7px;font-size:12px;display:none;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:400px;}
+.toast.show{display:flex;align-items:center;gap:8px;animation:su .25s ease;}
+.toast .t-icon{flex-shrink:0;}
+.toast .t-undo{color:#4ade80;cursor:pointer;margin-left:8px;font-size:11px;text-decoration:underline;flex-shrink:0;}
+@keyframes su{from{opacity:0;transform:translateX(-50%) translateY(8px);}to{opacity:1;transform:translateX(-50%) translateY(0);}}
+
+/* Source forms */
+.src-form{display:none;}
+.src-form.active{display:block;}
+
+.tab-content{display:none;}
+.tab-content.active{display:block;}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="sidebar">
+  <h2>设置</h2>
+  <div class="nav-item">⚙ 通用</div>
+  <div class="nav-item">🖥 显示</div>
+  <div class="nav-item">🔊 声音</div>
+  <div class="nav-item">🔗 Hooks</div>
+  <div class="nav-item active">⚡ 技能管理</div>
+  <div class="nav-item">📡 SSH 远程</div>
+  <div class="nav-item">🔔 Webhook</div>
+  <div class="nav-item">⌨ 快捷键</div>
+  <div class="nav-item">🧪 实验室</div>
+  <div class="nav-item">ℹ 关于</div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <div class="tabs">
+      <div class="tab active" data-tab="skills">技能列表</div>
+      <div class="tab" data-tab="packs">技能包</div>
+      <div class="tab" data-tab="sync">同步</div>
+    </div>
+    <div class="topbar-right">
+      <button class="btn btn-sm" id="batch-toggle" onclick="toggleBatch()">☑ 批量操作</button>
+      <button class="btn" onclick="showModal('install')">＋ 安装技能</button>
+      <button class="btn btn-p" onclick="switchTab('sync')">⟳ 同步</button>
+    </div>
+  </div>
+
+  <div class="content-wrap">
+    <div class="content">
+
+      <!-- ===== 技能列表 ===== -->
+      <div class="tab-content active" id="tab-skills">
+        <div class="filter-bar">
+          <div class="search-wrap"><input class="search" id="skill-search" placeholder="搜索技能名称或描述..." oninput="filterSkills()"></div>
+          <div class="chip active" data-filter="all" onclick="setTypeFilter('all')">全部</div>
+          <div class="chip" data-filter="skill" onclick="setTypeFilter('skill')">Skills</div>
+          <div class="chip" data-filter="mcp" onclick="setTypeFilter('mcp')">MCP</div>
+        </div>
+        <div class="pills" id="agent-pills"></div>
+
+        <!-- Batch bar -->
+        <div class="batch-bar" id="batch-bar">
+          <span class="batch-count" id="batch-count">已选 0 项</span>
+          <button class="btn btn-sm" onclick="batchToggleEnable(true)">批量启用</button>
+          <button class="btn btn-sm" onclick="batchToggleEnable(false)">批量禁用</button>
+          <button class="btn btn-sm" onclick="showModal('batch-pack')">添加到技能包</button>
+          <button class="btn btn-sm btn-d" onclick="batchUninstall()">批量卸载</button>
+          <div style="flex:1"></div>
+          <button class="btn btn-sm btn-ghost" onclick="clearBatch()">取消选择</button>
+        </div>
+
+        <div id="skill-list"></div>
+        <div class="empty" id="empty-skills" style="display:none;">
+          <div class="empty-icon">📭</div>
+          <div class="empty-title">还没有安装任何技能</div>
+          <div class="empty-desc">点击上方「安装技能」按钮，从 GitHub、skills.sh 或本地路径添加你的第一个技能</div>
+          <button class="btn btn-p" onclick="showModal('install')">＋ 安装第一个技能</button>
+        </div>
+        <div class="empty" id="empty-search" style="display:none;">
+          <div class="empty-icon">🔍</div>
+          <div class="empty-title">未找到匹配的技能</div>
+          <div class="empty-desc">试试换个关键词，或清除筛选条件</div>
+          <button class="btn" onclick="clearFilters()">清除筛选</button>
+        </div>
+      </div>
+
+      <!-- ===== 技能包 ===== -->
+      <div class="tab-content" id="tab-packs">
+        <div class="filter-bar">
+          <div class="search-wrap"><input class="search" placeholder="搜索技能包..."></div>
+          <button class="btn btn-p" onclick="showModal('pack')">＋ 新建技能包</button>
+        </div>
+        <div id="pack-list"></div>
+        <div class="pk" style="border-style:dashed;cursor:pointer;text-align:center;padding:20px;" onclick="showModal('pack')">
+          <div style="color:#444;font-size:13px;">＋ 创建新的技能包</div>
+          <div style="color:#333;font-size:11px;margin-top:3px;">将技能分组管理，支持批量安装和启停</div>
+        </div>
+      </div>
+
+      <!-- ===== 同步 ===== -->
+      <div class="tab-content" id="tab-sync">
+        <div class="sync-box">
+          <div class="sync-title">🐙 GitHub 仓库同步</div>
+          <div class="sync-desc">将技能配置同步到私有 GitHub 仓库，跨设备共享</div>
+          <div class="sync-row">
+            <input class="sync-input" value="shirenchuang/my-agent-config" placeholder="user/repo">
+            <button class="btn btn-sm" onclick="showModal('token')">🔑 配置 Token</button>
+            <button class="btn btn-sm btn-p" onclick="simulateSync('push')">↑ 推送</button>
+            <button class="btn btn-sm" onclick="simulateSync('pull')">↓ 拉取</button>
+          </div>
+          <div class="progress" id="sync-progress" style="display:none;"><div class="progress-bar" id="sync-bar"></div></div>
+          <div class="sync-status" id="sync-status">上次同步：2026-05-10 14:32 ｜ 8 个技能，2 个技能包</div>
+        </div>
+
+        <div class="sync-box">
+          <div class="sync-title">📦 导出 / 导入</div>
+          <div class="sync-desc">导出配置为文件，或从文件导入</div>
+          <div class="sync-row">
+            <button class="btn btn-sm">↓ 导出 .agentbro-backup.zip</button>
+            <button class="btn btn-sm">↑ 从文件导入...</button>
+          </div>
+        </div>
+
+        <div class="sync-box">
+          <div class="sync-title">🔄 Agent 间同步</div>
+          <div class="sync-desc">一键复制技能配置到另一个 Agent</div>
+          <div class="agent-sync-row">
+            <select class="agent-sel" id="sync-from"><option>Claude Code</option><option>Codex</option><option>Gemini CLI</option><option>Cursor</option><option>Hermes</option></select>
+            <span class="sync-arrow">→</span>
+            <select class="agent-sel" id="sync-to"><option>Codex</option><option>Claude Code</option><option>Gemini CLI</option><option>Cursor</option><option>Hermes</option></select>
+            <button class="btn btn-sm btn-p" onclick="showModal('agent-sync-confirm')">立即同步</button>
+          </div>
+          <div class="sync-status">将复制 8 个技能和 3 个 MCP，已有的技能会跳过</div>
+        </div>
+
+        <div class="sync-box" style="background:#0a140a;border-color:#152015;">
+          <div class="sync-title" style="color:#4ade80;">📊 扫描状态</div>
+          <div id="scanner-list" style="margin-top:6px;"></div>
+          <button class="btn btn-sm" style="margin-top:8px;" onclick="rescan()">⟳ 重新扫描全部</button>
+          <div class="loading-row" id="scan-loading" style="display:none;"><div class="spinner"></div> 正在扫描各 Agent 的技能目录...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detail panel -->
+    <div class="detail hidden" id="detail">
+      <div class="dt-head">
+        <div>
+          <div class="dt-title" id="dt-title"></div>
+          <div class="dt-src" id="dt-src"></div>
+        </div>
+        <button class="btn-ghost" onclick="hideDetail()">✕</button>
+      </div>
+      <div class="dt-body">
+        <div class="dt-label">安装位置</div>
+        <div id="dt-agents"></div>
+
+        <div class="dt-label">基本信息</div>
+        <div id="dt-info" style="font-size:11px;color:#888;line-height:1.8;"></div>
+
+        <div class="dt-label">所属技能包</div>
+        <div id="dt-packs" style="font-size:11px;"></div>
+
+        <div class="dt-label" style="display:flex;justify-content:space-between;align-items:center;">
+          文件浏览
+          <input class="search" id="file-search" placeholder="搜索文件..." style="width:120px;padding:3px 6px;font-size:10px;" oninput="filterFiles()">
+        </div>
+        <div class="tree" id="file-tree"></div>
+        <div class="fv" id="fv">
+          <div class="fv-head">
+            <span id="fv-path"></span>
+            <button class="btn btn-sm btn-ghost" onclick="toast('已在编辑器中打开','📂')">打开</button>
+          </div>
+          <div class="fv-body" id="fv-body"></div>
+        </div>
+      </div>
+      <div class="dt-foot">
+        <button class="btn" style="flex:1;" onclick="toast('已在编辑器中打开','📂')">📂 打开文件</button>
+        <button class="btn" style="flex:1;" onclick="showPackAddFromDetail()">📦 加入技能包</button>
+        <button class="btn btn-d" style="flex:1;" onclick="confirmUninstall()">🗑 卸载</button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ===== 安装技能 Modal ===== -->
+<div class="modal-bg" id="modal-install">
+<div class="modal">
+  <div class="m-head"><div class="m-title">安装技能</div><button class="btn-ghost" onclick="hideModal('install')">✕</button></div>
+  <div class="m-body">
+    <div class="fg">
+      <div class="fl">来源类型</div>
+      <div class="rg" id="src-radios">
+        <div class="r active" onclick="switchSrc('url',this)">URL 地址</div>
+        <div class="r" onclick="switchSrc('github',this)">GitHub 仓库</div>
+        <div class="r" onclick="switchSrc('local',this)">本地路径</div>
+        <div class="r" onclick="switchSrc('skillsh',this)">skills.sh</div>
+      </div>
+    </div>
+
+    <!-- URL -->
+    <div class="src-form active" id="src-url">
+      <div class="fg">
+        <div class="fl">技能地址</div>
+        <input class="fi" placeholder="https://github.com/user/repo/tree/main/skills/my-skill">
+        <div class="fhint">粘贴 GitHub 仓库地址或任意可访问的 URL</div>
+      </div>
+    </div>
+    <!-- GitHub -->
+    <div class="src-form" id="src-github">
+      <div class="fg">
+        <div class="fl">仓库</div>
+        <div style="display:flex;gap:6px;">
+          <input class="fi" placeholder="owner/repo" style="flex:1;">
+          <button class="btn btn-sm">获取</button>
+        </div>
+      </div>
+      <div class="fg">
+        <div class="fl">分支</div>
+        <input class="fi" value="main" style="width:120px;">
+      </div>
+      <div class="fg">
+        <div class="fl">路径 (可选)</div>
+        <input class="fi" placeholder="skills/my-skill">
+        <div class="fhint">留空则安装整个仓库；填写子路径安装特定技能</div>
+      </div>
+    </div>
+    <!-- Local -->
+    <div class="src-form" id="src-local">
+      <div class="fg">
+        <div class="fl">本地路径</div>
+        <div style="display:flex;gap:6px;">
+          <input class="fi" placeholder="/Users/you/.claude/skills/my-skill" style="flex:1;" id="local-path">
+          <button class="btn btn-sm" onclick="document.getElementById('local-path').value='/Users/shirenchuang/.claude/skills/sz-business-workflows'">浏览</button>
+        </div>
+        <div class="fhint">选择技能所在的目录或文件</div>
+      </div>
+    </div>
+    <!-- skills.sh -->
+    <div class="src-form" id="src-skillsh">
+      <div class="fg">
+        <div class="fl">搜索 skills.sh</div>
+        <input class="fi" placeholder="搜索技能名称..." id="skillsh-search">
+      </div>
+      <div style="border:1px solid #1e1e1e;border-radius:5px;padding:4px;max-height:140px;overflow-y:auto;margin-top:6px;">
+        <div class="sp-item on" onclick="this.classList.toggle('on')"><span>📝</span><span class="sp-pick-name" style="flex:1;font-size:11px;">wechat-publisher</span><span style="font-size:10px;color:#555;">by shirenchuang</span><div class="sp-chk">✓</div></div>
+        <div class="sp-item" onclick="this.classList.toggle('on')"><span>🔧</span><span style="flex:1;font-size:11px;">mcp-github</span><span style="font-size:10px;color:#555;">by anthropic</span><div class="sp-chk">✓</div></div>
+        <div class="sp-item" onclick="this.classList.toggle('on')"><span>📊</span><span style="flex:1;font-size:11px;">data-analysis</span><span style="font-size:10px;color:#555;">by datadev</span><div class="sp-chk">✓</div></div>
+        <div class="sp-item" onclick="this.classList.toggle('on')"><span>🧪</span><span style="flex:1;font-size:11px;">tdd-workflow</span><span style="font-size:10px;color:#555;">by testmaster</span><div class="sp-chk">✓</div></div>
+      </div>
+      <div class="fhint" style="margin-top:4px;">点击选择要安装的技能</div>
+    </div>
+
+    <div class="fg" style="margin-top:14px;">
+      <div class="fl">安装到哪些 Agent</div>
+      <div id="install-agents"></div>
+    </div>
+    <div class="fg">
+      <div class="fl">安装方式</div>
+      <div class="rg">
+        <div class="r active" onclick="this.parentElement.querySelectorAll('.r').forEach(x=>x.classList.remove('active'));this.classList.add('active')">直接复制</div>
+        <div class="r" onclick="this.parentElement.querySelectorAll('.r').forEach(x=>x.classList.remove('active'));this.classList.add('active')">符号链接 (Symlink)</div>
+      </div>
+      <div class="fhint">Symlink：统一存放在 ~/.agentbro/skills/，各 Agent 通过符号链接引用</div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('install')">取消</button>
+    <button class="btn btn-p" onclick="installSkill()">安装</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== 新建技能包 Modal ===== -->
+<div class="modal-bg" id="modal-pack">
+<div class="modal modal-lg">
+  <div class="m-head"><div class="m-title">新建技能包</div><button class="btn-ghost" onclick="hideModal('pack')">✕</button></div>
+  <div class="m-body">
+    <div class="fg"><div class="fl">技能包名称</div><input class="fi" placeholder="例如：内容生产、开发工具" id="pk-name"></div>
+    <div class="fg"><div class="fl">描述</div><textarea class="fi" placeholder="描述这个技能包的用途..." id="pk-desc"></textarea></div>
+    <div class="fg">
+      <div class="fl">选择技能 <span style="color:#444;">（点击添加/移除）</span></div>
+      <div class="sk-picker" id="skill-picker"></div>
+    </div>
+    <div class="fg">
+      <div class="fl">默认推送到</div>
+      <div id="pack-agents"></div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('pack')">取消</button>
+    <button class="btn btn-p" onclick="createPack()">创建</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== Token 配置 Modal ===== -->
+<div class="modal-bg" id="modal-token">
+<div class="modal modal-sm">
+  <div class="m-head"><div class="m-title">🔑 配置 GitHub Token</div><button class="btn-ghost" onclick="hideModal('token')">✕</button></div>
+  <div class="m-body">
+    <div class="fg">
+      <div class="fl">Personal Access Token</div>
+      <input class="fi" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" id="token-input">
+      <div class="fhint">需要 repo 读写权限。<a href="#" style="color:#4ade80;">如何创建 Token？</a></div>
+    </div>
+    <div class="fg">
+      <div class="fl">验证状态</div>
+      <div style="font-size:12px;color:#888;" id="token-status">未配置</div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('token')">取消</button>
+    <button class="btn btn-p" onclick="saveToken()">保存并验证</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== 卸载确认 Modal ===== -->
+<div class="modal-bg" id="modal-uninstall">
+<div class="modal modal-sm">
+  <div class="m-head"><div class="m-title">确认卸载</div><button class="btn-ghost" onclick="hideModal('uninstall')">✕</button></div>
+  <div class="m-body">
+    <div class="confirm-body">
+      <div class="confirm-icon">⚠️</div>
+      <div class="confirm-msg">确定要卸载「<span id="uninstall-name"></span>」吗？</div>
+      <div class="confirm-sub" id="uninstall-agents">此技能已安装在以下 Agent 中，将全部移除</div>
+      <div style="margin-top:10px;" id="uninstall-agent-tags"></div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('uninstall')">取消</button>
+    <button class="btn btn-d" onclick="doUninstall()">确认卸载</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== Agent 间同步确认 Modal ===== -->
+<div class="modal-bg" id="modal-agent-sync-confirm">
+<div class="modal modal-sm">
+  <div class="m-head"><div class="m-title">确认同步</div><button class="btn-ghost" onclick="hideModal('agent-sync-confirm')">✕</button></div>
+  <div class="m-body">
+    <div class="confirm-body">
+      <div class="confirm-icon">🔄</div>
+      <div class="confirm-msg">将 <b>Claude Code</b> 的技能同步到 <b>Codex</b></div>
+      <div class="confirm-sub" style="margin-top:10px;text-align:left;">
+        <div style="margin-bottom:4px;">将执行以下操作：</div>
+        <div style="padding:8px;background:#0d0d0d;border-radius:5px;font-size:11px;line-height:1.8;">
+          ✓ 复制 8 个技能<br>
+          ✓ 复制 3 个 MCP 服务器配置<br>
+          ⏭ 跳过已存在的 2 个技能<br>
+          ⚠ 1 个技能的配置文件将被更新
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('agent-sync-confirm')">取消</button>
+    <button class="btn btn-p" onclick="hideModal('agent-sync-confirm');simulateSync('agent')">确认同步</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== 同步冲突 Modal ===== -->
+<div class="modal-bg" id="modal-conflict">
+<div class="modal">
+  <div class="m-head"><div class="m-title">⚠️ 同步冲突</div><button class="btn-ghost" onclick="hideModal('conflict')">✕</button></div>
+  <div class="m-body">
+    <div style="font-size:12px;color:#999;margin-bottom:12px;">以下技能在本地和远端都有修改，请选择处理方式：</div>
+    <div style="border:1px solid #1e1e1e;border-radius:5px;overflow:hidden;">
+      <div style="display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid #1e1e1e;gap:8px;">
+        <span>📝</span>
+        <span style="flex:1;font-size:12px;">wechat-article</span>
+        <span style="font-size:10px;color:#666;">本地：05-10 修改 ｜ 远端：05-09 修改</span>
+        <select class="agent-sel" style="font-size:10px;">
+          <option>保留本地版本</option>
+          <option>使用远端版本</option>
+          <option>保留两者（重命名）</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;padding:8px 10px;gap:8px;">
+        <span>📰</span>
+        <span style="flex:1;font-size:12px;">fetching-ai-news</span>
+        <span style="font-size:10px;color:#666;">本地：05-10 修改 ｜ 远端：05-10 修改</span>
+        <select class="agent-sel" style="font-size:10px;">
+          <option>保留本地版本</option>
+          <option>使用远端版本</option>
+          <option>保留两者（重命名）</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('conflict')">取消</button>
+    <button class="btn" onclick="hideModal('conflict');toast('已全部使用本地版本','✓')">全部使用本地</button>
+    <button class="btn" onclick="hideModal('conflict');toast('已全部使用远端版本','✓')">全部使用远端</button>
+    <button class="btn btn-p" onclick="hideModal('conflict');toast('冲突已解决','✓')">应用选择</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== 批量加入技能包 Modal ===== -->
+<div class="modal-bg" id="modal-batch-pack">
+<div class="modal modal-sm">
+  <div class="m-head"><div class="m-title">添加到技能包</div><button class="btn-ghost" onclick="hideModal('batch-pack')">✕</button></div>
+  <div class="m-body">
+    <div class="fl">选择技能包</div>
+    <div id="batch-pack-list"></div>
+  </div>
+  <div class="m-foot">
+    <button class="btn" onclick="hideModal('batch-pack')">取消</button>
+    <button class="btn btn-p" onclick="hideModal('batch-pack');toast('已添加到技能包','✓')">确认</button>
+  </div>
+</div>
+</div>
+
+<div class="toast" id="toast"><span class="t-icon"></span><span class="t-msg"></span><span class="t-undo" id="t-undo" style="display:none;" onclick="toast('已撤销操作','↩')">撤销</span></div>
+
+<script>
+// ====== Data ======
+const allAgents = [
+  {id:'cc',name:'Claude Code'},{id:'cx',name:'Codex'},{id:'gm',name:'Gemini CLI'},
+  {id:'cs',name:'Cursor'},{id:'hm',name:'Hermes'}
+];
+const tagCls={cc:'t-cc',cx:'t-cx',gm:'t-gm',cs:'t-cs',hm:'t-hm'};
+const agName=Object.fromEntries(allAgents.map(a=>[a.id,a.name]));
+
+let skills=[
+  {id:'wechat-article',name:'wechat-article',desc:'微信公众号完整发布工作流',icon:'📝',type:'skill',agents:['cc','cx'],on:true,src:'island',hasUpdate:false,
+   files:{'wechat-article':{t:'d',c:{'index.md':{t:'f'},'steps':{t:'d',c:{'humanize.md':{t:'f'},'gen-image.md':{t:'f'},'upload.md':{t:'f'}}},'templates':{t:'d',c:{'article.hbs':{t:'f'},'style.css':{t:'f'}}}}}},
+   fc:{'wechat-article/index.md':'---\nname: wechat-article\ndescription: 微信公众号完整发布工作流\ntype: skill\ntriggers:\n  - publish to wechat\n  - 发布微信文章\n---\n\n# 微信文章工作流\n\n完整流程：写文章 → 润色 → 生成配图\n→ 上传微信 → 渲染样式 → 创建草稿\n→ 发送预览\n\n## 步骤\n1. 撰写文章内容\n2. 运行文风润色\n3. 生成头图\n4. 上传素材到 OSS\n5. 推送到微信草稿',
+     'wechat-article/steps/humanize.md':'---\nname: humanize\n---\n\n# 文风润色\n\n将 AI 生成的文本转化为更自然的写作风格\n\n## 规则\n- 避免 AI 味的表达\n- 保持口语化\n- 添加个人观点和经验\n- 使用短句和段落',
+     'wechat-article/steps/gen-image.md':'---\nname: gen-image\n---\n\n# 生成配图\n\n使用 Gemini 3 Pro 生成文章头图和配图\n\n## 参数\n- style: 扁平插画\n- ratio: 16:9\n- count: 1-3',
+     'wechat-article/steps/upload.md':'---\nname: upload\n---\n\n# 上传到微信\n\n调用微信 API 上传草稿',
+     'wechat-article/templates/article.hbs':'<div class="article">\n  <h1>{{title}}</h1>\n  <div class="meta">\n    {{author}} · {{date}}\n  </div>\n  <div class="content">\n    {{{body}}}\n  </div>\n</div>',
+     'wechat-article/templates/style.css':'.article {\n  max-width: 680px;\n  margin: 0 auto;\n  padding: 20px;\n}\n.article h1 {\n  font-size: 22px;\n  font-weight: 700;\n}\n.meta {\n  color: #999;\n  font-size: 13px;\n  margin: 8px 0 20px;\n}'}},
+  {id:'video-notes',name:'video-notes',desc:'AI 解说视频生成，支持 TTS 和 Remotion 渲染',icon:'🎬',type:'skill',agents:['cc'],on:true,src:'island',hasUpdate:true,
+   files:{'video-notes':{t:'d',c:{'index.md':{t:'f'},'config.json':{t:'f'}}}},
+   fc:{'video-notes/index.md':'---\nname: video-notes\ndescription: AI 解说类短视频生成\n---\n\n# 视频笔记\n\n从文章或主题生成解说视频脚本\n使用火山引擎 TTS 配音\nRemotion 渲染输出','video-notes/config.json':'{\n  "tts": "volcengine",\n  "renderer": "remotion",\n  "output": "mp4",\n  "resolution": "1080x1920"\n}'}},
+  {id:'text-to-image',name:'text-to-image',desc:'使用 Gemini 3 Pro 生成图片',icon:'🖼',type:'skill',agents:['cc','gm'],on:true,src:'island',hasUpdate:false},
+  {id:'fetching-ai-news',name:'fetching-ai-news',desc:'从多个来源聚合 AI 资讯',icon:'📰',type:'skill',agents:['cc','cx','gm'],on:true,src:'island',hasUpdate:true},
+  {id:'mcp-filesystem',name:'mcp-filesystem',desc:'MCP 本地文件系统访问服务器',icon:'💾',type:'mcp',agents:['cc','cs'],on:true,src:'island',hasUpdate:false},
+  {id:'mcp-browser',name:'mcp-browser',desc:'MCP 浏览器控制与网页抓取',icon:'🌐',type:'mcp',agents:['cc'],on:true,src:'island',hasUpdate:false},
+  {id:'browse',name:'browse',desc:'网页浏览和调研技能',icon:'🔍',type:'skill',agents:['cc'],on:true,src:'local',hasUpdate:false},
+  {id:'init',name:'init',desc:'初始化 CLAUDE.md 代码库文档',icon:'🛠',type:'skill',agents:['cc'],on:true,src:'local',hasUpdate:false},
+  {id:'deprecated-tool',name:'deprecated-tool',desc:'一个已弃用的旧工具',icon:'🚫',type:'skill',agents:['cx'],on:false,src:'local',hasUpdate:false},
+];
+
+let packs=[
+  {id:'content',name:'内容生产',desc:'微信文章、图片生成、视频笔记、资讯聚合',icon:'📦',skills:['wechat-article','video-notes','text-to-image','fetching-ai-news','mcp-browser'],agents:['cc','cx']},
+  {id:'dev',name:'开发工具',desc:'文件系统、浏览、代码初始化',icon:'💻',skills:['browse','init','mcp-filesystem'],agents:['cc','gm','cs']},
+];
+
+const scanners=[
+  {name:'Claude Code',count:'12 技能，4 MCP',status:'ok'},
+  {name:'Codex',count:'3 技能，2 MCP',status:'ok'},
+  {name:'Gemini CLI',count:'1 技能，0 MCP',status:'warn'},
+  {name:'Cursor',count:'未安装',status:'off'},
+  {name:'Hermes',count:'5 技能，1 MCP',status:'ok'},
+];
+
+// ====== State ======
+let currentSkill=null, typeFilter='all', agentFilter='all', batchMode=false, batchSelected=new Set();
+
+// ====== Render ======
+function render(){renderSkills();renderPacks();renderPicker();renderAgentPills();renderScanners();renderInstallAgents();renderPackAgents();renderBatchPackList();}
+
+function renderSkills(){
+  const q=document.getElementById('skill-search').value.toLowerCase();
+  let filtered=skills.filter(s=>{
+    if(typeFilter!=='all'&&s.type!==typeFilter)return false;
+    if(agentFilter!=='all'&&!s.agents.includes(agentFilter))return false;
+    if(q&&!s.name.toLowerCase().includes(q)&&!s.desc.toLowerCase().includes(q))return false;
+    return true;
+  });
+  const island=filtered.filter(s=>s.src==='island');
+  const local=filtered.filter(s=>s.src==='local');
+
+  if(filtered.length===0&&(q||typeFilter!=='all'||agentFilter!=='all')){
+    document.getElementById('skill-list').innerHTML='';
+    document.getElementById('empty-search').style.display='block';
+    document.getElementById('empty-skills').style.display='none';
+    return;
+  }
+  if(skills.length===0){
+    document.getElementById('skill-list').innerHTML='';
+    document.getElementById('empty-skills').style.display='block';
+    document.getElementById('empty-search').style.display='none';
+    return;
+  }
+  document.getElementById('empty-skills').style.display='none';
+  document.getElementById('empty-search').style.display='none';
+
+  let html='';
+  if(island.length){
+    html+=`<div class="section-hd">通过 AgentBro 安装 <span class="badge">${island.length}</span></div>`;
+    html+=island.map(s=>skHtml(s)).join('');
+  }
+  if(local.length){
+    html+=`<div class="section-hd">本地发现 <span class="badge">${local.length}</span></div>`;
+    html+=local.map(s=>skHtml(s)).join('');
+  }
+  document.getElementById('skill-list').innerHTML=html;
+  if(batchMode)document.getElementById('skill-list').classList.add('batch-mode');
+  else document.getElementById('skill-list').classList.remove('batch-mode');
+}
+
+function skHtml(s){
+  const sel=currentSkill===s.id?'selected':'';
+  const dis=s.on?'':'disabled';
+  const checked=batchSelected.has(s.id)?'checked':'';
+  return `<div class="sk ${sel} ${dis}" data-id="${s.id}" onclick="selectSkill('${s.id}')">
+    <div class="sk-check ${checked}" onclick="event.stopPropagation();toggleBatchItem('${s.id}')">✓</div>
+    <div class="sk-icon ${s.type}">${s.icon}</div>
+    <div class="sk-info">
+      <div class="sk-name">${s.name} ${s.hasUpdate?'<span class="update-dot" title="有新版本可用"></span>':''}</div>
+      <div class="sk-desc">${s.desc}</div>
+    </div>
+    <div class="sk-tags">${s.agents.map(a=>`<span class="tag ${tagCls[a]}">${agName[a]}</span>`).join('')}</div>
+    <div class="tog ${s.on?'on':''}" onclick="event.stopPropagation();toggleEnable('${s.id}')"><div class="d"></div></div>
+    <div class="sk-acts">
+      <div class="act" title="查看" onclick="event.stopPropagation();selectSkill('${s.id}')">👁</div>
+      ${s.hasUpdate?`<div class="act" title="更新" style="color:#fbbf24;border-color:#332a0f;" onclick="event.stopPropagation();toast('已更新 ${s.name} 到最新版本','⬆')">⬆</div>`:''}
+      ${s.src==='local'?`<div class="act" title="添加来源" onclick="event.stopPropagation();toast('请输入技能来源地址','🔗')">🔗</div>`
+        :`<div class="act del" title="卸载" onclick="event.stopPropagation();confirmUninstallById('${s.id}')">🗑</div>`}
+    </div>
+  </div>`;
+}
+
+function renderPacks(){
+  document.getElementById('pack-list').innerHTML=packs.map(p=>`<div class="pk">
+    <div class="pk-head">
+      <div class="pk-name">${p.icon} ${p.name}</div>
+      <div style="display:flex;gap:3px;">
+        <button class="btn btn-sm" onclick="toast('编辑功能开发中','✏')">编辑</button>
+        <button class="btn btn-sm" onclick="packToggle('${p.id}',true)">全部启用</button>
+        <button class="btn btn-sm" onclick="packToggle('${p.id}',false)">全部禁用</button>
+        <button class="btn btn-sm btn-p" onclick="toast('已推送到 ${p.agents.map(a=>agName[a]).join('、')}','✓')">推送到 Agent</button>
+        <button class="btn btn-sm btn-d" onclick="deletePack('${p.id}')">删除</button>
+      </div>
+    </div>
+    <div class="pk-desc">${p.desc}</div>
+    <div class="pk-chips">${p.skills.map(sid=>`<span class="pk-chip">${sid}</span>`).join('')}</div>
+    <div class="pk-foot">
+      <div style="display:flex;gap:2px;">${p.agents.map(a=>`<span class="tag ${tagCls[a]}">${agName[a]}</span>`).join('')}</div>
+      <div class="pk-status">${p.skills.length}/${p.skills.length} 已安装</div>
+    </div>
+  </div>`).join('');
+}
+
+function renderPicker(){
+  document.getElementById('skill-picker').innerHTML=skills.map(s=>
+    `<div class="sp-item" onclick="this.classList.toggle('on')"><span>${s.icon}</span><span style="flex:1">${s.name}</span><div class="sp-chk">✓</div></div>`
+  ).join('');
+}
+
+function renderAgentPills(){
+  document.getElementById('agent-pills').innerHTML=
+    `<div class="pill ${agentFilter==='all'?'active':''}" onclick="setAgentFilter('all')">全部 Agent</div>`+
+    allAgents.map(a=>`<div class="pill ${agentFilter===a.id?'active':''}" onclick="setAgentFilter('${a.id}')">${a.name}</div>`).join('');
+}
+
+function renderScanners(){
+  document.getElementById('scanner-list').innerHTML=scanners.map(s=>
+    `<div class="scanner-row"><span>${s.name}</span><span class="${s.status==='ok'?'scanner-ok':s.status==='warn'?'scanner-warn':'scanner-off'}" style="color:${s.status==='ok'?'#4ade80':s.status==='warn'?'#fcd34d':'#444'}">${s.count} ${s.status==='ok'?'✓':s.status==='warn'?'⚠':''}</span></div>`
+  ).join('');
+}
+
+function renderInstallAgents(){
+  document.getElementById('install-agents').innerHTML=allAgents.map((a,i)=>
+    `<div class="ck ${i===0?'on':''}" onclick="this.classList.toggle('on')"><div class="ck-b">✓</div>${a.name}</div>`
+  ).join('');
+}
+function renderPackAgents(){
+  document.getElementById('pack-agents').innerHTML=allAgents.map((a,i)=>
+    `<div class="ck ${i<2?'on':''}" onclick="this.classList.toggle('on')"><div class="ck-b">✓</div>${a.name}</div>`
+  ).join('');
+}
+function renderBatchPackList(){
+  document.getElementById('batch-pack-list').innerHTML=packs.map(p=>
+    `<div class="sp-item" onclick="this.classList.toggle('on')"><span>${p.icon}</span><span style="flex:1">${p.name}</span><div class="sp-chk">✓</div></div>`
+  ).join('');
+}
+
+// ====== Detail ======
+function selectSkill(id){
+  currentSkill=id;
+  const s=skills.find(x=>x.id===id);
+  if(!s)return;
+  document.getElementById('dt-title').textContent=s.name+(s.hasUpdate?' ⬆':'');
+  document.getElementById('dt-src').textContent=s.src==='island'?'github.com/user/skills/'+s.name:'本地发现 — 未关联来源';
+  document.getElementById('detail').classList.remove('hidden');
+
+  document.getElementById('dt-agents').innerHTML=
+    s.agents.map(a=>`<div class="ag-row"><span>${agName[a]}</span><div class="tog on" onclick="this.classList.toggle('on')"><div class="d"></div></div></div>`).join('')+
+    allAgents.filter(a=>!s.agents.includes(a.id)).map(a=>`<div class="ag-row add"><span>＋ ${a.name}</span><button class="btn btn-sm" onclick="toast('已安装到 ${a.name}','✓')">安装</button></div>`).join('');
+
+  document.getElementById('dt-info').innerHTML=`类型：<span style="color:#ddd">${s.type==='skill'?'Skill':'MCP Server'}</span><br>安装方式：<span style="color:#ddd">Symlink</span><br>大小：<span style="color:#ddd">12.4 KB</span><br>修改：<span style="color:#ddd">2026-05-08</span>`;
+
+  const inPacks=packs.filter(p=>p.skills.includes(s.id));
+  document.getElementById('dt-packs').innerHTML=inPacks.length?
+    inPacks.map(p=>`<span class="pk-chip" style="color:#4ade80;border-color:#1a3a1a;">${p.icon} ${p.name}</span>`).join(' '):
+    '<span style="color:#444;font-size:11px;">未加入任何技能包</span>';
+
+  if(s.files){
+    document.getElementById('file-tree').innerHTML=renderTree(s.files);
+    document.getElementById('fv').style.display='block';
+    const first=Object.keys(s.fc||{})[0];
+    if(first)viewFile(first);
+  }else{
+    document.getElementById('file-tree').innerHTML='<div style="color:#444;font-size:10px;padding:4px;">暂无文件树</div>';
+    document.getElementById('fv').style.display='block';
+    document.getElementById('fv-path').textContent=s.name;
+    document.getElementById('fv-body').innerHTML=`<span class="ln">1</span><span class="cm">---</span>\n<span class="ln">2</span><span class="kw">name:</span> ${s.name}\n<span class="ln">3</span><span class="kw">description:</span> ${s.desc}\n<span class="ln">4</span><span class="cm">---</span>`;
+  }
+  renderSkills();
+}
+
+function hideDetail(){document.getElementById('detail').classList.add('hidden');currentSkill=null;renderSkills();}
+
+function renderTree(tree,prefix=''){
+  let h='';
+  for(const[name,node]of Object.entries(tree)){
+    const path=prefix?prefix+'/'+name:name;
+    if(node.t==='d'){
+      h+=`<div><div class="tree-dir open" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('collapsed')"><span class="arr">▶</span>📁 ${name}</div><div class="tree-ch">${renderTree(node.c,path)}</div></div>`;
+    }else{
+      h+=`<div class="tree-file" data-path="${path}" onclick="viewFile('${path}')">${name.endsWith('.md')?'📄':name.endsWith('.css')?'🎨':name.endsWith('.json')?'📋':'📄'} ${name}</div>`;
+    }
+  }
+  return h;
+}
+
+function viewFile(path){
+  const s=skills.find(x=>x.id===currentSkill);
+  if(!s||!s.fc)return;
+  document.querySelectorAll('.tree-file').forEach(f=>f.classList.remove('active'));
+  document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('active');
+  document.getElementById('fv-path').textContent=path;
+  const content=s.fc[path]||'// 文件内容';
+  const lines=content.split('\n');
+  document.getElementById('fv-body').innerHTML=lines.map((l,i)=>{
+    const ln=`<span class="ln">${i+1}</span>`;
+    if(l.startsWith('#'))return ln+`<span class="hl">${esc(l)}</span>`;
+    if(l==='---')return ln+`<span class="cm">${l}</span>`;
+    if(l.match(/^\w[\w-]*:/))return ln+`<span class="kw">${esc(l.split(':')[0])}:</span>${esc(l.slice(l.indexOf(':')+1))}`;
+    return ln+esc(l);
+  }).join('\n');
+}
+
+function filterFiles(){
+  const q=document.getElementById('file-search').value.toLowerCase();
+  document.querySelectorAll('.tree-file').forEach(f=>{
+    f.style.display=f.textContent.toLowerCase().includes(q)?'':'none';
+  });
+}
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ====== Filters ======
+function setTypeFilter(t){
+  typeFilter=t;
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active',c.dataset.filter===t));
+  renderSkills();
+}
+function setAgentFilter(a){agentFilter=a;renderAgentPills();renderSkills();}
+function filterSkills(){renderSkills();}
+function clearFilters(){
+  document.getElementById('skill-search').value='';
+  typeFilter='all';agentFilter='all';
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active',c.dataset.filter==='all'));
+  renderAgentPills();renderSkills();
+}
+
+// ====== Batch ======
+function toggleBatch(){
+  batchMode=!batchMode;
+  document.getElementById('batch-bar').classList.toggle('show',batchMode);
+  document.getElementById('batch-toggle').textContent=batchMode?'✕ 退出批量':'☑ 批量操作';
+  if(!batchMode){batchSelected.clear();updateBatchCount();}
+  renderSkills();
+}
+function toggleBatchItem(id){
+  if(batchSelected.has(id))batchSelected.delete(id);else batchSelected.add(id);
+  updateBatchCount();renderSkills();
+}
+function updateBatchCount(){document.getElementById('batch-count').textContent=`已选 ${batchSelected.size} 项`;}
+function clearBatch(){batchSelected.clear();updateBatchCount();renderSkills();}
+function batchToggleEnable(on){
+  batchSelected.forEach(id=>{const s=skills.find(x=>x.id===id);if(s)s.on=on;});
+  toast(`已${on?'启用':'禁用'} ${batchSelected.size} 个技能`,'✓',true);
+  renderSkills();
+}
+function batchUninstall(){
+  if(batchSelected.size===0)return;
+  document.getElementById('uninstall-name').textContent=`${batchSelected.size} 个技能`;
+  document.getElementById('uninstall-agents').textContent='选中的技能将被全部卸载';
+  document.getElementById('uninstall-agent-tags').innerHTML='';
+  showModal('uninstall');
+}
+
+// ====== Actions ======
+function toggleEnable(id){
+  const s=skills.find(x=>x.id===id);s.on=!s.on;
+  toast(s.on?`已启用 ${s.name}`:`已禁用 ${s.name}`,s.on?'✓':'⏸',true);
+  renderSkills();
+}
+
+function confirmUninstall(){
+  if(!currentSkill)return;
+  confirmUninstallById(currentSkill);
+}
+function confirmUninstallById(id){
+  const s=skills.find(x=>x.id===id);
+  document.getElementById('uninstall-name').textContent=s.name;
+  document.getElementById('uninstall-agents').textContent='此技能已安装在以下 Agent 中，将全部移除：';
+  document.getElementById('uninstall-agent-tags').innerHTML=s.agents.map(a=>`<span class="tag ${tagCls[a]}" style="padding:2px 8px;font-size:11px;">${agName[a]}</span>`).join(' ');
+  showModal('uninstall');
+}
+function doUninstall(){
+  if(batchSelected.size>0){
+    skills=skills.filter(s=>!batchSelected.has(s.id));
+    toast(`已卸载 ${batchSelected.size} 个技能`,'🗑',true);
+    batchSelected.clear();updateBatchCount();
+  }else if(currentSkill){
+    const name=skills.find(s=>s.id===currentSkill)?.name;
+    skills=skills.filter(s=>s.id!==currentSkill);
+    toast(`已卸载 ${name}`,'🗑',true);
+    hideDetail();
+  }
+  hideModal('uninstall');render();
+}
+
+function packToggle(pid,on){
+  const p=packs.find(x=>x.id===pid);
+  p.skills.forEach(sid=>{const s=skills.find(x=>x.id===sid);if(s)s.on=on;});
+  toast(`已${on?'启用':'禁用'}「${p.name}」中的 ${p.skills.length} 个技能`,'✓');
+  renderSkills();
+}
+function deletePack(pid){
+  const p=packs.find(x=>x.id===pid);
+  packs=packs.filter(x=>x.id!==pid);
+  toast(`已删除技能包「${p.name}」（技能本身未删除）`,'🗑',true);
+  renderPacks();renderBatchPackList();
+}
+
+function showPackAddFromDetail(){
+  showModal('batch-pack');
+}
+
+function createPack(){
+  const name=document.getElementById('pk-name').value||'新技能包';
+  const desc=document.getElementById('pk-desc').value||'自定义技能包';
+  const picked=[...document.querySelectorAll('#skill-picker .sp-item.on span:nth-child(2)')].map(e=>e.textContent);
+  const agents=[...document.querySelectorAll('#pack-agents .ck.on')].map((_,i)=>allAgents[i].id);
+  packs.push({id:'p'+Date.now(),name,desc,icon:'📦',skills:picked.length?picked:['wechat-article'],agents:agents.length?agents:['cc']});
+  hideModal('pack');
+  toast(`技能包「${name}」创建成功`,'✓');
+  render();
+}
+
+function installSkill(){
+  hideModal('install');
+  toast('正在安装...','⏳');
+  setTimeout(()=>toast('安装成功：skill 已安装到 Claude Code','✓'),1200);
+}
+
+// ====== Sync ======
+function simulateSync(type){
+  const pg=document.getElementById('sync-progress');
+  const bar=document.getElementById('sync-bar');
+  const st=document.getElementById('sync-status');
+  pg.style.display='block';bar.style.width='0%';
+  st.textContent='同步中...';
+  let w=0;
+  const iv=setInterval(()=>{
+    w+=Math.random()*25;
+    if(w>=100){
+      w=100;clearInterval(iv);
+      bar.style.width='100%';
+      setTimeout(()=>{
+        pg.style.display='none';
+        if(type==='pull'&&Math.random()>0.5){
+          showModal('conflict');
+          st.textContent='发现冲突，请解决';
+        }else{
+          const now=new Date().toLocaleString('zh',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+          st.textContent=`上次同步：${now} ｜ 8 个技能，2 个技能包`;
+          toast(type==='push'?'推送成功':'同步完成','✓');
+        }
+      },400);
+    }
+    bar.style.width=w+'%';
+  },200);
+}
+
+function rescan(){
+  document.getElementById('scan-loading').style.display='flex';
+  setTimeout(()=>{
+    document.getElementById('scan-loading').style.display='none';
+    toast('扫描完成：共发现 21 个技能，7 个 MCP','✓');
+  },2000);
+}
+
+function saveToken(){
+  const v=document.getElementById('token-input').value;
+  if(!v){document.getElementById('token-status').innerHTML='<span style="color:#f87171">请输入 Token</span>';return;}
+  document.getElementById('token-status').innerHTML='<div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px;"></div>验证中...';
+  setTimeout(()=>{
+    document.getElementById('token-status').innerHTML='<span style="color:#4ade80">✓ Token 有效，已保存</span>';
+    setTimeout(()=>hideModal('token'),800);
+  },1500);
+}
+
+// ====== Tabs ======
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.toggle('active',t.id==='tab-'+name));
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
+
+// ====== Source form switch ======
+function switchSrc(src,el){
+  el.parentElement.querySelectorAll('.r').forEach(r=>r.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.src-form').forEach(f=>f.classList.remove('active'));
+  document.getElementById('src-'+src).classList.add('active');
+}
+
+// ====== Modal ======
+function showModal(name){document.getElementById('modal-'+name).classList.add('show');}
+function hideModal(name){document.getElementById('modal-'+name).classList.remove('show');}
+document.querySelectorAll('.modal-bg').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('show');}));
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-bg.show').forEach(m=>m.classList.remove('show'));});
+
+// ====== Toast ======
+function toast(msg,icon='✓',undoable=false){
+  const t=document.getElementById('toast');
+  t.querySelector('.t-icon').textContent=icon;
+  t.querySelector('.t-msg').textContent=msg;
+  document.getElementById('t-undo').style.display=undoable?'inline':'none';
+  t.classList.add('show');
+  clearTimeout(t._tm);
+  t._tm=setTimeout(()=>t.classList.remove('show'),2800);
+}
+
+// ====== Init ======
+render();
+selectSkill('wechat-article');
+</script>
+</body>
+</html>

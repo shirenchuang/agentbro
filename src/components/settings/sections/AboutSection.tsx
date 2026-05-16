@@ -1,17 +1,14 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useConfigStore } from '../../../stores/configStore'
 import { quitApp, exportDiagnostics } from '../../../services/tauriApi'
 import { useUpdater } from '../../../hooks/useUpdater'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
-import { Toggle } from '../Toggle'
 import { GlassButton } from '../../shared'
 
 export function AboutSection() {
   const { t } = useTranslation()
-  const config = useConfigStore()
   const updater = useUpdater()
   const [diagStatus, setDiagStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
 
@@ -44,7 +41,7 @@ export function AboutSection() {
     <SettingSection title={t('settings.aboutTitle')}>
       <div className="about-header">
         <div className="about-header__icon">🏝</div>
-        <div className="about-header__name">Agent Island</div>
+        <div className="about-header__name">AgentBro</div>
         <div className="about-header__version">Version 0.1.0-alpha</div>
       </div>
 
@@ -66,12 +63,6 @@ export function AboutSection() {
           >
             {diagStatus === 'copied' ? 'Copied!' : diagStatus === 'error' ? 'Failed' : t('settings.export')}
           </GlassButton>
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup>
-        <SettingRow label={t('settings.telemetry')} description={t('settings.telemetryDesc')}>
-          <Toggle checked={config.telemetryEnabled} onChange={(v) => config.updateConfig('telemetryEnabled', v)} />
         </SettingRow>
       </SettingGroup>
 

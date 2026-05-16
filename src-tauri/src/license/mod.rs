@@ -27,13 +27,9 @@ pub enum LicenseStatus {
         device_id: String,
     },
     /// Trial has expired
-    TrialExpired {
-        device_id: String,
-    },
+    TrialExpired { device_id: String },
     /// License key is invalid
-    Invalid {
-        reason: String,
-    },
+    Invalid { reason: String },
     /// Offline grace period — license was valid but can't reach server
     OfflineGrace {
         days_remaining: i64,
@@ -99,7 +95,11 @@ impl LicenseManager {
     pub fn check(&self) -> LicenseStatus {
         let data = match self.data.read() {
             Ok(d) => d.clone(),
-            Err(_) => return LicenseStatus::Invalid { reason: "Lock error".to_string() },
+            Err(_) => {
+                return LicenseStatus::Invalid {
+                    reason: "Lock error".to_string(),
+                }
+            }
         };
 
         let now = chrono::Utc::now().timestamp();
@@ -163,12 +163,16 @@ impl LicenseManager {
         let now = chrono::Utc::now().timestamp();
 
         {
-            let mut data = self.data.write().map_err(|e| format!("Lock error: {}", e))?;
+            let mut data = self
+                .data
+                .write()
+                .map_err(|e| format!("Lock error: {}", e))?;
             data.license_key = Some(key.clone());
             data.last_validated = Some(now);
         }
 
-        self.save_to_disk().map_err(|e| format!("Failed to save: {}", e))?;
+        self.save_to_disk()
+            .map_err(|e| format!("Failed to save: {}", e))?;
         self.emit_status_change();
 
         let device_id = self.get_device_id();
@@ -181,12 +185,16 @@ impl LicenseManager {
     /// Deactivate the current license
     pub fn deactivate(&self) -> Result<LicenseStatus, String> {
         {
-            let mut data = self.data.write().map_err(|e| format!("Lock error: {}", e))?;
+            let mut data = self
+                .data
+                .write()
+                .map_err(|e| format!("Lock error: {}", e))?;
             data.license_key = None;
             data.last_validated = None;
         }
 
-        self.save_to_disk().map_err(|e| format!("Failed to save: {}", e))?;
+        self.save_to_disk()
+            .map_err(|e| format!("Failed to save: {}", e))?;
         self.emit_status_change();
 
         Ok(self.check())
@@ -194,7 +202,8 @@ impl LicenseManager {
 
     /// Get the device ID
     pub fn get_device_id(&self) -> String {
-        self.data.read()
+        self.data
+            .read()
             .map(|d| d.device_id.clone())
             .unwrap_or_else(|_| "unknown".to_string())
     }
@@ -263,9 +272,9 @@ impl LicenseManager {
 
     fn license_file_path() -> PathBuf {
         let base = dirs::config_dir()
-            .or_else(|| dirs::data_local_dir())
+            .or_else(dirs::data_local_dir)
             .unwrap_or_else(std::env::temp_dir);
-        base.join("agent-island").join("license.json")
+        base.join("agentbro").join("license.json")
     }
 
     fn load_from_disk(path: &PathBuf) -> Option<LicenseData> {
@@ -290,5 +299,11 @@ impl LicenseManager {
                 log::error!("Failed to emit license-status-changed: {}", e);
             }
         }
+    }
+}
+
+impl Default for LicenseManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

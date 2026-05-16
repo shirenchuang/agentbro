@@ -1,0 +1,37 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+import { useConfigStore } from '../stores/configStore'
+
+describe('configStore island defaults', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useConfigStore.getState().resetIslandDefaults()
+  })
+
+  it('matches evolab island behavior defaults for feedback and cache display', () => {
+    const state = useConfigStore.getState()
+
+    expect(state.completionCardHeight).toBe(200)
+    expect(state.showCacheTTL).toBe(true)
+    expect(state.taskCompleteDwellSeconds).toBe(6)
+    expect(state.idleTimeoutMinutes).toBe(5)
+    expect(state.volume).toBe(70)
+  })
+
+  it('keeps evolab-safe tools in the default auto-approve list', () => {
+    expect(useConfigStore.getState().autoApproveTools).toEqual(
+      expect.arrayContaining([
+        'TaskCreate',
+        'TaskUpdate',
+        'TaskGet',
+        'TaskList',
+        'TaskOutput',
+        'TaskStop',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'TodoRead',
+        'TodoWrite',
+        'Read',
+      ]),
+    )
+  })
+})

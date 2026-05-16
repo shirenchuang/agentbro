@@ -11,7 +11,7 @@
 
 /* "任务" label in green/teal */
 .task-summary__label {
-  color: var(--vi-accent-green);
+  color: #22c55e;
   font-weight: 600;
   font-size: 11px;
 }
@@ -39,7 +39,7 @@
 }
 
 .task-summary__bullet--active {
-  background: var(--vi-accent-blue);
+  background: #2563eb;
   box-shadow: 0 0 4px rgba(0, 122, 255, 0.4);
 }
 
@@ -47,7 +47,7 @@
 .task-summary__checkbox {
   width: 12px;
   height: 12px;
-  border: 1.5px solid var(--vi-text-tertiary);
+  border: 1.5px solid var(--island-text-muted);
   border-radius: 3px;
   flex-shrink: 0;
   display: flex;
@@ -57,13 +57,13 @@
 
 /* Checkbox: checked */
 .task-summary__checkbox--checked {
-  border-color: var(--vi-accent-green);
-  color: var(--vi-accent-green);
+  border-color: #22c55e;
+  color: #22c55e;
   background: rgba(48, 209, 88, 0.1);
 }
 
 .task-summary__name {
-  color: var(--vi-text-secondary);
+  color: var(--island-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -71,20 +71,20 @@
 
 /* In-progress: white text */
 .task-summary__item--in-progress .task-summary__name {
-  color: var(--vi-text-primary);
+  color: var(--island-text);
 }
 
 /* Completed: strikethrough + dimmed */
 .task-summary__name--done {
   text-decoration: line-through;
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-muted);
 }
 
 /* "+N completed" toggle */
 .task-summary__toggle {
   background: none;
   border: none;
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-muted);
   font-size: 11px;
   cursor: pointer;
   padding: 0;
@@ -93,5 +93,5 @@
 }
 
 .task-summary__toggle:hover {
-  color: var(--vi-text-secondary);
+  color: var(--island-text-secondary);
 }

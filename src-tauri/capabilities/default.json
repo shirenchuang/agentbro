@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "identifier": "default",
-  "description": "Default permissions for Agent Island",
+  "description": "Default permissions for AgentBro",
   "windows": ["notch", "settings"],
   "permissions": [
     "core:default",
@@ -23,6 +23,7 @@
     "core:webview:allow-webview-position",
     "core:webview:allow-webview-size",
     "shell:allow-open",
+    "dialog:allow-open",
     "updater:default",
     "notification:default"
   ]

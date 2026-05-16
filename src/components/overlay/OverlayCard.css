@@ -1,13 +1,14 @@
 .overlay-card {
   background: var(--island-card);
   backdrop-filter: blur(20px);
-  border-radius: var(--radius-lg, 12px);
+  border-radius: 12px;
   border: 1px solid var(--island-border);
   padding: 10px 12px;
   box-shadow: var(--island-shadow);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow: hidden;
 }
 
 .overlay-card__header {
@@ -26,7 +27,7 @@
   border: none;
   border-radius: 50%;
   background: var(--island-subtle-hover);
-  color: var(--vi-text-secondary, #aaa);
+  color: var(--island-text-secondary);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
@@ -34,13 +35,15 @@
 
 .overlay-card__close:hover {
   background: var(--island-scrollbar);
-  color: var(--vi-text-primary, #fff);
+  color: var(--island-text);
 }
 
 .overlay-card__body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  overflow: auto;
 }
 
 /* Session context header */
@@ -58,7 +61,7 @@
   gap: 6px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--vi-text-secondary, #aaa);
+  color: var(--island-text-secondary);
 }
 
 .overlay-ctx__project {
@@ -80,7 +83,7 @@
   display: flex;
   gap: 4px;
   font-size: 11px;
-  color: var(--vi-text-tertiary, #666);
+  color: var(--island-text-muted);
   overflow: hidden;
 }
 

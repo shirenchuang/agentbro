@@ -16,6 +16,57 @@ pub struct EngineInstance {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundRuleConfig {
+    pub enabled: bool,
+    pub sound: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomSoundConfig {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub data_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowOrigin {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomHookTemplate {
+    pub id: String,
+    pub label: String,
+    pub agent: String,
+    pub config_path: String,
+    pub format: String,
+    pub events: Vec<String>,
+    pub command: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuddyDeviceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_buddy_device_transport")]
+    pub transport: String,
+    #[serde(default = "default_buddy_device_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub shared_secret: String,
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +75,8 @@ pub struct AppConfig {
     pub sound_volume: f32,
     pub auto_hide: bool,
     pub smart_suppression: bool,
+    #[serde(default)]
+    pub hide_in_fullscreen: bool,
     pub completion_timeout: u32,
     pub show_token_usage: bool,
     pub theme: String,
@@ -33,20 +86,30 @@ pub struct AppConfig {
     /// Hide the notch (via opacity) when there are no active sessions
     #[serde(default)]
     pub auto_hide_no_sessions: bool,
-    /// Hide the notch when the frontmost app is fullscreen
-    #[serde(default = "default_true")]
-    pub hide_in_fullscreen: bool,
     /// Per-event sound enable map (event name -> enabled)
     #[serde(default)]
     pub sound_events: std::collections::HashMap<String, bool>,
+    /// Per-event sound choice rules (event name -> enabled + sound choice)
+    #[serde(default)]
+    pub sound_rules: std::collections::HashMap<String, SoundRuleConfig>,
+    /// Imported custom sound files
+    #[serde(default)]
+    pub custom_sounds: Vec<CustomSoundConfig>,
     /// Active sound pack
     #[serde(default = "default_sound_pack")]
     pub sound_pack: String,
     /// Filter out sounds for probe/health-check sessions
     #[serde(default)]
     pub probe_session_filter: bool,
-    /// Minutes of inactivity before auto-hiding (0 = disabled)
+    /// Suppress sounds during a configured local time window
     #[serde(default)]
+    pub quiet_hours_enabled: bool,
+    #[serde(default = "default_quiet_hours_start")]
+    pub quiet_hours_start: String,
+    #[serde(default = "default_quiet_hours_end")]
+    pub quiet_hours_end: String,
+    /// Minutes of inactivity before auto-hiding (0 = disabled)
+    #[serde(default = "default_idle_timeout_minutes")]
     pub idle_timeout_minutes: u32,
     /// Notification mode: "turnEnd" or "every"
     #[serde(default = "default_notification_mode")]
@@ -54,6 +117,72 @@ pub struct AppConfig {
     /// Custom engine instances (Claude Code at non-default paths)
     #[serde(default)]
     pub engine_instances: Vec<EngineInstance>,
+    /// Webhook forwarding configurations (DingTalk / Feishu)
+    #[serde(default)]
+    pub webhook_configs: Vec<crate::webhook::WebhookConfig>,
+    /// SSH remote host configurations
+    #[serde(default)]
+    pub remote_hosts: Vec<crate::remote::RemoteHost>,
+    /// Sound volume (0-100)
+    #[serde(default = "default_volume")]
+    pub volume: u8,
+    /// Custom hooks path override
+    #[serde(default)]
+    pub custom_hooks_path: String,
+    /// User-defined hook templates for unsupported CLIs.
+    #[serde(default)]
+    pub custom_hook_templates: Vec<CustomHookTemplate>,
+    /// Enable Hook Doctor diagnostics UI and command.
+    #[serde(default)]
+    pub hook_doctor_enabled: bool,
+    /// Enable launching agent sessions from AgentBro.
+    #[serde(default)]
+    pub session_launcher_enabled: bool,
+    /// Enable custom CLI hook template management UI.
+    #[serde(default)]
+    pub custom_hook_templates_enabled: bool,
+    /// External Buddy device bridge for Apple Watch / ESP32 companion devices.
+    #[serde(default)]
+    pub buddy_device: BuddyDeviceConfig,
+    /// Show tips when all sessions are idle
+    #[serde(default = "default_true")]
+    pub tips_enabled: bool,
+    /// Show animated pixel cursor border dots
+    #[serde(default = "default_true")]
+    pub pixel_cursor_enabled: bool,
+    /// Show confetti on task completion
+    #[serde(default = "default_true")]
+    pub confetti_enabled: bool,
+    /// Filter sessions by focused terminal window
+    #[serde(default)]
+    pub follow_focus: bool,
+    /// Island surface mode: "island" or "pet"
+    #[serde(default = "default_island_surface_mode")]
+    pub island_surface_mode: String,
+    /// Pet scale percentage
+    #[serde(default = "default_island_pet_scale")]
+    pub island_pet_scale: u32,
+    /// Pet window origin
+    #[serde(default)]
+    pub island_pet_window_origin: Option<WindowOrigin>,
+    /// Global keyboard shortcut to toggle island visibility
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
+    /// Global keyboard shortcut to approve current permission request
+    #[serde(default = "default_shortcut_approve")]
+    pub shortcut_approve: String,
+    #[serde(default = "default_true")]
+    pub shortcut_approve_enabled: bool,
+    /// Global keyboard shortcut to deny current permission request
+    #[serde(default = "default_shortcut_deny")]
+    pub shortcut_deny: String,
+    #[serde(default = "default_true")]
+    pub shortcut_deny_enabled: bool,
+    /// Global keyboard shortcut to skip current question by selecting the first option
+    #[serde(default = "default_shortcut_skip")]
+    pub shortcut_skip: String,
+    #[serde(default)]
+    pub shortcut_skip_enabled: bool,
 }
 
 fn default_display_id() -> String {
@@ -65,11 +194,51 @@ fn default_true() -> bool {
 }
 
 fn default_sound_pack() -> String {
-    "eight-bit".to_string()
+    "synth".to_string()
 }
 
 fn default_notification_mode() -> String {
     "turnEnd".to_string()
+}
+
+fn default_volume() -> u8 {
+    70
+}
+
+fn default_idle_timeout_minutes() -> u32 {
+    5
+}
+
+fn default_quiet_hours_start() -> String {
+    "22:00".to_string()
+}
+
+fn default_quiet_hours_end() -> String {
+    "08:00".to_string()
+}
+
+fn default_global_shortcut() -> String {
+    "CommandOrControl+Shift+I".to_string()
+}
+
+fn default_shortcut_approve() -> String {
+    "CommandOrControl+Shift+A".to_string()
+}
+
+fn default_shortcut_deny() -> String {
+    "CommandOrControl+Shift+D".to_string()
+}
+
+fn default_shortcut_skip() -> String {
+    "CommandOrControl+Shift+S".to_string()
+}
+
+fn default_island_surface_mode() -> String {
+    "island".to_string()
+}
+
+fn default_island_pet_scale() -> u32 {
+    72
 }
 
 impl Default for AppConfig {
@@ -79,18 +248,65 @@ impl Default for AppConfig {
             sound_volume: 0.7,
             auto_hide: true,
             smart_suppression: true,
+            hide_in_fullscreen: false,
             completion_timeout: 5,
             show_token_usage: true,
             theme: "system".to_string(),
             display_id: "primary".to_string(),
-            auto_hide_no_sessions: false,
-            hide_in_fullscreen: true,
+            auto_hide_no_sessions: true,
             sound_events: std::collections::HashMap::new(),
-            sound_pack: "eight-bit".to_string(),
+            sound_rules: std::collections::HashMap::new(),
+            custom_sounds: Vec::new(),
+            sound_pack: "synth".to_string(),
             probe_session_filter: false,
-            idle_timeout_minutes: 0,
+            quiet_hours_enabled: false,
+            quiet_hours_start: default_quiet_hours_start(),
+            quiet_hours_end: default_quiet_hours_end(),
+            idle_timeout_minutes: default_idle_timeout_minutes(),
             notification_mode: "turnEnd".to_string(),
             engine_instances: Vec::new(),
+            webhook_configs: Vec::new(),
+            remote_hosts: Vec::new(),
+            volume: default_volume(),
+            custom_hooks_path: String::new(),
+            custom_hook_templates: Vec::new(),
+            hook_doctor_enabled: false,
+            session_launcher_enabled: false,
+            custom_hook_templates_enabled: false,
+            buddy_device: BuddyDeviceConfig::default(),
+            tips_enabled: true,
+            pixel_cursor_enabled: true,
+            confetti_enabled: true,
+            follow_focus: false,
+            island_surface_mode: default_island_surface_mode(),
+            island_pet_scale: default_island_pet_scale(),
+            island_pet_window_origin: None,
+            global_shortcut: "CommandOrControl+Shift+I".to_string(),
+            shortcut_approve: default_shortcut_approve(),
+            shortcut_approve_enabled: true,
+            shortcut_deny: default_shortcut_deny(),
+            shortcut_deny_enabled: true,
+            shortcut_skip: default_shortcut_skip(),
+            shortcut_skip_enabled: false,
+        }
+    }
+}
+
+fn default_buddy_device_transport() -> String {
+    "http".to_string()
+}
+
+fn default_buddy_device_port() -> u16 {
+    17893
+}
+
+impl Default for BuddyDeviceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            transport: default_buddy_device_transport(),
+            port: default_buddy_device_port(),
+            shared_secret: String::new(),
         }
     }
 }
@@ -124,9 +340,9 @@ impl ConfigStore {
     /// Get the platform-appropriate config file path
     fn config_file_path() -> PathBuf {
         let base = dirs::config_dir()
-            .or_else(|| dirs::data_local_dir())
-            .unwrap_or_else(|| std::env::temp_dir());
-        base.join("agent-island").join("config.json")
+            .or_else(dirs::data_local_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("agentbro").join("config.json")
     }
 
     /// Load config from disk
@@ -140,7 +356,10 @@ impl ConfigStore {
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let config = self.config.read().map_err(|e| format!("Lock error: {}", e))?;
+        let config = self
+            .config
+            .read()
+            .map_err(|e| format!("Lock error: {}", e))?;
         let content = serde_json::to_string_pretty(&*config)?;
         std::fs::write(&self.config_path, content)?;
         Ok(())
@@ -148,15 +367,16 @@ impl ConfigStore {
 
     /// Get the current config
     pub fn get(&self) -> AppConfig {
-        self.config.read()
-            .map(|c| c.clone())
-            .unwrap_or_default()
+        self.config.read().map(|c| c.clone()).unwrap_or_default()
     }
 
     /// Update the config, save to disk, and emit event
     pub fn update(&self, new_config: AppConfig) -> Result<(), String> {
         {
-            let mut config = self.config.write().map_err(|e| format!("Lock error: {}", e))?;
+            let mut config = self
+                .config
+                .write()
+                .map_err(|e| format!("Lock error: {}", e))?;
             *config = new_config.clone();
         }
 
@@ -174,5 +394,26 @@ impl ConfigStore {
 
         log::info!("Config updated and saved");
         Ok(())
+    }
+}
+
+impl Default for ConfigStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn defaults_match_evolab_island_behavior() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.completion_timeout, 5);
+        assert_eq!(config.idle_timeout_minutes, 5);
+        assert_eq!(config.sound_volume, 0.7);
+        assert_eq!(config.volume, 70);
     }
 }

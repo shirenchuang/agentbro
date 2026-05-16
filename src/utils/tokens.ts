@@ -1,4 +1,4 @@
-/* Agent Island — Token formatting and cost estimation utilities */
+/* AgentBro — Token formatting and cost estimation utilities */
 import type { TokenUsage } from '../types/agent'
 
 export function formatTokens(n: number): string {

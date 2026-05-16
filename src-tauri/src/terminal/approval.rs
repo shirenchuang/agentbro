@@ -41,7 +41,11 @@ pub fn reject(tmux_target: &str, message: Option<&str>) -> Result<(), Box<dyn st
 
 /// Find the tmux path (reuse logic from tmux module)
 fn find_tmux_path() -> Option<String> {
-    for path in &["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
+    for path in &[
+        "/opt/homebrew/bin/tmux",
+        "/usr/local/bin/tmux",
+        "/usr/bin/tmux",
+    ] {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
         }
@@ -61,9 +65,11 @@ fn find_tmux_path() -> Option<String> {
 
 /// Send literal text to a tmux pane, followed by Enter as a separate command.
 /// Uses `-l` flag to prevent tmux from interpreting special characters.
-fn send_keys_with_enter(target: &tmux::TmuxTarget, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let tmux_path = find_tmux_path()
-        .ok_or("tmux not found")?;
+fn send_keys_with_enter(
+    target: &tmux::TmuxTarget,
+    text: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tmux_path = find_tmux_path().ok_or("tmux not found")?;
     let target_str = target.target_string();
 
     // Send the literal text

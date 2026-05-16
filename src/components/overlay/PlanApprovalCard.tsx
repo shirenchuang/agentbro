@@ -10,14 +10,15 @@ interface PlanApprovalCardProps {
   overlay: OverlayItem
   session: SessionState
   onSendFeedback: (feedback: string) => void
+  onManualReview: () => void
   onAcceptEdits: () => void
   onAutoApprove: () => void
   onDismiss: () => void
 }
 
-export function PlanApprovalCard({ overlay, session, onSendFeedback, onAcceptEdits, onAutoApprove, onDismiss }: PlanApprovalCardProps) {
+export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onDismiss }: PlanApprovalCardProps) {
   const { t } = useTranslation()
-  const data = overlay.data as { planTitle?: string; planContent: string; requestedPermissions?: string[] }
+  const data = overlay.data as { planTitle?: string; planContent: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
   const [feedback, setFeedback] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -49,7 +50,13 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onAcceptEdi
         <div className="plan-approval__perms">
           <span className="plan-approval__perms-label">Requested permissions:</span>
           {data.requestedPermissions.map((p, i) => (
-            <span key={i} className="plan-approval__perm-item">{p}</span>
+            <div key={i} className="plan-approval__perm-item">
+              {typeof p === 'string' ? (
+                <span>{p}</span>
+              ) : (
+                <span><span className="plan-approval__perm-tool">{p.tool}</span>: {p.prompt}</span>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -70,7 +77,7 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onAcceptEdi
       <div className="plan-approval__actions">
         <button
           className="plan-approval__btn plan-approval__btn--feedback"
-          onClick={feedback.trim() ? handleSendFeedback : onDismiss}
+          onClick={feedback.trim() ? handleSendFeedback : onManualReview}
         >
           {feedback.trim() ? t('notch.sendFeedback', { defaultValue: 'Send Feedback' }) : t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>

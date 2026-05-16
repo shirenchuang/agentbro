@@ -1,7 +1,9 @@
 /* ApprovalBar — Vibe Island style: warning card + 4 colored buttons, plan approval bar */
-import { useRef } from 'react'
+import { useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
+import { setNotchFocusable } from '../../services/tauriApi'
+import { getToolActivityLabel } from '../../utils/toolLabels'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -16,9 +18,26 @@ interface ApprovalBarProps {
 export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage }: ApprovalBarProps) {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleInputFocus = useCallback(() => {
+    if (blurTimerRef.current) {
+      clearTimeout(blurTimerRef.current)
+      blurTimerRef.current = null
+    }
+    setNotchFocusable(true).catch(() => {})
+  }, [])
+
+  const handleInputBlur = useCallback(() => {
+    blurTimerRef.current = setTimeout(() => {
+      blurTimerRef.current = null
+      setNotchFocusable(false).catch(() => {})
+    }, 200)
+  }, [])
 
   if (session.phase === 'waiting_approval') {
     const toolName = session.pendingPermission?.toolName || ''
+    const toolLabel = toolName ? getToolActivityLabel(t, toolName) : ''
     const toolInput = session.pendingPermission?.toolInput || ''
 
     return (
@@ -26,14 +45,14 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         {/* Warning header */}
         <div className="approval-bar__warning">
           <span className="approval-bar__warning-icon">{'\u26A0'}</span>
-          <span className="approval-bar__warning-text">{toolName}</span>
+          <span className="approval-bar__warning-text">{toolLabel}</span>
         </div>
 
         {/* Tool detail card */}
         <div className="approval-bar__tool-card">
           <div className="approval-bar__tool-header">
             <span className="approval-bar__tool-icon">{'\uD83D\uDD0D'}</span>
-            <span className="approval-bar__tool-name">{toolName}</span>
+            <span className="approval-bar__tool-name">{toolLabel}</span>
           </div>
           {toolInput && (
             <div className="approval-bar__tool-input">{toolInput}</div>
@@ -82,6 +101,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           <input
             className="approval-bar__input"
             placeholder={t('notch.typeReply')}
+            onFocus={handleInputFocus}
+            onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 const val = (e.target as HTMLInputElement).value.trim()
@@ -106,6 +127,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             ref={inputRef}
             className="approval-bar__input"
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
+            onFocus={handleInputFocus}
+            onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 const val = (e.target as HTMLInputElement).value.trim()
@@ -140,6 +163,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           ref={inputRef}
           className="approval-bar__input"
           placeholder={t('notch.typeMessage')}
+          onFocus={handleInputFocus}
+          onBlur={handleInputBlur}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               const val = (e.target as HTMLInputElement).value.trim()
@@ -152,7 +177,12 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         />
         <button
           className="approval-bar__send"
-          onClick={() => {
+          onMouseDown={(e) => {
+            e.preventDefault()
+            if (blurTimerRef.current) {
+              clearTimeout(blurTimerRef.current)
+              blurTimerRef.current = null
+            }
             if (inputRef.current && inputRef.current.value.trim()) {
               onSendMessage(inputRef.current.value)
               inputRef.current.value = ''

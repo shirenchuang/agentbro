@@ -1,13 +1,14 @@
-/* Agent Island — Priority System */
+/* AgentBro — Priority System */
 
 export const PRIORITY = {
   dormant: 0,
   idle: 1,
   done: 2,
-  thinking: 3,
-  working: 4,
-  compacting: 5,
+  compacting: 3,
+  thinking: 4,
+  working: 5,
   attention: 6,
+  error: 7,
 } as const
 
 export type Priority = typeof PRIORITY[keyof typeof PRIORITY]
@@ -19,7 +20,7 @@ export function computePriority(session: {
   idleSince?: number
   startedAt: number
 }): Priority {
-  if (session.phase === 'error') return PRIORITY.attention
+  if (session.phase === 'error') return PRIORITY.error
   if (session.phase === 'waiting_approval' || session.phase === 'waiting_input')
     return PRIORITY.attention
   if (session.phase === 'compacting') return PRIORITY.compacting

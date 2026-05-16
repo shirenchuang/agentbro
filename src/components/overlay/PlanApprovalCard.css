@@ -1,38 +1,45 @@
+/* PlanApprovalCard — evolab-style with amber accent, scrollable content, 3 actions */
+
 .plan-approval__header {
   display: flex;
   align-items: center;
   gap: 8px;
+  border-left: 2px solid #f59e0b;
+  padding-left: 10px;
 }
 
 .plan-approval__title {
-  font-size: var(--font-size-sm, 12px);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--vi-text-primary, #fff);
+  color: var(--island-text);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 .plan-approval__tag {
   font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--vi-accent-green, #30D158);
-  background: rgba(48, 209, 88, 0.12);
-  padding: 2px 6px;
+  color: var(--island-text-secondary);
+  background: var(--island-subtle-hover, rgba(255, 255, 255, 0.06));
+  padding: 2px 8px;
   border-radius: 4px;
   flex-shrink: 0;
 }
 
 .plan-approval__content {
-  max-height: 200px;
+  max-height: 250px;
   overflow-y: auto;
   font-size: 12px;
-  line-height: 1.5;
-  color: var(--vi-text-secondary, #aaa);
-  padding: 4px 0;
+  line-height: 1.6;
+  color: var(--island-text);
+  padding: 8px 0;
+}
+
+.plan-approval__content::-webkit-scrollbar {
+  display: none;
 }
 
 .plan-approval__content h1,
@@ -40,7 +47,7 @@
 .plan-approval__content h3 {
   font-size: 12px;
   font-weight: 600;
-  color: var(--vi-text-primary, #fff);
+  color: var(--island-text);
   margin: 8px 0 4px;
 }
 
@@ -64,7 +71,7 @@
 
 .plan-approval__content pre {
   background: var(--island-input-bg);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: 6px;
   padding: 8px;
   overflow-x: auto;
   margin: 4px 0;
@@ -75,65 +82,81 @@
   padding: 0;
 }
 
+/* Permissions list */
 .plan-approval__perms {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
+  border-top: 1px solid var(--island-border);
+  padding: 8px 0;
 }
 
 .plan-approval__perms-label {
   font-size: 10px;
-  color: var(--vi-text-tertiary, #666);
-  width: 100%;
-  margin-bottom: 2px;
+  color: var(--island-text-muted);
+  display: block;
+  margin-bottom: 4px;
 }
 
 .plan-approval__perm-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   font-size: 10px;
-  font-family: var(--font-mono, monospace);
-  background: var(--island-subtle);
-  border-radius: 3px;
-  padding: 2px 6px;
-  color: var(--vi-text-secondary, #aaa);
+  color: var(--island-text-secondary);
+  margin-bottom: 2px;
 }
 
+.plan-approval__perm-item::before {
+  content: '·';
+  color: var(--island-text-muted);
+  margin-top: 1px;
+}
+
+.plan-approval__perm-tool {
+  color: #4ade80;
+  flex-shrink: 0;
+}
+
+/* Feedback input */
 .plan-approval__input-row {
-  display: flex;
+  border-top: 1px solid var(--island-border);
+  padding-top: 8px;
 }
 
 .plan-approval__input {
-  flex: 1;
-  padding: 6px 10px;
-  background: var(--island-input-bg);
-  border: 1px solid var(--vi-card-border, #333);
-  border-radius: var(--radius-sm, 6px);
-  color: var(--vi-text-primary, #fff);
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--island-card);
+  border: 1px solid var(--island-border);
+  border-radius: 8px;
+  color: var(--island-text);
   font-family: var(--font-sans, system-ui);
-  font-size: var(--font-size-sm, 12px);
+  font-size: 11px;
   outline: none;
+  box-sizing: border-box;
 }
 
 .plan-approval__input::placeholder {
-  color: var(--vi-text-tertiary, #666);
+  color: var(--island-text-muted);
 }
 
 .plan-approval__input:focus {
-  border-color: var(--vi-accent-blue, #007AFF);
+  border-color: var(--island-text-muted);
 }
 
+/* Actions — 3 full-width buttons */
 .plan-approval__actions {
   display: flex;
   gap: 6px;
+  border-top: 1px solid var(--island-border);
+  padding-top: 8px;
 }
 
 .plan-approval__btn {
   flex: 1;
-  padding: 6px 8px;
+  padding: 8px 8px;
   border: none;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: 8px;
   font-family: var(--font-sans, system-ui);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.15s;
@@ -150,16 +173,16 @@
 }
 
 .plan-approval__btn--feedback {
-  background: var(--vi-badge-dark, #333);
-  color: var(--vi-text-primary, #fff);
+  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
 }
 
 .plan-approval__btn--accept {
-  background: var(--vi-accent-orange, #FF9500);
+  background: #d97706;
   color: white;
 }
 
 .plan-approval__btn--auto {
-  background: var(--vi-accent-red, #FF3B30);
+  background: #dc2626;
   color: white;
 }

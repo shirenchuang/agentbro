@@ -1,0 +1,121 @@
+<h2>Install / Update / Uninstall — Feedback UX</h2>
+<p class="subtitle">When the user clicks "Install" or "Update", what kind of progress feedback should they see?</p>
+
+<div class="cards">
+
+  <!-- Option A: Inline spinner + status text -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Installing Claude Code...</div>
+
+      <!-- Row: before click -->
+      <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px; margin-bottom:6px; opacity:0.4;">
+        <div style="font-size:20px;">🧬</div>
+        <div style="flex:1;">
+          <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Gemini CLI</div>
+          <div style="color:#64748b; font-size:10px;">pip · gemini-cli</div>
+        </div>
+        <div style="background:#64748b20; color:#94a3b8; padding:3px 10px; border-radius:5px; font-size:10px;">Not installed</div>
+        <div style="background:#3b82f630; color:#3b82f6; padding:4px 10px; border-radius:5px; font-size:10px;">Install</div>
+      </div>
+
+      <!-- Row: installing (spinner + status text) -->
+      <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border:1px solid #3b82f640; border-radius:8px; padding:10px 12px; margin-bottom:6px;">
+        <div style="font-size:20px;">🤖</div>
+        <div style="flex:1;">
+          <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Claude Code</div>
+          <div style="color:#3b82f6; font-size:10px; display:flex; align-items:center; gap:6px;">
+            <span style="display:inline-block; width:12px; height:12px; border:2px solid #3b82f640; border-top-color:#3b82f6; border-radius:50%; animation:spin 0.8s linear infinite;"></span>
+            Installing via npm... (npm install -g @anthropic-ai/claude-code)
+          </div>
+        </div>
+        <div style="background:#3b82f620; color:#3b82f6; padding:3px 10px; border-radius:5px; font-size:10px;">Installing...</div>
+      </div>
+
+      <!-- Row: done -->
+      <div style="display:flex; align-items:center; gap:10px; background:#2a2a3e; border-radius:8px; padding:10px 12px;">
+        <div style="font-size:20px;">📦</div>
+        <div style="flex:1;">
+          <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Codex</div>
+          <div style="color:#22c55e; font-size:10px;">✓ Installed v0.1.0 — 3s ago</div>
+        </div>
+        <div style="background:#22c55e30; color:#22c55e; padding:3px 10px; border-radius:5px; font-size:10px;">Installed</div>
+        <div style="display:flex; gap:4px;">
+          <div style="background:#dc262620; color:#ef4444; padding:4px 8px; border-radius:5px; font-size:10px;">Uninstall</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Inline Status</h3>
+      <p>Spinner + one-line status text directly in the row. Shows the command being run (e.g. "npm install -g ..."). Row gets a subtle blue border while working. Simple, no extra panels.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Expandable terminal output -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 20px; background: #1a1a2e;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Installing with terminal output</div>
+
+      <!-- Row: installing with expand -->
+      <div style="background:#2a2a3e; border:1px solid #3b82f640; border-radius:8px; overflow:hidden; margin-bottom:6px;">
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 12px;">
+          <div style="font-size:20px;">🤖</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Claude Code</div>
+            <div style="color:#3b82f6; font-size:10px; display:flex; align-items:center; gap:6px;">
+              <span style="display:inline-block; width:12px; height:12px; border:2px solid #3b82f640; border-top-color:#3b82f6; border-radius:50%; animation:spin 0.8s linear infinite;"></span>
+              Installing...
+            </div>
+          </div>
+          <div style="color:#64748b; font-size:10px; padding:4px 8px; background:#1a1a2e; border-radius:4px; cursor:pointer;">▼ Output</div>
+        </div>
+        <!-- Terminal output area -->
+        <div style="background:#0f0f1e; padding:10px 14px; border-top:1px solid #374151; font-family:monospace; font-size:11px; line-height:1.6; color:#94a3b8; max-height:120px; overflow-y:auto;">
+          <div style="color:#64748b;">$ npm install -g @anthropic-ai/claude-code</div>
+          <div>added 1 package in 2.4s</div>
+          <div style="color:#22c55e;">✓ claude-code@1.0.33 installed</div>
+          <div style="color:#64748b;">$ claude --version</div>
+          <div>1.0.33</div>
+        </div>
+      </div>
+
+      <!-- Row: error state -->
+      <div style="background:#2a2a3e; border:1px solid #ef444440; border-radius:8px; overflow:hidden;">
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 12px;">
+          <div style="font-size:20px;">🧬</div>
+          <div style="flex:1;">
+            <div style="color:#e2e8f0; font-size:12px; font-weight:600;">Gemini CLI</div>
+            <div style="color:#ef4444; font-size:10px;">✗ Installation failed</div>
+          </div>
+          <div style="color:#64748b; font-size:10px; padding:4px 8px; background:#1a1a2e; border-radius:4px; cursor:pointer;">▼ Output</div>
+          <div style="background:#3b82f630; color:#3b82f6; padding:4px 8px; border-radius:5px; font-size:10px; cursor:pointer;">Retry</div>
+        </div>
+        <div style="background:#0f0f1e; padding:10px 14px; border-top:1px solid #374151; font-family:monospace; font-size:11px; line-height:1.6; color:#94a3b8; max-height:100px;">
+          <div style="color:#64748b;">$ pip install gemini-cli</div>
+          <div style="color:#ef4444;">ERROR: Could not find a version that satisfies the requirement</div>
+          <div style="color:#ef4444;">ERROR: No matching distribution found for gemini-cli</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Expandable Terminal</h3>
+      <p>Row has a collapsible terminal output area. Shows real-time command output, useful for debugging install failures. Output area auto-scrolls. Error state shows red border + Retry button.</p>
+    </div>
+  </div>
+
+</div>
+
+<style>
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+</style>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>Both options include:</h3>
+  <ul style="color: #94a3b8; font-size: 13px; line-height: 1.8;">
+    <li><strong>Error handling</strong> — failed installs show error message + Retry button</li>
+    <li><strong>InlineConfirm for Uninstall</strong> — same two-state button pattern from Skills</li>
+    <li><strong>Concurrent installs</strong> — can install/update multiple agents at once</li>
+  </ul>
+</div>

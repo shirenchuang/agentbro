@@ -1,6 +1,15 @@
-/* Agent Island — Shared TypeScript Types */
+/* AgentBro — Shared TypeScript Types */
 
-export type AgentType = 'claude-code' | 'codex' | 'gemini-cli' | 'cursor' | 'opencode' | 'droid' | 'qoder' | 'codebuddy' | 'copilot' | 'kiro'
+export type AgentType =
+  | 'claude-code' | 'codex' | 'gemini-cli'
+  | 'cursor' | 'cursor-cli'
+  | 'copilot'
+  | 'trae' | 'traecli' | 'traecn'
+  | 'qoder' | 'qoder-cli'
+  | 'codebuddy' | 'codebuddycn'
+  | 'qwen' | 'kimi' | 'opencode'
+  | 'droid' | 'stepfun' | 'antigravity'
+  | 'workbuddy' | 'hermes' | 'pi' | 'kiro'
 
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 
@@ -35,6 +44,7 @@ export interface OverlayItem {
   type: OverlayType
   data: unknown
   createdAt: number
+  suppressed?: boolean
 }
 
 export interface TokenUsage {
@@ -65,6 +75,15 @@ export interface PermissionRequest {
 export interface AskQuestion {
   question: string
   options: string[]
+  descriptions?: string[]
+  header?: string
+  multiSelect?: boolean
+  questions?: Array<{
+    question: string
+    header?: string | null
+    options: Array<{ label: string; description?: string | null }>
+    multiSelect?: boolean
+  }>
 }
 
 export interface RateLimitInfo {
@@ -72,6 +91,13 @@ export interface RateLimitInfo {
   fiveHourRemaining: string // "1d6h" format
   sevenDayUsage: number
   sevenDayRemaining: string
+}
+
+export interface ContextWindowInfo {
+  totalInputTokens: number
+  totalOutputTokens: number
+  contextWindowSize: number
+  usedPercentage: number | null
 }
 
 export interface TerminalInfo {
@@ -85,14 +111,22 @@ export interface TerminalInfo {
 export interface SessionState {
   id: string
   agentType: AgentType
+  engineLabel?: string
+  engineConfigRoot?: string
   project: string
+  cwd?: string
   terminal: string
   phase: SessionPhase
   startedAt: number
   idleSince?: number
+  unattendedSince?: number // timestamp when session entered a waiting state
   duration: number
   tokens: TokenUsage
   rateLimits?: RateLimitInfo
+  statusLineText?: string
+  contextWindow?: ContextWindowInfo
+  lastMainAgentAt?: number
+  cacheTtlMs?: number
   pendingPermission?: PermissionRequest
   pendingQuestion?: AskQuestion
   lastToolName?: string
@@ -105,16 +139,32 @@ export interface SessionState {
   tasks?: TaskInfo[]
   lastUserMessage?: string
   sessionTitle?: string
+  pid?: number
+  tty?: string
+  termBundleId?: string
+  weztermPane?: string
+  zellijPaneId?: string
+  zellijSessionName?: string
+  cmuxSurfaceId?: string
+  cmuxWorkspaceId?: string
   planTitle?: string
   planContent?: string
+  planPermissions?: string[]
   responseText?: string
   taskCompletedAt?: number // timestamp when task completed
+  isYoloMode?: boolean
+  lastActivityAt?: number // timestamp for processing timeout
 }
 
 export interface SubagentInfo {
   agentId: string
+  agentType?: string
   description: string
+  transcriptPath?: string
+  agentTranscriptPath?: string
+  lastAssistantMessage?: string
   startedAt: number
+  completedAt?: number
   status: 'running' | 'completed' | 'error'
   tools: string[]
 }
@@ -140,22 +190,41 @@ export interface McpToolInfo {
   displayName: string
 }
 
+export interface ChatToolCall {
+  toolUseId?: string
+  toolName: string
+  toolInput?: string
+  status: ToolStatus
+  result?: string
+  diff?: DiffContent
+}
+
 // Chat message types for conversation view
 export type ChatMessage =
-  | { role: 'user'; content: string; timestamp: number }
-  | { role: 'assistant'; content: string; timestamp: number }
-  | { role: 'tool_use'; toolName: string; toolInput?: string; status: ToolStatus; result?: string; diff?: DiffContent; timestamp: number }
+  | { role: 'user'; content: string; timestamp: number; images?: string[] }
+  | {
+      role: 'assistant'
+      content: string
+      timestamp: number
+      images?: string[]
+      toolCalls?: ChatToolCall[]
+      thinking?: string
+      thinkingCount?: number
+      messageCount?: number
+      trailingContent?: string
+    }
+  | ({ role: 'tool_use'; timestamp: number } & ChatToolCall)
   | { role: 'permission'; toolName: string; toolInput?: string; diff?: DiffContent; options?: string[]; timestamp: number }
   | { role: 'thinking'; content: string; timestamp: number }
   | { role: 'error'; message: string; timestamp: number }
 
 export type AgentEvent =
-  | { type: 'session_start'; sessionId: string; project: string; terminal: string; agentType: AgentType }
+  | { type: 'session_start'; sessionId: string; project: string; terminal: string; agentType: AgentType; cwd?: string }
   | { type: 'session_end'; sessionId: string }
   | { type: 'processing'; sessionId: string; description: string }
   | { type: 'tool_use'; sessionId: string; toolName: string; toolInput: string; toolTarget?: string; status: ToolStatus }
   | { type: 'permission_request'; sessionId: string; toolName: string; toolInput?: string; diff?: DiffContent; options?: string[] }
-  | { type: 'ask_question'; sessionId: string; question: string; options: string[] }
+  | { type: 'ask_question'; sessionId: string; question: string; options: string[]; descriptions?: string[]; header?: string; multiSelect?: boolean; questions?: AskQuestion['questions'] }
   | { type: 'task_complete'; sessionId: string; summary: string }
   | { type: 'error'; sessionId: string; message: string }
   | { type: 'interrupt'; sessionId: string }

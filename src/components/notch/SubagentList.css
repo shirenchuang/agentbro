@@ -1,7 +1,7 @@
 /* SubagentList — Nested agent tree under main session */
 
 .subagent-list {
-  padding: 0 var(--space-md);
+  padding: 0 12px;
   border-bottom: 1px solid var(--island-subtle);
 }
 
@@ -12,20 +12,20 @@
   padding: 4px 0;
   background: none;
   border: none;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-xs);
+  color: var(--island-text-muted);
+  font-size: 10px;
   cursor: pointer;
   width: 100%;
   text-align: left;
-  transition: color var(--duration-fast) var(--ease-out);
+  transition: color 0.15s ease-out;
 }
 
 .subagent-list__toggle:hover {
-  color: var(--text-secondary);
+  color: var(--island-text-secondary);
 }
 
 .subagent-list__chevron {
-  transition: transform var(--duration-fast) var(--ease-out);
+  transition: transform 0.15s ease-out;
   flex-shrink: 0;
 }
 
@@ -48,9 +48,31 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  font-size: 10px;
+  color: var(--island-text-secondary);
   padding: 2px 0;
+  width: 100%;
+  min-height: 20px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.subagent-row:disabled {
+  cursor: default;
+}
+
+.subagent-row--button {
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 2px 4px 2px 0;
+  transition: background-color 0.15s ease-out, color 0.15s ease-out;
+}
+
+.subagent-row--button:hover {
+  background: var(--island-card-hover);
+  color: var(--island-text);
 }
 
 .subagent-row__desc {
@@ -64,17 +86,23 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
+  color: var(--island-text-muted);
+  font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10px;
   flex-shrink: 0;
+}
+
+.subagent-row__history {
+  flex-shrink: 0;
+  color: var(--island-text-muted);
+  font-size: 9px;
 }
 
 .subagent-row__spinner {
   width: 6px;
   height: 6px;
-  border: 1px solid var(--text-tertiary);
-  border-top-color: var(--text-primary);
+  border: 1px solid var(--island-text-muted);
+  border-top-color: var(--island-text);
   border-radius: 50%;
   animation: subagent-spin 0.8s linear infinite;
 }

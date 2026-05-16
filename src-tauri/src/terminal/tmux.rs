@@ -31,7 +31,11 @@ impl TmuxTarget {
 /// Find the path to tmux binary
 fn find_tmux_path() -> Option<String> {
     // Check common paths
-    for path in &["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
+    for path in &[
+        "/opt/homebrew/bin/tmux",
+        "/usr/local/bin/tmux",
+        "/usr/bin/tmux",
+    ] {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
         }
@@ -58,7 +62,12 @@ pub fn find_pane_for_pid(agent_pid: u32) -> Option<TmuxTarget> {
     let tmux_path = find_tmux_path()?;
 
     let output = std::process::Command::new(&tmux_path)
-        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_pid}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}:#{window_index}.#{pane_index} #{pane_pid}",
+        ])
         .output()
         .ok()?;
 
@@ -92,16 +101,23 @@ pub fn find_pane_for_pid(agent_pid: u32) -> Option<TmuxTarget> {
 
 /// Switch to a specific tmux pane (select-window + select-pane)
 pub fn switch_to_pane(target: &TmuxTarget) -> Result<(), Box<dyn std::error::Error>> {
-    let tmux_path = find_tmux_path()
-        .ok_or("tmux not found")?;
+    let tmux_path = find_tmux_path().ok_or("tmux not found")?;
 
     // Select the window first
     let status = std::process::Command::new(&tmux_path)
-        .args(["select-window", "-t", &format!("{}:{}", target.session, target.window)])
+        .args([
+            "select-window",
+            "-t",
+            &format!("{}:{}", target.session, target.window),
+        ])
         .status()?;
 
     if !status.success() {
-        return Err(format!("Failed to select tmux window {}:{}", target.session, target.window).into());
+        return Err(format!(
+            "Failed to select tmux window {}:{}",
+            target.session, target.window
+        )
+        .into());
     }
 
     // Then select the pane
@@ -131,7 +147,11 @@ pub fn is_pane_active(agent_pid: u32) -> bool {
 
     // Get the currently active pane
     let output = match std::process::Command::new(&tmux_path)
-        .args(["display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"])
+        .args([
+            "display-message",
+            "-p",
+            "#{session_name}:#{window_index}.#{pane_index}",
+        ])
         .output()
     {
         Ok(o) if o.status.success() => o,

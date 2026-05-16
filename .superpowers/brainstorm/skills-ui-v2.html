@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentBro - Skills & Plugins</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro','PingFang SC',sans-serif;background:#0d0d0d;color:#e0e0e0;font-size:13px;}
+::-webkit-scrollbar{width:6px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#333;border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:#555;}
+
+.container{display:flex;height:100vh;}
+
+/* Sidebar */
+.sidebar{width:180px;background:#131313;border-right:1px solid #222;padding:12px 0;flex-shrink:0;}
+.sidebar h2{font-size:11px;color:#555;padding:8px 14px;text-transform:uppercase;letter-spacing:1px;}
+.nav-item{padding:7px 14px;font-size:12px;color:#777;cursor:pointer;display:flex;align-items:center;gap:8px;transition:all .15s;}
+.nav-item:hover{background:#1a1a1a;color:#bbb;}
+.nav-item.active{background:linear-gradient(90deg,#0a1f0a,transparent);color:#4ade80;border-left:2px solid #4ade80;padding-left:12px;}
+
+/* Main */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #222;background:#111;}
+.tabs{display:flex;gap:0;}
+.tab{padding:6px 18px;font-size:12px;color:#777;cursor:pointer;border:1px solid #2a2a2a;background:#161616;transition:all .15s;user-select:none;}
+.tab:first-child{border-radius:6px 0 0 6px;}
+.tab:last-child{border-radius:0 6px 6px 0;}
+.tab.active{background:#4ade80;color:#000;border-color:#4ade80;font-weight:600;}
+.tab:not(.active):hover{background:#1e1e1e;color:#ccc;}
+.topbar-actions{display:flex;gap:6px;}
+
+/* Buttons */
+.btn{padding:5px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#bbb;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;font-family:inherit;}
+.btn:hover{background:#252525;color:#fff;border-color:#444;}
+.btn-primary{background:#4ade80;color:#000;border-color:#4ade80;font-weight:600;}
+.btn-primary:hover{background:#22c55e;}
+.btn-danger{color:#f87171;border-color:#3a1a1a;}
+.btn-danger:hover{background:#2a1111;border-color:#f87171;}
+.btn-sm{padding:3px 8px;font-size:10px;}
+.btn-ghost{border:none;background:none;color:#888;}
+.btn-ghost:hover{color:#fff;background:#222;}
+
+/* Content */
+.content-wrap{display:flex;flex:1;overflow:hidden;}
+.content{flex:1;overflow-y:auto;padding:16px 20px;}
+
+/* Filter */
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;align-items:center;}
+.search{flex:1;padding:7px 10px 7px 30px;border-radius:6px;border:1px solid #2a2a2a;background:#141414;color:#e0e0e0;font-size:12px;font-family:inherit;position:relative;}
+.search::placeholder{color:#444;}
+.search-wrap{flex:1;position:relative;}
+.search-wrap::before{content:'🔍';position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;z-index:1;}
+.chip{padding:4px 10px;border-radius:12px;border:1px solid #2a2a2a;background:#141414;color:#777;font-size:11px;cursor:pointer;transition:all .15s;user-select:none;}
+.chip.active{background:#0f1f0f;color:#4ade80;border-color:#2a4a2a;}
+.chip:hover:not(.active){color:#bbb;border-color:#444;}
+
+/* Agent pills */
+.pills{display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap;}
+.pill{padding:3px 9px;border-radius:10px;font-size:10px;border:1px solid #2a2a2a;background:#141414;color:#666;cursor:pointer;transition:all .15s;user-select:none;}
+.pill.active{border-color:#6366f1;color:#a5b4fc;background:#111128;}
+.pill:hover:not(.active){color:#aaa;border-color:#444;}
+
+/* Section */
+.section-hd{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.8px;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;align-items:center;}
+.section-hd:first-child{margin-top:0;}
+.section-count{background:#1a1a1a;padding:1px 6px;border-radius:8px;font-size:10px;color:#888;}
+
+/* Skill card */
+.sk{display:flex;align-items:center;padding:10px 12px;border-radius:8px;border:1px solid #1e1e1e;background:#141414;cursor:pointer;transition:all .15s;margin-bottom:4px;}
+.sk:hover{border-color:#333;background:#181818;}
+.sk.selected{border-color:#4ade80;background:#0f1a0f;}
+.sk-icon{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-right:10px;flex-shrink:0;}
+.sk-icon.skill{background:#0f1f0f;}
+.sk-icon.mcp{background:#0f0f2f;}
+.sk-info{flex:1;min-width:0;}
+.sk-name{font-size:12px;font-weight:600;color:#ddd;margin-bottom:1px;}
+.sk-desc{font-size:10px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sk-tags{display:flex;gap:3px;margin-left:8px;flex-shrink:0;}
+.tag{padding:1px 6px;border-radius:3px;font-size:9px;font-weight:500;}
+.t-cc{background:#111128;color:#a5b4fc;}
+.t-cx{background:#281111;color:#fca5a5;}
+.t-gm{background:#112828;color:#a5f0fc;}
+.t-cs{background:#282811;color:#fcd34d;}
+.t-hm{background:#281128;color:#d8b4fe;}
+.tog{width:32px;height:18px;border-radius:9px;background:#333;position:relative;cursor:pointer;transition:background .2s;margin-left:8px;flex-shrink:0;}
+.tog.on{background:#4ade80;}
+.tog .d{width:14px;height:14px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .2s;}
+.tog.on .d{left:16px;}
+.sk-acts{display:flex;gap:4px;margin-left:8px;opacity:0;transition:opacity .15s;}
+.sk:hover .sk-acts{opacity:1;}
+.act{width:26px;height:26px;border-radius:5px;border:1px solid #2a2a2a;background:#1a1a1a;color:#666;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;transition:all .15s;}
+.act:hover{border-color:#444;color:#fff;}
+.act.del:hover{border-color:#f87171;color:#f87171;}
+
+/* Detail panel */
+.detail{width:340px;border-left:1px solid #222;background:#111;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;transition:width .2s;}
+.detail.hidden{width:0;border:none;}
+.detail-head{padding:14px 16px;border-bottom:1px solid #1e1e1e;display:flex;justify-content:space-between;align-items:flex-start;}
+.detail-title{font-size:15px;font-weight:600;}
+.detail-src{font-size:10px;color:#4ade80;margin-top:2px;word-break:break-all;}
+.detail-body{flex:1;overflow-y:auto;padding:14px 16px;}
+.detail-label{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;margin-top:14px;}
+.detail-label:first-child{margin-top:0;}
+
+/* Agent rows in detail */
+.ag-row{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:#161616;border-radius:5px;font-size:11px;margin-bottom:3px;}
+.ag-row.add{opacity:.4;border:1px dashed #333;}
+.ag-row.add:hover{opacity:.7;}
+
+/* Tree view */
+.tree{font-size:11px;font-family:'SF Mono','Fira Code',monospace;user-select:none;}
+.tree-node{padding:2px 0;}
+.tree-dir{cursor:pointer;color:#a5b4fc;display:flex;align-items:center;gap:4px;padding:2px 4px;border-radius:3px;}
+.tree-dir:hover{background:#1a1a2a;}
+.tree-dir .arrow{display:inline-block;width:12px;font-size:8px;color:#666;transition:transform .15s;}
+.tree-dir.open .arrow{transform:rotate(90deg);}
+.tree-file{padding:2px 4px 2px 20px;color:#999;cursor:pointer;display:flex;align-items:center;gap:4px;border-radius:3px;}
+.tree-file:hover{background:#1a1a1a;color:#fff;}
+.tree-file.active{background:#0f1f0f;color:#4ade80;}
+.tree-children{padding-left:14px;overflow:hidden;}
+.tree-children.collapsed{display:none;}
+
+/* File viewer */
+.file-viewer{background:#0a0a0a;border:1px solid #1e1e1e;border-radius:6px;overflow:hidden;margin-top:8px;}
+.file-header{background:#141414;padding:6px 10px;font-size:10px;color:#888;border-bottom:1px solid #1e1e1e;display:flex;justify-content:space-between;align-items:center;}
+.file-content{padding:10px;font-family:'SF Mono','Fira Code',monospace;font-size:11px;color:#aaa;line-height:1.7;max-height:260px;overflow-y:auto;white-space:pre-wrap;}
+.file-content .ln{color:#444;display:inline-block;width:24px;text-align:right;margin-right:10px;user-select:none;}
+.file-content .hl{color:#4ade80;}
+.file-content .cm{color:#555;}
+
+/* Pack card */
+.pk{padding:14px;border-radius:8px;border:1px solid #1e1e1e;background:#141414;margin-bottom:8px;transition:all .15s;}
+.pk:hover{border-color:#333;}
+.pk-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.pk-name{font-size:13px;font-weight:600;}
+.pk-desc{font-size:11px;color:#666;margin-bottom:10px;}
+.pk-skills{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;}
+.pk-chip{padding:2px 8px;border-radius:4px;font-size:10px;background:#1a1a1a;border:1px solid #222;color:#999;}
+.pk-foot{display:flex;align-items:center;justify-content:space-between;}
+.pk-status{font-size:10px;color:#4ade80;}
+
+/* Sync sections */
+.sync-box{padding:14px;border-radius:8px;border:1px solid #1e1e1e;background:#141414;margin-bottom:10px;}
+.sync-title{font-size:12px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px;}
+.sync-desc{font-size:11px;color:#666;margin-bottom:10px;}
+.sync-row{display:flex;gap:6px;align-items:center;}
+.sync-input{flex:1;padding:5px 8px;border-radius:5px;border:1px solid #2a2a2a;background:#0d0d0d;color:#ddd;font-size:11px;font-family:inherit;}
+.sync-status{font-size:10px;color:#555;margin-top:6px;}
+.agent-sync-row{display:flex;align-items:center;gap:10px;padding:10px;background:#0d0d0d;border-radius:6px;}
+.agent-sel{padding:5px 8px;border-radius:5px;border:1px solid #2a2a2a;background:#141414;color:#ddd;font-size:11px;font-family:inherit;}
+.sync-arrow{color:#4ade80;font-size:16px;}
+.scanner-row{display:flex;justify-content:space-between;padding:4px 0;font-size:11px;}
+.scanner-ok{color:#4ade80;}
+.scanner-warn{color:#fcd34d;}
+.scanner-off{color:#555;}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px);}
+.modal-overlay.show{display:flex;}
+.modal{background:#161616;border:1px solid #2a2a2a;border-radius:12px;width:520px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+.modal-head{padding:16px 20px;border-bottom:1px solid #222;display:flex;justify-content:space-between;align-items:center;}
+.modal-title{font-size:15px;font-weight:600;}
+.modal-body{padding:20px;overflow-y:auto;flex:1;}
+.modal-foot{padding:14px 20px;border-top:1px solid #222;display:flex;justify-content:flex-end;gap:8px;}
+
+/* Form */
+.form-group{margin-bottom:14px;}
+.form-label{display:block;font-size:11px;color:#888;margin-bottom:5px;}
+.form-input{width:100%;padding:7px 10px;border-radius:6px;border:1px solid #2a2a2a;background:#0d0d0d;color:#ddd;font-size:12px;font-family:inherit;}
+.form-input:focus{outline:none;border-color:#4ade80;}
+textarea.form-input{resize:vertical;min-height:60px;}
+.form-hint{font-size:10px;color:#555;margin-top:3px;}
+
+/* Checkbox row */
+.ck-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;cursor:pointer;transition:background .1s;}
+.ck-row:hover{background:#1a1a1a;}
+.ck-box{width:16px;height:16px;border:1px solid #444;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#000;transition:all .15s;flex-shrink:0;}
+.ck-row.checked .ck-box{background:#4ade80;border-color:#4ade80;}
+.ck-row .ck-label{font-size:12px;color:#ccc;}
+
+/* Radio */
+.radio-group{display:flex;gap:0;margin-top:4px;}
+.radio{padding:5px 14px;border:1px solid #2a2a2a;background:#141414;color:#777;font-size:11px;cursor:pointer;transition:all .15s;}
+.radio:first-child{border-radius:5px 0 0 5px;}
+.radio:last-child{border-radius:0 5px 5px 0;}
+.radio.active{background:#0f1f0f;color:#4ade80;border-color:#2a4a2a;}
+
+/* Skill picker (for pack creation) */
+.sk-picker{max-height:180px;overflow-y:auto;border:1px solid #222;border-radius:6px;background:#0d0d0d;padding:4px;}
+.sk-pick-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;transition:background .1s;}
+.sk-pick-item:hover{background:#1a1a1a;}
+.sk-pick-item.picked{background:#0f1f0f;}
+.sk-pick-icon{font-size:14px;}
+.sk-pick-name{font-size:11px;flex:1;}
+.sk-pick-check{width:14px;height:14px;border:1px solid #444;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;}
+.sk-pick-item.picked .sk-pick-check{background:#4ade80;border-color:#4ade80;color:#000;}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 20px;background:#1a3a1a;border:1px solid #2a4a2a;color:#4ade80;border-radius:8px;font-size:12px;display:none;z-index:200;box-shadow:0 4px 20px rgba(0,0,0,.4);}
+.toast.show{display:flex;align-items:center;gap:8px;animation:slideUp .3s ease;}
+@keyframes slideUp{from{opacity:0;transform:translateX(-50%) translateY(10px);}to{opacity:1;transform:translateX(-50%) translateY(0);}}
+
+.tab-content{display:none;}
+.tab-content.active{display:block;}
+.detail-foot{padding:10px 16px;border-top:1px solid #1e1e1e;display:flex;gap:6px;}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <h2>Settings</h2>
+    <div class="nav-item">⚙ 通用</div>
+    <div class="nav-item">🖥 显示</div>
+    <div class="nav-item">🔊 声音</div>
+    <div class="nav-item">🔗 Hooks</div>
+    <div class="nav-item active">⚡ 技能管理</div>
+    <div class="nav-item">📡 SSH 远程</div>
+    <div class="nav-item">🔔 Webhook</div>
+    <div class="nav-item">⌨ 快捷键</div>
+    <div class="nav-item">🧪 实验室</div>
+    <div class="nav-item">ℹ 关于</div>
+  </div>
+
+  <div class="main">
+    <!-- Topbar -->
+    <div class="topbar">
+      <div class="tabs">
+        <div class="tab active" data-tab="skills">技能列表</div>
+        <div class="tab" data-tab="packs">技能包</div>
+        <div class="tab" data-tab="sync">同步</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn" onclick="showModal('install')">＋ 安装技能</button>
+        <button class="btn btn-primary" onclick="switchTab('sync')">⟳ 同步</button>
+      </div>
+    </div>
+
+    <div class="content-wrap">
+      <div class="content">
+        <!-- ========== 技能列表 ========== -->
+        <div class="tab-content active" id="tab-skills">
+          <div class="filter-bar">
+            <div class="search-wrap"><input class="search" placeholder="搜索技能和 MCP 服务器..."></div>
+            <div class="chip active" data-filter="all">全部</div>
+            <div class="chip" data-filter="skill">Skills</div>
+            <div class="chip" data-filter="mcp">MCP</div>
+          </div>
+          <div class="pills">
+            <div class="pill active">全部 Agent</div>
+            <div class="pill">Claude Code</div>
+            <div class="pill">Codex</div>
+            <div class="pill">Gemini CLI</div>
+            <div class="pill">Cursor</div>
+            <div class="pill">Hermes</div>
+          </div>
+
+          <div class="section-hd">通过 Island 安装 <span class="section-count">6</span></div>
+          <div id="installed-list"></div>
+
+          <div class="section-hd">本地发现 <span class="section-count">3</span></div>
+          <div id="local-list"></div>
+        </div>
+
+        <!-- ========== 技能包 ========== -->
+        <div class="tab-content" id="tab-packs">
+          <div class="filter-bar">
+            <div class="search-wrap"><input class="search" placeholder="搜索技能包..."></div>
+            <button class="btn btn-primary" onclick="showModal('pack')">＋ 新建技能包</button>
+          </div>
+          <div id="pack-list"></div>
+          <div class="pk" style="border-style:dashed;cursor:pointer;text-align:center;padding:24px;" onclick="showModal('pack')">
+            <div style="color:#555;font-size:13px;">＋ 创建新的技能包</div>
+            <div style="color:#444;font-size:11px;margin-top:4px;">将技能分组管理，批量安装和启停</div>
+          </div>
+        </div>
+
+        <!-- ========== 同步 ========== -->
+        <div class="tab-content" id="tab-sync">
+          <div class="sync-box">
+            <div class="sync-title">🐙 GitHub 仓库同步</div>
+            <div class="sync-desc">将技能配置同步到私有 GitHub 仓库，跨设备共享</div>
+            <div class="sync-row">
+              <input class="sync-input" value="shirenchuang/my-agent-config" placeholder="user/repo">
+              <button class="btn btn-sm">配置 Token</button>
+              <button class="btn btn-sm btn-primary">↑ 推送</button>
+              <button class="btn btn-sm">↓ 拉取</button>
+            </div>
+            <div class="sync-status">上次同步：2026-05-10 14:32 ｜ 8 个技能，2 个技能包</div>
+          </div>
+
+          <div class="sync-box">
+            <div class="sync-title">📦 导出 / 导入</div>
+            <div class="sync-desc">导出配置文件到本地，或从文件导入</div>
+            <div class="sync-row">
+              <button class="btn btn-sm">↓ 导出 .island-backup.zip</button>
+              <button class="btn btn-sm">↑ 从文件导入...</button>
+            </div>
+          </div>
+
+          <div class="sync-box">
+            <div class="sync-title">🔄 Agent 间同步</div>
+            <div class="sync-desc">一键将一个 Agent 的技能复制到另一个 Agent</div>
+            <div class="agent-sync-row">
+              <select class="agent-sel"><option>Claude Code</option><option>Codex</option><option>Gemini CLI</option><option>Cursor</option><option>Hermes</option></select>
+              <span class="sync-arrow">→</span>
+              <select class="agent-sel"><option>Codex</option><option>Claude Code</option><option>Gemini CLI</option><option>Cursor</option><option>Hermes</option></select>
+              <button class="btn btn-sm btn-primary" onclick="toast('同步完成：已将 8 个技能从 Claude Code 复制到 Codex')">立即同步</button>
+            </div>
+            <div class="sync-status">将复制 8 个技能和 3 个 MCP 服务器，已有的技能会跳过</div>
+          </div>
+
+          <div class="sync-box" style="background:#0d1a0d;border-color:#1a2a1a;">
+            <div class="sync-title" style="color:#4ade80;">📊 扫描状态</div>
+            <div style="margin-top:8px;">
+              <div class="scanner-row"><span>Claude Code</span><span class="scanner-ok">12 技能，4 MCP ✓</span></div>
+              <div class="scanner-row"><span>Codex</span><span class="scanner-ok">3 技能，2 MCP ✓</span></div>
+              <div class="scanner-row"><span>Gemini CLI</span><span class="scanner-warn">1 技能，0 MCP ⚠</span></div>
+              <div class="scanner-row"><span>Cursor</span><span class="scanner-off">未安装</span></div>
+              <div class="scanner-row"><span>Hermes</span><span class="scanner-ok">5 技能，1 MCP ✓</span></div>
+            </div>
+            <button class="btn btn-sm" style="margin-top:10px;" onclick="toast('扫描完成：共发现 21 个技能，7 个 MCP 服务器')">⟳ 重新扫描全部 Agent</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail Panel -->
+      <div class="detail" id="detail">
+        <div class="detail-head">
+          <div>
+            <div class="detail-title" id="dt-title">wechat-article</div>
+            <div class="detail-src" id="dt-src">github.com/user/sz-workflows/wechat-article</div>
+          </div>
+          <button class="btn-ghost" onclick="hideDetail()">✕</button>
+        </div>
+        <div class="detail-body">
+          <div class="detail-label">安装位置</div>
+          <div id="dt-agents">
+            <div class="ag-row"><span>Claude Code</span><div class="tog on"><div class="d"></div></div></div>
+            <div class="ag-row"><span>Codex</span><div class="tog on"><div class="d"></div></div></div>
+            <div class="ag-row add"><span>＋ 安装到 Gemini CLI</span><button class="btn btn-sm">安装</button></div>
+          </div>
+
+          <div class="detail-label">基本信息</div>
+          <div style="font-size:11px;color:#999;line-height:1.8;">
+            <div>类型：<span style="color:#ddd;">Skill</span></div>
+            <div>安装方式：<span style="color:#ddd;">Symlink</span></div>
+            <div>所属技能包：<span style="color:#4ade80;">内容生产</span></div>
+            <div>大小：<span style="color:#ddd;">12.4 KB</span></div>
+            <div>修改时间：<span style="color:#ddd;">2026-05-08</span></div>
+          </div>
+
+          <div class="detail-label">文件浏览</div>
+          <div class="tree" id="file-tree"></div>
+          <div class="file-viewer" id="file-viewer">
+            <div class="file-header">
+              <span id="fv-path">wechat-article/index.md</span>
+              <button class="btn btn-sm btn-ghost" onclick="toast('已在编辑器中打开')">打开文件</button>
+            </div>
+            <div class="file-content" id="fv-content"></div>
+          </div>
+        </div>
+        <div class="detail-foot">
+          <button class="btn" style="flex:1;" onclick="toast('已在编辑器中打开')">📂 在编辑器中打开</button>
+          <button class="btn btn-danger" style="flex:1;">🗑 卸载</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Install Modal -->
+<div class="modal-overlay" id="modal-install">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">安装技能</div>
+      <button class="btn-ghost" onclick="hideModal('install')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <div class="form-label">来源</div>
+        <div class="radio-group">
+          <div class="radio active" data-src="url">URL 地址</div>
+          <div class="radio" data-src="github">GitHub</div>
+          <div class="radio" data-src="local">本地路径</div>
+          <div class="radio" data-src="skillsh">skills.sh</div>
+        </div>
+      </div>
+      <div class="form-group" id="src-url">
+        <div class="form-label">技能地址</div>
+        <input class="form-input" placeholder="https://github.com/user/repo/tree/main/skills/my-skill">
+        <div class="form-hint">支持 GitHub 仓库地址、skills.sh 分享链接、或直接 URL</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">安装到哪些 Agent</div>
+        <div>
+          <div class="ck-row checked" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Claude Code</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Codex</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Gemini CLI</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Cursor</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Hermes</div></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">安装方式</div>
+        <div class="radio-group">
+          <div class="radio active">直接复制</div>
+          <div class="radio">符号链接 (Symlink)</div>
+        </div>
+        <div class="form-hint">符号链接：统一存放在 ~/.agentbro/skills/，各 Agent 通过 symlink 引用</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="hideModal('install')">取消</button>
+      <button class="btn btn-primary" onclick="hideModal('install');toast('安装成功：wechat-publisher 已安装到 Claude Code')">安装</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Pack Modal -->
+<div class="modal-overlay" id="modal-pack">
+  <div class="modal" style="width:560px;">
+    <div class="modal-head">
+      <div class="modal-title">新建技能包</div>
+      <button class="btn-ghost" onclick="hideModal('pack')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <div class="form-label">技能包名称</div>
+        <input class="form-input" placeholder="例如：内容生产、开发工具、数据分析" id="pack-name-input">
+      </div>
+      <div class="form-group">
+        <div class="form-label">描述</div>
+        <textarea class="form-input" placeholder="描述这个技能包的用途..." id="pack-desc-input"></textarea>
+      </div>
+      <div class="form-group">
+        <div class="form-label">选择技能 <span style="color:#555;">（点击添加或移除）</span></div>
+        <div class="sk-picker" id="skill-picker"></div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">默认推送到</div>
+        <div>
+          <div class="ck-row checked" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Claude Code</div></div>
+          <div class="ck-row checked" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Codex</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Gemini CLI</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Cursor</div></div>
+          <div class="ck-row" onclick="this.classList.toggle('checked')"><div class="ck-box">✓</div><div class="ck-label">Hermes</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="hideModal('pack')">取消</button>
+      <button class="btn btn-primary" onclick="createPack()">创建技能包</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ====== Data ======
+const skills = [
+  {id:'wechat-article',name:'wechat-article',desc:'微信公众号完整发布工作流',icon:'📝',type:'skill',agents:['cc','cx'],on:true,source:'island',
+   files:{'wechat-article':{type:'dir',children:{'index.md':{type:'file'},'steps':{type:'dir',children:{'humanize.md':{type:'file'},'gen-image.md':{type:'file'},'upload-wechat.md':{type:'file'}}},'templates':{type:'dir',children:{'article.hbs':{type:'file'},'style.css':{type:'file'}}}}}},
+   fileContents:{'wechat-article/index.md':`---\nname: wechat-article\ndescription: 微信公众号完整发布工作流\ntype: skill\ntriggers:\n  - publish to wechat\n  - 发布微信文章\n---\n\n# 微信文章工作流\n\n完整流程：写文章 → 润色 → 生成配图 → 上传微信 → 渲染样式 → 创建草稿 → 发送预览\n\n## 步骤\n1. 撰写文章内容\n2. 运行文风润色\n3. 生成头图\n4. 上传素材到 OSS\n5. 推送到微信草稿`,
+    'wechat-article/steps/humanize.md':'---\nname: humanize\n---\n\n# 文风润色\n\n将 AI 生成的文本转化为更自然的人类写作风格。\n\n## 规则\n- 避免 AI 味的表达\n- 保持口语化\n- 添加个人观点',
+    'wechat-article/steps/gen-image.md':'---\nname: gen-image\n---\n\n# 生成配图\n\n使用 Gemini 3 Pro 生成文章头图和配图。',
+    'wechat-article/templates/article.hbs':'<div class="article">\n  <h1>{{title}}</h1>\n  <div class="meta">{{author}} · {{date}}</div>\n  <div class="content">{{{body}}}</div>\n</div>',
+    'wechat-article/templates/style.css':'.article { max-width: 680px; margin: 0 auto; }\n.article h1 { font-size: 22px; }\n.meta { color: #999; font-size: 13px; }'
+  }},
+  {id:'video-notes',name:'video-notes',desc:'AI 解说视频生成，支持 TTS 和 Remotion 渲染',icon:'🎬',type:'skill',agents:['cc'],on:true,source:'island'},
+  {id:'text-to-image',name:'text-to-image',desc:'使用 Gemini 3 Pro 生成图片',icon:'🖼',type:'skill',agents:['cc','gm'],on:true,source:'island'},
+  {id:'fetching-ai-news',name:'fetching-ai-news',desc:'从多个来源聚合 AI 资讯',icon:'📰',type:'skill',agents:['cc','cx','gm'],on:true,source:'island'},
+  {id:'mcp-filesystem',name:'mcp-filesystem',desc:'MCP 本地文件系统访问服务器',icon:'💾',type:'mcp',agents:['cc','cs'],on:true,source:'island'},
+  {id:'mcp-browser',name:'mcp-browser',desc:'MCP 浏览器控制和网页抓取',icon:'🌐',type:'mcp',agents:['cc'],on:true,source:'island'},
+  {id:'browse',name:'browse',desc:'网页浏览和调研技能',icon:'🔍',type:'skill',agents:['cc'],on:true,source:'local'},
+  {id:'init',name:'init',desc:'初始化 CLAUDE.md 代码库文档',icon:'🛠',type:'skill',agents:['cc'],on:true,source:'local'},
+  {id:'deprecated-tool',name:'deprecated-tool',desc:'一个已弃用的旧工具',icon:'🚫',type:'skill',agents:['cx'],on:false,source:'local'},
+];
+
+const packs = [
+  {id:'content',name:'内容生产',desc:'微信文章写作、图片生成、视频笔记、资讯聚合',icon:'📦',skills:['wechat-article','video-notes','text-to-image','fetching-ai-news','mcp-browser'],agents:['cc','cx']},
+  {id:'dev',name:'开发工具',desc:'TDD、调试、代码审查、计划制定',icon:'💻',skills:['browse','init','mcp-filesystem'],agents:['cc','gm','cs']},
+];
+
+const agentMap = {cc:'Claude',cx:'Codex',gm:'Gemini',cs:'Cursor',hm:'Hermes'};
+const tagClass = {cc:'t-cc',cx:'t-cx',gm:'t-gm',cs:'t-cs',hm:'t-hm'};
+
+// ====== Render ======
+function renderSkills(){
+  const island = skills.filter(s=>s.source==='island');
+  const local = skills.filter(s=>s.source==='local');
+  document.getElementById('installed-list').innerHTML = island.map(s=>skCard(s)).join('');
+  document.getElementById('local-list').innerHTML = local.map(s=>skCard(s)).join('');
+}
+
+function skCard(s){
+  return `<div class="sk" data-id="${s.id}" onclick="selectSkill('${s.id}')">
+    <div class="sk-icon ${s.type}">${s.icon}</div>
+    <div class="sk-info"><div class="sk-name">${s.name}</div><div class="sk-desc">${s.desc}</div></div>
+    <div class="sk-tags">${s.agents.map(a=>`<span class="tag ${tagClass[a]}">${agentMap[a]}</span>`).join('')}</div>
+    <div class="tog ${s.on?'on':''}" onclick="event.stopPropagation();toggleSkill('${s.id}')"><div class="d"></div></div>
+    <div class="sk-acts">
+      <div class="act" title="查看文件" onclick="event.stopPropagation();selectSkill('${s.id}')">👁</div>
+      ${s.source==='local'?`<div class="act" title="添加来源">🔗</div>`:`<div class="act del" title="卸载" onclick="event.stopPropagation();toast('已卸载 ${s.name}')">🗑</div>`}
+    </div>
+  </div>`;
+}
+
+function renderPacks(){
+  document.getElementById('pack-list').innerHTML = packs.map(p=>`<div class="pk">
+    <div class="pk-head">
+      <div class="pk-name">${p.icon} ${p.name}</div>
+      <div style="display:flex;gap:4px;">
+        <button class="btn btn-sm">编辑</button>
+        <button class="btn btn-sm" onclick="toast('已禁用技能包「${p.name}」中的所有技能')">全部禁用</button>
+        <button class="btn btn-sm btn-primary" onclick="toast('已将「${p.name}」推送到所有目标 Agent')">推送到 Agent</button>
+      </div>
+    </div>
+    <div class="pk-desc">${p.desc}</div>
+    <div class="pk-skills">${p.skills.map(sid=>`<span class="pk-chip">${sid}</span>`).join('')}</div>
+    <div class="pk-foot">
+      <div style="display:flex;gap:3px;">${p.agents.map(a=>`<span class="tag ${tagClass[a]}">${agentMap[a]}</span>`).join('')}</div>
+      <div class="pk-status">${p.skills.length}/${p.skills.length} 已安装</div>
+    </div>
+  </div>`).join('');
+}
+
+function renderSkillPicker(){
+  document.getElementById('skill-picker').innerHTML = skills.filter(s=>s.source==='island').map(s=>
+    `<div class="sk-pick-item" onclick="this.classList.toggle('picked')">
+      <span class="sk-pick-icon">${s.icon}</span>
+      <span class="sk-pick-name">${s.name}</span>
+      <span class="sk-pick-check">✓</span>
+    </div>`
+  ).join('');
+}
+
+// ====== File Tree ======
+function renderTree(tree, prefix=''){
+  let html = '';
+  for(const [name, node] of Object.entries(tree)){
+    if(node.type==='dir'){
+      html += `<div class="tree-node">
+        <div class="tree-dir open" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('collapsed')">
+          <span class="arrow">▶</span> 📁 ${name}
+        </div>
+        <div class="tree-children">${renderTree(node.children, prefix?prefix+'/'+name:name)}</div>
+      </div>`;
+    } else {
+      const path = prefix ? prefix+'/'+name : name;
+      html += `<div class="tree-file" data-path="${path}" onclick="viewFile('${path}')">${fileIcon(name)} ${name}</div>`;
+    }
+  }
+  return html;
+}
+
+function fileIcon(name){
+  if(name.endsWith('.md')) return '📄';
+  if(name.endsWith('.css')) return '🎨';
+  if(name.endsWith('.hbs')) return '📋';
+  return '📄';
+}
+
+function viewFile(path){
+  const sk = skills.find(s=>s.id===currentSkill);
+  if(!sk || !sk.fileContents) return;
+  document.querySelectorAll('.tree-file').forEach(f=>f.classList.remove('active'));
+  document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('active');
+  document.getElementById('fv-path').textContent = path;
+  const content = sk.fileContents[path] || '// 文件内容预览';
+  const lines = content.split('\n');
+  document.getElementById('fv-content').innerHTML = lines.map((l,i)=>{
+    const ln = `<span class="ln">${i+1}</span>`;
+    if(l.startsWith('#')) return ln+`<span class="hl">${esc(l)}</span>`;
+    if(l.startsWith('---')) return ln+`<span class="cm">${esc(l)}</span>`;
+    if(l.match(/^\w+:/)) return ln+`<span style="color:#fcd34d">${esc(l.split(':')[0])}:</span>${esc(l.slice(l.indexOf(':')+1))}`;
+    return ln+esc(l);
+  }).join('\n');
+}
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ====== Interactions ======
+let currentSkill = 'wechat-article';
+
+function selectSkill(id){
+  currentSkill = id;
+  document.querySelectorAll('.sk').forEach(s=>s.classList.remove('selected'));
+  document.querySelector(`.sk[data-id="${id}"]`)?.classList.add('selected');
+  const sk = skills.find(s=>s.id===id);
+  document.getElementById('dt-title').textContent = sk.name;
+  document.getElementById('dt-src').textContent = sk.source==='island' ? 'github.com/user/skills/'+sk.name : '本地发现';
+  document.getElementById('detail').classList.remove('hidden');
+
+  // Render agents
+  const allAgents = ['cc','cx','gm','cs','hm'];
+  const installed = sk.agents;
+  document.getElementById('dt-agents').innerHTML =
+    installed.map(a=>`<div class="ag-row"><span>${agentMap[a]}</span><div class="tog on" onclick="this.classList.toggle('on')"><div class="d"></div></div></div>`).join('') +
+    allAgents.filter(a=>!installed.includes(a)).map(a=>`<div class="ag-row add"><span>＋ 安装到 ${agentMap[a]}</span><button class="btn btn-sm" onclick="toast('已安装到 ${agentMap[a]}')">安装</button></div>`).join('');
+
+  // File tree
+  if(sk.files){
+    document.getElementById('file-tree').innerHTML = renderTree(sk.files);
+    document.getElementById('file-viewer').style.display = 'block';
+    const firstFile = Object.keys(sk.fileContents||{})[0];
+    if(firstFile) viewFile(firstFile);
+  } else {
+    document.getElementById('file-tree').innerHTML = '<div style="color:#555;font-size:11px;padding:8px;">无文件树信息</div>';
+    document.getElementById('file-viewer').style.display = 'block';
+    document.getElementById('fv-path').textContent = sk.name;
+    document.getElementById('fv-content').innerHTML = `<span class="ln">1</span><span class="cm">---</span>\n<span class="ln">2</span><span style="color:#fcd34d">name:</span> ${sk.name}\n<span class="ln">3</span><span style="color:#fcd34d">description:</span> ${sk.desc}\n<span class="ln">4</span><span class="cm">---</span>`;
+  }
+}
+
+function hideDetail(){document.getElementById('detail').classList.add('hidden');}
+
+function toggleSkill(id){
+  const sk = skills.find(s=>s.id===id);
+  sk.on = !sk.on;
+  renderSkills();
+  toast(sk.on ? `已启用 ${sk.name}` : `已禁用 ${sk.name}`);
+}
+
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+function showModal(name){document.getElementById('modal-'+name).classList.add('show');}
+function hideModal(name){document.getElementById('modal-'+name).classList.remove('show');}
+
+function createPack(){
+  const name = document.getElementById('pack-name-input').value || '新技能包';
+  const desc = document.getElementById('pack-desc-input').value || '自定义技能包';
+  const picked = [...document.querySelectorAll('.sk-pick-item.picked .sk-pick-name')].map(e=>e.textContent);
+  packs.push({id:'new-'+Date.now(),name,desc,icon:'📦',skills:picked.length?picked:['wechat-article'],agents:['cc']});
+  renderPacks();
+  hideModal('pack');
+  toast(`技能包「${name}」创建成功，包含 ${picked.length||1} 个技能`);
+}
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = '✓ '+msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=>t.classList.remove('show'), 2500);
+}
+
+// ====== Tab clicks ======
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
+
+// ====== Filter chips ======
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{
+  c.parentElement.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));
+  c.classList.add('active');
+}));
+document.querySelectorAll('.pill').forEach(p=>p.addEventListener('click',()=>{
+  p.parentElement.querySelectorAll('.pill').forEach(x=>x.classList.remove('active'));
+  p.classList.add('active');
+}));
+
+// ====== Radio buttons ======
+document.querySelectorAll('.radio-group').forEach(g=>{
+  g.querySelectorAll('.radio').forEach(r=>r.addEventListener('click',()=>{
+    g.querySelectorAll('.radio').forEach(x=>x.classList.remove('active'));
+    r.classList.add('active');
+  }));
+});
+
+// ====== Modal overlay click ======
+document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',e=>{
+  if(e.target===o) o.classList.remove('show');
+}));
+
+// ====== Init ======
+renderSkills();
+renderPacks();
+renderSkillPicker();
+selectSkill('wechat-article');
+</script>
+</body>
+</html>

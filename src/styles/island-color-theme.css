@@ -1,7 +1,5 @@
-/* Island Color Themes — 7 visual themes, each = ~15 CSS variables */
-/* Applied via data-island-color-theme attribute on <html> */
+/* AgentBro — Evolab-style Island Color Themes */
 
-/* ── Midnight (default dark) ── */
 :root,
 html[data-island-color-theme="midnight"] {
   --island-bg: #000000;
@@ -15,17 +13,36 @@ html[data-island-color-theme="midnight"] {
   --island-input-bg: #0d0d0d;
   --island-btn-bg: #2a2a2e;
   --island-btn-hover: #333333;
-  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  --island-pill-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  --island-accent: #3b82f6;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --island-pill-shadow: 0 2px 12px rgba(0, 0, 0, 0.42);
+  --island-accent: #7b78ff;
   --island-border-style: none;
-  --island-subtle: rgba(255, 255, 255, 0.06);
+  --island-subtle: rgba(255, 255, 255, 0.05);
   --island-subtle-hover: rgba(255, 255, 255, 0.08);
   --island-scrollbar: rgba(255, 255, 255, 0.15);
   --island-scrollbar-hover: rgba(255, 255, 255, 0.25);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(0, 0, 0, 0.9);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #111827;
+  --chat-assistant-bg: var(--island-card);
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+  --status-idle: #666666;
+  --status-working: #60a5fa;
+  --status-error: #ef4444;
+  --status-done: #4ade80;
+  --status-thinking: #a78bfa;
 }
 
-/* ── Frosted Glass — 冰霜毛玻璃 ── */
 html[data-island-color-theme="frosted-glass"] {
   --island-bg: #eef0f4;
   --island-card: #f6f7f9;
@@ -34,90 +51,35 @@ html[data-island-color-theme="frosted-glass"] {
   --island-text: #2c2c2e;
   --island-text-secondary: #5c5c66;
   --island-text-muted: #8c8c96;
-  --island-code-bg: #e4e6ec;
+  --island-code-bg: #1e1e2e;
   --island-input-bg: #e8eaef;
   --island-btn-bg: #dcdee5;
   --island-btn-hover: #d0d2da;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
   --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
-  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
-  --island-accent: #3b82f6;
+  --island-pill-shadow: 0 10px 28px rgba(39, 48, 62, 0.12);
+  --island-accent: #352eff;
   --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+  --island-subtle: rgba(0, 0, 0, 0.05);
+  --island-subtle-hover: rgba(0, 0, 0, 0.08);
+  --island-scrollbar: rgba(0, 0, 0, 0.16);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(246, 247, 249, 0.86);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #e8eaef;
+  --chat-assistant-bg: #f6f7f9;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
 }
 
-/* ── Warm Paper — 暖纸 ── */
-html[data-island-color-theme="warm-paper"] {
-  --island-bg: #f2efe8;
-  --island-card: #faf7f0;
-  --island-card-hover: #ede9df;
-  --island-border: #dcd6c8;
-  --island-text: #33302a;
-  --island-text-secondary: #7a7468;
-  --island-text-muted: #a09888;
-  --island-code-bg: #e8e3d8;
-  --island-input-bg: #ede9df;
-  --island-btn-bg: #e2ddd2;
-  --island-btn-hover: #d6d0c2;
-  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
-  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
-  --island-accent: #3b82f6;
-  --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
-}
-
-/* ── Soft Lavender — 柔紫 ── */
-html[data-island-color-theme="soft-lavender"] {
-  --island-bg: #eeedf6;
-  --island-card: #f8f7fc;
-  --island-card-hover: #e8e6f2;
-  --island-border: #d4d2e0;
-  --island-text: #2e2c38;
-  --island-text-secondary: #6e6a82;
-  --island-text-muted: #9490a6;
-  --island-code-bg: #dddbe8;
-  --island-input-bg: #e8e6f2;
-  --island-btn-bg: #dddbe8;
-  --island-btn-hover: #d0cee0;
-  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
-  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
-  --island-accent: #6366f1;
-  --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
-}
-
-/* ── Ocean Mist — 海雾 ── */
-html[data-island-color-theme="ocean-mist"] {
-  --island-bg: #e8eef5;
-  --island-card: #f2f6fb;
-  --island-card-hover: #dde6f0;
-  --island-border: #c8d4e0;
-  --island-text: #242e3a;
-  --island-text-secondary: #5a6e82;
-  --island-text-muted: #8294a6;
-  --island-code-bg: #d0dae6;
-  --island-input-bg: #dde6f0;
-  --island-btn-bg: #d0dae6;
-  --island-btn-hover: #c0ceda;
-  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
-  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
-  --island-accent: #3b82f6;
-  --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
-}
-
-/* ── Apple — 苹果风 ── */
 html[data-island-color-theme="apple"] {
   --island-bg: #f5f5f7;
   --island-card: #ffffff;
@@ -126,21 +88,35 @@ html[data-island-color-theme="apple"] {
   --island-text: #1d1d1f;
   --island-text-secondary: #6e6e73;
   --island-text-muted: #aeaeb2;
-  --island-code-bg: #f5f5f7;
+  --island-code-bg: #1c1c1e;
   --island-input-bg: #f5f5f7;
   --island-btn-bg: #e8e8ed;
   --island-btn-hover: #dddde2;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
   --island-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 8px 32px rgba(0, 0, 0, 0.08);
-  --island-pill-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 2px 12px rgba(0, 0, 0, 0.06);
+  --island-pill-shadow: 0 16px 36px rgba(0, 0, 0, 0.13);
   --island-accent: #007aff;
-  --island-border-style: 0.5px solid rgba(0, 0, 0, 0.06);
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.05);
+  --island-subtle-hover: rgba(0, 0, 0, 0.08);
+  --island-scrollbar: rgba(0, 0, 0, 0.16);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(255, 255, 255, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #eaf2ff;
+  --chat-assistant-bg: #ffffff;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
 }
 
-/* ── Smoke — 烟雾 ── */
 html[data-island-color-theme="smoke"] {
   --island-bg: #e8e8ec;
   --island-card: #f4f4f6;
@@ -149,16 +125,223 @@ html[data-island-color-theme="smoke"] {
   --island-text: #2a2a30;
   --island-text-secondary: #6a6a74;
   --island-text-muted: #8a8a94;
-  --island-code-bg: #d4d4da;
+  --island-code-bg: #1e1e22;
   --island-input-bg: #e0e0e4;
   --island-btn-bg: #d4d4da;
   --island-btn-hover: #c6c6ce;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
   --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
-  --island-pill-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
-  --island-accent: #3b82f6;
+  --island-pill-shadow: 0 14px 32px rgba(42, 42, 48, 0.12);
+  --island-accent: #64748b;
   --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.04);
-  --island-subtle-hover: rgba(0, 0, 0, 0.06);
-  --island-scrollbar: rgba(0, 0, 0, 0.12);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.2);
+  --island-subtle: rgba(0, 0, 0, 0.05);
+  --island-subtle-hover: rgba(0, 0, 0, 0.08);
+  --island-scrollbar: rgba(0, 0, 0, 0.16);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(244, 244, 246, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #dde2ea;
+  --chat-assistant-bg: #f4f4f6;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+html[data-island-color-theme="ocean-mist"] {
+  --island-bg: #e8eef5;
+  --island-card: #f2f6fb;
+  --island-card-hover: #dde6f0;
+  --island-border: #c8d4e0;
+  --island-text: #242e3a;
+  --island-text-secondary: #5a6e82;
+  --island-text-muted: #8294a6;
+  --island-code-bg: #1a2430;
+  --island-input-bg: #dde6f0;
+  --island-btn-bg: #d0dae6;
+  --island-btn-hover: #c0ceda;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 14px 32px rgba(20, 72, 116, 0.13);
+  --island-accent: #0284c7;
+  --island-border-style: none;
+  --island-subtle: rgba(2, 132, 199, 0.07);
+  --island-subtle-hover: rgba(2, 132, 199, 0.11);
+  --island-scrollbar: rgba(2, 132, 199, 0.20);
+  --island-scrollbar-hover: rgba(2, 132, 199, 0.30);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(242, 246, 251, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #dceaf7;
+  --chat-assistant-bg: #f2f6fb;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+html[data-island-color-theme="warm-paper"] {
+  --island-bg: #f2efe8;
+  --island-card: #faf7f0;
+  --island-card-hover: #ede9df;
+  --island-border: #dcd6c8;
+  --island-text: #33302a;
+  --island-text-secondary: #7a7468;
+  --island-text-muted: #a09888;
+  --island-code-bg: #2a2520;
+  --island-input-bg: #ede9df;
+  --island-btn-bg: #e2ddd2;
+  --island-btn-hover: #d6d0c2;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 14px 32px rgba(92, 64, 40, 0.12);
+  --island-accent: #d97706;
+  --island-border-style: none;
+  --island-subtle: rgba(217, 119, 6, 0.07);
+  --island-subtle-hover: rgba(217, 119, 6, 0.11);
+  --island-scrollbar: rgba(217, 119, 6, 0.18);
+  --island-scrollbar-hover: rgba(217, 119, 6, 0.28);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(250, 247, 240, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #f0e8d9;
+  --chat-assistant-bg: #faf7f0;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+html[data-island-color-theme="soft-lavender"] {
+  --island-bg: #eeedf6;
+  --island-card: #f8f7fc;
+  --island-card-hover: #e8e6f2;
+  --island-border: #d4d2e0;
+  --island-text: #2e2c38;
+  --island-text-secondary: #6e6a82;
+  --island-text-muted: #9490a6;
+  --island-code-bg: #1e1c2e;
+  --island-input-bg: #e8e6f2;
+  --island-btn-bg: #dddbe8;
+  --island-btn-hover: #d0cee0;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --island-pill-shadow: 0 14px 32px rgba(70, 58, 110, 0.13);
+  --island-accent: #6366f1;
+  --island-border-style: none;
+  --island-subtle: rgba(99, 102, 241, 0.07);
+  --island-subtle-hover: rgba(99, 102, 241, 0.11);
+  --island-scrollbar: rgba(99, 102, 241, 0.18);
+  --island-scrollbar-hover: rgba(99, 102, 241, 0.28);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(248, 247, 252, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #e7e5f4;
+  --chat-assistant-bg: #f8f7fc;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+html[data-island-color-theme="system"] {
+  --island-bg: #f5f5f7;
+  --island-card: #ffffff;
+  --island-card-hover: #f0f0f2;
+  --island-border: rgba(0, 0, 0, 0.08);
+  --island-text: #1d1d1f;
+  --island-text-secondary: #6e6e73;
+  --island-text-muted: #aeaeb2;
+  --island-code-bg: #1c1c1e;
+  --island-input-bg: #f5f5f7;
+  --island-btn-bg: #e8e8ed;
+  --island-btn-hover: #dddde2;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 8px 32px rgba(0, 0, 0, 0.08);
+  --island-pill-shadow: 0 16px 36px rgba(0, 0, 0, 0.13);
+  --island-accent: #007aff;
+  --island-border-style: none;
+  --island-subtle: rgba(0, 0, 0, 0.05);
+  --island-subtle-hover: rgba(0, 0, 0, 0.08);
+  --island-scrollbar: rgba(0, 0, 0, 0.16);
+  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(255, 255, 255, 0.88);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #eaf2ff;
+  --chat-assistant-bg: #ffffff;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-island-color-theme="system"] {
+    --island-bg: #000000;
+    --island-card: #0a0a0a;
+    --island-card-hover: #18181c;
+    --island-border: #1a1a1a;
+    --island-text: #e0e0e0;
+    --island-text-secondary: #888888;
+    --island-text-muted: #666666;
+    --island-code-bg: #1a1a1a;
+    --island-input-bg: #0d0d0d;
+    --island-btn-bg: #2a2a2e;
+    --island-btn-hover: #333333;
+    --island-button-bg: var(--island-btn-bg);
+    --island-button-hover: var(--island-btn-hover);
+    --island-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --island-pill-shadow: 0 2px 12px rgba(0, 0, 0, 0.42);
+    --island-accent: #7b78ff;
+    --island-border-style: none;
+    --island-subtle: rgba(255, 255, 255, 0.05);
+    --island-subtle-hover: rgba(255, 255, 255, 0.08);
+    --island-scrollbar: rgba(255, 255, 255, 0.15);
+    --island-scrollbar-hover: rgba(255, 255, 255, 0.25);
+    --bg-primary: var(--island-bg);
+    --bg-secondary: var(--island-card);
+    --bg-glass: rgba(0, 0, 0, 0.9);
+    --text-primary: var(--island-text);
+    --text-secondary: var(--island-text-secondary);
+    --text-muted: var(--island-text-muted);
+    --accent: var(--island-accent);
+    --border: var(--island-border);
+    --shadow: var(--island-shadow);
+    --chat-user-bg: #111827;
+    --chat-assistant-bg: var(--island-card);
+    --badge-bg: var(--island-btn-bg);
+    --badge-text: var(--island-text);
+    --status-idle: #666666;
+    --status-working: #60a5fa;
+    --status-error: #ef4444;
+    --status-done: #4ade80;
+    --status-thinking: #a78bfa;
+  }
 }

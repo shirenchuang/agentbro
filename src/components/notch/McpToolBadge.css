@@ -2,7 +2,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: var(--font-size-sm);
+  font-size: 11px;
 }
 
 .mcp-badge__icon {
@@ -17,16 +17,16 @@
 }
 
 .mcp-badge__sep {
-  color: var(--text-tertiary);
-  font-size: var(--font-size-xs);
+  color: var(--island-text-muted);
+  font-size: 10px;
 }
 
 .mcp-badge__tool {
-  color: var(--text-primary);
+  color: var(--island-text);
   font-weight: 500;
 }
 
 .mcp-badge__tool-only {
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--island-text);
 }

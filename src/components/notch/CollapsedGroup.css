@@ -8,9 +8,9 @@
   gap: 6px;
   padding: 4px 8px;
   border: none;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
-  color: var(--vi-text-tertiary, #666);
+  color: var(--island-text-muted);
   font-size: 11px;
   cursor: pointer;
   width: 100%;
@@ -20,7 +20,7 @@
 
 .collapsed-group__summary:hover {
   background: var(--island-subtle);
-  color: var(--vi-text-secondary, #aaa);
+  color: var(--island-text-secondary);
 }
 
 .collapsed-group__chevron {
@@ -37,12 +37,12 @@
 
 .collapsed-group__badge--thinking {
   background: rgba(0, 122, 255, 0.1);
-  color: var(--vi-accent-blue, #007AFF);
+  color: #2563eb;
 }
 
 .collapsed-group__badge--tool {
   background: rgba(255, 149, 0, 0.1);
-  color: var(--vi-accent-orange, #FF9500);
+  color: #f59e0b;
 }
 
 .collapsed-group__detail {
@@ -61,11 +61,11 @@
 }
 
 .collapsed-group__item--thinking {
-  color: var(--vi-text-tertiary, #666);
+  color: var(--island-text-muted);
 }
 
 .collapsed-group__item--tool {
-  color: var(--vi-text-secondary, #aaa);
+  color: var(--island-text-secondary);
   flex-wrap: wrap;
 }
 
@@ -73,30 +73,30 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--vi-accent-blue, #007AFF);
+  background: #2563eb;
   opacity: 0.5;
   flex-shrink: 0;
 }
 
 .collapsed-group__tool-name {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono, 'SF Mono', monospace);
   font-weight: 500;
 }
 
 .collapsed-group__check {
-  color: var(--vi-accent-green, #30D158);
+  color: #22c55e;
   font-size: 12px;
 }
 
 .collapsed-group__x {
-  color: var(--vi-accent-red, #FF3B30);
+  color: #dc2626;
   font-size: 12px;
 }
 
 .collapsed-group__spinner {
   width: 8px;
   height: 8px;
-  border: 1.5px solid var(--vi-text-tertiary, #666);
+  border: 1.5px solid var(--island-text-muted);
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -111,7 +111,7 @@
   margin-top: 4px;
   max-height: 120px;
   overflow-y: auto;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: 6px;
 }
 
 .collapsed-group__text {

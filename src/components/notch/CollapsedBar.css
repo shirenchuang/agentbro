@@ -4,12 +4,35 @@
   cursor: pointer;
 }
 
+.collapsed-bar--micro {
+  width: 100%;
+  cursor: default;
+}
+
+.collapsed-bar__micro-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 32px;
+  padding: 4px 12px;
+}
+
+.collapsed-bar__micro-count {
+  color: var(--island-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Status row: rate limits + icons (only shown when expanded) */
 .collapsed-bar__status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 16px 0;
+  position: relative;
+  padding: 6px 12px 0;
   min-height: 24px;
 }
 
@@ -25,6 +48,36 @@
   flex-shrink: 0;
 }
 
+.collapsed-bar__header-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  width: max-content;
+  max-width: clamp(220px, 38vw, 460px);
+  overflow: hidden;
+  pointer-events: none;
+  transform: translate(-50%, -45%);
+}
+
+.collapsed-bar__header-tip > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.collapsed-bar__header-tip span {
+  white-space: nowrap;
+}
+
+.collapsed-bar__header-tip span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .collapsed-bar__icon-btn {
   display: flex;
   align-items: center;
@@ -32,9 +85,9 @@
   width: 24px;
   height: 24px;
   border: none;
-  border-radius: var(--radius-xs);
+  border-radius: 50%;
   background: transparent;
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-secondary);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
@@ -42,13 +95,13 @@
 }
 
 .collapsed-bar__icon-btn:hover {
-  color: var(--vi-text-primary);
-  background: var(--island-subtle-hover);
+  color: var(--island-text);
+  background: rgba(255, 255, 255, 0.1);
 }
 
-/* Separator below status row */
+/* Separator below status row — evolab dashed style */
 .collapsed-bar--expanded .collapsed-bar__status-row {
-  border-bottom: 1px solid var(--island-subtle);
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.15);
   padding-bottom: 6px;
   margin-bottom: 2px;
 }
@@ -58,17 +111,29 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  height: 36px;
-  min-height: 36px;
+  padding: 0 12px;
+  height: 32px;
+  min-height: 32px;
 }
 
 .collapsed-bar__left {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: 8px;
   overflow: hidden;
   flex: 1;
+  min-width: 0;
+}
+
+.collapsed-bar__theme-avatar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+}
+
+.collapsed-bar__theme-avatar canvas {
+  display: block;
 }
 
 .collapsed-bar__right {
@@ -78,41 +143,231 @@
   flex-shrink: 0;
 }
 
+/* Carousel container — clips the slide-up animation */
+.collapsed-bar__carousel {
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .collapsed-bar__info {
-  font-size: var(--font-size-sm);
+  font-size: 11px;
   font-weight: 500;
-  color: var(--vi-text-primary);
+  color: var(--island-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: block;
+  width: 100%;
 }
 
 .collapsed-bar__info--empty {
-  color: var(--vi-text-tertiary);
+  color: var(--island-text-muted);
   font-weight: 400;
 }
 
-/* Alert badge — red pill for attention-needed count */
+/* Alert badge — evolab-style: gray bg + amber dot + count */
 .collapsed-bar__alert-badge {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: #FF3B30;
-  color: #fff;
-  font-size: 10px;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--island-card-hover);
+  color: var(--island-text-secondary);
+  font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
-/* Session count — plain number, no colored circle */
+.collapsed-bar__alert-badge::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+/* Session count — mono, semibold */
 .collapsed-bar__count {
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  color: var(--vi-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--island-text);
   font-variant-numeric: tabular-nums;
+}
+
+/* Unattended timer badge */
+.collapsed-bar__unattended {
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.collapsed-bar__unattended--amber {
+  color: #FF9F0A;
+  background: rgba(255, 159, 10, 0.12);
+  animation: unattended-pulse-amber 2s ease-in-out infinite;
+}
+
+.collapsed-bar__unattended--red {
+  color: #FF3B30;
+  background: rgba(255, 59, 48, 0.12);
+  animation: unattended-pulse-red 1s ease-in-out infinite;
+}
+
+@keyframes unattended-pulse-amber {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 159, 10, 0.3); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 3px rgba(255, 159, 10, 0); }
+}
+
+@keyframes unattended-pulse-red {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 3px rgba(255, 59, 48, 0); }
+}
+
+/* Shimmer animation — AI is thinking */
+.collapsed-bar--shimmer .collapsed-bar__main {
+  position: relative;
+  overflow: hidden;
+}
+
+.collapsed-bar--shimmer .collapsed-bar__main::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    transparent 100%
+  );
+  animation: shimmer-slide 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Tool status in collapsed bar — evolab pink for tool names */
+.collapsed-bar__tool-status {
+  font-size: 11px;
+  font-weight: 500;
+  color: #fa216e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+/* ALL/ACT/WAIT counter pills — evolab expanded header */
+.collapsed-bar__counter-pills {
+  display: flex;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.collapsed-bar__counter-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--island-text-muted);
+}
+
+.collapsed-bar__counter-pill:last-child {
+  border-right: none;
+}
+
+.collapsed-bar__counter-pill--active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--island-text);
+}
+
+.collapsed-bar__counter-pill--act {
+  color: #86efac;
+}
+
+.collapsed-bar__counter-pill--wait {
+  color: #fcd34d;
+}
+
+.collapsed-bar__counter-pill-val {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.collapsed-bar__session-count-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--island-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.collapsed-bar__esc-hint {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--island-text-muted);
+  flex-shrink: 0;
+}
+
+/* Rate limit percentage — color set inline */
+.collapsed-bar__rate-pct {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Error warning badge */
+.collapsed-bar__error-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  animation: error-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes error-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0); }
+}
+
+/* YOLO mode badge */
+.collapsed-bar__yolo-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #FF9F0A;
+  background: rgba(255, 159, 10, 0.15);
+  padding: 1px 4px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
 }

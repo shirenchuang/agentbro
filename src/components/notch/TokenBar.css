@@ -2,15 +2,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-xs) var(--space-lg);
+  padding: 4px 16px;
   background: rgba(255, 255, 255, 0.03);
   border-top: 1px solid rgba(255, 255, 255, 0.04);
-  font-size: var(--font-size-xs);
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 
 .token-bar__counts {
-  color: var(--text-tertiary);
+  color: var(--island-text-muted);
 }
 
 .token-bar__cache {
@@ -32,15 +32,15 @@
   background: var(--island-subtle);
   border: 1px solid var(--island-subtle);
   border-radius: 4px;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-xs);
+  color: var(--island-text-muted);
+  font-size: 10px;
   font-family: var(--font-sans);
   padding: 1px 5px;
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all 0.15s ease-out;
 }
 
 .token-bar__model-btn:hover {
   background: var(--island-border);
-  color: var(--text-secondary);
+  color: var(--island-text-secondary);
 }

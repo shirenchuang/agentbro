@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-universal:
+    name: Build Universal DMG
+    runs-on: macos-15
+    env:
+      SKIP_NOTARIZE: ${{ secrets.APPLE_ID == '' && '1' || '0' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install create-dmg
+        run: |
+          if ! command -v create-dmg >/dev/null 2>&1; then
+            brew install create-dmg
+          fi
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Import signing certificate
+        if: env.SKIP_NOTARIZE == '0'
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import certificate.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          rm certificate.p12
+
+      - name: Build universal DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash build.sh --notarize 2>&1 || bash build.sh
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AgentIsland.dmg
+          generate_release_notes: true
+
+  update-homebrew:
+    name: Update Homebrew Cask
+    runs-on: ubuntu-latest
+    needs: build-universal
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+
+      - name: Download DMG from release
+        run: |
+          curl -L \
+            "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/AgentIsland.dmg" \
+            -o AgentIsland.dmg
+
+      - name: Compute SHA256
+        run: echo "SHA256=$(sha256sum AgentIsland.dmg | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Clone homebrew-tap
+        run: |
+          git clone \
+            "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/${{ github.repository_owner }}/homebrew-tap.git" \
+            homebrew-tap
+
+      - name: Update Cask formula
+        run: |
+          mkdir -p homebrew-tap/Casks
+          cat > homebrew-tap/Casks/agent-island.rb <<CASK_EOF
+          cask "agent-island" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/${{ github.repository }}/releases/download/v#{version}/AgentIsland.dmg"
+            name "Agent Island"
+            desc "Menu bar companion for Claude Code, Codex, Gemini CLI and more"
+            homepage "https://github.com/${{ github.repository }}"
+
+            app "Agent Island.app"
+
+            zap trash: [
+              "~/.agent-island",
+              "~/Library/Application Support/com.agent-island.app",
+              "~/Library/Preferences/com.agent-island.app.plist",
+            ]
+          end
+          CASK_EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/agent-island.rb
+          git commit -m "Update agent-island to ${VERSION}"
+          git push

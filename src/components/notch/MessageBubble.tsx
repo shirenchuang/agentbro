@@ -1,11 +1,14 @@
 /* MessageBubble — Renders a single chat message by type */
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ChatMessage } from '../../types/agent'
+import type { ChatMessage, ChatToolCall } from '../../types/agent'
 import { DiffView } from './DiffView'
 import { StatusDot } from '../shared'
 import { parseMcpTool } from '../../utils/mcp'
+import { getToolActivityLabel } from '../../utils/toolLabels'
+import { openImage } from '../../services/tauriApi'
 import './MessageBubble.css'
 
 interface MessageBubbleProps {
@@ -18,19 +21,31 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       return (
         <div className="msg msg--user">
           <div className="msg__pill">
-            <span className="msg__prefix">You:</span> {message.content}
+            {message.content && (
+              <div>
+                <span className="msg__prefix">You:</span> {message.content}
+              </div>
+            )}
+            {message.images && message.images.length > 0 && (
+              <div className="msg__images">
+                {message.images.map((src, index) => (
+                  <img
+                    key={`${src}-${index}`}
+                    className="msg__image"
+                    src={src}
+                    alt=""
+                    title="Open image"
+                    onClick={() => openImage(src).catch((e) => console.warn('[MessageBubble] openImage:', e))}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )
 
     case 'assistant':
-      return (
-        <div className="msg msg--assistant">
-          <div className="msg__content selectable markdown-body">
-            <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-          </div>
-        </div>
-      )
+      return <AssistantMessage message={message} />
 
     case 'tool_use':
       return <ToolMessage message={message} />
@@ -54,10 +69,126 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 }
 
+function AssistantMessage({ message }: { message: Extract<ChatMessage, { role: 'assistant' }> }) {
+  const [expanded, setExpanded] = useState(false)
+  const { t } = useTranslation()
+  const toolCalls = message.toolCalls ?? []
+  const hasThinking = !!message.thinking
+  const hasIntermediateText = !!message.content && !!message.trailingContent
+  const hasProcess = hasThinking || toolCalls.length > 0 || hasIntermediateText
+  const finalContent = message.trailingContent ?? (!hasProcess ? message.content : '')
+  const summary = buildProcessSummary({
+    messageCount: message.messageCount ?? 0,
+    thinkingCount: message.thinkingCount ?? (hasThinking ? 1 : 0),
+    toolCount: toolCalls.length,
+    t,
+  })
+
+  return (
+    <div className="msg msg--assistant">
+      {hasProcess && (
+        <div className="msg__process">
+          <button className="msg__process-summary" onClick={() => setExpanded(!expanded)}>
+            <span className="msg__process-chevron">{expanded ? '▼' : '▶'}</span>
+            <span>{summary}</span>
+            {toolCalls.some((tool) => tool.status === 'running') && <span className="msg__tool-spinner" />}
+          </button>
+          {expanded && (
+            <div className="msg__process-detail selectable">
+              {message.thinking && (
+                <div className="msg__process-section msg__process-section--thinking">
+                  <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
+                  <Markdown remarkPlugins={[remarkGfm]}>{message.thinking}</Markdown>
+                </div>
+              )}
+              {hasIntermediateText && (
+                <div className="msg__process-section markdown-body">
+                  <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+                </div>
+              )}
+              {toolCalls.length > 0 && (
+                <div className="msg__process-tools">
+                  {toolCalls.map((tool, index) => (
+                    <AssistantToolCall key={tool.toolUseId ?? `${tool.toolName}-${index}`} tool={tool} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {finalContent && (
+        <div className="msg__content selectable markdown-body">
+          <Markdown remarkPlugins={[remarkGfm]}>{finalContent}</Markdown>
+        </div>
+      )}
+      {message.images && message.images.length > 0 && (
+        <div className="msg__images">
+          {message.images.map((src, index) => (
+            <ImageThumb key={`${src}-${index}`} src={src} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function buildProcessSummary({
+  messageCount,
+  thinkingCount,
+  toolCount,
+  t,
+}: {
+  messageCount: number
+  thinkingCount: number
+  toolCount: number
+  t: ReturnType<typeof useTranslation>['t']
+}): string {
+  const parts: string[] = []
+  if (thinkingCount > 0) parts.push(t('notch.chat.summaryThinking', '{{count}} 次思考', { count: thinkingCount }))
+  if (toolCount > 0) parts.push(t('notch.chat.summaryTools', '{{count}} 次工具调用', { count: toolCount }))
+  if (messageCount > 0) parts.push(t('notch.chat.summaryMessages', '{{count}} 条消息', { count: messageCount }))
+  return parts.join(t('notch.chat.summarySeparator', '，')) || t('notch.chat.summaryProcess', '处理过程')
+}
+
+function AssistantToolCall({ tool }: { tool: ChatToolCall }) {
+  const { t } = useTranslation()
+  const displayName = getToolActivityLabel(t, tool.toolName)
+
+  return (
+    <div className="msg__process-tool">
+      <div className="msg__tool-header">
+        <StatusDot phase={tool.status === 'running' ? 'processing' : tool.status === 'success' ? 'done' : 'error'} size={6} />
+        <span className="msg__tool-name">{displayName}</span>
+        {tool.status === 'running' && <span className="msg__tool-spinner" />}
+        {tool.status === 'success' && <span className="msg__tool-check">✓</span>}
+        {tool.status === 'error' && <span className="msg__tool-x">✗</span>}
+      </div>
+      {tool.toolInput && <pre className="msg__process-pre">{tool.toolInput}</pre>}
+      {tool.result && <pre className="msg__process-pre">{tool.result}</pre>}
+      {tool.diff && <DiffView diff={tool.diff} />}
+    </div>
+  )
+}
+
+function ImageThumb({ src }: { src: string }) {
+  return (
+    <img
+      className="msg__image"
+      src={src}
+      alt=""
+      title="Open image"
+      onClick={() => openImage(src).catch((e) => console.warn('[MessageBubble] openImage:', e))}
+    />
+  )
+}
+
 function ToolMessage({ message }: { message: ChatMessage & { role: 'tool_use' } }) {
   const [expanded, setExpanded] = useState(false)
+  const { t } = useTranslation()
   const mcp = parseMcpTool(message.toolName)
-  const displayName = mcp.isMcp ? `${mcp.displayServer} — ${mcp.displayTool}` : mcp.displayTool
+  const displayName = getToolActivityLabel(t, message.toolName)
 
   return (
     <div className="msg msg--tool" onClick={() => setExpanded(!expanded)}>
@@ -85,8 +216,8 @@ function ToolMessage({ message }: { message: ChatMessage & { role: 'tool_use' } 
 }
 
 function PermissionMessage({ message }: { message: ChatMessage & { role: 'permission' } }) {
-  const mcp = parseMcpTool(message.toolName)
-  const displayName = mcp.isMcp ? `${mcp.displayServer} — ${mcp.displayTool}` : mcp.displayTool
+  const { t } = useTranslation()
+  const displayName = getToolActivityLabel(t, message.toolName)
 
   return (
     <div className="msg msg--permission">

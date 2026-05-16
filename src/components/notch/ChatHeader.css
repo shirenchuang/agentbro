@@ -1,9 +1,9 @@
 .chat-header {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  padding: 6px var(--space-md);
-  border-bottom: 1px solid var(--island-subtle);
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--island-border);
   min-height: 32px;
 }
 
@@ -14,17 +14,17 @@
   width: 24px;
   height: 24px;
   border: none;
-  background: var(--island-subtle);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
+  background: var(--island-subtle, rgba(255, 255, 255, 0.05));
+  border-radius: 4px;
+  color: var(--island-text-secondary);
   cursor: pointer;
   flex-shrink: 0;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all 0.15s ease-out;
 }
 
 .chat-header__back:hover {
   background: rgba(255, 255, 255, 0.12);
-  color: var(--text-primary);
+  color: var(--island-text);
 }
 
 .chat-header__info {
@@ -36,9 +36,9 @@
 }
 
 .chat-header__project {
-  font-size: var(--font-size-sm);
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--island-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -56,20 +56,30 @@
   align-items: center;
   gap: 3px;
   font-size: 10px;
-  color: var(--text-tertiary);
-  background: var(--island-subtle);
+  color: var(--island-text-muted);
+  background: var(--island-subtle, rgba(255, 255, 255, 0.05));
   padding: 2px 6px;
-  border-radius: var(--radius-xs);
+  border-radius: 4px;
   white-space: nowrap;
 }
 
 .chat-header__badge--agent {
-  color: var(--accent);
-  background: var(--accent-glass);
+  color: var(--island-accent, #7b78ff);
+  background: rgba(123, 120, 255, 0.1);
+}
+
+.chat-header__badge--source {
+  color: #00d184;
+  background: rgba(16, 185, 129, 0.16);
+}
+
+.chat-header__badge--antcc {
+  color: #ff2f81;
+  background: rgba(255, 47, 129, 0.14);
 }
 
 .chat-header__badge--time {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', monospace);
   font-variant-numeric: tabular-nums;
 }
 
@@ -80,14 +90,14 @@
   width: 22px;
   height: 22px;
   border: none;
-  background: var(--island-subtle);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
+  background: var(--island-subtle, rgba(255, 255, 255, 0.05));
+  border-radius: 4px;
+  color: var(--island-text-secondary);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all 0.15s ease-out;
 }
 
 .chat-header__jump:hover {
-  background: var(--accent-glass);
-  color: var(--accent);
+  background: rgba(123, 120, 255, 0.1);
+  color: var(--island-accent, #7b78ff);
 }

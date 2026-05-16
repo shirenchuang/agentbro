@@ -188,3 +188,9 @@ impl DisplayController {
         }
     }
 }
+
+impl Default for DisplayController {
+    fn default() -> Self {
+        Self::new()
+    }
+}

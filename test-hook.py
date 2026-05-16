@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test for Agent Island hook event pipeline.
+Comprehensive test for AgentBro hook event pipeline.
 
 Simulates a full Claude Code session lifecycle by sending events directly
 to the HookServer Unix socket (or TCP fallback). This tests the path:
@@ -11,6 +11,8 @@ Usage:
     python3 test-hook.py              # Full session test
     python3 test-hook.py --quick      # Quick smoke test (3 events)
     python3 test-hook.py --permission # Test permission request flow
+    python3 test-hook.py --question   # Test AskQuestion / AskUserQuestion UI flow
+    python3 test-hook.py --plan       # Test PlanApproval / ExitPlanMode UI flow
     python3 test-hook.py --tcp        # Use TCP instead of Unix socket
 """
 import json
@@ -19,7 +21,7 @@ import sys
 import time
 import argparse
 
-UNIX_SOCKET_PATH = "/tmp/agent-island.sock"
+UNIX_SOCKET_PATH = "/tmp/agentbro.sock"
 TCP_HOST = "127.0.0.1"
 TCP_PORT = 17892
 
@@ -40,7 +42,7 @@ class Colors:
 
 
 def connect(use_tcp=False):
-    """Connect to Agent Island server."""
+    """Connect to AgentBro server."""
     if not use_tcp:
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -107,7 +109,7 @@ def send_event(event_data, use_tcp=False, wait_response=False):
 
 def test_full_session(use_tcp=False):
     """Simulate a complete Claude Code session lifecycle."""
-    print(f"{Colors.BOLD}=== Agent Island Full Session Test ==={Colors.RESET}")
+    print(f"{Colors.BOLD}=== AgentBro Full Session Test ==={Colors.RESET}")
     print(f"Socket: {Colors.DIM}{UNIX_SOCKET_PATH}{Colors.RESET}")
     print(f"TCP:    {Colors.DIM}{TCP_HOST}:{TCP_PORT}{Colors.RESET}")
     print(f"Session: {Colors.CYAN}{SESSION_ID}{Colors.RESET}")
@@ -378,9 +380,9 @@ def test_full_session(use_tcp=False):
 
     if failed == 0:
         print(f"{Colors.GREEN}All events delivered successfully!{Colors.RESET}")
-        print(f"Check the Agent Island notch panel for session state changes.")
+        print(f"Check the AgentBro notch panel for session state changes.")
     else:
-        print(f"{Colors.RED}Some events failed. Is Agent Island running?{Colors.RESET}")
+        print(f"{Colors.RED}Some events failed. Is AgentBro running?{Colors.RESET}")
         print(f"The app must be running to accept socket connections.")
 
     return failed == 0
@@ -422,7 +424,7 @@ def test_quick(use_tcp=False):
     if all_ok:
         print(f"{Colors.GREEN}Smoke test passed!{Colors.RESET}")
     else:
-        print(f"{Colors.RED}Smoke test failed. Is Agent Island running?{Colors.RESET}")
+        print(f"{Colors.RED}Smoke test failed. Is AgentBro running?{Colors.RESET}")
     return all_ok
 
 
@@ -452,7 +454,7 @@ def test_permission(use_tcp=False):
 
     # Send permission request (this will BLOCK until UI responds)
     print("3. Sending PermissionRequest (waiting for UI decision)...")
-    print(f"   {Colors.YELLOW}Approve or deny in the Agent Island UI...{Colors.RESET}")
+    print(f"   {Colors.YELLOW}Approve or deny in the AgentBro UI...{Colors.RESET}")
     ok, response = send_event({
         "agent": "claude-code", "event": "PermissionRequest",
         "session_id": SESSION_ID, "cwd": CWD,
@@ -483,6 +485,118 @@ def test_permission(use_tcp=False):
     print()
     print(f"{Colors.GREEN}Permission test complete!{Colors.RESET}")
     return True
+
+
+def test_question(use_tcp=False):
+    """Test the AskQuestion flow (will block waiting for UI response)."""
+    print(f"{Colors.BOLD}=== AskQuestion Test ==={Colors.RESET}")
+    print(f"Session: {Colors.CYAN}{SESSION_ID}{Colors.RESET}")
+    print()
+
+    print("1. Starting session...")
+    send_event({
+        "agent": "claude-code", "event": "SessionStart",
+        "session_id": SESSION_ID, "cwd": CWD,
+        "status": "waiting_for_input", "pid": PID, "tty": TTY,
+    }, use_tcp=use_tcp)
+    time.sleep(0.3)
+
+    print("2. Sending AskQuestion (waiting for UI answer)...")
+    print(f"   {Colors.YELLOW}Answer in the AgentBro UI...{Colors.RESET}")
+    ok, response = send_event({
+        "agent": "claude-code",
+        "event": "AskQuestion",
+        "session_id": SESSION_ID,
+        "cwd": CWD,
+        "status": "waiting_for_input",
+        "question": "[Deploy] Choose release options",
+        "options": ["Preview", "Ship"],
+        "descriptions": ["Open staging first", "Release now"],
+        "header": "Deploy",
+        "multiSelect": True,
+        "questions": [
+            {
+                "header": "Deploy",
+                "question": "Which target?",
+                "options": [
+                    {"label": "Preview", "description": "Open staging first"},
+                    {"label": "Ship", "description": "Release now"},
+                ],
+                "multiSelect": True,
+            },
+            {
+                "header": "Notify",
+                "question": "Notify the team?",
+                "options": [{"label": "Yes"}, {"label": "No"}],
+                "multiSelect": False,
+            },
+        ],
+        "pid": PID,
+        "tty": TTY,
+    }, use_tcp=use_tcp, wait_response=True)
+
+    if response:
+        print(f"\n   {Colors.GREEN}Answer received: {json.dumps(response)}{Colors.RESET}")
+    elif ok:
+        print(f"\n   {Colors.YELLOW}No response (timed out or no answer){Colors.RESET}")
+
+    time.sleep(0.3)
+    print("3. Ending session...")
+    send_event({
+        "agent": "claude-code", "event": "SessionEnd",
+        "session_id": SESSION_ID, "cwd": CWD,
+        "status": "ended", "pid": PID, "tty": TTY,
+    }, use_tcp=use_tcp)
+
+    return ok
+
+
+def test_plan(use_tcp=False):
+    """Test the PlanApproval flow (will block waiting for UI response)."""
+    print(f"{Colors.BOLD}=== PlanApproval Test ==={Colors.RESET}")
+    print(f"Session: {Colors.CYAN}{SESSION_ID}{Colors.RESET}")
+    print()
+
+    print("1. Starting session...")
+    send_event({
+        "agent": "claude-code", "event": "SessionStart",
+        "session_id": SESSION_ID, "cwd": CWD,
+        "status": "waiting_for_input", "pid": PID, "tty": TTY,
+    }, use_tcp=use_tcp)
+    time.sleep(0.3)
+
+    print("2. Sending PlanApproval (waiting for UI decision)...")
+    print(f"   {Colors.YELLOW}Choose Manual / Accept Edits / Auto in AgentBro...{Colors.RESET}")
+    ok, response = send_event({
+        "agent": "claude-code",
+        "event": "PlanApproval",
+        "session_id": SESSION_ID,
+        "cwd": CWD,
+        "status": "waiting_for_approval",
+        "plan_title": "Implement checkout",
+        "plan_content": "1. Update API\n2. Adjust UI\n3. Run tests",
+        "requested_permissions": [
+            {"tool": "Edit", "prompt": "Update checkout.ts"},
+            "Bash: npm test",
+        ],
+        "pid": PID,
+        "tty": TTY,
+    }, use_tcp=use_tcp, wait_response=True)
+
+    if response:
+        print(f"\n   {Colors.GREEN}Plan response received: {json.dumps(response)}{Colors.RESET}")
+    elif ok:
+        print(f"\n   {Colors.YELLOW}No response (timed out or no decision){Colors.RESET}")
+
+    time.sleep(0.3)
+    print("3. Ending session...")
+    send_event({
+        "agent": "claude-code", "event": "SessionEnd",
+        "session_id": SESSION_ID, "cwd": CWD,
+        "status": "ended", "pid": PID, "tty": TTY,
+    }, use_tcp=use_tcp)
+
+    return ok
 
 
 def test_multi_session(use_tcp=False):
@@ -554,9 +668,11 @@ def test_multi_session(use_tcp=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Agent Island Hook Test")
+    parser = argparse.ArgumentParser(description="AgentBro Hook Test")
     parser.add_argument("--quick", action="store_true", help="Quick 3-event smoke test")
     parser.add_argument("--permission", action="store_true", help="Test permission request flow")
+    parser.add_argument("--question", action="store_true", help="Test AskQuestion flow")
+    parser.add_argument("--plan", action="store_true", help="Test PlanApproval flow")
     parser.add_argument("--multi", action="store_true", help="Test multiple concurrent sessions")
     parser.add_argument("--tcp", action="store_true", help="Force TCP connection")
     args = parser.parse_args()
@@ -564,19 +680,23 @@ def main():
     # Check connectivity first
     sock, transport = connect(args.tcp)
     if not sock:
-        print(f"{Colors.RED}Cannot connect to Agent Island.{Colors.RESET}")
+        print(f"{Colors.RED}Cannot connect to AgentBro.{Colors.RESET}")
         print(f"Make sure the app is running and listening on:")
         print(f"  Unix: {UNIX_SOCKET_PATH}")
         print(f"  TCP:  {TCP_HOST}:{TCP_PORT}")
         sys.exit(1)
     sock.close()
-    print(f"{Colors.GREEN}Connected to Agent Island via {transport}{Colors.RESET}")
+    print(f"{Colors.GREEN}Connected to AgentBro via {transport}{Colors.RESET}")
     print()
 
     if args.quick:
         success = test_quick(args.tcp)
     elif args.permission:
         success = test_permission(args.tcp)
+    elif args.question:
+        success = test_question(args.tcp)
+    elif args.plan:
+        success = test_plan(args.tcp)
     elif args.multi:
         success = test_multi_session(args.tcp)
     else:
