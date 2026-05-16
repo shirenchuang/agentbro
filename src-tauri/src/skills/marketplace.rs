@@ -1,7 +1,49 @@
-use super::{registry, MarketplaceItem, MarketplaceMcpConfig};
+use super::{
+    registry, InstallMode, MarketplaceItem, MarketplaceMcpConfig, MarketplaceSource, TargetConfig,
+};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRegistry {
+    pub id: String,
+    pub name: String,
+    pub source_type: String,
+    pub url: String,
+    pub is_builtin: bool,
+    pub is_enabled: bool,
+    pub last_synced: Option<String>,
+    pub last_attempted_sync: Option<String>,
+    pub last_sync_status: String,
+    pub last_sync_error: Option<String>,
+    pub cache_updated_at: Option<String>,
+    pub cache_expires_at: Option<String>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSkill {
+    pub id: String,
+    pub registry_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub download_url: String,
+    pub is_installed: bool,
+    pub synced_at: String,
+    pub cache_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRegistryOptions {
+    pub force_refresh: bool,
+}
 
 pub fn list_items() -> Result<Vec<MarketplaceItem>, String> {
     let mut items = default_items();
@@ -15,6 +57,213 @@ pub fn list_items() -> Result<Vec<MarketplaceItem>, String> {
         items.append(&mut remote_items);
     }
     dedupe_items(items)
+}
+
+pub fn list_registries() -> Vec<SkillRegistry> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut registries = vec![SkillRegistry {
+        id: "builtin".to_string(),
+        name: "Built-in Marketplace".to_string(),
+        source_type: "builtin".to_string(),
+        url: "agentbro://builtin-marketplace".to_string(),
+        is_builtin: true,
+        is_enabled: true,
+        last_synced: Some(now.clone()),
+        last_attempted_sync: Some(now.clone()),
+        last_sync_status: "success".to_string(),
+        last_sync_error: None,
+        cache_updated_at: Some(now.clone()),
+        cache_expires_at: None,
+        etag: None,
+        last_modified: None,
+        created_at: now.clone(),
+    }];
+    registries.extend(
+        registry::list_marketplace_sources()
+            .into_iter()
+            .map(|source| source_to_registry(source, &now)),
+    );
+    registries
+}
+
+pub fn add_registry(
+    name: String,
+    source_type: String,
+    url: String,
+) -> Result<SkillRegistry, String> {
+    if name.trim().is_empty() {
+        return Err("Marketplace registry name cannot be empty".to_string());
+    }
+    if url.trim().is_empty() {
+        return Err("Marketplace registry URL cannot be empty".to_string());
+    }
+    let id = registry_id_from_name(&name);
+    let source = MarketplaceSource {
+        id: id.clone(),
+        name: name.trim().to_string(),
+        url: url.trim().to_string(),
+        enabled: true,
+    };
+    registry::upsert_marketplace_source(source.clone())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut item = source_to_registry(source, &now);
+    item.source_type = source_type;
+    Ok(item)
+}
+
+pub fn remove_registry(id: &str) -> Result<(), String> {
+    if id == "builtin" {
+        return Err("Cannot remove built-in marketplace registry".to_string());
+    }
+    registry::remove_marketplace_source(id)
+}
+
+pub fn sync_registry(
+    registry_id: &str,
+    _options: SyncRegistryOptions,
+) -> Result<Vec<MarketplaceSkill>, String> {
+    marketplace_skills(Some(registry_id), None)
+}
+
+pub fn search_marketplace_skills(
+    registry_id: Option<String>,
+    query: Option<String>,
+) -> Result<Vec<MarketplaceSkill>, String> {
+    marketplace_skills(registry_id.as_deref(), query.as_deref())
+}
+
+pub fn install_marketplace_skill(skill_id: &str) -> Result<(), String> {
+    let item = list_items()?
+        .into_iter()
+        .find(|item| item.id == skill_id)
+        .ok_or_else(|| format!("Marketplace skill not found: {skill_id}"))?;
+    match item.category.as_str() {
+        "skill" => {
+            let source = install_source_for_item(&item);
+            let targets = vec![TargetConfig {
+                agent: "central".to_string(),
+                install_mode: InstallMode::Direct,
+            }];
+            for installed_id in
+                super::installer::install_skill(&source, &targets, &InstallMode::Direct)?
+            {
+                registry::add_source(&installed_id, &source)?;
+            }
+            Ok(())
+        }
+        "plugin" => Err("Marketplace plugin installs require choosing a target Agent".to_string()),
+        "mcp" => Err("Marketplace MCP installs require choosing a target Agent".to_string()),
+        other => Err(format!("Unsupported marketplace item category: {other}")),
+    }
+}
+
+fn marketplace_skills(
+    registry_id: Option<&str>,
+    query: Option<&str>,
+) -> Result<Vec<MarketplaceSkill>, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let normalized_query = query
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
+    let installed_sources = registry::load().sources;
+    let items = list_items()?
+        .into_iter()
+        .filter(|item| {
+            registry_id
+                .filter(|id| *id != "builtin")
+                .map(|id| item.id.starts_with(id) || item.author.eq_ignore_ascii_case(id))
+                .unwrap_or(true)
+        })
+        .filter(|item| {
+            normalized_query
+                .as_ref()
+                .map(|query| {
+                    item.name.to_lowercase().contains(query)
+                        || item.description.to_lowercase().contains(query)
+                        || item.author.to_lowercase().contains(query)
+                })
+                .unwrap_or(true)
+        })
+        .map(|item| {
+            let source = install_source_for_item(&item);
+            let is_installed = installed_sources
+                .values()
+                .any(|entry| entry.origin == source || entry.origin == item.source);
+            let registry_id = registry_id_for_item(&item);
+            MarketplaceSkill {
+                id: item.id,
+                registry_id,
+                name: item.name,
+                description: Some(item.description),
+                download_url: source,
+                is_installed,
+                synced_at: now.clone(),
+                cache_updated_at: Some(now.clone()),
+            }
+        })
+        .collect();
+    Ok(items)
+}
+
+fn source_to_registry(source: MarketplaceSource, now: &str) -> SkillRegistry {
+    SkillRegistry {
+        id: source.id,
+        name: source.name,
+        source_type: "json".to_string(),
+        url: source.url,
+        is_builtin: false,
+        is_enabled: source.enabled,
+        last_synced: None,
+        last_attempted_sync: None,
+        last_sync_status: "never".to_string(),
+        last_sync_error: None,
+        cache_updated_at: None,
+        cache_expires_at: None,
+        etag: None,
+        last_modified: None,
+        created_at: now.to_string(),
+    }
+}
+
+fn registry_id_from_name(name: &str) -> String {
+    let id = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if id.is_empty() {
+        format!("registry-{}", uuid::Uuid::new_v4())
+    } else {
+        id
+    }
+}
+
+fn registry_id_for_item(item: &MarketplaceItem) -> String {
+    if item.id.starts_with("official:") || item.id.starts_with("official-repo:") {
+        return "official".to_string();
+    }
+    "builtin".to_string()
+}
+
+pub fn install_source_for_item(item: &MarketplaceItem) -> String {
+    if item.source_type == "github" {
+        format!(
+            "github:{}",
+            [Some(item.source.as_str()), item.sub_path.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter(|part| !part.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    } else {
+        item.source.clone()
+    }
 }
 
 fn read_manifest(url: &str) -> Result<String, String> {

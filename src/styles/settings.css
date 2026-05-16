@@ -1525,10 +1525,34 @@
 }
 
 .hook-tool-row__icon {
-  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  width: 28px;
-  text-align: center;
+  width: 34px;
+  height: 34px;
+}
+
+.platform-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.platform-icon--image {
+  object-fit: cover;
+  border-radius: 9px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.42) inset;
+}
+
+.platform-icon--glyph {
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--settings-text-primary);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
 }
 
 .hook-tool-row__info {

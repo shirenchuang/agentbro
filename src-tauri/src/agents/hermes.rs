@@ -11,7 +11,7 @@ pub struct HermesAdapter {
 
 impl HermesAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".hermes");
         let status = if Self::is_installed() {
             AdapterStatus::Available

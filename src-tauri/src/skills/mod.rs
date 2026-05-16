@@ -60,6 +60,26 @@ pub struct ScannedSkill {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CentralSkillBundle {
+    pub name: String,
+    pub path: String,
+    pub skill_count: usize,
+    pub linked_agent_count: usize,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CentralDeletePreview {
+    pub path: String,
+    pub skill_ids: Vec<String>,
+    pub linked_install_paths: Vec<String>,
+    pub removable_paths: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveredSkill {
     pub id: String,
     pub name: String,
@@ -88,6 +108,41 @@ pub struct SkillPack {
     pub description: String,
     pub skills: Vec<String>,
     pub target_agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCollection {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub skills: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionExport {
+    pub schema_version: u32,
+    pub collection: SkillCollection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanRoot {
+    pub path: String,
+    pub enabled: bool,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianVault {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub skill_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,10 +396,19 @@ mod tests {
     }
 
     #[test]
-    fn scans_central_agentbro_skills_dir() {
+    fn scans_central_skills_dirs() {
         let _guard = lock_home();
         let home = TempHome::new("central-scan");
-        write_skill(&home.path.join(".agentbro/skills"), "central-dir", "central-fixture");
+        write_skill(
+            &home.path.join(".agents/skills"),
+            "central-dir",
+            "central-fixture",
+        );
+        write_skill(
+            &home.path.join(".agentbro/skills"),
+            "legacy-dir",
+            "legacy-fixture",
+        );
 
         let scanned = scanner::scan_agent("central");
         let skill = scanned
@@ -355,8 +419,94 @@ mod tests {
         assert!(matches!(skill.skill_type, SkillType::Skill));
         assert_eq!(skill.agents[0].agent, "central");
         assert!(
-            skill.file_path.contains(".agentbro/skills/central-dir"),
-            "central scan should point at canonical AgentBro skill path"
+            skill.file_path.contains(".agents/skills/central-dir"),
+            "central scan should point at canonical ~/.agents skill path"
+        );
+        assert!(
+            scanned.iter().any(|skill| skill.id == "legacy-fixture"
+                && skill.file_path.contains(".agentbro/skills/legacy-dir")),
+            "central scan should retain compatibility with legacy AgentBro skill path"
+        );
+    }
+
+    #[test]
+    fn persists_collections_scan_roots_and_discovers_obsidian_skills() {
+        let _guard = lock_home();
+        let home = TempHome::new("collections-discover");
+        let project_skill = write_skill(
+            &home.path.join("workspace/demo/.agents/skills"),
+            "reviewer",
+            "reviewer",
+        );
+        let vault_skill = write_skill(
+            &home.path.join("vaults/Notes/.skills"),
+            "article",
+            "article-writer",
+        );
+        fs::create_dir_all(home.path.join("vaults/Notes/.obsidian")).expect("create vault marker");
+
+        registry::set_scan_roots(vec![
+            ScanRoot {
+                path: home.path.join("workspace").display().to_string(),
+                enabled: true,
+                label: "workspace".to_string(),
+            },
+            ScanRoot {
+                path: home.path.join("vaults").display().to_string(),
+                enabled: true,
+                label: "vaults".to_string(),
+            },
+        ])
+        .expect("save scan roots");
+
+        let discovered = scanner::discover_project_skills_from_scan_roots();
+        registry::cache_discovered_skills(discovered.clone()).expect("cache discovered skills");
+        assert!(
+            discovered
+                .iter()
+                .any(|skill| skill.dir_path == project_skill.display().to_string()),
+            "enabled scan roots should discover project skills"
+        );
+        assert!(
+            registry::list_discovered_skills()
+                .iter()
+                .any(|skill| skill.dir_path == project_skill.display().to_string()),
+            "discovered skills should be cached for later navigation"
+        );
+
+        let vaults = scanner::get_obsidian_vaults();
+        let vault = vaults
+            .iter()
+            .find(|vault| vault.name == "Notes")
+            .expect("obsidian vault should be discovered");
+        assert_eq!(vault.skill_count, 1);
+        let vault_skills = scanner::get_obsidian_vault_skills(&vault.path);
+        assert!(
+            vault_skills
+                .iter()
+                .any(|skill| skill.dir_path == vault_skill.display().to_string()),
+            "vault skills should be discoverable from the vault view"
+        );
+
+        let collection = registry::upsert_collection(SkillCollection {
+            id: "collection-one".to_string(),
+            name: "Review Workflow".to_string(),
+            description: "Code review skills".to_string(),
+            skills: vec!["reviewer".to_string(), "reviewer".to_string()],
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+        .expect("create collection");
+        assert_eq!(collection.skills, vec!["reviewer"]);
+
+        let exported = registry::export_collection("collection-one").expect("export collection");
+        registry::delete_collection("collection-one").expect("delete collection");
+        registry::import_collection(&exported).expect("import collection");
+        assert!(
+            registry::list_collections()
+                .iter()
+                .any(|item| item.name == "Review Workflow"),
+            "imported collection should be listed"
         );
     }
 
@@ -414,6 +564,7 @@ mod tests {
         let backup = home.path.join("backup.zip");
         sync::export_backup(backup.to_str().expect("backup path")).expect("export backup");
         fs::remove_dir_all(home.path.join(".agentbro")).expect("clear metadata");
+        fs::remove_dir_all(home.path.join(".agents")).expect("clear central skills");
         sync::import_backup(backup.to_str().expect("backup path")).expect("import backup");
 
         let meta = registry::load();

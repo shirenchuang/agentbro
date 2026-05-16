@@ -28,6 +28,9 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
     return Array.from(installedAgents).some(id => agentMatchesId(id, agent))
   }
   const version = displayVersionValue(skill.frontmatter.version || skill.frontmatter.versionName)
+  const visibleAgentStates = skill.agents.slice(0, 5)
+  const hiddenAgentCount = Math.max(0, skill.agents.length - visibleAgentStates.length)
+  const activePlatformAgents = detectedAgents.filter(agent => isAgentInstalled(agent.id)).slice(0, 6)
 
   const handleToggle = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -68,7 +71,7 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
           <div className="skill-card__desc">{skill.description}</div>
         )}
         <div className="skill-card__agent-tags">
-          {skill.agents.map((agent) => {
+          {visibleAgentStates.map((agent) => {
             const color = agentColor(agent.agent)
             return (
               <span
@@ -80,24 +83,28 @@ export function SkillCard({ skill, onRefresh }: SkillCardProps) {
               </span>
             )
           })}
+          {hiddenAgentCount > 0 && (
+            <span className="skill-card__agent-more">+{hiddenAgentCount}</span>
+          )}
         </div>
       </div>
-      <div className="skill-card__platforms">
-        {detectedAgents.map(agent => {
-          const installed = isAgentInstalled(agent.id)
-          const color = agentColor(agent.id)
-          return (
-            <span
-              key={agent.id}
-              className={`skill-card__platform-icon ${installed ? 'skill-card__platform-icon--active' : ''}`}
-              style={{ '--platform-color': color } as React.CSSProperties}
-              title={agent.displayName}
-            >
-              {shortAgentName(agent.id, agents)}
-            </span>
-          )
-        })}
-      </div>
+      {activePlatformAgents.length > 0 && (
+        <div className="skill-card__platforms">
+          {activePlatformAgents.map(agent => {
+            const color = agentColor(agent.id)
+            return (
+              <span
+                key={agent.id}
+                className="skill-card__platform-icon skill-card__platform-icon--active"
+                style={{ '--platform-color': color } as React.CSSProperties}
+                title={agent.displayName}
+              >
+                {shortAgentName(agent.id, agents)}
+              </span>
+            )
+          })}
+        </div>
+      )}
       <button
         className={`skill-card__toggle ${allEnabled ? 'skill-card__toggle--on' : ''}`}
         onClick={handleToggle}

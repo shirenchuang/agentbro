@@ -3,13 +3,13 @@ use std::path::PathBuf;
 pub fn expand_tilde(path: &str) -> String {
     if path == "~" {
         return dirs::home_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
+            .unwrap_or_else(std::env::temp_dir)
             .display()
             .to_string();
     }
     if let Some(rest) = path.strip_prefix("~/") {
         return dirs::home_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
+            .unwrap_or_else(std::env::temp_dir)
             .join(rest)
             .display()
             .to_string();

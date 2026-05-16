@@ -17,7 +17,8 @@ use super::session_store::{
 };
 use crate::agents::{AgentAdapter, AgentEvent};
 use crate::hooks::conversation_parser::{
-    discover_session_file, extract_cache_ttl_info, extract_session_title,
+    discover_session_file, extract_cache_ttl_info, extract_latest_assistant_text,
+    extract_session_title,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
@@ -635,10 +636,7 @@ impl HookServer {
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::SessionStart);
             }
             AgentEvent::SessionEnd { session_id } => {
-                let summary = store
-                    .get_session(session_id)
-                    .and_then(|s| s.session_title.or(s.description).or(Some(s.project)))
-                    .unwrap_or_else(|| "Session ended".to_string());
+                let summary = "Session ended".to_string();
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Done;
                     s.description = Some(summary.clone());
@@ -775,6 +773,13 @@ impl HookServer {
                 session_id,
                 summary,
             } => {
+                let summary = Self::resolve_completion_summary(
+                    store,
+                    session_id,
+                    summary,
+                    "Task completed",
+                    Some(_raw),
+                );
                 store.update_session(session_id, |s| {
                     s.phase = SessionPhase::Done;
                     s.description = Some(summary.clone());
@@ -799,7 +804,13 @@ impl HookServer {
                 Self::schedule_done_session_cleanup(store, session_id, 30);
             }
             AgentEvent::AssistantResponseComplete { session_id, text } => {
-                let truncated = Self::truncate_preview(text, 2000);
+                let truncated = Self::resolve_completion_summary(
+                    store,
+                    session_id,
+                    text,
+                    "Task completed",
+                    Some(_raw),
+                );
                 store.update_session(session_id, |s| {
                     s.phase = if s.has_unfinished_tasks() {
                         SessionPhase::WaitingInput
@@ -890,7 +901,7 @@ impl HookServer {
                 message,
                 status,
             } => {
-                Self::process_notification(store, session_id, message, status, sound);
+                Self::process_notification(store, session_id, message, status, sound, _raw);
             }
             AgentEvent::SubagentStart {
                 session_id,
@@ -1170,6 +1181,7 @@ impl HookServer {
         message: &str,
         status: &Option<String>,
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        raw: &serde_json::Value,
     ) {
         let lower = message.to_lowercase();
 
@@ -1198,11 +1210,13 @@ impl HookServer {
         }
 
         if lower.contains("complete") || lower.contains("done") {
-            let summary = if message.trim().is_empty() {
-                "Task complete".to_string()
-            } else {
-                Self::truncate_preview(message.trim(), 2000)
-            };
+            let summary = Self::resolve_completion_summary(
+                store,
+                session_id,
+                message.trim(),
+                "Task complete",
+                Some(raw),
+            );
             store.update_session(session_id, |s| {
                 s.phase = SessionPhase::Done;
                 s.description = Some(summary.clone());
@@ -1324,6 +1338,77 @@ impl HookServer {
         } else {
             truncated
         }
+    }
+
+    fn is_generic_completion_text(text: &str) -> bool {
+        let normalized = text
+            .trim()
+            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '。' | '！'))
+            .to_lowercase();
+        normalized.is_empty()
+            || normalized == "done"
+            || normalized == "task complete"
+            || normalized == "task completed"
+            || normalized == "session ended"
+            || normalized == "processing user input"
+            || normalized == "compacting context"
+            || normalized == "waiting for input"
+    }
+
+    fn useful_completion_text(text: Option<&str>) -> Option<String> {
+        let trimmed = text?.trim();
+        if trimmed.is_empty() || Self::is_generic_completion_text(trimmed) {
+            None
+        } else {
+            Some(Self::truncate_preview(trimmed, 2000))
+        }
+    }
+
+    fn resolve_completion_summary(
+        store: &SessionStore,
+        session_id: &str,
+        incoming: &str,
+        fallback: &str,
+        raw: Option<&serde_json::Value>,
+    ) -> String {
+        Self::useful_completion_text(Some(incoming))
+            .or_else(|| {
+                store
+                    .get_session(session_id)
+                    .and_then(|s| Self::useful_completion_text(s.last_response.as_deref()))
+            })
+            .or_else(|| Self::latest_assistant_text_from_transcript(store, session_id, raw))
+            .or_else(|| {
+                store
+                    .get_session(session_id)
+                    .and_then(|s| Self::useful_completion_text(s.description.as_deref()))
+            })
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn latest_assistant_text_from_transcript(
+        store: &SessionStore,
+        session_id: &str,
+        raw: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        let path = Self::transcript_path_for_session(store, session_id, raw?)?;
+        Self::useful_completion_text(extract_latest_assistant_text(&path).as_deref())
+    }
+
+    fn transcript_path_for_session(
+        store: &SessionStore,
+        session_id: &str,
+        raw: &serde_json::Value,
+    ) -> Option<std::path::PathBuf> {
+        raw.get("transcript_path")
+            .or_else(|| raw.get("transcriptPath"))
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                let session = store.get_session(session_id)?;
+                discover_session_file(session_id, &session.cwd)
+            })
     }
 
     fn update_session_metadata_from_raw(store: &SessionStore, raw: &serde_json::Value) {

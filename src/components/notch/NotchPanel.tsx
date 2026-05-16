@@ -114,6 +114,7 @@ function OverlayRenderer({ overlay, onDismiss }: { overlay: OverlayItem; onDismi
         <OverlayCompletionCard
           overlay={overlay}
           session={session}
+          onJumpToTerminal={() => jumpToTerminal(session.id)}
           onDismiss={onDismiss}
         />
       )
@@ -194,11 +195,13 @@ export function NotchPanel() {
   const idleHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const overlayDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const alertContentRef = useRef<HTMLDivElement | null>(null)
+  const feedbackContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
   const [displayChanging, setDisplayChanging] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [layoutPreview, setLayoutPreview] = useState<IslandLayoutPreview | null>(null)
   const [measuredAlertContentHeight, setMeasuredAlertContentHeight] = useState(0)
+  const [measuredFeedbackContentHeight, setMeasuredFeedbackContentHeight] = useState(0)
   const [focusedSessionIds, setFocusedSessionIds] = useState<Set<string> | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
@@ -491,6 +494,15 @@ export function NotchPanel() {
     window.requestAnimationFrame(() => {
       const nextHeight = Math.ceil(node.getBoundingClientRect().height || node.scrollHeight)
       if (nextHeight > 0) setMeasuredAlertContentHeight(nextHeight)
+    })
+  }, [])
+
+  const setFeedbackContentNode = useCallback((node: HTMLDivElement | null) => {
+    feedbackContentRef.current = node
+    if (!node) return
+    window.requestAnimationFrame(() => {
+      const nextHeight = Math.ceil(node.getBoundingClientRect().height || node.scrollHeight)
+      if (nextHeight > 0) setMeasuredFeedbackContentHeight(nextHeight)
     })
   }, [])
 
@@ -787,6 +799,12 @@ export function NotchPanel() {
     && isBlockingOverlay(activeOverlay)
     && effectivePanelState !== 'collapsed',
   )
+  const feedbackPresentationOpen = Boolean(
+    !layoutPreview
+    && activeOverlay
+    && isNonBlockingOverlay(activeOverlay)
+    && effectivePanelState !== 'collapsed',
+  )
   const collapsedHeight = notchHeightMode === 'custom'
     ? customNotchHeight
     : notchHeightMode === 'matchMenuBar'
@@ -809,7 +827,6 @@ export function NotchPanel() {
             : (isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50))
 
   const statusBarHeight = effectivePanelState !== 'collapsed' ? 32 : 0
-  const overlayExtraHeight = activeOverlay && isNonBlockingOverlay(activeOverlay) ? 120 : 0
   const projectCount = new Set(displayedSessions.map((session) => session.project)).size
   const hoverListHeight = 96 + Math.max(displayedSessions.length, 1) * 76 + Math.max(projectCount, 1) * 32
   const blockingOverlayFallbackHeight = activeOverlay?.type === 'plan'
@@ -830,12 +847,14 @@ export function NotchPanel() {
             ? (maxPanelHeight || 560)
             : hasBlockingOverlayContent
               ? Math.min(Math.max(measuredAlertContentHeight || blockingOverlayFallbackHeight, 220), maxPanelHeight || 600)
+            : feedbackPresentationOpen
+              ? Math.min(Math.max(measuredFeedbackContentHeight || completionCardHeight + 168, 220), maxPanelHeight || 600)
             : overlayPresentationOpen
-              ? Math.min(Math.max(statusBarHeight + completionCardHeight + 72, 220), maxPanelHeight || 600)
+              ? Math.min(Math.max(completionCardHeight + 168, 260), maxPanelHeight || 600)
               : effectivePanelState === 'collapsed'
                 ? collapsedHeight
                 : effectivePanelState === 'hover'
-                  ? Math.min(Math.max(statusBarHeight + hoverListHeight + overlayExtraHeight, 260), maxPanelHeight || 600)
+                  ? Math.min(Math.max(statusBarHeight + hoverListHeight, 260), maxPanelHeight || 600)
                   : (maxPanelHeight || 560)
 
   const visualState = isPetMode
@@ -909,6 +928,34 @@ export function NotchPanel() {
       observer.disconnect()
     }
   }, [activeOverlay?.id, hasBlockingOverlayContent])
+
+  useEffect(() => {
+    if (!feedbackPresentationOpen) {
+      setMeasuredFeedbackContentHeight(0)
+      return
+    }
+
+    const element = feedbackContentRef.current
+    if (!element) return
+
+    const measure = () => {
+      const nextHeight = Math.ceil(element.getBoundingClientRect().height || element.scrollHeight)
+      if (nextHeight > 0) setMeasuredFeedbackContentHeight(nextHeight)
+    }
+
+    measure()
+    const frame = window.requestAnimationFrame(measure)
+    if (typeof ResizeObserver === 'undefined') {
+      return () => window.cancelAnimationFrame(frame)
+    }
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [activeOverlay?.id, feedbackPresentationOpen])
 
   // Debounce IPC resize to avoid jitter during spring animation
   useEffect(() => {
@@ -1095,7 +1142,7 @@ export function NotchPanel() {
               <Confetti trigger={confettiEnabled && activeOverlay?.type === 'completion'} />
               <PixelCursor priority={activePriority} visible={pixelCursorEnabled && panelState !== 'collapsed'} />
 
-              {!hasBlockingOverlayContent && (
+              {!hasBlockingOverlayContent && !feedbackPresentationOpen && (
                 <CollapsedBar
                   sessions={displayedSessions}
                   panelState={effectivePanelState}
@@ -1133,8 +1180,22 @@ export function NotchPanel() {
                   </motion.div>
                 )}
 
+                {!isDragging && feedbackPresentationOpen && activeOverlay && (
+                  <motion.div
+                    ref={setFeedbackContentNode}
+                    key={`feedback-${activeOverlay.id}`}
+                    className="notch-panel__feedback-content"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={contentTransition}
+                  >
+                    <OverlayRenderer overlay={activeOverlay} onDismiss={() => dismissOverlay(activeOverlay.id)} />
+                  </motion.div>
+                )}
+
                 {/* Base layer: session list */}
-                {!isDragging && !layoutPreview && !hasBlockingOverlayContent && panelState === 'hover' && (
+                {!isDragging && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'hover' && (
                   <motion.div
                     key="hover"
                     initial={{ opacity: 0 }}
@@ -1155,7 +1216,7 @@ export function NotchPanel() {
                 )}
 
                 {/* Base layer: detail view */}
-                {!isDragging && !layoutPreview && !hasBlockingOverlayContent && panelState === 'expanded' && (
+                {!isDragging && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'expanded' && (
                   <motion.div
                     key="expanded"
                     initial={{ opacity: 0 }}
@@ -1175,7 +1236,7 @@ export function NotchPanel() {
                 )}
               </AnimatePresence>
 
-              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && (
+              {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && !feedbackPresentationOpen && (
                 <button
                   type="button"
                   className="notch-panel__outside-dismiss"
@@ -1190,7 +1251,7 @@ export function NotchPanel() {
 
               {/* Overlay layer — renders on top of base layer */}
               <AnimatePresence>
-                {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && (
+                {!isDragging && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && !feedbackPresentationOpen && (
                   <motion.div
                     key={`overlay-${activeOverlay.id}`}
                     className="notch-panel__overlay"

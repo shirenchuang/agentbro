@@ -62,6 +62,8 @@ struct HostState {
     status: ConnectionStatus,
 }
 
+type StatusChangeCallback = Box<dyn Fn(&str, ConnectionStatus) + Send + Sync>;
+
 /// Manages all SSH remote host connections
 pub struct RemoteManager {
     hosts: Mutex<Vec<RemoteHost>>,
@@ -69,7 +71,7 @@ pub struct RemoteManager {
     /// Path to the local Unix socket to reverse-forward
     local_socket_path: String,
     /// Status change callback (host_id, new_status)
-    on_status_change: Arc<Mutex<Option<Box<dyn Fn(&str, ConnectionStatus) + Send + Sync>>>>,
+    on_status_change: Arc<Mutex<Option<StatusChangeCallback>>>,
 }
 
 impl RemoteManager {

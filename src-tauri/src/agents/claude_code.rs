@@ -16,7 +16,7 @@ pub struct ClaudeCodeAdapter {
 
 impl ClaudeCodeAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".claude");
         let status = if Self::is_claude_code_installed() {
             AdapterStatus::Available
@@ -73,7 +73,7 @@ impl ClaudeCodeAdapter {
     /// Get the path where the bridge binary should be installed
     /// Uses ~/.agentbro/bin/ to avoid spaces in path (shared across all instances)
     fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
     }
 
@@ -181,7 +181,7 @@ impl ClaudeCodeAdapter {
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)
     fn cleanup_old_python_hook() {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let old_script = home.join(".agentbro").join("agentbro-hook.py");
         if old_script.exists() {
             if let Err(e) = std::fs::remove_file(&old_script) {
@@ -1147,10 +1147,10 @@ impl ClaudeCodeAdapter {
 /// Expand `~` prefix to the user's home directory
 pub fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         home.join(rest)
     } else if path == "~" {
-        dirs::home_dir().unwrap_or_else(|| std::env::temp_dir())
+        dirs::home_dir().unwrap_or_else(std::env::temp_dir)
     } else {
         PathBuf::from(path)
     }
@@ -1160,6 +1160,9 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 pub fn send_message_to_terminal(
     tty: &str,
     message: &str,
+    terminal: &str,
+    pid: Option<u32>,
+    term_bundle_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Try tmux first
     if let Ok(output) = std::process::Command::new("tmux")
@@ -1172,18 +1175,180 @@ pub fn send_message_to_terminal(
             .find(|line| line.starts_with(tty))
             .and_then(|line| line.split_whitespace().nth(1))
         {
-            std::process::Command::new("tmux")
-                .args(["send-keys", "-l", "-t", pane_id, &format!("{}\n", message)])
-                .output()?;
+            send_tmux_text_with_enter(pane_id, message)?;
             return Ok(());
         }
     }
 
-    // Fallback: write directly to the TTY device
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().write(true).open(tty)?;
-    f.write_all(format!("{}\n", message).as_bytes())?;
+    let terminal_app = resolve_terminal_app_label(terminal, term_bundle_id, pid);
+    if terminal_app.eq_ignore_ascii_case("iterm2") || terminal_app.eq_ignore_ascii_case("iterm") {
+        run_osascript(&build_iterm_write_script(tty, message))?;
+        return Ok(());
+    }
+
+    if terminal_app.eq_ignore_ascii_case("terminal") {
+        run_osascript(&build_terminal_write_script(tty, message))?;
+        return Ok(());
+    }
+
+    if let Some(pid) = pid {
+        let jump_context = crate::terminal::jump::JumpContext {
+            pid,
+            iterm_session_id: None,
+            kitty_window_id: None,
+            wezterm_pane: None,
+            zellij_pane_id: None,
+            zellij_session_name: None,
+            cmux_surface_id: None,
+            cmux_workspace_id: None,
+            tmux_pane: None,
+            tmux_env: None,
+            cwd: None,
+            tty_path: Some(tty.to_string()),
+            terminal_app: Some(terminal_app.clone()),
+            term_bundle_id: term_bundle_id.map(ToString::to_string),
+            agent_type: Some("claude-code".to_string()),
+        };
+        let _ = crate::terminal::jump::jump_to_terminal_with_context(&jump_context);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    run_osascript(&build_system_events_type_script(message))
+}
+
+fn send_tmux_text_with_enter(
+    pane_id: &str,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text_status = std::process::Command::new("tmux")
+        .args(["send-keys", "-l", "-t", pane_id, message])
+        .status()?;
+    if !text_status.success() {
+        return Err(format!("Failed to send message to tmux pane {}", pane_id).into());
+    }
+
+    let enter_status = std::process::Command::new("tmux")
+        .args(["send-keys", "-t", pane_id, "Enter"])
+        .status()?;
+    if !enter_status.success() {
+        return Err(format!("Failed to send Enter to tmux pane {}", pane_id).into());
+    }
+
     Ok(())
+}
+
+fn resolve_terminal_app_label(
+    terminal: &str,
+    term_bundle_id: Option<&str>,
+    pid: Option<u32>,
+) -> String {
+    let bundle = term_bundle_id.unwrap_or("").to_ascii_lowercase();
+    if bundle.contains("iterm") {
+        return "iTerm2".to_string();
+    }
+    if bundle.contains("terminal") {
+        return "Terminal".to_string();
+    }
+    if bundle.contains("ghostty") {
+        return "Ghostty".to_string();
+    }
+    if bundle.contains("kitty") {
+        return "kitty".to_string();
+    }
+
+    let lower = terminal.to_ascii_lowercase();
+    if lower.contains("iterm") {
+        return "iTerm2".to_string();
+    }
+    if lower.contains("terminal") && !lower.contains("/dev/") {
+        return "Terminal".to_string();
+    }
+    if lower.contains("ghostty") {
+        return "Ghostty".to_string();
+    }
+    if lower.contains("kitty") {
+        return "kitty".to_string();
+    }
+
+    if let Some(pid) = pid {
+        let tree = crate::terminal::process_tree::build_tree();
+        if let Some(app) = crate::terminal::process_tree::find_terminal_app_name(pid, &tree) {
+            return app;
+        }
+    }
+
+    "Terminal".to_string()
+}
+
+fn build_iterm_write_script(tty: &str, message: &str) -> String {
+    let tty_literal = apple_script_string_literal(tty);
+    let message_literal = apple_script_string_literal(message);
+    format!(
+        r#"tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if tty of s contains {tty_literal} then
+          tell s to write text {message_literal}
+          return
+        end if
+      end repeat
+    end repeat
+  end repeat
+  tell current session of current tab of current window to write text {message_literal}
+end tell"#
+    )
+}
+
+fn build_terminal_write_script(tty: &str, message: &str) -> String {
+    let tty_literal = apple_script_string_literal(tty);
+    let message_literal = apple_script_string_literal(message);
+    format!(
+        r#"tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is {tty_literal} then
+        do script {message_literal} in t
+        return
+      end if
+    end repeat
+  end repeat
+  do script {message_literal}
+end tell"#
+    )
+}
+
+fn build_system_events_type_script(message: &str) -> String {
+    let message_literal = apple_script_string_literal(message);
+    format!(
+        r#"tell application "System Events"
+  keystroke {message_literal}
+  key code 36
+end tell"#
+    )
+}
+
+fn run_osascript(script: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into())
+    }
+}
+
+fn apple_script_string_literal(value: &str) -> String {
+    let parts: Vec<String> = value
+        .split('\n')
+        .map(|part| format!("\"{}\"", part.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    parts.join(" & linefeed & ")
 }
 
 #[cfg(test)]
@@ -1237,6 +1402,25 @@ mod tests {
             }
             other => panic!("expected Notification, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_message_scripts_target_tty_and_submit() {
+        let iterm_script = build_iterm_write_script("/dev/ttys001", "ok");
+        assert!(iterm_script.contains("tty of s contains \"/dev/ttys001\""));
+        assert!(iterm_script.contains("write text \"ok\""));
+
+        let terminal_script = build_terminal_write_script("/dev/ttys001", "ok");
+        assert!(terminal_script.contains("tty of t is \"/dev/ttys001\""));
+        assert!(terminal_script.contains("do script \"ok\" in t"));
+    }
+
+    #[test]
+    fn apple_script_string_literal_escapes_quotes_and_newlines() {
+        assert_eq!(
+            apple_script_string_literal("say \"hi\"\nnext"),
+            "\"say \\\"hi\\\"\" & linefeed & \"next\""
+        );
     }
 
     #[test]

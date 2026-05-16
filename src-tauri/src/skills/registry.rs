@@ -1,5 +1,8 @@
 use super::agent_paths;
-use super::{MarketplaceSource, SkillPack, SyncConfig};
+use super::{
+    CollectionExport, DiscoveredSkill, MarketplaceSource, ScanRoot, SkillCollection, SkillPack,
+    SyncConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -19,6 +22,14 @@ pub struct Metadata {
     pub sources: HashMap<String, SkillSourceEntry>,
     #[serde(default)]
     pub packs: Vec<SkillPack>,
+    #[serde(default)]
+    pub collections: Vec<SkillCollection>,
+    #[serde(default)]
+    pub scan_roots: Vec<ScanRoot>,
+    #[serde(default)]
+    pub discovered_skills: Vec<DiscoveredSkill>,
+    #[serde(default)]
+    pub discovered_scanned_at: Option<String>,
     #[serde(default)]
     pub sync: Option<SyncConfig>,
     #[serde(default)]
@@ -144,6 +155,155 @@ pub fn update_pack(pack: SkillPack) -> Result<(), String> {
 pub fn delete_pack(id: &str) -> Result<(), String> {
     let mut meta = load();
     meta.packs.retain(|p| p.id != id);
+    save(&meta)
+}
+
+pub fn list_collections() -> Vec<SkillCollection> {
+    let mut collections = load().collections;
+    collections.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    collections
+}
+
+pub fn upsert_collection(mut collection: SkillCollection) -> Result<SkillCollection, String> {
+    if collection.name.trim().is_empty() {
+        return Err("Collection name cannot be empty".to_string());
+    }
+    collection.name = collection.name.trim().to_string();
+    collection.description = collection.description.trim().to_string();
+    collection.skills.sort();
+    collection.skills.dedup();
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut meta = load();
+    if let Some(existing) = meta
+        .collections
+        .iter_mut()
+        .find(|item| item.id == collection.id)
+    {
+        if collection.created_at.trim().is_empty() {
+            collection.created_at = existing.created_at.clone();
+        }
+        collection.updated_at = now;
+        *existing = collection.clone();
+    } else {
+        if collection.id.trim().is_empty() {
+            collection.id = format!("collection-{}", uuid::Uuid::new_v4());
+        }
+        if collection.created_at.trim().is_empty() {
+            collection.created_at = now.clone();
+        }
+        if collection.updated_at.trim().is_empty() {
+            collection.updated_at = now;
+        }
+        meta.collections.push(collection.clone());
+    }
+    save(&meta)?;
+    Ok(collection)
+}
+
+pub fn delete_collection(id: &str) -> Result<(), String> {
+    let mut meta = load();
+    let before = meta.collections.len();
+    meta.collections.retain(|collection| collection.id != id);
+    if before == meta.collections.len() {
+        return Err(format!("Collection not found: {id}"));
+    }
+    save(&meta)
+}
+
+pub fn export_collection(id: &str) -> Result<String, String> {
+    let collection = load()
+        .collections
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| format!("Collection not found: {id}"))?;
+    serde_json::to_string_pretty(&CollectionExport {
+        schema_version: 1,
+        collection,
+    })
+    .map_err(|e| e.to_string())
+}
+
+pub fn import_collection(json: &str) -> Result<SkillCollection, String> {
+    let parsed: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let collection_value = parsed
+        .get("collection")
+        .cloned()
+        .unwrap_or_else(|| parsed.clone());
+    let mut collection: SkillCollection =
+        serde_json::from_value(collection_value).map_err(|e| e.to_string())?;
+    if collection.id.trim().is_empty() {
+        collection.id = format!("collection-{}", uuid::Uuid::new_v4());
+    }
+    let existing_ids = load()
+        .collections
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<std::collections::HashSet<_>>();
+    if existing_ids.contains(&collection.id) {
+        collection.id = format!(
+            "{}-imported-{}",
+            collection.id,
+            chrono::Utc::now().timestamp()
+        );
+        collection.name = format!("{} (Imported)", collection.name);
+    }
+    upsert_collection(collection)
+}
+
+pub fn list_scan_roots() -> Vec<ScanRoot> {
+    let roots = load().scan_roots;
+    if roots.is_empty() {
+        default_scan_roots()
+    } else {
+        roots
+    }
+}
+
+pub fn set_scan_roots(mut roots: Vec<ScanRoot>) -> Result<(), String> {
+    for root in &mut roots {
+        root.path = normalize_path(&root.path);
+        if root.label.trim().is_empty() {
+            root.label = label_for_path(&root.path);
+        }
+    }
+    roots.sort_by(|a, b| a.path.cmp(&b.path));
+    roots.dedup_by(|a, b| a.path == b.path);
+    let mut meta = load();
+    meta.scan_roots = roots;
+    save(&meta)
+}
+
+pub fn set_scan_root_enabled(path: &str, enabled: bool) -> Result<(), String> {
+    let normalized = normalize_path(path);
+    let mut roots = list_scan_roots();
+    let root = roots
+        .iter_mut()
+        .find(|root| root.path == normalized)
+        .ok_or_else(|| format!("Scan root not found: {path}"))?;
+    root.enabled = enabled;
+    set_scan_roots(roots)
+}
+
+pub fn cache_discovered_skills(
+    skills: Vec<DiscoveredSkill>,
+) -> Result<Vec<DiscoveredSkill>, String> {
+    let mut meta = load();
+    meta.discovered_skills = skills;
+    meta.discovered_scanned_at = Some(chrono::Utc::now().to_rfc3339());
+    let cached = meta.discovered_skills.clone();
+    save(&meta)?;
+    Ok(cached)
+}
+
+pub fn list_discovered_skills() -> Vec<DiscoveredSkill> {
+    load().discovered_skills
+}
+
+pub fn clear_discovered_skills() -> Result<(), String> {
+    let mut meta = load();
+    meta.discovered_skills.clear();
+    meta.discovered_scanned_at = None;
     save(&meta)
 }
 
@@ -288,6 +448,26 @@ fn normalize_path(path: &str) -> String {
         return expand_home(trimmed).display().to_string();
     }
     trimmed.to_string()
+}
+
+fn default_scan_roots() -> Vec<ScanRoot> {
+    ["~/code", "~/projects", "~/workspace", "~/Documents"]
+        .iter()
+        .map(|path| ScanRoot {
+            path: normalize_path(path),
+            enabled: true,
+            label: label_for_path(path),
+        })
+        .collect()
+}
+
+fn label_for_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn expand_home(path: &str) -> PathBuf {

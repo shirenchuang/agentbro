@@ -98,7 +98,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
 
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
-  const alertCount = sessions.filter(s => computePriority(s) === PRIORITY.attention).length
+  const alertCount = sessions.filter(s => computePriority(s) >= PRIORITY.attention).length
   const workingCount = sessions.filter(s => s.phase === 'processing' || s.phase === 'compacting').length
   const waitingCount = sessions.filter(sessionNeedsAttention).length
   const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)

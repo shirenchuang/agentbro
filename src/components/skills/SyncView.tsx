@@ -19,6 +19,8 @@ export function SyncView() {
   const [syncMessage, setSyncMessage] = useState('')
   const [fromAgent, setFromAgent] = useState('')
   const [toAgent, setToAgent] = useState('')
+  const [backupPath, setBackupPath] = useState('~/Desktop/agentbro-backup.zip')
+  const [importPath, setImportPath] = useState('')
   const [previewDetails, setPreviewDetails] = useState<string[]>([])
   const [conflicts, setConflicts] = useState<SyncResult['conflicts']>([])
   const defaultFromAgent = syncAgents[0]?.id || ''
@@ -95,7 +97,7 @@ export function SyncView() {
   }, [selectedFromAgent, selectedToAgent, loadAll, t])
 
   const handleExport = useCallback(async () => {
-    const path = prompt(t('skills.importPathPrompt'), '~/Desktop/agentbro-backup.zip')
+    const path = backupPath.trim()
     if (!path) return
     try {
       await skillApi.exportBackup(path)
@@ -103,10 +105,10 @@ export function SyncView() {
     } catch (e) {
       setSyncMessage(String(e))
     }
-  }, [t])
+  }, [backupPath, t])
 
   const handleImport = useCallback(async () => {
-    const path = prompt(t('skills.importPathPrompt'))
+    const path = importPath.trim()
     if (!path) return
     try {
       await skillApi.importBackup(path)
@@ -115,7 +117,7 @@ export function SyncView() {
     } catch (e) {
       setSyncMessage(String(e))
     }
-  }, [loadAll, t])
+  }, [importPath, loadAll, t])
 
   const handleResolveConflicts = useCallback(async (action: 'keep_local' | 'use_remote' | 'keep_both') => {
     if (conflicts.length === 0) return
@@ -185,9 +187,32 @@ export function SyncView() {
           <section className="sync-section">
             <div className="sync-section__title">{t('skills.exportImport')}</div>
             <div className="sync-section__desc">{t('skills.exportImportDesc')}</div>
+            <div className="sync-input-row">
+              <input
+                className="sync-input"
+                value={backupPath}
+                onChange={e => setBackupPath(e.target.value)}
+                placeholder="~/Desktop/agentbro-backup.zip"
+              />
+              <button className="skills-btn skills-btn--small" onClick={handleExport} disabled={!backupPath.trim()}>
+                {t('skills.export')}
+              </button>
+            </div>
+            <div className="sync-input-row">
+              <input
+                className="sync-input"
+                value={importPath}
+                onChange={e => setImportPath(e.target.value)}
+                placeholder={t('skills.importPathPrompt')}
+              />
+              <button className="skills-btn skills-btn--small" onClick={handleImport} disabled={!importPath.trim()}>
+                {t('skills.import')}
+              </button>
+            </div>
             <div className="sync-buttons">
-              <button className="skills-btn" onClick={handleExport}>{t('skills.export')}</button>
-              <button className="skills-btn" onClick={handleImport}>{t('skills.import')}</button>
+              <button className="skills-btn" onClick={() => setImportPath(backupPath)} disabled={!backupPath.trim()}>
+                使用导出路径导入
+              </button>
             </div>
           </section>
 

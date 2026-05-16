@@ -185,11 +185,14 @@ function App() {
         const nextTheme = persisted.state?.colorTheme
         if (nextTheme && COLOR_THEMES.some((theme) => theme.id === nextTheme)) {
           document.documentElement.setAttribute('data-island-color-theme', nextTheme)
-          useThemeStore.setState({ colorTheme: nextTheme })
+          if (useThemeStore.getState().colorTheme !== nextTheme) {
+            useThemeStore.setState({ colorTheme: nextTheme })
+          }
         }
         const activeThemeName = persisted.state?.activeThemeName
         if (activeThemeName) {
           const store = useThemeStore.getState()
+          if (store.activeThemeName === activeThemeName && store.activeTheme.name === activeThemeName) return
           const theme = store.themes.find((candidate) => candidate.name === activeThemeName)
           if (theme) {
             store.setActiveTheme(activeThemeName)

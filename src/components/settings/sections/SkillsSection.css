@@ -50,6 +50,203 @@
   overflow-x: auto;
 }
 
+.collection-view,
+.obsidian-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.collection-targets,
+.discover-root-list {
+  flex: 1;
+}
+
+.collection-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.collection-card {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 136px;
+  padding: 14px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: var(--settings-card-bg);
+}
+
+.collection-card__main {
+  min-width: 0;
+}
+
+.collection-card__name {
+  color: var(--settings-text-primary);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.collection-card__desc {
+  margin-top: 4px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.collection-card__chips,
+.collection-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.collection-card__chips span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--settings-bg);
+  color: var(--settings-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.collection-card__actions {
+  flex: 0 0 92px;
+  align-content: flex-start;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.collection-import-box {
+  margin-top: 2px;
+}
+
+.collection-import-textarea {
+  min-height: 96px;
+  resize: vertical;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+}
+
+.collection-skill-picker {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.collection-agent-note {
+  color: var(--settings-text-tertiary);
+  font-size: 11px;
+}
+
+.obsidian-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.4fr);
+  gap: 12px;
+}
+
+.obsidian-vault-list,
+.obsidian-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.obsidian-vault-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: var(--settings-card-bg);
+  color: var(--settings-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.obsidian-vault-card:hover,
+.obsidian-vault-card--active {
+  border-color: var(--settings-accent);
+  box-shadow: 0 6px 18px rgba(20, 31, 56, 0.08);
+}
+
+.obsidian-vault-card span,
+.obsidian-vault-card code {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.obsidian-vault-card code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-hero__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.central-bundle-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.central-bundle-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: var(--settings-card-bg);
+  color: var(--settings-text-primary);
+  text-align: left;
+}
+
+.central-bundle-card:hover,
+.central-bundle-card--active {
+  border-color: var(--settings-accent);
+  box-shadow: 0 6px 18px rgba(20, 31, 56, 0.08);
+}
+
+.central-bundle-card span,
+.central-bundle-card code {
+  overflow: hidden;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.central-bundle-card__main {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.discover-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
 .skills-tab {
   padding: 6px 16px;
   border-radius: 8px;
@@ -150,18 +347,19 @@
 
 .skills-list--grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(285px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
 }
 
 .skill-card {
   position: relative;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  grid-template-rows: auto 1fr auto;
-  gap: 10px;
-  min-height: 158px;
-  padding: 15px;
+  grid-template-columns: 48px minmax(0, 1fr) 74px;
+  grid-template-rows: minmax(82px, auto) 28px auto;
+  column-gap: 12px;
+  row-gap: 8px;
+  min-height: 184px;
+  padding: 14px;
   border: 1px solid var(--settings-card-border);
   border-radius: 8px;
   background:
@@ -189,7 +387,9 @@
   align-items: center;
   justify-content: center;
   font-size: 17px;
-  grid-row: 1 / span 2;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28), 0 6px 14px rgba(0, 122, 255, 0.16);
 }
 
@@ -204,6 +404,8 @@
 }
 
 .skill-card__info {
+  grid-column: 2;
+  grid-row: 1 / span 2;
   min-width: 0;
 }
 
@@ -256,12 +458,16 @@
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 8px;
+  max-height: 50px;
+  overflow: hidden;
 }
 
-.skill-card__agent-tags span {
+.skill-card__agent-tags span,
+.skill-card__agent-more {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 128px;
   min-height: 21px;
   padding: 0 8px;
   border: 1px solid color-mix(in srgb, var(--platform-color, #888) 24%, transparent);
@@ -270,6 +476,9 @@
   color: color-mix(in srgb, var(--platform-color, #888) 70%, #111);
   font-size: 10px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .skill-card__agent-tags i {
@@ -279,13 +488,23 @@
   background: var(--platform-color, #888);
 }
 
+.skill-card__agent-more {
+  border-color: var(--settings-card-border);
+  background: var(--settings-bg);
+  color: var(--settings-text-secondary);
+}
+
 .skill-card__platforms {
+  grid-column: 3;
+  grid-row: 1;
   display: flex;
   gap: 3px;
   align-items: center;
   justify-content: flex-end;
-  max-width: 130px;
   flex-wrap: wrap;
+  align-self: start;
+  max-height: 44px;
+  overflow: hidden;
 }
 
 .skill-card__platform-icon {
@@ -318,7 +537,7 @@
   grid-column: 3;
   grid-row: 2;
   justify-self: end;
-  align-self: start;
+  align-self: center;
   border-radius: 10px;
   background: var(--settings-toggle-off);
   position: relative;

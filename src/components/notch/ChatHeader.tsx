@@ -4,6 +4,7 @@ import type { SessionState } from '../../types/agent'
 import { AgentIcon } from './AgentIcon'
 import { StatusDot } from '../shared'
 import { formatDurationShort } from '../../utils/time'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
 import './ChatHeader.css'
 
 interface ChatHeaderProps {
@@ -12,35 +13,12 @@ interface ChatHeaderProps {
   onJump?: () => void
 }
 
-function getAgentName(session: SessionState): string {
-  if (session.agentType === 'claude-code' && session.engineLabel && session.engineLabel !== 'Claude Code') {
-    return session.engineLabel
-  }
-  return session.agentType === 'claude-code' ? 'Claude' : session.agentType
-}
-
-function getSessionTitle(session: SessionState): string {
-  const title = (session.sessionTitle || '').trim()
-  const project = (session.project || '').trim()
-  if (title && project && title !== project && !title.startsWith(`${project} ·`)) {
-    return `${project} · ${title}`
-  }
-  return title || project || 'Session'
-}
-
-function isEvolabSession(session: SessionState): boolean {
-  const cwd = session.cwd || ''
-  return (
-    cwd.includes('.evolab-desktop')
-    || cwd.endsWith('/evolab')
-    || cwd.includes('/evolab/')
-    || session.project === 'free-chat'
-  )
-}
-
 export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
   const { t } = useTranslation()
-  const isAntCC = getAgentName(session).toLowerCase() === 'antcc'
+  const agentName = getAgentDisplayName(session)
+  const appLabel = getSessionAppLabel(session)
+  const terminalLabel = getSessionTerminalLabel(session)
+  const isAntCC = agentName.toLowerCase() === 'antcc'
 
   return (
     <div className="chat-header">
@@ -56,14 +34,14 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
       </div>
 
       <div className="chat-header__badges">
-        {isEvolabSession(session) && (
-          <span className="chat-header__badge chat-header__badge--source">Evolab</span>
+        {appLabel && (
+          <span className="chat-header__badge chat-header__badge--source">{appLabel}</span>
         )}
         <span className={`chat-header__badge chat-header__badge--agent${isAntCC ? ' chat-header__badge--antcc' : ''}`}>
           <AgentIcon agentType={session.agentType} size={12} />
-          {getAgentName(session)}
+          {agentName}
         </span>
-        {session.terminal && <span className="chat-header__badge">{session.terminal}</span>}
+        {terminalLabel && <span className="chat-header__badge">{terminalLabel}</span>}
         <span className="chat-header__badge chat-header__badge--time">{formatDurationShort(session.duration)}</span>
         {onJump && (
           <button className="chat-header__jump" onClick={onJump} aria-label={t('notch.jumpToTerminal')}>

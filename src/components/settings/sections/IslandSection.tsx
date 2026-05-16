@@ -27,6 +27,7 @@ import { Toggle } from '../Toggle'
 import { Dropdown } from '../Dropdown'
 import { Slider } from '../Slider'
 import { GlassButton, GlassInput } from '../../shared'
+import { PlatformIcon } from '../../platform/PlatformIcon'
 import type { IslandSettingsView } from '../../../types/capability'
 
 function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInfo[]): string {
@@ -227,13 +228,6 @@ interface ToolHookStatus {
   configPath?: string
   status?: string
   version?: string
-}
-
-const TOOL_ICONS: Record<string, string> = {
-  'claude-code': '🟠', 'codex': '🟢', 'gemini-cli': '🔵', 'cursor': '⬛',
-  'copilot': '🔷', 'trae': '🩵', 'qoder': '🟡', 'codebuddy': '🔴',
-  'qwen': '🟣', 'kimi': '🌸', 'opencode': '🌿', 'droid': '🤖',
-  'kiro': '🔵', 'aider': '💚', 'continue': '🔵', 'amp': '🟠',
 }
 
 function hookToolId(tool: ToolHookStatus) {
@@ -1301,7 +1295,9 @@ function IntegrationTab() {
           const busy = actionLoading[toolId] !== undefined
           return (
             <div key={toolId} className="hook-tool-row">
-              <div className="hook-tool-row__icon">{TOOL_ICONS[toolId] ?? '🔧'}</div>
+              <div className="hook-tool-row__icon">
+                <PlatformIcon agentId={toolId} displayName={tool.displayName || tool.name} size={30} />
+              </div>
               <div className="hook-tool-row__info">
                 <div className="hook-tool-row__name">{tool.displayName || tool.name}</div>
                 <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>

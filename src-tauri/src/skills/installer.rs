@@ -13,23 +13,44 @@ pub fn install_skill(
     targets: &[TargetConfig],
     mode: &InstallMode,
 ) -> Result<Vec<String>, String> {
+    install_skill_named(source_path, targets, mode, None, None)
+}
+
+pub fn install_skill_named(
+    source_path: &str,
+    targets: &[TargetConfig],
+    mode: &InstallMode,
+    directory_name: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<Vec<String>, String> {
     let (src, temp_root) = resolve_install_source(source_path)?;
     if !src.exists() {
         return Err(format!("Source not found: {}", source_path));
     }
 
-    let skill_name = src
+    let source_skill_name = src
         .file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
-    let installed_ids = skill_id_candidates(&src, &skill_name);
+    let skill_name = directory_name
+        .map(sanitize_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(source_skill_name);
+    let installed_ids = display_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| vec![name])
+        .unwrap_or_else(|| skill_id_candidates(&src, &skill_name));
 
     let central_path = if matches!(mode, InstallMode::Symlink) {
         let central_dir = agent_paths::agentbro_skills_dir();
         fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
         let dest = central_dir.join(&skill_name);
         copy_recursive(&src, &dest)?;
+        if let Some(name) = display_name {
+            rewrite_skill_name(&dest, name)?;
+        }
         Some(dest)
     } else {
         None
@@ -51,6 +72,9 @@ pub fn install_skill(
         match mode {
             InstallMode::Direct => {
                 copy_recursive(&src, &dest)?;
+                if let Some(name) = display_name {
+                    rewrite_skill_name(&dest, name)?;
+                }
             }
             InstallMode::Symlink => {
                 if let Some(ref central) = central_path {
@@ -248,7 +272,7 @@ fn parse_frontmatter_text(content: &str) -> std::collections::HashMap<String, St
     if !content.starts_with("---") {
         return map;
     }
-    let Some(frontmatter) = content.splitn(3, "---").nth(1) else {
+    let Some(frontmatter) = content.split("---").nth(1) else {
         return map;
     };
     for line in frontmatter.lines() {
@@ -328,6 +352,31 @@ fn temp_install_dir() -> Result<PathBuf, String> {
 }
 
 fn clone_github_spec(spec: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let parsed = parse_github_spec_ref(spec)?;
+    clone_repo(
+        &parsed.repo_url,
+        parsed.branch.as_deref(),
+        parsed.subpath.as_deref(),
+    )
+}
+
+fn clone_github_url(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let parsed = parse_github_url_ref(source)?;
+    clone_repo(
+        &parsed.repo_url,
+        parsed.branch.as_deref(),
+        parsed.subpath.as_deref(),
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct GithubCloneRef {
+    repo_url: String,
+    branch: Option<String>,
+    subpath: Option<String>,
+}
+
+fn parse_github_spec_ref(spec: &str) -> Result<GithubCloneRef, String> {
     let parts: Vec<&str> = spec
         .trim_matches('/')
         .split('/')
@@ -342,15 +391,22 @@ fn clone_github_spec(spec: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
         parts[0],
         parts[1].trim_end_matches(".git")
     );
-    let subpath = if parts.len() > 2 {
-        Some(parts[2..].join("/"))
+    let (branch, subpath) = if parts.len() >= 4 && parts[2] == "tree" {
+        let subpath = (parts.len() > 4).then(|| parts[4..].join("/"));
+        (Some(parts[3].to_string()), subpath)
+    } else if parts.len() > 2 {
+        (None, Some(parts[2..].join("/")))
     } else {
-        None
+        (None, None)
     };
-    clone_repo(&repo_url, None, subpath.as_deref())
+    Ok(GithubCloneRef {
+        repo_url,
+        branch,
+        subpath,
+    })
 }
 
-fn clone_github_url(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn parse_github_url_ref(source: &str) -> Result<GithubCloneRef, String> {
     let trimmed = source.trim_end_matches('/');
     let without_scheme = trimmed
         .strip_prefix("https://github.com/")
@@ -366,13 +422,17 @@ fn clone_github_url(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> 
 
     let repo = parts[1].trim_end_matches(".git");
     let repo_url = format!("https://github.com/{}/{}.git", parts[0], repo);
-    if parts.len() >= 5 && parts[2] == "tree" {
-        let branch = parts[3];
-        let subpath = parts[4..].join("/");
-        clone_repo(&repo_url, Some(branch), Some(&subpath))
+    let (branch, subpath) = if parts.len() >= 4 && parts[2] == "tree" {
+        let subpath = (parts.len() > 4).then(|| parts[4..].join("/"));
+        (Some(parts[3].to_string()), subpath)
     } else {
-        clone_repo(&repo_url, None, None)
-    }
+        (None, None)
+    };
+    Ok(GithubCloneRef {
+        repo_url,
+        branch,
+        subpath,
+    })
 }
 
 fn clone_repo(
@@ -536,7 +596,7 @@ fn frontmatter_name(src: &Path) -> Option<String> {
     if !content.starts_with("---") {
         return None;
     }
-    let frontmatter = content.splitn(3, "---").nth(1)?;
+    let frontmatter = content.split("---").nth(1)?;
     frontmatter.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
         if key.trim() != "name" {
@@ -556,12 +616,66 @@ pub fn uninstall_skill(skill_path: &str) -> Result<(), String> {
     if !path.exists() && path.symlink_metadata().is_err() {
         return Ok(());
     }
+    if path
+        .symlink_metadata()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return fs::remove_file(&path).map_err(|e| e.to_string());
+    }
 
     if path.is_dir() {
         fs::remove_dir_all(&path).map_err(|e| e.to_string())
     } else {
         fs::remove_file(&path).map_err(|e| e.to_string())
     }
+}
+
+fn rewrite_skill_name(skill_path: &Path, display_name: &str) -> Result<(), String> {
+    let Some(index) = find_skill_index_for_rewrite(skill_path) else {
+        return Ok(());
+    };
+    let content = fs::read_to_string(&index).map_err(|e| e.to_string())?;
+    let escaped = display_name.replace('"', "\\\"");
+    let updated = if content.starts_with("---") {
+        let mut parts = content.split("---");
+        let _ = parts.next();
+        let Some(frontmatter) = parts.next() else {
+            return Ok(());
+        };
+        let rest = parts.next().unwrap_or("");
+        let mut found_name = false;
+        let mut lines = Vec::new();
+        for line in frontmatter.lines() {
+            if line
+                .split_once(':')
+                .map(|(key, _)| key.trim() == "name")
+                .unwrap_or(false)
+            {
+                lines.push(format!("name: \"{escaped}\""));
+                found_name = true;
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        if !found_name {
+            lines.insert(0, format!("name: \"{escaped}\""));
+        }
+        format!("---\n{}\n---{}", lines.join("\n"), rest)
+    } else {
+        format!("---\nname: \"{escaped}\"\n---\n{content}")
+    };
+    fs::write(index, updated).map_err(|e| e.to_string())
+}
+
+fn find_skill_index_for_rewrite(skill_path: &Path) -> Option<PathBuf> {
+    if skill_path.is_file() {
+        return Some(skill_path.to_path_buf());
+    }
+    ["SKILL.md", "index.md", "README.md", "main.md"]
+        .iter()
+        .map(|name| skill_path.join(name))
+        .find(|path| path.exists())
 }
 
 pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), String> {
@@ -883,5 +997,25 @@ mod tests {
         assert_eq!(nested_preview.description, "nested description");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_github_tree_branch_sources() {
+        assert_eq!(
+            parse_github_spec_ref("owner/repo/tree/feature/skills/foo").unwrap(),
+            GithubCloneRef {
+                repo_url: "https://github.com/owner/repo.git".to_string(),
+                branch: Some("feature".to_string()),
+                subpath: Some("skills/foo".to_string()),
+            },
+        );
+        assert_eq!(
+            parse_github_url_ref("https://github.com/owner/repo/tree/dev").unwrap(),
+            GithubCloneRef {
+                repo_url: "https://github.com/owner/repo.git".to_string(),
+                branch: Some("dev".to_string()),
+                subpath: None,
+            },
+        );
     }
 }

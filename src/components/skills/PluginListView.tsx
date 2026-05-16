@@ -1,8 +1,10 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSkillStore } from '../../stores/skillStore'
 import { skillApi, type SkillPack } from '../../services/skillApi'
 import { PackDialog } from './PackDialog'
 import { displayVersionValue } from '../../utils/versions'
+import { useAgentStore } from '../../stores/agentStore'
+import { detectedAgentOptions } from '../../utils/agentPrograms'
 
 type PluginFilter = 'all' | 'plugin' | 'pack' | 'mcp'
 
@@ -15,10 +17,45 @@ const filters: { id: PluginFilter; label: string }[] = [
 
 export function PluginListView() {
   const { skills, packs, loadAll, selectSkill } = useSkillStore()
+  const { agents, loadAgents } = useAgentStore()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<PluginFilter>('all')
   const [editingPack, setEditingPack] = useState<SkillPack | undefined>()
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [pluginDialogOpen, setPluginDialogOpen] = useState(false)
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false)
+  const [pluginSource, setPluginSource] = useState('')
+  const [pluginAgent, setPluginAgent] = useState('claude-code')
+  const [mcpName, setMcpName] = useState('')
+  const [mcpCommand, setMcpCommand] = useState('')
+  const [mcpArgs, setMcpArgs] = useState('')
+  const [mcpEnv, setMcpEnv] = useState('')
+  const [mcpTargets, setMcpTargets] = useState<Set<string>>(new Set())
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const targetAgents = useMemo(() => {
+    const installed = detectedAgentOptions(agents)
+    return installed.length > 0 ? installed : agents
+  }, [agents])
+  const pluginAgents = useMemo(() => {
+    const supported = targetAgents.filter(agent => agent.id === 'claude-code' || agent.id === 'codex')
+    return supported.length > 0 ? supported : targetAgents
+  }, [targetAgents])
+
+  useEffect(() => {
+    if (agents.length === 0) loadAgents()
+  }, [agents.length, loadAgents])
+
+  useEffect(() => {
+    if (!pluginAgents.some(agent => agent.id === pluginAgent) && pluginAgents[0]) {
+      setPluginAgent(pluginAgents[0].id)
+    }
+  }, [pluginAgent, pluginAgents])
+
+  useEffect(() => {
+    if (mcpTargets.size > 0 || targetAgents.length === 0) return
+    setMcpTargets(new Set([targetAgents[0].id]))
+  }, [mcpTargets.size, targetAgents])
 
   const mcps = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -52,6 +89,60 @@ export function PluginListView() {
     loadAll()
   }, [loadAll])
 
+  const handleInstallPlugin = useCallback(async () => {
+    if (!pluginSource.trim() || !pluginAgent) return
+    setSaving(true)
+    setMessage('')
+    try {
+      await skillApi.installPlugin({ source: pluginSource.trim(), agent: pluginAgent })
+      setPluginSource('')
+      setPluginDialogOpen(false)
+      await loadAll()
+      setMessage('插件已安装。')
+    } catch (error) {
+      setMessage(String(error))
+    } finally {
+      setSaving(false)
+    }
+  }, [loadAll, pluginAgent, pluginSource])
+
+  const toggleMcpTarget = useCallback((agentId: string) => {
+    setMcpTargets(prev => {
+      const next = new Set(prev)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      return next
+    })
+  }, [])
+
+  const handleAddMcp = useCallback(async () => {
+    if (!mcpName.trim() || !mcpCommand.trim() || mcpTargets.size === 0) return
+    setSaving(true)
+    setMessage('')
+    try {
+      const server = {
+        name: mcpName.trim(),
+        command: mcpCommand.trim(),
+        args: splitArgs(mcpArgs),
+        env: parseEnvLines(mcpEnv),
+      }
+      for (const agent of mcpTargets) {
+        await skillApi.upsertMcpServer(agent, server)
+      }
+      setMcpName('')
+      setMcpCommand('')
+      setMcpArgs('')
+      setMcpEnv('')
+      setMcpDialogOpen(false)
+      await loadAll()
+      setMessage('MCP 服务已写入目标 Agent 配置。')
+    } catch (error) {
+      setMessage(String(error))
+    } finally {
+      setSaving(false)
+    }
+  }, [loadAll, mcpArgs, mcpCommand, mcpEnv, mcpName, mcpTargets])
+
   const enabledMcpCount = mcps.filter((mcp) => mcp.agents.some((agent) => agent.enabled)).length
 
   return (
@@ -78,12 +169,28 @@ export function PluginListView() {
           />
           <button
             type="button"
+            className="skills-btn"
+            onClick={() => setPluginDialogOpen(true)}
+          >
+            + 安装插件
+          </button>
+          <button
+            type="button"
+            className="skills-btn"
+            onClick={() => setMcpDialogOpen(true)}
+          >
+            + 添加 MCP
+          </button>
+          <button
+            type="button"
             className="skills-btn skills-btn--primary"
             onClick={() => { setEditingPack(undefined); setDialogOpen(true) }}
           >
             + 新建技能包
           </button>
         </div>
+
+        {message && <div className="sync-status">{message}</div>}
 
         <div className="mkt-tabs">
           {filters.map((item) => (
@@ -185,7 +292,106 @@ export function PluginListView() {
         {dialogOpen && (
           <PackDialog pack={editingPack} onClose={() => { setDialogOpen(false); setEditingPack(undefined) }} />
         )}
+
+        {pluginDialogOpen && (
+          <div className="skills-dialog-overlay" onClick={() => setPluginDialogOpen(false)}>
+            <div className="skills-dialog" onClick={event => event.stopPropagation()}>
+              <div className="skills-dialog__header">
+                <div className="skills-dialog__title">安装插件</div>
+              </div>
+              <div className="skills-dialog__body">
+                <div className="install-form-row">
+                  <label className="install-form-label">来源</label>
+                  <input
+                    className="install-form-input"
+                    value={pluginSource}
+                    onChange={event => setPluginSource(event.target.value)}
+                    placeholder="本地路径、GitHub owner/repo/path 或 URL"
+                  />
+                </div>
+                <div className="install-form-row">
+                  <label className="install-form-label">目标 Agent</label>
+                  <select className="install-form-input" value={pluginAgent} onChange={event => setPluginAgent(event.target.value)}>
+                    {pluginAgents.map(agent => <option key={agent.id} value={agent.id}>{agent.displayName}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="skills-dialog__footer">
+                <button className="skills-btn" onClick={() => setPluginDialogOpen(false)}>取消</button>
+                <button className="skills-btn skills-btn--primary" disabled={saving || !pluginSource.trim() || !pluginAgent} onClick={handleInstallPlugin}>
+                  {saving ? '安装中...' : '安装'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mcpDialogOpen && (
+          <div className="skills-dialog-overlay" onClick={() => setMcpDialogOpen(false)}>
+            <div className="skills-dialog" onClick={event => event.stopPropagation()}>
+              <div className="skills-dialog__header">
+                <div className="skills-dialog__title">添加 MCP Server</div>
+              </div>
+              <div className="skills-dialog__body">
+                <div className="install-form-row">
+                  <label className="install-form-label">名称</label>
+                  <input className="install-form-input" value={mcpName} onChange={event => setMcpName(event.target.value)} placeholder="github" />
+                </div>
+                <div className="install-form-row">
+                  <label className="install-form-label">Command</label>
+                  <input className="install-form-input" value={mcpCommand} onChange={event => setMcpCommand(event.target.value)} placeholder="npx / docker / uvx" />
+                </div>
+                <div className="install-form-row">
+                  <label className="install-form-label">Args</label>
+                  <input className="install-form-input" value={mcpArgs} onChange={event => setMcpArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-filesystem" />
+                </div>
+                <div className="install-form-row">
+                  <label className="install-form-label">Env</label>
+                  <textarea className="install-form-input install-form-textarea" value={mcpEnv} onChange={event => setMcpEnv(event.target.value)} placeholder="KEY=value，每行一个" />
+                </div>
+                <div className="install-form-row">
+                  <label className="install-form-label">目标 Agent</label>
+                  <div className="install-targets">
+                    {targetAgents.map(agent => (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        className={`install-target-chip ${mcpTargets.has(agent.id) ? 'install-target-chip--selected' : ''}`}
+                        onClick={() => toggleMcpTarget(agent.id)}
+                      >
+                        {agent.displayName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="skills-dialog__footer">
+                <button className="skills-btn" onClick={() => setMcpDialogOpen(false)}>取消</button>
+                <button className="skills-btn skills-btn--primary" disabled={saving || !mcpName.trim() || !mcpCommand.trim() || mcpTargets.size === 0} onClick={handleAddMcp}>
+                  {saving ? '写入中...' : '写入配置'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+function splitArgs(value: string) {
+  return value.split(/\s+/).map(part => part.trim()).filter(Boolean)
+}
+
+function parseEnvLines(value: string) {
+  return value
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((env, line) => {
+      const index = line.indexOf('=')
+      if (index <= 0) return env
+      env[line.slice(0, index).trim()] = line.slice(index + 1).trim()
+      return env
+    }, {})
 }

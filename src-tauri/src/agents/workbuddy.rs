@@ -11,7 +11,7 @@ pub struct WorkBuddyAdapter {
 
 impl WorkBuddyAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".workbuddy");
         let status = if Self::is_installed() {
             AdapterStatus::Available

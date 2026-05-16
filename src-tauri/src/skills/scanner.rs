@@ -1,7 +1,7 @@
 use super::agent_paths;
 use super::{
-    AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ScannedSkill, SkillSource,
-    SkillType,
+    AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ObsidianVault, ScannedSkill,
+    SkillSource, SkillType,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -62,6 +62,104 @@ pub fn discover_project_skills(roots: &[String]) -> Vec<DiscoveredSkill> {
         }
     }
     results
+}
+
+pub fn discover_project_skills_from_scan_roots() -> Vec<DiscoveredSkill> {
+    let roots = super::registry::list_scan_roots()
+        .into_iter()
+        .filter(|root| root.enabled)
+        .map(|root| root.path)
+        .collect::<Vec<_>>();
+    discover_project_skills(&roots)
+}
+
+pub fn get_obsidian_vaults() -> Vec<ObsidianVault> {
+    let mut vaults = Vec::new();
+    let mut seen = HashSet::new();
+    let roots = super::registry::list_scan_roots()
+        .into_iter()
+        .filter(|root| root.enabled)
+        .map(|root| expand_user_path(&root.path))
+        .collect::<Vec<_>>();
+
+    for root in roots {
+        if root.is_dir() {
+            discover_obsidian_vaults_in_dir(&root, 0, &mut seen, &mut vaults);
+        }
+        if vaults.len() >= 100 {
+            break;
+        }
+    }
+    vaults.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    vaults
+}
+
+pub fn get_obsidian_vault_skills(vault_path: &str) -> Vec<DiscoveredSkill> {
+    let path = expand_user_path(vault_path);
+    if !path.is_dir() || !path.join(".obsidian").is_dir() {
+        return Vec::new();
+    }
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    discover_in_dir(&path, &path, 0, &mut seen, &mut results);
+    results
+}
+
+fn discover_obsidian_vaults_in_dir(
+    dir: &Path,
+    depth: usize,
+    seen: &mut HashSet<String>,
+    vaults: &mut Vec<ObsidianVault>,
+) {
+    if depth > 6 || vaults.len() >= 100 {
+        return;
+    }
+    if dir.join(".obsidian").is_dir() {
+        let key = dir.display().to_string();
+        if seen.insert(key.clone()) {
+            let skills = get_obsidian_vault_skills(&key);
+            vaults.push(ObsidianVault {
+                id: stable_id(&key),
+                name: dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                path: key,
+                skill_count: skills.len(),
+            });
+        }
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "dist" | "build" | ".next" | ".turbo"
+        ) {
+            continue;
+        }
+        discover_obsidian_vaults_in_dir(&path, depth + 1, seen, vaults);
+    }
+}
+
+fn stable_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn discover_in_dir(
@@ -641,7 +739,7 @@ fn parse_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
         return std::collections::HashMap::new();
     }
 
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
+    let parts: Vec<&str> = content.split("---").collect();
     if parts.len() < 3 {
         return std::collections::HashMap::new();
     }

@@ -67,7 +67,7 @@ export function PetSurface({
   const actionKind = getActionKind(activeOverlay)
   const activeSession = activeOverlay ? sessions.find((session) => session.id === activeOverlay.sessionId) : undefined
   const displayScale = Math.min(1.2, Math.max(0.5, scale / 100))
-  const showSessionState = expanded || petOpen || Boolean(activeOverlay) || Boolean(expandedSessionId)
+  const showSessionState = !activeOverlay && (expanded || petOpen || Boolean(expandedSessionId))
 
   const finishDrag = useCallback(async (pointerId?: number) => {
     if (dragPointerIdRef.current == null) {

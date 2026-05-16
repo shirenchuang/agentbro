@@ -679,26 +679,50 @@ impl SessionStore {
 
     fn prune_dead_process_sessions(&self) {
         let tree = crate::terminal::process_tree::build_tree();
-        let stale_ids: Vec<String> = self
-            .sessions
-            .iter()
-            .filter_map(|entry| {
-                let session = entry.value();
-                let pid = session.pid?;
-                if tree.contains_key(&pid) || session.phase.needs_attention() {
-                    None
-                } else {
-                    Some(session.id.clone())
-                }
-            })
-            .collect();
+        let mut ended_ids = Vec::new();
+        let mut stale_ids = Vec::new();
 
-        for id in stale_ids {
+        for entry in self.sessions.iter() {
+            let session = entry.value();
+            let Some(pid) = session.pid else {
+                continue;
+            };
+            if tree.contains_key(&pid) || session.phase.needs_attention() {
+                continue;
+            }
+            if session.phase == SessionPhase::Done {
+                stale_ids.push(session.id.clone());
+            } else {
+                ended_ids.push(session.id.clone());
+            }
+        }
+
+        for id in &ended_ids {
+            log::info!(
+                "Marking session {} as ended because PID is no longer alive",
+                id
+            );
+            if let Some(mut session) = self.sessions.get_mut(id) {
+                session.phase = SessionPhase::Done;
+                session.description = Some("Session ended".to_string());
+                session.last_response = Some("Session ended".to_string());
+                session.pending_permission = None;
+                session.pending_question = None;
+                session.pending_plan = None;
+                session.update_duration();
+            }
+        }
+
+        for id in &stale_ids {
             log::info!(
                 "Removing stale session {} because PID is no longer alive",
                 id
             );
-            self.sessions.remove(&id);
+            self.sessions.remove(id);
+        }
+
+        if !stale_ids.is_empty() || !ended_ids.is_empty() {
+            self.emit_update();
         }
     }
 
@@ -866,6 +890,24 @@ mod tests {
 
         assert!(store.get_all_sessions().is_empty());
         assert!(store.get_session("s1").is_none());
+    }
+
+    #[test]
+    fn get_all_sessions_marks_dead_active_sessions_as_ended_once() {
+        let store = seeded_store();
+        store.update_session("s1", |session| {
+            session.pid = Some(u32::MAX);
+            session.phase = SessionPhase::Processing;
+            session.description = Some("Hi! How can I help you today?".to_string());
+            session.last_response = Some("Hi! How can I help you today?".to_string());
+        });
+
+        let sessions = store.get_all_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].phase, SessionPhase::Done);
+        assert_eq!(sessions[0].description.as_deref(), Some("Session ended"));
+        assert_eq!(sessions[0].last_response.as_deref(), Some("Session ended"));
     }
 
     #[test]

@@ -575,6 +575,11 @@
   color: var(--island-text);
 }
 
+.hover-list__inline-question-count {
+  font-size: 10px;
+  color: var(--island-text-muted);
+}
+
 .hover-list__inline-question-text {
   padding: 0 10px 6px;
   margin: 0;
@@ -594,8 +599,17 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--island-text-secondary);
+  text-align: left;
   cursor: pointer;
   transition: background 0.12s;
+}
+
+.hover-list__inline-question-opt--selected {
+  background: var(--island-card-hover);
+  color: var(--island-text);
 }
 
 .hover-list__inline-question-opt:hover {
@@ -614,6 +628,66 @@
   font-size: 8px;
   font-weight: 700;
   color: var(--island-text);
+}
+
+.hover-list__inline-question-multi {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 8px;
+}
+
+.hover-list__inline-question-group {
+  border-radius: 6px;
+  background: var(--island-bg);
+  padding: 8px;
+}
+
+.hover-list__inline-question-group .hover-list__inline-question-text {
+  padding: 0 0 6px;
+}
+
+.hover-list__inline-question-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hover-list__inline-chip {
+  border: 0;
+  border-radius: 6px;
+  background: var(--island-button-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 8px;
+  transition: background 0.12s, opacity 0.12s;
+}
+
+.hover-list__inline-chip:hover {
+  opacity: 0.86;
+}
+
+.hover-list__inline-chip--selected {
+  background: #2563eb;
+  color: #fff;
+}
+
+.hover-list__inline-submit {
+  margin: 6px 10px 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--island-button-bg, rgba(255, 255, 255, 0.08));
+  color: var(--island-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+}
+
+.hover-list__inline-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 /* Row 9: Inline Plan */
@@ -663,6 +737,33 @@
   color: var(--island-text);
   max-height: 120px;
   overflow-y: auto;
+}
+
+.hover-list__inline-plan-feedback {
+  border-top: 1px solid var(--island-border);
+  padding: 8px 12px;
+}
+
+.hover-list__inline-plan-input {
+  width: 100%;
+  border: 1px solid var(--island-border);
+  border-radius: 7px;
+  background: var(--island-card);
+  color: var(--island-text);
+  font-size: 11px;
+  outline: none;
+  padding: 7px 9px;
+}
+
+.hover-list__inline-plan-input:focus {
+  border-color: var(--island-text-muted);
+}
+
+.hover-list__inline-plan-actions {
+  display: flex;
+  gap: 6px;
+  border-top: 1px solid var(--island-border);
+  padding: 8px 12px;
 }
 
 /* Empty state */

@@ -234,7 +234,7 @@ async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResu
 fn base64_encode(data: &[u8]) -> String {
     // Standard base64 without padding newlines
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
         let b1 = if chunk.len() > 1 {

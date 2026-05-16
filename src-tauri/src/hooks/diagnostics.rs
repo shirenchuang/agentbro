@@ -111,7 +111,7 @@ impl DiagnosticRingBuffer {
         inner
             .events
             .iter()
-            .filter(|e| e.severity >= min_severity && component.map_or(true, |c| e.component == c))
+            .filter(|e| e.severity >= min_severity && component.is_none_or(|c| e.component == c))
             .cloned()
             .collect()
     }

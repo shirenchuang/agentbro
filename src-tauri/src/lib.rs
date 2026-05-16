@@ -450,7 +450,7 @@ async fn test_webhook(
         body: "This is a test notification from AgentBro.".to_string(),
     };
     let results = webhook::WebhookForwarder::send(&[wh], &event, "test", "test-session").await;
-    for (_, result) in &results {
+    if let Some((_, result)) = results.first() {
         match result {
             webhook::WebhookResult::Success => {
                 return Ok("Test notification sent successfully".to_string())
@@ -859,24 +859,30 @@ async fn unregister_global_shortcut(app: tauri::AppHandle) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
-async fn set_global_action_shortcuts(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobalActionShortcuts {
     approve: String,
     approve_enabled: bool,
     deny: String,
     deny_enabled: bool,
     skip: String,
     skip_enabled: bool,
+}
+
+#[tauri::command]
+async fn set_global_action_shortcuts(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    shortcuts: GlobalActionShortcuts,
 ) -> Result<(), String> {
     let mut config = state.config_store.get();
-    config.shortcut_approve = approve;
-    config.shortcut_approve_enabled = approve_enabled;
-    config.shortcut_deny = deny;
-    config.shortcut_deny_enabled = deny_enabled;
-    config.shortcut_skip = skip;
-    config.shortcut_skip_enabled = skip_enabled;
+    config.shortcut_approve = shortcuts.approve;
+    config.shortcut_approve_enabled = shortcuts.approve_enabled;
+    config.shortcut_deny = shortcuts.deny;
+    config.shortcut_deny_enabled = shortcuts.deny_enabled;
+    config.shortcut_skip = shortcuts.skip;
+    config.shortcut_skip_enabled = shortcuts.skip_enabled;
     state.config_store.update(config)?;
     register_island_global_shortcuts(&app)
 }
@@ -893,7 +899,7 @@ async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
 
 fn custom_sounds_dir() -> PathBuf {
     let base = dirs::data_dir()
-        .or_else(|| dirs::config_dir())
+        .or_else(dirs::config_dir)
         .unwrap_or_else(std::env::temp_dir);
     base.join("agentbro").join("sounds")
 }
@@ -1141,10 +1147,151 @@ async fn scan_agent_skills(agent: String) -> Result<Vec<skills::ScannedSkill>, S
 }
 
 #[tauri::command]
+async fn get_central_skill_bundles() -> Result<Vec<skills::CentralSkillBundle>, String> {
+    let scan = skills::scanner::scan_all();
+    let mut linked_by_id: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (agent, agent_skills) in &scan {
+        if agent == "central" {
+            continue;
+        }
+        for skill in agent_skills {
+            *linked_by_id.entry(skill.id.clone()).or_default() += 1;
+        }
+    }
+
+    let mut grouped: std::collections::HashMap<String, skills::CentralSkillBundle> =
+        std::collections::HashMap::new();
+    for skill in scan.get("central").into_iter().flatten() {
+        let Some(path) = central_skill_path(skill) else {
+            continue;
+        };
+        let name = central_bundle_name_for_path(&path);
+        let entry = grouped
+            .entry(name.clone())
+            .or_insert_with(|| skills::CentralSkillBundle {
+                name: name.clone(),
+                path: central_bundle_path_for_path(&path),
+                skill_count: 0,
+                linked_agent_count: 0,
+                skill_ids: Vec::new(),
+            });
+        entry.skill_count += 1;
+        entry.linked_agent_count += linked_by_id.get(&skill.id).copied().unwrap_or(0);
+        if !entry.skill_ids.iter().any(|id| id == &skill.id) {
+            entry.skill_ids.push(skill.id.clone());
+        }
+    }
+
+    let mut bundles = grouped.into_values().collect::<Vec<_>>();
+    for bundle in &mut bundles {
+        bundle.skill_ids.sort();
+    }
+    bundles.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(bundles)
+}
+
+#[tauri::command]
+async fn get_central_skill_bundle_detail(
+    bundle_name: String,
+) -> Result<Vec<skills::ScannedSkill>, String> {
+    Ok(skills::scanner::scan_agent("central")
+        .into_iter()
+        .filter(|skill| {
+            central_skill_path(skill)
+                .map(|path| central_bundle_matches(&path, &bundle_name))
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn preview_delete_central_skill_bundle(
+    bundle_name: String,
+) -> Result<skills::CentralDeletePreview, String> {
+    central_delete_preview(|path| central_bundle_matches(path, &bundle_name))
+}
+
+#[tauri::command]
+async fn delete_central_skill_bundle(
+    bundle_name: String,
+    remove_linked: Option<bool>,
+) -> Result<(), String> {
+    let preview = central_delete_preview(|path| central_bundle_matches(path, &bundle_name))?;
+    delete_central_paths(preview, remove_linked.unwrap_or(false))
+}
+
+#[tauri::command]
+async fn preview_delete_central_skill(
+    skill_path: String,
+) -> Result<skills::CentralDeletePreview, String> {
+    let target = PathBuf::from(skill_path);
+    central_delete_preview(|path| path == target)
+}
+
+#[tauri::command]
+async fn delete_central_skill(
+    skill_path: String,
+    remove_linked: Option<bool>,
+) -> Result<(), String> {
+    let preview = preview_delete_central_skill(skill_path).await?;
+    delete_central_paths(preview, remove_linked.unwrap_or(false))
+}
+
+#[tauri::command]
 async fn discover_project_skills_cmd(
     roots: Vec<String>,
 ) -> Result<Vec<skills::DiscoveredSkill>, String> {
-    Ok(skills::scanner::discover_project_skills(&roots))
+    let discovered = skills::scanner::discover_project_skills(&roots);
+    skills::registry::cache_discovered_skills(discovered)
+}
+
+#[tauri::command]
+async fn discover_enabled_project_skills_cmd() -> Result<Vec<skills::DiscoveredSkill>, String> {
+    let discovered = skills::scanner::discover_project_skills_from_scan_roots();
+    skills::registry::cache_discovered_skills(discovered)
+}
+
+#[tauri::command]
+async fn get_discovered_skills_cmd() -> Result<Vec<skills::DiscoveredSkill>, String> {
+    Ok(skills::registry::list_discovered_skills())
+}
+
+#[tauri::command]
+async fn clear_discovered_skills_cmd() -> Result<(), String> {
+    skills::registry::clear_discovered_skills()
+}
+
+#[tauri::command]
+async fn stop_project_scan() -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_scan_roots_cmd() -> Result<Vec<skills::ScanRoot>, String> {
+    Ok(skills::registry::list_scan_roots())
+}
+
+#[tauri::command]
+async fn set_scan_roots_cmd(roots: Vec<skills::ScanRoot>) -> Result<(), String> {
+    skills::registry::set_scan_roots(roots)
+}
+
+#[tauri::command]
+async fn set_scan_root_enabled_cmd(path: String, enabled: bool) -> Result<(), String> {
+    skills::registry::set_scan_root_enabled(&path, enabled)
+}
+
+#[tauri::command]
+async fn get_obsidian_vaults_cmd() -> Result<Vec<skills::ObsidianVault>, String> {
+    Ok(skills::scanner::get_obsidian_vaults())
+}
+
+#[tauri::command]
+async fn get_obsidian_vault_skills_cmd(
+    vault_path: String,
+) -> Result<Vec<skills::DiscoveredSkill>, String> {
+    Ok(skills::scanner::get_obsidian_vault_skills(&vault_path))
 }
 
 #[tauri::command]
@@ -1160,10 +1307,369 @@ async fn install_skill_cmd(
 }
 
 #[tauri::command]
+async fn batch_import_discovered_skills_cmd(
+    skills_to_import: Vec<skills::DiscoveredSkill>,
+    target_agents: Vec<String>,
+    mode: skills::InstallMode,
+) -> Result<Vec<String>, String> {
+    let targets = target_agents
+        .into_iter()
+        .map(|agent| skills::TargetConfig {
+            agent,
+            install_mode: mode.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut imported = Vec::new();
+    for skill in skills_to_import {
+        for installed_id in skills::installer::install_skill(&skill.dir_path, &targets, &mode)? {
+            skills::registry::add_source(&installed_id, &skill.dir_path)?;
+            imported.push(installed_id);
+        }
+    }
+    imported.sort();
+    imported.dedup();
+    Ok(imported)
+}
+
+#[tauri::command]
 async fn preview_github_skills_cmd(
     source: String,
 ) -> Result<Vec<skills::GitHubSkillPreview>, String> {
     skills::installer::preview_github_skills(&source)
+}
+
+#[tauri::command]
+async fn preview_github_repo_import(repo_url: String) -> Result<serde_json::Value, String> {
+    let repo = normalize_github_repo_ref(&repo_url)?;
+    let previews = skills::installer::preview_github_skills(&repo.spec)?;
+    let installed_ids = skills::scanner::scan_agent("central")
+        .into_iter()
+        .map(|skill| skill.id)
+        .collect::<std::collections::HashSet<_>>();
+    let skills = previews
+        .into_iter()
+        .map(|preview| {
+            let skill_id = preview.name.clone();
+            let skill_name = preview.name.clone();
+            let conflict_skill_id = skill_id.clone();
+            let conflict_skill_name = skill_name.clone();
+            let conflict = installed_ids.contains(&skill_id).then(|| {
+                serde_json::json!({
+                    "existingSkillId": conflict_skill_id.clone(),
+                    "existingName": conflict_skill_name.clone(),
+                    "existingCanonicalPath": null,
+                    "proposedSkillId": conflict_skill_id.clone(),
+                    "proposedName": conflict_skill_name.clone(),
+                })
+            });
+            serde_json::json!({
+                "sourcePath": preview.source_path,
+                "skillId": skill_id,
+                "skillName": preview.name,
+                "description": preview.description,
+                "rootDirectory": repo.repo.clone(),
+                "skillDirectoryName": preview.directory_name,
+                "downloadUrl": github_import_source(&repo.spec, &preview.source_path),
+                "conflict": conflict,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "repo": {
+            "owner": repo.owner,
+            "repo": repo.repo,
+            "branch": repo.branch,
+            "normalizedUrl": repo.normalized_url,
+        },
+        "skills": skills,
+    }))
+}
+
+#[tauri::command]
+async fn import_github_repo_skills(
+    repo_url: String,
+    selections: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let repo = normalize_github_repo_ref(&repo_url)?;
+    let targets = vec![skills::TargetConfig {
+        agent: "central".to_string(),
+        install_mode: skills::InstallMode::Direct,
+    }];
+    let mut imported = Vec::new();
+    let mut skipped = Vec::new();
+    for selection in selections {
+        let source_path = selection
+            .get("sourcePath")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let resolution = selection
+            .get("resolution")
+            .and_then(|value| value.as_str())
+            .unwrap_or("overwrite");
+        if resolution == "skip" {
+            skipped.push(source_path);
+            continue;
+        }
+        let rename_to = selection
+            .get("renamedSkillId")
+            .or_else(|| selection.get("renamed_skill_id"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let source = github_import_source(&repo.spec, &source_path);
+        let installed_ids = skills::installer::install_skill_named(
+            &source,
+            &targets,
+            &skills::InstallMode::Direct,
+            rename_to,
+            rename_to,
+        )?;
+        for installed_id in installed_ids {
+            skills::registry::add_source(&installed_id, &source)?;
+            imported.push(serde_json::json!({
+                "sourcePath": source_path,
+                "originalSkillId": installed_id,
+                "importedSkillId": installed_id,
+                "skillName": installed_id,
+                "targetDirectory": skills::agent_paths::agentbro_skills_dir()
+                    .join(
+                        rename_to
+                            .map(sanitize_skill_directory_name)
+                            .unwrap_or_else(|| sanitize_skill_directory_name(&installed_id)),
+                    )
+                    .display()
+                    .to_string(),
+                "resolution": resolution,
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "repo": {
+            "owner": repo.owner,
+            "repo": repo.repo,
+            "branch": repo.branch,
+            "normalizedUrl": repo.normalized_url,
+        },
+        "importedSkills": imported,
+        "skippedSkills": skipped,
+    }))
+}
+
+struct GithubRepoRefCompat {
+    owner: String,
+    repo: String,
+    branch: String,
+    normalized_url: String,
+    spec: String,
+}
+
+fn normalize_github_repo_ref(input: &str) -> Result<GithubRepoRefCompat, String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .or_else(|| trimmed.strip_prefix("github:"))
+        .unwrap_or(trimmed);
+    let parts = without_scheme
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err("GitHub repo must be owner/repo or a github.com URL".to_string());
+    }
+    let owner = parts[0].to_string();
+    let repo = parts[1].trim_end_matches(".git").to_string();
+    let tree_branch = (parts.len() >= 4 && parts[2] == "tree").then_some(parts[3]);
+    let branch = tree_branch.unwrap_or("HEAD").to_string();
+    let spec = if parts.len() >= 5 && parts[2] == "tree" {
+        format!("{owner}/{repo}/tree/{branch}/{}", parts[4..].join("/"))
+    } else if parts.len() == 4 && parts[2] == "tree" {
+        format!("{owner}/{repo}/tree/{branch}")
+    } else if parts.len() > 2 && parts[2] != "tree" {
+        format!("{owner}/{repo}/{}", parts[2..].join("/"))
+    } else {
+        format!("{owner}/{repo}")
+    };
+    Ok(GithubRepoRefCompat {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        branch,
+        normalized_url: format!("https://github.com/{owner}/{repo}"),
+        spec,
+    })
+}
+
+fn github_import_source(repo_spec: &str, source_path: &str) -> String {
+    let path = source_path.trim().trim_matches('/');
+    if path.is_empty() || path == "." {
+        format!("github:{repo_spec}")
+    } else {
+        format!("github:{repo_spec}/{path}")
+    }
+}
+
+fn sanitize_skill_directory_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "downloaded-skill".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn central_skill_path(skill: &skills::ScannedSkill) -> Option<PathBuf> {
+    skill
+        .agents
+        .iter()
+        .find(|agent| {
+            agent.agent == "central"
+                || agent.install_path.contains("/.agents/skills/")
+                || agent.install_path.contains("/.agentbro/skills/")
+        })
+        .map(|agent| PathBuf::from(&agent.install_path))
+        .or_else(|| {
+            (skill.file_path.contains("/.agents/skills/")
+                || skill.file_path.contains("/.agentbro/skills/"))
+            .then(|| PathBuf::from(&skill.file_path))
+        })
+}
+
+fn central_bundle_name_for_path(path: &Path) -> String {
+    let value = path.display().to_string();
+    let marker = if value.contains("/.agents/skills/") {
+        "/.agents/skills/"
+    } else {
+        "/.agentbro/skills/"
+    };
+    value
+        .split(marker)
+        .nth(1)
+        .and_then(|rest| rest.split('/').find(|part| !part.is_empty()))
+        .unwrap_or("root")
+        .to_string()
+}
+
+fn central_bundle_path_for_path(path: &Path) -> String {
+    let value = path.display().to_string();
+    let marker = if value.contains("/.agents/skills/") {
+        "/.agents/skills/"
+    } else {
+        "/.agentbro/skills/"
+    };
+    let Some((root, rest)) = value.split_once(marker) else {
+        return value;
+    };
+    let Some(first) = rest.split('/').find(|part| !part.is_empty()) else {
+        return value;
+    };
+    format!("{root}{marker}{first}")
+}
+
+fn central_bundle_matches(path: &Path, bundle_name: &str) -> bool {
+    let query = bundle_name.trim();
+    if query.is_empty() {
+        return false;
+    }
+    central_bundle_name_for_path(path) == query || central_bundle_path_for_path(path) == query
+}
+
+fn is_central_path(path: &Path) -> bool {
+    skills::agent_paths::central_skill_dirs()
+        .into_iter()
+        .any(|root| path.starts_with(root))
+}
+
+fn central_delete_preview<F>(matches_path: F) -> Result<skills::CentralDeletePreview, String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let scan = skills::scanner::scan_all();
+    let central_skills = scan
+        .get("central")
+        .into_iter()
+        .flatten()
+        .filter_map(|skill| {
+            let path = central_skill_path(skill)?;
+            (is_central_path(&path) && matches_path(&path)).then(|| (skill.clone(), path))
+        })
+        .collect::<Vec<_>>();
+    if central_skills.is_empty() {
+        return Err("Central skill or bundle not found".to_string());
+    }
+
+    let skill_ids = central_skills
+        .iter()
+        .map(|(skill, _)| skill.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let central_paths = central_skills
+        .iter()
+        .map(|(_, path)| path.display().to_string())
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut linked_install_paths = Vec::new();
+    for (agent, agent_skills) in &scan {
+        if agent == "central" {
+            continue;
+        }
+        for skill in agent_skills {
+            if !skill_ids.contains(&skill.id) {
+                continue;
+            }
+            for state in &skill.agents {
+                if state.agent == "central" || central_paths.contains(&state.install_path) {
+                    continue;
+                }
+                linked_install_paths.push(state.install_path.clone());
+            }
+        }
+    }
+    linked_install_paths.sort();
+    linked_install_paths.dedup();
+
+    let mut removable_paths = central_paths.into_iter().collect::<Vec<_>>();
+    removable_paths.sort();
+    let mut ids = skill_ids.into_iter().collect::<Vec<_>>();
+    ids.sort();
+
+    Ok(skills::CentralDeletePreview {
+        path: removable_paths.first().cloned().unwrap_or_default(),
+        skill_ids: ids,
+        linked_install_paths,
+        removable_paths,
+        warnings: Vec::new(),
+    })
+}
+
+fn delete_central_paths(
+    preview: skills::CentralDeletePreview,
+    remove_linked: bool,
+) -> Result<(), String> {
+    let mut paths = preview.removable_paths.clone();
+    if remove_linked {
+        paths.extend(preview.linked_install_paths.clone());
+    }
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        skills::installer::uninstall_skill(&path)?;
+    }
+    for skill_id in preview.skill_ids {
+        skills::registry::remove_source(&skill_id)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1251,6 +1757,48 @@ async fn delete_pack_cmd(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn list_collections_cmd() -> Result<Vec<skills::SkillCollection>, String> {
+    Ok(skills::registry::list_collections())
+}
+
+#[tauri::command]
+async fn upsert_collection_cmd(
+    collection: skills::SkillCollection,
+) -> Result<skills::SkillCollection, String> {
+    skills::registry::upsert_collection(collection)
+}
+
+#[tauri::command]
+async fn delete_collection_cmd(id: String) -> Result<(), String> {
+    skills::registry::delete_collection(&id)
+}
+
+#[tauri::command]
+async fn export_collection_cmd(id: String) -> Result<String, String> {
+    skills::registry::export_collection(&id)
+}
+
+#[tauri::command]
+async fn import_collection_cmd(json: String) -> Result<skills::SkillCollection, String> {
+    skills::registry::import_collection(&json)
+}
+
+#[tauri::command]
+async fn batch_install_collection_cmd(
+    collection: skills::SkillCollection,
+    target_agents: Vec<String>,
+) -> Result<(), String> {
+    let pack = skills::SkillPack {
+        id: collection.id,
+        name: collection.name,
+        description: collection.description,
+        skills: collection.skills,
+        target_agents,
+    };
+    skills::installer::apply_pack(&pack)
+}
+
+#[tauri::command]
 async fn apply_pack_cmd(pack: skills::SkillPack) -> Result<(), String> {
     skills::installer::apply_pack(&pack)
 }
@@ -1303,6 +1851,56 @@ async fn get_registry_metadata() -> Result<skills::registry::Metadata, String> {
 #[tauri::command]
 async fn list_marketplace_items_cmd() -> Result<Vec<skills::MarketplaceItem>, String> {
     skills::marketplace::list_items()
+}
+
+#[tauri::command]
+async fn list_registries() -> Result<Vec<skills::marketplace::SkillRegistry>, String> {
+    Ok(skills::marketplace::list_registries())
+}
+
+#[tauri::command]
+async fn add_registry(
+    name: String,
+    source_type: String,
+    url: String,
+) -> Result<skills::marketplace::SkillRegistry, String> {
+    skills::marketplace::add_registry(name, source_type, url)
+}
+
+#[tauri::command]
+async fn remove_registry(registry_id: String) -> Result<(), String> {
+    skills::marketplace::remove_registry(&registry_id)
+}
+
+#[tauri::command]
+async fn sync_registry(
+    registry_id: String,
+) -> Result<Vec<skills::marketplace::MarketplaceSkill>, String> {
+    skills::marketplace::sync_registry(
+        &registry_id,
+        skills::marketplace::SyncRegistryOptions::default(),
+    )
+}
+
+#[tauri::command]
+async fn sync_registry_with_options(
+    registry_id: String,
+    options: Option<skills::marketplace::SyncRegistryOptions>,
+) -> Result<Vec<skills::marketplace::MarketplaceSkill>, String> {
+    skills::marketplace::sync_registry(&registry_id, options.unwrap_or_default())
+}
+
+#[tauri::command]
+async fn search_marketplace_skills(
+    registry_id: Option<String>,
+    query: Option<String>,
+) -> Result<Vec<skills::marketplace::MarketplaceSkill>, String> {
+    skills::marketplace::search_marketplace_skills(registry_id, query)
+}
+
+#[tauri::command]
+async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
+    skills::marketplace::install_marketplace_skill(&skill_id)
 }
 
 #[tauri::command]
@@ -1862,7 +2460,7 @@ async fn resize_notch(
             .filter(|id| !id.is_empty())
             .unwrap_or(configured_display_id.as_str());
 
-        let monitor = find_target_monitor(&app, &display_id)
+        let monitor = find_target_monitor(&app, display_id)
             .or_else(|| window.current_monitor().ok().flatten())
             .or_else(|| window.primary_monitor().ok().flatten());
 
@@ -2017,7 +2615,7 @@ pub fn run() {
             }
 
             // Initialize themes: ensure built-in themes exist in user dir
-            if let Some(resource_path) = app.path().resource_dir().ok() {
+            if let Ok(resource_path) = app.path().resource_dir() {
                 theme::scanner::seed_builtin_themes(&resource_path);
             }
 
@@ -2230,6 +2828,11 @@ pub fn run() {
                 remote_manager,
                 diagnostic_buffer,
             };
+            let buddy_device_config = app_state.config_store.get().buddy_device;
+            commands::buddy::start_buddy_device_server(
+                buddy_device_config,
+                app_state.session_store.clone(),
+            );
             app.manage(app_state);
 
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
@@ -2258,6 +2861,7 @@ pub fn run() {
             commands::get_adapter_status,
             commands::verify_hooks,
             commands::is_terminal_focused,
+            commands::is_frontmost_app_fullscreen,
             commands::list_custom_hook_templates,
             commands::upsert_custom_hook_template,
             commands::remove_custom_hook_template,
@@ -2329,6 +2933,10 @@ pub fn run() {
             get_webhook_logs,
             get_diagnostic_events,
             commands::buddy::read_buddy_data,
+            commands::buddy::buddy_device_snapshot,
+            commands::buddy::get_buddy_device_config,
+            commands::buddy::set_buddy_device_config,
+            commands::buddy::buddy_reverse_focus,
             validate_path,
             register_global_shortcut,
             unregister_global_shortcut,
@@ -2342,9 +2950,27 @@ pub fn run() {
             import_theme,
             scan_all_skills,
             scan_agent_skills,
+            get_central_skill_bundles,
+            get_central_skill_bundle_detail,
+            preview_delete_central_skill_bundle,
+            delete_central_skill_bundle,
+            preview_delete_central_skill,
+            delete_central_skill,
             discover_project_skills_cmd,
+            discover_enabled_project_skills_cmd,
+            get_discovered_skills_cmd,
+            clear_discovered_skills_cmd,
+            stop_project_scan,
+            get_scan_roots_cmd,
+            set_scan_roots_cmd,
+            set_scan_root_enabled_cmd,
+            get_obsidian_vaults_cmd,
+            get_obsidian_vault_skills_cmd,
             install_skill_cmd,
+            batch_import_discovered_skills_cmd,
             preview_github_skills_cmd,
+            preview_github_repo_import,
+            import_github_repo_skills,
             install_plugin_cmd,
             uninstall_skill_cmd,
             upsert_mcp_server_cmd,
@@ -2359,6 +2985,12 @@ pub fn run() {
             create_pack_cmd,
             update_pack_cmd,
             delete_pack_cmd,
+            list_collections_cmd,
+            upsert_collection_cmd,
+            delete_collection_cmd,
+            export_collection_cmd,
+            import_collection_cmd,
+            batch_install_collection_cmd,
             apply_pack_cmd,
             configure_sync_cmd,
             push_sync_cmd,
@@ -2370,6 +3002,13 @@ pub fn run() {
             import_backup_cmd,
             get_registry_metadata,
             list_marketplace_items_cmd,
+            list_registries,
+            add_registry,
+            remove_registry,
+            sync_registry,
+            sync_registry_with_options,
+            search_marketplace_skills,
+            install_marketplace_skill,
             list_marketplace_sources_cmd,
             upsert_marketplace_source_cmd,
             remove_marketplace_source_cmd,

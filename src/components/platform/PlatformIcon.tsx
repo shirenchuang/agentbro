@@ -1,17 +1,26 @@
 import autoclawIcon from '../../assets/autoclaw.png'
-import codebuddyIcon from '../../assets/codebuddy.png'
-import codexIcon from '../../assets/codex.png'
-import cursorIcon from '../../assets/cursor.png'
+import antigravityCliIcon from '../../assets/cli-icons/antigravity.png'
+import claudeCliIcon from '../../assets/cli-icons/claude.png'
+import codebuddyCliIcon from '../../assets/cli-icons/codebuddy.png'
+import codexCliIcon from '../../assets/cli-icons/codex.png'
+import copilotCliIcon from '../../assets/cli-icons/copilot.png'
+import cursorCliIcon from '../../assets/cli-icons/cursor.png'
+import factoryCliIcon from '../../assets/cli-icons/factory.png'
+import geminiCliIcon from '../../assets/cli-icons/gemini.png'
+import hermesCliIcon from '../../assets/cli-icons/hermes.png'
+import kimiCliIcon from '../../assets/cli-icons/kimi.png'
+import opencodeCliIcon from '../../assets/cli-icons/opencode.png'
+import piCliIcon from '../../assets/cli-icons/pi.png'
+import qoderCliIcon from '../../assets/cli-icons/qoder.png'
+import qwenCliIcon from '../../assets/cli-icons/qwen.png'
+import stepfunCliIcon from '../../assets/cli-icons/stepfun.png'
+import traeCliIcon from '../../assets/cli-icons/trae.png'
+import workbuddyCliIcon from '../../assets/cli-icons/workbuddy.png'
 import easyclawIcon from '../../assets/easyclaw.png'
-import factoryDroidIcon from '../../assets/factory-droid.png'
-import hermesIcon from '../../assets/hermes.png'
 import kiroIcon from '../../assets/kiro.png'
 import openclawIcon from '../../assets/openclaw.png'
 import qclawIcon from '../../assets/qclaw.png'
-import qoderIcon from '../../assets/qoder.png'
-import traeIcon from '../../assets/trae.png'
 import windsurfIcon from '../../assets/windsurf.png'
-import workbuddyIcon from '../../assets/workbuddy.png'
 
 interface PlatformIconProps {
   agentId: string
@@ -21,41 +30,52 @@ interface PlatformIconProps {
 }
 
 const imageIcons: Record<string, string> = {
+  antcc: claudeCliIcon,
+  'ant-cc': claudeCliIcon,
+  antigravity: antigravityCliIcon,
   autoclaw: autoclawIcon,
-  codebuddy: codebuddyIcon,
-  codebuddycn: codebuddyIcon,
-  codex: codexIcon,
-  cursor: cursorIcon,
-  'cursor-cli': cursorIcon,
-  droid: factoryDroidIcon,
-  'factory-droid': factoryDroidIcon,
+  claude: claudeCliIcon,
+  'claude-code': claudeCliIcon,
+  codebuddy: codebuddyCliIcon,
+  'code-buddy': codebuddyCliIcon,
+  codebuddycn: codebuddyCliIcon,
+  codex: codexCliIcon,
+  'openai-codex': codexCliIcon,
+  copilot: copilotCliIcon,
+  'github-copilot': copilotCliIcon,
+  cursor: cursorCliIcon,
+  'cursor-cli': cursorCliIcon,
+  droid: factoryCliIcon,
+  factory: factoryCliIcon,
+  'factory-droid': factoryCliIcon,
   easyclaw: easyclawIcon,
   'easyclaw-v2': easyclawIcon,
-  hermes: hermesIcon,
+  gemini: geminiCliIcon,
+  'gemini-cli': geminiCliIcon,
+  'google-gemini': geminiCliIcon,
+  hermes: hermesCliIcon,
   kiro: kiroIcon,
+  kimi: kimiCliIcon,
+  opencode: opencodeCliIcon,
+  'open-code': opencodeCliIcon,
   openclaw: openclawIcon,
+  pi: piCliIcon,
   qclaw: qclawIcon,
-  qoder: qoderIcon,
-  'qoder-cli': qoderIcon,
-  trae: traeIcon,
-  traecli: traeIcon,
-  traecn: traeIcon,
-  'trae-cn': traeIcon,
+  qoder: qoderCliIcon,
+  'qoder-cli': qoderCliIcon,
+  qwen: qwenCliIcon,
+  stepfun: stepfunCliIcon,
+  trae: traeCliIcon,
+  traecli: traeCliIcon,
+  'trae-cli': traeCliIcon,
+  traecn: traeCliIcon,
+  'trae-cn': traeCliIcon,
   windsurf: windsurfIcon,
-  workbuddy: workbuddyIcon,
+  workbuddy: workbuddyCliIcon,
+  'work-buddy': workbuddyCliIcon,
 }
 
 const glyphIcons: Record<string, string> = {
-  'claude-code': 'CC',
-  gemini: 'G',
-  'gemini-cli': 'G',
-  copilot: 'GH',
-  opencode: 'OC',
-  qwen: 'QW',
-  kimi: 'KM',
-  antigravity: 'AG',
-  stepfun: 'SF',
-  pi: 'PI',
   junie: 'JN',
   augment: 'AU',
   kilocode: 'KC',
@@ -65,7 +85,8 @@ const glyphIcons: Record<string, string> = {
 }
 
 export function PlatformIcon({ agentId, displayName, size = 28, className = '' }: PlatformIconProps) {
-  const src = imageIcons[agentId]
+  const normalizedAgentId = agentId.trim().toLowerCase().replace(/[\s_]+/g, '-')
+  const src = imageIcons[normalizedAgentId]
   if (src) {
     return (
       <img
@@ -79,7 +100,7 @@ export function PlatformIcon({ agentId, displayName, size = 28, className = '' }
     )
   }
 
-  const label = glyphIcons[agentId] ?? displayName?.slice(0, 2).toUpperCase() ?? agentId.slice(0, 2).toUpperCase()
+  const label = glyphIcons[normalizedAgentId] ?? displayName?.slice(0, 2).toUpperCase() ?? normalizedAgentId.slice(0, 2).toUpperCase()
   return (
     <span
       className={`platform-icon platform-icon--glyph ${className}`}

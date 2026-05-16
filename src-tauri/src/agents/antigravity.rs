@@ -11,7 +11,7 @@ pub struct AntiGravityAdapter {
 
 impl AntiGravityAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".antigravity");
         let status = if Self::is_installed() {
             AdapterStatus::Available

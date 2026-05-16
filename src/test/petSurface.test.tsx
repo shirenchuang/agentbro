@@ -106,6 +106,32 @@ describe('PetSurface', () => {
     expect(screen.getByText('始终允许')).toBeInTheDocument()
   })
 
+  it('does not render the session fan behind an active overlay toast', () => {
+    const overlay: OverlayItem = {
+      id: 'o1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Edit' },
+      createdAt: Date.now(),
+    }
+
+    render(
+      <PetSurface
+        activeOverlay={overlay}
+        expanded={false}
+        hidden={false}
+        onCollapse={vi.fn()}
+        onDismissOverlay={vi.fn()}
+        scale={72}
+        sessions={[session({ phase: 'waiting_approval' })]}
+      />,
+    )
+
+    expect(screen.getByText('需要授权')).toBeInTheDocument()
+    expect(screen.queryByText('Build pet surface')).not.toBeInTheDocument()
+    expect(screen.queryByText('Running implementation')).not.toBeInTheDocument()
+  })
+
   it('uses the active Codex pet theme sprite when selected', () => {
     const petTheme: ThemeConfig = {
       name: 'codex-pet:test',

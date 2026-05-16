@@ -13,7 +13,7 @@ pub struct OpenCodeAdapter {
 
 impl OpenCodeAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".opencode");
         let status = if Self::is_installed() {
             AdapterStatus::Available
@@ -35,7 +35,7 @@ impl OpenCodeAdapter {
     }
 
     fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
     }
 

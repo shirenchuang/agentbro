@@ -10,7 +10,7 @@ pub struct KiroAdapter {
 
 impl KiroAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".kiro");
         let status = if Self::is_installed() {
             AdapterStatus::Available
@@ -32,7 +32,7 @@ impl KiroAdapter {
     }
 
     fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         home.join(".agentbro").join("bin").join("agentbro-bridge")
     }
 

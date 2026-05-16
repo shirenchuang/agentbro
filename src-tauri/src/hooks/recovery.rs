@@ -54,6 +54,12 @@ impl HookRecovery {
     }
 }
 
+impl Default for HookRecovery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Start the hook recovery watcher as a background task.
 /// Watches all adapter settings paths for modifications and re-installs hooks if they were removed.
 pub fn start_hook_recovery(

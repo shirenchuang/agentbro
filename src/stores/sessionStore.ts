@@ -63,7 +63,163 @@ interface SessionStore {
 }
 
 function toList(sessions: Record<string, SessionState>): SessionState[] {
-  return Object.values(sessions)
+  return Object.values(sessions).filter(isDisplayableSession)
+}
+
+function hasSessionContent(session: SessionState): boolean {
+  return Boolean(
+    session.lastUserMessage
+    || session.sessionTitle
+    || session.pendingPermission
+    || session.pendingQuestion
+    || session.planTitle
+    || session.planContent
+    || session.responseText
+    || session.description
+    || session.lastToolName
+    || session.statusLineText
+    || session.contextWindow
+    || session.rateLimits
+    || session.subagents.length > 0
+    || session.activeTools.length > 0
+    || (session.tasks && session.tasks.length > 0)
+    || session.tokens.input > 0
+    || session.tokens.output > 0
+    || session.tokens.cacheRead > 0
+    || session.tokens.cacheCreate > 0
+  )
+}
+
+function isCodexAppPlaceholder(session: SessionState): boolean {
+  const cwd = session.cwd || ''
+  const terminal = session.terminal || ''
+  const bundle = session.termBundleId || ''
+  return session.agentType === 'codex' && (
+    terminal.toLowerCase().includes('codex')
+    || bundle.toLowerCase().includes('codex')
+    || cwd.includes('.evolab-desktop')
+    || session.project === 'free-chat'
+  )
+}
+
+function isDisplayableSession(session: SessionState): boolean {
+  if (session.phase === 'waiting_approval' || session.phase === 'waiting_input' || session.phase === 'error') {
+    return true
+  }
+  if (session.phase === 'done' && (sessionEndedText(session.responseText) || sessionEndedText(session.description))) {
+    return false
+  }
+  if (isExpiredClaudeListItem(session)) {
+    return false
+  }
+  if (isInternalCodexPromptSession(session)) {
+    return false
+  }
+  if (isCodexAppPlaceholder(session) && !hasSessionContent(session)) {
+    return false
+  }
+  return true
+}
+
+const INTERNAL_CODEX_PROMPT_PREFIXES = [
+  'you are a helpful assistant. you will be presented with a user prompt',
+  'you are codex, a coding agent',
+  'you are an ai assistant accessed via an api',
+]
+
+function normalizedPromptText(text: string | undefined | null): string {
+  return (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function isInternalCodexPromptText(text: string | undefined | null): boolean {
+  const normalized = normalizedPromptText(text)
+  if (!normalized) return false
+  return INTERNAL_CODEX_PROMPT_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+}
+
+function hasCodexDetailAnchor(session: SessionState): boolean {
+  return Boolean(
+    session.chatHistory.length > 0
+    || session.pid
+    || session.tty
+    || session.termBundleId
+    || session.weztermPane
+    || session.zellijPaneId
+    || session.zellijSessionName
+    || session.cmuxSurfaceId
+    || session.cmuxWorkspaceId
+    || session.terminal?.trim()
+  )
+}
+
+function isInternalCodexPromptSession(session: SessionState): boolean {
+  if (session.agentType !== 'codex') return false
+  if (session.phase !== 'idle' && session.phase !== 'done') return false
+  if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
+  if (!isInternalCodexPromptText(session.sessionTitle) && !isInternalCodexPromptText(session.lastUserMessage)) return false
+  if (usefulCompletionText(session.responseText) || usefulCompletionText(session.description)) return false
+  if (hasCodexDetailAnchor(session)) return false
+  return true
+}
+
+function isExpiredClaudeListItem(session: SessionState): boolean {
+  if (session.agentType !== 'claude-code') return false
+  if (session.phase !== 'idle' && session.phase !== 'done') return false
+  if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
+  if (usefulCompletionText(session.responseText) || usefulCompletionText(session.description)) return false
+  if (session.lastToolName || session.statusLineText || session.contextWindow || session.rateLimits) return false
+  if (session.activeTools.some((tool) => tool.status === 'running')) return false
+  if (session.subagents.some((agent) => agent.status === 'running')) return false
+  if (session.tasks?.some((task) => task.status !== 'completed')) return false
+  return true
+}
+
+function isGenericCompletionText(text: string | undefined | null): boolean {
+  const normalized = (text || '')
+    .trim()
+    .replace(/[.!。！]+$/g, '')
+    .toLowerCase()
+  return normalized === ''
+    || normalized === 'done'
+    || normalized === 'task complete'
+    || normalized === 'task completed'
+    || normalized === 'session ended'
+    || normalized === 'processing user input'
+    || normalized === 'compacting context'
+    || normalized === 'waiting for input'
+}
+
+function usefulCompletionText(text: string | undefined | null): string | null {
+  const trimmed = (text || '').trim()
+  return trimmed && !isGenericCompletionText(trimmed) ? trimmed : null
+}
+
+function sessionEndedText(text: string | undefined | null): string | null {
+  const normalized = (text || '')
+    .trim()
+    .replace(/[.!。！]+$/g, '')
+    .toLowerCase()
+  return normalized === 'session ended' ? 'Session ended' : null
+}
+
+function getLastAssistantText(session: SessionState): string | null {
+  for (let index = session.chatHistory.length - 1; index >= 0; index -= 1) {
+    const message = session.chatHistory[index]
+    if (message.role !== 'assistant') continue
+    const text = usefulCompletionText(message.trailingContent) || usefulCompletionText(message.content)
+    if (text) return text
+  }
+  return null
+}
+
+function deriveCompletionSummary(session: SessionState, incoming?: string): string {
+  return sessionEndedText(incoming)
+    || (session.phase === 'done' && (sessionEndedText(session.responseText) || sessionEndedText(session.description)))
+    || usefulCompletionText(incoming)
+    || usefulCompletionText(session.responseText)
+    || getLastAssistantText(session)
+    || usefulCompletionText(session.description)
+    || 'Task completed'
 }
 
 export const selectSessionList = (s: SessionStore) => s.sessionList
@@ -301,11 +457,13 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         case 'task_complete': {
           const session = sessions[event.sessionId]
           if (session) {
-            const msg: ChatMessage = { role: 'assistant', content: event.summary, timestamp: Date.now() }
+            const summary = deriveCompletionSummary(session, event.summary)
+            const msg: ChatMessage = { role: 'assistant', content: summary, timestamp: Date.now() }
             sessions[event.sessionId] = {
               ...session,
               phase: 'done',
-              description: event.summary,
+              description: summary,
+              responseText: summary,
               pendingPermission: undefined,
               pendingQuestion: undefined,
               chatHistory: [...session.chatHistory, msg],
@@ -321,7 +479,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             id: completionId,
             sessionId: event.sessionId,
             type: 'completion',
-            data: { summary: event.summary },
+            data: { summary: session ? deriveCompletionSummary(session, event.summary) : event.summary },
             createdAt: Date.now(),
           }
           setTimeout(() => useSessionStore.getState().pushOverlay(completionOverlay), 0)
@@ -515,8 +673,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
         }
 
+        const hideNonBlockingOverlays = isInternalCodexPromptSession(s)
+
         // Detect a newly available assistant response and show the response overlay.
-        if (s.responseText && s.responseText !== prev?.responseText) {
+        if (!hideNonBlockingOverlays && s.phase !== 'done' && s.responseText && s.responseText !== prev?.responseText) {
           newOverlays.push({
             id: `response-${s.id}-${Date.now()}`,
             sessionId: s.id,
@@ -531,19 +691,21 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
         // Backend session updates are the source of truth in Tauri mode, so
         // synthesize completion overlays when a session transitions to done.
-        if (s.phase === 'done' && prev?.phase !== 'done') {
+        if (!hideNonBlockingOverlays && s.phase === 'done' && prev?.phase !== 'done') {
+          const summary = deriveCompletionSummary(s)
           newOverlays.push({
             id: `completion-${s.id}-${Date.now()}`,
             sessionId: s.id,
             type: 'completion',
-            data: { summary: s.description || s.sessionTitle || 'Task completed' },
+            data: { summary },
             createdAt: Date.now(),
           })
         }
       }
       let activeSessionId = state.activeSessionId
-      if (activeSessionId && !sessions[activeSessionId]) {
-        activeSessionId = Object.keys(sessions)[0] ?? null
+      const sessionList = toList(sessions)
+      if (activeSessionId && (!sessions[activeSessionId] || !isDisplayableSession(sessions[activeSessionId]))) {
+        activeSessionId = sessionList[0]?.id ?? null
       }
       const overlayQueue = state.overlayQueue.filter((overlay) => {
         const session = sessions[overlay.sessionId]
@@ -553,7 +715,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (overlay.type === 'plan') return Boolean(session.planTitle || session.planContent)
         return true
       })
-      return { sessions, sessionList: toList(sessions), activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {

@@ -189,7 +189,7 @@ fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String>
     if !content.starts_with("---") {
         return map;
     }
-    let Some(frontmatter) = content.splitn(3, "---").nth(1) else {
+    let Some(frontmatter) = content.split("---").nth(1) else {
         return map;
     };
     for line in frontmatter.lines() {
@@ -208,8 +208,7 @@ fn first_non_empty_body_line(content: &str) -> Option<String> {
     content
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("---") && !line.starts_with('#'))
-        .next()
+        .find(|line| !line.is_empty() && !line.starts_with("---") && !line.starts_with('#'))
         .map(ToString::to_string)
 }
 

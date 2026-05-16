@@ -67,6 +67,7 @@ export function MarketplaceView() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<MarketCategory>('all')
   const [installing, setInstalling] = useState<MarketItem | null>(null)
+  const [githubImportOpen, setGithubImportOpen] = useState(false)
   const [mcpInstalling, setMcpInstalling] = useState<MarketItem | null>(null)
   const [pluginInstalling, setPluginInstalling] = useState<MarketItem | null>(null)
   const [mcpName, setMcpName] = useState('')
@@ -247,7 +248,12 @@ export function MarketplaceView() {
             <h3>可安装能力</h3>
             <p>包含本地市场源、MCP 服务、插件，以及 skills-manage 官方/推荐 Skill 仓库。</p>
           </div>
-          <div className="market-hero__count">{filtered.length}</div>
+          <div className="market-hero__actions">
+            <div className="market-hero__count">{filtered.length}</div>
+            <button type="button" className="skills-btn skills-btn--primary skills-btn--small" onClick={() => setGithubImportOpen(true)}>
+              GitHub 导入
+            </button>
+          </div>
         </div>
 
         <div className="market-sources">
@@ -325,6 +331,13 @@ export function MarketplaceView() {
             initialGithubPath={installing.subPath ?? ''}
             initialUrl={installing.sourceType === 'url' ? installing.source : ''}
             onClose={() => setInstalling(null)}
+          />
+        )}
+
+        {githubImportOpen && (
+          <InstallDialog
+            initialSourceType="github"
+            onClose={() => setGithubImportOpen(false)}
           />
         )}
 

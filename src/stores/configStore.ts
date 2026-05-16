@@ -326,7 +326,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     smartSuppression: true,
     autoCollapse: true,
     dwellDuration: 300,
-    taskCompleteDwellSeconds: 5,
+    taskCompleteDwellSeconds: 6,
     notchStyle: 'compact',
     hoverSpeed: 'normal',
     contentFontSize: '13px',
@@ -408,7 +408,7 @@ export const useConfigStore = create<ConfigStore>()(
   autoCollapse: true,
   completionPopupDuration: '5s',
   dwellDuration: 300,
-  taskCompleteDwellSeconds: 5,
+  taskCompleteDwellSeconds: 6,
   agentHooks: defaultAgentHooks,
 
   // Display

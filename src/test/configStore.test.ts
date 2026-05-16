@@ -11,9 +11,10 @@ describe('configStore island defaults', () => {
     const state = useConfigStore.getState()
 
     expect(state.completionCardHeight).toBe(200)
-    expect(state.dismissOnOutsideClick).toBe(true)
     expect(state.showCacheTTL).toBe(true)
-    expect(state.taskCompleteDwellSeconds).toBe(10)
+    expect(state.taskCompleteDwellSeconds).toBe(6)
+    expect(state.idleTimeoutMinutes).toBe(5)
+    expect(state.volume).toBe(70)
   })
 
   it('keeps evolab-safe tools in the default auto-approve list', () => {

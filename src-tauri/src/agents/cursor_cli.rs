@@ -11,7 +11,7 @@ pub struct CursorCliAdapter {
 
 impl CursorCliAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".cursor");
         let status = if Self::is_installed() {
             AdapterStatus::Available
@@ -25,7 +25,7 @@ impl CursorCliAdapter {
     }
 
     fn is_installed() -> bool {
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         home.join(".local")
             .join("share")
             .join("cursor-agent")

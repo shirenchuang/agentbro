@@ -1,20 +1,25 @@
 import { create } from 'zustand'
-import type { ScannedSkill, SkillPack, SyncConfig, FileTreeNode } from '../services/skillApi'
+import type { FileTreeNode, ObsidianVault, ScanRoot, ScannedSkill, SkillCollection, SkillPack, SyncConfig } from '../services/skillApi'
 import { skillApi } from '../services/skillApi'
 
 interface SkillRegistryMetadata {
   sources: Record<string, { origin: string }>
   packs: SkillPack[]
+  collections?: SkillCollection[]
+  scanRoots?: ScanRoot[]
   sync: SyncConfig | null
 }
 
 interface SkillState {
   skills: ScannedSkill[]
   packs: SkillPack[]
+  collections: SkillCollection[]
+  scanRoots: ScanRoot[]
+  obsidianVaults: ObsidianVault[]
   syncConfig: SyncConfig | null
   loading: boolean
   scanning: boolean
-  activeTab: 'skills' | 'central' | 'plugins' | 'packs' | 'discover' | 'market' | 'sync'
+  activeTab: 'skills' | 'central' | 'plugins' | 'collections' | 'packs' | 'discover' | 'obsidian' | 'market' | 'sync'
   selectedSkillId: string | null
   detailOpen: boolean
   fileTree: FileTreeNode | null
@@ -27,6 +32,9 @@ interface SkillState {
 
 interface SkillActions {
   loadAll: () => Promise<void>
+  loadCollections: () => Promise<void>
+  loadScanRoots: () => Promise<void>
+  loadObsidianVaults: () => Promise<void>
   setTab: (tab: SkillState['activeTab']) => void
   selectSkill: (id: string) => void
   closeDetail: () => void
@@ -42,6 +50,9 @@ interface SkillActions {
 export const useSkillStore = create<SkillState & SkillActions>()((set, get) => ({
   skills: [],
   packs: [],
+  collections: [],
+  scanRoots: [],
+  obsidianVaults: [],
   syncConfig: null,
   loading: false,
   scanning: false,
@@ -113,12 +124,41 @@ export const useSkillStore = create<SkillState & SkillActions>()((set, get) => (
       set({
         skills: Array.from(merged.values()),
         packs: meta.packs,
+        collections: meta.collections ?? [],
+        scanRoots: meta.scanRoots ?? [],
         syncConfig: meta.sync,
         scanning: false,
       })
     } catch (e) {
       console.error('Failed to load skills:', e)
       set({ scanning: false })
+    }
+  },
+
+  loadCollections: async () => {
+    try {
+      const collections = await skillApi.listCollections()
+      set({ collections })
+    } catch (e) {
+      console.error('Failed to load collections:', e)
+    }
+  },
+
+  loadScanRoots: async () => {
+    try {
+      const scanRoots = await skillApi.getScanRoots()
+      set({ scanRoots })
+    } catch (e) {
+      console.error('Failed to load scan roots:', e)
+    }
+  },
+
+  loadObsidianVaults: async () => {
+    try {
+      const obsidianVaults = await skillApi.getObsidianVaults()
+      set({ obsidianVaults })
+    } catch (e) {
+      console.error('Failed to load Obsidian vaults:', e)
     }
   },
 

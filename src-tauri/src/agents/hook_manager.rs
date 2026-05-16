@@ -177,7 +177,7 @@ fn build_toml_block(hook_command: &str, events: &[&str]) -> String {
     let cmd = hook_command.replace('"', "\\\"");
     let mut lines = vec![BLOCK_START.to_string()];
     for event in events {
-        lines.push(format!("[[hooks]]"));
+        lines.push("[[hooks]]".to_string());
         lines.push(format!("event = \"{}\"", event));
         lines.push(format!("command = \"{}\"", cmd));
         lines.push(String::new());
@@ -227,6 +227,6 @@ pub fn has_agentbro_hooks(path: &Path) -> bool {
 
 /// Return the bridge binary path for use in hook commands.
 pub fn bridge_binary_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| std::env::temp_dir());
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
     home.join(".agentbro").join("bin").join("agentbro-bridge")
 }

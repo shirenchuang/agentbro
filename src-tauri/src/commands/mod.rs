@@ -17,6 +17,9 @@ use crate::license::{LicenseManager, LicenseStatus};
 use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use tauri::State;
@@ -122,7 +125,7 @@ pub async fn send_message(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     if is_codex_desktop_session(&session) {
-        match send_message_to_codex_desktop(&session.id, &message) {
+        match send_message_to_codex_desktop(&session, &message) {
             Ok(()) => return Ok(()),
             Err(err) if session.tty.is_some() => {
                 log::warn!("Codex Desktop send failed, falling back to TTY: {}", err);
@@ -136,7 +139,14 @@ pub async fn send_message(
         .as_deref()
         .ok_or_else(|| "Session has no TTY".to_string())?;
 
-    crate::agents::claude_code::send_message_to_terminal(tty, &message).map_err(|e| e.to_string())
+    crate::agents::claude_code::send_message_to_terminal(
+        tty,
+        &message,
+        &session.terminal,
+        session.pid,
+        session.term_bundle_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn is_codex_desktop_session(session: &SessionState) -> bool {
@@ -172,77 +182,130 @@ fn open_codex_desktop_session(session_id: &str) -> Result<(), String> {
     }
 }
 
-fn send_message_to_codex_desktop(session_id: &str, message: &str) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Codex Desktop message sending is only supported on macOS".to_string());
+fn send_message_to_codex_desktop(session: &SessionState, message: &str) -> Result<(), String> {
+    send_message_to_codex_background(&session.id, message, &session.cwd)
+}
+
+fn send_message_to_codex_background(
+    session_id: &str,
+    message: &str,
+    cwd: &str,
+) -> Result<(), String> {
+    let codex = resolve_codex_binary()
+        .ok_or_else(|| "Could not find codex CLI for background send".to_string())?;
+
+    let mut command = std::process::Command::new(&codex);
+    command
+        .args(codex_exec_resume_args(session_id))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    if !cwd.trim().is_empty() && Path::new(cwd).is_dir() {
+        command.current_dir(cwd);
     }
 
-    let opened_thread = std::process::Command::new("/usr/bin/open")
-        .arg(format!("codex://threads/{}", session_id))
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start codex background send: {}", e))?;
 
-    if !opened_thread {
-        let opened_app = std::process::Command::new("/usr/bin/open")
-            .args(["-a", "Codex"])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        if !opened_app {
-            return Err("Failed to activate Codex Desktop".to_string());
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open codex stdin".to_string())?;
+    stdin
+        .write_all(message.as_bytes())
+        .map_err(|e| format!("Failed to write message to codex: {}", e))?;
+    drop(stdin);
+
+    let session_id = session_id.to_string();
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if status.success() => {
+            log::debug!("Codex background send completed for {}", session_id);
+        }
+        Ok(status) => {
+            log::warn!(
+                "Codex background send exited with status {} for {}",
+                status,
+                session_id
+            );
+        }
+        Err(err) => {
+            log::warn!(
+                "Codex background send wait failed for {}: {}",
+                session_id,
+                err
+            );
+        }
+    });
+
+    Ok(())
+}
+
+fn codex_exec_resume_args(session_id: &str) -> Vec<String> {
+    vec![
+        "exec".to_string(),
+        "resume".to_string(),
+        "--skip-git-repo-check".to_string(),
+        session_id.to_string(),
+        "-".to_string(),
+    ]
+}
+
+fn resolve_codex_binary() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CODEX_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
-    let script = build_codex_desktop_send_message_script(message);
-    let output = std::process::Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(script)
+    if let Some(path) = std::process::Command::new("which")
+        .arg("codex")
         .output()
-        .map_err(|e| format!("Failed to run osascript: {}", e))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|path| PathBuf::from(path.trim()))
+        .filter(|path| path.is_file())
+    {
+        return Some(path);
     }
+
+    codex_binary_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
-fn build_codex_desktop_send_message_script(message: &str) -> String {
-    format!(
-        r#"tell application "System Events"
-  set previousClipboard to the clipboard as text
-  set the clipboard to {message}
-  keystroke "v" using command down
-  delay 0.35
-  set didSend to false
-  try
-    set frontProcess to first application process whose frontmost is true
-    set frontWindow to front window of frontProcess
-    set sendButtons to (entire contents of frontWindow) whose role is "AXButton" and (name is "Send" or description is "Send" or name is "发送" or description is "发送")
-    if (count of sendButtons) > 0 then
-      click item 1 of sendButtons
-      set didSend to true
-    end if
-  end try
-  if didSend is false then
-    key code 36
-  end if
-  delay 0.1
-  set the clipboard to previousClipboard
-end tell"#,
-        message = apple_script_string(message),
-    )
-}
+fn codex_binary_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/opt/homebrew/bin/codex"),
+        PathBuf::from("/usr/local/bin/codex"),
+        PathBuf::from("/usr/bin/codex"),
+    ];
 
-fn apple_script_string(value: &str) -> String {
-    let parts: Vec<String> = value
-        .split('\n')
-        .map(|part| format!("\"{}\"", part.replace('\\', "\\\\").replace('"', "\\\"")))
-        .collect();
-    parts.join(" & linefeed & ")
+    if let Some(home) = dirs::home_dir() {
+        candidates.extend([
+            home.join(".npm-global/bin/codex"),
+            home.join(".local/bin/codex"),
+            home.join(".bun/bin/codex"),
+            home.join(".yarn/bin/codex"),
+            home.join(".volta/bin/codex"),
+        ]);
+
+        let nvm_versions = home.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(nvm_versions) {
+            let mut nvm_candidates = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("bin/codex"))
+                .collect::<Vec<_>>();
+            nvm_candidates.sort();
+            nvm_candidates.reverse();
+            candidates.extend(nvm_candidates);
+        }
+    }
+
+    candidates
 }
 
 // ── Question Response Command ────────────────────────────────────
@@ -1264,9 +1327,8 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apple_script_string, build_codex_desktop_send_message_script, can_fallback_to_terminal_app,
-        fallback_terminal_app_name, is_codex_desktop_session,
-        parse_subagent_chat_history_for_session,
+        can_fallback_to_terminal_app, codex_exec_resume_args, fallback_terminal_app_name,
+        is_codex_desktop_session, parse_subagent_chat_history_for_session,
     };
     use crate::hooks::session_store::{SessionState, SubagentInfo};
     use std::fs;
@@ -1284,22 +1346,17 @@ mod tests {
     }
 
     #[test]
-    fn apple_script_string_escapes_quotes_and_newlines() {
+    fn codex_desktop_send_uses_background_exec_resume_args() {
         assert_eq!(
-            apple_script_string("say \"hi\"\nnext"),
-            "\"say \\\"hi\\\"\" & linefeed & \"next\""
+            codex_exec_resume_args("session-123"),
+            vec![
+                "exec",
+                "resume",
+                "--skip-git-repo-check",
+                "session-123",
+                "-"
+            ]
         );
-    }
-
-    #[test]
-    fn codex_desktop_script_pastes_and_clicks_send_with_enter_fallback() {
-        let script = build_codex_desktop_send_message_script("hello");
-
-        assert!(script.contains("keystroke \"v\" using command down"));
-        assert!(script.contains("name is \"Send\""));
-        assert!(script.contains("name is \"发送\""));
-        assert!(script.contains("key code 36"));
-        assert!(script.contains("set the clipboard to previousClipboard"));
     }
 
     #[test]

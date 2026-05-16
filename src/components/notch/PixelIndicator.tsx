@@ -20,6 +20,7 @@ const FALLBACK_COLORS: Record<number, string[]> = {
   [PRIORITY.working]:   ['#FF9500', '#30D158', '#007AFF', '#E8654A'],
   [PRIORITY.compacting]:['#9C27B0', '#AB47BC', '#CE93D8', '#7B1FA2'],
   [PRIORITY.attention]: ['#FF3B30', '#FF453A', '#FF9500', '#FFD60A'],
+  [PRIORITY.error]:     ['#FF3B30', '#FF453A', '#C1121F', '#FFD60A'],
 }
 
 function phaseToFallbackPriority(phase: SessionPhase): Priority {
@@ -35,7 +36,7 @@ export function PixelIndicator({ priority, phase, size = 14 }: PixelIndicatorPro
   const themeSpeed = theme.prioritySpeeds[pName]
 
   const isAnimated = p >= PRIORITY.thinking
-  const isAttention = p === PRIORITY.attention
+  const isAttention = p >= PRIORITY.attention
 
   const speed = themeSpeed ?? 1500
 

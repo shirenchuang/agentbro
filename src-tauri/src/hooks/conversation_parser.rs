@@ -247,6 +247,10 @@ impl ConversationParser {
     fn parse_line(&mut self, json: &serde_json::Value) -> Option<ParsedMessage> {
         let msg_type = json.get("type")?.as_str()?;
 
+        if msg_type == "response_item" {
+            return self.parse_codex_response_item(json);
+        }
+
         // Only parse user and assistant message lines
         if msg_type != "user" && msg_type != "assistant" {
             return None;
@@ -290,6 +294,190 @@ impl ConversationParser {
             timestamp,
             blocks,
         })
+    }
+
+    fn parse_codex_response_item(&mut self, json: &serde_json::Value) -> Option<ParsedMessage> {
+        let payload = json.get("payload")?;
+        let item_type = payload.get("type")?.as_str()?;
+        let timestamp = json
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        match item_type {
+            "message" => {
+                let role = match payload.get("role").and_then(|v| v.as_str())? {
+                    "user" => ChatRole::User,
+                    "assistant" => ChatRole::Assistant,
+                    _ => return None,
+                };
+                let blocks = Self::parse_codex_message_content(payload.get("content")?)?;
+                if blocks.is_empty() {
+                    return None;
+                }
+                Some(ParsedMessage {
+                    id: payload
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    role,
+                    timestamp,
+                    blocks,
+                })
+            }
+            "function_call" => {
+                let call_id = payload
+                    .get("call_id")
+                    .or_else(|| payload.get("callId"))
+                    .or_else(|| payload.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let input = Self::parse_codex_function_arguments(payload.get("arguments"));
+                Some(ParsedMessage {
+                    id: call_id.clone(),
+                    role: ChatRole::Assistant,
+                    timestamp,
+                    blocks: vec![MessageBlock::ToolUse {
+                        id: call_id,
+                        name,
+                        input,
+                    }],
+                })
+            }
+            "function_call_output" => {
+                let call_id = payload
+                    .get("call_id")
+                    .or_else(|| payload.get("callId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let content = payload.get("output").map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                });
+                let is_error = payload
+                    .get("is_error")
+                    .or_else(|| payload.get("isError"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Some(ParsedMessage {
+                    id: call_id.clone(),
+                    role: ChatRole::User,
+                    timestamp,
+                    blocks: vec![MessageBlock::ToolResult {
+                        tool_use_id: call_id,
+                        content,
+                        is_error,
+                    }],
+                })
+            }
+            "reasoning" => {
+                let summary = payload.get("summary")?.as_array()?;
+                let thinking = summary
+                    .iter()
+                    .filter(|item| {
+                        item.get("type").and_then(|v| v.as_str()) == Some("summary_text")
+                    })
+                    .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if thinking.is_empty() {
+                    return None;
+                }
+                Some(ParsedMessage {
+                    id: payload
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    role: ChatRole::Assistant,
+                    timestamp,
+                    blocks: vec![MessageBlock::Thinking { thinking }],
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_codex_message_content(content: &serde_json::Value) -> Option<Vec<MessageBlock>> {
+        let mut blocks = Vec::new();
+        let arr = content.as_array()?;
+
+        for block in arr {
+            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match block_type {
+                "input_text" | "output_text" | "text" => {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        if text.starts_with("<environment_context>") {
+                            continue;
+                        }
+                        blocks.push(MessageBlock::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+                "input_image" | "image_url" | "image" => {
+                    let source = block
+                        .get("image_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            block
+                                .get("image_url")
+                                .and_then(|v| v.get("url"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            block
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| Self::parse_image_source(block));
+                    if let Some(source) = source {
+                        blocks.push(MessageBlock::Image { source });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Some(blocks)
+    }
+
+    fn parse_codex_function_arguments(
+        arguments: Option<&serde_json::Value>,
+    ) -> HashMap<String, String> {
+        let mut input = HashMap::new();
+        match arguments {
+            Some(serde_json::Value::String(raw)) => {
+                match serde_json::from_str::<serde_json::Value>(raw) {
+                    Ok(serde_json::Value::Object(map)) => Self::flatten_input(Some(&map)),
+                    Ok(other) => {
+                        input.insert("arguments".to_string(), other.to_string());
+                        input
+                    }
+                    Err(_) => {
+                        input.insert("arguments".to_string(), raw.clone());
+                        input
+                    }
+                }
+            }
+            Some(serde_json::Value::Object(map)) => Self::flatten_input(Some(map)),
+            Some(other) => {
+                input.insert("arguments".to_string(), other.to_string());
+                input
+            }
+            None => input,
+        }
     }
 
     /// Parse the `message.content` field into a list of `MessageBlock`s.
@@ -467,7 +655,7 @@ pub fn discover_session_file_in_dirs(
     cwd: &str,
     projects_dirs: &[PathBuf],
 ) -> Option<PathBuf> {
-    let project_dir_name = cwd.replace('/', "-").replace('.', "-");
+    let project_dir_name = cwd.replace(['/', '.'], "-");
 
     for projects_dir in projects_dirs {
         let session_file = projects_dir
@@ -490,6 +678,163 @@ pub fn discover_session_file_in_dirs(
     }
 
     None
+}
+
+/// Discover a Codex JSONL rollout file for a session id.
+///
+/// Codex stores transcripts under:
+///   `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-...-<session-id>.jsonl`
+/// and may later move them to `~/.codex/archived_sessions`.
+pub fn discover_codex_session_file(session_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let codex_root = home.join(".codex");
+    let roots = [
+        codex_root.join("sessions"),
+        codex_root.join("archived_sessions"),
+    ];
+
+    for root in roots {
+        if let Some(path) = find_codex_session_file_in_dir(&root, session_id) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn find_codex_session_file_in_dir(root: &Path, session_id: &str) -> Option<PathBuf> {
+    if !root.is_dir() {
+        return None;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let Some(file_name) = path.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if file_name.ends_with(".jsonl")
+                && file_name.starts_with("rollout-")
+                && file_name.contains(session_id)
+            {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract the latest main-agent assistant text from a Claude/Codex JSONL transcript.
+pub fn extract_latest_assistant_text(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut latest = None;
+
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(text) = assistant_text_from_json(&json) {
+            latest = Some(text);
+        }
+    }
+
+    latest
+}
+
+fn assistant_text_from_json(json: &serde_json::Value) -> Option<String> {
+    match json.get("type").and_then(|v| v.as_str())? {
+        "assistant" => {
+            if json
+                .get("isSidechain")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || json.get("agentId").is_some()
+            {
+                return None;
+            }
+            let message = json.get("message")?;
+            if message
+                .get("role")
+                .and_then(|v| v.as_str())
+                .is_some_and(|role| role != "assistant")
+            {
+                return None;
+            }
+            text_from_content(message.get("content")?)
+        }
+        "response_item" => {
+            let payload = json.get("payload")?;
+            if payload.get("type").and_then(|v| v.as_str()) != Some("message")
+                || payload.get("role").and_then(|v| v.as_str()) != Some("assistant")
+            {
+                return None;
+            }
+            text_from_content(payload.get("content")?)
+        }
+        _ => None,
+    }
+}
+
+fn text_from_content(content: &serde_json::Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return useful_text_block(text).map(|text| text.to_string());
+    }
+
+    let texts = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| {
+            let block_type = block.get("type").and_then(|v| v.as_str())?;
+            if !matches!(block_type, "text" | "output_text" | "input_text") {
+                return None;
+            }
+            block
+                .get("text")
+                .and_then(|v| v.as_str())
+                .and_then(useful_text_block)
+                .map(|text| text.to_string())
+        })
+        .collect::<Vec<_>>();
+
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n\n"))
+    }
+}
+
+fn useful_text_block(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("<command-name>")
+        || trimmed.starts_with("<local-command")
+        || trimmed.starts_with("<command-message>")
+        || trimmed.starts_with("<environment_context>")
+        || trimmed.starts_with("[Request interrupted by user")
+        || trimmed.starts_with("Caveat:")
+    {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// Read the tail of a Claude Code JSONL transcript and infer cache TTL.
@@ -880,6 +1225,22 @@ mod tests {
     }
 
     #[test]
+    fn extracts_latest_main_assistant_text() {
+        let path = write_temp_jsonl(
+            "latest-assistant",
+            r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"sidechain reply"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi! How can I help you today?"}]}}
+"#,
+        );
+
+        assert_eq!(
+            extract_latest_assistant_text(&path).as_deref(),
+            Some("Hi! How can I help you today?")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_flatten_input_strings() {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), serde_json::json!("ls -la"));
@@ -913,6 +1274,134 @@ mod tests {
             MessageBlock::Text { text } => assert_eq!(text, "Hello, world!"),
             _ => panic!("Expected Text block"),
         }
+    }
+
+    #[test]
+    fn test_parse_codex_user_and_assistant_messages() {
+        let user_line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello codex" }]
+            }
+        });
+        let assistant_line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "hello back" }]
+            }
+        });
+
+        let mut parser = ConversationParser::new(PathBuf::from("/tmp/test.jsonl"));
+        let user = parser.parse_line(&user_line).unwrap();
+        let assistant = parser.parse_line(&assistant_line).unwrap();
+
+        assert_eq!(user.role, ChatRole::User);
+        assert_eq!(assistant.role, ChatRole::Assistant);
+        match &user.blocks[0] {
+            MessageBlock::Text { text } => assert_eq!(text, "hello codex"),
+            _ => panic!("Expected Text block"),
+        }
+        match &assistant.blocks[0] {
+            MessageBlock::Text { text } => assert_eq!(text, "hello back"),
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    #[test]
+    fn test_parse_codex_skips_environment_context() {
+        let line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "<environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>"
+                }]
+            }
+        });
+
+        let mut parser = ConversationParser::new(PathBuf::from("/tmp/test.jsonl"));
+        assert!(parser.parse_line(&line).is_none());
+    }
+
+    #[test]
+    fn test_parse_codex_tool_call_and_output() {
+        let call_line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_123",
+                "arguments": "{\"cmd\":\"ls\"}"
+            }
+        });
+        let output_line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "file.txt\n"
+            }
+        });
+
+        let mut parser = ConversationParser::new(PathBuf::from("/tmp/test.jsonl"));
+        let call = parser.parse_line(&call_line).unwrap();
+        let output = parser.parse_line(&output_line).unwrap();
+
+        assert_eq!(call.role, ChatRole::Assistant);
+        match &call.blocks[0] {
+            MessageBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_123");
+                assert_eq!(name, "exec_command");
+                assert_eq!(input.get("cmd").unwrap(), "ls");
+            }
+            _ => panic!("Expected ToolUse block"),
+        }
+        assert_eq!(output.role, ChatRole::User);
+        match &output.blocks[0] {
+            MessageBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call_123");
+                assert_eq!(content.as_deref(), Some("file.txt\n"));
+                assert!(!is_error);
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    #[test]
+    fn test_find_codex_session_file_in_dir() {
+        let session_id = "019d1a08-a24d-7ef0-a7ed-c3a84a84704a";
+        let root = std::env::temp_dir().join(format!(
+            "agentbro-codex-sessions-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let day_dir = root.join("2026").join("03").join("23");
+        std::fs::create_dir_all(&day_dir).expect("create codex session dir");
+        let file_path = day_dir.join(format!("rollout-2026-03-23T17-31-06-{session_id}.jsonl"));
+        std::fs::write(&file_path, "").expect("write codex session");
+
+        assert_eq!(
+            find_codex_session_file_in_dir(&root, session_id),
+            Some(file_path.clone())
+        );
+
+        let _ = std::fs::remove_file(file_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

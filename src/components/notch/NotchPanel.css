@@ -175,6 +175,13 @@
   min-height: 0;
 }
 
+.notch-panel__feedback-content {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
 .notch-panel__outside-dismiss {
   position: absolute;
   inset: 0;

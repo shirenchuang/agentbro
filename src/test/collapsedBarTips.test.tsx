@@ -60,4 +60,19 @@ describe('CollapsedBar idle tips', () => {
 
     expect(container.querySelector('.collapsed-bar__counter-pill--wait')?.textContent).toBe('WAIT1')
   })
+
+  it('counts error sessions as alerts above ordinary attention sessions', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[
+          session({ id: 'error', phase: 'error', description: 'Tool failed' }),
+          session({ id: 'approval', phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } }),
+        ]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('.collapsed-bar__alert-badge')?.textContent).toBe('2')
+  })
 })

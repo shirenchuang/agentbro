@@ -7,6 +7,8 @@ import type { SessionState } from '../types/agent'
 
 const tauriMocks = vi.hoisted(() => ({
   respondPermission: vi.fn(() => Promise.resolve()),
+  respondPlan: vi.fn(() => Promise.resolve()),
+  respondQuestion: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -14,6 +16,8 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     respondPermission: tauriMocks.respondPermission,
+    respondPlan: tauriMocks.respondPlan,
+    respondQuestion: tauriMocks.respondQuestion,
   }
 })
 
@@ -113,6 +117,23 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('labels Codex App sessions by app instead of cwd-derived Evolab', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          project: 'free-chat',
+          cwd: '/Users/me/Library/Application Support/.evolab-desktop/free-chat',
+          terminal: 'Codex',
+          termBundleId: 'com.openai.codex',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Codex App')).toBeInTheDocument()
+    expect(screen.queryByText('Evolab')).not.toBeInTheDocument()
+  })
+
   it('supports keyboard navigation and Enter jump like the island panel', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -154,6 +175,104 @@ describe('HoverList interactions', () => {
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('routes inline question options without opening the row', async () => {
+    const onSessionClick = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_input',
+          pendingQuestion: { question: 'Pick a target', options: ['Preview', 'Ship'] },
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('routes inline multi-select question answers as joined text', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_input',
+          pendingQuestion: {
+            question: 'Pick targets',
+            options: ['Preview', 'Docs', 'Production'],
+            multiSelect: true,
+          },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
+    fireEvent.mouseDown(screen.getByText('Production').closest('button')!)
+    fireEvent.mouseDown(screen.getByRole('button', { name: '确认 (2)' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Production')
+  })
+
+  it('routes inline multi-question answers as JSON', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_input',
+          pendingQuestion: {
+            question: '[Deploy] Choose options',
+            options: ['Preview', 'Ship'],
+            questions: [
+              {
+                question: 'Which target?',
+                options: [{ label: 'Preview' }, { label: 'Ship' }],
+                multiSelect: true,
+              },
+              {
+                question: 'Notify channel?',
+                options: [{ label: 'Yes' }, { label: 'No' }],
+              },
+            ],
+          },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
+    fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
+    fireEvent.mouseDown(screen.getByText('No').closest('button')!)
+    fireEvent.mouseDown(screen.getByRole('button', { name: '提交所有回答' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith(
+      's1',
+      JSON.stringify({
+        'Which target?': 'Preview, Ship',
+        'Notify channel?': 'No',
+      }),
+    )
+  })
+
+  it('routes inline plan actions without opening the row', () => {
+    const onSessionClick = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          planTitle: 'Implementation plan',
+          planContent: '1. Fix the island',
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 

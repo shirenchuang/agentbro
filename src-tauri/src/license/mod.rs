@@ -272,7 +272,7 @@ impl LicenseManager {
 
     fn license_file_path() -> PathBuf {
         let base = dirs::config_dir()
-            .or_else(|| dirs::data_local_dir())
+            .or_else(dirs::data_local_dir)
             .unwrap_or_else(std::env::temp_dir);
         base.join("agentbro").join("license.json")
     }
@@ -299,5 +299,11 @@ impl LicenseManager {
                 log::error!("Failed to emit license-status-changed: {}", e);
             }
         }
+    }
+}
+
+impl Default for LicenseManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

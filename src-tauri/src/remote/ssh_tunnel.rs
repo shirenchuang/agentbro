@@ -89,6 +89,12 @@ impl SshTunnel {
     }
 }
 
+impl Default for SshTunnel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for SshTunnel {
     fn drop(&mut self) {
         self.disconnect_inner();

@@ -73,6 +73,182 @@ describe('sessionStore backend overlays', () => {
     expect(overlay?.data).toMatchObject({ summary: 'All checks passed' })
   })
 
+  it('uses backend response text instead of generic completion text', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'Task completed',
+        responseText: 'AntWalle 能做，我们当然也能做。它本质是桌面 UI + 本地 opencode server。',
+      }),
+    ])
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('completion')
+    expect(overlay?.data).toMatchObject({
+      summary: 'AntWalle 能做，我们当然也能做。它本质是桌面 UI + 本地 opencode server。',
+    })
+  })
+
+  it('falls back to the last assistant message when done summary is generic', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'Task completed',
+        chatHistory: [
+          { role: 'user', content: '怎么实现？', timestamp: Date.now() - 1000 },
+          { role: 'assistant', content: '', trailingContent: '完整回答内容应该展示在通知里。', timestamp: Date.now() },
+        ],
+      }),
+    ])
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('completion')
+    expect(overlay?.data).toMatchObject({ summary: '完整回答内容应该展示在通知里。' })
+  })
+
+  it('preserves explicit session-ended summaries instead of replaying the last assistant response', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'Session ended',
+        responseText: 'Session ended',
+        chatHistory: [
+          { role: 'assistant', content: 'Hi! How can I help you today?', timestamp: Date.now() },
+        ],
+      }),
+    ])
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('completion')
+    expect(overlay?.data).toMatchObject({ summary: 'Session ended' })
+  })
+
+  it('hides ended sessions from the visible session list', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'Session ended',
+        responseText: 'Session ended',
+        chatHistory: [
+          { role: 'assistant', content: 'Hi! How can I help you today?', timestamp: Date.now() },
+        ],
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.sessions.s1).toBeDefined()
+    expect(state.activeOverlay?.type).toBe('completion')
+  })
+
+  it('hides expired Claude rows that only have a title or last user message', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'idle',
+        sessionTitle: 'hi',
+        lastUserMessage: 'hi',
+        description: undefined,
+        responseText: undefined,
+        lastToolName: undefined,
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.activeSessionId).toBeNull()
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('hides completed Codex internal prompt sessions from the visible list', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'evolab',
+        terminal: '',
+        tty: undefined,
+        pid: undefined,
+        termBundleId: undefined,
+        phase: 'idle',
+        sessionTitle: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        lastUserMessage: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        description: 'Task completed',
+        responseText: 'Task completed',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.activeSessionId).toBeNull()
+  })
+
+  it('keeps Codex prompt-looking sessions when they still have a detail anchor', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'evolab',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'idle',
+        sessionTitle: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        lastUserMessage: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        description: 'Task completed',
+        responseText: 'Task completed',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toHaveLength(1)
+  })
+
+  it('keeps normal Codex sessions even when their completion text is generic', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agent-island',
+        phase: 'idle',
+        sessionTitle: 'Fix session filtering',
+        lastUserMessage: 'Fix session filtering',
+        description: 'Task completed',
+        responseText: 'Task completed',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toHaveLength(1)
+  })
+
+  it('ignores transient processing text when deriving completion summary', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'Processing user input',
+        responseText: 'Hi! How can I help you today?',
+      }),
+    ])
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('completion')
+    expect(overlay?.data).toMatchObject({ summary: 'Hi! How can I help you today?' })
+  })
+
+  it('does not duplicate done-state backend responses as a response overlay', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'done',
+        description: 'All checks passed',
+        responseText: 'All checks passed',
+        lastUserMessage: 'Run checks',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.activeOverlay?.type).toBe('completion')
+    expect(state.overlayQueue.map((overlay) => overlay.type)).toEqual(['completion'])
+  })
+
   it('marks blocking overlays from suppressed backend updates', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
@@ -109,6 +285,35 @@ describe('sessionStore backend overlays', () => {
     expect(state.sessions.s1.planPermissions).toEqual(['Edit'])
     expect(state.sessions.s1.unattendedSince).toEqual(expect.any(Number))
     expect(state.activeOverlay?.type).toBe('plan')
+  })
+
+  it('hides empty Codex App startup placeholders from the visible session list', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'free-chat',
+        cwd: '/Users/me/Library/Application Support/.evolab-desktop/free-chat',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'idle',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toEqual([])
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'free-chat',
+        cwd: '/Users/me/Library/Application Support/.evolab-desktop/free-chat',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'processing',
+        lastUserMessage: 'Help me inspect this project',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toHaveLength(1)
   })
 
   it('removes stale blocking overlays when backend clears pending state', () => {
