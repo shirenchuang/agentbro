@@ -121,7 +121,7 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('Claude')).toBeInTheDocument()
   })
 
-  it('focuses the notch window when hover opens the session list', () => {
+  it('focuses the notch window when hover opens the session list', async () => {
     const currentSession = session()
     useSessionStore.setState({
       sessions: { [currentSession.id]: currentSession },
@@ -140,7 +140,7 @@ describe('NotchPanel island shell', () => {
     fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
 
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
-    expect(useSessionStore.getState().panelState).toBe('hover')
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
   })
 
   it('uses Evolab-style progressive Escape: collapse first, then hide from compact', async () => {

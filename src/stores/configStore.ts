@@ -102,6 +102,7 @@ interface ConfigState {
   // Display
   notchStyle: 'compact' | 'detailed'
   hoverSpeed: 'instant' | 'normal' | 'slow'
+  islandAnimationScale: number
   contentFontSize: string
   completionCardHeight: number
   maxPanelHeight: number
@@ -223,6 +224,7 @@ interface ConfigState {
   hoverExpandDelay: number // ms before expanding on hover (0 = instant)
   microHoverExpandDelay: number // ms before expanding micro pill on hover
   collapseDelay: number // ms before collapsing after cursor leaves
+  idleCompactDwellSeconds: number // seconds to keep compact after active sessions finish
   noSessionsHideDelay: number // minutes before hiding when no active sessions
   escSilenceDuration: number // seconds to silence wakeups after ESC
   interactionMode: 'persistent' | 'minimal'
@@ -329,6 +331,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     taskCompleteDwellSeconds: 6,
     notchStyle: 'compact',
     hoverSpeed: 'normal',
+    islandAnimationScale: 1,
     contentFontSize: '13px',
     completionCardHeight: 200,
     maxPanelHeight: 600,
@@ -389,6 +392,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     hoverExpandDelay: 350,
     microHoverExpandDelay: 500,
     collapseDelay: 400,
+    idleCompactDwellSeconds: 8,
     noSessionsHideDelay: 10,
     escSilenceDuration: 30,
     interactionMode: 'persistent',
@@ -414,6 +418,7 @@ export const useConfigStore = create<ConfigStore>()(
   // Display
   notchStyle: 'compact',
   hoverSpeed: 'normal',
+  islandAnimationScale: 1,
   contentFontSize: '13px',
   completionCardHeight: 200,
   maxPanelHeight: 600,
@@ -541,6 +546,7 @@ export const useConfigStore = create<ConfigStore>()(
   hoverExpandDelay: 350,
   microHoverExpandDelay: 500,
   collapseDelay: 400,
+  idleCompactDwellSeconds: 8,
   noSessionsHideDelay: 10,
   escSilenceDuration: 30,
   interactionMode: 'persistent',

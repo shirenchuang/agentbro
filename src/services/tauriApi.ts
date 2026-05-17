@@ -116,6 +116,7 @@ export interface BackendSession {
 export interface BackendConfig {
   soundEnabled: boolean
   soundVolume: number
+  launchAtLogin: boolean
   autoHide: boolean
   smartSuppression: boolean
   hideInFullscreen: boolean
@@ -231,6 +232,7 @@ export async function getConfig(): Promise<BackendConfig> {
     return {
       soundEnabled: true,
       soundVolume: 0.7,
+      launchAtLogin: false,
       autoHide: true,
       smartSuppression: true,
       hideInFullscreen: false,
@@ -238,7 +240,7 @@ export async function getConfig(): Promise<BackendConfig> {
       showTokenUsage: true,
       theme: 'system',
       displayId: 'primary',
-      autoHideNoSessions: true,
+      autoHideNoSessions: false,
       soundEvents: {},
       soundRules: {},
       customSounds: [],
@@ -276,6 +278,14 @@ export async function updateConfig(config: BackendConfig): Promise<void> {
     return
   }
   return invoke('update_config', { config })
+}
+
+export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    console.log(`[mock] setLaunchAtLogin(${enabled})`)
+    return
+  }
+  return invoke('set_launch_at_login', { enabled })
 }
 
 export interface CustomHookTemplate {
@@ -618,6 +628,11 @@ export async function setNotchFocusable(focusable: boolean): Promise<void> {
   return invoke('set_notch_focusable', { focusable })
 }
 
+export async function setNotchIgnoreCursorEvents(ignore: boolean): Promise<void> {
+  if (!isTauri()) return
+  return invoke('set_notch_ignore_cursor_events', { ignore })
+}
+
 // ── Suppression Commands ────────────────────────────────────────
 
 /** Check if a session's terminal is currently focused (smart suppression). */
@@ -816,15 +831,31 @@ export interface DetectedTool {
   configDir: string | null
 }
 
+export type HookEventCategory = 'approvals' | 'notifications' | 'lifecycle' | 'activity'
+
+export interface HookEventStatus {
+  name: string
+  category: HookEventCategory
+  categoryTitle: string
+  categorySubtitle: string
+  timeout?: number | null
+  enabled: boolean
+}
+
 export interface HookStatus {
   toolId?: string
   adapterId?: string
+  profileId?: string
   name: string
   displayName: string
   installed: boolean
   installStatus?: 'installed' | 'not_installed' | 'error' | string
   configPath?: string
+  configDir?: string
   status: string
+  supportsEventSelection?: boolean
+  events?: HookEventStatus[]
+  enabledEventNames?: string[]
 }
 
 export async function detectTools(): Promise<DetectedTool[]> {
@@ -840,6 +871,23 @@ export async function installAgentHook(toolName: string): Promise<void> {
 export async function uninstallAgentHook(toolName: string): Promise<void> {
   if (!isTauri()) return
   return invoke('uninstall_agent_hook', { toolName })
+}
+
+export async function configureAgentHookEvents(toolName: string, enabledEvents: string[]): Promise<void> {
+  if (!isTauri()) return
+  return invoke('configure_agent_hook_events', { toolName, enabledEvents })
+}
+
+export async function simulateHookEvent(eventName: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('simulate_hook_event', { eventName })
+}
+
+export async function simulateHookLifecycle(): Promise<void> {
+  if (!isTauri()) return
+  for (const eventName of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']) {
+    await simulateHookEvent(eventName)
+  }
 }
 
 export async function getAllHookStatus(): Promise<HookStatus[]> {

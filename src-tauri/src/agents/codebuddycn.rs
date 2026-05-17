@@ -1,6 +1,6 @@
 // CodeBuddyCNAdapter — Agent adapter for CodeBuddy CN (Chinese variant)
 
-use super::hook_manager;
+use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
@@ -46,33 +46,13 @@ impl AgentAdapter for CodeBuddyCNAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.settings_path();
-        let hook_command = format!(
-            "{} --source codybuddycn",
-            hook_manager::bridge_binary_path().display()
-        );
-        let mut settings = hook_manager::read_json_config(&path);
-        let events = &[
-            "SessionStart",
-            "PreToolUse",
-            "PostToolUse",
-            "Notification",
-            "Stop",
-        ];
-        hook_manager::inject_hooks_json(&mut settings, events, &hook_command);
-        hook_manager::write_json_config(&path, &settings)?;
+        profiles::install_at(&profiles::codebuddycn_profile(), &self.settings_path())?;
         log::info!("CodeBuddy CN hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.settings_path();
-        if !path.exists() {
-            return Ok(());
-        }
-        let mut settings = hook_manager::read_json_config(&path);
-        hook_manager::remove_hooks_json(&mut settings);
-        hook_manager::write_json_config(&path, &settings)?;
+        profiles::uninstall_at(&profiles::codebuddycn_profile(), &self.settings_path())?;
         log::info!("CodeBuddy CN hooks removed");
         Ok(())
     }

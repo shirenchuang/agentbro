@@ -4,7 +4,7 @@ import type { SessionState } from '../../types/agent'
 import { AgentIcon } from './AgentIcon'
 import { StatusDot } from '../shared'
 import { formatDurationShort } from '../../utils/time'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import './ChatHeader.css'
 
 interface ChatHeaderProps {
@@ -18,6 +18,7 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
+  const showAgentBadge = shouldShowAgentBadge(session)
   const isAntCC = agentName.toLowerCase() === 'antcc'
 
   return (
@@ -37,10 +38,12 @@ export function ChatHeader({ session, onBack, onJump }: ChatHeaderProps) {
         {appLabel && (
           <span className="chat-header__badge chat-header__badge--source">{appLabel}</span>
         )}
-        <span className={`chat-header__badge chat-header__badge--agent${isAntCC ? ' chat-header__badge--antcc' : ''}`}>
-          <AgentIcon agentType={session.agentType} size={12} />
-          {agentName}
-        </span>
+        {showAgentBadge && (
+          <span className={`chat-header__badge chat-header__badge--agent${isAntCC ? ' chat-header__badge--antcc' : ''}`}>
+            <AgentIcon agentType={session.agentType} size={12} />
+            {agentName}
+          </span>
+        )}
         {terminalLabel && <span className="chat-header__badge">{terminalLabel}</span>}
         <span className="chat-header__badge chat-header__badge--time">{formatDurationShort(session.duration)}</span>
         {onJump && (

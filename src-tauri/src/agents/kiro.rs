@@ -1,6 +1,6 @@
 // KiroAdapter — Agent adapter for Kiro CLI (JSON agent file format)
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
 pub struct KiroAdapter {
@@ -31,39 +31,8 @@ impl KiroAdapter {
             .unwrap_or(false)
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join("agentbro-bridge")
-    }
-
     fn agent_file_path(&self) -> PathBuf {
         self.config_root.join("agents").join("agentbro.json")
-    }
-
-    fn build_kiro_agent_json(hook_command: &str) -> serde_json::Value {
-        let events = [
-            "PreToolUse",
-            "PostToolUse",
-            "Notification",
-            "Stop",
-            "SubagentStart",
-            "SubagentEnd",
-        ];
-        let mut hooks = serde_json::Map::new();
-        for event in &events {
-            hooks.insert(
-                event.to_string(),
-                serde_json::json!({
-                    "command": hook_command,
-                    "timeout_ms": 10000,
-                }),
-            );
-        }
-        serde_json::json!({
-            "name": "agentbro",
-            "description": "AgentBro status monitor hooks",
-            "hooks": hooks,
-        })
     }
 }
 
@@ -80,22 +49,13 @@ impl AgentAdapter for KiroAdapter {
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = self.agent_file_path();
-        let hook_command = Self::bridge_binary_path().display().to_string();
-        let content = Self::build_kiro_agent_json(&hook_command);
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&content)?)?;
+        profiles::install_at(&profiles::kiro_profile(), &path)?;
         log::info!("Kiro hooks installed at {:?}", path);
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.agent_file_path();
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
+        profiles::uninstall_at(&profiles::kiro_profile(), &self.agent_file_path())?;
         log::info!("Kiro hooks removed");
         Ok(())
     }

@@ -85,14 +85,14 @@ export function SettingsSidebar({
   const { skills, packs } = useSkillStore()
 
   if (activeSection === 'island') {
-    const navItems: Array<{ id: IslandSettingsView; label: string; icon: string }> = [
-      { id: 'overview', label: t('settings.island.tabs.overview', { defaultValue: 'Overview' }), icon: '✧' },
-      { id: 'display', label: t('settings.island.tabs.display', { defaultValue: 'Display' }), icon: '◎' },
-      { id: 'behavior', label: t('settings.island.tabs.behavior', { defaultValue: 'Behavior' }), icon: '▣' },
-      { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '◌' },
-      { id: 'notify', label: t('settings.island.tabs.notify', { defaultValue: 'Notifications' }), icon: '⌁' },
-      { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌘' },
-      { id: 'advanced', label: t('settings.island.tabs.advanced', { defaultValue: 'Advanced' }), icon: '▤' },
+    const navItems: Array<{ id: IslandSettingsView; label: string; icon: string; iconBg: string }> = [
+      { id: 'overview', label: t('settings.island.tabs.overview', { defaultValue: 'Overview' }), icon: '✦', iconBg: '#5856D6' },
+      { id: 'display', label: t('settings.island.tabs.display', { defaultValue: 'Display' }), icon: '◉', iconBg: '#007AFF' },
+      { id: 'behavior', label: t('settings.island.tabs.behavior', { defaultValue: 'Behavior' }), icon: '⚡', iconBg: '#FF9500' },
+      { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '⚙', iconBg: '#34C759' },
+      { id: 'notify', label: t('settings.island.tabs.notify', { defaultValue: 'Notifications' }), icon: '🔔', iconBg: '#FF3B30' },
+      { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌘', iconBg: '#8E8E93' },
+      { id: 'advanced', label: t('settings.island.tabs.advanced', { defaultValue: 'Advanced' }), icon: '⚒', iconBg: '#636366' },
     ]
 
     return (
@@ -114,7 +114,12 @@ export function SettingsSidebar({
               className={activeIslandView === item.id ? 'active' : ''}
               onClick={() => onIslandViewChange(item.id)}
             >
-              <span className="settings-capability-nav__icon">{item.icon}</span>
+              <span
+                className="settings-sidebar__icon settings-capability-nav__icon--colored"
+                style={{ background: activeIslandView === item.id ? 'rgba(255,255,255,0.25)' : item.iconBg, color: '#fff' }}
+              >
+                {item.icon}
+              </span>
               <span>{item.label}</span>
             </button>
           ))}

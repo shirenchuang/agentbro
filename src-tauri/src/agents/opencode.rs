@@ -1,29 +1,21 @@
 // OpenCodeAdapter — Agent adapter for OpenCode AI
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use super::profiles;
+use super::{AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption};
 use std::path::PathBuf;
 
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
-const AGENTBRO_MARKER: &str = "agentbro";
-
 pub struct OpenCodeAdapter {
-    config_root: PathBuf,
     status: AdapterStatus,
 }
 
 impl OpenCodeAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let config_root = home.join(".opencode");
         let status = if Self::is_installed() {
             AdapterStatus::Available
         } else {
             AdapterStatus::Unavailable
         };
-        Self {
-            config_root,
-            status,
-        }
+        Self { status }
     }
 
     fn is_installed() -> bool {
@@ -34,49 +26,8 @@ impl OpenCodeAdapter {
             .unwrap_or(false)
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
-    }
-
-    fn settings_path(&self) -> PathBuf {
-        self.config_root.join("config.json")
-    }
-
-    fn inject_hooks(settings: &mut serde_json::Value, hook_command: &str) {
-        if settings.get("hooks").is_none() {
-            settings["hooks"] = serde_json::json!({});
-        }
-        let hooks = settings["hooks"].as_object_mut().unwrap();
-        for event in &["PreToolUse", "PostToolUse", "SessionStart", "SessionEnd"] {
-            let entry = hooks
-                .entry(event.to_string())
-                .or_insert_with(|| serde_json::json!([]));
-            if let Some(arr) = entry.as_array_mut() {
-                arr.retain(|e| {
-                    !e.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c.contains(AGENTBRO_MARKER))
-                        .unwrap_or(false)
-                });
-                arr.push(serde_json::json!({"type": "command", "command": hook_command}));
-            }
-        }
-    }
-
-    fn remove_hooks(settings: &mut serde_json::Value) {
-        if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            for (_, v) in hooks.iter_mut() {
-                if let Some(arr) = v.as_array_mut() {
-                    arr.retain(|e| {
-                        !e.get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.contains(AGENTBRO_MARKER))
-                            .unwrap_or(false)
-                    });
-                }
-            }
-        }
+    fn plugin_path(&self) -> PathBuf {
+        profiles::configuration_url(&profiles::opencode_profile())
     }
 }
 
@@ -92,37 +43,14 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        let hook_command = Self::bridge_binary_path().display().to_string();
-
-        let mut settings: serde_json::Value = if settings_path.exists() {
-            let content = std::fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        Self::inject_hooks(&mut settings, &hook_command);
-
-        if let Some(parent) = settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        log::info!("OpenCode hooks installed");
+        profiles::install(&profiles::opencode_profile())?;
+        log::info!("OpenCode plugin hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        if !settings_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&settings_path)?;
-        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-        Self::remove_hooks(&mut settings);
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        log::info!("OpenCode hooks removed");
+        profiles::uninstall(&profiles::opencode_profile())?;
+        log::info!("OpenCode plugin hooks removed");
         Ok(())
     }
 
@@ -190,6 +118,101 @@ impl AgentAdapter for OpenCodeAdapter {
                 tool_target: None,
                 status: "success".to_string(),
             }),
+            "AskQuestion" => {
+                let questions = raw
+                    .get("questions")
+                    .and_then(|value| value.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|item| QuestionItem {
+                                question: item
+                                    .get("question")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                header: item
+                                    .get("header")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string()),
+                                options: item
+                                    .get("options")
+                                    .and_then(|value| value.as_array())
+                                    .map(|options| {
+                                        options
+                                            .iter()
+                                            .filter_map(|option| {
+                                                option.get("label").and_then(|label| {
+                                                    label.as_str().map(|label| QuestionOption {
+                                                        label: label.to_string(),
+                                                        description: option
+                                                            .get("description")
+                                                            .and_then(|value| value.as_str())
+                                                            .map(|value| value.to_string()),
+                                                    })
+                                                })
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(),
+                                multi_select: item
+                                    .get("multiSelect")
+                                    .or_else(|| item.get("multiple"))
+                                    .and_then(|value| value.as_bool())
+                                    .unwrap_or(false),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                Ok(AgentEvent::AskQuestion {
+                    session_id,
+                    question: raw
+                        .get("question")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("OpenCode needs input")
+                        .to_string(),
+                    options: raw
+                        .get("options")
+                        .and_then(|value| value.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|value| value.as_str().map(|value| value.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    descriptions: raw
+                        .get("descriptions")
+                        .and_then(|value| value.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|value| value.as_str().map(|value| value.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    header: raw
+                        .get("header")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string()),
+                    multi_select: raw
+                        .get("multi_select")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    questions,
+                })
+            }
+            "PermissionRequest" => Ok(AgentEvent::PermissionRequest {
+                session_id,
+                tool_name: raw
+                    .get("tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Permission")
+                    .to_string(),
+                diff: None,
+                options: Some(vec!["Allow".to_string(), "Deny".to_string()]),
+            }),
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),
@@ -198,6 +221,10 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn hook_config_paths(&self) -> Vec<PathBuf> {
-        vec![self.settings_path()]
+        vec![self.plugin_path()]
+    }
+
+    fn hooks_installed(&self) -> bool {
+        profiles::is_installed(&profiles::opencode_profile())
     }
 }

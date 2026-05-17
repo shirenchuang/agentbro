@@ -5,6 +5,7 @@ import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
 import { Toggle } from '../Toggle'
 import { Dropdown } from '../Dropdown'
+import { setLaunchAtLogin } from '../../../services/tauriApi'
 
 export function GeneralSection() {
   const { t, i18n } = useTranslation()
@@ -40,7 +41,14 @@ export function GeneralSection() {
           />
         </SettingRow>
         <SettingRow label={t('settings.launchAtLogin')} description={t('settings.launchAtLoginDesc')}>
-          <Toggle checked={config.launchAtLogin} onChange={(v) => config.updateConfig('launchAtLogin', v)} />
+          <Toggle checked={config.launchAtLogin} onChange={(v) => {
+            const previous = config.launchAtLogin
+            config.updateConfig('launchAtLogin', v)
+            setLaunchAtLogin(v).catch((error) => {
+              console.error('[settings] setLaunchAtLogin:', error)
+              config.updateConfig('launchAtLogin', previous)
+            })
+          }} />
         </SettingRow>
       </SettingGroup>
 

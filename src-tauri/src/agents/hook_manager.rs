@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 const AGENTBRO_MARKER: &str = "agentbro";
+const AGENTBRO_BRIDGE_MARKER: &str = "agentbro-bridge";
 const BLOCK_START: &str = "# [AGENTBRO-START]";
 const BLOCK_END: &str = "# [AGENTBRO-END]";
 
@@ -220,13 +221,92 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Erro
 
 /// Check whether a config file (any format) already contains our hooks.
 pub fn has_agentbro_hooks(path: &Path) -> bool {
+    if path.is_dir() {
+        for name in ["plugin.yaml", "__init__.py"] {
+            let candidate = path.join(name);
+            if std::fs::read_to_string(candidate)
+                .map(|s| s.contains(AGENTBRO_BRIDGE_MARKER) || s.contains(BLOCK_START))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::fs::read_to_string(path)
-        .map(|s| s.contains(AGENTBRO_MARKER))
+        .map(|s| s.contains(AGENTBRO_BRIDGE_MARKER) || s.contains(BLOCK_START))
         .unwrap_or(false)
 }
 
 /// Return the bridge binary path for use in hook commands.
 pub fn bridge_binary_path() -> PathBuf {
+    ensure_bridge_binary().unwrap_or_else(|_| raw_bridge_binary_path())
+}
+
+fn raw_bridge_binary_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
     home.join(".agentbro").join("bin").join("agentbro-bridge")
+}
+
+/// Ensure the bridge binary is deployed to ~/.agentbro/bin.
+pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let dest = raw_bridge_binary_path();
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    if let Some(source) = find_source_bridge() {
+        let should_copy = std::fs::metadata(&dest)
+            .and_then(|dest_meta| {
+                std::fs::metadata(&source).map(|source_meta| dest_meta.len() != source_meta.len())
+            })
+            .unwrap_or(true);
+        if should_copy {
+            std::fs::copy(source, &dest)?;
+        }
+    } else if !dest.exists() {
+        return Err("Bridge binary not found next to main executable".into());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    Ok(dest)
+}
+
+fn find_source_bridge() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let bridge = exe_dir.join("agentbro-bridge");
+    if bridge.exists() {
+        return Some(bridge);
+    }
+
+    let bundled_bridge = exe_dir
+        .parent()
+        .and_then(|contents_dir| contents_dir.parent())
+        .map(|app_dir| {
+            app_dir
+                .join("Contents")
+                .join("Resources")
+                .join("agentbro-bridge")
+        });
+    bundled_bridge.filter(|bridge| bridge.exists())
+}
+
+pub fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }

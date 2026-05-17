@@ -1,10 +1,7 @@
 // CopilotAdapter — Agent adapter for GitHub Copilot CLI
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
-
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
-const AGENTBRO_MARKER: &str = "agentbro";
 
 pub struct CopilotAdapter {
     config_root: PathBuf,
@@ -43,56 +40,8 @@ impl CopilotAdapter {
         false
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
-    }
-
     fn settings_path(&self) -> PathBuf {
         self.config_root.join("hooks.json")
-    }
-
-    fn inject_hooks_json(settings: &mut serde_json::Value, hook_command: &str) {
-        let hook_entry = serde_json::json!([{"command": hook_command}]);
-        if settings.get("hooks").is_none() {
-            settings["hooks"] = serde_json::json!({});
-        }
-        let hooks = settings["hooks"].as_object_mut().unwrap();
-        for event in &[
-            "pre_tool_use",
-            "post_tool_use",
-            "session_start",
-            "session_end",
-        ] {
-            let existing = hooks
-                .entry(event.to_string())
-                .or_insert_with(|| serde_json::json!([]));
-            if let Some(arr) = existing.as_array_mut() {
-                arr.retain(|e| {
-                    !e.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c.contains(AGENTBRO_MARKER))
-                        .unwrap_or(false)
-                });
-                arr.push(serde_json::json!({"command": hook_command}));
-            }
-        }
-        let _ = hook_entry;
-    }
-
-    fn remove_hooks_json(settings: &mut serde_json::Value) {
-        if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            for (_, v) in hooks.iter_mut() {
-                if let Some(arr) = v.as_array_mut() {
-                    arr.retain(|e| {
-                        !e.get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.contains(AGENTBRO_MARKER))
-                            .unwrap_or(false)
-                    });
-                }
-            }
-        }
     }
 }
 
@@ -108,36 +57,13 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        let hook_command = Self::bridge_binary_path().display().to_string();
-
-        let mut settings: serde_json::Value = if settings_path.exists() {
-            let content = std::fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        Self::inject_hooks_json(&mut settings, &hook_command);
-
-        if let Some(parent) = settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        profiles::install_at(&profiles::copilot_profile(), &self.settings_path())?;
         log::info!("Copilot hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        if !settings_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&settings_path)?;
-        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-        Self::remove_hooks_json(&mut settings);
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        profiles::uninstall_at(&profiles::copilot_profile(), &self.settings_path())?;
         log::info!("Copilot hooks removed");
         Ok(())
     }

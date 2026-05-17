@@ -1,11 +1,11 @@
 // CodexAdapter — Agent adapter for OpenAI Codex CLI
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption};
+use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
+#[cfg(test)]
 const AGENTBRO_MARKER: &str = "agentbro";
 
 const HOOK_EVENTS: &[(&str, &str, u64)] = &[
@@ -48,41 +48,6 @@ impl CodexAdapter {
             .unwrap_or(false)
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
-    }
-
-    fn find_source_bridge() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let exe_dir = exe.parent()?;
-        let bridge = exe_dir.join(BRIDGE_BINARY_NAME);
-        bridge.exists().then_some(bridge)
-    }
-
-    fn install_bridge() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let dest = Self::bridge_binary_path();
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        if let Some(source) = Self::find_source_bridge() {
-            std::fs::copy(source, &dest)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
-            }
-            return Ok(dest);
-        }
-
-        if dest.exists() {
-            return Ok(dest);
-        }
-
-        Err("Bridge binary not found next to main executable".into())
-    }
-
     fn hooks_path(&self) -> PathBuf {
         self.config_root.join("hooks.json")
     }
@@ -92,12 +57,10 @@ impl CodexAdapter {
     }
 
     fn hook_command() -> Result<String, Box<dyn std::error::Error>> {
-        Ok(format!(
-            "{} --source codex",
-            Self::install_bridge()?.display()
-        ))
+        profiles::managed_bridge_command(&profiles::codex_profile())
     }
 
+    #[cfg(test)]
     fn inject_hooks_json(settings: &mut serde_json::Value, hook_command: &str) {
         if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
             settings["hooks"] = serde_json::json!({});
@@ -108,14 +71,10 @@ impl CodexAdapter {
             let entry = hooks
                 .entry(event.to_string())
                 .or_insert_with(|| serde_json::json!([]));
-            let groups = match entry.as_array_mut() {
-                Some(groups) => groups,
-                None => {
-                    *entry = serde_json::json!([]);
-                    entry.as_array_mut().expect("event hooks is array")
-                }
-            };
-
+            if !entry.is_array() {
+                *entry = serde_json::json!([]);
+            }
+            let groups = entry.as_array_mut().expect("event hooks is array");
             groups.retain(|group| !group_contains_agentbro(group));
             groups.push(serde_json::json!({
                 "hooks": [{
@@ -124,17 +83,6 @@ impl CodexAdapter {
                     "timeout": timeout
                 }]
             }));
-        }
-    }
-
-    fn remove_hooks_json(settings: &mut serde_json::Value) {
-        if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            for value in hooks.values_mut() {
-                if let Some(groups) = value.as_array_mut() {
-                    groups.retain(|group| !group_contains_agentbro(group));
-                }
-            }
-            hooks.retain(|_, value| value.as_array().map(|arr| !arr.is_empty()).unwrap_or(true));
         }
     }
 
@@ -235,20 +183,11 @@ impl AgentAdapter for CodexAdapter {
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let hooks_path = self.hooks_path();
         let hook_command = Self::hook_command()?;
-
-        let mut settings: serde_json::Value = if hooks_path.exists() {
-            let content = std::fs::read_to_string(&hooks_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        Self::inject_hooks_json(&mut settings, &hook_command);
-
-        if let Some(parent) = hooks_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&hooks_path, serde_json::to_string_pretty(&settings)?)?;
+        let settings = profiles::install_nested_json_hooks_at(
+            &profiles::codex_profile(),
+            &hooks_path,
+            &hook_command,
+        )?;
         Self::trust_codex_hooks(
             &hooks_path,
             &self.config_toml_path(),
@@ -260,15 +199,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let hooks_path = self.hooks_path();
-        if !hooks_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&hooks_path)?;
-        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-        Self::remove_hooks_json(&mut settings);
-        std::fs::write(&hooks_path, serde_json::to_string_pretty(&settings)?)?;
+        profiles::uninstall_at(&profiles::codex_profile(), &self.hooks_path())?;
         log::info!("Codex hooks removed");
         Ok(())
     }
@@ -405,6 +336,7 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
+#[cfg(test)]
 fn group_contains_agentbro(group: &serde_json::Value) -> bool {
     if group
         .get("command")

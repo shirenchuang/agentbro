@@ -1,6 +1,6 @@
 // QoderCliAdapter — Agent adapter for Qoder CLI (separate from IDE)
 
-use super::hook_manager;
+use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
@@ -49,24 +49,13 @@ impl AgentAdapter for QoderCliAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.settings_path();
-        let hook_command = hook_manager::bridge_binary_path().display().to_string();
-        let mut settings = hook_manager::read_json_config(&path);
-        let events = &["PreToolUse", "PostToolUse", "Notification", "Stop"];
-        hook_manager::inject_hooks_json(&mut settings, events, &hook_command);
-        hook_manager::write_json_config(&path, &settings)?;
+        profiles::install_at(&profiles::qoder_cli_profile(), &self.settings_path())?;
         log::info!("Qoder CLI hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.settings_path();
-        if !path.exists() {
-            return Ok(());
-        }
-        let mut settings = hook_manager::read_json_config(&path);
-        hook_manager::remove_hooks_json(&mut settings);
-        hook_manager::write_json_config(&path, &settings)?;
+        profiles::uninstall_at(&profiles::qoder_cli_profile(), &self.settings_path())?;
         log::info!("Qoder CLI hooks removed");
         Ok(())
     }

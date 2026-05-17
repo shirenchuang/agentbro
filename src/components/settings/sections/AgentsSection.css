@@ -210,6 +210,15 @@
   color: #16833a;
 }
 
+.demo-btn--simulate {
+  background: linear-gradient(135deg, #5856d6, #af52de);
+  border-color: transparent;
+  color: #fff;
+}
+.demo-btn--simulate:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
 .demo-profile-bar > span {
   flex: 0 0 auto;
   color: var(--settings-text-secondary);
@@ -643,6 +652,41 @@
 .agent-hook-badge--error {
   background: rgba(255, 59, 48, 0.12);
   color: #d70015;
+}
+
+.agent-hook-card__actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  min-width: 0;
+}
+
+.agent-hook-config-btn {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 11px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--settings-text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.agent-hook-config-btn:hover:not(:disabled) {
+  border-color: rgba(0, 122, 255, 0.28);
+  background: rgba(0, 122, 255, 0.07);
+  color: var(--settings-accent);
+}
+
+.agent-hook-config-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .agent-config-grid {
@@ -1879,4 +1923,14 @@
     flex-wrap: wrap;
     justify-content: flex-end;
   }
+
+  .agent-hook-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .agent-hook-card__actions {
+    justify-content: space-between;
+  }
+
 }

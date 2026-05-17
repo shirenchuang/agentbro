@@ -1,17 +1,48 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useConfigStore } from '../../stores/configStore'
 
-const TIPS = [
-  '⌘⇧I 切换灵动岛可见性',
-  '⌘K 打开命令面板',
-  '⌘J 切换终端面板',
-  '⌘⌥← / → 在 session 之间切换',
-  '⌘⌥T 切换亮色/暗色主题',
-  '⌘, 快速打开设置',
-  '拖拽面板分隔线可调整布局宽度',
-  '右键 session 查看更多操作',
-  'Playground 模式适合快速测试 prompt',
-]
+function formatShortcut(shortcut: string): string {
+  return shortcut
+    .replace(/CommandOrControl/g, '⌘')
+    .replace(/Command/g, '⌘')
+    .replace(/Control/g, '⌃')
+    .replace(/Alt|Option/g, '⌥')
+    .replace(/Shift/g, '⇧')
+    .replace(/\+/g, '')
+}
+
+function buildTips(config: {
+  globalShortcut: string
+  shortcutApprove: string
+  shortcutApproveEnabled: boolean
+  shortcutDeny: string
+  shortcutDenyEnabled: boolean
+  shortcutSkip: string
+  shortcutSkipEnabled: boolean
+}): string[] {
+  const tips = [
+    `${formatShortcut(config.globalShortcut)} 切换灵动岛显示`,
+    'ESC 收起当前展开面板',
+    '悬停灵动岛查看会话详情',
+    '点击设置图标可调整主题、声音和快捷键',
+    '在 Agents 设置里安装或修复各 Agent hooks',
+    '开启 Follow Focus 后只看当前窗口相关会话',
+    '空闲提示可以在 Island 设置里关闭',
+  ]
+
+  if (config.shortcutApproveEnabled) {
+    tips.push(`${formatShortcut(config.shortcutApprove)} 批准当前权限请求`)
+  }
+  if (config.shortcutDenyEnabled) {
+    tips.push(`${formatShortcut(config.shortcutDeny)} 拒绝当前权限请求`)
+  }
+  if (config.shortcutSkipEnabled) {
+    tips.push(`${formatShortcut(config.shortcutSkip)} 跳过当前问题`)
+  }
+
+  return tips
+}
 
 function shuffleTips(tips: string[]): string[] {
   const shuffled = [...tips]
@@ -24,20 +55,26 @@ function shuffleTips(tips: string[]): string[] {
   return shuffled
 }
 
-function useTipRotation(active: boolean): string | null {
-  const [tip, setTip] = useState<string | null>(() => TIPS[0] ?? null)
+function useTipRotation(active: boolean, tips: string[]): string | null {
+  const [tip, setTip] = useState<string | null>(() => tips[0] ?? null)
   const shuffledRef = useRef<string[]>([])
   const indexRef = useRef(0)
 
   const nextTip = useCallback(() => {
     if (shuffledRef.current.length === 0 || indexRef.current >= shuffledRef.current.length) {
-      shuffledRef.current = shuffleTips(TIPS)
+      shuffledRef.current = shuffleTips(tips)
       indexRef.current = 0
     }
-    const next = shuffledRef.current[indexRef.current] ?? TIPS[0]
+    const next = shuffledRef.current[indexRef.current] ?? tips[0]
     indexRef.current += 1
     return next
-  }, [])
+  }, [tips])
+
+  useEffect(() => {
+    shuffledRef.current = []
+    indexRef.current = 0
+    setTip(tips[0] ?? null)
+  }, [tips])
 
   useEffect(() => {
     if (!active) return
@@ -61,7 +98,31 @@ interface TipDisplayProps {
 }
 
 export function TipDisplay({ show }: TipDisplayProps) {
-  const tip = useTipRotation(show)
+  const globalShortcut = useConfigStore((s) => s.globalShortcut)
+  const shortcutApprove = useConfigStore((s) => s.shortcutApprove)
+  const shortcutApproveEnabled = useConfigStore((s) => s.shortcutApproveEnabled)
+  const shortcutDeny = useConfigStore((s) => s.shortcutDeny)
+  const shortcutDenyEnabled = useConfigStore((s) => s.shortcutDenyEnabled)
+  const shortcutSkip = useConfigStore((s) => s.shortcutSkip)
+  const shortcutSkipEnabled = useConfigStore((s) => s.shortcutSkipEnabled)
+  const tips = useMemo(() => buildTips({
+    globalShortcut,
+    shortcutApprove,
+    shortcutApproveEnabled,
+    shortcutDeny,
+    shortcutDenyEnabled,
+    shortcutSkip,
+    shortcutSkipEnabled,
+  }), [
+    globalShortcut,
+    shortcutApprove,
+    shortcutApproveEnabled,
+    shortcutDeny,
+    shortcutDenyEnabled,
+    shortcutSkip,
+    shortcutSkipEnabled,
+  ])
+  const tip = useTipRotation(show, tips)
   if (!show || !tip) return null
 
   return (

@@ -1,11 +1,10 @@
 // ClaudeCodeAdapter — Agent adapter for Claude Code CLI
 // Handles hook installation, event parsing, and communication via tmux
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption};
+use super::{
+    hook_manager, profiles, AdapterStatus, AgentAdapter, AgentEvent, QuestionItem, QuestionOption,
+};
 use std::path::PathBuf;
-
-/// Bridge binary name
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
 
 /// Claude Code adapter implementation
 pub struct ClaudeCodeAdapter {
@@ -73,8 +72,7 @@ impl ClaudeCodeAdapter {
     /// Get the path where the bridge binary should be installed
     /// Uses ~/.agentbro/bin/ to avoid spaces in path (shared across all instances)
     fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
+        hook_manager::bridge_binary_path()
     }
 
     /// Get the settings.json path for this instance
@@ -82,101 +80,15 @@ impl ClaudeCodeAdapter {
         self.config_root.join("settings.json")
     }
 
-    /// Find the source bridge binary next to the current executable
-    fn find_source_bridge() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let exe_dir = exe.parent()?;
-        let bridge = exe_dir.join(BRIDGE_BINARY_NAME);
-        if bridge.exists() {
-            Some(bridge)
-        } else {
-            None
-        }
-    }
-
-    /// Install the bridge binary to ~/.agentbro/bin/
-    /// Copies the compiled binary from the app bundle directory.
-    fn install_bridge() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let dest = Self::bridge_binary_path();
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let source =
-            Self::find_source_bridge().ok_or("Bridge binary not found next to main executable")?;
-
-        std::fs::copy(&source, &dest)?;
-
-        // Make executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
-        }
-
-        log::info!("Bridge binary installed to {}", dest.display());
-        Ok(dest)
-    }
-
     /// Build the hook command string and stamp instance metadata into the bridge env.
     fn hook_command(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let bridge_path = Self::install_bridge()?;
+        let bridge_path = hook_manager::ensure_bridge_binary()?;
         Ok(format!(
             "/usr/bin/env AGENTBRO_ENGINE_LABEL={} AGENTBRO_CONFIG_ROOT={} {}",
             shell_quote(&self.label),
             shell_quote(&self.config_root.display().to_string()),
             shell_quote(&bridge_path.display().to_string()),
         ))
-    }
-
-    /// All hook event names that Claude Code supports
-    fn hook_events() -> Vec<&'static str> {
-        vec![
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PostToolUse",
-            "PostToolUseFailure",
-            "PermissionRequest",
-            "PermissionDenied",
-            "Notification",
-            "Stop",
-            "StopFailure",
-            "SubagentStart",
-            "SubagentStop",
-            "SessionStart",
-            "SessionEnd",
-            "PreCompact",
-            "PostCompact",
-            "beforeShellExecution",
-            "afterShellExecution",
-            "beforeMCPExecution",
-            "afterMCPExecution",
-            "afterAgentResponse",
-            "afterAgentThought",
-        ]
-    }
-
-    /// Hook events that need a matcher pattern
-    fn events_with_matcher() -> Vec<&'static str> {
-        vec![
-            "PreToolUse",
-            "PostToolUse",
-            "PostToolUseFailure",
-            "PermissionRequest",
-            "PermissionDenied",
-            "Notification",
-            "beforeShellExecution",
-            "afterShellExecution",
-            "beforeMCPExecution",
-            "afterMCPExecution",
-            "afterAgentResponse",
-            "afterAgentThought",
-        ]
-    }
-
-    /// Hook events that need a timeout (permission-related)
-    fn events_with_timeout() -> Vec<&'static str> {
-        vec!["PermissionRequest"]
     }
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)
@@ -210,168 +122,19 @@ impl AgentAdapter for ClaudeCodeAdapter {
         // Clean up old Python hook if present
         Self::cleanup_old_python_hook();
 
-        let settings_path = self.settings_path();
         let hook_command = self.hook_command()?;
-
-        // Read existing settings or create new
-        let mut settings: serde_json::Value = if settings_path.exists() {
-            let content = std::fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        // Ensure hooks object exists
-        if settings.get("hooks").is_none() {
-            settings["hooks"] = serde_json::json!({});
-        }
-
-        let hooks = settings
-            .get_mut("hooks")
-            .and_then(|h| h.as_object_mut())
-            .ok_or("Failed to access hooks object")?;
-
-        let events_with_matcher = Self::events_with_matcher();
-        let events_with_timeout = Self::events_with_timeout();
-
-        // Add hook entries for each event using Claude Code's nested format:
-        // { "hooks": { "EventName": [ { "matcher": "...", "hooks": [ { "type": "command", "command": "..." } ] } ] } }
-        for event_name in Self::hook_events() {
-            let use_matcher = events_with_matcher.contains(&event_name);
-            let use_timeout = events_with_timeout.contains(&event_name);
-
-            // Build the inner hook object
-            let mut inner_hook = serde_json::json!({
-                "type": "command",
-                "command": hook_command
-            });
-            if use_timeout {
-                inner_hook["timeout"] = serde_json::json!(86400);
-            }
-
-            // Build the outer hook group (with matcher if needed)
-            let mut hook_group = serde_json::json!({
-                "hooks": [inner_hook]
-            });
-            if use_matcher {
-                hook_group["matcher"] = serde_json::json!("*");
-            }
-
-            if let Some(existing) = hooks.get_mut(event_name) {
-                // If it's an array, check if we already have an agentbro entry
-                if let Some(arr) = existing.as_array_mut() {
-                    // Remove old Python hook entries and old bridge entries.
-                    // Older builds used ~/.agent-island/bin/agent-island-bridge;
-                    // leaving those around emits duplicate unlabeled events, so
-                    // custom engines like AntCC can appear as plain Claude.
-                    arr.retain(|group| {
-                        let has_agentbro = |cmd: Option<&str>| -> bool {
-                            cmd.map(|c| {
-                                c.contains("agentbro")
-                                    || c.contains("agent-island")
-                                    || c.contains("vibe-island")
-                            })
-                            .unwrap_or(false)
-                        };
-
-                        // Check nested format
-                        let nested_match = group
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .map(|hooks_arr| {
-                                hooks_arr.iter().any(|h| {
-                                    has_agentbro(h.get("command").and_then(|c| c.as_str()))
-                                })
-                            })
-                            .unwrap_or(false);
-
-                        // Check flat format
-                        let flat_match =
-                            has_agentbro(group.get("command").and_then(|c| c.as_str()));
-
-                        !nested_match && !flat_match
-                    });
-                    arr.push(hook_group);
-                } else {
-                    // Convert single entry to array
-                    let old = existing.clone();
-                    *existing = serde_json::json!([old, hook_group]);
-                }
-            } else {
-                hooks.insert(event_name.to_string(), serde_json::json!([hook_group]));
-            }
-        }
-
-        // Write settings back
-        if let Some(parent) = settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let content = serde_json::to_string_pretty(&settings)?;
-        std::fs::write(&settings_path, content)?;
+        profiles::install_nested_json_hooks_at(
+            &profiles::claude_code_profile(),
+            &self.settings_path(),
+            &hook_command,
+        )?;
 
         log::info!("Claude Code hooks installed successfully");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-
-        if !settings_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&settings_path)?;
-        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-
-        // Collect event names to remove (can't mutate while iterating)
-        let mut events_to_remove = Vec::new();
-
-        if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-            for event_name in Self::hook_events() {
-                if let Some(existing) = hooks.get_mut(event_name) {
-                    if let Some(arr) = existing.as_array_mut() {
-                        arr.retain(|group| {
-                            let has_agentbro = |cmd: Option<&str>| -> bool {
-                                cmd.map(|c| c.contains("agentbro")).unwrap_or(false)
-                            };
-
-                            // Check nested format
-                            let nested_match = group
-                                .get("hooks")
-                                .and_then(|h| h.as_array())
-                                .map(|hooks_arr| {
-                                    hooks_arr.iter().any(|h| {
-                                        has_agentbro(h.get("command").and_then(|c| c.as_str()))
-                                    })
-                                })
-                                .unwrap_or(false);
-
-                            // Check flat format
-                            let flat_match =
-                                has_agentbro(group.get("command").and_then(|c| c.as_str()));
-
-                            !nested_match && !flat_match
-                        });
-                        if arr.is_empty() {
-                            events_to_remove.push(event_name.to_string());
-                        }
-                    }
-                }
-            }
-
-            for event_name in events_to_remove {
-                hooks.remove(&event_name);
-            }
-        }
-
-        let content = serde_json::to_string_pretty(&settings)?;
-        std::fs::write(&settings_path, content)?;
-
-        // Remove the bridge binary
-        let bridge_path = Self::bridge_binary_path();
-        if bridge_path.exists() {
-            let _ = std::fs::remove_file(&bridge_path);
-        }
+        profiles::uninstall_at(&profiles::claude_code_profile(), &self.settings_path())?;
 
         // Also clean up old Python hook if present
         Self::cleanup_old_python_hook();
@@ -1113,32 +876,9 @@ impl ClaudeCodeAdapter {
     /// If so, overwrite with the new version (app was updated).
     /// Returns true if the binary was updated.
     pub fn update_hook_script_if_needed() -> bool {
-        let dest = Self::bridge_binary_path();
-        let source = match Self::find_source_bridge() {
-            Some(s) => s,
-            None => return false,
-        };
-
-        // Compare file sizes as a quick check for differences
-        let dest_meta = match std::fs::metadata(&dest) {
-            Ok(m) => m,
-            Err(_) => return false, // If dest doesn't exist, install_hooks will handle it
-        };
-        let source_meta = match std::fs::metadata(&source) {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
-
-        if dest_meta.len() != source_meta.len() {
-            match Self::install_bridge() {
-                Ok(_) => {
-                    log::info!("Bridge binary updated to latest version");
-                    return true;
-                }
-                Err(e) => {
-                    log::warn!("Failed to update bridge binary: {}", e);
-                }
-            }
+        if let Err(e) = hook_manager::ensure_bridge_binary() {
+            log::warn!("Failed to update bridge binary: {}", e);
+            return false;
         }
         false
     }

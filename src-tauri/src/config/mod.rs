@@ -73,6 +73,8 @@ pub struct BuddyDeviceConfig {
 pub struct AppConfig {
     pub sound_enabled: bool,
     pub sound_volume: f32,
+    #[serde(default)]
+    pub launch_at_login: bool,
     pub auto_hide: bool,
     pub smart_suppression: bool,
     #[serde(default)]
@@ -246,6 +248,7 @@ impl Default for AppConfig {
         Self {
             sound_enabled: true,
             sound_volume: 0.7,
+            launch_at_login: false,
             auto_hide: true,
             smart_suppression: true,
             hide_in_fullscreen: false,
@@ -253,7 +256,7 @@ impl Default for AppConfig {
             show_token_usage: true,
             theme: "system".to_string(),
             display_id: "primary".to_string(),
-            auto_hide_no_sessions: true,
+            auto_hide_no_sessions: false,
             sound_events: std::collections::HashMap::new(),
             sound_rules: std::collections::HashMap::new(),
             custom_sounds: Vec::new(),

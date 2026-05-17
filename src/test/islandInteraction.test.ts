@@ -85,6 +85,21 @@ describe('deriveIslandInteraction', () => {
     expect(state.outerState).toBe('compact')
   })
 
+  it('keeps compact state during the post-active dwell window', () => {
+    const state = deriveIslandInteraction({
+      sessions: [session({ phase: 'idle' })],
+      panelState: 'collapsed',
+      activeOverlay: null,
+      interactionMode: 'persistent',
+      persistentIdleHidden: false,
+      keepCompactAfterActive: true,
+      wakeSilenced: false,
+    })
+
+    expect(state.outerState).toBe('compact')
+    expect(state.isMicro).toBe(false)
+  })
+
   it('lets ESC silence hide persistent mode while work is running', () => {
     const state = deriveIslandInteraction({
       sessions: [session({ phase: 'processing' })],

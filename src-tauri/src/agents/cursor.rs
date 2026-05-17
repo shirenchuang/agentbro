@@ -1,9 +1,7 @@
 // CursorAdapter — Agent adapter for Cursor IDE
 
-use super::{AdapterStatus, AgentAdapter, AgentEvent};
+use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
-
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
 
 pub struct CursorAdapter {
     config_root: PathBuf,
@@ -39,31 +37,8 @@ impl CursorAdapter {
         std::path::Path::new("/Applications/Cursor.app").exists()
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
-    }
-
     fn settings_path(&self) -> PathBuf {
         self.config_root.join("settings.json")
-    }
-
-    fn inject_hooks_json(settings: &mut serde_json::Value, hook_command: &str) {
-        if settings.get("agentIslandHooks").is_none() {
-            settings["agentIslandHooks"] = serde_json::json!({
-                "command": hook_command,
-                "enabled": true,
-            });
-        } else {
-            settings["agentIslandHooks"]["command"] = serde_json::json!(hook_command);
-            settings["agentIslandHooks"]["enabled"] = serde_json::json!(true);
-        }
-    }
-
-    fn remove_hooks_json(settings: &mut serde_json::Value) {
-        if let Some(obj) = settings.as_object_mut() {
-            obj.remove("agentIslandHooks");
-        }
     }
 }
 
@@ -79,39 +54,13 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        let hook_command = Self::bridge_binary_path().display().to_string();
-
-        let mut settings: serde_json::Value = if settings_path.exists() {
-            let content = std::fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        Self::inject_hooks_json(&mut settings, &hook_command);
-
-        if let Some(parent) = settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        profiles::install_at(&profiles::cursor_profile(), &self.settings_path())?;
         log::info!("Cursor hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let settings_path = self.settings_path();
-        if !settings_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&settings_path)?;
-        let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-        let had_hooks = settings.get("agentIslandHooks").is_some();
-        Self::remove_hooks_json(&mut settings);
-        if had_hooks {
-            std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        }
+        profiles::uninstall_at(&profiles::cursor_profile(), &self.settings_path())?;
         log::info!("Cursor hooks removed");
         Ok(())
     }
@@ -170,19 +119,6 @@ impl CursorAdapter {
     }
 
     pub fn has_agentbro_hooks(&self) -> bool {
-        let settings_path = self.settings_path();
-        if !settings_path.exists() {
-            return false;
-        }
-        std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| {
-                v.get("agentIslandHooks")
-                    .and_then(|h| h.get("enabled"))
-                    .and_then(|e| e.as_bool())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
+        profiles::is_installed_at(&profiles::cursor_profile(), &self.settings_path())
     }
 }

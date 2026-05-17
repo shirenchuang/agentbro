@@ -9,6 +9,7 @@ export interface IslandInteractionInput {
   activeOverlay: OverlayItem | null
   interactionMode: IslandInteractionMode
   persistentIdleHidden: boolean
+  keepCompactAfterActive?: boolean
   wakeSilenced: boolean
 }
 
@@ -57,7 +58,7 @@ export function getFollowFocusVisibleSessions(
 }
 
 export function deriveIslandInteraction(input: IslandInteractionInput): IslandInteractionSnapshot {
-  const { sessions, panelState, activeOverlay, interactionMode, persistentIdleHidden, wakeSilenced } = input
+  const { sessions, panelState, activeOverlay, interactionMode, persistentIdleHidden, keepCompactAfterActive = false, wakeSilenced } = input
   const hasRunningSession = sessions.some((session) => session.phase === 'processing' || session.phase === 'compacting')
   const hasWaitingSession = sessions.some(sessionNeedsAttention)
   const hasErrorSession = sessions.some((session) => session.phase === 'error')
@@ -106,8 +107,8 @@ export function deriveIslandInteraction(input: IslandInteractionInput): IslandIn
     }
   }
 
-  const isHidden = persistentIdleHidden && !hasActiveSession && !hasNonBlockingOverlay && !hasBlockingSignal
-  const isMicro = !isHidden && !hasRunningSession && !hasErrorSession && !hasBlockingSignal && !hasNonBlockingOverlay
+  const isHidden = persistentIdleHidden && !hasActiveSession && !hasNonBlockingOverlay && !hasBlockingSignal && !keepCompactAfterActive
+  const isMicro = !isHidden && !keepCompactAfterActive && !hasRunningSession && !hasErrorSession && !hasBlockingSignal && !hasNonBlockingOverlay
 
   return {
     outerState: isHidden ? 'hidden' : isMicro ? 'micro' : 'compact',

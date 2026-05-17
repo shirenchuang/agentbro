@@ -11,7 +11,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -470,7 +470,7 @@ function SessionCard({
   onSessionClick,
   onJumpToTerminal,
   animDuration,
-  index,
+  animDelay,
   isAlertActive,
   selected,
 }: {
@@ -478,7 +478,7 @@ function SessionCard({
   onSessionClick: (id: string) => void
   onJumpToTerminal?: (id: string) => void
   animDuration: number
-  index: number
+  animDelay: number
   isAlertActive: boolean
   selected: boolean
 }) {
@@ -487,6 +487,7 @@ function SessionCard({
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
+  const showAgentBadge = shouldShowAgentBadge(session)
   const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || null) : null
   const title = getSessionTitle(session)
   const assistantPreview = session.responseText || (session.description && session.phase !== 'processing' ? session.description : undefined)
@@ -531,7 +532,7 @@ function SessionCard({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: animDuration, delay: index * 0.03 }}
+      transition={{ duration: animDuration, delay: animDelay }}
     >
       <div
         data-no-drag
@@ -564,9 +565,11 @@ function SessionCard({
                     {appLabel}
                   </span>
                 )}
-                <span className="hover-list__agent-badge" style={{ background: badge.bg, color: badge.text }}>
-                  {agentName}
-                </span>
+                {showAgentBadge && (
+                  <span className="hover-list__agent-badge" style={{ background: badge.bg, color: badge.text }}>
+                    {agentName}
+                  </span>
+                )}
                 {terminalLabel && termBadge && (
                   <span className="hover-list__agent-badge" style={{ background: termBadge.bg, color: termBadge.text }}>
                     {terminalLabel}
@@ -624,7 +627,7 @@ function SessionCard({
             )}
 
             {/* Row 3: tool action or status */}
-            {session.phase === 'processing' && session.lastToolName ? (
+            {session.lastToolName ? (
               <div className="hover-list__row3">
                 <span className={`hover-list__tool-label${session.lastToolName.startsWith('Compacting') ? ' hover-list__tool-label--compact' : ''}`}>
                   {getToolActivityLabel(t, session.lastToolName)}
@@ -697,8 +700,10 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
+  const islandAnimationScaleValue = useConfigStore((s) => s.islandAnimationScale)
   const maxVisibleSessions = useConfigStore((s) => s.maxVisibleSessions)
-  const animDuration = HOVER_SPEED_MS[hoverSpeed] ?? 0.2
+  const islandAnimationScale = Math.max(0.1, islandAnimationScaleValue || 1)
+  const animDuration = (HOVER_SPEED_MS[hoverSpeed] ?? 0.2) * islandAnimationScale
 
   const [showAll, setShowAll] = useState(false)
   const [selectedIndex, setSelectedIndexState] = useState(-1)
@@ -718,7 +723,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   }, [sessions])
 
   const totalSessions = sorted.length
-  const isLimited = !showAll && totalSessions > maxVisibleSessions
+  const isLimited = maxVisibleSessions > 0 && !showAll && totalSessions > maxVisibleSessions
   const visibleSessions = isLimited ? sorted.slice(0, maxVisibleSessions) : sorted
 
   useEffect(() => {
@@ -789,7 +794,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
             onSessionClick={onSessionClick}
             onJumpToTerminal={onJumpToTerminal}
             animDuration={animDuration}
-            index={index}
+            animDelay={index * 0.03 * islandAnimationScale}
             isAlertActive={isAlertActive}
             selected={index === selectedIndex}
           />

@@ -3,12 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
-import type { EngineInstance, SoundChoice, SoundRule } from '../../../stores/configStore'
+import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
 import { MODEL_PRICING } from '../../../utils/tokens'
 import {
-  installHooks, removeHooks, listDisplays, isTauri,
-  addEngineInstance, removeEngineInstance, setEngineInstanceEnabled, verifyEnginePath,
+  listDisplays, isTauri,
   setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
   previewIslandLayout, clearIslandLayoutPreview,
   setSoundQuietHours, setSoundEventRule, importCustomSound as importCustomSoundFile, setCustomSounds,
@@ -19,7 +18,7 @@ import {
   runHookDoctor, launchAgentSession, listCustomHookTemplates, upsertCustomHookTemplate,
   removeCustomHookTemplate, installCustomHookTemplate, removeCustomHookTemplateHooks,
 } from '../../../services/tauriApi'
-import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
@@ -28,6 +27,7 @@ import { Dropdown } from '../Dropdown'
 import { Slider } from '../Slider'
 import { GlassButton, GlassInput } from '../../shared'
 import { PlatformIcon } from '../../platform/PlatformIcon'
+import { HookEventConfigDialog } from '../HookEventConfigDialog'
 import type { IslandSettingsView } from '../../../types/capability'
 
 function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInfo[]): string {
@@ -89,37 +89,6 @@ function SurfaceModeSegmentedControl({
         <button
           aria-checked={value === option.value}
           className={`surface-mode-segmented__option ${value === option.value ? 'surface-mode-segmented__option--active' : ''}`}
-          key={option.value}
-          onClick={() => onChange(option.value)}
-          role="radio"
-          type="button"
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function InteractionModeSegmentedControl({
-  onChange,
-  value,
-}: {
-  value: 'persistent' | 'minimal'
-  onChange: (value: 'persistent' | 'minimal') => void
-}) {
-  const { t } = useTranslation()
-  const options = [
-    { value: 'minimal' as const, label: t('settings.interactionMinimal') },
-    { value: 'persistent' as const, label: t('settings.interactionPersistent') },
-  ]
-
-  return (
-    <div className="interaction-mode-segmented" role="radiogroup" aria-label={t('settings.interactionMode')}>
-      {options.map((option) => (
-        <button
-          aria-checked={value === option.value}
-          className={`interaction-mode-segmented__option ${value === option.value ? 'interaction-mode-segmented__option--active' : ''}`}
           key={option.value}
           onClick={() => onChange(option.value)}
           role="radio"
@@ -221,13 +190,19 @@ function ShortcutRow({ action, label, keys }: { action: string; label: string; k
 // ── Hook helpers ──
 interface ToolHookStatus {
   toolId?: string
+  adapterId?: string
+  profileId?: string
   name: string
-  displayName?: string
-  installed?: boolean
-  installStatus?: 'installed' | 'not_installed' | 'error'
+  displayName: string
+  installed: boolean
+  installStatus?: 'installed' | 'not_installed' | 'error' | string
   configPath?: string
-  status?: string
+  configDir?: string
+  status: string
   version?: string
+  supportsEventSelection?: boolean
+  events?: HookEventStatus[]
+  enabledEventNames?: string[]
 }
 
 function hookToolId(tool: ToolHookStatus) {
@@ -235,7 +210,7 @@ function hookToolId(tool: ToolHookStatus) {
 }
 
 function hookInstallStatus(tool: ToolHookStatus): 'installed' | 'not_installed' | 'error' {
-  if (tool.installStatus) return tool.installStatus
+  if (tool.installStatus === 'installed' || tool.installStatus === 'not_installed' || tool.installStatus === 'error') return tool.installStatus
   return tool.installed ? 'installed' : 'not_installed'
 }
 
@@ -324,73 +299,6 @@ function WebhookProviderSection({
   )
 }
 
-// ── Engine Instance Adder ──
-function EngineInstanceAdder({ onAdd }: { onAdd: (inst: EngineInstance) => void }) {
-  const { t } = useTranslation()
-  const [open, setOpen] = useState(false)
-  const [label, setLabel] = useState('')
-  const [configRoot, setConfigRoot] = useState('')
-  const [pathValid, setPathValid] = useState<boolean | null>(null)
-  const [checking, setChecking] = useState(false)
-
-  const checkPath = useCallback(async (path: string) => {
-    if (!path.trim()) { setPathValid(null); return }
-    setChecking(true)
-    try { const valid = await verifyEnginePath(path); setPathValid(valid) } catch { setPathValid(false) }
-    setChecking(false)
-  }, [])
-
-  useEffect(() => {
-    const timer = setTimeout(() => checkPath(configRoot), 400)
-    return () => clearTimeout(timer)
-  }, [configRoot, checkPath])
-
-  if (!open) {
-    return (
-      <button className="engine-add-btn" onClick={() => setOpen(true)}>
-        + {t('settings.addEngineBranch')}
-      </button>
-    )
-  }
-
-  const canSubmit = label.trim() && configRoot.trim() && pathValid !== false
-
-  return (
-    <div className="engine-add-form">
-      <div className="engine-add-form__row">
-        <label>{t('settings.engineLabel')}</label>
-        <input type="text" className="glass-input" value={label} placeholder="e.g. engine/cc"
-          onChange={(e) => setLabel(e.target.value)} />
-      </div>
-      <div className="engine-add-form__row">
-        <label>{t('settings.engineConfigRoot')}</label>
-        <div className="engine-add-form__path-input">
-          <input type="text" className="glass-input" value={configRoot} placeholder="~/.codefuse/engine/cc"
-            onChange={(e) => setConfigRoot(e.target.value)} />
-          {checking && <span className="engine-add-form__status">...</span>}
-          {!checking && pathValid === true && <span className="engine-add-form__status engine-add-form__status--valid">{t('settings.enginePathValid')}</span>}
-          {!checking && pathValid === false && <span className="engine-add-form__status engine-add-form__status--invalid">{t('settings.enginePathInvalid')}</span>}
-        </div>
-      </div>
-      <div className="engine-add-form__actions">
-        <button className="engine-add-form__cancel" onClick={() => { setOpen(false); setLabel(''); setConfigRoot(''); setPathValid(null) }}>
-          {t('settings.cancel')}
-        </button>
-        <button className="engine-add-form__submit" disabled={!canSubmit}
-          onClick={async () => {
-            try {
-              const inst = await addEngineInstance(label.trim(), configRoot.trim())
-              onAdd(inst)
-              setOpen(false); setLabel(''); setConfigRoot(''); setPathValid(null)
-            } catch (e) { console.error('Failed to add engine instance:', e) }
-          }}>
-          {t('settings.add')}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 // ═══════════════════════════════════════════════
 // Main IslandSection
 // ═══════════════════════════════════════════════
@@ -446,7 +354,7 @@ function OverviewTab() {
             <span className="overview-live-pill__mark">A</span>
             <span className="overview-live-pill__copy">
               <strong>{t('settings.island.overview.previewTitle', { defaultValue: 'Codex is running tests' })}</strong>
-              <span>{t('settings.island.overview.previewMeta', { defaultValue: 'evolab · bun test:run · 2m' })}</span>
+              <span>{t('settings.island.overview.previewMeta', { defaultValue: 'agentBro · bun test:run · 2m' })}</span>
             </span>
             <span className="overview-live-pill__count">11</span>
           </div>
@@ -505,11 +413,14 @@ function OverviewTab() {
             }
           }} />
         </SettingRow>
-        <SettingRow label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })} description={t('settings.islandExternalEnabledDesc', { defaultValue: 'Track supported AI CLI sessions through installed hooks.' })}>
-          <Toggle checked={config.islandExternalEnabled} onChange={(v) => config.updateConfig('islandExternalEnabled', v)} />
-        </SettingRow>
         <SettingRow label={t('settings.islandMonitorSubagents', { defaultValue: 'Monitor subagents' })} description={t('settings.islandMonitorSubagentsDesc', { defaultValue: 'Surface subagent activity and completion history in the island.' })}>
           <Toggle checked={config.islandMonitorSubagents} onChange={(v) => config.updateConfig('islandMonitorSubagents', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.tipsEnabled')} description={t('settings.tipsEnabledDesc')}>
+          <Toggle checked={config.tipsEnabled} onChange={(v) => {
+            config.updateConfig('tipsEnabled', v)
+            persistIslandFeatureFlags({ tipsEnabled: v })
+          }} />
         </SettingRow>
         <SettingRow label={t('settings.smartSuppression')} description={t('settings.smartSuppressionDesc')}>
           <Toggle checked={config.smartSuppression} onChange={(v) => config.updateConfig('smartSuppression', v)} />
@@ -570,11 +481,19 @@ function BehaviorTab() {
           <Slider value={config.collapseDelay} min={100} max={1000} step={50}
             onChange={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
         </SettingRow>
+        <SettingRow label={t('settings.islandAnimationScale', { defaultValue: 'Animation Scale' })} description={t('settings.islandAnimationScaleDesc', { defaultValue: 'Adjust the speed of island open, close, and content motion.' })}>
+          <Slider value={config.islandAnimationScale} min={0.25} max={6} step={0.25}
+            onChange={(v) => config.updateConfig('islandAnimationScale', v)} unit="x" />
+        </SettingRow>
       </SettingGroup>
 
       <SettingGroup label={t('settings.island.section.hide', { defaultValue: 'Hide and Collapse' })}>
         <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
           <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
+        </SettingRow>
+        <SettingRow label={t('settings.idleCompactDwell')} description={t('settings.idleCompactDwellDesc')}>
+          <Slider value={config.idleCompactDwellSeconds} min={0} max={60} step={1}
+            onChange={(v) => config.updateConfig('idleCompactDwellSeconds', v)} unit="s" />
         </SettingRow>
         <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
           <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
@@ -598,6 +517,9 @@ function BehaviorTab() {
       </SettingGroup>
 
       <SettingGroup label={t('settings.island.section.sessionHandling', { defaultValue: 'Session Handling' })}>
+        <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
+          <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
+        </SettingRow>
         <SettingRow label={t('settings.defaultMascot')} description={t('settings.defaultMascotDesc')}>
           <Dropdown value={config.defaultMascotSource} options={defaultMascotOptions}
             onChange={(v) => config.updateConfig('defaultMascotSource', v)} minWidth={150} />
@@ -667,14 +589,23 @@ function DisplayTab() {
       : th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' '),
   }))
   const fontSizeOptions = [
-    { value: '11px', label: '11px — Small' }, { value: '12px', label: '12px — Compact' },
-    { value: '13px', label: '13px — Default' }, { value: '14px', label: '14px — Medium' },
-    { value: '16px', label: '16px — Large' },
+    { value: '11px', label: `11px - ${t('settings.fontSizeSmall', { defaultValue: 'Small' })}` },
+    { value: '12px', label: `12px - ${t('settings.fontSizeCompact', { defaultValue: 'Compact' })}` },
+    { value: '13px', label: `13px - ${t('settings.fontSizeDefault', { defaultValue: 'Default' })}` },
+    { value: '14px', label: `14px - ${t('settings.fontSizeMedium', { defaultValue: 'Medium' })}` },
+    { value: '16px', label: `16px - ${t('settings.fontSizeLarge', { defaultValue: 'Large' })}` },
   ]
   const hoverSpeedOptions = [
     { value: 'instant', label: t('settings.hoverSpeedInstant') },
     { value: 'normal', label: t('settings.hoverSpeedNormal') },
     { value: 'slow', label: t('settings.hoverSpeedSlow') },
+  ]
+  const maxVisibleSessionOptions = [
+    { value: '3', label: '3' },
+    { value: '5', label: '5' },
+    { value: '8', label: '8' },
+    { value: '10', label: '10' },
+    { value: '0', label: t('settings.maxVisibleSessionsUnlimited') },
   ]
   const monitorOptions = [
     {
@@ -782,31 +713,11 @@ function DisplayTab() {
         </SettingRow>
       </SettingGroup>
 
-      <div className="notch-layout-settings">
-        <div className="notch-layout-settings__header">
-          <div className="notch-layout-settings__title">{t('settings.notchLayout')}</div>
-          <div className="notch-layout-settings__hint">
-            {t('settings.layoutPreviewHint', { defaultValue: '调整时会临时预览真实灵动岛' })}
-          </div>
-        </div>
-        <div className="notch-layout-card">
-          <div className="notch-layout-row">
-            <div className="notch-layout-row__copy">
-              <div className="notch-layout-row__label">{t('settings.interactionMode')}</div>
-              <div className="notch-layout-row__description">{t('settings.interactionModeDesc')}</div>
-            </div>
-            <InteractionModeSegmentedControl
-              value={config.interactionMode}
-              onChange={(mode) => {
-                config.updateConfig('interactionMode', mode)
-                previewLayout(mode === 'minimal' ? 'micro' : 'compact')
-              }}
-            />
-          </div>
-        </div>
-      </div>
-
       <SettingGroup label={t('settings.panelSize')}>
+        <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
+          <Dropdown value={String(config.maxVisibleSessions)} options={maxVisibleSessionOptions}
+            onChange={(v) => { config.updateConfig('maxVisibleSessions', Number(v)); previewLayout('expanded') }} minWidth={120} />
+        </SettingRow>
         <SettingRow label={t('settings.collapsedWidthScale')} description={`${config.collapsedWidthScale}%`}>
           <Slider value={config.collapsedWidthScale} min={50} max={150} step={5}
             onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact') }} unit="%" />
@@ -844,7 +755,10 @@ function DisplayTab() {
         </SettingRow>
         <SettingRow label={t('settings.contentFontSize')}>
           <Dropdown value={config.contentFontSize} options={fontSizeOptions}
-            onChange={(v) => config.updateConfig('contentFontSize', v)} minWidth={160} />
+            onChange={(v) => { config.updateConfig('contentFontSize', v); previewLayout('expanded') }} minWidth={160} />
+        </SettingRow>
+        <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
+          <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
         </SettingRow>
         <SettingRow label={t('settings.completionCardHeight')} description={`${config.completionCardHeight}px`}>
           <Slider value={config.completionCardHeight} min={80} max={200} step={10}
@@ -1151,23 +1065,27 @@ function IntegrationTab() {
   const [tools, setTools] = useState<ToolHookStatus[]>([])
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({})
-  const [customToolId, setCustomToolId] = useState('')
-  const [customToolPath, setCustomToolPath] = useState('')
+  const [selectedCustomProfileId, setSelectedCustomProfileId] = useState('')
+  const [customInstallDir, setCustomInstallDir] = useState('')
   const [addingCustom, setAddingCustom] = useState(false)
+  const [configuringTool, setConfiguringTool] = useState<ToolHookStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const fetchStatus = useCallback(async () => {
-    setLoading(true); setError(null)
-    try { const status = await invoke<ToolHookStatus[]>('get_all_hook_status'); setTools(status) }
+    setLoading(true); setError(null); setNotice(null)
+    if (!isTauri()) {
+      setTools([])
+      setLoading(false)
+      return
+    }
+    try {
+      const status = await invoke<ToolHookStatus[]>('get_all_hook_status')
+      setTools(status)
+    }
     catch (e) { setError(String(e)) }
     setLoading(false)
   }, [])
-
-  const detectTools = useCallback(async () => {
-    setLoading(true); setError(null)
-    try { await invoke('detect_tools'); await fetchStatus() }
-    catch (e) { setError(String(e)); setLoading(false) }
-  }, [fetchStatus])
 
   useEffect(() => {
     if (!config.islandExternalEnabled) return
@@ -1179,111 +1097,124 @@ function IntegrationTab() {
     setActionLoading(prev => { const next = { ...prev }; if (action === null) delete next[toolId]; else next[toolId] = action; return next })
 
   const install = async (toolId: string) => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
     setToolAction(toolId, 'install')
-    try { await invoke('install_agent_hook', { toolName: toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    try {
+      await invoke('install_agent_hook', { toolName: toolId })
+      await fetchStatus()
+      setNotice(t('settings.hookInstallDone', { defaultValue: 'Hook installed. Restart the corresponding CLI session to load it.' }))
+    } catch (e) { setError(String(e)) }
     setToolAction(toolId, null)
   }
 
   const uninstall = async (toolId: string) => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
     setToolAction(toolId, 'uninstall')
-    try { await invoke('uninstall_agent_hook', { toolName: toolId }); await fetchStatus() } catch (e) { setError(String(e)) }
+    try {
+      await invoke('uninstall_agent_hook', { toolName: toolId })
+      await fetchStatus()
+      setNotice(t('settings.hookUninstallDone', { defaultValue: 'Hook uninstalled.' }))
+    } catch (e) { setError(String(e)) }
     setToolAction(toolId, null)
   }
 
-  const reinstallAll = async () => {
-    setLoading(true)
-    try { for (const tool of tools.filter(t => hookInstallStatus(t) === 'installed')) { await invoke('install_agent_hook', { toolName: hookToolId(tool) }) }; await fetchStatus() }
-    catch (e) { setError(String(e)); setLoading(false) }
+  const reinstall = async (toolId: string) => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    setToolAction(toolId, 'reinstall')
+    try {
+      await invoke('install_agent_hook', { toolName: toolId })
+      await fetchStatus()
+      setNotice(t('settings.hookReinstallDone', { defaultValue: 'Hook reinstalled. Restart the corresponding CLI session to load it.' }))
+    } catch (e) { setError(String(e)) }
+    setToolAction(toolId, null)
   }
 
-  const addCustomTool = async () => {
-    if (!customToolId.trim() || !customToolPath.trim()) return
-    try { await invoke('install_agent_hook', { toolName: customToolId.trim() }); setCustomToolId(''); setCustomToolPath(''); setAddingCustom(false); await fetchStatus() }
+  const configureEvents = async (tool: ToolHookStatus, enabledEvents: string[]) => {
+    const toolId = hookToolId(tool)
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    setToolAction(toolId, 'configure')
+    try {
+      await invoke('configure_agent_hook_events', { toolName: toolId, enabledEvents })
+      await fetchStatus()
+      setConfiguringTool(null)
+      setNotice(t('settings.hookConfigSaved', { defaultValue: 'Hook configuration saved. Restart the corresponding CLI session to load it.' }))
+    } catch (e) { setError(String(e)) }
+    setToolAction(toolId, null)
+  }
+
+  const openPath = async (path?: string) => {
+    if (!path) return
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    try { await invoke('open_system_path', { path }) }
     catch (e) { setError(String(e)) }
   }
 
-  const installedCount = tools.filter(t => hookInstallStatus(t) === 'installed').length
-  const visibleTools = config.islandExternalEnabled ? tools : []
-  const defaultClaudeHook = config.agentHooks.find((hook) => hook.agentType === 'claude-code')
-  const defaultClaudeEnabled = defaultClaudeHook?.enabled ?? true
-
-  const toggleDefaultClaude = async (enabled: boolean) => {
-    config.toggleAgentHook('claude-code')
-    try {
-      if (enabled) await installHooks('claude-code')
-      else await removeHooks('claude-code')
-      await fetchStatus()
-    } catch (e) {
-      setError(String(e))
+  const addCustomHook = async () => {
+    if (!selectedCustomProfileId || !customInstallDir.trim()) return
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
     }
+    setError(null); setNotice(null)
+    try {
+      const targetPath = await invoke<string>('install_custom_agent_hook', {
+        profileId: selectedCustomProfileId,
+        installDirectory: customInstallDir.trim(),
+      })
+      setSelectedCustomProfileId('')
+      setCustomInstallDir('')
+      setAddingCustom(false)
+      await fetchStatus()
+      setNotice(t('settings.customHookInstalled', {
+        defaultValue: 'Custom hook installed at {{path}}',
+        path: targetPath,
+      }))
+    }
+    catch (e) { setError(String(e)) }
   }
+
+  const selectCustomInstallDir = async () => {
+    if (!isTauri()) return
+    const result = await openDialog({
+      directory: true,
+      multiple: false,
+      title: t('settings.selectInstallDir', { defaultValue: 'Select install directory' }),
+    })
+    if (typeof result === 'string') setCustomInstallDir(result)
+  }
+
+  const visibleTools = config.islandExternalEnabled ? tools : []
+  const customProfileOptions = tools
+    .filter((tool) => tool.adapterId || tool.name)
+    .map((tool) => ({
+      id: tool.adapterId || tool.name,
+      label: tool.displayName || tool.name,
+    }))
+    .filter((tool, index, all) => all.findIndex((item) => item.id === tool.id) === index)
 
   return (
     <>
-      <SettingGroup label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })}>
-        <SettingRow label={t('settings.islandExternalEnabled', { defaultValue: 'External CLI tracking' })} description={t('settings.islandExternalEnabledDesc', { defaultValue: 'Track supported AI CLI sessions through installed hooks.' })}>
-          <Toggle checked={config.islandExternalEnabled} onChange={(v) => config.updateConfig('islandExternalEnabled', v)} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.cliHooks')}>
-        <SettingRow label={t('settings.excludedCwd')} description={t('settings.excludedCwdDesc')}>
-          <input
-            type="text"
-            className="glass-input"
-            value={config.excludedHookCwdSubstrings}
-            placeholder="node_modules,.git"
-            onChange={(e) => config.updateConfig('excludedHookCwdSubstrings', e.target.value)}
-            style={{ minWidth: 200 }}
-          />
-        </SettingRow>
-        <div className="agent-hook-row">
-          <span className={`agent-hook-row__status ${defaultClaudeEnabled ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
-          <div style={{ flex: 1 }}>
-            <span className="agent-hook-row__label">Claude Code</span>
-            <span className="agent-hook-row__path">~/.claude</span>
-          </div>
-          <Toggle checked={defaultClaudeEnabled} onChange={toggleDefaultClaude} />
-        </div>
-        {config.engineInstances.map((inst: EngineInstance) => (
-          <div key={inst.id} className="agent-hook-row">
-            <span className={`agent-hook-row__status ${inst.enabled ? 'agent-hook-row__status--connected' : 'agent-hook-row__status--disconnected'}`} />
-            <div style={{ flex: 1 }}>
-              <span className="agent-hook-row__label">{inst.label}</span>
-              <span className="agent-hook-row__path">{inst.configRoot}</span>
-            </div>
-            <Toggle checked={inst.enabled} onChange={async (v) => {
-              const updated = config.engineInstances.map((i: EngineInstance) => i.id === inst.id ? { ...i, enabled: v } : i)
-              config.updateConfig('engineInstances', updated)
-              try {
-                await setEngineInstanceEnabled(inst.id, v)
-              } catch (e) {
-                console.error('Failed to update engine instance:', e)
-              }
-            }} />
-            <button className="agent-hook-row__remove"
-              onClick={async () => { try { await removeEngineInstance(inst.id); const updated = config.engineInstances.filter((i: EngineInstance) => i.id !== inst.id); config.updateConfig('engineInstances', updated) } catch (e) { console.error('Failed to remove engine instance:', e) } }}
-              title={t('settings.removeEngine')}>×</button>
-          </div>
-        ))}
-        <EngineInstanceAdder onAdd={(inst) => { config.updateConfig('engineInstances', [...config.engineInstances, inst]) }} />
-        <SettingRow label={t('settings.customHooksPath')} description={t('settings.customHooksPathDesc')}>
-          <input type="text" className="glass-input" value={config.customHooksPath} placeholder="~/.codefuse/engine/cc"
-            onChange={(e) => config.updateConfig('customHooksPath', e.target.value)} style={{ minWidth: 200 }} />
-        </SettingRow>
-      </SettingGroup>
-
-      {/* Tool detection from HookSection */}
-      {error && <div className="hook-error-card">{error}</div>}
-
-      <div className="hook-actions-bar">
-        <GlassButton variant="secondary" onClick={detectTools} disabled={loading || !config.islandExternalEnabled}>
-          {loading ? '...' : t('settings.detectTools')}
-        </GlassButton>
-        <GlassButton variant="secondary" onClick={reinstallAll} disabled={loading || installedCount === 0 || !config.islandExternalEnabled}>
-          {t('settings.reinstallAll')}
-        </GlassButton>
-      </div>
+{error && <div className="hook-error-card">{error}</div>}
+      {notice && <div className="hook-notice-card">{notice}</div>}
 
       <SettingGroup label={t('settings.detectedTools')}>
         {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
@@ -1293,6 +1224,8 @@ function IntegrationTab() {
           const toolId = hookToolId(tool)
           const installStatus = hookInstallStatus(tool)
           const busy = actionLoading[toolId] !== undefined
+          const isInstalled = installStatus === 'installed'
+          const canConfigureHook = isInstalled && tool.supportsEventSelection && tool.events && tool.events.length > 0
           return (
             <div key={toolId} className="hook-tool-row">
               <div className="hook-tool-row__icon">
@@ -1306,39 +1239,84 @@ function IntegrationTab() {
                 {installStatus === 'installed' ? t('settings.hookInstalled') : installStatus === 'error' ? t('settings.hookError') : t('settings.hookNotInstalled')}
               </div>
               <div className="hook-tool-row__actions">
-                <Toggle
-                  checked={installStatus === 'installed'}
-                  disabled={busy}
-                  onChange={(checked) => { if (checked) install(toolId); else uninstall(toolId) }}
-                />
+                {canConfigureHook && (
+                  <GlassButton variant="ghost" onClick={() => setConfiguringTool(tool)} disabled={busy}>
+                    {t('settings.configureHook', { defaultValue: '配置 Hook' })}
+                  </GlassButton>
+                )}
+                <GlassButton variant="ghost" onClick={() => openPath(tool.configDir || tool.configPath)} disabled={busy || !tool.configPath}>
+                  {t('settings.openConfigDir', { defaultValue: '打开配置目录' })}
+                </GlassButton>
+                {isInstalled ? (
+                  <>
+                    <GlassButton variant="secondary" onClick={() => reinstall(toolId)} disabled={busy}>
+                      {actionLoading[toolId] === 'reinstall' ? t('settings.installing', { defaultValue: 'Installing...' }) : t('settings.reinstall', { defaultValue: 'Reinstall' })}
+                    </GlassButton>
+                    <GlassButton variant="secondary" onClick={() => uninstall(toolId)} disabled={busy}>
+                      {actionLoading[toolId] === 'uninstall' ? t('settings.uninstalling', { defaultValue: 'Uninstalling...' }) : t('settings.uninstall', { defaultValue: 'Uninstall' })}
+                    </GlassButton>
+                  </>
+                ) : (
+                  <GlassButton variant="secondary" onClick={() => install(toolId)} disabled={busy}>
+                    {actionLoading[toolId] === 'install' ? t('settings.installing', { defaultValue: 'Installing...' }) : t('settings.install', { defaultValue: 'Install' })}
+                  </GlassButton>
+                )}
               </div>
             </div>
           )
         })}
       </SettingGroup>
 
-      <SettingGroup label={t('settings.customCLI')}>
+      <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
         {!addingCustom ? (
-          <button className="engine-add-btn" onClick={() => setAddingCustom(true)}>+ {t('settings.addCustomTool')}</button>
+          <button className="engine-add-btn" onClick={() => setAddingCustom(true)}>
+            + {t('settings.addCustomHookConfig', { defaultValue: '添加自定义配置' })}
+          </button>
         ) : (
           <div className="engine-add-form">
             <div className="engine-add-form__row">
-              <label>{t('settings.toolId')}</label>
-              <GlassInput placeholder="e.g. my-ai-tool" value={customToolId}
-                onChange={(e) => setCustomToolId((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
+              <label>{t('settings.selectApp', { defaultValue: '选择应用' })}</label>
+              <select
+                className="glass-input"
+                value={selectedCustomProfileId}
+                onChange={(e) => setSelectedCustomProfileId(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                <option value="">{t('settings.selectPlaceholder', { defaultValue: '请选择...' })}</option>
+                {customProfileOptions.map((profile) => (
+                  <option key={profile.id} value={profile.id}>{profile.label}</option>
+                ))}
+              </select>
             </div>
             <div className="engine-add-form__row">
-              <label>{t('settings.configPath')}</label>
-              <GlassInput placeholder="~/.my-tool" value={customToolPath}
-                onChange={(e) => setCustomToolPath((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
+              <label>{t('settings.installDir', { defaultValue: '安装目录' })}</label>
+              <div className="engine-add-form__path-input">
+                <GlassInput
+                  placeholder="例如 /path/to/.claude"
+                  value={customInstallDir}
+                  onChange={(e) => setCustomInstallDir((e.target as HTMLInputElement).value)}
+                  style={{ flex: 1 }}
+                />
+                <GlassButton variant="secondary" onClick={selectCustomInstallDir}>
+                  {t('settings.selectDir', { defaultValue: '选择目录' })}
+                </GlassButton>
+              </div>
             </div>
             <div className="engine-add-form__actions">
-              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setCustomToolId(''); setCustomToolPath('') }}>{t('settings.cancel')}</button>
-              <button className="engine-add-form__submit" disabled={!customToolId.trim() || !customToolPath.trim()} onClick={addCustomTool}>{t('settings.install')}</button>
+              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setSelectedCustomProfileId(''); setCustomInstallDir('') }}>{t('settings.cancel')}</button>
+              <button className="engine-add-form__submit" disabled={!selectedCustomProfileId || !customInstallDir.trim()} onClick={addCustomHook}>{t('settings.install')}</button>
             </div>
           </div>
         )}
       </SettingGroup>
+      {configuringTool && (
+        <HookEventConfigDialog
+          hook={configuringTool}
+          busy={actionLoading[hookToolId(configuringTool)] === 'configure'}
+          onClose={() => setConfiguringTool(null)}
+          onSave={(enabledEvents) => configureEvents(configuringTool, enabledEvents)}
+        />
+      )}
     </>
   )
 }
@@ -1671,20 +1649,11 @@ function AdvancedTab() {
       )}
 
       <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
-        <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
-          <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
-        </SettingRow>
         <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
           <Toggle checked={config.showUsageQuota} onChange={(v) => config.updateConfig('showUsageQuota', v)} />
         </SettingRow>
         <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
           <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.tipsEnabled')} description={t('settings.tipsEnabledDesc')}>
-          <Toggle checked={config.tipsEnabled} onChange={(v) => {
-            config.updateConfig('tipsEnabled', v)
-            persistIslandFeatureFlags({ tipsEnabled: v })
-          }} />
         </SettingRow>
       </SettingGroup>
 
@@ -1700,13 +1669,6 @@ function AdvancedTab() {
       </SettingGroup>
 
       <SettingGroup label={t('settings.island.section.visualSignals', { defaultValue: 'Visual Signals' })}>
-        <SettingRow label={t('settings.maxVisibleSessions')} description={t('settings.maxVisibleSessionsDesc')}>
-          <Slider value={config.maxVisibleSessions} min={2} max={15} step={1}
-            onChange={(v) => config.updateConfig('maxVisibleSessions', v)} />
-        </SettingRow>
-        <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
-          <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
-        </SettingRow>
         <SettingRow label={t('settings.aiMessageLines')} description={t('settings.aiMessageLinesDesc')}>
           <Slider value={config.aiMessageLines} min={1} max={5} step={1}
             onChange={(v) => config.updateConfig('aiMessageLines', v)} />

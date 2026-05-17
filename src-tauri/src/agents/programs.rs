@@ -1,4 +1,4 @@
-use crate::agents::{hook_manager, AdapterStatus, AgentAdapter};
+use crate::agents::{AdapterStatus, AgentAdapter};
 use crate::commands::AppState;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
@@ -202,10 +202,7 @@ async fn build_agent_list(
                     adapter.status(),
                     AdapterStatus::Active | AdapterStatus::Installed | AdapterStatus::Available
                 ),
-                hooks_installed: adapter
-                    .hook_config_paths()
-                    .iter()
-                    .any(|path| hook_manager::has_agentbro_hooks(path)),
+                hooks_installed: adapter.hooks_installed(),
             },
         );
     }

@@ -16,6 +16,7 @@ pub mod kimi;
 pub mod kiro;
 pub mod opencode;
 pub mod pi;
+pub mod profiles;
 pub mod programs;
 pub mod qoder;
 pub mod qoder_cli;

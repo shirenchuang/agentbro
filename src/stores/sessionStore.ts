@@ -254,15 +254,6 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
       switch (event.type) {
         case 'session_start': {
-          // Check CWD exclusion list
-          const excludedStr = useConfigStore.getState().excludedHookCwdSubstrings
-          if (excludedStr && 'cwd' in event && (event as { cwd?: string }).cwd) {
-            const cwd = (event as { cwd?: string }).cwd!
-            const excluded = excludedStr.split(',').map(s => s.trim()).filter(Boolean)
-            if (excluded.some(sub => cwd.includes(sub))) {
-              return state
-            }
-          }
           sessions[event.sessionId] = {
             id: event.sessionId,
             agentType: event.agentType,

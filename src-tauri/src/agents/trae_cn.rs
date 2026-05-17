@@ -1,6 +1,6 @@
 // TraeCNAdapter — Agent adapter for Trae CN (Chinese variant, YAML config)
 
-use super::hook_manager;
+use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
@@ -50,17 +50,13 @@ impl AgentAdapter for TraeCNAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config_path = self.config_path();
-        let hook_command = hook_manager::bridge_binary_path().display().to_string();
-        let events = &["pre_tool_use", "post_tool_use", "session_start"];
-        hook_manager::inject_hooks_yaml(&config_path, &hook_command, events)?;
+        profiles::install_at(&profiles::trae_cn_profile(), &self.config_path())?;
         log::info!("Trae CN hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config_path = self.config_path();
-        hook_manager::remove_hooks_yaml(&config_path)?;
+        profiles::uninstall_at(&profiles::trae_cn_profile(), &self.config_path())?;
         log::info!("Trae CN hooks removed");
         Ok(())
     }

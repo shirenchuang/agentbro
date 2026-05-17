@@ -1,32 +1,21 @@
 // KimiAdapter — Agent adapter for Moonshot Kimi (TOML config format)
-// Uses sentinel-based TOML injection to avoid a toml dependency.
 
+use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::PathBuf;
 
-const BRIDGE_BINARY_NAME: &str = "agentbro-bridge";
-const AGENTBRO_MARKER: &str = "agentbro";
-const TOML_BLOCK_START: &str = "# [AGENTBRO-START]";
-const TOML_BLOCK_END: &str = "# [AGENTBRO-END]";
-
 pub struct KimiAdapter {
-    config_root: PathBuf,
     status: AdapterStatus,
 }
 
 impl KimiAdapter {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        let config_root = home.join(".kimi");
         let status = if Self::is_installed() {
             AdapterStatus::Available
         } else {
             AdapterStatus::Unavailable
         };
-        Self {
-            config_root,
-            status,
-        }
+        Self { status }
     }
 
     fn is_installed() -> bool {
@@ -37,47 +26,8 @@ impl KimiAdapter {
             .unwrap_or(false)
     }
 
-    fn bridge_binary_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        home.join(".agentbro").join("bin").join(BRIDGE_BINARY_NAME)
-    }
-
     fn config_path(&self) -> PathBuf {
-        self.config_root.join("config.toml")
-    }
-
-    fn build_toml_block(hook_command: &str) -> String {
-        let cmd = hook_command.replace('"', "\\\"");
-        format!(
-            "{start}\n[[hooks]]\nevent = \"pre_tool_use\"\ncommand = \"{cmd}\"\n\n[[hooks]]\nevent = \"post_tool_use\"\ncommand = \"{cmd}\"\n\n[[hooks]]\nevent = \"session_start\"\ncommand = \"{cmd}\"\n{end}",
-            start = TOML_BLOCK_START,
-            cmd = cmd,
-            end = TOML_BLOCK_END,
-        )
-    }
-
-    fn strip_our_block(content: &str) -> String {
-        let mut result = String::new();
-        let mut inside_block = false;
-        for line in content.lines() {
-            if line.trim() == TOML_BLOCK_START {
-                inside_block = true;
-                continue;
-            }
-            if line.trim() == TOML_BLOCK_END {
-                inside_block = false;
-                continue;
-            }
-            if !inside_block {
-                result.push_str(line);
-                result.push('\n');
-            }
-        }
-        result
-    }
-
-    fn has_our_block(content: &str) -> bool {
-        content.contains(AGENTBRO_MARKER)
+        profiles::configuration_url(&profiles::kimi_profile())
     }
 }
 
@@ -93,44 +43,13 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config_path = self.config_path();
-        let hook_command = Self::bridge_binary_path().display().to_string();
-
-        let existing = if config_path.exists() {
-            std::fs::read_to_string(&config_path)?
-        } else {
-            String::new()
-        };
-
-        let stripped = Self::strip_our_block(&existing);
-        let new_block = Self::build_toml_block(&hook_command);
-        let new_content = if stripped.trim().is_empty() {
-            new_block
-        } else {
-            format!("{}\n{}", stripped.trim_end(), new_block)
-        };
-
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&config_path, new_content)?;
+        profiles::install(&profiles::kimi_profile())?;
         log::info!("Kimi hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config_path = self.config_path();
-        if !config_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&config_path)?;
-        if !Self::has_our_block(&content) {
-            return Ok(());
-        }
-
-        let stripped = Self::strip_our_block(&content);
-        std::fs::write(&config_path, stripped)?;
+        profiles::uninstall(&profiles::kimi_profile())?;
         log::info!("Kimi hooks removed");
         Ok(())
     }
@@ -150,7 +69,7 @@ impl AgentAdapter for KimiAdapter {
             .to_string();
         let event = raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
         match event {
-            "session_start" => Ok(AgentEvent::SessionStart {
+            "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
                 project: raw
                     .get("cwd")
@@ -166,7 +85,57 @@ impl AgentAdapter for KimiAdapter {
                 terminal: "".to_string(),
                 agent_type: "kimi".to_string(),
             }),
-            "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
+            "session_end" | "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
+            "stop" | "Stop" => Ok(AgentEvent::TaskComplete {
+                session_id,
+                summary: raw
+                    .get("last_assistant_message")
+                    .or_else(|| raw.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Kimi turn completed")
+                    .to_string(),
+            }),
+            "pre_tool_use" | "PreToolUse" => Ok(AgentEvent::ToolUse {
+                session_id,
+                tool_name: raw
+                    .get("tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Tool")
+                    .to_string(),
+                tool_input: raw
+                    .get("tool_input")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                tool_target: None,
+                status: "running".to_string(),
+            }),
+            "post_tool_use" | "PostToolUse" => Ok(AgentEvent::ToolUse {
+                session_id,
+                tool_name: raw
+                    .get("tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Tool")
+                    .to_string(),
+                tool_input: raw
+                    .get("tool_input")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                tool_target: None,
+                status: "success".to_string(),
+            }),
+            "permission_request" | "PermissionRequest" => Ok(AgentEvent::PermissionRequest {
+                session_id,
+                tool_name: raw
+                    .get("tool")
+                    .or_else(|| raw.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Permission")
+                    .to_string(),
+                diff: None,
+                options: Some(vec!["Allow".to_string(), "Deny".to_string()]),
+            }),
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),
@@ -176,5 +145,9 @@ impl AgentAdapter for KimiAdapter {
 
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.config_path()]
+    }
+
+    fn hooks_installed(&self) -> bool {
+        profiles::is_installed(&profiles::kimi_profile())
     }
 }

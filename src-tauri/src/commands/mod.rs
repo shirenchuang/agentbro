@@ -19,7 +19,7 @@ use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use tauri::State;
@@ -151,7 +151,9 @@ pub async fn send_message(
 
 fn is_codex_desktop_session(session: &SessionState) -> bool {
     session.agent_type == "codex"
-        && (session.tty.is_none() || session.terminal.to_ascii_lowercase().contains("codex"))
+        && session.tty.is_none()
+        && !session.terminal.starts_with("/dev/")
+        && (session.terminal.is_empty() || session.terminal.to_ascii_lowercase().contains("codex"))
 }
 
 fn open_codex_desktop_session(session_id: &str) -> Result<(), String> {
@@ -419,6 +421,38 @@ pub async fn verify_hooks(
             "Hook verification not supported for agent: {}",
             agent
         ))
+    }
+}
+
+// ── Hook Lifecycle Simulation ─────────────────────────────────────
+
+#[tauri::command]
+pub async fn simulate_hook_event(event_name: String) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let sid = format!("simulate-{}", uuid::Uuid::new_v4());
+    let payload = match event_name.as_str() {
+        "SessionStart" => serde_json::json!({"agent":"claude-code","event":"SessionStart","session_id":sid,"cwd":"/Users/demo/my-project","tty":""}),
+        "SessionEnd" => serde_json::json!({"agent":"claude-code","event":"SessionEnd","session_id":sid}),
+        "UserPromptSubmit" => serde_json::json!({"agent":"claude-code","event":"UserPromptSubmit","session_id":sid}),
+        "PreToolUse" => serde_json::json!({"agent":"claude-code","event":"PreToolUse","session_id":sid,"tool":"Bash","tool_input":{"command":"ls -la /Users/demo/my-project"}}),
+        "PostToolUse" => serde_json::json!({"agent":"claude-code","event":"PostToolUse","session_id":sid,"tool":"Bash","tool_input":{"command":"ls -la /Users/demo/my-project"}}),
+        "PermissionRequest" => serde_json::json!({"agent":"claude-code","event":"PermissionRequest","session_id":sid,"tool_name":"Bash","tool_input":{"command":"cat ~/.ssh/id_rsa"},"diff":"[验证 PermissionRequest Hook]\n\n即将执行：cat ~/.ssh/id_rsa\n\n这是一个读取 SSH 私钥的敏感操作，需要用户确认。"}),
+        "Notification" => serde_json::json!({"agent":"claude-code","event":"Notification","session_id":sid,"message":"[验证 Notification Hook]\n\n这是一条来自 Claude Code 的通知消息，当 AI 需要提醒用户时触发。"}),
+        "Stop" => serde_json::json!({"agent":"claude-code","event":"Stop","session_id":sid,"summary":"[验证 Stop Hook] 模拟会话已完成。"}),
+        "SubagentStop" => serde_json::json!({"agent":"claude-code","event":"SubagentStop","session_id":sid,"agent_id":"subagent-demo-001","agent_status":"completed","message":"[验证 SubagentStop Hook]\n\n子 Agent 已完成任务：分析代码依赖关系。"}),
+        "PreCompact" => serde_json::json!({"agent":"claude-code","event":"PreCompact","session_id":sid,"message":"[验证 PreCompact Hook]\n\n对话上下文即将被压缩以节省 token。"}),
+        other => return Err(format!("No simulation payload for event: {other}")),
+    };
+
+    let line = format!("{payload}\n");
+    let bytes = line.as_bytes();
+
+    if let Ok(mut stream) = tokio::net::UnixStream::connect("/tmp/agentbro.sock").await {
+        stream.write_all(bytes).await.map_err(|e| e.to_string())
+    } else {
+        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:17892").await.map_err(|e| e.to_string())?;
+        stream.write_all(bytes).await.map_err(|e| e.to_string())
     }
 }
 
@@ -909,12 +943,7 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
     let adapters = state
         .adapters
         .iter()
-        .filter(|adapter| {
-            adapter
-                .hook_config_paths()
-                .iter()
-                .any(|path| crate::agents::hook_manager::has_agentbro_hooks(path))
-        })
+        .filter(|adapter| adapter.hooks_installed())
         .count();
     checks.push(HookDoctorCheck {
         id: "installed-hooks".to_string(),
@@ -1006,12 +1035,109 @@ pub async fn launch_agent_session(
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    Ok(state.config_store.get())
+    let mut config = state.config_store.get();
+    config.launch_at_login = get_launch_at_login_state();
+    Ok(config)
 }
 
 #[tauri::command]
 pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
     state.config_store.update(config)
+}
+
+#[tauri::command]
+pub async fn set_launch_at_login(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    set_launch_at_login_state(enabled)?;
+    let mut config = state.config_store.get();
+    config.launch_at_login = enabled;
+    state.config_store.update(config)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+    Ok(home
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.agentbro.desktop.login.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn app_launch_target() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    for ancestor in exe.ancestors() {
+        if ancestor.extension().and_then(|ext| ext.to_str()) == Some("app") {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    Ok(exe)
+}
+
+#[cfg(target_os = "macos")]
+fn escape_plist(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "macos")]
+fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
+    let plist_path = launch_agent_path()?;
+    if enabled {
+        if let Some(parent) = plist_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let target = app_launch_target()?;
+        let target = escape_plist(&target.to_string_lossy());
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agentbro.desktop.login</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string>
+    <string>{target}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#
+        );
+        std::fs::write(plist_path, plist).map_err(|e| e.to_string())?;
+    } else if plist_path.exists() {
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let _ = Command::new("launchctl")
+            .arg("bootout")
+            .arg(domain)
+            .arg(&plist_path)
+            .output();
+        std::fs::remove_file(plist_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_launch_at_login_state(_enabled: bool) -> Result<(), String> {
+    Err("Launch at login is only supported on macOS for now".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn get_launch_at_login_state() -> bool {
+    launch_agent_path()
+        .map(|path| path.exists())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_launch_at_login_state() -> bool {
+    false
 }
 
 #[tauri::command]
@@ -1310,18 +1436,27 @@ pub async fn set_engine_instance_enabled(
     let Some(instance) = config.engine_instances.iter_mut().find(|i| i.id == id) else {
         return Err(format!("Engine instance {} not found", id));
     };
+    let instance_snapshot = instance.clone();
     instance.enabled = enabled;
-    state.config_store.update(config)
+    state.config_store.update(config)?;
+
+    let root = crate::agents::claude_code::expand_tilde(&instance_snapshot.config_root);
+    let adapter = crate::agents::claude_code::ClaudeCodeAdapter::with_config_root(
+        root,
+        instance_snapshot.label,
+    );
+    let result = if enabled {
+        adapter.install_hooks()
+    } else {
+        adapter.remove_hooks()
+    };
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn verify_engine_path(path: String) -> Result<bool, String> {
     let expanded = crate::agents::claude_code::expand_tilde(&path);
-    if !expanded.is_dir() {
-        return Ok(false);
-    }
-    let settings = expanded.join("settings.json");
-    Ok(settings.exists())
+    Ok(expanded.is_dir())
 }
 
 #[cfg(test)]
@@ -1361,19 +1496,23 @@ mod tests {
 
     #[test]
     fn codex_desktop_detection_uses_missing_tty_or_codex_terminal() {
-        assert!(is_codex_desktop_session(&session(
+        // Desktop: no tty, terminal is empty or contains "codex"
+        assert!(is_codex_desktop_session(&session("codex", "", None)));
+        assert!(is_codex_desktop_session(&session("codex", "Codex", None)));
+        assert!(!is_codex_desktop_session(&session("codex", "AgentBro", None)));
+        // CLI: terminal is a tty path — not desktop even if tty field is None
+        assert!(!is_codex_desktop_session(&session(
             "codex",
-            "Codex",
-            Some("/dev/ttys001")
+            "/dev/ttys001",
+            None
         )));
-        assert!(is_codex_desktop_session(&session(
-            "codex", "AgentBro", None
-        )));
+        // CLI: has explicit tty field set
         assert!(!is_codex_desktop_session(&session(
             "codex",
             "iTerm2",
             Some("/dev/ttys001")
         )));
+        // Wrong agent type
         assert!(!is_codex_desktop_session(&session(
             "claude-code",
             "Codex",

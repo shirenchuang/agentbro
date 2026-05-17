@@ -82,16 +82,49 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
 
   const lead = getLeadSession(sessions)
   useTick(1000, Boolean(lead?.unattendedSince))
-  const slides = lead ? getCarouselSlides(lead, t) : []
+
+  // Linger: keep showing tool name for 2s after it clears
+  const [lingeredToolName, setLingeredToolName] = useState<string | undefined>(undefined)
+  const [lingeredToolTarget, setLingeredToolTarget] = useState<string | undefined>(undefined)
+  const lingerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const liveTool = lead?.lastToolName
+  useEffect(() => {
+    if (liveTool) {
+      if (lingerTimerRef.current) { clearTimeout(lingerTimerRef.current); lingerTimerRef.current = null }
+      setLingeredToolName(liveTool)
+      setLingeredToolTarget(lead?.lastToolTarget)
+    } else {
+      lingerTimerRef.current = setTimeout(() => {
+        setLingeredToolName(undefined)
+        setLingeredToolTarget(undefined)
+        lingerTimerRef.current = null
+      }, 2000)
+    }
+  }, [liveTool, lead?.lastToolTarget])
+
+  const effectiveToolName = lingeredToolName
+  const effectiveToolTarget = lingeredToolTarget
+
+  const getSlides = (session: SessionState) => {
+    const base = getCarouselSlides(session, t)
+    if (showToolStatus && effectiveToolName) {
+      const target = effectiveToolTarget ? `: ${effectiveToolTarget}` : ''
+      const toolSlide = `${getToolActivityLabel(t, effectiveToolName)}${target}`
+      return [session.project, toolSlide, ...base.slice(2)]
+    }
+    return base
+  }
+  const slides = lead ? getSlides(lead) : []
   const slidesCount = slides.length
 
   const [slideIndex, setSlideIndex] = useState(0)
   const leadId = lead?.id
 
-  // Reset to slide 0 when the lead session changes
+  // Jump to tool slide when tool becomes active; reset on session change
+  useEffect(() => { setSlideIndex(0) }, [leadId])
   useEffect(() => {
-    setSlideIndex(0)
-  }, [leadId])
+    if (effectiveToolName) setSlideIndex(1)
+  }, [effectiveToolName])
 
   const safeIndex = slidesCount > 0 ? slideIndex % slidesCount : 0
   const currentSlide = slides[safeIndex] ?? ''
@@ -136,8 +169,10 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
     if (isTauri()) {
       try {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+        const { invoke } = await import('@tauri-apps/api/core')
         const settingsWin = await WebviewWindow.getByLabel('settings')
         if (settingsWin) {
+          await invoke('set_dock_visible', { visible: true })
           await settingsWin.show()
           await settingsWin.setFocus()
         }
@@ -233,6 +268,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
                     <motion.span
                       key={`${leadId}-${safeIndex}`}
                       className="collapsed-bar__info"
+                      style={safeIndex === 1 && effectiveToolName ? { color: '#ef4444' } : undefined}
                       initial={{ y: 8, opacity: 0 }}
                       animate={{ y: 0, opacity: 1 }}
                       exit={{ y: -8, opacity: 0 }}
@@ -261,13 +297,6 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
         </div>
 
         <div className="collapsed-bar__right">
-          {/* Tool status display */}
-          {showToolStatus && lead?.lastToolName && !isExpanded && (
-            <span className="collapsed-bar__tool-status">
-              {getToolActivityLabel(t, lead.lastToolName)}
-              {lead.lastToolTarget ? `: ${lead.lastToolTarget}` : ''}
-            </span>
-          )}
           {/* Rate limit percentage */}
           {ratePct != null && !isExpanded && (
             <span className="collapsed-bar__rate-pct" style={{ color: rateColor }}>

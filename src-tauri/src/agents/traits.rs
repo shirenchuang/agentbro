@@ -15,4 +15,9 @@ pub trait AgentAdapter: Send + Sync + 'static {
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>>;
     fn hook_config_paths(&self) -> Vec<PathBuf>;
+    fn hooks_installed(&self) -> bool {
+        self.hook_config_paths()
+            .iter()
+            .any(|path| super::hook_manager::has_agentbro_hooks(path))
+    }
 }

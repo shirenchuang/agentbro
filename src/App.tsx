@@ -288,6 +288,8 @@ function App() {
       if (isTauri()) {
         try {
           const { getCurrentWindow } = await import('@tauri-apps/api/window')
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('set_dock_visible', { visible: false })
           getCurrentWindow().hide()
         } catch {
           // fallback: do nothing

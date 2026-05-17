@@ -19,6 +19,22 @@ export function getAgentDisplayName(session: SessionState): string {
   }
 }
 
+function normalizeProductLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/\b(openai|app|cli|code)\b/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+export function shouldShowAgentBadge(session: SessionState): boolean {
+  const appLabel = getSessionAppLabel(session)
+  if (!appLabel) return true
+
+  const appProduct = normalizeProductLabel(appLabel)
+  const agentProduct = normalizeProductLabel(getAgentDisplayName(session))
+  return !appProduct || !agentProduct || appProduct !== agentProduct
+}
+
 export function isTtyLabel(value: string | null | undefined): boolean {
   const label = (value || '').trim()
   return /^\/dev\/tty/.test(label) || /^ttys\d+$/i.test(label) || /^tty[A-Za-z0-9]+$/i.test(label)

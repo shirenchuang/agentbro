@@ -707,6 +707,7 @@ impl HookServer {
                     .unwrap_or("")
                     .to_string();
 
+                log::info!("[ToolUse] session={} tool={} status={}", session_id, tool_name, status);
                 store.update_session(session_id, |s| {
                     s.last_tool_name = Some(tool_name.clone());
                     s.last_tool_target = tool_target.clone();

@@ -46,13 +46,12 @@ describe('settings island menu', () => {
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
 
-  it('preserves follow focus when persisting visual island feature flags', async () => {
+  it('shows tips toggle in island overview and preserves follow focus when persisting it', async () => {
     useConfigStore.setState({ followFocus: true, tipsEnabled: true })
 
     render(<SettingsApp onClose={vi.fn()} />)
 
     fireEvent.click(screen.getByText('settings.island.title'))
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
 
     await waitFor(() => expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument())
     const tipsRow = screen.getByText('settings.tipsEnabled').closest('.setting-row')

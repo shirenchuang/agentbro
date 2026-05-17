@@ -131,6 +131,16 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
 }
 
 #[tauri::command]
+async fn set_notch_ignore_cursor_events(app: tauri::AppHandle, ignore: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("notch") {
+        window
+            .set_ignore_cursor_events(ignore)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_image(src: String) -> Result<(), String> {
     let target = if src.starts_with("data:") {
         persist_data_url_image(&src)?
@@ -185,31 +195,42 @@ fn image_extension(media_type: &str) -> &'static str {
 }
 
 fn open_system_target(target: &str) -> Result<(), String> {
+    let target = expand_tilde_target(target);
+
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("open");
-        command.arg(target);
+        command.arg(&target);
         command
     };
 
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", "", target]);
+        command.args(["/C", "start", "", &target]);
         command
     };
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(target);
+        command.arg(&target);
         command
     };
 
     command
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("Failed to open image: {}", e))
+        .map_err(|e| format!("Failed to open path: {}", e))
+}
+
+fn expand_tilde_target(target: &str) -> String {
+    if let Some(rest) = target.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).display().to_string();
+        }
+    }
+    target.to_string()
 }
 
 // ── Agent Detection & Hook Management Commands ──────────────────
@@ -233,6 +254,25 @@ async fn install_agent_hook(
 }
 
 #[tauri::command]
+async fn install_custom_agent_hook(
+    profile_id: String,
+    install_directory: String,
+) -> Result<String, String> {
+    let profile = agents::profiles::profile_for_agent(&profile_id)
+        .ok_or_else(|| format!("Unknown hook profile: {}", profile_id))?;
+    let base_directory = std::path::PathBuf::from(expand_tilde_target(&install_directory));
+    if !base_directory.is_dir() {
+        return Err(format!(
+            "Install directory does not exist: {}",
+            base_directory.display()
+        ));
+    }
+    let target = agents::profiles::install_custom_at(&profile, &base_directory)
+        .map_err(|e| e.to_string())?;
+    Ok(display_path_with_home(&target))
+}
+
+#[tauri::command]
 async fn uninstall_agent_hook(
     state: tauri::State<'_, commands::AppState>,
     tool_name: String,
@@ -243,6 +283,23 @@ async fn uninstall_agent_hook(
         .find(|a| a.name() == tool_name || a.display_name() == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     adapter.remove_hooks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn configure_agent_hook_events(
+    state: tauri::State<'_, commands::AppState>,
+    tool_name: String,
+    enabled_events: Vec<String>,
+) -> Result<(), String> {
+    let adapter = state
+        .adapters
+        .iter()
+        .find(|a| a.name() == tool_name || a.display_name() == tool_name)
+        .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+    let profile = agents::profiles::profile_for_agent(adapter.name())
+        .ok_or_else(|| format!("Unknown hook profile: {}", adapter.name()))?;
+    agents::profiles::save_event_selection(&profile, &enabled_events).map_err(|e| e.to_string())?;
+    adapter.install_hooks().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -258,13 +315,29 @@ async fn get_all_hook_status(
             } else {
                 a.name().to_string()
             };
+            let profile = agents::profiles::profile_for_agent(a.name());
+            let supports_event_selection = profile
+                .as_ref()
+                .map(agents::profiles::supports_event_selection)
+                .unwrap_or(false);
+            let events = profile
+                .as_ref()
+                .map(agents::profiles::event_statuses)
+                .unwrap_or_default();
+            let enabled_event_names = profile
+                .as_ref()
+                .map(agents::profiles::selected_event_names)
+                .unwrap_or_default();
             let paths = a.hook_config_paths();
-            let installed = paths
-                .iter()
-                .any(|p| agents::hook_manager::has_agentbro_hooks(p));
+            let installed = a.hooks_installed();
             let config_path = paths
                 .first()
                 .map(|path| display_path_with_home(path))
+                .unwrap_or_default();
+            let config_dir = paths
+                .first()
+                .and_then(|path| path.parent())
+                .map(display_path_with_home)
                 .unwrap_or_default();
             let install_status = if installed {
                 "installed"
@@ -274,12 +347,17 @@ async fn get_all_hook_status(
             serde_json::json!({
                 "toolId": tool_id,
                 "adapterId": a.name(),
+                "profileId": profile.as_ref().map(|profile| profile.id).unwrap_or(a.name()),
                 "name": a.name(),
                 "displayName": a.display_name(),
                 "installed": installed,
                 "installStatus": install_status,
                 "configPath": config_path,
+                "configDir": config_dir,
                 "status": format!("{:?}", a.status()),
+                "supportsEventSelection": supports_event_selection,
+                "events": events,
+                "enabledEventNames": enabled_event_names,
             })
         })
         .collect())
@@ -907,6 +985,37 @@ async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
     app.exit(0);
     Ok(())
 }
+
+#[tauri::command]
+#[cfg(target_os = "macos")]
+fn set_dock_visible(app: tauri::AppHandle, visible: bool) {
+    let policy = if visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app.set_activation_policy(policy);
+    if visible {
+        // Delay icon reset by one runloop cycle so macOS applies the policy first
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = app.run_on_main_thread(|| unsafe {
+                let cls = objc2::runtime::AnyClass::get("NSApplication").unwrap();
+                let ns_app: *mut objc2::runtime::AnyObject =
+                    objc2::msg_send![cls, sharedApplication];
+                let _: () = objc2::msg_send![ns_app, setApplicationIconImage: std::ptr::null::<objc2::runtime::AnyObject>()];
+            });
+        });
+    } else {
+        if let Some(notch) = app.get_webview_window("notch") {
+            let _ = notch.show();
+        }
+    }
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+fn set_dock_visible(_app: tauri::AppHandle, _visible: bool) {}
 
 // ── Sound Commands ───────────────────────────────────────────────
 
@@ -2499,7 +2608,9 @@ async fn resize_notch(
                         },
                     );
                     configure_notch_window_for_spaces(&app);
-                    return Ok(ResizeNotchResult { anchor_offset_x: 0.0 });
+                    return Ok(ResizeNotchResult {
+                        anchor_offset_x: 0.0,
+                    });
                 }
             }
             let anchor_offset_x = position_notch_window(
@@ -2514,7 +2625,9 @@ async fn resize_notch(
         }
         configure_notch_window_for_spaces(&app);
     }
-    Ok(ResizeNotchResult { anchor_offset_x: 0.0 })
+    Ok(ResizeNotchResult {
+        anchor_offset_x: 0.0,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2561,6 +2674,17 @@ pub fn run() {
             // Ensure settings window is hidden on startup
             if let Some(settings_window) = app.get_webview_window("settings") {
                 let _ = settings_window.hide();
+                let app_handle = app.handle().clone();
+                settings_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = app_handle.get_webview_window("settings").map(|w| w.hide());
+                        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        if let Some(notch) = app_handle.get_webview_window("notch") {
+                            let _ = notch.show();
+                        }
+                    }
+                });
             }
 
             // Initialize session store
@@ -2866,6 +2990,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             quit_app,
+            set_dock_visible,
             commands::get_sessions,
             commands::respond_permission,
             commands::respond_auto_approve,
@@ -2875,6 +3000,7 @@ pub fn run() {
             commands::jump_to_terminal,
             commands::get_config,
             commands::update_config,
+            commands::set_launch_at_login,
             commands::set_island_feature_flags,
             commands::set_island_surface_options,
             commands::set_advanced_tool_flags,
@@ -2925,6 +3051,7 @@ pub fn run() {
             should_suppress,
             get_cursor_position,
             is_cursor_over_notch,
+            set_notch_ignore_cursor_events,
             save_sessions,
             load_sessions,
             get_themes,
@@ -2936,9 +3063,12 @@ pub fn run() {
             notify_expand,
             detect_tools,
             install_agent_hook,
+            install_custom_agent_hook,
             uninstall_agent_hook,
+            configure_agent_hook_events,
             get_all_hook_status,
             reinstall_all_hooks,
+            commands::simulate_hook_event,
             list_remote_hosts,
             add_remote_host,
             remove_remote_host,

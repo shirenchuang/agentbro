@@ -173,6 +173,7 @@ function applyBackendConfig(config: BackendConfig) {
   const store = useConfigStore.getState()
   store.updateConfig('soundEnabled', config.soundEnabled)
   store.updateConfig('volume', Math.round(config.soundVolume * 100))
+  store.updateConfig('launchAtLogin', config.launchAtLogin ?? false)
   store.updateConfig('autoHide', config.autoHide)
   store.updateConfig('smartSuppression', config.smartSuppression)
   store.updateConfig('hideInFullscreen', config.hideInFullscreen ?? false)

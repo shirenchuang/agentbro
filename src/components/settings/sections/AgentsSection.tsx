@@ -18,7 +18,9 @@ import { agentColor, isAgentProgramInstalled } from '../../../utils/agentProgram
 import { displayVersionValue } from '../../../utils/versions'
 import { PlatformIcon } from '../../platform/PlatformIcon'
 import { CustomAgentDialog } from './CustomAgentDialog'
+import { HookEventConfigDialog } from '../HookEventConfigDialog'
 import {
+  configureAgentHookEvents,
   getAllHookStatus,
   installAgentHook,
   reinstallAllHooks,
@@ -145,6 +147,7 @@ export function AgentsSection({
   const [hookStatuses, setHookStatuses] = useState<HookStatus[]>([])
   const [hooksLoading, setHooksLoading] = useState(false)
   const [hookActions, setHookActions] = useState<Record<string, string>>({})
+  const [configuringHook, setConfiguringHook] = useState<HookStatus | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [editingCustomAgent, setEditingCustomAgent] = useState<AgentProgramInfo | null>(null)
 
@@ -229,6 +232,23 @@ export function AgentsSection({
       else await uninstallAgentHook(toolId)
       await loadHookStatuses()
       await refreshAgents()
+    } catch (error) {
+      setNotice(String(error))
+    } finally {
+      setHookAction(toolId, null)
+    }
+  }, [loadHookStatuses, refreshAgents, setHookAction])
+
+  const saveHookEventConfig = useCallback(async (hook: HookStatus, enabledEvents: string[]) => {
+    const toolId = hookToolId(hook)
+    setHookAction(toolId, 'configure')
+    setNotice('')
+    try {
+      await configureAgentHookEvents(toolId, enabledEvents)
+      await loadHookStatuses()
+      await refreshAgents()
+      setConfiguringHook(null)
+      setNotice('Hook 配置已保存。请重启对应 CLI 会话以加载最新配置。')
     } catch (error) {
       setNotice(String(error))
     } finally {
@@ -490,6 +510,7 @@ export function AgentsSection({
             const installStatus = hookInstallStatus(hook)
             const busy = hookActions[toolId] !== undefined
             const isCurrentAgent = selectedAgent && (hook.adapterId || hook.name) === selectedAgent.id
+            const canConfigureHook = installStatus === 'installed' && hook.supportsEventSelection && hook.events && hook.events.length > 0
             return (
               <div key={`${toolId}:${hook.configPath || hook.displayName}`} className="agent-hook-card">
                 <div className="agent-hook-card__identity">
@@ -505,13 +526,25 @@ export function AgentsSection({
                 <div className={`agent-hook-badge agent-hook-badge--${installStatus}`}>
                   {hookStatusLabel(hook)}
                 </div>
-                <button
-                  type="button"
-                  className={`demo-toggle ${installStatus === 'installed' ? 'demo-toggle--on' : ''}`}
-                  disabled={busy}
-                  onClick={() => toggleHook(hook, installStatus !== 'installed')}
-                  aria-label={installStatus === 'installed' ? '移除 Hook' : '安装 Hook'}
-                />
+                <div className="agent-hook-card__actions">
+                  {canConfigureHook && (
+                    <button
+                      type="button"
+                      className="agent-hook-config-btn"
+                      disabled={busy}
+                      onClick={() => setConfiguringHook(hook)}
+                    >
+                      配置
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`demo-toggle ${installStatus === 'installed' ? 'demo-toggle--on' : ''}`}
+                    disabled={busy}
+                    onClick={() => toggleHook(hook, installStatus !== 'installed')}
+                    aria-label={installStatus === 'installed' ? '移除 Hook' : '安装 Hook'}
+                  />
+                </div>
               </div>
             )
           })}
@@ -725,6 +758,14 @@ export function AgentsSection({
         onRefresh={refreshAgents}
         onRun={runOperation}
       />
+      {configuringHook && (
+        <HookEventConfigDialog
+          hook={configuringHook}
+          busy={hookActions[hookToolId(configuringHook)] === 'configure'}
+          onClose={() => setConfiguringHook(null)}
+          onSave={(enabledEvents) => saveHookEventConfig(configuringHook, enabledEvents)}
+        />
+      )}
       {customAgentDialogOpen && (
         <CustomAgentDialog
           agent={editingCustomAgent}

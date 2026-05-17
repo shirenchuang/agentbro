@@ -11,7 +11,7 @@ use std::time::Duration;
 
 const SOCKET_PATH: &str = "/tmp/agentbro.sock";
 const TCP_ADDR: &str = "127.0.0.1:17892";
-const TIMEOUT_SECONDS: u64 = 300;
+const TIMEOUT_SECONDS: u64 = 21_600;
 
 /// Polymorphic stream: Unix socket or TCP
 enum Stream {

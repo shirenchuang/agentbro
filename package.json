@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "tauri:dev": "cargo tauri dev",
-    "tauri:build": "cargo tauri build",
+    "build:bridge": "cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge",
+    "build:bridge:release": "cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge --release",
+    "tauri:dev": "pnpm build:bridge && cargo tauri dev",
+    "tauri:build": "pnpm build:bridge:release && cargo tauri build",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

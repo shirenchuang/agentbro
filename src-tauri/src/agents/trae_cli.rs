@@ -1,6 +1,6 @@
 // TraeCliAdapter — Agent adapter for Trae CLI (separate from Trae app)
 
-use super::hook_manager;
+use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
 use std::path::{Path, PathBuf};
 
@@ -51,26 +51,13 @@ impl AgentAdapter for TraeCliAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let hook_command = format!(
-            "{} --source traecli",
-            hook_manager::bridge_binary_path().display()
-        );
-        let events = &[
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PostToolUse",
-            "PermissionRequest",
-            "Stop",
-            "SessionStart",
-            "SessionEnd",
-        ];
-        hook_manager::inject_hooks_yaml(&self.config_path(), &hook_command, events)?;
+        profiles::install_at(&profiles::trae_cli_profile(), &self.config_path())?;
         log::info!("TraeCli hooks installed");
         Ok(())
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        hook_manager::remove_hooks_yaml(&self.config_path())?;
+        profiles::uninstall_at(&profiles::trae_cli_profile(), &self.config_path())?;
         log::info!("TraeCli hooks removed");
         Ok(())
     }
