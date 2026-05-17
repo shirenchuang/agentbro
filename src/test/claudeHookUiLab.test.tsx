@@ -11,6 +11,8 @@ function renderLab() {
   )
 }
 
+const RECORDED_SESSION_ID = 'e336326d-ab6f-4002-bc6a-3ba66892b469'
+
 describe('ClaudeHookUiLab', () => {
   beforeEach(() => {
     useSessionStore.setState({
@@ -34,6 +36,8 @@ describe('ClaudeHookUiLab', () => {
 
   it('loads PermissionRequest as a backend-style pending permission snapshot', async () => {
     renderLab()
+
+    fireEvent.click(screen.getByText('Permission').closest('button')!)
 
     await waitFor(() => {
       const state = useSessionStore.getState()
@@ -59,6 +63,7 @@ describe('ClaudeHookUiLab', () => {
   it('detail mode clears only the overlay layer while preserving hook metadata', async () => {
     renderLab()
 
+    fireEvent.click(screen.getByText('Permission').closest('button')!)
     fireEvent.click(screen.getByText('Detail'))
 
     await waitFor(() => {
@@ -80,6 +85,50 @@ describe('ClaudeHookUiLab', () => {
       expect(state.sessions['claude-hook-lab']?.responseText).toContain('Updated token refresh flow')
       expect(state.activeOverlay?.type).toBe('completion')
       expect(state.panelState).toBe('collapsed')
+    })
+  })
+
+  it('replays the real Edit permission checkpoint from the recorded Claude Code session', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Real Edit Wait').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      const session = state.sessions[RECORDED_SESSION_ID]
+      expect(session?.phase).toBe('waiting_approval')
+      expect(session?.pendingPermission?.toolName).toBe('Edit')
+      expect(session?.pendingPermission?.diff?.filePath).toContain('src/auth/middleware.ts')
+      expect(state.activeOverlay?.type).toBe('permission')
+    })
+  })
+
+  it('replays the real multi-select AskUserQuestion checkpoint', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Real Multi Q').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      const session = state.sessions[RECORDED_SESSION_ID]
+      expect(session?.phase).toBe('waiting_input')
+      expect(session?.pendingQuestion?.multiSelect).toBe(true)
+      expect(session?.pendingQuestion?.options).toContain('权限详情卡')
+      expect(state.activeOverlay?.type).toBe('question')
+    })
+  })
+
+  it('replays the real compact checkpoint without inventing an overlay', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Real Compact').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      const session = state.sessions[RECORDED_SESSION_ID]
+      expect(session?.phase).toBe('compacting')
+      expect(session?.lastToolName).toBe('Compacting')
+      expect(state.activeOverlay).toBeNull()
     })
   })
 })

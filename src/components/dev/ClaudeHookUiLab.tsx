@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useConfigStore } from '../../stores/configStore'
 import type { DiffContent, PanelState, SessionState, TaskInfo } from '../../types/agent'
 import './ClaudeHookUiLab.css'
 
@@ -11,6 +12,17 @@ type LabScenarioId =
   | 'plan-approval'
   | 'stop'
   | 'stop-failure'
+  | 'real-write'
+  | 'real-read'
+  | 'real-edit-pending'
+  | 'real-edit-allowed'
+  | 'real-bash-pending'
+  | 'real-bash-failure'
+  | 'real-plan'
+  | 'real-question'
+  | 'real-multi-question'
+  | 'real-subagent'
+  | 'real-compact'
 
 type LabViewMode = 'overlay' | 'list' | 'detail' | 'compact'
 
@@ -28,6 +40,8 @@ interface ClaudeHookUiLabProps {
 
 const LAB_SESSION_ID = 'claude-hook-lab'
 const LAB_CWD = '/Users/demo/projects/agentbro'
+const RECORDED_SESSION_ID = 'e336326d-ab6f-4002-bc6a-3ba66892b469'
+const RECORDED_CWD = '/Users/shirenchuang/code/github/empty'
 const VIEW_MODE_LABELS: Record<LabViewMode, string> = {
   overlay: 'Overlay',
   list: 'List',
@@ -51,6 +65,15 @@ const baseTasks: TaskInfo[] = [
   { id: 'lab-task-1', name: 'Read auth middleware', status: 'completed' },
   { id: 'lab-task-2', name: 'Patch expired token refresh', status: 'in_progress' },
   { id: 'lab-task-3', name: 'Run focused regression test', status: 'pending' },
+]
+
+const recordedTasks: TaskInfo[] = [
+  { id: 'recorded-init', name: 'Create minimal TypeScript test project', status: 'completed' },
+  { id: 'recorded-read', name: 'Read package/auth/middleware files', status: 'completed' },
+  { id: 'recorded-edit', name: 'Edit middleware to use refreshToken', status: 'completed' },
+  { id: 'recorded-test', name: 'Run tests and capture failure', status: 'completed' },
+  { id: 'recorded-questions', name: 'Capture single and multi AskUserQuestion', status: 'completed' },
+  { id: 'recorded-compact', name: 'Capture PreCompact output', status: 'completed' },
 ]
 
 function baseSession(now: number, overrides: Partial<SessionState> = {}): SessionState {
@@ -88,6 +111,453 @@ function baseSession(now: number, overrides: Partial<SessionState> = {}): Sessio
     lastActivityAt: now - 1_500,
     ...overrides,
   }
+}
+
+function recordedSession(now: number, overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    id: RECORDED_SESSION_ID,
+    agentType: 'claude-code',
+    engineLabel: 'Claude Code',
+    project: 'empty',
+    cwd: RECORDED_CWD,
+    terminal: 'iTerm',
+    phase: 'processing',
+    startedAt: now - 14 * 60_000,
+    duration: 14 * 60_000,
+    tokens: { input: 33_802, output: 1_120, cacheRead: 33_437, cacheCreate: 0 },
+    chatHistory: [
+      {
+        role: 'user',
+        content: '我们要做 AgentBro Claude Code hook UI 真实采样。请严格按我每一轮指令执行。',
+        timestamp: now - 13 * 60_000,
+      },
+      {
+        role: 'assistant',
+        content: '明白。等待你的第一步指令。',
+        timestamp: now - 12 * 60_000,
+      },
+    ],
+    subagents: [],
+    activeTools: [],
+    tasks: recordedTasks,
+    lastUserMessage: '请修改 src/auth/middleware.ts：不再直接使用 getToken()，改成 await refreshToken()',
+    sessionTitle: 'AgentBro Claude Code hook UI 真实采样',
+    pid: 47839,
+    tty: '/dev/ttys002',
+    termBundleId: 'com.googlecode.iterm2',
+    lastActivityAt: now - 1_000,
+    ...overrides,
+  }
+}
+
+function recordedEditInput() {
+  return JSON.stringify({
+    replace_all: false,
+    file_path: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    old_string: 'import { getToken } from "./auth";\n\nexport function buildAuthHeaders(): Record<string, string> {\n  return { Authorization: `Bearer ${getToken()}` };\n}',
+    new_string: 'import { refreshToken } from "./auth";\n\nexport async function buildAuthHeaders(): Promise<Record<string, string>> {\n  const token = await refreshToken();\n  if (!token) return {};\n  return { Authorization: `Bearer ${token}` };\n}',
+  }, null, 2)
+}
+
+function recordedEditDiff(): DiffContent {
+  return {
+    filePath: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    lines: [
+      { type: 'remove', lineNumber: 1, content: 'import { getToken } from "./auth";' },
+      { type: 'add', lineNumber: 1, content: 'import { refreshToken } from "./auth";' },
+      { type: 'context', lineNumber: 2, content: '' },
+      { type: 'remove', lineNumber: 3, content: 'export function buildAuthHeaders(): Record<string, string> {' },
+      { type: 'remove', lineNumber: 4, content: '  return { Authorization: `Bearer ${getToken()}` };' },
+      { type: 'add', lineNumber: 3, content: 'export async function buildAuthHeaders(): Promise<Record<string, string>> {' },
+      { type: 'add', lineNumber: 4, content: '  const token = await refreshToken();' },
+      { type: 'add', lineNumber: 5, content: '  if (!token) return {};' },
+      { type: 'add', lineNumber: 6, content: '  return { Authorization: `Bearer ${token}` };' },
+      { type: 'context', lineNumber: 7, content: '}' },
+    ],
+  }
+}
+
+function recordedWriteSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'processing',
+    description: '创建4个文件。',
+    lastUserMessage: '请在当前空目录创建一个最小 TypeScript 测试项目',
+    sessionTitle: 'Create minimal TypeScript project',
+    lastToolName: 'Write',
+    lastToolTarget: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    lastToolStatus: 'running',
+    activeTools: [
+      { toolUseId: 'tooluse_3wObTzgiqWYNnU4G7tMQwH', toolName: 'Write', status: 'running', startedAt: now - 2_000 },
+    ],
+    chatHistory: [
+      {
+        role: 'user',
+        content: '请在当前空目录创建一个最小 TypeScript 测试项目，只包含 package.json、auth.ts、middleware.ts、middleware.test.ts。',
+        timestamp: now - 45_000,
+      },
+      {
+        role: 'assistant',
+        content: '创建4个文件。',
+        timestamp: now - 38_000,
+        toolCalls: [
+          {
+            toolUseId: 'tooluse_GMVOwdN2UBU1KTZtn9aLmq',
+            toolName: 'Write',
+            toolInput: `file_path: ${RECORDED_CWD}/package.json`,
+            status: 'success',
+          },
+          {
+            toolUseId: 'tooluse_3wObTzgiqWYNnU4G7tMQwH',
+            toolName: 'Write',
+            toolInput: `file_path: ${RECORDED_CWD}/src/auth/middleware.ts`,
+            status: 'running',
+          },
+        ],
+      },
+    ],
+  })
+}
+
+function recordedReadSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'done',
+    description: '`auth.ts` 导出两个硬编码的 mock token 函数，`middleware.ts` 调用 getToken() 拼接 Bearer header。',
+    responseText: '`auth.ts` 导出两个硬编码的 mock token 函数，`middleware.ts` 调用 getToken() 拼接 Bearer header。',
+    lastUserMessage: '请只读取 package.json、src/auth/auth.ts、src/auth/middleware.ts，然后用三句话总结当前实现。',
+    sessionTitle: 'Read package/auth/middleware',
+    lastToolName: 'Read',
+    lastToolTarget: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    lastToolStatus: 'success',
+    activeTools: [
+      { toolUseId: 'tooluse_6Z8UKEAredekq7774Bc8OH', toolName: 'Read', status: 'success', startedAt: now - 10_000, completedAt: now - 8_000 },
+      { toolUseId: 'tooluse_oqOgggPHv3XcCZgd2rCvQZ', toolName: 'Read', status: 'success', startedAt: now - 9_000, completedAt: now - 7_000 },
+      { toolUseId: 'tooluse_BHJWkz7TzzDUxbZFsHqzdd', toolName: 'Read', status: 'success', startedAt: now - 8_000, completedAt: now - 6_000 },
+    ],
+    chatHistory: [
+      {
+        role: 'user',
+        content: '请只读取 package.json、src/auth/auth.ts、src/auth/middleware.ts，然后用三句话总结当前实现。不要修改任何文件。',
+        timestamp: now - 16_000,
+      },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: now - 10_000,
+        toolCalls: [
+          { toolUseId: 'tooluse_6Z8UKEAredekq7774Bc8OH', toolName: 'Read', toolInput: `file_path: ${RECORDED_CWD}/package.json`, status: 'success' },
+          { toolUseId: 'tooluse_oqOgggPHv3XcCZgd2rCvQZ', toolName: 'Read', toolInput: `file_path: ${RECORDED_CWD}/src/auth/auth.ts`, status: 'success' },
+          { toolUseId: 'tooluse_BHJWkz7TzzDUxbZFsHqzdd', toolName: 'Read', toolInput: `file_path: ${RECORDED_CWD}/src/auth/middleware.ts`, status: 'success' },
+        ],
+        trailingContent: '`auth.ts` 导出两个硬编码的 mock token 函数（`getToken` 返回 `"mock-token"`，`refreshToken` 返回 `"refreshed-token"`）。`middleware.ts` 的 `buildAuthHeaders()` 调用 `getToken()` 拼接成 `Bearer` header 返回。`package.json` 使用 `ts-jest` + Jest 29 作为测试框架，`npm test` 即可运行。',
+      },
+    ],
+  })
+}
+
+function recordedEditPendingSession(now: number): SessionState {
+  const diff = recordedEditDiff()
+  return recordedSession(now, {
+    phase: 'waiting_approval',
+    description: 'PermissionRequest: Edit src/auth/middleware.ts',
+    pendingPermission: {
+      toolName: 'Edit',
+      toolInput: recordedEditInput(),
+      diff,
+    },
+    lastToolName: 'Edit',
+    lastToolTarget: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    lastToolStatus: 'running',
+    activeTools: [
+      { toolUseId: 'tooluse_KpxejiPDybvgkOqLx2iNo4', toolName: 'Edit', status: 'running', startedAt: now - 47_000 },
+    ],
+    unattendedSince: now - 47_000,
+    chatHistory: [
+      {
+        role: 'user',
+        content: '请修改 src/auth/middleware.ts：不再直接使用 getToken()，改成 await refreshToken()，Authorization 返回值改成 Bearer ${token}。',
+        timestamp: now - 55_000,
+      },
+      {
+        role: 'permission',
+        toolName: 'Edit',
+        toolInput: recordedEditInput(),
+        diff,
+        timestamp: now - 47_000,
+      },
+    ],
+  })
+}
+
+function recordedEditAllowedSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'done',
+    description: 'hook_permission_decision: allow; buildAuthHeaders now awaits refreshToken().',
+    responseText: '完成。`buildAuthHeaders` 现在是 async，调用 `await refreshToken()`，token 为空时返回 `{}`。等待下一步指令。',
+    lastToolName: 'Edit',
+    lastToolTarget: `${RECORDED_CWD}/src/auth/middleware.ts`,
+    lastToolStatus: 'success',
+    chatHistory: [
+      {
+        role: 'user',
+        content: '请修改 src/auth/middleware.ts：不再直接使用 getToken()，改成 await refreshToken()。',
+        timestamp: now - 60_000,
+      },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: now - 52_000,
+        toolCalls: [
+          {
+            toolUseId: 'tooluse_KpxejiPDybvgkOqLx2iNo4',
+            toolName: 'Edit',
+            toolInput: recordedEditInput(),
+            diff: recordedEditDiff(),
+            status: 'success',
+            result: 'hook_permission_decision: allow\nThe file src/auth/middleware.ts has been updated successfully.',
+          },
+        ],
+        trailingContent: '完成。`buildAuthHeaders` 现在是 async，调用 `await refreshToken()`，token 为空时返回 `{}`。等待下一步指令。',
+      },
+    ],
+  })
+}
+
+function recordedBashPendingSession(now: number): SessionState {
+  const toolInput = JSON.stringify({ command: 'npm install 2>&1 | tail -5', description: 'Install dependencies' })
+  return recordedSession(now, {
+    phase: 'waiting_approval',
+    description: 'Processing user input: 请运行项目里的测试命令。如果通过，只总结测试结果，不要继续修改。',
+    pendingPermission: {
+      toolName: 'Bash',
+      toolInput,
+    },
+    lastUserMessage: '请运行项目里的测试命令。如果通过，只总结测试结果，不要继续修改。',
+    sessionTitle: 'Run project tests',
+    lastToolName: 'Bash',
+    lastToolTarget: 'npm install 2>&1 | tail -5',
+    lastToolStatus: 'running',
+    activeTools: [
+      { toolUseId: 'tooluse_igIFg0ku5blKXCJNO9ZAh5', toolName: 'Bash', status: 'running', startedAt: now - 7_000 },
+    ],
+    unattendedSince: now - 7_000,
+    chatHistory: [
+      { role: 'user', content: '请运行项目里的测试命令。如果通过，只总结测试结果，不要继续修改。', timestamp: now - 14_000 },
+      { role: 'assistant', content: '先安装依赖再运行测试。', timestamp: now - 8_000 },
+      { role: 'permission', toolName: 'Bash', toolInput, timestamp: now - 7_000 },
+    ],
+  })
+}
+
+function recordedBashFailureSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'done',
+    description: '命令以 exit code 7 退出，stderr 输出：intentional hook ui failure。',
+    responseText: '命令以 exit code 7 退出，stderr 输出：`intentional hook ui failure`。',
+    lastUserMessage: '请运行这个命令，并只报告结果，不要修复：node -e "console.error(...); process.exit(7)"',
+    sessionTitle: 'Intentional Bash failure',
+    lastToolName: 'Bash',
+    lastToolStatus: 'error',
+    activeTools: [
+      {
+        toolUseId: 'tooluse_intentional_failure',
+        toolName: 'Bash',
+        status: 'error',
+        startedAt: now - 16_000,
+        completedAt: now - 4_000,
+        error: 'Exit code 7 intentional hook ui failure',
+      },
+    ],
+    chatHistory: [
+      { role: 'user', content: '请运行这个命令，并只报告结果，不要修复：\n\nnode -e "console.error(\'intentional hook ui failure\'); process.exit(7)"', timestamp: now - 22_000 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: now - 16_000,
+        toolCalls: [
+          {
+            toolUseId: 'tooluse_intentional_failure',
+            toolName: 'Bash',
+            toolInput: 'command: node -e "console.error(\'intentional hook ui failure\'); process.exit(7)"',
+            status: 'error',
+            result: 'Exit code 7\nintentional hook ui failure',
+          },
+        ],
+        trailingContent: '命令以 exit code 7 退出，stderr 输出：`intentional hook ui failure`。',
+      },
+    ],
+  })
+}
+
+function recordedPlanSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'waiting_approval',
+    description: 'PlanApproval: ExitPlanMode generated a plan and is waiting for approval.',
+    planTitle: 'AgentBro Hook UI Lab — 视觉统一计划',
+    planContent: `# AgentBro Hook UI Lab — 视觉统一计划
+
+## Context
+
+为测试灵动岛交互，需要 Mock 三个 UI 组件的视觉表现，统一设计语言：
+1. 权限详情卡
+2. 底部审批栏
+3. 浏览器 Hook UI Lab
+
+## Plan
+
+1. 用真实 Claude Code hook payload 构造回放 case。
+2. 保持浏览器和 Tauri 走同一套 NotchPanel / Overlay / ChatView 组件。
+3. 为 Permission、Question、Plan、Bash failure、Compact 增加稳定场景。`,
+    planPermissions: ['Edit: src/components/dev/ClaudeHookUiLab.tsx', 'Bash: pnpm test:run'],
+    lastToolName: 'ExitPlanMode',
+    lastToolStatus: 'running',
+    unattendedSince: now - 18_000,
+    chatHistory: [
+      { role: 'user', content: '请为“统一 AgentBro 权限详情卡、底部审批栏和浏览器 Hook UI Lab 的视觉表现”制定一个实现计划。', timestamp: now - 40_000 },
+      { role: 'assistant', content: '这是一个纯 Mock UI 计划，不需要探索现有代码库。直接进入设计阶段。', timestamp: now - 24_000 },
+    ],
+  })
+}
+
+function recordedQuestionSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'waiting_input',
+    description: 'AskUserQuestion: single choice UI sampling mode.',
+    pendingQuestion: {
+      header: 'UI 采样模式',
+      question: '接下来优先采样哪个视图？',
+      options: ['Overlay', 'Detail', 'Compact'],
+      descriptions: ['检查弹层卡片', '检查详情页聊天流', '检查微药丸和折叠态'],
+      multiSelect: false,
+      questions: [
+        {
+          header: 'UI 采样模式',
+          question: '接下来优先采样哪个视图？',
+          multiSelect: false,
+          options: [
+            { label: 'Overlay', description: '检查弹层卡片' },
+            { label: 'Detail', description: '检查详情页聊天流' },
+            { label: 'Compact', description: '检查微药丸和折叠态' },
+          ],
+        },
+      ],
+    },
+    lastToolName: 'AskUserQuestion',
+    lastToolStatus: 'running',
+    unattendedSince: now - 8_000,
+    chatHistory: [
+      { role: 'user', content: '请调用 AskUserQuestion，让我选择下一步 UI 采样模式。', timestamp: now - 18_000 },
+      {
+        role: 'tool_use',
+        toolName: 'AskUserQuestion',
+        toolUseId: 'tooluse_single_question',
+        toolInput: 'question: 接下来优先采样哪个视图？\noptions: Overlay, Detail, Compact',
+        status: 'running',
+        timestamp: now - 8_000,
+      },
+    ],
+  })
+}
+
+function recordedMultiQuestionSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'waiting_input',
+    description: 'AskUserQuestion: multi-select component sampling.',
+    pendingQuestion: {
+      header: '组件选择',
+      question: '请选择本轮需要采样的 UI 组件（可多选）：',
+      options: ['权限详情卡', '底部审批栏', 'Hook 事件列表', '手动'],
+      descriptions: [
+        'PermissionCard - 风险等级、操作描述、diff',
+        'ApprovalBar - 拒绝 / 允许一次 / 始终允许',
+        '浏览器 Hook UI Lab 场景列表',
+        '手动输入其他组件',
+      ],
+      multiSelect: true,
+      questions: [
+        {
+          header: '组件选择',
+          question: '请选择本轮需要采样的 UI 组件（可多选）：',
+          multiSelect: true,
+          options: [
+            { label: '权限详情卡', description: 'PermissionCard - 风险等级、操作描述、diff' },
+            { label: '底部审批栏', description: 'ApprovalBar - 拒绝 / 允许一次 / 始终允许' },
+            { label: 'Hook 事件列表', description: '浏览器 Hook UI Lab 场景列表' },
+            { label: '手动', description: '手动输入其他组件' },
+          ],
+        },
+      ],
+    },
+    lastToolName: 'AskUserQuestion',
+    lastToolStatus: 'running',
+    unattendedSince: now - 9_000,
+  })
+}
+
+function recordedSubagentSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'done',
+    description: '子 Agent 报告：getToken、refreshToken、空 token 分支和 async Promise 路径缺少测试覆盖。',
+    responseText: '子 Agent 报告：getToken、refreshToken、空 token 分支和 async Promise 路径缺少测试覆盖。',
+    lastUserMessage: '请启动一个子 Agent 或等价的子任务来检查 src/auth 目录里的测试覆盖。',
+    sessionTitle: 'Subagent coverage check',
+    lastToolName: 'Agent',
+    lastToolStatus: 'success',
+    subagents: [
+      {
+        agentId: 'tooluse_agent_coverage',
+        agentType: 'Explore',
+        description: '检查 src/auth 测试覆盖缺口',
+        startedAt: now - 22_000,
+        completedAt: now - 8_000,
+        status: 'completed',
+        tools: ['Read', 'Grep'],
+        lastAssistantMessage: '未覆盖 getToken()、refreshToken()、buildAuthHeaders() 空 token 分支。',
+      },
+    ],
+    chatHistory: [
+      { role: 'user', content: '请启动一个子 Agent 或等价的子任务来检查 src/auth 目录里的测试覆盖。子任务只需要总结缺口，不要修改文件。', timestamp: now - 26_000 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: now - 20_000,
+        toolCalls: [
+          {
+            toolUseId: 'tooluse_agent_coverage',
+            toolName: 'Agent',
+            toolInput: 'description: 检查 src/auth 测试覆盖缺口\nsubagent_type: Explore',
+            status: 'success',
+            result: '[object Object]',
+          },
+        ],
+        trailingContent: '子 Agent 报告如下：\n\n**未覆盖：**\n- `getToken()` - 完全无测试\n- `refreshToken()` - 完全无测试\n- `buildAuthHeaders()` 空 token 分支\n- async Promise 路径导致当前测试失败',
+      },
+    ],
+  })
+}
+
+function recordedCompactSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'compacting',
+    description: 'PreCompact completed successfully after /compact.',
+    statusLineText: 'Compacted (ctrl+o to see full summary)',
+    lastToolName: 'Compacting',
+    lastToolStatus: 'success',
+    chatHistory: [
+      { role: 'user', content: '接下来我要测试上下文压缩 hook。请在我触发压缩前，先总结当前会话里已经做过的 UI 采样场景。', timestamp: now - 58_000 },
+      {
+        role: 'assistant',
+        content: '本次会话已完成的 UI 采样场景：文件读取、文件编辑、Bash 成功/失败、PlanApproval、AskUserQuestion、Subagent。',
+        timestamp: now - 50_000,
+      },
+      {
+        role: 'tool_use',
+        toolName: 'Compacting',
+        toolInput: '/compact\nPreCompact [/Users/shirenchuang/.evolab-desktop/bin/evolab-bridge --source claude-code] completed successfully',
+        status: 'success',
+        timestamp: now - 7_000,
+      },
+    ],
+  })
 }
 
 function permissionSession(now: number): SessionState {
@@ -257,6 +727,83 @@ function stopFailureSession(now: number): SessionState {
 
 const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
   {
+    id: 'real-edit-pending',
+    hookName: 'Real Edit Permission',
+    title: 'Real Edit Wait',
+    caption: 'recorded PermissionRequest from e336326d, replayed as pending Edit',
+    buildSession: recordedEditPendingSession,
+  },
+  {
+    id: 'real-edit-allowed',
+    hookName: 'Real Edit Auto-Allow',
+    title: 'Real Edit Done',
+    caption: 'actual transcript result: hook_permission_decision allow',
+    buildSession: recordedEditAllowedSession,
+  },
+  {
+    id: 'real-bash-pending',
+    hookName: 'Real Bash Permission',
+    title: 'Real Bash Wait',
+    caption: 'recorded npm install Bash permission checkpoint',
+    buildSession: recordedBashPendingSession,
+  },
+  {
+    id: 'real-plan',
+    hookName: 'Real PlanApproval',
+    title: 'Real Plan',
+    caption: 'recorded ExitPlanMode pending plan approval',
+    buildSession: recordedPlanSession,
+  },
+  {
+    id: 'real-question',
+    hookName: 'Real AskUserQuestion',
+    title: 'Real Question',
+    caption: 'recorded single-choice AskUserQuestion',
+    buildSession: recordedQuestionSession,
+  },
+  {
+    id: 'real-multi-question',
+    hookName: 'Real Multi Question',
+    title: 'Real Multi Q',
+    caption: 'recorded multi-select AskUserQuestion',
+    buildSession: recordedMultiQuestionSession,
+  },
+  {
+    id: 'real-compact',
+    hookName: 'Real PreCompact',
+    title: 'Real Compact',
+    caption: 'recorded /compact PreCompact success checkpoint',
+    buildSession: recordedCompactSession,
+  },
+  {
+    id: 'real-write',
+    hookName: 'Real Write',
+    title: 'Real Write',
+    caption: 'recorded Write tool while creating the sample project',
+    buildSession: recordedWriteSession,
+  },
+  {
+    id: 'real-read',
+    hookName: 'Real Read',
+    title: 'Real Read',
+    caption: 'recorded three-file Read summary',
+    buildSession: recordedReadSession,
+  },
+  {
+    id: 'real-bash-failure',
+    hookName: 'Real Bash Failure',
+    title: 'Real Bash Fail',
+    caption: 'recorded intentional exit code 7 failure',
+    buildSession: recordedBashFailureSession,
+  },
+  {
+    id: 'real-subagent',
+    hookName: 'Real Subagent',
+    title: 'Real Agent',
+    caption: 'recorded Agent subtask coverage summary',
+    buildSession: recordedSubagentSession,
+  },
+  {
     id: 'permission-request',
     hookName: 'PermissionRequest',
     title: 'Permission',
@@ -349,11 +896,20 @@ function applyClaudeHookLabScenario(scenarioId: LabScenarioId, viewMode: LabView
 }
 
 export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
-  const [selectedScenarioId, setSelectedScenarioId] = useState<LabScenarioId>('permission-request')
+  const [selectedScenarioId, setSelectedScenarioId] = useState<LabScenarioId>('real-edit-pending')
   const [viewMode, setViewMode] = useState<LabViewMode>('overlay')
   const [replayToken, setReplayToken] = useState(0)
   const activeOverlay = useSessionStore((state) => state.activeOverlay)
   const activeSession = useSessionStore((state) => state.activeSessionId ? state.sessions[state.activeSessionId] : undefined)
+
+  useEffect(() => {
+    const previousAutoCollapse = useConfigStore.getState().autoCollapse
+    useConfigStore.setState({ autoCollapse: false })
+
+    return () => {
+      useConfigStore.setState({ autoCollapse: previousAutoCollapse })
+    }
+  }, [])
 
   useEffect(() => {
     applyClaudeHookLabScenario(selectedScenarioId, viewMode)
@@ -421,7 +977,9 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
 
         <footer className="claude-hook-lab__status">
           <span>{activeScenario.caption}</span>
+          <span>session: {activeSession?.id === RECORDED_SESSION_ID ? 'real e336326d' : activeSession?.id ?? 'none'}</span>
           <span>phase: {activeSession?.phase ?? 'none'}</span>
+          <span>tool: {activeSession?.lastToolName ?? 'none'}</span>
           <span>overlay: {activeOverlay?.type ?? 'none'}</span>
         </footer>
       </aside>

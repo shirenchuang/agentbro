@@ -71,8 +71,11 @@
 
 .claude-hook-lab__scenario-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  max-height: 190px;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 6px;
+  padding-right: 2px;
+  overflow: auto;
 }
 
 .claude-hook-lab__scenario {
