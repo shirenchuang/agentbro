@@ -47,6 +47,10 @@ const NOTCH_HIT_SLOP_Y_EXPANDED = 12
 const DRAG_START_THRESHOLD_PX = 4
 const OPEN_NATIVE_PREPARE_FALLBACK_MS = 120
 const CLOSE_NATIVE_RESIZE_DELAY_MS = 520
+const HOVER_PANEL_MIN_HEIGHT = 180
+const EXPANDED_PREVIEW_SESSION_COUNT = 4
+const EXPANDED_PREVIEW_ROW_HEIGHT = 58
+const EXPANDED_PREVIEW_VERTICAL_PADDING = 48
 
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
   return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
@@ -171,7 +175,7 @@ function LayoutPreviewBody({ mode }: { mode: IslandLayoutPreview['mode'] }) {
   if (mode === 'expanded') {
     return (
       <div className="layout-preview layout-preview--expanded" style={{ '--preview-content-font-size': contentFontSize } as CSSProperties}>
-        {Array.from({ length: 4 }).map((_, index) => (
+        {Array.from({ length: EXPANDED_PREVIEW_SESSION_COUNT }).map((_, index) => (
           <div className="layout-preview__row" key={index}>
             <span className="layout-preview__dot" />
             <div className="layout-preview__copy">
@@ -229,12 +233,14 @@ export function NotchPanel() {
   const overlayDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const alertContentRef = useRef<HTMLDivElement | null>(null)
   const feedbackContentRef = useRef<HTMLDivElement | null>(null)
+  const hoverContentRef = useRef<HTMLDivElement | null>(null)
   const [persistentIdleHidden, setPersistentIdleHidden] = useState(false)
   const [displayChanging, setDisplayChanging] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [layoutPreview, setLayoutPreview] = useState<IslandLayoutPreview | null>(null)
   const [measuredAlertContentHeight, setMeasuredAlertContentHeight] = useState(0)
   const [measuredFeedbackContentHeight, setMeasuredFeedbackContentHeight] = useState(0)
+  const [measuredHoverContentHeight, setMeasuredHoverContentHeight] = useState(0)
   const [focusedSessionIds, setFocusedSessionIds] = useState<Set<string> | null>(null)
   const [preparingOpen, setPreparingOpen] = useState(false)
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
@@ -623,6 +629,16 @@ export function NotchPanel() {
     window.requestAnimationFrame(() => {
       const nextHeight = Math.ceil(node.getBoundingClientRect().height || node.scrollHeight)
       if (nextHeight > 0) setMeasuredFeedbackContentHeight(nextHeight)
+    })
+  }, [])
+
+  const setHoverContentNode = useCallback((node: HTMLDivElement | null) => {
+    hoverContentRef.current = node
+    if (!node) return
+    window.requestAnimationFrame(() => {
+      const rectHeight = node.getBoundingClientRect().height
+      const nextHeight = Math.ceil(Math.max(rectHeight, node.scrollHeight))
+      if (nextHeight > 0) setMeasuredHoverContentHeight(nextHeight)
     })
   }, [])
 
@@ -1033,6 +1049,14 @@ export function NotchPanel() {
     : activeOverlay?.type === 'question'
       ? 380
       : 340
+  const hoverPanelContentHeight = measuredHoverContentHeight || hoverListHeight
+  const expandedPreviewHeight = Math.min(
+    Math.max(
+      statusBarHeight + EXPANDED_PREVIEW_SESSION_COUNT * EXPANDED_PREVIEW_ROW_HEIGHT + EXPANDED_PREVIEW_VERTICAL_PADDING,
+      HOVER_PANEL_MIN_HEIGHT,
+    ),
+    maxPanelHeight || 560,
+  )
   const panelHeight =
     isPetMode
       ? 360
@@ -1041,7 +1065,7 @@ export function NotchPanel() {
         : previewMode === 'completion'
           ? Math.min(Math.max(statusBarHeight + completionCardHeight + 72, 220), maxPanelHeight || 600)
           : previewMode === 'expanded'
-            ? (maxPanelHeight || 560)
+            ? expandedPreviewHeight
             : hasBlockingOverlayContent
               ? Math.min(Math.max(measuredAlertContentHeight, blockingOverlayFallbackHeight, 220), maxPanelHeight || 600)
             : feedbackPresentationOpen
@@ -1051,7 +1075,7 @@ export function NotchPanel() {
               : effectivePanelState === 'collapsed'
                 ? collapsedHeight
                 : effectivePanelState === 'hover'
-                  ? Math.min(Math.max(statusBarHeight + hoverListHeight, 260), maxPanelHeight || 600)
+                  ? Math.min(Math.max(statusBarHeight + hoverPanelContentHeight, HOVER_PANEL_MIN_HEIGHT), maxPanelHeight || 600)
                   : (maxPanelHeight || 560)
 
   const visualState = isPetMode
@@ -1181,6 +1205,48 @@ export function NotchPanel() {
       observer.disconnect()
     }
   }, [activeOverlay?.id, feedbackPresentationOpen])
+
+  useEffect(() => {
+    const shouldMeasureHoverContent =
+      !layoutPreview
+      && !hasBlockingOverlayContent
+      && !feedbackPresentationOpen
+      && effectivePanelState === 'hover'
+
+    if (!shouldMeasureHoverContent) {
+      setMeasuredHoverContentHeight(0)
+      return
+    }
+
+    const element = hoverContentRef.current
+    if (!element) return
+
+    const measure = () => {
+      const visibleHeight = element.getBoundingClientRect().height
+      const nextHeight = Math.ceil(Math.max(visibleHeight, element.scrollHeight))
+      if (nextHeight > 0) setMeasuredHoverContentHeight(nextHeight)
+    }
+
+    measure()
+    const frame = window.requestAnimationFrame(measure)
+    if (typeof ResizeObserver === 'undefined') {
+      return () => window.cancelAnimationFrame(frame)
+    }
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [
+    displayedSessions,
+    effectivePanelState,
+    feedbackPresentationOpen,
+    hasBlockingOverlayContent,
+    layoutPreview,
+    maxVisibleSessions,
+  ])
 
   const morphTransition = effectivePanelState === 'collapsed'
     ? scaleTransitionDuration(closeMorphTransition, islandAnimationScale)
@@ -1571,7 +1637,9 @@ export function NotchPanel() {
                 {/* Base layer: session list */}
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'hover' && (
                   <motion.div
+                    ref={setHoverContentNode}
                     key="hover"
+                    data-testid="notch-hover-content"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
