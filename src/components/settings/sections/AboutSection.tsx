@@ -40,8 +40,9 @@ export function AboutSection() {
   return (
     <SettingSection title={t('settings.aboutTitle')}>
       <div className="about-header">
-        <div className="about-header__icon">🏝</div>
+        <img className="about-header__icon" src="/agentbro-logo.png" alt="" aria-hidden="true" />
         <div className="about-header__name">AgentBro</div>
+        <div className="about-header__slogan">{t('notch.slogan')}</div>
         <div className="about-header__version">Version 0.1.0-alpha</div>
       </div>
 

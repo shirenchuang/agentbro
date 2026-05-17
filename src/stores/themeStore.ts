@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ThemeConfig } from '../types/theme'
+import inkAmberThemeConfig from '../themes/ink-amber/theme.json'
 
 export interface ColorThemeInfo {
   id: string
@@ -14,6 +15,7 @@ export interface ColorThemeInfo {
 }
 
 export const COLOR_THEMES: ColorThemeInfo[] = [
+  { id: 'ink-amber', label: 'AgentBro Classic', labelZh: 'AgentBro 经典', tag: 'Default', isDark: false, bg: '#fff7ec', card: '#fffdf8', accent: '#f8a400' },
   { id: 'midnight', label: 'Midnight', labelZh: '午夜', tag: 'Evolab', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#7b78ff' },
   { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '磨砂玻璃', tag: 'Light', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#352eff' },
   { id: 'apple', label: 'Apple', labelZh: '苹果', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
@@ -23,6 +25,10 @@ export const COLOR_THEMES: ColorThemeInfo[] = [
   { id: 'soft-lavender', label: 'Soft Lavender', labelZh: '柔薰衣草', tag: 'Soft', isDark: false, bg: '#eeedf6', card: '#f8f7fc', accent: '#6366f1' },
   { id: 'system', label: 'System', labelZh: '跟随系统', tag: 'Auto', isDark: false, bg: 'linear-gradient(90deg, #0b0c0f 0 50%, #f5f5f7 50% 100%)', card: 'linear-gradient(90deg, #15171c 0 50%, #ffffff 50% 100%)', accent: '#007aff' },
 ]
+
+export function isDarkColorTheme(id: string) {
+  return COLOR_THEMES.find((theme) => theme.id === id)?.isDark ?? false
+}
 
 const DEFAULT_THEME: ThemeConfig = {
   name: 'default',
@@ -59,13 +65,22 @@ const DEFAULT_THEME: ThemeConfig = {
   sounds: { pack: '8bit' },
 }
 
+const INK_AMBER_THEME = inkAmberThemeConfig as ThemeConfig
+const BUILTIN_THEMES = [INK_AMBER_THEME, DEFAULT_THEME]
+const DEFAULT_ROLE_THEME_NAME = INK_AMBER_THEME.name
+
+type PersistedThemeState = {
+  activeThemeName?: string
+  colorTheme?: string
+}
+
 function applyColorTheme(id: string) {
   document.documentElement.setAttribute('data-island-color-theme', id)
 }
 
 function mergeThemes(themes: ThemeConfig[]) {
-  const seen = new Set([DEFAULT_THEME.name])
-  const all = [DEFAULT_THEME]
+  const seen = new Set(BUILTIN_THEMES.map((theme) => theme.name))
+  const all = [...BUILTIN_THEMES]
 
   for (const theme of themes) {
     if (seen.has(theme.name)) continue
@@ -89,10 +104,10 @@ interface ThemeStore {
 export const useThemeStore = create<ThemeStore>()(
   persist(
     (set, get) => ({
-      themes: [DEFAULT_THEME],
-      activeThemeName: 'default',
-      activeTheme: DEFAULT_THEME,
-      colorTheme: 'midnight',
+      themes: BUILTIN_THEMES,
+      activeThemeName: DEFAULT_ROLE_THEME_NAME,
+      activeTheme: INK_AMBER_THEME,
+      colorTheme: 'ink-amber',
 
       setActiveTheme: (name) => {
         const theme = get().themes.find((t) => t.name === name)
@@ -112,22 +127,36 @@ export const useThemeStore = create<ThemeStore>()(
       },
 
       loadThemes: (themes) => {
-        const all = mergeThemes(themes.filter((t) => t.name !== DEFAULT_THEME.name))
+        const builtInThemeNames = new Set(BUILTIN_THEMES.map((theme) => theme.name))
+        const all = mergeThemes(themes.filter((theme) => !builtInThemeNames.has(theme.name)))
         const activeThemeName = get().activeThemeName
-        const activeTheme = all.find((t) => t.name === activeThemeName) ?? DEFAULT_THEME
+        const activeTheme = all.find((t) => t.name === activeThemeName) ?? INK_AMBER_THEME
         set({ themes: all, activeTheme })
       },
     }),
     {
       name: 'agentbro-theme',
+      version: 2,
       partialize: (state) => ({ activeThemeName: state.activeThemeName, colorTheme: state.colorTheme }),
+      migrate: (persistedState, version) => {
+        const state = persistedState as PersistedThemeState | undefined
+        if (!state) return persistedState
+        if (version < 2 && (!state.activeThemeName || state.activeThemeName === DEFAULT_THEME.name)) {
+          return { ...state, activeThemeName: DEFAULT_ROLE_THEME_NAME }
+        }
+        return persistedState
+      },
       onRehydrateStorage: () => {
         return (state) => {
           if (state?.colorTheme && COLOR_THEMES.some((theme) => theme.id === state.colorTheme)) {
             applyColorTheme(state.colorTheme)
           } else if (state) {
-            state.colorTheme = 'midnight'
-            applyColorTheme('midnight')
+            state.colorTheme = 'ink-amber'
+            applyColorTheme('ink-amber')
+          }
+          if (state && !state.activeThemeName) {
+            state.activeThemeName = DEFAULT_ROLE_THEME_NAME
+            state.activeTheme = INK_AMBER_THEME
           }
         }
       },

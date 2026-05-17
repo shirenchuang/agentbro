@@ -8,6 +8,7 @@ import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { respondAutoApprove, respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
@@ -49,21 +50,24 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
 }
 
 const TERMINAL_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
-  'iTerm2': { bg: 'rgba(255, 255, 255, 0.08)', text: '#8d8d93' },
+  'iTerm': { bg: 'rgba(20, 184, 166, 0.16)', text: '#2dd4bf' },
+  'iTerm2': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
   'Terminal': { bg: 'rgba(107, 114, 128, 0.15)', text: '#9ca3af' },
+  'Ghostty': { bg: 'rgba(244, 114, 182, 0.15)', text: '#f472b6' },
   'Warp': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'Alacritty': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'Kitty': { bg: 'rgba(236, 72, 153, 0.15)', text: '#ec4899' },
   'WezTerm': { bg: 'rgba(168, 85, 247, 0.15)', text: '#a855f7' },
   'VS Code': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
-  'Cursor': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },
-  'Ghostty': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
-  'Windsurf': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
-  'Zed': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
-  'cmux': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
+  'Cursor': { bg: 'rgba(250, 204, 21, 0.15)', text: '#facc15' },
+  'Windsurf': { bg: 'rgba(56, 189, 248, 0.15)', text: '#38bdf8' },
+  'Zed': { bg: 'rgba(251, 113, 133, 0.15)', text: '#fb7185' },
+  'cmux': { bg: 'rgba(45, 212, 191, 0.15)', text: '#2dd4bf' },
+  'Kaku': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
 }
 
 const DEFAULT_BADGE = { bg: 'rgba(107, 114, 128, 0.15)', text: '#9ca3af' }
+const DEFAULT_TERMINAL_BADGE = { bg: 'rgba(20, 184, 166, 0.13)', text: '#5eead4' }
 
 const HOVER_SPEED_MS: Record<string, number> = {
   instant: 0.05,
@@ -77,6 +81,34 @@ function getAgentBadge(session: SessionState): { bg: string; text: string } {
     return { bg: 'rgba(255, 47, 129, 0.16)', text: '#ff2f81' }
   }
   return AGENT_BADGE_COLORS[session.agentType] || DEFAULT_BADGE
+}
+
+function getTerminalBadge(label: string): { bg: string; text: string } {
+  const exact = TERMINAL_BADGE_COLORS[label]
+  if (exact) return exact
+
+  const normalized = label.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const matchedKey = Object.keys(TERMINAL_BADGE_COLORS).find((key) => (
+    key.toLowerCase().replace(/[^a-z0-9]+/g, '') === normalized
+  ))
+  return matchedKey ? TERMINAL_BADGE_COLORS[matchedKey] : DEFAULT_TERMINAL_BADGE
+}
+
+function appBadgeMark(label: string): string {
+  const normalized = label.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  if (normalized.includes('iterm')) return 'iT'
+  if (normalized.includes('terminal')) return 'T'
+  if (normalized.includes('ghostty')) return 'G'
+  if (normalized.includes('warp')) return 'W'
+  if (normalized.includes('wezterm')) return 'Wz'
+  if (normalized.includes('kitty')) return 'K'
+  if (normalized.includes('alacritty')) return 'A'
+  if (normalized.includes('vscode')) return 'VS'
+  if (normalized.includes('cursor')) return 'Cu'
+  if (normalized.includes('windsurf')) return 'Ws'
+  if (normalized.includes('codex')) return 'Cx'
+  if (normalized.includes('chatgpt')) return 'GPT'
+  return label.slice(0, 2)
 }
 
 function stripMarkdown(text: string): string {
@@ -173,6 +205,11 @@ function getHoverSessionTitle(session: SessionState, recentUserMessage?: string)
 function isGenericProcessingDescription(text: string | undefined): boolean {
   const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
   return normalized === 'processing user input' || normalized.startsWith('processing user input:')
+}
+
+function isCompactingContextDescription(text: string | undefined): boolean {
+  const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return normalized === 'compacting context' || normalized.startsWith('compacting context:')
 }
 
 function splitToolTargetChanges(target: string): { name: string; additions?: string; deletions?: string } | null {
@@ -692,8 +729,8 @@ function SessionCard({
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
-  const showAgentBadge = shouldShowAgentBadge(session)
-  const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || DEFAULT_BADGE) : null
+  const showAgentBadge = Boolean(appLabel || terminalLabel) || shouldShowAgentBadge(session)
+  const termBadge = terminalLabel ? getTerminalBadge(terminalLabel) : null
   const recentUserMessage = latestUserMessage(session)
   const title = getHoverSessionTitle(session, recentUserMessage)
   const assistantPreview = latestAssistantPreview(session)
@@ -704,6 +741,7 @@ function SessionCard({
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
   const isMuted = Boolean(mutedSessions[session.id])
+  const isCompactingContext = session.phase === 'compacting' || isCompactingContextDescription(session.description)
 
   const isStatic = session.phase === 'idle' || session.phase === 'done'
   const showPassiveDot = isPassiveSession(session)
@@ -774,18 +812,18 @@ function SessionCard({
               <span className="hover-list__session-title">{title}</span>
 
               <div className="hover-list__meta">
-                {appLabel && (
-                  <span className="hover-list__agent-badge hover-list__source-badge">
-                    {appLabel}
-                  </span>
-                )}
                 {showAgentBadge && (
                   <span className="hover-list__agent-badge" style={{ background: badge.bg, color: badge.text }}>
                     {agentName}
                   </span>
                 )}
+                {appLabel && (
+                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__source-badge" data-app-mark={appBadgeMark(appLabel)}>
+                    {appLabel}
+                  </span>
+                )}
                 {terminalLabel && termBadge && (
-                  <span className="hover-list__agent-badge" style={{ background: termBadge.bg, color: termBadge.text }}>
+                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__terminal-badge" data-app-mark={appBadgeMark(terminalLabel)} style={{ background: termBadge.bg, color: termBadge.text }}>
                     {terminalLabel}
                   </span>
                 )}
@@ -850,10 +888,12 @@ function SessionCard({
                   <ToolTarget target={session.lastToolTarget} />
                 )}
               </div>
-            ) : session.phase === 'processing' ? (
+            ) : session.phase === 'processing' || session.phase === 'compacting' ? (
               <div className="hover-list__row3">
-                <span className="hover-list__tool-label">
-                  {session.description && !isGenericProcessingDescription(session.description)
+                <span className={`hover-list__tool-label${isCompactingContext ? ' hover-list__tool-label--compact' : ''}`}>
+                  {isCompactingContext
+                    ? t('notch.tool.compactingContext')
+                    : session.description && !isGenericProcessingDescription(session.description)
                     ? truncateText(stripMarkdown(session.description), 100)
                     : t('notch.thinking')}
                 </span>
@@ -920,6 +960,8 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
   const islandAnimationScaleValue = useConfigStore((s) => s.islandAnimationScale)
   const maxVisibleSessions = useConfigStore((s) => s.maxVisibleSessions)
+  const colorTheme = useThemeStore((s) => s.colorTheme)
+  const emptyLogoSrc = isDarkColorTheme(colorTheme) ? '/agentbro-logo-dark.png' : '/agentbro-logo.png'
   const islandAnimationScale = Math.max(0.1, islandAnimationScaleValue || 1)
   const animDuration = (HOVER_SPEED_MS[hoverSpeed] ?? 0.2) * islandAnimationScale
 
@@ -932,8 +974,8 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
     setSelectedIndexState(resolved)
   }, [])
 
-  const activeOverlay = useSessionStore((s) => s.activeOverlay)
   const hookNotification = useSessionStore((s) => s.hookNotification)
+  const activeOverlay = useSessionStore((s) => s.activeOverlay)
   const isAlertActive = activeOverlay?.type === 'permission' || activeOverlay?.type === 'question' || activeOverlay?.type === 'plan'
 
   const sorted = useMemo(() => {
@@ -979,15 +1021,28 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   if (sorted.length === 0) {
     return (
       <div className="hover-list__empty">
-        <svg className="hover-list__empty-logo" viewBox="0 0 48 48" fill="none" aria-hidden>
-          <rect x="4" y="10" width="40" height="28" rx="6" stroke="var(--island-text-muted)" strokeWidth="2" opacity="0.5" />
-          <circle cx="24" cy="24" r="6" stroke="var(--island-text-muted)" strokeWidth="2" opacity="0.5" />
-          <path d="M18 24h-4M34 24h-4M24 18v-4M24 30v4" stroke="var(--island-text-muted)" strokeWidth="2" strokeLinecap="round" opacity="0.35" />
-        </svg>
-        <span className="hover-list__empty-text">
-          {focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.noSessions')}<br />
-          {focusFilteredEmpty ? t('notch.noSessionInFocusHint') : t('notch.noSessionsHint')}
-        </span>
+        <div className="hover-list__empty-orbit" aria-hidden>
+          <span className="hover-list__empty-pulse" />
+          <img className="hover-list__empty-logo" src={emptyLogoSrc} alt="" />
+        </div>
+        <div className="hover-list__empty-copy">
+          <span className="hover-list__empty-title">
+            {focusFilteredEmpty ? t('notch.noSessionInFocus') : 'AgentBro'}
+          </span>
+          <span className="hover-list__empty-text">
+            {focusFilteredEmpty ? t('notch.noSessionInFocusHint') : t('notch.slogan')}
+          </span>
+        </div>
+        {!focusFilteredEmpty && (
+          <div className="hover-list__empty-agents" aria-hidden>
+            <span>Claude Code</span>
+            <span>Codex</span>
+            <span>Cursor</span>
+            <span>Gemini</span>
+            <span>OpenCode</span>
+            <span>Qwen</span>
+          </div>
+        )}
       </div>
     )
   }

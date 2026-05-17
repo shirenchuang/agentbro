@@ -10,7 +10,7 @@
   --vi-text-secondary: var(--island-text-secondary);
   --vi-text-tertiary: var(--island-text-muted);
   --vi-accent-green: #30D158;
-  --vi-accent-blue: #007AFF;
+  --vi-accent-blue: #F8A400;
   --vi-accent-orange: #FF9500;
   --vi-accent-red: #FF3B30;
   --vi-accent-coral: #E8654A;
@@ -38,8 +38,8 @@
 
   /* Accent */
   --accent: var(--island-accent);
-  --accent-hover: #409CFF;
-  --accent-glass: rgba(0, 122, 255, 0.3);
+  --accent-hover: #ffb21a;
+  --accent-glass: rgba(248, 164, 0, 0.28);
 
   /* Status colors */
   --status-active: var(--vi-accent-green);

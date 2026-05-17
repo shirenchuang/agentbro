@@ -13,6 +13,7 @@ import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
 import type { ChatMessage, SubagentInfo } from '../../types/agent'
 import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
+import { getAgentDisplayName } from '../../utils/sessionDisplay'
 import './ChatView.css'
 
 interface MessageGroup {
@@ -256,6 +257,7 @@ export function ChatView({ onBack }: ChatViewProps) {
 
   const currentSubagentHistory = subagentHistory?.sessionId === activeSession.id ? subagentHistory : null
   const displayedMessages = currentSubagentHistory?.messages ?? activeSession.chatHistory
+  const agentName = getAgentDisplayName(activeSession)
 
   return (
     <div className="chat-view">
@@ -321,7 +323,12 @@ export function ChatView({ onBack }: ChatViewProps) {
             group.type === 'collapsed' ? (
               <CollapsedGroup key={`g-${i}`} messages={group.messages} />
             ) : (
-              <MessageBubble key={`m-${i}`} message={group.messages[0]} />
+              <MessageBubble
+                key={`m-${i}`}
+                message={group.messages[0]}
+                agentType={activeSession.agentType}
+                agentName={agentName}
+              />
             )
           )
         )}

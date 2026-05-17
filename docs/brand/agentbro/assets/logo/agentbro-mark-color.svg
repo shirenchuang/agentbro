@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">AgentBro AB handshake mark</title>
+  <desc id="desc">A bold AB monogram with a compact negative-space handshake.</desc>
+  <defs>
+    <linearGradient id="b-fill" x1="136" y1="56" x2="214" y2="199" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1ED1C6"/>
+      <stop offset="1" stop-color="#0896A7"/>
+    </linearGradient>
+    <filter id="mark-shadow" x="-16%" y="-16%" width="132%" height="132%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#061E22" flood-opacity=".18"/>
+    </filter>
+  </defs>
+  <g filter="url(#mark-shadow)">
+    <text x="33" y="190" fill="#111820" font-family="Arial Rounded MT Bold, Avenir Next, Arial Black, Helvetica Neue, sans-serif" font-size="176" font-weight="900" letter-spacing="-18">A</text>
+    <text x="120" y="190" fill="url(#b-fill)" font-family="Arial Rounded MT Bold, Avenir Next, Arial Black, Helvetica Neue, sans-serif" font-size="176" font-weight="900" letter-spacing="-10">B</text>
+    <path d="M71 139h43" stroke="#F8FBF8" stroke-width="21" stroke-linecap="round"/>
+    <path d="M143 103h45" stroke="#F8FBF8" stroke-width="20" stroke-linecap="round"/>
+    <path d="M141 117c-7.8 0-13.3 3.1-18.7 8.5l-16.2 16.2" stroke="#F8FBF8" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M91 141 135 185" stroke="#F8FBF8" stroke-width="23" stroke-linecap="round"/>
+    <path d="m132 181 9 9M125 187l8 8M118 193l7 7" stroke="#F8FBF8" stroke-width="12" stroke-linecap="round"/>
+    <path d="M118 127c7-7 15-8.5 24-4.3" stroke="#0796A7" stroke-width="10" stroke-linecap="round"/>
+  </g>
+</svg>

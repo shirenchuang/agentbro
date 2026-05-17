@@ -118,6 +118,7 @@ function transformSession(bs: BackendSession): SessionState {
     sessionTitle: bs.sessionTitle ?? undefined,
     pid: bs.pid ?? undefined,
     tty: bs.tty ?? undefined,
+    termProgram: bs.termProgram ?? undefined,
     termBundleId: bs.termBundleId ?? undefined,
     weztermPane: bs.weztermPane ?? undefined,
     zellijPaneId: bs.zellijPaneId ?? undefined,

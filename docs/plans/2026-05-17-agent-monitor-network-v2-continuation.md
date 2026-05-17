@@ -18,8 +18,8 @@ Decision made:
 - Add Claude Code-first native network request monitoring through a local proxy.
 - Do not use system-wide MITM in this version because CA install and privacy risk are too high.
 - Network monitoring must default to off.
-- Monitoring must be manually enabled each time and should not persist as an always-on setting.
-- When the monitor page unmounts, the frontend disables the backend proxy.
+- Monitoring is enabled explicitly by the user, but the proxy lifecycle must not be tied to a React page unmount.
+- Claude Code hooks must be preserved. Network capture must not break AgentBro's hook-driven island/session monitor.
 
 ## Current Implementation State
 
@@ -46,6 +46,12 @@ Key backend files:
     - `set_network_monitor_enabled`
     - `get_network_monitor_requests`
     - `get_network_monitor_request_detail`
+    - `get_claude_wrapper_status`
+    - `install_claude_wrapper`
+    - `remove_claude_wrapper`
+  - Installs a PATH shim at `~/.agentbro/bin/claude`.
+  - The shim detects the real upstream from env/project/global Claude settings, routes it through AgentBro, then launches real Claude with process-level `ANTHROPIC_BASE_URL`.
+  - The shim must not pass `--settings`; doing so can override or bypass Claude Code hooks.
 
 - `src-tauri/src/commands/mod.rs`
   - `AppState` now includes `network_monitor`.
@@ -66,12 +72,12 @@ Key backend files:
 Key frontend files:
 
 - `src/components/settings/sections/AgentMonitorSection.tsx`
-  - Added top-level network control card.
+  - Added Agent Monitor sub-views: overview, capture, stats, sessions, access.
   - Toggle defaults off.
   - On mount: reads current network monitor status.
-  - On unmount: calls `setNetworkMonitorEnabled(false)`.
-  - Adds `网络请求` detail tab.
-  - Shows proxy command when enabled:
+  - Does not disable the proxy on page unmount.
+  - Adds `请求抓包` workbench and per-session `网络请求` detail tab.
+  - Shows proxy command when enabled for debugging/manual fallback:
     - `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`
   - Shows request list and detail:
     - model/status/duration/tokens
@@ -111,10 +117,14 @@ For AgentBro-launched Claude Code sessions:
 
 For externally launched Claude Code sessions:
 
-- The user must launch manually with the env command shown in the UI:
+- The preferred path is the AgentBro Claude command shim.
+- After the user installs the shim and opens a new shell, typing `claude` normally should route new Claude processes through AgentBro.
+- The shim injects only process-level `ANTHROPIC_BASE_URL=<agentbro-route>`.
+- It must preserve the user's Claude settings and hooks; it must not pass generated `--settings`.
+- The manual env command remains useful for debugging or non-standard shells:
   - `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`
 
-The monitor does not yet automatically modify existing external terminals or existing Claude processes.
+The monitor does not modify existing external terminals or existing Claude processes.
 
 ## Validation Already Run
 
@@ -184,6 +194,67 @@ This is still an MVP. Do not treat it as complete production-quality request ana
 
 ## Recommended Next Work
 
+## AgentBro Native Integration Direction
+
+Do not embed cc-viewer as a separate app or server inside AgentBro. Treat cc-viewer as the reference implementation for Claude Code request interpretation, then rebuild the durable pieces in AgentBro's native monitor domain.
+
+Target product shape:
+
+- `Agent监控` remains the top-level entry.
+- Network capture stays local, manual, memory-first, and off by default.
+- Claude command wrapping must preserve Claude Code hooks and AgentBro island behavior.
+- Captured HTTP requests are normalized into AgentBro trace records instead of staying as raw proxy rows.
+- AgentBro sessions, hook events, terminal launch metadata, and network requests should converge into one timeline.
+- Token usage should become a first-class analytics surface by project, session, model, request type, and time range.
+
+Wrapper invariant:
+
+- The wrapper may read Claude settings to discover the real provider upstream.
+- The wrapper may inject `ANTHROPIC_BASE_URL=<AgentBro route>` into the child process environment.
+- The wrapper must not generate or pass `--settings` to Claude Code.
+- The wrapper must not write project or global Claude settings.
+- Existing Claude Code hooks are part of AgentBro's monitoring contract and must be preserved.
+- If the AgentBro proxy is unavailable or stale, the wrapper must fall back to launching the real Claude command unchanged.
+
+Recommended layering:
+
+1. `Capture`
+   - Local provider proxy for Claude/Anthropic-compatible traffic.
+   - Preserve raw request/response details with redaction and bounded retention.
+   - Keep this provider-specific until Claude Code is reliable.
+
+2. `Interpret`
+   - Classify requests into `MainAgent`, `SubAgent`, `Count`, `Preflight`, `Synthetic`, `Plan`, or `Unknown`.
+   - Extract structured `system`, `messages`, `tools`, `response`, streaming chunks, and usage.
+   - Adopt cc-viewer-style heuristics, but keep the code native to AgentBro.
+
+3. `Correlate`
+   - Link requests to AgentBro sessions using injected launch metadata when available.
+   - Fall back to cwd/project/time-window matching with explicit confidence labels.
+   - Display unknown correlation honestly instead of implying exactness.
+
+4. `Analyze`
+   - Roll up token/cost metrics by session, project, model, request type, and date.
+   - Track cache read/create tokens separately.
+   - Later add waste diagnostics: low cache hit rate, repeated large prompts, retry storms, and expensive subagents.
+
+5. `Present`
+   - Replace raw-only request detail with focused tabs:
+     - `System`
+     - `Messages`
+     - `Tools`
+     - `Response`
+     - `Headers`
+     - `Raw`
+   - Keep raw JSON available for debugging, but make the normal path explain what the agent actually did.
+
+First implementation slice:
+
+- Add request classification and normalized usage summary to `NetworkRequestSummary`.
+- Add structured request detail tabs in `AgentMonitorSection`.
+- Keep storage in-memory and maintain all current privacy constraints.
+- Add frontend coverage that renders a classified request and its structured tabs.
+
 ### Step 1: Real E2E Test With Claude Code
 
 Run the desktop app:
@@ -196,7 +267,13 @@ Open settings -> `Agent监控`.
 
 Enable `原生网络请求监控`.
 
-Copy the displayed command, for example:
+Install `Claude 命令无感接入`, then open a new terminal and run:
+
+```bash
+claude
+```
+
+The manual command remains a debugging fallback:
 
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude
@@ -306,10 +383,13 @@ Frontend:
 - Network tab empty state when enabled with no requests.
 - Request list renders model/status/token summary.
 - Request detail renders system/messages/tools.
+- Overview/access copy makes it clear that AgentBro preserves Claude hooks/settings.
 
 Backend:
 
 - Unit tests for:
+  - Claude wrapper script never contains generated `--settings`
+  - Claude wrapper launches via process-level `ANTHROPIC_BASE_URL`
   - header redaction
   - upstream URL joining
   - system prompt extraction

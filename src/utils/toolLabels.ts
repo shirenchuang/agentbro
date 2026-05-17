@@ -46,6 +46,7 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   state_list_active: 'notch.tool.readingState',
   state_get_status: 'notch.tool.readingState',
   Compacting: 'notch.tool.compacting',
+  'Compacting context': 'notch.tool.compactingContext',
 }
 
 export function getToolActivityLabel(t: Translate, toolName: string): string {

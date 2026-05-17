@@ -126,12 +126,12 @@ export function TipDisplay({ show }: TipDisplayProps) {
   if (!show || !tip) return null
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-      <span style={{ fontSize: 11, color: 'var(--text-secondary)', flexShrink: 0 }}>Tips:</span>
+    <div className="tip-display">
+      <span className="tip-display__label">Tips:</span>
       <AnimatePresence mode="wait">
         <motion.span
           key={tip}
-          style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+          className="tip-display__text"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

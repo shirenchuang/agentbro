@@ -142,6 +142,7 @@ describe('NotchPanel island shell', () => {
       autoHideNoSessions: false,
       clickToDetail: true,
       completionCardHeight: 120,
+      detailPanelMaxHeight: 500,
       confettiEnabled: false,
       followFocus: false,
       hoverExpandDelay: 0,
@@ -618,7 +619,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
   })
 
-  it('renders blocking permission as the primary island content instead of over the session list', () => {
+  it('renders fresh blocking permission as the primary island content', () => {
     mountIsland({
       id: 'permission-s1',
       sessionId: 's1',
@@ -641,6 +642,31 @@ describe('NotchPanel island shell', () => {
     expect(scrollRegion).toBeInTheDocument()
     expect(actions).toBeInTheDocument()
     expect(scrollRegion).not.toContainElement(actions as HTMLElement)
+  })
+
+  it('renders collapsed permission inline in the hover session list', async () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+    })
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
+
+    fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
+
+    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'hover')
+    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+    expect(document.querySelector('.hover-list')).toBeInTheDocument()
+    expect(screen.getByText('agent-island · Port dynamic island')).toBeInTheDocument()
+    expect(document.querySelector('.hover-list__inline-perm')).toBeInTheDocument()
   })
 
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
@@ -940,7 +966,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().overlayQueue).toEqual([])
   })
 
-  it('defers feedback overlay dismissal after expiry until the cursor leaves', () => {
+  it('keeps the feedback countdown running while hovered', () => {
     vi.useFakeTimers()
     try {
       mountIsland({
@@ -954,18 +980,134 @@ describe('NotchPanel island shell', () => {
       const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
       fireEvent.pointerEnter(hitbox)
       act(() => {
-        vi.advanceTimersByTime(3_000)
+        vi.advanceTimersByTime(2_000)
       })
 
       expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
 
-      fireEvent.pointerLeave(hitbox)
+      fireEvent.mouseLeave(document.querySelector('.overlay-feedback')!)
+      act(() => {
+        vi.advanceTimersByTime(999)
+      })
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
+
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
 
       expect(useSessionStore.getState().activeOverlay).toBeNull()
       expect(useSessionStore.getState().panelState).toBe('collapsed')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('defers collapsed feedback presentation dismissal until the cursor leaves', () => {
+    vi.useFakeTimers()
+    try {
+      const activeOverlay: OverlayItem = {
+        id: 'completion-s1-collapsed',
+        sessionId: 's1',
+        type: 'completion',
+        data: { summary: 'Stay open while hovered' },
+        createdAt: Date.now(),
+      }
+      const currentSession = session()
+      useSessionStore.setState({
+        sessions: { [currentSession.id]: currentSession },
+        sessionList: [currentSession],
+        activeSessionId: currentSession.id,
+        panelState: 'collapsed',
+        activeOverlay,
+        overlayQueue: [activeOverlay],
+        rateLimits: undefined,
+        hookNotification: null,
+        wakeSilencedUntil: 0,
+        focusedTerminal: null,
+      })
+
+      render(<NotchPanel />)
+
+      fireEvent.mouseEnter(document.querySelector('.overlay-feedback')!)
+      act(() => {
+        vi.advanceTimersByTime(3_000)
+      })
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1-collapsed')
+
+      fireEvent.mouseLeave(document.querySelector('.overlay-feedback')!)
+
+      expect(useSessionStore.getState().activeOverlay).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('focuses the notch when the cursor enters an already visible notification', async () => {
+    const activeOverlay: OverlayItem = {
+      id: 'completion-s1-collapsed',
+      sessionId: 's1',
+      type: 'completion',
+      data: { summary: 'Do not steal focus' },
+      createdAt: Date.now(),
+    }
+    const currentSession = session()
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+    tauriMocks.setNotchFocusable.mockClear()
+
+    fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
+  })
+
+  it('does not let native notification hover probing steal focus', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(true)
+    const activeOverlay: OverlayItem = {
+      id: 'completion-s1-native',
+      sessionId: 's1',
+      type: 'completion',
+      data: { summary: 'Native probe should not focus' },
+      createdAt: Date.now(),
+    }
+    const currentSession = session()
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay,
+      overlayQueue: [activeOverlay],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+    tauriMocks.setNotchFocusable.mockClear()
+
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+    })
+
+    expect(tauriMocks.setNotchFocusable).not.toHaveBeenCalledWith(true)
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
   it('filters the session list to focused terminal sessions when follow focus is enabled', async () => {

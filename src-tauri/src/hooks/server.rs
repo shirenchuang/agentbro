@@ -1660,6 +1660,8 @@ impl HookServer {
             .get("engine_config_root")
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty());
+        let term_program = optional_nonempty_string(raw, "_term_program")
+            .or_else(|| optional_nonempty_string(raw, "_term_app"));
         let term_bundle_id = optional_nonempty_string(raw, "_term_bundle_id");
         let wezterm_pane = optional_nonempty_string(raw, "_wezterm_pane");
         let zellij_pane_id = optional_nonempty_string(raw, "_zellij_pane_id");
@@ -1671,6 +1673,7 @@ impl HookServer {
             && tty.is_none()
             && engine_label.is_none()
             && engine_config_root.is_none()
+            && term_program.is_none()
             && term_bundle_id.is_none()
             && wezterm_pane.is_none()
             && zellij_pane_id.is_none()
@@ -1693,6 +1696,9 @@ impl HookServer {
             }
             if let Some(root) = engine_config_root {
                 s.engine_config_root = Some(root.to_string());
+            }
+            if let Some(value) = term_program {
+                s.term_program = Some(value.to_string());
             }
             if let Some(value) = term_bundle_id {
                 s.term_bundle_id = Some(value.to_string());

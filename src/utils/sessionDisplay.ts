@@ -14,39 +14,48 @@ const TERMINAL_BUNDLE_LABELS: Array<[string, string]> = [
   ['apple.terminal', 'Terminal'],
   ['mitchellh.ghostty', 'Ghostty'],
   ['ghostty', 'Ghostty'],
+  ['warp', 'Warp'],
   ['wez.wezterm', 'WezTerm'],
   ['wezterm', 'WezTerm'],
   ['kovidgoyal.kitty', 'Kitty'],
   ['kitty', 'Kitty'],
-  ['warp', 'Warp'],
   ['alacritty', 'Alacritty'],
+  ['microsoft.vscodeinsiders', 'VS Code'],
+  ['microsoft.vscode', 'VS Code'],
   ['vscodeinsiders', 'VS Code'],
   ['vscode', 'VS Code'],
   ['todesktop.230313mzl4w4u92', 'Cursor'],
   ['cursor', 'Cursor'],
+  ['exafunction.windsurf', 'Windsurf'],
   ['windsurf', 'Windsurf'],
+  ['zed.zed', 'Zed'],
   ['zed', 'Zed'],
   ['cmuxterm', 'cmux'],
+  ['tw93.kaku', 'Kaku'],
+  ['kapeli.kaku', 'Kaku'],
 ]
 
-const TERMINAL_TEXT_LABELS: Array<[string, string]> = [
+const TERMINAL_NAME_LABELS: Array<[string, string]> = [
   ['iterm2', 'iTerm2'],
-  ['iterm', 'iTerm2'],
-  ['terminal.app', 'Terminal'],
+  ['iterm', 'iTerm'],
+  ['appleterminal', 'Terminal'],
   ['apple_terminal', 'Terminal'],
+  ['terminalapp', 'Terminal'],
   ['terminal', 'Terminal'],
   ['ghostty', 'Ghostty'],
+  ['warp', 'Warp'],
   ['wezterm', 'WezTerm'],
   ['kitty', 'Kitty'],
-  ['warp', 'Warp'],
   ['alacritty', 'Alacritty'],
-  ['vs code', 'VS Code'],
+  ['vscodeinsiders', 'VS Code'],
   ['vscode', 'VS Code'],
+  ['codeinsiders', 'VS Code'],
   ['code - insiders', 'VS Code'],
   ['cursor', 'Cursor'],
   ['windsurf', 'Windsurf'],
   ['zed', 'Zed'],
   ['cmux', 'cmux'],
+  ['kaku', 'Kaku'],
 ]
 
 const PASSIVE_PHASES = new Set<SessionPhase>(['idle', 'done', 'interrupted'])
@@ -83,16 +92,26 @@ export function isTtyLabel(value: string | null | undefined): boolean {
   return /^\/dev\/tty/.test(label) || /^ttys\d+$/i.test(label) || /^tty[A-Za-z0-9]+$/i.test(label)
 }
 
-function labelFromPairs(value: string | null | undefined, pairs: Array<[string, string]>): string | null {
-  const normalized = (value || '').trim().toLowerCase()
-  if (!normalized) return null
-  const matched = pairs.find(([needle]) => normalized.includes(needle))
-  return matched?.[1] ?? null
+function labelFromBundle(bundleId: string | null | undefined, labels: Array<[string, string]>): string | null {
+  const bundle = (bundleId || '').trim().toLowerCase()
+  if (!bundle) return null
+  return labels.find(([needle]) => bundle.includes(needle))?.[1] ?? null
+}
+
+function normalizeTerminalLabel(value: string | null | undefined): string | null {
+  const raw = (value || '').trim()
+  if (!raw || isTtyLabel(raw)) return null
+
+  const lastPathPart = raw.split('/').filter(Boolean).pop() || raw
+  const withoutExtension = lastPathPart.replace(/\.app$/i, '')
+  const normalized = withoutExtension.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const matched = TERMINAL_NAME_LABELS.find(([needle]) => normalized.includes(needle))
+  return matched?.[1] ?? withoutExtension
 }
 
 export function getSessionAppLabel(session: SessionState): string | null {
-  const bundleLabel = labelFromPairs(session.termBundleId, APP_BUNDLE_LABELS)
-  if (bundleLabel) return bundleLabel
+  const appLabel = labelFromBundle(session.termBundleId, APP_BUNDLE_LABELS)
+  if (appLabel) return appLabel
 
   const terminal = (session.terminal || '').trim()
   const terminalLower = terminal.toLowerCase()
@@ -104,18 +123,21 @@ export function getSessionAppLabel(session: SessionState): string | null {
 }
 
 export function getSessionTerminalLabel(session: SessionState): string | null {
-  const terminal = (session.terminal || '').trim()
-  const bundleLabel = labelFromPairs(session.termBundleId, TERMINAL_BUNDLE_LABELS)
-  if (bundleLabel) return bundleLabel
-
-  if (!terminal || isTtyLabel(terminal)) return null
-
   const appLabel = getSessionAppLabel(session)
-  if (appLabel && terminal.toLowerCase().includes(appLabel.replace(/\s+app$/i, '').toLowerCase())) {
+  const bundleLabel = labelFromBundle(session.termBundleId, TERMINAL_BUNDLE_LABELS)
+  if (bundleLabel && bundleLabel !== appLabel) return bundleLabel
+
+  const termProgramLabel = normalizeTerminalLabel(session.termProgram)
+  if (termProgramLabel && termProgramLabel !== appLabel) return termProgramLabel
+
+  const terminalLabel = normalizeTerminalLabel(session.terminal)
+  if (!terminalLabel) return null
+
+  if (appLabel && terminalLabel.toLowerCase().includes(appLabel.replace(/\s+app$/i, '').toLowerCase())) {
     return null
   }
 
-  return labelFromPairs(terminal, TERMINAL_TEXT_LABELS) ?? terminal
+  return terminalLabel
 }
 
 export function getSessionTitle(session: SessionState): string {

@@ -157,6 +157,7 @@ type IslandLayoutPreview = {
   contentFontSize?: string
   completionCardHeight?: number
   maxPanelHeight?: number
+  detailPanelMaxHeight?: number
 }
 
 function LayoutPreviewBody({ mode }: { mode: IslandLayoutPreview['mode'] }) {
@@ -248,6 +249,7 @@ export function NotchPanel() {
   const [focusedSessionIds, setFocusedSessionIds] = useState<Set<string> | null>(null)
   const [preparingOpen, setPreparingOpen] = useState(false)
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
+  const [inlinePermissionOverlayIds, setInlinePermissionOverlayIds] = useState<Set<string>>(() => new Set())
   const dragPointerIdRef = useRef<number | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const nativeHoverHitboxSizeRef = useRef({ width: 420, height: 52 })
@@ -307,6 +309,17 @@ export function NotchPanel() {
       : visibleSessions.map((session) => ({ ...session, subagents: [] }))
   ), [islandMonitorSubagents, visibleSessions])
   const focusFilteredEmpty = followFocus && focusedSessionIds !== null && sessions.length > 0 && visibleSessions.length === 0
+
+  const markActivePermissionInlineAfterCollapse = useCallback(() => {
+    const overlay = useSessionStore.getState().activeOverlay
+    if (overlay?.type !== 'permission') return
+    setInlinePermissionOverlayIds((current) => {
+      if (current.has(overlay.id)) return current
+      const next = new Set(current)
+      next.add(overlay.id)
+      return next
+    })
+  }, [])
 
   const hasActiveSession = useMemo(
     () => sessions.some((session) => session.phase === 'processing' || session.phase === 'compacting' || sessionNeedsAttention(session)),
@@ -373,6 +386,7 @@ export function NotchPanel() {
         if (typeof next.contentFontSize === 'string') store.updateConfig('contentFontSize', next.contentFontSize)
         if (typeof next.completionCardHeight === 'number') store.updateConfig('completionCardHeight', next.completionCardHeight)
         if (typeof next.maxPanelHeight === 'number') store.updateConfig('maxPanelHeight', next.maxPanelHeight)
+        if (typeof next.detailPanelMaxHeight === 'number') store.updateConfig('detailPanelMaxHeight', next.detailPanelMaxHeight)
         setLayoutPreview(event.payload)
         setNotchOpacity(1).catch(() => {})
       }).then((fn) => { unlistenPreview = fn }).catch(() => {})
@@ -564,6 +578,12 @@ export function NotchPanel() {
     const overlay = useSessionStore.getState().activeOverlay
     if (overlay?.type === 'permission') {
       inlineBlockingOverlayIdsRef.current.add(overlay.id)
+      setInlinePermissionOverlayIds((current) => {
+        if (current.has(overlay.id)) return current
+        const next = new Set(current)
+        next.add(overlay.id)
+        return next
+      })
     }
   }, [])
 
@@ -652,7 +672,9 @@ export function NotchPanel() {
     flushNativeIgnoreCursorEvents()
   }, [flushNativeIgnoreCursorEvents])
 
-  const focusNotchForHover = useCallback(() => {
+  const focusNotchForHover = useCallback((options?: { allowNonBlockingOverlay?: boolean }) => {
+    const overlay = useSessionStore.getState().activeOverlay
+    if (overlay && isNonBlockingOverlay(overlay) && !options?.allowNonBlockingOverlay) return
     setNotchFocusable(true).catch(() => {})
   }, [])
 
@@ -701,8 +723,8 @@ export function NotchPanel() {
     setPreparingOpen(false)
   }, [setPanelState])
 
-  const showHoverPanel = useCallback(() => {
-    focusNotchForHover()
+  const showHoverPanel = useCallback((options?: { allowNonBlockingOverlay?: boolean }) => {
+    focusNotchForHover(options)
     if (openPrepareTimerRef.current) {
       clearTimeout(openPrepareTimerRef.current)
       openPrepareTimerRef.current = undefined
@@ -723,7 +745,7 @@ export function NotchPanel() {
   }, [finishPreparedOpen, focusNotchForHover, islandAnimationScale, setPanelState])
 
   // Mouse enter
-  const handleMouseEnter = useCallback(() => {
+  const handleMouseEnter = useCallback((source: 'dom' | 'native' = 'dom') => {
     if (!islandEnabled) return
     const wakeSilenced = useSessionStore.getState().isWakeSilenced()
     if (leaveTimerRef.current) {
@@ -732,6 +754,13 @@ export function NotchPanel() {
     }
     if (wakeSilenced) return
     nativeHoverInsideRef.current = true
+    const notificationIsAlreadyVisible = Boolean(
+      activeOverlay
+      && isNonBlockingOverlay(activeOverlay)
+      && panelState === 'collapsed'
+      && !interaction.isHidden,
+    )
+    if (notificationIsAlreadyVisible && source === 'native') return
     if (panelState !== 'collapsed') {
       focusNotchForHover()
       return
@@ -743,16 +772,16 @@ export function NotchPanel() {
           const current = useSessionStore.getState().panelState
           const silenced = useSessionStore.getState().isWakeSilenced()
           if (current === 'collapsed' && !silenced) {
-            showHoverPanel()
+            showHoverPanel({ allowNonBlockingOverlay: source === 'dom' })
             if (hapticOnHover) performHaptic(hapticIntensity).catch(() => {})
           }
         }, delay)
       } else {
-        showHoverPanel()
+        showHoverPanel({ allowNonBlockingOverlay: source === 'dom' })
         if (hapticOnHover) performHaptic(hapticIntensity).catch(() => {})
       }
     }
-  }, [focusNotchForHover, hapticIntensity, hapticOnHover, hoverExpandDelay, interaction.isMicro, islandEnabled, microHoverExpandDelay, panelState, showHoverPanel])
+  }, [activeOverlay, focusNotchForHover, hapticIntensity, hapticOnHover, hoverExpandDelay, interaction.isHidden, interaction.isMicro, islandEnabled, microHoverExpandDelay, panelState, showHoverPanel])
 
   // Mouse leave
   const handleMouseLeave = useCallback(() => {
@@ -792,11 +821,12 @@ export function NotchPanel() {
           detailBackGuardUntilRef.current = 0
           markActivePermissionOverlayInline()
           setNotchFocusable(false).catch(() => {})
+          markActivePermissionInlineAfterCollapse()
           setPanelState('collapsed')
         }
       }, delay)
     }
-  }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActivePermissionOverlayInline, setPanelState])
+  }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActivePermissionInlineAfterCollapse, markActivePermissionOverlayInline, setPanelState])
 
   useEffect(() => {
     return () => {
@@ -822,7 +852,6 @@ export function NotchPanel() {
         const isOver = await isCursorOverNotch(width, height)
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
-        const overlayKeepsWindowInteractive = Boolean(activeOverlay && isNonBlockingOverlay(activeOverlay) && !interaction.isHidden)
         const ignoreTransparentHost = !islandEnabled
           || (
             islandSurfaceMode !== 'pet'
@@ -830,13 +859,12 @@ export function NotchPanel() {
             && !isOver
             && !preparingOpen
             && currentPanelState === 'collapsed'
-            && !overlayKeepsWindowInteractive
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
         if (isOver && !wasOver) {
           requestNativeIgnoreCursorEvents(false, { force: true })
-          handleMouseEnter()
+          handleMouseEnter('native')
         } else if (!isOver && wasOver) {
           handleMouseLeave()
         }
@@ -898,6 +926,7 @@ export function NotchPanel() {
               inlineBlockingOverlayIdsRef.current.add(overlay.id)
             }
             setNotchFocusable(false).catch(() => {})
+            markActivePermissionInlineAfterCollapse()
             setPanelState('collapsed')
           }
         } else if (store.panelState === 'expanded') {
@@ -922,6 +951,7 @@ export function NotchPanel() {
         detailModeRef.current = false
         markActivePermissionOverlayInline()
         setNotchFocusable(false).catch(() => {})
+        markActivePermissionInlineAfterCollapse()
         setPanelState('collapsed')
         return
       }
@@ -976,7 +1006,7 @@ export function NotchPanel() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [escSilenceDuration, markActivePermissionOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
+  }, [escSilenceDuration, markActivePermissionInlineAfterCollapse, markActivePermissionOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
   const handleSessionClick = (sessionId: string) => {
     if (!clickToDetail) {
@@ -1031,6 +1061,7 @@ export function NotchPanel() {
     }
     markActivePermissionOverlayInline()
     setNotchFocusable(false).catch(() => {})
+    markActivePermissionInlineAfterCollapse()
     setPanelState('collapsed')
   }
 
@@ -1041,6 +1072,7 @@ export function NotchPanel() {
   const compactPillWidth = useConfigStore((s) => s.compactPillWidth)
   const panelMaxWidth = useConfigStore((s) => s.panelMaxWidth)
   const completionCardHeight = useConfigStore((s) => s.completionCardHeight)
+  const detailPanelMaxHeight = useConfigStore((s) => s.detailPanelMaxHeight)
   const maxVisibleSessions = useConfigStore((s) => s.maxVisibleSessions)
   const allowHorizontalDrag = useConfigStore((s) => s.allowHorizontalDrag)
   const panelHorizontalOffset = useConfigStore((s) => s.panelHorizontalOffset)
@@ -1067,16 +1099,20 @@ export function NotchPanel() {
       : overlayPresentationOpen
         ? 'hover'
         : panelState
-  const showBlockingOverlayAsInline = Boolean(
+  const showPermissionInlineAfterCollapse = Boolean(
     activeOverlay?.type === 'permission'
-    && inlineBlockingOverlayIdsRef.current.has(activeOverlay.id),
+    && panelState === 'hover'
+    && (
+      inlinePermissionOverlayIds.has(activeOverlay.id)
+      || inlineBlockingOverlayIdsRef.current.has(activeOverlay.id)
+    ),
   )
   const hasBlockingOverlayContent = Boolean(
     !layoutPreview
     && activeOverlay
     && isBlockingOverlay(activeOverlay)
-    && !showBlockingOverlayAsInline
-    && effectivePanelState !== 'collapsed',
+    && effectivePanelState !== 'collapsed'
+    && !showPermissionInlineAfterCollapse,
   )
   const feedbackPresentationOpen = Boolean(
     !layoutPreview
@@ -1117,14 +1153,17 @@ export function NotchPanel() {
     : activeOverlay?.type === 'question'
       ? 380
       : 340
+  const effectiveDetailPanelMaxHeight = layoutPreview?.detailPanelMaxHeight ?? detailPanelMaxHeight
   const hoverPanelContentHeight = measuredHoverContentHeight || hoverListHeight
-  const expandedPreviewHeight = Math.min(
-    Math.max(
-      statusBarHeight + EXPANDED_PREVIEW_SESSION_COUNT * EXPANDED_PREVIEW_ROW_HEIGHT + EXPANDED_PREVIEW_VERTICAL_PADDING,
-      HOVER_PANEL_MIN_HEIGHT,
-    ),
-    maxPanelHeight || 560,
-  )
+  const expandedPreviewHeight = typeof layoutPreview?.detailPanelMaxHeight === 'number'
+    ? layoutPreview.detailPanelMaxHeight
+    : Math.min(
+        Math.max(
+          statusBarHeight + EXPANDED_PREVIEW_SESSION_COUNT * EXPANDED_PREVIEW_ROW_HEIGHT + EXPANDED_PREVIEW_VERTICAL_PADDING,
+          HOVER_PANEL_MIN_HEIGHT,
+        ),
+        effectiveDetailPanelMaxHeight || 500,
+      )
   const panelHeight =
     isPetMode
       ? 360
@@ -1136,15 +1175,15 @@ export function NotchPanel() {
             ? expandedPreviewHeight
             : hasBlockingOverlayContent
               ? Math.min(Math.max(measuredAlertContentHeight, blockingOverlayFallbackHeight, 220), maxPanelHeight || 600)
-            : feedbackPresentationOpen
-              ? Math.min(Math.max(measuredFeedbackContentHeight || completionCardHeight + 168, 220), maxPanelHeight || 600)
-            : overlayPresentationOpen
-              ? Math.min(Math.max(completionCardHeight + 168, 260), maxPanelHeight || 600)
-              : effectivePanelState === 'collapsed'
-                ? collapsedHeight
-                : effectivePanelState === 'hover'
-                  ? Math.min(Math.max(statusBarHeight + hoverPanelContentHeight, HOVER_PANEL_MIN_HEIGHT), maxPanelHeight || 600)
-                  : (maxPanelHeight || 560)
+              : feedbackPresentationOpen
+                ? Math.min(Math.max(measuredFeedbackContentHeight || completionCardHeight + 168, 220), maxPanelHeight || 600)
+                : overlayPresentationOpen
+                  ? Math.min(Math.max(completionCardHeight + 168, 260), maxPanelHeight || 600)
+                  : effectivePanelState === 'collapsed'
+                    ? collapsedHeight
+                    : effectivePanelState === 'hover'
+                      ? Math.min(Math.max(statusBarHeight + hoverPanelContentHeight, HOVER_PANEL_MIN_HEIGHT), maxPanelHeight || 600)
+                      : (effectiveDetailPanelMaxHeight || 500)
 
   const visualState = isPetMode
     ? 'pet'
@@ -1196,7 +1235,7 @@ export function NotchPanel() {
   const expandedHostContentWidth = isPetMode
     ? 820
     : (isCompact ? panelMaxWidth : Math.min(760, panelMaxWidth + 50))
-  const expandedHostPanelHeight = isPetMode ? 360 : (maxPanelHeight || 600)
+  const expandedHostPanelHeight = isPetMode ? 360 : Math.max(maxPanelHeight || 600, detailPanelMaxHeight || 500)
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || (!layoutPreview && interaction.isHidden)
@@ -1594,7 +1633,7 @@ export function NotchPanel() {
       <div
         className="notch-hitbox"
         data-island-hidden={islandHidden ? 'true' : 'false'}
-        onPointerEnter={handleMouseEnter}
+        onPointerEnter={() => handleMouseEnter('dom')}
         onPointerLeave={handleMouseLeave}
       >
         <motion.div
@@ -1697,8 +1736,10 @@ export function NotchPanel() {
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={scaledContentTransition}
+                    onMouseEnter={() => { nativeHoverInsideRef.current = true }}
+                    onMouseLeave={handleMouseLeave}
                   >
-                    <OverlayRenderer overlay={activeOverlay} onDismiss={() => dismissOverlay(activeOverlay.id)} />
+                    <OverlayRenderer overlay={activeOverlay} onDismiss={() => dismissNonBlockingOverlay(activeOverlay.id, { collapse: true })} />
                   </motion.div>
                 )}
 
@@ -1729,11 +1770,11 @@ export function NotchPanel() {
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'expanded' && (
                   <motion.div
                     key="expanded"
+                    className="notch-panel__detail-content"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={scaledContentTransition}
-                    style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
                   >
                     <ChatView onBack={() => {
                       if (Date.now() < detailBackGuardUntilRef.current) return

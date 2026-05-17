@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">AgentBro English stacked logo lockup</title>
+  <desc id="desc">AgentBro stacked logo lockup with the English slogan: Make Agents Easier to Use.</desc>
+  <defs>
+    <linearGradient id="b-fill" x1="136" y1="56" x2="214" y2="199" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1ED1C6"/>
+      <stop offset="1" stop-color="#0896A7"/>
+    </linearGradient>
+    <filter id="card-shadow" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#0A2C32" flood-opacity=".11"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="672" height="672" rx="28" fill="#F8FBF8" filter="url(#card-shadow)"/>
+  <g transform="translate(115 -8) scale(1.92)">
+    <text x="33" y="190" fill="#111820" font-family="Arial Rounded MT Bold, Avenir Next, Arial Black, Helvetica Neue, sans-serif" font-size="176" font-weight="900" letter-spacing="-18">A</text>
+    <text x="120" y="190" fill="url(#b-fill)" font-family="Arial Rounded MT Bold, Avenir Next, Arial Black, Helvetica Neue, sans-serif" font-size="176" font-weight="900" letter-spacing="-10">B</text>
+    <path d="M71 139h43" stroke="#F8FBF8" stroke-width="21" stroke-linecap="round"/>
+    <path d="M143 103h45" stroke="#F8FBF8" stroke-width="20" stroke-linecap="round"/>
+    <path d="M141 117c-7.8 0-13.3 3.1-18.7 8.5l-16.2 16.2" stroke="#F8FBF8" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M91 141 135 185" stroke="#F8FBF8" stroke-width="23" stroke-linecap="round"/>
+    <path d="m132 181 9 9M125 187l8 8M118 193l7 7" stroke="#F8FBF8" stroke-width="12" stroke-linecap="round"/>
+    <path d="M118 127c7-7 15-8.5 24-4.3" stroke="#0796A7" stroke-width="10" stroke-linecap="round"/>
+  </g>
+  <text x="360" y="510" text-anchor="middle" fill="#111820" font-family="Avenir Next, Arial Rounded MT Bold, Helvetica Neue, sans-serif" font-size="74" font-weight="700" letter-spacing="-1">AgentBro</text>
+  <text x="360" y="580" text-anchor="middle" fill="#0C6B63" font-family="Avenir Next, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="500" letter-spacing="0">Make Agents Easier to Use</text>
+</svg>

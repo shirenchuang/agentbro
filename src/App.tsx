@@ -53,7 +53,7 @@ function App() {
   // Apply color theme to DOM
   const colorTheme = useThemeStore((s) => s.colorTheme)
   useEffect(() => {
-    const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'midnight'
+    const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'ink-amber'
     document.documentElement.setAttribute('data-island-color-theme', normalizedTheme)
   }, [colorTheme])
 
@@ -61,7 +61,7 @@ function App() {
     const applyPersistedTheme = (raw: string | null) => {
       if (!raw) return
       try {
-        const persisted = JSON.parse(raw) as { state?: { activeThemeName?: string; colorTheme?: string } }
+        const persisted = JSON.parse(raw) as { version?: number; state?: { activeThemeName?: string; colorTheme?: string } }
         const nextTheme = persisted.state?.colorTheme
         if (nextTheme && COLOR_THEMES.some((theme) => theme.id === nextTheme)) {
           document.documentElement.setAttribute('data-island-color-theme', nextTheme)
@@ -69,7 +69,9 @@ function App() {
             useThemeStore.setState({ colorTheme: nextTheme })
           }
         }
-        const activeThemeName = persisted.state?.activeThemeName
+        const activeThemeName = (persisted.version ?? 0) < 2 && persisted.state?.activeThemeName === 'default'
+          ? 'ink-amber'
+          : persisted.state?.activeThemeName
         if (activeThemeName) {
           const store = useThemeStore.getState()
           if (store.activeThemeName === activeThemeName && store.activeTheme.name === activeThemeName) return
@@ -176,7 +178,7 @@ function App() {
     }
 
     return (
-      <div style={{ width: '100vw', height: '100vh', background: '#f2f2f7' }}>
+      <div style={{ width: '100vw', height: '100vh', background: 'var(--settings-bg)' }}>
         <SettingsApp onClose={handleClose} />
       </div>
     )

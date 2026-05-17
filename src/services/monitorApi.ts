@@ -2,9 +2,12 @@ export {
   getNetworkMonitorRequestDetail,
   getNetworkMonitorRequests,
   getNetworkMonitorStatus,
+  getClaudeWrapperStatus,
   getMonitorSessionDetail,
   getMonitorSessions,
   getMonitorTimeline,
+  installClaudeWrapper,
+  removeClaudeWrapper,
   setNetworkMonitorEnabled,
 } from './tauriApi'
 
@@ -16,4 +19,5 @@ export type {
   NetworkMonitorStatus,
   NetworkRequestDetail,
   NetworkRequestSummary,
+  ClaudeWrapperStatus,
 } from './tauriApi'

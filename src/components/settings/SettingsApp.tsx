@@ -9,12 +9,11 @@ import { AgentsSection } from './sections/AgentsSection'
 import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
-import type { CapabilityView, IslandSettingsView } from '../../types/capability'
+import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
-  'monitor': AgentMonitorSection,
   'license': LicenseSection,
   'about': AboutSection,
 }
@@ -28,7 +27,9 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const [activeSection, setActiveSection] = useState('general')
   const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
+  const [activeMonitorView, setActiveMonitorView] = useState<MonitorSettingsView>('overview')
   const [customAgentDialogOpen, setCustomAgentDialogOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const openCustomAgentDialog = () => {
     setActiveSection('agents')
@@ -42,9 +43,13 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         activeSection={activeSection}
         activeCapabilityView={activeCapabilityView}
         activeIslandView={activeIslandView}
+        activeMonitorView={activeMonitorView}
+        collapsed={sidebarCollapsed}
+        onCollapsedChange={setSidebarCollapsed}
         onSelect={setActiveSection}
         onCapabilityViewChange={setActiveCapabilityView}
         onIslandViewChange={setActiveIslandView}
+        onMonitorViewChange={setActiveMonitorView}
         onAddCustomAgent={openCustomAgentDialog}
       />
       <div className="settings-content settings-scroll">
@@ -64,6 +69,8 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
           >
             {activeSection === 'island' ? (
               <IslandSection activeView={activeIslandView} />
+            ) : activeSection === 'monitor' ? (
+              <AgentMonitorSection activeView={activeMonitorView} />
             ) : activeSection === 'agents' ? (
               <AgentsSection
                 activeView={activeCapabilityView}

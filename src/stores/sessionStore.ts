@@ -67,6 +67,29 @@ function toList(sessions: Record<string, SessionState>, now = Date.now()): Sessi
   return Object.values(sessions).filter((session) => isDisplayableSession(session, now))
 }
 
+function hasPendingInteraction(session: SessionState): boolean {
+  return Boolean(session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent)
+}
+
+function clearPendingInteraction(session: SessionState): SessionState {
+  return {
+    ...session,
+    pendingPermission: undefined,
+    pendingQuestion: undefined,
+    planTitle: undefined,
+    planContent: undefined,
+    planPermissions: undefined,
+    unattendedSince: undefined,
+  }
+}
+
+function clearBlockingOverlaysForSession(queue: OverlayItem[], sessionId: string): OverlayItem[] {
+  return queue.filter((overlay) => !(
+    overlay.sessionId === sessionId
+    && (overlay.type === 'permission' || overlay.type === 'question' || overlay.type === 'plan')
+  ))
+}
+
 function hasSessionContent(session: SessionState): boolean {
   return Boolean(
     session.lastUserMessage
@@ -194,6 +217,14 @@ function deriveCompletionSummary(session: SessionState, incoming?: string): stri
     || 'Task completed'
 }
 
+function shouldSuppressCompletionOverlay(session: SessionState, incoming?: string): boolean {
+  return Boolean(
+    sessionEndedText(incoming)
+    || sessionEndedText(session.responseText)
+    || sessionEndedText(session.description)
+  )
+}
+
 export const selectSessionList = (s: SessionStore) => s.sessionList
 export const selectActiveSession = (s: SessionStore): SessionState | undefined =>
   s.activeSessionId ? s.sessions[s.activeSessionId] : undefined
@@ -222,7 +253,13 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const sessions = { ...state.sessions }
       const panelState = state.panelState
+      let overlayQueue = state.overlayQueue
       let activeSessionId = state.activeSessionId
+      const clearBlockingState = (session: SessionState): SessionState => {
+        if (!hasPendingInteraction(session)) return session
+        overlayQueue = clearBlockingOverlaysForSession(overlayQueue, session.id)
+        return clearPendingInteraction(session)
+      }
 
       switch (event.type) {
         case 'session_start': {
@@ -257,7 +294,13 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         case 'processing': {
           const session = sessions[event.sessionId]
           if (session) {
-            sessions[event.sessionId] = { ...session, phase: 'processing', description: event.description, idleSince: undefined, unattendedSince: undefined, lastActivityAt: Date.now() }
+            sessions[event.sessionId] = {
+              ...clearBlockingState(session),
+              phase: 'processing',
+              description: event.description,
+              idleSince: undefined,
+              lastActivityAt: Date.now(),
+            }
           }
           break
         }
@@ -266,7 +309,14 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'user', content: event.content, timestamp: Date.now() }
-            sessions[event.sessionId] = { ...session, chatHistory: [...session.chatHistory, msg] }
+            sessions[event.sessionId] = {
+              ...clearBlockingState(session),
+              phase: 'processing',
+              lastUserMessage: event.content,
+              chatHistory: [...session.chatHistory, msg],
+              idleSince: undefined,
+              lastActivityAt: Date.now(),
+            }
           }
           break
         }
@@ -275,8 +325,9 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'tool_use', toolName: event.toolName, toolInput: event.toolInput, status: event.status, timestamp: Date.now() }
+            const baseSession = clearBlockingState(session)
             const updatedSession = {
-              ...session,
+              ...baseSession,
               phase: 'processing' as const,
               lastToolName: event.toolName,
               lastToolTarget: event.toolTarget,
@@ -419,8 +470,8 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
         case 'task_complete': {
           const session = sessions[event.sessionId]
+          const summary = session ? deriveCompletionSummary(session, event.summary) : event.summary
           if (session) {
-            const summary = deriveCompletionSummary(session, event.summary)
             const msg: ChatMessage = { role: 'assistant', content: summary, timestamp: Date.now() }
             sessions[event.sessionId] = {
               ...session,
@@ -429,6 +480,9 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               responseText: summary,
               pendingPermission: undefined,
               pendingQuestion: undefined,
+              planTitle: undefined,
+              planContent: undefined,
+              planPermissions: undefined,
               chatHistory: [...session.chatHistory, msg],
               taskCompletedAt: Date.now(),
               idleSince: Date.now(),
@@ -436,16 +490,18 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               subagents: session.subagents.map((s) => s.status === 'running' ? { ...s, status: 'completed' as const } : s),
             }
           }
-          // Push completion overlay with auto-dismiss
-          const completionId = `completion-${event.sessionId}-${Date.now()}`
-          const completionOverlay: OverlayItem = {
-            id: completionId,
-            sessionId: event.sessionId,
-            type: 'completion',
-            data: { summary: session ? deriveCompletionSummary(session, event.summary) : event.summary },
-            createdAt: Date.now(),
+          if (session && !shouldSuppressCompletionOverlay(session, event.summary)) {
+            // Push completion overlay with auto-dismiss
+            const completionId = `completion-${event.sessionId}-${Date.now()}`
+            const completionOverlay: OverlayItem = {
+              id: completionId,
+              sessionId: event.sessionId,
+              type: 'completion',
+              data: { summary },
+              createdAt: Date.now(),
+            }
+            setTimeout(() => useSessionStore.getState().pushOverlay(completionOverlay), 0)
           }
-          setTimeout(() => useSessionStore.getState().pushOverlay(completionOverlay), 0)
           break
         }
 
@@ -532,7 +588,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
       }
 
-      return { sessions, sessionList: toList(sessions), panelState, activeSessionId }
+      return { sessions, sessionList: toList(sessions), panelState, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
     // Trigger debounced save after update
     saveSessionsDebounced()
@@ -650,7 +706,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         const hideNonBlockingOverlays = isInternalCodexPromptSession(s)
 
         // Detect a newly available assistant response and show the response overlay.
-        if (!hideNonBlockingOverlays && s.phase !== 'done' && s.responseText && s.responseText !== prev?.responseText) {
+        if (!hideNonBlockingOverlays && s.phase !== 'done' && s.responseText && s.responseText !== prev?.responseText && !sessionEndedText(s.responseText)) {
           newOverlays.push({
             id: `response-${s.id}-${Date.now()}`,
             sessionId: s.id,
@@ -665,7 +721,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
         // Backend session updates are the source of truth in Tauri mode, so
         // synthesize completion overlays when a session transitions to done.
-        if (!hideNonBlockingOverlays && s.phase === 'done' && prev?.phase !== 'done') {
+        if (!hideNonBlockingOverlays && s.phase === 'done' && prev?.phase !== 'done' && !shouldSuppressCompletionOverlay(s)) {
           const summary = deriveCompletionSummary(s)
           newOverlays.push({
             id: `completion-${s.id}-${Date.now()}`,
@@ -678,7 +734,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       }
       let activeSessionId = state.activeSessionId
       const sessionList = toList(sessions, now)
-      if (activeSessionId && (!sessions[activeSessionId] || !isDisplayableSession(sessions[activeSessionId], now))) {
+      if (activeSessionId && !sessions[activeSessionId]) {
         activeSessionId = sessionList[0]?.id ?? null
       }
       const overlayQueue = state.overlayQueue.filter((overlay) => {

@@ -4,17 +4,21 @@ use axum::http::header::{ACCEPT_ENCODING, CONTENT_LENGTH, HOST, TRANSFER_ENCODIN
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use axum::routing::any;
 use axum::Router;
+use base64::Engine;
 use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 const DEFAULT_UPSTREAM_BASE_URL: &str = "https://api.anthropic.com";
+const ROUTE_PREFIX: &str = "/__agentbro_route/";
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CAPTURED_REQUESTS: usize = 200;
@@ -27,6 +31,17 @@ pub struct NetworkMonitorStatus {
     pub upstream_base_url: String,
     pub request_count: usize,
     pub active_request_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkUsageSummary {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_hit_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,10 +62,13 @@ pub struct NetworkRequestSummary {
     pub response_bytes: usize,
     pub is_stream: bool,
     pub main_agent: bool,
+    pub request_type: String,
+    pub request_sub_type: Option<String>,
     pub message_count: usize,
     pub tool_count: usize,
     pub system_preview: Option<String>,
     pub usage: Option<Value>,
+    pub usage_summary: Option<NetworkUsageSummary>,
     pub error: Option<String>,
     pub in_progress: bool,
 }
@@ -103,6 +121,7 @@ pub struct NetworkMonitor {
 
 impl NetworkMonitor {
     pub fn new() -> Self {
+        write_monitor_state(false, None);
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -191,6 +210,7 @@ impl NetworkMonitor {
             inner.active_request_count = 0;
             inner.requests.clear();
         }
+        write_monitor_state(true, Some(addr.port()));
 
         let monitor = self.clone();
         let app = Router::new()
@@ -230,6 +250,7 @@ impl NetworkMonitor {
         if let Some(tx) = shutdown {
             let _ = tx.send(());
         }
+        write_monitor_state(false, None);
         Ok(self.status())
     }
 
@@ -240,6 +261,7 @@ impl NetworkMonitor {
             inner.port = None;
             inner.shutdown_tx = None;
             inner.active_request_count = 0;
+            write_monitor_state(false, None);
         }
     }
 
@@ -250,6 +272,10 @@ impl NetworkMonitor {
         headers: HeaderMap,
         body: Body,
     ) -> Response<Body> {
+        if uri.path() == "/__agentbro_health" {
+            return text_response(StatusCode::NO_CONTENT, "");
+        }
+
         let status = self.status();
         if !status.enabled {
             return text_response(
@@ -258,7 +284,13 @@ impl NetworkMonitor {
             );
         }
 
-        let upstream_url = match join_upstream_url(&status.upstream_base_url, &uri) {
+        let route = match resolve_route(&status.upstream_base_url, &uri) {
+            Ok(route) => route,
+            Err(err) => return text_response(StatusCode::BAD_REQUEST, &err),
+        };
+
+        let upstream_url = match join_upstream_url(&route.upstream_base_url, &route.path_and_query)
+        {
             Ok(url) => url,
             Err(err) => return text_response(StatusCode::BAD_REQUEST, &err),
         };
@@ -369,7 +401,7 @@ impl NetworkMonitor {
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_ms();
-        let metadata = request_metadata(&request_body);
+        let metadata = request_metadata(&request_body, &uri);
         let summary = NetworkRequestSummary {
             id: id.clone(),
             timestamp_ms: now,
@@ -392,10 +424,13 @@ impl NetworkMonitor {
             response_bytes: 0,
             is_stream: metadata.is_stream,
             main_agent: metadata.main_agent,
+            request_type: metadata.request_type,
+            request_sub_type: metadata.request_sub_type,
             message_count: metadata.message_count,
             tool_count: metadata.tool_count,
             system_preview: metadata.system_preview,
             usage: None,
+            usage_summary: None,
             error: None,
             in_progress: true,
         };
@@ -429,6 +464,7 @@ impl NetworkMonitor {
     ) {
         let body_text = String::from_utf8_lossy(&capture.chunks).to_string();
         let usage = extract_usage(&body_text);
+        let usage_summary = usage.as_ref().map(summarize_usage);
         let mut inner = self.inner.lock().expect("network monitor lock poisoned");
         if inner.active_request_count > 0 {
             inner.active_request_count -= 1;
@@ -442,6 +478,7 @@ impl NetworkMonitor {
             entry.summary.duration_ms = Some(duration_ms);
             entry.summary.response_bytes = capture.total_bytes;
             entry.summary.usage = usage;
+            entry.summary.usage_summary = usage_summary;
             entry.summary.in_progress = false;
             entry.response_headers = response_headers;
             entry.response_body = Some(body_text);
@@ -491,6 +528,11 @@ async fn proxy_handler(
         .await
 }
 
+struct RouteTarget {
+    upstream_base_url: String,
+    path_and_query: String,
+}
+
 fn normalize_upstream_base_url(value: Option<String>) -> Result<String, String> {
     let value = value
         .map(|value| value.trim().trim_end_matches('/').to_string())
@@ -503,11 +545,35 @@ fn normalize_upstream_base_url(value: Option<String>) -> Result<String, String> 
     }
 }
 
-fn join_upstream_url(upstream_base_url: &str, uri: &Uri) -> Result<String, String> {
+fn resolve_route(default_upstream_base_url: &str, uri: &Uri) -> Result<RouteTarget, String> {
     let path_and_query = uri
         .path_and_query()
         .map(|part| part.as_str())
         .unwrap_or("/");
+    if !path_and_query.starts_with(ROUTE_PREFIX) {
+        return Ok(RouteTarget {
+            upstream_base_url: default_upstream_base_url.to_string(),
+            path_and_query: path_and_query.to_string(),
+        });
+    }
+
+    let rest = &path_and_query[ROUTE_PREFIX.len()..];
+    let Some((encoded_upstream, remaining)) = rest.split_once('/') else {
+        return Err("Invalid AgentBro route URL".to_string());
+    };
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded_upstream)
+        .map_err(|_| "Invalid AgentBro route upstream encoding".to_string())?;
+    let upstream_base_url = String::from_utf8(decoded)
+        .map_err(|_| "Invalid AgentBro route upstream text".to_string())?;
+    let upstream_base_url = normalize_upstream_base_url(Some(upstream_base_url))?;
+    Ok(RouteTarget {
+        upstream_base_url,
+        path_and_query: format!("/{remaining}"),
+    })
+}
+
+fn join_upstream_url(upstream_base_url: &str, path_and_query: &str) -> Result<String, String> {
     let url = format!(
         "{}{}",
         upstream_base_url.trim_end_matches('/'),
@@ -520,6 +586,28 @@ fn join_upstream_url(upstream_base_url: &str, uri: &Uri) -> Result<String, Strin
     reqwest::Url::parse(&url)
         .map(|url| url.to_string())
         .map_err(|e| format!("Invalid proxied URL: {e}"))
+}
+
+fn monitor_state_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".agentbro").join("network-monitor.json"))
+}
+
+fn write_monitor_state(enabled: bool, port: Option<u16>) {
+    let Some(path) = monitor_state_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let proxy_url = port.map(|port| format!("http://127.0.0.1:{port}"));
+    let payload = json!({
+        "enabled": enabled,
+        "proxyUrl": proxy_url,
+        "updatedAt": now_ms(),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&payload) {
+        let _ = fs::write(path, text);
+    }
 }
 
 fn parse_json_or_text(bytes: &Bytes) -> Value {
@@ -567,12 +655,14 @@ struct RequestMetadata {
     model: Option<String>,
     is_stream: bool,
     main_agent: bool,
+    request_type: String,
+    request_sub_type: Option<String>,
     message_count: usize,
     tool_count: usize,
     system_preview: Option<String>,
 }
 
-fn request_metadata(body: &Value) -> RequestMetadata {
+fn request_metadata(body: &Value, uri: &Uri) -> RequestMetadata {
     let model = body
         .get("model")
         .and_then(Value::as_str)
@@ -588,21 +678,233 @@ fn request_metadata(body: &Value) -> RequestMetadata {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    let system_preview = system_text(body).map(|text| truncate_chars(&text, 280));
-    let main_agent = system_preview
-        .as_deref()
-        .map(|text| text.contains("Claude Code") || text.contains("You are Claude Code"))
-        .unwrap_or(false)
-        || (body.get("system").is_some() && tool_count > 0 && message_count > 0);
+    let system_text = system_text(body);
+    let system_preview = system_text.as_ref().map(|text| truncate_chars(text, 280));
+    let (request_type, request_sub_type, main_agent) =
+        classify_request(body, uri, system_text.as_deref(), message_count, tool_count);
 
     RequestMetadata {
         model,
         is_stream,
         main_agent,
+        request_type,
+        request_sub_type,
         message_count,
         tool_count,
         system_preview,
     }
+}
+
+fn classify_request(
+    body: &Value,
+    uri: &Uri,
+    system_text: Option<&str>,
+    message_count: usize,
+    tool_count: usize,
+) -> (String, Option<String>, bool) {
+    let path = uri.path();
+    if path.ends_with("/v1/messages/count_tokens") || is_count_request(body) {
+        return ("Count".to_string(), None, false);
+    }
+
+    let sys = system_text.unwrap_or("");
+    if let Some(sub_type) = subagent_sub_type(sys, body) {
+        return ("SubAgent".to_string(), Some(sub_type), false);
+    }
+
+    let main_agent = is_main_agent_request(body, sys, message_count, tool_count);
+    if main_agent {
+        if let Some(sub_type) = synthetic_sub_type(body) {
+            return ("Synthetic".to_string(), Some(sub_type), true);
+        }
+        return ("MainAgent".to_string(), None, true);
+    }
+
+    if is_preflight_request(body, sys, tool_count, message_count) {
+        if latest_user_text(body)
+            .map(|text| {
+                text.trim_start()
+                    .starts_with("Implement the following plan:")
+            })
+            .unwrap_or(false)
+        {
+            return ("Plan".to_string(), Some("Prompt".to_string()), false);
+        }
+        return ("Preflight".to_string(), None, false);
+    }
+
+    ("Unknown".to_string(), None, false)
+}
+
+fn is_main_agent_request(
+    body: &Value,
+    sys: &str,
+    _message_count: usize,
+    tool_count: usize,
+) -> bool {
+    if !body.get("system").is_some() || !body.get("tools").and_then(Value::as_array).is_some() {
+        return false;
+    }
+    if !sys.contains("Claude Code") {
+        return false;
+    }
+    if is_subagent_system(sys) {
+        return false;
+    }
+
+    let tools = body.get("tools").and_then(Value::as_array);
+    if has_tool_named(tools, "ToolSearch") {
+        let first_text = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .and_then(|messages| messages.first())
+            .and_then(message_text)
+            .unwrap_or_default();
+        if first_text.contains("<available-deferred-tools>") {
+            return true;
+        }
+    }
+
+    tool_count > 5
+        && has_tool_named(tools, "Edit")
+        && has_tool_named(tools, "Bash")
+        && (has_tool_named(tools, "Task") || has_tool_named(tools, "Agent"))
+}
+
+fn subagent_sub_type(sys: &str, body: &Value) -> Option<String> {
+    if sys.contains("Extract any file paths")
+        || sys.contains("process Bash commands")
+        || contains_ci(sys, "command execution specialist")
+    {
+        return Some("Bash".to_string());
+    }
+    if contains_ci(sys, "file search specialist") {
+        return Some("Search".to_string());
+    }
+    if contains_ci(sys, "planning specialist") {
+        return Some("Plan".to_string());
+    }
+    if contains_ci(sys, "general-purpose agent") {
+        return Some("General".to_string());
+    }
+
+    latest_user_text(body).and_then(|text| {
+        if text.lines().any(|line| line.starts_with("Command:")) {
+            Some("Bash".to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_subagent_system(sys: &str) -> bool {
+    contains_ci(sys, "command execution specialist")
+        || contains_ci(sys, "file search specialist")
+        || contains_ci(sys, "planning specialist")
+        || contains_ci(sys, "general-purpose agent")
+}
+
+fn is_count_request(body: &Value) -> bool {
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return false;
+    };
+    if messages.len() != 1 {
+        return false;
+    }
+    messages
+        .first()
+        .and_then(message_text)
+        .map(|text| text.trim() == "count")
+        .unwrap_or(false)
+}
+
+fn is_preflight_request(body: &Value, sys: &str, tool_count: usize, message_count: usize) -> bool {
+    if tool_count > 0 || message_count != 1 || !sys.contains("Claude Code") {
+        return false;
+    }
+    let Some(text) = latest_user_text(body) else {
+        return false;
+    };
+    let trimmed = text.trim();
+    !trimmed.is_empty()
+        && trimmed != "count"
+        && !trimmed.starts_with("Command:")
+        && !trimmed.starts_with("<policy_spec>")
+        && !trimmed.starts_with("<task-notification>")
+        && !sys.contains("process Bash commands")
+        && !sys.contains("Extract any file paths")
+}
+
+fn synthetic_sub_type(body: &Value) -> Option<String> {
+    let text = latest_user_text(body)?;
+    let trimmed = text.trim_start();
+    let patterns = [
+        ("Recap", "Your task is to create a detailed summary"),
+        ("Title", "Generate a short title"),
+        (
+            "Compact",
+            "Your task is to create a summary of the conversation",
+        ),
+        (
+            "Topic",
+            "Analyze if this message indicates a new conversation topic",
+        ),
+        ("Summary", "Provide a concise summary"),
+    ];
+    patterns
+        .iter()
+        .find(|(_, prefix)| trimmed.starts_with(prefix))
+        .map(|(name, _)| (*name).to_string())
+}
+
+fn latest_user_text(body: &Value) -> Option<String> {
+    body.get("messages")
+        .and_then(Value::as_array)?
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(message_text)
+}
+
+fn message_text(message: &Value) -> Option<String> {
+    let content = message.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(blocks) = content.as_array() {
+        let parts: Vec<String> = blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
+    } else {
+        None
+    }
+}
+
+fn has_tool_named(tools: Option<&Vec<Value>>, name: &str) -> bool {
+    tools
+        .map(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        })
+        .unwrap_or(false)
+}
+
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    haystack
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 fn system_text(body: &Value) -> Option<String> {
@@ -677,6 +979,34 @@ fn extract_usage(body_text: &str) -> Option<Value> {
     latest_usage
 }
 
+fn summarize_usage(usage: &Value) -> NetworkUsageSummary {
+    let input_tokens = usage_u64(usage, "input_tokens");
+    let output_tokens = usage_u64(usage, "output_tokens");
+    let cache_creation_input_tokens = usage_u64(usage, "cache_creation_input_tokens");
+    let cache_read_input_tokens = usage_u64(usage, "cache_read_input_tokens");
+    let total_tokens =
+        input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens;
+    let cache_total = cache_creation_input_tokens + cache_read_input_tokens;
+    let cache_hit_rate = if cache_total > 0 {
+        Some((cache_read_input_tokens as f64 / cache_total as f64) * 100.0)
+    } else {
+        None
+    };
+
+    NetworkUsageSummary {
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
+        total_tokens,
+        cache_hit_rate,
+    }
+}
+
+fn usage_u64(usage: &Value, key: &str) -> u64 {
+    usage.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
 fn truncate_chars(value: &str, limit: usize) -> String {
     let mut result = String::new();
     for (index, ch) in value.chars().enumerate() {
@@ -702,4 +1032,60 @@ fn text_response(status: StatusCode, text: &str) -> Response<Body> {
         .header("content-type", "text/plain; charset=utf-8")
         .body(Body::from(text.to_string()))
         .unwrap_or_else(|_| Response::new(Body::from(text.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_encoded_route_to_original_upstream_and_path() {
+        let encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("https://www.coreapi.cc/");
+        let uri: Uri = format!("{ROUTE_PREFIX}{encoded}/v1/messages?beta=true")
+            .parse()
+            .unwrap();
+
+        let route = resolve_route(DEFAULT_UPSTREAM_BASE_URL, &uri).unwrap();
+
+        assert_eq!(route.upstream_base_url, "https://www.coreapi.cc");
+        assert_eq!(route.path_and_query, "/v1/messages?beta=true");
+        assert_eq!(
+            join_upstream_url(&route.upstream_base_url, &route.path_and_query).unwrap(),
+            "https://www.coreapi.cc/v1/messages?beta=true"
+        );
+    }
+
+    #[test]
+    fn classifies_count_token_request_from_path() {
+        let body = json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let uri: Uri = "/v1/messages/count_tokens".parse().unwrap();
+
+        let metadata = request_metadata(&body, &uri);
+
+        assert_eq!(metadata.request_type, "Count");
+        assert!(!metadata.main_agent);
+    }
+
+    #[test]
+    fn extracts_latest_stream_usage_summary() {
+        let body = "\
+event: message_start\n\
+data: {\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":3}}}\n\n\
+event: message_delta\n\
+data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":7,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":6}}\n\n";
+
+        let usage = extract_usage(body).unwrap();
+        let summary = summarize_usage(&usage);
+
+        assert_eq!(summary.input_tokens, 10);
+        assert_eq!(summary.output_tokens, 7);
+        assert_eq!(summary.cache_creation_input_tokens, 2);
+        assert_eq!(summary.cache_read_input_tokens, 6);
+        assert_eq!(summary.total_tokens, 25);
+        assert_eq!(summary.cache_hit_rate, Some(75.0));
+    }
 }

@@ -3,9 +3,13 @@ import {
   getNetworkMonitorRequestDetail,
   getNetworkMonitorRequests,
   getNetworkMonitorStatus,
+  getClaudeWrapperStatus,
   getMonitorSessionDetail,
   getMonitorSessions,
+  installClaudeWrapper,
+  removeClaudeWrapper,
   setNetworkMonitorEnabled,
+  type ClaudeWrapperStatus,
   type MonitorSessionDetail,
   type MonitorSessionSummary,
   type MonitorTimelineItem,
@@ -13,18 +17,20 @@ import {
   type NetworkRequestDetail,
   type NetworkRequestSummary,
 } from '../../../services/monitorApi'
-import { getChatHistory, jumpToTerminal } from '../../../services/tauriApi'
+import { getChatHistory, jumpToTerminal, openSystemPath } from '../../../services/tauriApi'
 import { mapParsedMessages } from '../../../hooks/useTauri'
 import { selectSessionList, useSessionStore } from '../../../stores/sessionStore'
 import type { BackendSession } from '../../../services/tauriApi'
 import type { ChatMessage, SessionState, TokenUsage } from '../../../types/agent'
 import { formatDurationShort } from '../../../utils/time'
 import { formatTokens } from '../../../utils/tokens'
+import type { MonitorSettingsView } from '../../../types/capability'
 import { Toggle } from '../Toggle'
 import './AgentMonitorSection.css'
 
 type DetailTab = 'overview' | 'network' | 'conversation' | 'timeline' | 'approvals' | 'raw'
 type DetailSession = BackendSession | SessionState
+type NetworkDetailTab = 'system' | 'messages' | 'tools' | 'response' | 'headers' | 'raw'
 
 const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
   { id: 'overview', label: '概览' },
@@ -41,6 +47,13 @@ const DEFAULT_NETWORK_STATUS: NetworkMonitorStatus = {
   upstreamBaseUrl: 'https://api.anthropic.com',
   requestCount: 0,
   activeRequestCount: 0,
+}
+
+const DEFAULT_WRAPPER_STATUS: ClaudeWrapperStatus = {
+  installed: false,
+  shimPath: '~/.agentbro/bin/claude',
+  pathHintInstalled: false,
+  shellConfigPath: '~/.zshrc',
 }
 
 function agentLabel(agentType: string, engineLabel?: string | null) {
@@ -134,11 +147,59 @@ function usageTotal(usage: Record<string, unknown> | null | undefined) {
     + usageValue(usage, 'cache_read_input_tokens')
 }
 
+function requestTypeLabel(request: NetworkRequestSummary) {
+  return request.requestSubType ? `${request.requestType}:${request.requestSubType}` : request.requestType
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function jsonArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+function requestSystem(body: unknown) {
+  return jsonObject(body).system
+}
+
+function requestMessages(body: unknown) {
+  return jsonArray(jsonObject(body).messages)
+}
+
+function requestTools(body: unknown) {
+  return jsonArray(jsonObject(body).tools)
+}
+
+function responseEvents(responseBody: string | null | undefined) {
+  if (!responseBody) return []
+  return responseBody
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line && line !== '[DONE]')
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return line
+      }
+    })
+}
+
 function shortPath(path?: string | null) {
   if (!path) return '-'
   const parts = path.split('/').filter(Boolean)
   if (parts.length <= 3) return path
   return `…/${parts.slice(-3).join('/')}`
+}
+
+function parentPath(path?: string | null) {
+  if (!path) return null
+  const normalized = path.replace(/\/+$/, '')
+  const index = normalized.lastIndexOf('/')
+  if (index <= 0) return null
+  return normalized.slice(0, index)
 }
 
 function sessionPlan(session?: DetailSession) {
@@ -176,13 +237,65 @@ function messagePreview(message: ChatMessage) {
   return message.content
 }
 
+interface AgentMonitorSectionProps {
+  activeView?: MonitorSettingsView
+}
+
 function roleLabel(role: ChatMessage['role']) {
   if (role === 'tool_use') return 'tool'
   if (role === 'permission') return 'approval'
   return role
 }
 
-export function AgentMonitorSection() {
+interface RequestStats {
+  key: string
+  requestCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreate: number
+  cacheRead: number
+  mainAgentCount: number
+  subAgentCount: number
+}
+
+function emptyRequestStats(key: string): RequestStats {
+  return {
+    key,
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreate: 0,
+    cacheRead: 0,
+    mainAgentCount: 0,
+    subAgentCount: 0,
+  }
+}
+
+function aggregateRequestStats(requests: NetworkRequestSummary[], by: 'model' | 'project') {
+  const groups = new Map<string, RequestStats>()
+  for (const request of requests) {
+    const key = by === 'model'
+      ? request.model || request.provider || 'unknown'
+      : request.project || '未关联项目'
+    const stats = groups.get(key) ?? emptyRequestStats(key)
+    stats.requestCount += 1
+    stats.inputTokens += request.usageSummary?.inputTokens ?? usageValue(request.usage, 'input_tokens')
+    stats.outputTokens += request.usageSummary?.outputTokens ?? usageValue(request.usage, 'output_tokens')
+    stats.cacheCreate += request.usageSummary?.cacheCreationInputTokens ?? usageValue(request.usage, 'cache_creation_input_tokens')
+    stats.cacheRead += request.usageSummary?.cacheReadInputTokens ?? usageValue(request.usage, 'cache_read_input_tokens')
+    if (request.requestType === 'MainAgent') stats.mainAgentCount += 1
+    if (request.requestType === 'SubAgent') stats.subAgentCount += 1
+    groups.set(key, stats)
+  }
+  return Array.from(groups.values()).sort((a, b) => b.requestCount - a.requestCount)
+}
+
+function cacheHitRate(stats: RequestStats) {
+  const cacheTotal = stats.cacheCreate + stats.cacheRead
+  return cacheTotal > 0 ? Math.round((stats.cacheRead / cacheTotal) * 100) : null
+}
+
+export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSectionProps) {
   const liveSessions = useSessionStore(selectSessionList)
   const [sessions, setSessions] = useState<MonitorSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -206,6 +319,8 @@ export function AgentMonitorSection() {
   const [networkLoading, setNetworkLoading] = useState(false)
   const [networkBusy, setNetworkBusy] = useState(false)
   const [networkError, setNetworkError] = useState('')
+  const [wrapperStatus, setWrapperStatus] = useState<ClaudeWrapperStatus>(DEFAULT_WRAPPER_STATUS)
+  const [wrapperBusy, setWrapperBusy] = useState(false)
 
   const loadSessions = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true)
@@ -238,6 +353,17 @@ export function AgentMonitorSection() {
     }
   }, [])
 
+  const loadWrapperStatus = useCallback(async () => {
+    try {
+      const status = await getClaudeWrapperStatus()
+      setWrapperStatus(status)
+      return status
+    } catch (err) {
+      setNetworkError(String(err))
+      return null
+    }
+  }, [])
+
   const loadNetworkRequests = useCallback(async () => {
     try {
       const requests = await getNetworkMonitorRequests()
@@ -261,10 +387,8 @@ export function AgentMonitorSection() {
     loadNetworkStatus().then((status) => {
       if (status?.enabled) loadNetworkRequests()
     })
-    return () => {
-      setNetworkMonitorEnabled(false).catch(() => undefined)
-    }
-  }, [loadNetworkRequests, loadNetworkStatus])
+    loadWrapperStatus()
+  }, [loadNetworkRequests, loadNetworkStatus, loadWrapperStatus])
 
   useEffect(() => {
     const timer = window.setInterval(() => loadSessions(false), 3000)
@@ -333,13 +457,15 @@ export function AgentMonitorSection() {
     }
   }, [activeTab, selectedId])
 
-  useEffect(() => {
-    if (activeTab !== 'network' || !networkStatus.enabled) return
-    loadNetworkRequests()
-  }, [activeTab, loadNetworkRequests, networkStatus.enabled])
+  const networkViewActive = activeTab === 'network' || activeView === 'capture'
 
   useEffect(() => {
-    if (activeTab !== 'network' || !selectedNetworkRequestId) {
+    if (!networkViewActive || !networkStatus.enabled) return
+    loadNetworkRequests()
+  }, [loadNetworkRequests, networkStatus.enabled, networkViewActive])
+
+  useEffect(() => {
+    if (!networkViewActive || !selectedNetworkRequestId) {
       setNetworkDetail(null)
       return
     }
@@ -364,7 +490,7 @@ export function AgentMonitorSection() {
     return () => {
       cancelled = true
     }
-  }, [activeTab, selectedNetworkRequestId, networkRequests])
+  }, [networkViewActive, selectedNetworkRequestId, networkRequests])
 
   const agentOptions = useMemo(() => Array.from(new Set(sessions.map((session) => session.agentType))).sort(), [sessions])
   const statusOptions = useMemo(() => Array.from(new Set(sessions.map((session) => session.phase))).sort(), [sessions])
@@ -394,6 +520,17 @@ export function AgentMonitorSection() {
     jumpToTerminal(selectedId).catch((err) => setDetailError(String(err)))
   }
 
+  const openSelectedTranscript = () => {
+    if (!detail?.transcriptPath) return
+    openSystemPath(detail.transcriptPath).catch((err) => setDetailError(String(err)))
+  }
+
+  const openSelectedTranscriptDirectory = () => {
+    const directory = parentPath(detail?.transcriptPath)
+    if (!directory) return
+    openSystemPath(directory).catch((err) => setDetailError(String(err)))
+  }
+
   const toggleNetworkMonitor = async (enabled: boolean) => {
     setNetworkBusy(true)
     setNetworkError('')
@@ -415,22 +552,27 @@ export function AgentMonitorSection() {
     }
   }
 
-  return (
-    <section className="agent-monitor">
-      <header className="agent-monitor__header">
-        <div>
-          <h2>Agent监控</h2>
-          <p>查看 Agent 会话状态，并在手动开启后捕获 Claude Code 原生网络请求。</p>
-        </div>
-        <button type="button" className="agent-monitor__refresh" onClick={() => loadSessions(true)}>
-          重新加载
-        </button>
-      </header>
+  const toggleClaudeWrapper = async () => {
+    setWrapperBusy(true)
+    setNetworkError('')
+    try {
+      const status = wrapperStatus.installed
+        ? await removeClaudeWrapper()
+        : await installClaudeWrapper()
+      setWrapperStatus(status)
+    } catch (err) {
+      setNetworkError(String(err))
+    } finally {
+      setWrapperBusy(false)
+    }
+  }
 
+  const accessControls = (
+    <>
       <div className={`agent-monitor__network-control ${networkStatus.enabled ? 'agent-monitor__network-control--on' : ''}`}>
         <div className="agent-monitor__network-copy">
           <strong>原生网络请求监控</strong>
-          <span>默认关闭；开启后会启动本地代理并记录 request body、system prompt、messages、tools 和 response usage。</span>
+          <span>开启后启动本地 inspector 代理，记录 request body、system prompt、messages、tools、response、usage 和 KV cache 数据。</span>
           <label>
             上游地址
             <input
@@ -450,15 +592,209 @@ export function AgentMonitorSection() {
         </div>
       </div>
 
+      <div className={`agent-monitor__wrapper-control ${wrapperStatus.installed ? 'agent-monitor__wrapper-control--on' : ''}`}>
+        <div>
+          <strong>Claude 命令无感接入</strong>
+          <span>
+            安装一次后，新开的 iTerm、Terminal、Cursor/VS Code 终端里继续输入 claude，会先进入 AgentBro inspector，再启动真实 Claude。只注入进程级环境变量，不覆盖 Claude settings 或 hooks。
+          </span>
+          <code>{wrapperStatus.shimPath}</code>
+          <em>{wrapperStatus.pathHintInstalled ? `PATH 已写入 ${wrapperStatus.shellConfigPath} · hooks preserved` : `PATH 尚未写入 ${wrapperStatus.shellConfigPath}`}</em>
+        </div>
+        <button type="button" onClick={toggleClaudeWrapper} disabled={wrapperBusy}>
+          {wrapperStatus.installed ? '移除接入' : '安装接入'}
+        </button>
+      </div>
+    </>
+  )
+
+  const summaryStats = (
+    <div className="agent-monitor__stats" aria-label="Agent monitor summary">
+      <div><span>Sessions</span><strong>{sessions.length}</strong></div>
+      <div><span>运行中</span><strong>{runningCount}</strong></div>
+      <div><span>等待用户</span><strong>{waitingCount}</strong></div>
+      <div><span>网络请求</span><strong>{networkStatus.requestCount}</strong></div>
+      <div><span>Raw events</span><strong>{rawEvents.length}</strong></div>
+    </div>
+  )
+
+  const quickControls = (
+    <div className="agent-monitor__quick-controls">
+      <section className={networkStatus.enabled ? 'agent-monitor__quick-control agent-monitor__quick-control--on' : 'agent-monitor__quick-control'}>
+        <div>
+          <span>Inspector 代理</span>
+          <strong>{networkStatus.enabled ? '运行中' : '未开启'}</strong>
+          <em>{networkStatus.proxyUrl || networkStatus.upstreamBaseUrl}</em>
+        </div>
+        <Toggle checked={networkStatus.enabled} onChange={toggleNetworkMonitor} disabled={networkBusy} />
+      </section>
+      <section className={wrapperStatus.installed ? 'agent-monitor__quick-control agent-monitor__quick-control--on' : 'agent-monitor__quick-control'}>
+        <div>
+          <span>Claude 命令接入</span>
+          <strong>{wrapperStatus.installed ? '已安装' : '未安装'}</strong>
+          <em>{wrapperStatus.pathHintInstalled ? 'PATH 已配置 · 保留 hooks' : '等待安装'}</em>
+        </div>
+        <button type="button" onClick={toggleClaudeWrapper} disabled={wrapperBusy}>
+          {wrapperStatus.installed ? '移除' : '安装'}
+        </button>
+      </section>
+    </div>
+  )
+
+  const modelStats = aggregateRequestStats(networkRequests, 'model')
+  const projectStats = aggregateRequestStats(networkRequests, 'project')
+  const networkTokenTotal = networkRequests.reduce((total, request) => (
+    total + (request.usageSummary?.totalTokens ?? usageTotal(request.usage))
+  ), 0)
+
+  if (activeView === 'access') {
+    return (
+      <section className="agent-monitor">
+        <header className="agent-monitor__header">
+          <div>
+            <h2>接入设置</h2>
+            <p>管理本地 inspector 代理和 Claude 命令无感接入。provider 仍按当前 shell、项目或全局 Claude 配置决定，Claude hooks/settings 会被保留。</p>
+          </div>
+          <button type="button" className="agent-monitor__refresh" onClick={() => {
+            loadNetworkStatus()
+            loadWrapperStatus()
+          }}>
+            重新加载
+          </button>
+        </header>
+        {accessControls}
+        {networkError && <div className="agent-monitor__notice">{networkError}</div>}
+      </section>
+    )
+  }
+
+  if (activeView === 'capture') {
+    return (
+      <section className="agent-monitor">
+        <header className="agent-monitor__header">
+          <div>
+            <h2>请求抓包</h2>
+            <p>按 MainAgent、SubAgent、count、preflight 分类查看 Claude Code 的 system、messages、tools、response 和 KV cache。</p>
+          </div>
+          <button type="button" className="agent-monitor__refresh" onClick={() => {
+            loadNetworkStatus()
+            loadNetworkRequests()
+          }}>
+            刷新请求
+          </button>
+        </header>
+        {accessControls}
+        {networkError && <div className="agent-monitor__notice">{networkError}</div>}
+        <div className="agent-monitor__capture-workbench">
+          <NetworkRequestsTab
+            status={networkStatus}
+            requests={networkRequests}
+            selectedRequestId={selectedNetworkRequestId}
+            detail={networkDetail}
+            loading={networkLoading}
+            onSelect={setSelectedNetworkRequestId}
+            onRefresh={() => {
+              loadNetworkStatus()
+              loadNetworkRequests()
+            }}
+          />
+        </div>
+      </section>
+    )
+  }
+
+  if (activeView === 'stats') {
+    return (
+      <section className="agent-monitor">
+        <header className="agent-monitor__header">
+          <div>
+            <h2>项目统计</h2>
+            <p>按项目和模型聚合请求量、Main/SubAgent 占比、token 消耗和 KV cache 命中。</p>
+          </div>
+          <button type="button" className="agent-monitor__refresh" onClick={loadNetworkRequests}>刷新统计</button>
+        </header>
+        {summaryStats}
+        <div className="agent-monitor__metric-row agent-monitor__metric-row--wide">
+          <div>
+            <span>Captured tokens</span>
+            <strong>{formatTokens(networkTokenTotal)}</strong>
+            <em>来自已捕获网络请求</em>
+          </div>
+          <div>
+            <span>MainAgent requests</span>
+            <strong>{networkRequests.filter((request) => request.requestType === 'MainAgent').length}</strong>
+            <em>主会话推理请求</em>
+          </div>
+          <div>
+            <span>SubAgent requests</span>
+            <strong>{networkRequests.filter((request) => request.requestType === 'SubAgent').length}</strong>
+            <em>子任务请求</em>
+          </div>
+        </div>
+        <StatsPanel title="模型使用统计" items={modelStats} />
+        <StatsPanel title="项目请求统计" items={projectStats} />
+      </section>
+    )
+  }
+
+  if (activeView === 'overview') {
+    return (
+      <section className="agent-monitor">
+        <header className="agent-monitor__header">
+          <div>
+            <h2>监控总览</h2>
+            <p>集中查看 Agent 会话、Claude 原生请求、KV cache 和接入状态。</p>
+          </div>
+          <button type="button" className="agent-monitor__refresh" onClick={() => {
+            loadSessions(true)
+            loadNetworkStatus()
+            loadNetworkRequests()
+          }}>
+            重新加载
+          </button>
+        </header>
+        {quickControls}
+        {networkError && <div className="agent-monitor__notice">{networkError}</div>}
+        {summaryStats}
+        <div className="agent-monitor__overview-grid">
+          <section>
+            <h3>抓包状态</h3>
+            <div className="agent-monitor__kv-grid">
+              <div><span>Inspector</span><strong>{networkStatus.enabled ? '运行中' : '未开启'}</strong></div>
+              <div><span>无感接入</span><strong>{wrapperStatus.installed ? '已安装' : '未安装'}</strong></div>
+              <div><span>Proxy</span><strong>{networkStatus.proxyUrl || '-'}</strong></div>
+              <div><span>Upstream</span><strong>{networkStatus.upstreamBaseUrl}</strong></div>
+            </div>
+          </section>
+          <section>
+            <h3>请求结构</h3>
+            <div className="agent-monitor__metric-row">
+              <div><span>MainAgent</span><strong>{networkRequests.filter((request) => request.requestType === 'MainAgent').length}</strong><em>主请求</em></div>
+              <div><span>SubAgent</span><strong>{networkRequests.filter((request) => request.requestType === 'SubAgent').length}</strong><em>子请求</em></div>
+              <div><span>Tokens</span><strong>{formatTokens(networkTokenTotal)}</strong><em>已捕获</em></div>
+            </div>
+          </section>
+        </div>
+        <StatsPanel title="模型使用统计" items={modelStats.slice(0, 3)} compact />
+      </section>
+    )
+  }
+
+  return (
+    <section className="agent-monitor">
+      <header className="agent-monitor__header">
+        <div>
+          <h2>Agent监控</h2>
+          <p>查看 Agent 会话状态，并在手动开启后捕获 Claude Code 原生网络请求。</p>
+        </div>
+        <button type="button" className="agent-monitor__refresh" onClick={() => loadSessions(true)}>
+          重新加载
+        </button>
+      </header>
+
       {networkError && <div className="agent-monitor__notice">{networkError}</div>}
 
-      <div className="agent-monitor__stats" aria-label="Agent monitor summary">
-        <div><span>Sessions</span><strong>{sessions.length}</strong></div>
-        <div><span>运行中</span><strong>{runningCount}</strong></div>
-        <div><span>等待用户</span><strong>{waitingCount}</strong></div>
-        <div><span>网络请求</span><strong>{networkStatus.requestCount}</strong></div>
-        <div><span>Raw events</span><strong>{rawEvents.length}</strong></div>
-      </div>
+      {summaryStats}
 
       <div className="agent-monitor__filters">
         <label>
@@ -493,47 +829,41 @@ export function AgentMonitorSection() {
           ) : filteredSessions.length === 0 ? (
             <div className="agent-monitor__empty">暂无匹配的 Agent 会话。</div>
           ) : (
-            <table className="agent-monitor__table">
-              <thead>
-                <tr>
-                  <th>Agent</th>
-                  <th>项目 / cwd</th>
-                  <th>状态</th>
-                  <th>时长</th>
-                  <th>Token</th>
-                  <th>最后工具</th>
-                  <th>等待</th>
-                  <th>Sub</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSessions.map((session) => (
-                  <tr
-                    key={session.id}
-                    className={session.id === selectedId ? 'agent-monitor__row--active' : ''}
-                    onClick={() => {
-                      setSelectedId(session.id)
-                      setActiveTab('overview')
-                    }}
-                  >
-                    <td>
-                      <strong>{agentLabel(session.agentType, session.engineLabel)}</strong>
-                      <span>{session.id.slice(0, 8)}</span>
-                    </td>
-                    <td>
-                      <strong>{session.title || session.project || 'Unknown'}</strong>
-                      <span title={session.cwd}>{shortPath(session.cwd)}</span>
-                    </td>
-                    <td><i className={`agent-monitor__dot agent-monitor__dot--${session.phase}`} />{phaseLabel(session.phase)}</td>
-                    <td>{formatDurationShort(session.duration)}</td>
-                    <td>{formatTokens(session.tokenTotal)}</td>
-                    <td title={session.lastToolTarget || undefined}>{session.lastToolName || '-'}</td>
-                    <td>{session.waitingUser ? pendingLabel(session.pendingKind) : '-'}</td>
-                    <td>{session.subagentCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="agent-monitor__session-list">
+              {filteredSessions.map((session) => (
+                <button
+                  key={session.id}
+                  type="button"
+                  className={session.id === selectedId ? 'agent-monitor__session-row agent-monitor__session-row--active' : 'agent-monitor__session-row'}
+                  onClick={() => {
+                    setSelectedId(session.id)
+                    setActiveTab('overview')
+                  }}
+                >
+                  <span className="agent-monitor__session-agent">
+                    <strong>{agentLabel(session.agentType, session.engineLabel)}</strong>
+                    <em>{session.id.slice(0, 8)}</em>
+                  </span>
+                  <span className="agent-monitor__session-main">
+                    <strong>{session.title || session.project || 'Unknown'}</strong>
+                    <em title={session.cwd}>{shortPath(session.cwd)}</em>
+                  </span>
+                  <span className="agent-monitor__session-state">
+                    <i className={`agent-monitor__dot agent-monitor__dot--${session.phase}`} />
+                    {phaseLabel(session.phase)}
+                  </span>
+                  <span className="agent-monitor__session-metrics">
+                    <em>{formatDurationShort(session.duration)}</em>
+                    <em>{formatTokens(session.tokenTotal)} tok</em>
+                    <em>{session.subagentCount} sub</em>
+                  </span>
+                  <span className="agent-monitor__session-foot">
+                    <em>{session.lastToolName || '无工具'}</em>
+                    <em>{session.waitingUser ? pendingLabel(session.pendingKind) : '无等待'}</em>
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
@@ -546,9 +876,17 @@ export function AgentMonitorSection() {
                 <div>
                   <span>{selectedSummary ? agentLabel(selectedSummary.agentType, selectedSummary.engineLabel) : 'Session'}</span>
                   <h3>{selectedSummary?.title || selectedSummary?.project || selectedId}</h3>
-                  <code>{selectedId}</code>
+                  <code title={detail?.transcriptPath || undefined}>{selectedId}</code>
                 </div>
-                <button type="button" onClick={jumpSelected}>跳转终端</button>
+                <div className="agent-monitor__detail-actions">
+                  <button type="button" onClick={openSelectedTranscript} disabled={!detail?.transcriptPath}>
+                    打开 JSON
+                  </button>
+                  <button type="button" onClick={openSelectedTranscriptDirectory} disabled={!parentPath(detail?.transcriptPath)}>
+                    打开目录
+                  </button>
+                  <button type="button" onClick={jumpSelected}>跳转终端</button>
+                </div>
               </div>
 
               <div className="agent-monitor__tabs">
@@ -676,6 +1014,54 @@ function OverviewTab({
   )
 }
 
+function StatsPanel({
+  title,
+  items,
+  compact = false,
+}: {
+  title: string
+  items: RequestStats[]
+  compact?: boolean
+}) {
+  return (
+    <section className={`agent-monitor__stats-panel ${compact ? 'agent-monitor__stats-panel--compact' : ''}`}>
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <div className="agent-monitor__empty">暂无可统计的网络请求。开启请求抓包并运行 Claude 后会在这里聚合。</div>
+      ) : (
+        <div className="agent-monitor__stats-list">
+          {items.map((item) => {
+            const hitRate = cacheHitRate(item)
+            return (
+              <article key={item.key} className="agent-monitor__stats-item">
+                <header>
+                  <strong>{item.key}</strong>
+                  <span>{item.requestCount} reqs</span>
+                </header>
+                <div>
+                  <span>Token</span>
+                  <strong>{formatTokens(item.inputTokens + item.outputTokens)}</strong>
+                  <em>{formatTokens(item.inputTokens)} in · {formatTokens(item.outputTokens)} out</em>
+                </div>
+                <div>
+                  <span>KV Cache</span>
+                  <strong>{hitRate == null ? '-' : `${hitRate}%`}</strong>
+                  <em>{formatTokens(item.cacheCreate)} create · {formatTokens(item.cacheRead)} read</em>
+                </div>
+                <div>
+                  <span>Agent</span>
+                  <strong>{item.mainAgentCount}/{item.subAgentCount}</strong>
+                  <em>Main/Sub</em>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function NetworkRequestsTab({
   status,
   requests,
@@ -693,6 +1079,8 @@ function NetworkRequestsTab({
   onSelect: (requestId: string) => void
   onRefresh: () => void
 }) {
+  const [detailTab, setDetailTab] = useState<NetworkDetailTab>('system')
+
   if (!status.enabled) {
     return (
       <div className="agent-monitor__empty">
@@ -710,7 +1098,16 @@ function NetworkRequestsTab({
   }
 
   const selected = requests.find((request) => request.id === selectedRequestId) ?? requests[0]
-  const usage = selected?.usage ?? null
+  const usage = selected?.usageSummary ?? null
+  const rawUsage = selected?.usage ?? null
+  const networkTabs: Array<{ id: NetworkDetailTab; label: string }> = [
+    { id: 'system', label: 'System' },
+    { id: 'messages', label: 'Messages' },
+    { id: 'tools', label: 'Tools' },
+    { id: 'response', label: 'Response' },
+    { id: 'headers', label: 'Headers' },
+    { id: 'raw', label: 'Raw' },
+  ]
 
   return (
     <div className="agent-monitor__network-tab">
@@ -730,7 +1127,7 @@ function NetworkRequestsTab({
             <span>{formatTime(request.timestampMs)}</span>
             <strong>{request.model || request.provider}</strong>
             <em>{request.inProgress ? 'streaming' : request.status ? `HTTP ${request.status}` : request.error ? 'error' : 'pending'}</em>
-            <small>{request.messageCount} msg · {request.toolCount} tools · {formatBytes(request.requestBytes)}</small>
+            <small>{requestTypeLabel(request)} · {request.messageCount} msg · {request.toolCount} tools · {formatBytes(request.requestBytes)}</small>
           </button>
         ))}
       </div>
@@ -738,34 +1135,127 @@ function NetworkRequestsTab({
       <div className="agent-monitor__network-detail">
         <div className="agent-monitor__kv-grid">
           <div><span>model</span><strong>{selected.model || '-'}</strong></div>
+          <div><span>type</span><strong>{requestTypeLabel(selected)}</strong></div>
           <div><span>status</span><strong>{selected.inProgress ? 'streaming' : selected.status ?? selected.error ?? '-'}</strong></div>
           <div><span>duration</span><strong>{selected.durationMs != null ? `${selected.durationMs}ms` : '-'}</strong></div>
-          <div><span>tokens</span><strong>{usage ? formatTokens(usageTotal(usage)) : '-'}</strong></div>
+          <div><span>tokens</span><strong>{usage ? formatTokens(usage.totalTokens) : rawUsage ? formatTokens(usageTotal(rawUsage)) : '-'}</strong></div>
+          <div><span>cache hit</span><strong>{usage?.cacheHitRate != null ? `${Math.round(usage.cacheHitRate)}%` : '-'}</strong></div>
         </div>
-
-        {selected.systemPreview && (
-          <section className="agent-monitor__network-section">
-            <h4>System Prompt Preview</h4>
-            <p>{selected.systemPreview}</p>
-          </section>
-        )}
 
         {loading ? (
           <div className="agent-monitor__inline">正在读取请求详情...</div>
         ) : detail ? (
           <>
-            <section className="agent-monitor__network-section">
-              <h4>Request</h4>
-              <pre>{JSON.stringify(detail.requestBody, null, 2)}</pre>
-            </section>
-            <section className="agent-monitor__network-section">
-              <h4>Response{detail.responseBodyTruncated ? ' · truncated' : ''}</h4>
-              <pre>{detail.responseBody || JSON.stringify(detail.responseHeaders, null, 2)}</pre>
-            </section>
-            <section className="agent-monitor__network-section">
-              <h4>Headers</h4>
-              <pre>{JSON.stringify({ request: detail.requestHeaders, response: detail.responseHeaders }, null, 2)}</pre>
-            </section>
+            {usage && (
+              <div className="agent-monitor__network-usage" aria-label="Network token usage">
+                <span>input {formatTokens(usage.inputTokens)}</span>
+                <span>output {formatTokens(usage.outputTokens)}</span>
+                <span>cache create {formatTokens(usage.cacheCreationInputTokens)}</span>
+                <span>cache read {formatTokens(usage.cacheReadInputTokens)}</span>
+              </div>
+            )}
+
+            <div className="agent-monitor__subtabs">
+              {networkTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={detailTab === tab.id ? 'active' : ''}
+                  onClick={() => setDetailTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {detailTab === 'system' && (
+              <section className="agent-monitor__network-section">
+                <h4>System Prompt</h4>
+                {requestSystem(detail.requestBody) ? (
+                  <pre>{JSON.stringify(requestSystem(detail.requestBody), null, 2)}</pre>
+                ) : (
+                  <p>{selected.systemPreview || 'No system prompt captured.'}</p>
+                )}
+              </section>
+            )}
+
+            {detailTab === 'messages' && (
+              <section className="agent-monitor__network-section">
+                <h4>Messages</h4>
+                {requestMessages(detail.requestBody).length > 0 ? (
+                  <div className="agent-monitor__network-block-list">
+                    {requestMessages(detail.requestBody).map((message, index) => {
+                      const item = jsonObject(message)
+                      return (
+                        <details key={index} open={index >= requestMessages(detail.requestBody).length - 2}>
+                          <summary>{String(item.role ?? 'message')} #{index + 1}</summary>
+                          <pre>{JSON.stringify(message, null, 2)}</pre>
+                        </details>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p>No messages captured.</p>
+                )}
+              </section>
+            )}
+
+            {detailTab === 'tools' && (
+              <section className="agent-monitor__network-section">
+                <h4>Tools</h4>
+                {requestTools(detail.requestBody).length > 0 ? (
+                  <div className="agent-monitor__network-block-list">
+                    {requestTools(detail.requestBody).map((tool, index) => {
+                      const item = jsonObject(tool)
+                      return (
+                        <details key={index}>
+                          <summary>{String(item.name ?? `tool-${index + 1}`)}</summary>
+                          <pre>{JSON.stringify(tool, null, 2)}</pre>
+                        </details>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p>No tools captured.</p>
+                )}
+              </section>
+            )}
+
+            {detailTab === 'response' && (
+              <section className="agent-monitor__network-section">
+                <h4>Response{detail.responseBodyTruncated ? ' · truncated' : ''}</h4>
+                {detail.responseBody && responseEvents(detail.responseBody).length > 0 ? (
+                  <div className="agent-monitor__network-block-list">
+                    {responseEvents(detail.responseBody).map((event, index) => (
+                      <details key={index} open={index === responseEvents(detail.responseBody).length - 1}>
+                        <summary>event #{index + 1}</summary>
+                        <pre>{typeof event === 'string' ? event : JSON.stringify(event, null, 2)}</pre>
+                      </details>
+                    ))}
+                  </div>
+                ) : (
+                  <pre>{detail.responseBody || JSON.stringify(detail.responseHeaders, null, 2)}</pre>
+                )}
+              </section>
+            )}
+
+            {detailTab === 'headers' && (
+              <section className="agent-monitor__network-section">
+                <h4>Headers</h4>
+                <pre>{JSON.stringify({ request: detail.requestHeaders, response: detail.responseHeaders }, null, 2)}</pre>
+              </section>
+            )}
+
+            {detailTab === 'raw' && (
+              <section className="agent-monitor__network-section">
+                <h4>Raw Request / Response</h4>
+                <pre>{JSON.stringify({
+                  summary: detail.summary,
+                  requestBody: detail.requestBody,
+                  responseBody: detail.responseBody,
+                }, null, 2)}</pre>
+              </section>
+            )}
           </>
         ) : (
           <div className="agent-monitor__empty">选择一个请求查看原始 request / response。</div>

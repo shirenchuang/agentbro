@@ -179,6 +179,7 @@ fn main() {
     let tty = get_tty();
     let engine_label = std::env::var("AGENTBRO_ENGINE_LABEL").ok();
     let engine_config_root = std::env::var("AGENTBRO_CONFIG_ROOT").ok();
+    let term_program = std::env::var("TERM_PROGRAM").ok();
     let term_bundle_id = std::env::var("__CFBundleIdentifier").ok();
     let wezterm_pane = std::env::var("WEZTERM_PANE").ok();
     let zellij = std::env::var("ZELLIJ").ok();
@@ -203,6 +204,9 @@ fn main() {
     }
     if let Some(root) = engine_config_root {
         obj.insert("engine_config_root".into(), root.into());
+    }
+    if let Some(program) = term_program {
+        obj.insert("_term_program".into(), program.into());
     }
     if let Some(bundle_id) = term_bundle_id {
         obj.insert("_term_bundle_id".into(), bundle_id.into());

@@ -230,6 +230,7 @@ pub struct SessionState {
     pub session_title: Option<String>,
     pub pid: Option<u32>,
     pub tty: Option<String>,
+    pub term_program: Option<String>,
     pub term_bundle_id: Option<String>,
     pub wezterm_pane: Option<String>,
     pub zellij_pane_id: Option<String>,
@@ -281,6 +282,7 @@ impl SessionState {
             session_title: None,
             pid: None,
             tty: None,
+            term_program: None,
             term_bundle_id: None,
             wezterm_pane: None,
             zellij_pane_id: None,
@@ -304,6 +306,23 @@ impl SessionState {
 
     pub fn has_unfinished_tasks(&self) -> bool {
         self.tasks.iter().any(|task| task.status != "completed")
+    }
+}
+
+fn reconcile_pending_for_phase(session: &mut SessionState) {
+    match &session.phase {
+        SessionPhase::WaitingApproval => {
+            session.pending_question = None;
+        }
+        SessionPhase::WaitingInput => {
+            session.pending_permission = None;
+            session.pending_plan = None;
+        }
+        _ => {
+            session.pending_permission = None;
+            session.pending_question = None;
+            session.pending_plan = None;
+        }
     }
 }
 
@@ -379,6 +398,7 @@ impl SessionStore {
                 );
             }
             session.phase = phase;
+            reconcile_pending_for_phase(&mut session);
             session.update_duration();
         }
         self.emit_update();
@@ -388,6 +408,7 @@ impl SessionStore {
     pub fn update_session(&self, session_id: &str, updater: impl FnOnce(&mut SessionState)) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             updater(&mut session);
+            reconcile_pending_for_phase(&mut session);
             session.update_duration();
         }
         self.emit_update();
@@ -890,6 +911,30 @@ mod tests {
 
         assert!(store.get_all_sessions().is_empty());
         assert!(store.get_session("s1").is_none());
+    }
+
+    #[test]
+    fn update_session_clears_pending_permission_when_activity_resumes() {
+        let store = seeded_store();
+        store.set_pending_permission(
+            "s1",
+            Some(PendingPermission {
+                tool_name: "Bash".to_string(),
+                tool_input: "{\"command\":\"pnpm test\"}".to_string(),
+                diff: None,
+                options: None,
+            }),
+        );
+
+        store.update_session("s1", |session| {
+            session.phase = SessionPhase::Processing;
+            session.last_tool_name = Some("Bash".to_string());
+            session.last_tool_status = Some("running".to_string());
+        });
+
+        let session = store.get_session("s1").expect("session should exist");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
     }
 
     #[test]

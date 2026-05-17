@@ -76,6 +76,7 @@ export interface BackendSession {
   sessionTitle: string | null
   pid: number | null
   tty: string | null
+  termProgram: string | null
   termBundleId: string | null
   weztermPane: string | null
   zellijPaneId: string | null
@@ -158,6 +159,7 @@ export interface MonitorSessionDetail {
   session: BackendSession
   timeline: MonitorTimelineItem[]
   rawEvents: MonitorRawEvent[]
+  transcriptPath: string | null
 }
 
 export interface NetworkMonitorStatus {
@@ -166,6 +168,13 @@ export interface NetworkMonitorStatus {
   upstreamBaseUrl: string
   requestCount: number
   activeRequestCount: number
+}
+
+export interface ClaudeWrapperStatus {
+  installed: boolean
+  shimPath: string
+  pathHintInstalled: boolean
+  shellConfigPath: string
 }
 
 export interface NetworkRequestSummary {
@@ -184,10 +193,20 @@ export interface NetworkRequestSummary {
   responseBytes: number
   isStream: boolean
   mainAgent: boolean
+  requestType: string
+  requestSubType: string | null
   messageCount: number
   toolCount: number
   systemPreview: string | null
   usage: Record<string, unknown> | null
+  usageSummary: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+    totalTokens: number
+    cacheHitRate: number | null
+  } | null
   error: string | null
   inProgress: boolean
 }
@@ -317,6 +336,28 @@ export async function getNetworkMonitorRequestDetail(requestId: string): Promise
   return invoke<NetworkRequestDetail | null>('get_network_monitor_request_detail', { requestId })
 }
 
+export async function getClaudeWrapperStatus(): Promise<ClaudeWrapperStatus> {
+  if (!isTauri()) {
+    return {
+      installed: false,
+      shimPath: '~/.agentbro/bin/claude',
+      pathHintInstalled: false,
+      shellConfigPath: '~/.zshrc',
+    }
+  }
+  return invoke<ClaudeWrapperStatus>('get_claude_wrapper_status')
+}
+
+export async function installClaudeWrapper(): Promise<ClaudeWrapperStatus> {
+  if (!isTauri()) return getClaudeWrapperStatus()
+  return invoke<ClaudeWrapperStatus>('install_claude_wrapper')
+}
+
+export async function removeClaudeWrapper(): Promise<ClaudeWrapperStatus> {
+  if (!isTauri()) return getClaudeWrapperStatus()
+  return invoke<ClaudeWrapperStatus>('remove_claude_wrapper')
+}
+
 export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondPermission(${sessionId}, ${allowed}, always=${always})`)
@@ -378,7 +419,7 @@ export async function getConfig(): Promise<BackendConfig> {
       hideInFullscreen: false,
       completionTimeout: 5,
       showTokenUsage: true,
-      theme: 'system',
+      theme: 'ink-amber',
       displayId: 'primary',
       autoHideNoSessions: false,
       soundEvents: {},
@@ -740,6 +781,14 @@ export async function openImage(src: string): Promise<void> {
   return invoke('open_image', { src })
 }
 
+export async function openSystemPath(path: string): Promise<void> {
+  if (!isTauri()) {
+    console.log(`[mock] openSystemPath(${path})`)
+    return
+  }
+  return invoke('open_system_path', { path })
+}
+
 // ── Window Management ───────────────────────────────────────────
 
 export type ResizeNotchResult = {
@@ -833,6 +882,7 @@ export interface IslandLayoutPreviewOptions {
   contentFontSize?: string
   completionCardHeight?: number
   maxPanelHeight?: number
+  detailPanelMaxHeight?: number
 }
 
 export async function previewIslandLayout(mode: IslandLayoutPreviewMode, options?: IslandLayoutPreviewOptions): Promise<void> {

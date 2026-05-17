@@ -107,10 +107,37 @@ describe('CollapsedBar idle tips', () => {
     )
 
     expect(screen.getByText('notch.tool.editing')).toBeInTheDocument()
+    expect(screen.getByText('project')).toBeInTheDocument()
     expect(screen.getByText('OverlayFeedbackPanel.tsx')).toBeInTheDocument()
     expect(screen.getByText('+68')).toHaveClass('collapsed-bar__tool-count--add')
     expect(screen.getByText('-41')).toHaveClass('collapsed-bar__tool-count--del')
     expect(container.querySelector('.collapsed-bar__tool-inline')).toBeInTheDocument()
+  })
+
+  it('compacts full file paths in collapsed live tool status', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[
+          session({
+            project: 'agentbro',
+            phase: 'processing',
+            lastToolName: 'Read',
+            lastToolTarget: '/Users/shirenchuang/code/shizhen/agentbro/src/components/notch/CollapsedBar.tsx',
+          }),
+        ]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('agentbro')).toBeInTheDocument()
+    expect(screen.getByText('notch.tool.reading')).toBeInTheDocument()
+    expect(screen.getByText('CollapsedBar.tsx')).toBeInTheDocument()
+    expect(container.querySelector('.collapsed-bar__tool-inline')).toHaveAttribute(
+      'title',
+      'notch.tool.reading /Users/shirenchuang/code/shizhen/agentbro/src/components/notch/CollapsedBar.tsx',
+    )
+    expect(screen.queryByText('/Users/shirenchuang/code/shizhen/agentbro/src/components/notch/CollapsedBar.tsx')).not.toBeInTheDocument()
   })
 
   it('hides live tool status from the collapsed island when disabled', () => {

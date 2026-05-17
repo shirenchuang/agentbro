@@ -36,11 +36,18 @@ export function OverlayFeedbackPanel({
   const { t } = useTranslation()
   const [inputValue, setInputValue] = useState('')
   const [sending, setSending] = useState(false)
+  const [isTimerPaused, setIsTimerPaused] = useState(false)
   const [progressRatio, setProgressRatio] = useState(1)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fallbackStartedAtRef = useRef(startedAt ?? Date.now())
   const onDismissRef = useRef(onDismiss)
+  const pointerInsideRef = useRef(false)
+  const inputFocusedRef = useRef(false)
+  const dismissPendingRef = useRef(false)
+  const remainingRef = useRef(dwellMs)
+  const startedAtRef = useRef(0)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
@@ -60,23 +67,70 @@ export function OverlayFeedbackPanel({
       setProgressRatio(0)
       return
     }
-    const remaining = countdownDeadline - Date.now()
-    setProgressRatio(Math.max(0, Math.min(1, remaining / dwellMs)))
-  }, [countdownDeadline, dwellMs])
+    if (timerRef.current) {
+      const elapsed = Date.now() - startedAtRef.current
+      setProgressRatio(Math.max(0, (remainingRef.current - elapsed) / dwellMs))
+    } else {
+      setProgressRatio(Math.max(0, remainingRef.current / dwellMs))
+    }
+  }, [dwellMs])
+
+  const scheduleDismiss = useCallback((delayMs: number) => {
+    startedAtRef.current = Date.now()
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      remainingRef.current = 0
+      setProgressRatio(0)
+      if (pointerInsideRef.current || inputFocusedRef.current) {
+        setIsTimerPaused(true)
+      }
+      dismissPendingRef.current = true
+    }, Math.max(0, delayMs))
+  }, [])
 
   useEffect(() => {
-    updateProgress()
+    const remaining = Math.max(0, countdownDeadline - Date.now())
+    remainingRef.current = remaining
+    setProgressRatio(dwellMs <= 0 ? 0 : Math.min(1, remaining / dwellMs))
+    dismissPendingRef.current = false
+    pointerInsideRef.current = false
+    scheduleDismiss(remaining)
     progressIntervalRef.current = setInterval(updateProgress, 100)
+    setIsTimerPaused(false)
+    inputFocusedRef.current = false
 
     return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
       if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
-      progressIntervalRef.current = null
-      blurTimerRef.current = null
     }
-  }, [updateProgress])
+  }, [countdownDeadline, dwellMs, scheduleDismiss, updateProgress])
+
+  const releaseDismissHold = useCallback(() => {
+    if (pointerInsideRef.current || inputFocusedRef.current) return
+    if (dismissPendingRef.current || remainingRef.current <= 0) {
+      onDismissRef.current()
+      return
+    }
+    setIsTimerPaused(false)
+  }, [])
+
+  useEffect(() => {
+    if (!isTimerPaused) return undefined
+
+    const interval = window.setInterval(() => {
+      if (inputFocusedRef.current) return
+      const isActuallyHovered = overlayRef.current?.matches(':hover') ?? false
+      pointerInsideRef.current = isActuallyHovered
+      if (!isActuallyHovered) releaseDismissHold()
+    }, 250)
+
+    return () => window.clearInterval(interval)
+  }, [isTimerPaused, releaseDismissHold])
 
   const focusInput = useCallback(() => {
+    inputFocusedRef.current = true
+    setIsTimerPaused(true)
     if (blurTimerRef.current) {
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
@@ -94,9 +148,12 @@ export function OverlayFeedbackPanel({
     if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
+      inputFocusedRef.current = false
       setNotchFocusable(false).catch(() => {})
+      pointerInsideRef.current = overlayRef.current?.matches(':hover') ?? false
+      releaseDismissHold()
     }, 200)
-  }, [])
+  }, [releaseDismissHold])
 
   const handleSend = useCallback(async () => {
     const value = inputValue.trim()
@@ -136,7 +193,15 @@ export function OverlayFeedbackPanel({
   return (
     <div
       ref={overlayRef}
-      className="overlay-feedback"
+      className={`overlay-feedback${isTimerPaused ? ' overlay-feedback--paused' : ''}`}
+      onMouseEnter={() => {
+        pointerInsideRef.current = true
+        setIsTimerPaused(true)
+      }}
+      onMouseLeave={() => {
+        pointerInsideRef.current = false
+        releaseDismissHold()
+      }}
     >
       <div className="overlay-feedback__session" data-no-drag>
         <div className="overlay-feedback__avatar">

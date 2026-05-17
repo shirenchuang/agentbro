@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import type { ChatMessage, ChatToolCall } from '../../types/agent'
 import { DiffView } from './DiffView'
 import { StatusDot } from '../shared'
+import { PlatformIcon } from '../platform/PlatformIcon'
 import { parseMcpTool } from '../../utils/mcp'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { openImage } from '../../services/tauriApi'
@@ -13,17 +14,20 @@ import './MessageBubble.css'
 
 interface MessageBubbleProps {
   message: ChatMessage
+  agentType?: string
+  agentName?: string
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, agentType = 'claude-code', agentName }: MessageBubbleProps) {
   switch (message.role) {
     case 'user':
       return (
         <div className="msg msg--user">
           <div className="msg__pill">
             {message.content && (
-              <div>
-                <span className="msg__prefix">You:</span> {message.content}
+              <div className="msg__user-content">
+                <img className="msg__sender-logo" src="/agentbro-app-icon.png" alt="AgentBro" />
+                <span>{message.content}</span>
               </div>
             )}
             {message.images && message.images.length > 0 && (
@@ -45,7 +49,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       )
 
     case 'assistant':
-      return <AssistantMessage message={message} />
+      return <AssistantMessage message={message} agentType={agentType} agentName={agentName} />
 
     case 'tool_use':
       return <ToolMessage message={message} />
@@ -69,7 +73,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 }
 
-function AssistantMessage({ message }: { message: Extract<ChatMessage, { role: 'assistant' }> }) {
+function AssistantMessage({
+  message,
+  agentType,
+  agentName,
+}: {
+  message: Extract<ChatMessage, { role: 'assistant' }>
+  agentType: string
+  agentName?: string
+}) {
   const [expanded, setExpanded] = useState(false)
   const { t } = useTranslation()
   const toolCalls = message.toolCalls ?? []
@@ -86,50 +98,55 @@ function AssistantMessage({ message }: { message: Extract<ChatMessage, { role: '
 
   return (
     <div className="msg msg--assistant">
-      {hasProcess && (
-        <div className="msg__process">
-          <button className="msg__process-summary" onClick={() => setExpanded(!expanded)}>
-            <span className="msg__process-chevron">{expanded ? '▼' : '▶'}</span>
-            <span>{summary}</span>
-            {toolCalls.some((tool) => tool.status === 'running') && <span className="msg__tool-spinner" />}
-          </button>
-          {expanded && (
-            <div className="msg__process-detail selectable">
-              {message.thinking && (
-                <div className="msg__process-section msg__process-section--thinking">
-                  <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
-                  <Markdown remarkPlugins={[remarkGfm]}>{message.thinking}</Markdown>
-                </div>
-              )}
-              {hasIntermediateText && (
-                <div className="msg__process-section markdown-body">
-                  <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-                </div>
-              )}
-              {toolCalls.length > 0 && (
-                <div className="msg__process-tools">
-                  {toolCalls.map((tool, index) => (
-                    <AssistantToolCall key={tool.toolUseId ?? `${tool.toolName}-${index}`} tool={tool} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="msg__avatar" title={agentName ?? agentType}>
+        <PlatformIcon agentId={agentType} displayName={agentName ?? agentType} size={22} />
+      </div>
+      <div className="msg__assistant-body">
+        {hasProcess && (
+          <div className="msg__process">
+            <button className="msg__process-summary" onClick={() => setExpanded(!expanded)}>
+              <span className="msg__process-chevron">{expanded ? '▼' : '▶'}</span>
+              <span>{summary}</span>
+              {toolCalls.some((tool) => tool.status === 'running') && <span className="msg__tool-spinner" />}
+            </button>
+            {expanded && (
+              <div className="msg__process-detail selectable">
+                {message.thinking && (
+                  <div className="msg__process-section msg__process-section--thinking">
+                    <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
+                    <Markdown remarkPlugins={[remarkGfm]}>{message.thinking}</Markdown>
+                  </div>
+                )}
+                {hasIntermediateText && (
+                  <div className="msg__process-section markdown-body">
+                    <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+                  </div>
+                )}
+                {toolCalls.length > 0 && (
+                  <div className="msg__process-tools">
+                    {toolCalls.map((tool, index) => (
+                      <AssistantToolCall key={tool.toolUseId ?? `${tool.toolName}-${index}`} tool={tool} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
-      {finalContent && (
-        <div className="msg__content selectable markdown-body">
-          <Markdown remarkPlugins={[remarkGfm]}>{finalContent}</Markdown>
-        </div>
-      )}
-      {message.images && message.images.length > 0 && (
-        <div className="msg__images">
-          {message.images.map((src, index) => (
-            <ImageThumb key={`${src}-${index}`} src={src} />
-          ))}
-        </div>
-      )}
+        {finalContent && (
+          <div className="msg__content selectable markdown-body">
+            <Markdown remarkPlugins={[remarkGfm]}>{finalContent}</Markdown>
+          </div>
+        )}
+        {message.images && message.images.length > 0 && (
+          <div className="msg__images">
+            {message.images.map((src, index) => (
+              <ImageThumb key={`${src}-${index}`} src={src} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

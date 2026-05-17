@@ -167,6 +167,33 @@
   color: #9ca3af;
 }
 
+.hover-list__app-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 3px;
+}
+
+.hover-list__app-badge::before {
+  content: attr(data-app-mark);
+  display: inline-grid;
+  place-items: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  color: currentColor;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hover-list__terminal-badge {
+  letter-spacing: 0;
+}
+
 .hover-list__yolo-badge {
   flex-shrink: 0;
   padding: 1px 6px;
@@ -946,28 +973,110 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 0;
-  gap: 12px;
-  color: var(--island-text-muted);
+  min-height: 230px;
+  padding: 34px 28px 38px;
+  gap: 14px;
+  overflow: hidden;
+  color: var(--island-text-secondary);
+  background:
+    radial-gradient(circle at 50% 26%, rgba(255, 255, 255, 0.1), transparent 23%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 52%);
+}
+
+.hover-list__empty-orbit {
+  position: relative;
+  display: grid;
+  width: 66px;
+  height: 50px;
+  place-items: center;
+  color: var(--island-text-secondary);
+}
+
+.hover-list__empty-orbit::before,
+.hover-list__empty-orbit::after {
+  position: absolute;
+  inset: 8px 2px;
+  content: '';
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}
+
+.hover-list__empty-orbit::after {
+  transform: rotate(90deg) scaleX(0.66);
+  opacity: 0.72;
+}
+
+.hover-list__empty-pulse {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--island-accent, #0a84ff);
+  box-shadow: 0 0 18px var(--island-accent, rgba(10, 132, 255, 0.8));
+  transform: translate(25px, -2px);
+  animation: hover-empty-pulse 2.8s ease-in-out infinite;
+}
+
+.hover-list__empty-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  max-width: min(640px, calc(100vw - 96px));
+}
+
+.hover-list__empty-title {
+  color: var(--island-text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .hover-list__empty-text {
+  max-width: 760px;
   text-align: center;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--island-text-secondary);
-  line-height: 1.5;
-}
-
-.hover-list__empty-text br + * {
-  font-size: 11px;
-  color: var(--island-text-muted);
+  line-height: 1.55;
 }
 
 .hover-list__empty-logo {
-  width: 36px;
-  height: 36px;
-  opacity: 0.5;
+  width: 60px;
+  height: 44px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 16px rgba(248, 164, 0, 0.24));
+}
+
+.hover-list__empty-agents {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.hover-list__empty-agents span {
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--island-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+@keyframes hover-empty-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: translate(25px, -2px) scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: translate(20px, -8px) scale(1);
+  }
 }
 
 /* Done highlight — green border flash */

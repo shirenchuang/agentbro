@@ -743,44 +743,9 @@ fn show_notch_window(app: &tauri::AppHandle) {
 }
 
 fn menu_bar_icon() -> tauri::image::Image<'static> {
-    const SIZE: u32 = 32;
-    let mut rgba = vec![0_u8; (SIZE * SIZE * 4) as usize];
-
-    let mut set_pixel = |x: u32, y: u32| {
-        let idx = ((y * SIZE + x) * 4) as usize;
-        rgba[idx] = 0;
-        rgba[idx + 1] = 0;
-        rgba[idx + 2] = 0;
-        rgba[idx + 3] = 255;
-    };
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let xf = x as f32 + 0.5;
-            let yf = y as f32 + 0.5;
-
-            let stem = (7.0..=12.0).contains(&xf) && (6.0..=26.0).contains(&yf);
-            let top_outer = ((xf - 17.0).powi(2) / 9.8_f32.powi(2))
-                + ((yf - 11.0).powi(2) / 6.5_f32.powi(2))
-                <= 1.0;
-            let top_inner = ((xf - 17.0).powi(2) / 5.5_f32.powi(2))
-                + ((yf - 11.0).powi(2) / 3.0_f32.powi(2))
-                <= 1.0;
-            let bottom_outer = ((xf - 17.5).powi(2) / 10.5_f32.powi(2))
-                + ((yf - 21.0).powi(2) / 7.0_f32.powi(2))
-                <= 1.0;
-            let bottom_inner = ((xf - 17.5).powi(2) / 5.8_f32.powi(2))
-                + ((yf - 21.0).powi(2) / 3.3_f32.powi(2))
-                <= 1.0;
-            let node = (xf - 26.0).powi(2) + (yf - 8.0).powi(2) <= 2.2_f32.powi(2);
-
-            if stem || (top_outer && !top_inner) || (bottom_outer && !bottom_inner) || node {
-                set_pixel(x, y);
-            }
-        }
-    }
-
-    tauri::image::Image::new_owned(rgba, SIZE, SIZE)
+    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-ink-amber.png"))
+        .expect("embedded AgentBro tray icon must be a valid PNG")
+        .to_owned()
 }
 
 fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
@@ -3063,7 +3028,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("AgentBro")
                 .icon(menu_bar_icon())
-                .icon_as_template(true)
+                .icon_as_template(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -3200,6 +3165,9 @@ pub fn run() {
             commands::monitor::set_network_monitor_enabled,
             commands::monitor::get_network_monitor_requests,
             commands::monitor::get_network_monitor_request_detail,
+            commands::monitor::get_claude_wrapper_status,
+            commands::monitor::install_claude_wrapper,
+            commands::monitor::remove_claude_wrapper,
             commands::export_diagnostics,
             commands::add_engine_instance,
             commands::remove_engine_instance,

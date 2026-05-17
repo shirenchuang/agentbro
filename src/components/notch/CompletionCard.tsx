@@ -16,27 +16,19 @@ const CHECKMARK_ICON = (
   </svg>
 )
 
-function parseCompletionTimeout(raw: string): number {
-  if (raw === 'persistent') return 0
-  const match = raw.match(/^(\d+)s$/)
-  return match ? parseInt(match[1], 10) * 1000 : 5000
-}
 
 export function CompletionCard({ session, onDismiss }: CompletionCardProps) {
-  const completionPopupDuration = useConfigStore((s) => s.completionPopupDuration)
+  const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
   const completionCardHeight = useConfigStore((s) => s.completionCardHeight)
   const [visible, setVisible] = useState(true)
 
   useEffect(() => {
-    const timeout = parseCompletionTimeout(completionPopupDuration)
-    if (timeout <= 0) return // persistent — no auto-dismiss
-
     const timer = setTimeout(() => {
       setVisible(false)
-    }, timeout)
+    }, Math.max(1, taskCompleteDwellSeconds) * 1000)
 
     return () => clearTimeout(timer)
-  }, [completionPopupDuration])
+  }, [])
 
   return (
     <AnimatePresence onExitComplete={() => onDismiss(session.id)}>

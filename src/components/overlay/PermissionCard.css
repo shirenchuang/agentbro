@@ -1,14 +1,17 @@
 /* PermissionCard — Queue + Tool Preview + Feedback + Actions */
 
 .perm-card {
+  --perm-accent: #f59e0b;
+  --perm-accent-soft: rgba(245, 158, 11, 0.14);
+  --perm-accent-border: rgba(245, 158, 11, 0.24);
   min-height: 0;
 }
 
 .perm-card__scroll {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-height: 0;
   padding-right: 2px;
   overflow-y: auto;
@@ -52,43 +55,58 @@
   transition: width 0.2s;
 }
 
-/* Tool header */
-.perm-card__tool {
-  flex: 0 0 auto;
-}
-
-.perm-card__tool-header {
+.perm-card__hero {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 2px 0 4px;
 }
 
 .perm-card__tool-icon-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 34px;
+  height: 34px;
   border-radius: 9999px;
-  background: var(--island-subtle-hover, rgba(255, 255, 255, 0.06));
+  background:
+    linear-gradient(180deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
+  border: 1px solid var(--perm-accent-border);
   flex-shrink: 0;
 }
 
 .perm-card__tool-icon-svg {
-  color: #f59e0b;
+  color: var(--perm-accent);
 }
 
-.perm-card__tool-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #f59e0b;
+.perm-card__hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.perm-card__hero-title {
+  color: var(--perm-accent);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.perm-card__hero-subtitle {
+  color: var(--island-text-secondary);
+  font-size: 12px;
+  line-height: 1.25;
 }
 
 /* Detail box */
 .perm-card__detail-box {
-  background: var(--island-input-bg, rgba(255, 255, 255, 0.04));
-  border-radius: 8px;
-  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.025));
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 12px;
   flex: 0 0 auto;
 }
 
@@ -101,9 +119,9 @@
 
 /* Tool previews */
 .perm-card__preview-desc {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--island-text-secondary);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -114,11 +132,12 @@
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  border-radius: 6px;
-  background: var(--island-code-bg, rgba(0, 0, 0, 0.3));
-  padding: 8px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 10px 12px;
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--island-text-secondary);
   margin: 0;
@@ -126,6 +145,7 @@
 
 .perm-card__preview-prompt {
   color: #34d399;
+  margin-right: 4px;
 }
 
 .perm-card__preview-file {
@@ -229,6 +249,7 @@
 /* Feedback */
 .perm-card__feedback {
   flex: 0 0 auto;
+  margin-top: 2px;
 }
 
 .perm-card__feedback-input {
@@ -256,47 +277,57 @@
 .perm-card__actions {
   display: flex;
   flex: 0 0 auto;
-  gap: 6px;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-top: 2px;
 }
 
 .perm-card__btn {
-  flex: 1;
-  padding: 8px 10px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 86px;
+  min-height: 30px;
+  padding: 6px 12px;
   border: none;
   border-radius: 8px;
   font-family: var(--font-sans, system-ui);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 650;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
   white-space: nowrap;
 }
 
 .perm-card__btn:hover {
-  opacity: 0.85;
+  transform: translateY(-1px);
+  filter: brightness(1.05);
 }
 
 .perm-card__btn--deny {
-  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
+  background: rgba(255, 255, 255, 0.09);
   color: var(--island-text);
 }
 
 .perm-card__btn--allow {
-  background: #2563eb;
+  background: linear-gradient(180deg, #3478f6, #2563eb);
   color: white;
 }
 
 .perm-card__btn--always {
-  background: #dc2626;
+  background: linear-gradient(180deg, #ef2b2b, #dc2626);
   color: white;
 }
 
 .perm-card__kbd {
-  margin-left: 6px;
+  margin-left: 5px;
   font-size: 9px;
   color: inherit;
-  opacity: 0.6;
+  opacity: 0.58;
   font-family: var(--font-mono, monospace);
+  font-weight: 600;
 }
 
 /* Secondary */
@@ -304,15 +335,15 @@
   display: flex;
   flex: 0 0 auto;
   justify-content: flex-end;
-  margin-top: 6px;
+  margin-top: 0;
 }
 
 .perm-card__jump-btn {
   background: none;
   border: none;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 10px;
+  padding: 4px 2px;
+  border-radius: 6px;
+  font-size: 11px;
   color: var(--island-text-secondary);
   cursor: pointer;
   transition: color 0.15s;

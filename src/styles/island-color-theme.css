@@ -1,6 +1,48 @@
 /* AgentBro — Evolab-style Island Color Themes */
 
 :root,
+html[data-island-color-theme="ink-amber"] {
+  --island-bg: #fff7ec;
+  --island-card: #fffdf8;
+  --island-card-hover: #f6ead8;
+  --island-border: #ead7ba;
+  --island-text: #111214;
+  --island-text-secondary: #6f604d;
+  --island-text-muted: #a38d6b;
+  --island-code-bg: #17120d;
+  --island-input-bg: #f6ead8;
+  --island-btn-bg: #efdbb8;
+  --island-btn-hover: #e6c997;
+  --island-button-bg: var(--island-btn-bg);
+  --island-button-hover: var(--island-btn-hover);
+  --island-shadow: 0 16px 44px rgba(95, 56, 0, 0.13);
+  --island-pill-shadow: 0 14px 34px rgba(88, 48, 0, 0.18);
+  --island-accent: #f8a400;
+  --island-border-style: none;
+  --island-subtle: rgba(248, 164, 0, 0.08);
+  --island-subtle-hover: rgba(248, 164, 0, 0.14);
+  --island-scrollbar: rgba(159, 92, 0, 0.22);
+  --island-scrollbar-hover: rgba(159, 92, 0, 0.34);
+  --bg-primary: var(--island-bg);
+  --bg-secondary: var(--island-card);
+  --bg-glass: rgba(255, 253, 248, 0.9);
+  --text-primary: var(--island-text);
+  --text-secondary: var(--island-text-secondary);
+  --text-muted: var(--island-text-muted);
+  --accent: var(--island-accent);
+  --border: var(--island-border);
+  --shadow: var(--island-shadow);
+  --chat-user-bg: #f4dfbd;
+  --chat-assistant-bg: #fffdf8;
+  --badge-bg: var(--island-btn-bg);
+  --badge-text: var(--island-text);
+  --status-idle: #766753;
+  --status-working: #f8a400;
+  --status-error: #ef4444;
+  --status-done: #18b981;
+  --status-thinking: #9f5c00;
+}
+
 html[data-island-color-theme="midnight"] {
   --island-bg: #000000;
   --island-card: #0a0a0a;

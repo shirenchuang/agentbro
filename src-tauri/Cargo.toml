@@ -18,7 +18,7 @@ path = "src/bridge/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-notification = "2"

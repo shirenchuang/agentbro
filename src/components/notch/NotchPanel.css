@@ -91,9 +91,7 @@
 }
 
 .notch-panel[data-island-state="micro"] {
-  background:
-    radial-gradient(120% 100% at 50% -30%, rgba(255, 255, 255, 0.07), transparent 56%),
-    linear-gradient(180deg, #111114 0%, var(--island-bg) 58%, var(--island-bg) 100%);
+  background: var(--island-bg);
 }
 
 html[data-island-color-theme="midnight"] .notch-panel,
@@ -204,11 +202,11 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
 }
 
 .notch-panel__alert-content[data-overlay-type="permission"] {
-  height: 100%;
+  justify-content: flex-start;
 }
 
 .notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 
 .notch-panel__feedback-content {
@@ -216,6 +214,31 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
   min-height: 0;
   flex: 0 0 auto;
   flex-direction: column;
+}
+
+.notch-panel__detail-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.notch-panel__detail-content .chat-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.notch-panel__detail-content .chat-view__messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.notch-panel__detail-content .chat-view__empty {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .notch-panel__outside-dismiss {

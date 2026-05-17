@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next'
 import type { AgentProgramInfo } from '../../services/agentApi'
 import { useAgentStore } from '../../stores/agentStore'
 import { useSkillStore } from '../../stores/skillStore'
-import type { CapabilityView, IslandSettingsView } from '../../types/capability'
+import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { isAgentProgramInstalled } from '../../utils/agentPrograms'
 import { displayVersionValue } from '../../utils/versions'
 
@@ -40,9 +40,13 @@ interface SettingsSidebarProps {
   activeSection: string
   activeCapabilityView: CapabilityView
   activeIslandView: IslandSettingsView
+  activeMonitorView: MonitorSettingsView
+  collapsed: boolean
+  onCollapsedChange: (collapsed: boolean) => void
   onSelect: (section: string) => void
   onCapabilityViewChange: (view: CapabilityView) => void
   onIslandViewChange: (view: IslandSettingsView) => void
+  onMonitorViewChange: (view: MonitorSettingsView) => void
   onAddCustomAgent: () => void
 }
 
@@ -72,9 +76,13 @@ export function SettingsSidebar({
   activeSection,
   activeCapabilityView,
   activeIslandView,
+  activeMonitorView,
+  collapsed,
+  onCollapsedChange,
   onSelect,
   onCapabilityViewChange,
   onIslandViewChange,
+  onMonitorViewChange,
   onAddCustomAgent,
 }: SettingsSidebarProps) {
   const { t } = useTranslation()
@@ -84,6 +92,20 @@ export function SettingsSidebar({
     focusAgent,
   } = useAgentStore()
   const { skills, packs } = useSkillStore()
+  const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
+  const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
+  const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
+  const toggleSidebar = (
+    <button
+      type="button"
+      className="settings-sidebar__collapse-toggle"
+      aria-label={toggleLabel}
+      title={toggleLabel}
+      onClick={() => onCollapsedChange(!collapsed)}
+    >
+      <img className="settings-sidebar__collapse-logo" src="/agentbro-logo.png" alt="" aria-hidden="true" />
+    </button>
+  )
 
   if (activeSection === 'island') {
     const navItems: Array<{ id: IslandSettingsView; label: string; icon: string; iconBg: string }> = [
@@ -97,7 +119,8 @@ export function SettingsSidebar({
     ]
 
     return (
-      <nav className="settings-sidebar settings-sidebar--capability settings-scroll">
+      <nav className={capabilitySidebarClassName}>
+        {toggleSidebar}
         <button
           type="button"
           className="settings-sidebar__back"
@@ -113,6 +136,8 @@ export function SettingsSidebar({
               key={item.id}
               type="button"
               className={activeIslandView === item.id ? 'active' : ''}
+              aria-label={item.label}
+              title={item.label}
               onClick={() => onIslandViewChange(item.id)}
             >
               <span
@@ -121,7 +146,52 @@ export function SettingsSidebar({
               >
                 {item.icon}
               </span>
-              <span>{item.label}</span>
+              <span className="settings-sidebar__label-text">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+    )
+  }
+
+  if (activeSection === 'monitor') {
+    const navItems: Array<{ id: MonitorSettingsView; label: string; icon: string; iconBg: string }> = [
+      { id: 'overview', label: '监控总览', icon: '▦', iconBg: '#34C759' },
+      { id: 'capture', label: '请求抓包', icon: '⇄', iconBg: '#007AFF' },
+      { id: 'stats', label: '项目统计', icon: '▥', iconBg: '#FF9500' },
+      { id: 'sessions', label: '会话追踪', icon: '◉', iconBg: '#5856D6' },
+      { id: 'access', label: '接入设置', icon: '⌘', iconBg: '#8E8E93' },
+    ]
+
+    return (
+      <nav className={capabilitySidebarClassName}>
+        {toggleSidebar}
+        <button
+          type="button"
+          className="settings-sidebar__back"
+          onClick={() => onSelect('general')}
+        >
+          ‹ {t('settings.title')}
+        </button>
+
+        <div className="settings-sidebar__group-label">Agent 监控</div>
+        <div className="settings-capability-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={activeMonitorView === item.id ? 'active' : ''}
+              aria-label={item.label}
+              title={item.label}
+              onClick={() => onMonitorViewChange(item.id)}
+            >
+              <span
+                className="settings-sidebar__icon settings-capability-nav__icon--colored"
+                style={{ background: activeMonitorView === item.id ? 'rgba(255,255,255,0.25)' : item.iconBg, color: '#fff' }}
+              >
+                {item.icon}
+              </span>
+              <span className="settings-sidebar__label-text">{item.label}</span>
             </button>
           ))}
         </div>
@@ -154,7 +224,8 @@ export function SettingsSidebar({
     }
 
     return (
-      <nav className="settings-sidebar settings-sidebar--capability settings-scroll">
+      <nav className={capabilitySidebarClassName}>
+        {toggleSidebar}
         <button
           type="button"
           className="settings-sidebar__back"
@@ -169,10 +240,12 @@ export function SettingsSidebar({
               key={item.id}
               type="button"
               className={activeCapabilityView === item.id ? 'active' : ''}
+              aria-label={item.label}
+              title={item.label}
               onClick={() => onCapabilityViewChange(item.id)}
             >
               <span className="settings-capability-nav__icon">{item.icon}</span>
-              <span>{item.label}</span>
+              <span className="settings-sidebar__label-text">{item.label}</span>
               {typeof item.count === 'number' && <em>{item.count}</em>}
             </button>
           ))}
@@ -225,7 +298,8 @@ export function SettingsSidebar({
   }
 
   return (
-    <nav className="settings-sidebar settings-scroll">
+    <nav className={sidebarClassName}>
+      {toggleSidebar}
       {sidebarGroups.map((group, gi) => (
         <div key={gi}>
           {gi > 0 && <div className="settings-sidebar__separator" />}
@@ -239,6 +313,8 @@ export function SettingsSidebar({
                   role="button"
                   tabIndex={0}
                   className={`settings-sidebar__item ${isActive ? 'settings-sidebar__item--active' : ''}`}
+                  aria-label={t(item.labelKey)}
+                  title={t(item.labelKey)}
                   onClick={() => onSelect(item.id)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(item.id) } }}
                 >
@@ -248,7 +324,7 @@ export function SettingsSidebar({
                   >
                     {item.icon}
                   </span>
-                  <span>{t(item.labelKey)}</span>
+                  <span className="settings-sidebar__label-text">{t(item.labelKey)}</span>
                 </div>
               )
             })}

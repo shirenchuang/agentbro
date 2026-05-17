@@ -1,0 +1,53 @@
+{
+  "name": "ink-amber",
+  "version": "1.0.0",
+  "author": "builtin",
+  "displayName": "AgentBro Classic",
+  "description": "AgentBro classic status theme matching the official app logo.",
+  "pixelGrid": { "cols": 5, "rows": 5 },
+  "priorityColors": {
+    "dormant": "#766753",
+    "idle": "#F8A400",
+    "done": "#18B981",
+    "thinking": "#9F5C00",
+    "working": "#F8A400",
+    "compacting": "#111214",
+    "attention": "#EF4444"
+  },
+  "prioritySpeeds": {
+    "dormant": 0,
+    "idle": 2200,
+    "done": 1600,
+    "thinking": 850,
+    "working": 620,
+    "compacting": 520,
+    "attention": 300
+  },
+  "priorityPatterns": {
+    "dormant": { "activePixels": [{ "row": 2, "col": 2 }], "animation": "pulse", "fps": 1 },
+    "idle": { "activePixels": [{ "row": 1, "col": 1 }, { "row": 1, "col": 3 }, { "row": 3, "col": 2 }], "animation": "breath", "fps": 2 },
+    "done": { "activePixels": [{ "row": 1, "col": 1 }, { "row": 2, "col": 2 }, { "row": 3, "col": 3 }], "animation": "wave", "fps": 3 },
+    "thinking": { "activePixels": [{ "row": 0, "col": 2 }, { "row": 2, "col": 0 }, { "row": 2, "col": 4 }, { "row": 4, "col": 2 }], "animation": "spin", "fps": 4 },
+    "working": { "activePixels": [{ "row": 1, "col": 1 }, { "row": 1, "col": 3 }, { "row": 3, "col": 1 }, { "row": 3, "col": 3 }], "animation": "wave", "fps": 5 },
+    "compacting": { "activePixels": [{ "row": 0, "col": 0 }, { "row": 0, "col": 4 }, { "row": 4, "col": 0 }, { "row": 4, "col": 4 }, { "row": 2, "col": 2 }], "animation": "spin", "fps": 6 },
+    "attention": { "activePixels": [{ "row": 0, "col": 2 }, { "row": 1, "col": 1 }, { "row": 1, "col": 3 }, { "row": 2, "col": 0 }, { "row": 2, "col": 4 }, { "row": 3, "col": 1 }, { "row": 3, "col": 3 }, { "row": 4, "col": 2 }], "animation": "blink", "fps": 8 }
+  },
+  "sounds": { "pack": "synth" },
+  "statusLabels": {
+    "dormant": "Dormant",
+    "idle": "Ready",
+    "done": "Done",
+    "thinking": "Reviewing",
+    "working": "Working",
+    "compacting": "Compacting",
+    "attention": "Needs attention"
+  },
+  "alertColors": {
+    "permission": "#F8A400",
+    "question": "#9F5C00",
+    "plan": "#111214",
+    "feedback": "#18B981"
+  },
+  "compactHeight": 26,
+  "pixelCursor": { "enabled": true, "color": "#F8A400" }
+}

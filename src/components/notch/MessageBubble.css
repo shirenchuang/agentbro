@@ -22,6 +22,24 @@
   word-break: break-word;
 }
 
+.msg__user-content {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.msg__user-content > span {
+  min-width: 0;
+}
+
+.msg__sender-logo {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
 .msg__prefix {
   color: var(--island-text-muted);
   font-size: 9px;
@@ -46,7 +64,44 @@
 
 /* Assistant message — left aligned */
 .msg--assistant {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   padding: 4px 0;
+}
+
+.msg__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  margin-top: 1px;
+}
+
+.msg__avatar .platform-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.msg__avatar .platform-icon--image {
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.msg__avatar .platform-icon--glyph {
+  border-radius: 7px;
+  background: rgba(var(--island-accent-rgb, 123, 120, 255), 0.14);
+  border: 1px solid rgba(var(--island-accent-rgb, 123, 120, 255), 0.25);
+  color: var(--island-accent, #7b78ff);
+}
+
+.msg__assistant-body {
+  min-width: 0;
+  flex: 1;
 }
 
 .msg__content {

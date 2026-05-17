@@ -62,6 +62,17 @@ describe('sessionStore backend overlays', () => {
     expect(state.overlayQueue.map((overlay) => overlay.type)).toEqual(['response'])
   })
 
+  it('does not show response overlays for generic session-ended text', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'idle', responseText: 'Session ended', lastUserMessage: 'Question?' }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
   it('creates a completion overlay on transition to done', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
     useSessionStore.getState().replaceAllSessions([
@@ -108,7 +119,7 @@ describe('sessionStore backend overlays', () => {
     expect(overlay?.data).toMatchObject({ summary: '完整回答内容应该展示在通知里。' })
   })
 
-  it('preserves explicit session-ended summaries instead of replaying the last assistant response', () => {
+  it('suppresses explicit session-ended completion overlays instead of replaying stale assistant text', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
     useSessionStore.getState().replaceAllSessions([
       session({
@@ -121,9 +132,9 @@ describe('sessionStore backend overlays', () => {
       }),
     ])
 
-    const overlay = useSessionStore.getState().activeOverlay
-    expect(overlay?.type).toBe('completion')
-    expect(overlay?.data).toMatchObject({ summary: 'Session ended' })
+    const state = useSessionStore.getState()
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
   })
 
   it('hides ended sessions from the visible session list', () => {
@@ -141,7 +152,30 @@ describe('sessionStore backend overlays', () => {
     const state = useSessionStore.getState()
     expect(state.sessionList).toEqual([])
     expect(state.sessions.s1).toBeDefined()
-    expect(state.activeOverlay?.type).toBe('completion')
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('does not show direct task-complete overlays for generic session-ended summaries', async () => {
+    useSessionStore.getState().updateSession({
+      type: 'session_start',
+      sessionId: 's1',
+      project: 'project',
+      terminal: 'iTerm',
+      agentType: 'claude-code',
+    })
+
+    useSessionStore.getState().updateSession({
+      type: 'task_complete',
+      sessionId: 's1',
+      summary: 'Session ended',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.phase).toBe('done')
+    expect(state.sessions.s1.responseText).toBe('Session ended')
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
   })
 
   it('keeps inactive Claude rows visible until the session timeout', () => {
@@ -199,6 +233,50 @@ describe('sessionStore backend overlays', () => {
 
     expect(useSessionStore.getState().sessionList).toEqual([])
     expect(useSessionStore.getState().sessions.s1).toBeDefined()
+  })
+
+  it('keeps an opened detail session selected when a backend refresh marks it idle', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({ id: 'selected', phase: 'processing', sessionTitle: 'Selected Claude session' }),
+      session({ id: 'other', phase: 'processing', sessionTitle: 'Other session' }),
+    ])
+    useSessionStore.getState().setActiveSession('selected')
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'selected',
+        phase: 'idle',
+        sessionTitle: 'Selected Claude session',
+        lastUserMessage: 'continue',
+        description: undefined,
+        responseText: undefined,
+        lastToolName: undefined,
+      }),
+      session({ id: 'other', phase: 'processing', sessionTitle: 'Other session' }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList.map((item) => item.id)).toEqual(['selected', 'other'])
+    expect(state.activeSessionId).toBe('selected')
+    expect(state.sessions.selected).toBeDefined()
+  })
+
+  it('marks locally sent messages as processing activity', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'idle', sessionTitle: 'Selected Claude session' }),
+    ])
+
+    useSessionStore.getState().updateSession({
+      type: 'user_message',
+      sessionId: 's1',
+      content: 'continue please',
+    })
+
+    const selected = useSessionStore.getState().sessions.s1
+    expect(selected.phase).toBe('processing')
+    expect(selected.lastUserMessage).toBe('continue please')
+    expect(selected.idleSince).toBeUndefined()
+    expect(selected.chatHistory.at(-1)).toMatchObject({ role: 'user', content: 'continue please' })
   })
 
   it('hides completed Codex internal prompt sessions from the visible list', () => {
@@ -410,6 +488,39 @@ describe('sessionStore backend overlays', () => {
 
     expect(useSessionStore.getState().overlayQueue).toEqual([])
     expect(useSessionStore.getState().activeOverlay).toBeNull()
+  })
+
+  it('clears pending permission overlays when a live terminal tool result arrives', async () => {
+    useSessionStore.getState().updateSession({
+      type: 'session_start',
+      sessionId: 's1',
+      project: 'project',
+      terminal: 'iTerm',
+      agentType: 'claude-code',
+    })
+    useSessionStore.getState().updateSession({
+      type: 'permission_request',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolInput: 'pnpm test',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
+    expect(useSessionStore.getState().activeOverlay?.type).toBe('permission')
+
+    useSessionStore.getState().updateSession({
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolInput: 'pnpm test',
+      status: 'error',
+    })
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.pendingPermission).toBeUndefined()
+    expect(state.sessions.s1.phase).toBe('processing')
+    expect(state.overlayQueue.some((overlay) => overlay.type === 'permission')).toBe(false)
+    expect(state.activeOverlay).toBeNull()
   })
 
   it('marks inactive processing sessions idle after the configured idle timeout', () => {

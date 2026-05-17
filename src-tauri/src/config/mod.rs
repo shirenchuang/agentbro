@@ -254,7 +254,7 @@ impl Default for AppConfig {
             hide_in_fullscreen: false,
             completion_timeout: 5,
             show_token_usage: true,
-            theme: "system".to_string(),
+            theme: "ink-amber".to_string(),
             display_id: "primary".to_string(),
             auto_hide_no_sessions: false,
             sound_events: std::collections::HashMap::new(),

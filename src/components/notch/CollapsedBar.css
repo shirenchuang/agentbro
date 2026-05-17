@@ -30,10 +30,9 @@
 .collapsed-bar__status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  position: relative;
-  padding: 6px 12px 0;
-  min-height: 24px;
+  gap: 12px;
+  padding: 8px 14px 0;
+  min-height: 30px;
 }
 
 .collapsed-bar__rate-limits {
@@ -44,7 +43,8 @@
 .collapsed-bar__icons {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -52,15 +52,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  z-index: 1;
-  width: max-content;
-  max-width: clamp(220px, 38vw, 460px);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   pointer-events: none;
-  transform: translate(-50%, -45%);
 }
 
 .collapsed-bar__header-tip > div {
@@ -78,15 +73,42 @@
   text-overflow: ellipsis;
 }
 
+.tip-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tip-display__label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tip-display__text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .collapsed-bar__icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border: none;
   border-radius: 50%;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--island-text-secondary);
   cursor: pointer;
   padding: 0;
@@ -101,9 +123,9 @@
 
 /* Separator below status row — evolab dashed style */
 .collapsed-bar--expanded .collapsed-bar__status-row {
-  border-bottom: 1px dashed rgba(255, 255, 255, 0.15);
-  padding-bottom: 6px;
-  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 8px;
+  margin-bottom: 0;
 }
 
 /* Main row: pixel + info + count */
@@ -123,6 +145,11 @@
   overflow: hidden;
   flex: 1;
   min-width: 0;
+}
+
+.collapsed-bar__status-row > .collapsed-bar__left {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .collapsed-bar__theme-avatar {
@@ -164,8 +191,45 @@
 }
 
 .collapsed-bar__info--empty {
-  color: var(--island-text-muted);
-  font-weight: 400;
+  color: var(--island-text-secondary);
+  font-weight: 600;
+}
+
+.collapsed-bar__brand-empty {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.collapsed-bar__brand-logo {
+  width: 31px;
+  height: 23px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 5px rgba(248, 164, 0, 0.26));
+}
+
+.collapsed-bar__brand-name {
+  flex: 0 0 auto;
+  color: var(--island-text);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.collapsed-bar__brand-slogan {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--island-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .collapsed-bar__tool-inline {
@@ -184,6 +248,15 @@
 .collapsed-bar__tool-label {
   flex-shrink: 0;
   color: #fa216e;
+}
+
+.collapsed-bar__tool-project {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--island-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .collapsed-bar__tool-target,
@@ -318,13 +391,15 @@
 /* ALL/ACT/WAIT counter pills — evolab expanded header */
 .collapsed-bar__counter-pills {
   display: flex;
-  height: 24px;
+  height: 26px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1;
 }
 
@@ -333,8 +408,8 @@
   align-items: center;
   gap: 4px;
   height: 100%;
-  padding: 0 8px;
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 10px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--island-text-muted);
 }
 
@@ -343,7 +418,7 @@
 }
 
 .collapsed-bar__counter-pill--active {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.085);
   color: var(--island-text);
 }
 
@@ -357,7 +432,7 @@
 
 .collapsed-bar__counter-pill-val {
   font-size: 9px;
-  opacity: 0.7;
+  opacity: 0.76;
 }
 
 .collapsed-bar__session-count-text {
@@ -373,9 +448,10 @@
 
 .collapsed-bar__esc-hint {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--island-text-muted);
   flex-shrink: 0;
+  letter-spacing: 0;
 }
 
 /* Rate limit percentage — color set inline */

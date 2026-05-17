@@ -26,6 +26,10 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string | { defaultValue?: string }) => {
+      const translations: Record<string, string> = {
+        'notch.tool.compactingContext': '压缩上下文',
+      }
+      if (translations[key]) return translations[key]
       if (typeof fallback === 'string') return fallback
       return fallback?.defaultValue ?? key
     },
@@ -133,6 +137,7 @@ describe('HoverList interactions', () => {
     )
 
     expect(screen.getByText('Codex App')).toBeInTheDocument()
+    expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.queryByText('Evolab')).not.toBeInTheDocument()
     expect(container.querySelector('.mascot-image')).toHaveAttribute('data-mascot-source', 'codex')
     expect(container.querySelector('.pixel-indicator')).not.toBeInTheDocument()
@@ -167,6 +172,64 @@ describe('HoverList interactions', () => {
 
     expect(container.querySelector('.hover-list__expired-dot')).toBeInTheDocument()
     expect(container.querySelector('.mascot-image')).not.toBeInTheDocument()
+  })
+
+  it('shows terminal program badges even when the terminal is not in the color table', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: 'Ghostty' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Ghostty')).toHaveClass('hover-list__terminal-badge')
+  })
+
+  it('shows iTerm terminal badges with the terminal style', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: 'iTerm' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('iTerm')).toHaveClass('hover-list__terminal-badge')
+  })
+
+  it('derives terminal badges from bundle ids when terminal is only a tty', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '/dev/ttys001', termBundleId: 'com.googlecode.iterm2' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('iTerm2')).toHaveClass('hover-list__terminal-badge')
+    expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
+  })
+
+  it('falls back to TERM_PROGRAM when bundle id is missing', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '/dev/ttys001', termProgram: 'Ghostty' })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Ghostty')).toHaveClass('hover-list__terminal-badge')
+    expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
+  })
+
+  it('keeps bare tty values out of the session list badges', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '/dev/ttys001', termBundleId: undefined })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText('/dev/ttys001')).not.toBeInTheDocument()
+    expect(document.querySelector('.hover-list__terminal-badge')).not.toBeInTheDocument()
   })
 
   it('renders Codex list items with title, latest user prompt, and response fallback rows', () => {
@@ -206,6 +269,37 @@ describe('HoverList interactions', () => {
 
     expect(screen.getByText('notch.thinking')).toBeInTheDocument()
     expect(screen.queryByText('Processing user input')).not.toBeInTheDocument()
+  })
+
+  it('localizes compacting context tool labels', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'compacting',
+          lastToolName: 'Compacting context',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('压缩上下文')).toHaveClass('hover-list__tool-label--compact')
+    expect(screen.queryByText('Compacting context')).not.toBeInTheDocument()
+  })
+
+  it('shows compacting context from a processing description without a tool label', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'processing',
+          lastToolName: undefined,
+          description: 'Compacting context',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('压缩上下文')).toHaveClass('hover-list__tool-label--compact')
+    expect(screen.queryByText('Compacting context')).not.toBeInTheDocument()
   })
 
   it('renders Codex edit targets with change counts', () => {

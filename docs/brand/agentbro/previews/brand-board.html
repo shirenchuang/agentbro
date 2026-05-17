@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentBro Brand Board</title>
+    <style>
+      :root {
+        --ink: #111820;
+        --soft: #69737d;
+        --paper: #f8fbf8;
+        --teal: #0c6b63;
+        --cyan: #19d3c5;
+        --amber: #f5b84b;
+        color-scheme: light;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #eef3f0;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 48px 0;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: end;
+        margin-bottom: 26px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 48px;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: var(--soft);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.35fr .65fr;
+        gap: 18px;
+      }
+
+      .panel {
+        border: 1px solid rgba(17, 24, 32, .1);
+        border-radius: 8px;
+        background: var(--paper);
+        box-shadow: 0 24px 80px rgba(17, 24, 32, .1);
+      }
+
+      .hero {
+        display: grid;
+        place-items: center;
+        min-height: 420px;
+        padding: 36px;
+      }
+
+      .hero img {
+        width: min(760px, 100%);
+      }
+
+      .side {
+        display: grid;
+        gap: 18px;
+      }
+
+      .app-icon {
+        display: grid;
+        place-items: center;
+        min-height: 280px;
+        background: #111820;
+      }
+
+      .app-icon img {
+        width: 210px;
+      }
+
+      .tray {
+        padding: 22px;
+      }
+
+      .tray-showcase {
+        margin-top: 18px;
+        overflow: hidden;
+      }
+
+      .tray-showcase img {
+        display: block;
+        width: 100%;
+      }
+
+      .variant-board {
+        margin-top: 18px;
+        overflow: hidden;
+      }
+
+      .variant-board img {
+        display: block;
+        width: 100%;
+      }
+
+      .logo-usage {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .logo-card {
+        display: grid;
+        place-items: center;
+        min-height: 220px;
+        border-radius: 8px;
+        box-shadow: inset 0 0 0 1px rgba(17, 24, 32, .08);
+      }
+
+      .logo-card img {
+        width: min(260px, 72%);
+      }
+
+      .logo-card--light {
+        background: #fffdf8;
+      }
+
+      .logo-card--dark {
+        background: #111214;
+      }
+
+      .tray-row {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .tray-sample {
+        display: grid;
+        place-items: center;
+        height: 62px;
+        border-radius: 8px;
+        background: white;
+        box-shadow: inset 0 0 0 1px rgba(17, 24, 32, .08);
+      }
+
+      .tray-sample img {
+        width: 34px;
+        height: 34px;
+      }
+
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .swatch {
+        min-height: 74px;
+        border-radius: 8px;
+        box-shadow: inset 0 0 0 1px rgba(17, 24, 32, .1);
+      }
+
+      .note {
+        margin-top: 18px;
+        padding: 22px;
+      }
+
+      .full {
+        margin-top: 18px;
+        padding: 26px;
+      }
+
+      @media (max-width: 860px) {
+        .grid,
+        header {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>AgentBro</h1>
+          <p>让 Agent 更好用 / Make Agents Easier to Use</p>
+        </div>
+        <img src="../assets/raster/agentbro-mark-reference.png" alt="AgentBro mark" width="82" height="82" />
+      </header>
+
+      <section class="grid">
+        <div class="panel hero">
+          <img src="../assets/raster/agentbro-lockup-zh-reference.png" alt="AgentBro Chinese lockup" />
+        </div>
+
+        <div class="side">
+          <div class="panel app-icon">
+            <img src="../assets/raster/agentbro-app-icon-reference.png" alt="AgentBro app icon" />
+          </div>
+
+          <div class="panel tray">
+            <p>Tray state icons</p>
+            <div class="tray-row">
+              <div class="tray-sample"><img src="../assets/raster/tray/agentbro-tray-default.png" alt="Default tray icon" /></div>
+              <div class="tray-sample"><img src="../assets/raster/tray/agentbro-tray-running.png" alt="Running tray icon" /></div>
+              <div class="tray-sample"><img src="../assets/raster/tray/agentbro-tray-attention.png" alt="Attention tray icon" /></div>
+              <div class="tray-sample"><img src="../assets/raster/tray/agentbro-tray-error.png" alt="Error tray icon" /></div>
+              <div class="tray-sample"><img src="../assets/raster/tray/agentbro-tray-paused.png" alt="Paused tray icon" /></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel full tray-showcase">
+        <img src="../assets/raster/tray/agentbro-tray-showcase.png" alt="AgentBro tray menu bar showcase" />
+      </section>
+
+      <section class="panel full variant-board">
+        <img src="../assets/raster/variants/agentbro-color-systems-board.png" alt="AgentBro color system variants" />
+      </section>
+
+      <section class="panel full variant-board">
+        <img src="../assets/raster/ink-amber/agentbro-ink-amber-detail-board.png" alt="AgentBro ink and amber detailed direction" />
+      </section>
+
+      <section class="panel full">
+        <p>AgentBro Classic logo usage</p>
+        <div class="logo-usage">
+          <div class="logo-card logo-card--light">
+            <img src="../assets/raster/ink-amber/agentbro-ink-amber-mark.png" alt="AgentBro Classic logo on light background" />
+          </div>
+          <div class="logo-card logo-card--dark">
+            <img src="../assets/raster/ink-amber/agentbro-ink-amber-mark-dark.png" alt="AgentBro Classic logo on dark background" />
+          </div>
+        </div>
+      </section>
+
+      <section class="panel full variant-board">
+        <img src="../assets/raster/variants/agentbro-tray-variants-board.png" alt="AgentBro tray icon variants" />
+      </section>
+
+      <section class="panel note">
+        <p>Primary palette</p>
+        <div class="swatches">
+          <div class="swatch" style="background:#111820"></div>
+          <div class="swatch" style="background:#69737d"></div>
+          <div class="swatch" style="background:#f8fbf8"></div>
+          <div class="swatch" style="background:#0c6b63"></div>
+          <div class="swatch" style="background:#19d3c5"></div>
+          <div class="swatch" style="background:#f5b84b"></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

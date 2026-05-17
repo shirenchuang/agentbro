@@ -27,14 +27,14 @@ describe('themeStore', () => {
     vi.restoreAllMocks()
     localStorage.clear()
     useThemeStore.getState().loadThemes([])
-    useThemeStore.getState().setActiveTheme('default')
-    useThemeStore.getState().setColorTheme('midnight')
+    useThemeStore.getState().setActiveTheme('ink-amber')
+    useThemeStore.getState().setColorTheme('ink-amber')
   })
 
   it('does not persist again when selecting the active role theme', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem')
 
-    useThemeStore.getState().setActiveTheme('default')
+    useThemeStore.getState().setActiveTheme('ink-amber')
 
     expect(setItem).not.toHaveBeenCalled()
   })
@@ -42,9 +42,18 @@ describe('themeStore', () => {
   it('does not persist again when selecting the active color theme', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem')
 
-    useThemeStore.getState().setColorTheme('midnight')
+    useThemeStore.getState().setColorTheme('ink-amber')
 
     expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('includes the AgentBro ink amber role theme as a built-in default', () => {
+    useThemeStore.getState().loadThemes([])
+    useThemeStore.getState().setActiveTheme('ink-amber')
+
+    const state = useThemeStore.getState()
+    expect(state.themes.map((theme) => theme.name)).toContain('ink-amber')
+    expect(state.activeTheme.name).toBe('ink-amber')
   })
 
   it('deduplicates role themes loaded from repeated syncs', () => {

@@ -2,11 +2,13 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 .chat-view__messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 16px;
   display: flex;

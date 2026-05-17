@@ -9,7 +9,7 @@ import { TipDisplay } from './TipDisplay'
 import { useTick } from '../../hooks/useTick'
 import { openSettingsWindow, setSoundEnabled } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
-import { useThemeStore } from '../../stores/themeStore'
+import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { SpriteCanvas } from './SpriteCanvas'
@@ -58,25 +58,59 @@ function splitToolTargetChanges(target: string): { name: string; additions?: str
   }
 }
 
+const PATH_TARGET_TOOLS = new Set([
+  'Read',
+  'ReadFile',
+  'Edit',
+  'EditFile',
+  'Write',
+  'WriteFile',
+  'Glob',
+  'GlobSearch',
+  'Grep',
+  'GrepGrep',
+  'GrepGlob',
+  'NotebookEdit',
+])
+
+function basename(value: string): string {
+  const normalized = value.trim().replace(/^["']|["']$/g, '').replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts.at(-1) || normalized
+}
+
+function getCompactToolTarget(toolName: string, target: string): string {
+  if (PATH_TARGET_TOOLS.has(toolName) || target.includes('/') || target.includes('\\')) {
+    return basename(target)
+  }
+  return target
+}
+
 function CollapsedToolStatus({
   label,
+  project,
   target,
+  toolName,
 }: {
   label: string
+  project: string
   target?: string
+  toolName: string
 }) {
   const changes = target ? splitToolTargetChanges(target) : null
+  const compactTarget = target ? getCompactToolTarget(toolName, target) : undefined
   return (
     <span className="collapsed-bar__tool-inline" title={target ? `${label} ${target}` : label}>
+      <span className="collapsed-bar__tool-project">{project}</span>
       <span className="collapsed-bar__tool-label">{label}</span>
       {changes ? (
         <>
-          <span className="collapsed-bar__tool-target-name">{changes.name}</span>
+          <span className="collapsed-bar__tool-target-name">{getCompactToolTarget(toolName, changes.name)}</span>
           {changes.additions && <span className="collapsed-bar__tool-count collapsed-bar__tool-count--add">{changes.additions}</span>}
           {changes.deletions && <span className="collapsed-bar__tool-count collapsed-bar__tool-count--del">{changes.deletions}</span>}
         </>
       ) : target ? (
-        <span className="collapsed-bar__tool-target">{target}</span>
+        <span className="collapsed-bar__tool-target">{compactTarget}</span>
       ) : null}
     </span>
   )
@@ -122,6 +156,8 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const defaultMascotSource = useConfigStore((s) => s.defaultMascotSource)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
   const activeTheme = useThemeStore((s) => s.activeTheme)
+  const colorTheme = useThemeStore((s) => s.colorTheme)
+  const brandLogoSrc = isDarkColorTheme(colorTheme) ? '/agentbro-logo-dark.png' : '/agentbro-logo.png'
 
   const lead = getLeadSession(sessions)
   useTick(1000, Boolean(lead?.unattendedSince))
@@ -184,6 +220,7 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)
   const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
   const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')
+  const showBrandEmpty = sessions.length === 0 && !focusFilteredEmpty
   const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
   const isYolo = lead?.isYoloMode
   const hasError = lead?.phase === 'error'
@@ -302,7 +339,9 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
                 {primaryToolName ? (
                   <CollapsedToolStatus
                     label={getToolActivityLabel(t, primaryToolName)}
+                    project={lead.project}
                     target={primaryToolTarget}
+                    toolName={primaryToolName}
                   />
                 ) : showTips ? (
                   <TipDisplay show />
@@ -325,15 +364,25 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
             </>
           ) : (
             <>
-              {renderMascot(undefined, 22)}
-              {showTips && !focusFilteredEmpty ? (
-                <div className="collapsed-bar__carousel">
-                  <TipDisplay show />
+              {showBrandEmpty ? (
+                <div className="collapsed-bar__brand-empty" aria-label={`AgentBro, ${t('notch.slogan')}`}>
+                  <img className="collapsed-bar__brand-logo" src={brandLogoSrc} alt="" aria-hidden="true" />
+                  <span className="collapsed-bar__brand-name">AgentBro</span>
+                  <span className="collapsed-bar__brand-slogan">{t('notch.slogan')}</span>
                 </div>
               ) : (
-                <span className="collapsed-bar__info collapsed-bar__info--empty">
-                  {emptyText}
-                </span>
+                <>
+                  {renderMascot(undefined, 22)}
+                  {showTips && !focusFilteredEmpty ? (
+                    <div className="collapsed-bar__carousel">
+                      <TipDisplay show />
+                    </div>
+                  ) : (
+                    <span className="collapsed-bar__info collapsed-bar__info--empty">
+                      {emptyText}
+                    </span>
+                  )}
+                </>
               )}
             </>
           )}

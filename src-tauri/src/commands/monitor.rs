@@ -1,8 +1,12 @@
 use super::AppState;
+use crate::hooks::conversation_parser::{discover_codex_session_file, discover_session_file};
 use crate::hooks::server::RawHookEvent;
 use crate::hooks::session_store::{SessionPhase, SessionState};
 use crate::network_monitor::{NetworkMonitorStatus, NetworkRequestDetail, NetworkRequestSummary};
 use serde::Serialize;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +38,7 @@ pub struct MonitorSessionDetail {
     pub session: SessionState,
     pub timeline: Vec<MonitorTimelineItem>,
     pub raw_events: Vec<RawHookEvent>,
+    pub transcript_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +52,15 @@ pub struct MonitorTimelineItem {
     pub status: Option<String>,
     pub tool_name: Option<String>,
     pub raw_event_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeWrapperStatus {
+    pub installed: bool,
+    pub shim_path: String,
+    pub path_hint_installed: bool,
+    pub shell_config_path: String,
 }
 
 #[tauri::command]
@@ -79,11 +93,13 @@ pub async fn get_monitor_session_detail(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     let raw_events = state.hook_server.raw_events_for_session(&session_id);
     let timeline = build_timeline(&session, &raw_events);
+    let transcript_path = monitor_transcript_path(&session, &raw_events);
 
     Ok(MonitorSessionDetail {
         session,
         timeline,
         raw_events,
+        transcript_path,
     })
 }
 
@@ -132,6 +148,224 @@ pub async fn get_network_monitor_request_detail(
     request_id: String,
 ) -> Result<Option<NetworkRequestDetail>, String> {
     Ok(state.network_monitor.request_detail(&request_id))
+}
+
+#[tauri::command]
+pub async fn get_claude_wrapper_status() -> Result<ClaudeWrapperStatus, String> {
+    Ok(claude_wrapper_status())
+}
+
+#[tauri::command]
+pub async fn install_claude_wrapper() -> Result<ClaudeWrapperStatus, String> {
+    let path = claude_wrapper_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create wrapper dir: {e}"))?;
+    }
+    fs::write(&path, claude_wrapper_script())
+        .map_err(|e| format!("Failed to write Claude wrapper: {e}"))?;
+    let mut perms = fs::metadata(&path)
+        .map_err(|e| format!("Failed to stat Claude wrapper: {e}"))?
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms)
+        .map_err(|e| format!("Failed to chmod Claude wrapper: {e}"))?;
+    ensure_shell_path_hook()?;
+    Ok(claude_wrapper_status())
+}
+
+#[tauri::command]
+pub async fn remove_claude_wrapper() -> Result<ClaudeWrapperStatus, String> {
+    let path = claude_wrapper_path()?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| format!("Failed to remove Claude wrapper: {e}"))?;
+    }
+    remove_shell_path_hook()?;
+    Ok(claude_wrapper_status())
+}
+
+const WRAPPER_PATH_HOOK_START: &str = "# >>> AgentBro Claude Inspector >>>";
+const WRAPPER_PATH_HOOK_END: &str = "# <<< AgentBro Claude Inspector <<<";
+
+fn claude_wrapper_status() -> ClaudeWrapperStatus {
+    let shim_path = claude_wrapper_path().unwrap_or_else(|_| PathBuf::from(""));
+    let shell_config_path = shell_config_path();
+    let shell_content = fs::read_to_string(&shell_config_path).unwrap_or_default();
+    ClaudeWrapperStatus {
+        installed: shim_path.exists(),
+        shim_path: shim_path.display().to_string(),
+        path_hint_installed: shell_content.contains(WRAPPER_PATH_HOOK_START),
+        shell_config_path: shell_config_path.display().to_string(),
+    }
+}
+
+fn claude_wrapper_path() -> Result<PathBuf, String> {
+    dirs::home_dir()
+        .map(|home| home.join(".agentbro").join("bin").join("claude"))
+        .ok_or_else(|| "Unable to resolve home directory".to_string())
+}
+
+fn shell_config_path() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    if shell.contains("bash") {
+        let bash_profile = home.join(".bash_profile");
+        if cfg!(target_os = "macos") && bash_profile.exists() {
+            bash_profile
+        } else {
+            home.join(".bashrc")
+        }
+    } else {
+        home.join(".zshrc")
+    }
+}
+
+fn ensure_shell_path_hook() -> Result<(), String> {
+    let config_path = shell_config_path();
+    let mut content = fs::read_to_string(&config_path).unwrap_or_default();
+    if content.contains(WRAPPER_PATH_HOOK_START) {
+        return Ok(());
+    }
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&format!(
+        "\n{WRAPPER_PATH_HOOK_START}\nexport PATH=\"$HOME/.agentbro/bin:$PATH\"\n{WRAPPER_PATH_HOOK_END}\n"
+    ));
+    fs::write(&config_path, content).map_err(|e| {
+        format!(
+            "Failed to update shell config {}: {e}",
+            config_path.display()
+        )
+    })
+}
+
+fn remove_shell_path_hook() -> Result<(), String> {
+    let config_path = shell_config_path();
+    let content = match fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(()),
+    };
+    if !content.contains(WRAPPER_PATH_HOOK_START) {
+        return Ok(());
+    }
+    let mut next = String::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        if line == WRAPPER_PATH_HOOK_START {
+            skipping = true;
+            continue;
+        }
+        if line == WRAPPER_PATH_HOOK_END {
+            skipping = false;
+            continue;
+        }
+        if !skipping {
+            next.push_str(line);
+            next.push('\n');
+        }
+    }
+    fs::write(&config_path, next).map_err(|e| {
+        format!(
+            "Failed to update shell config {}: {e}",
+            config_path.display()
+        )
+    })
+}
+
+fn claude_wrapper_script() -> &'static str {
+    r#"#!/bin/sh
+# AgentBro Claude Inspector shim. Generated by AgentBro.
+
+SELF_PATH="$0"
+REAL_CLAUDE=""
+
+for candidate in "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.local/bin/claude"; do
+  if [ -x "$candidate" ] && [ "$candidate" != "$SELF_PATH" ]; then
+    REAL_CLAUDE="$candidate"
+    break
+  fi
+done
+
+if [ -z "$REAL_CLAUDE" ]; then
+  for candidate in $(which -a claude 2>/dev/null); do
+    if [ "$candidate" != "$SELF_PATH" ] && [ "$candidate" != "$HOME/.agentbro/bin/claude" ]; then
+      REAL_CLAUDE="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "$REAL_CLAUDE" ]; then
+  echo "AgentBro: real claude executable not found" >&2
+  exit 127
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  exec "$REAL_CLAUDE" "$@"
+fi
+
+AGENTBRO_ROUTE_BASE_URL="$(python3 - "$PWD" <<'PY'
+import base64, json, os, sys
+from pathlib import Path
+from urllib import request as urlrequest
+
+cwd = Path(sys.argv[1])
+state_path = Path.home() / ".agentbro" / "network-monitor.json"
+default = "https://api.anthropic.com"
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+state = read_json(state_path) or {}
+proxy = state.get("proxyUrl") if state.get("enabled") else None
+if not proxy:
+    print("")
+    raise SystemExit
+
+try:
+    probe = urlrequest.Request(proxy.rstrip("/") + "/__agentbro_health", method="GET")
+    urlrequest.urlopen(probe, timeout=0.25).close()
+except Exception:
+    print("")
+    raise SystemExit
+
+def is_agentbro_url(url):
+    return isinstance(url, str) and "/__agentbro_route/" in url
+
+def env_base(path):
+    data = read_json(path)
+    env = data.get("env") if isinstance(data, dict) else None
+    value = env.get("ANTHROPIC_BASE_URL") if isinstance(env, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+upstream = os.environ.get("ANTHROPIC_BASE_URL")
+if not upstream or is_agentbro_url(upstream):
+    for candidate in (
+        cwd / ".claude" / "settings.local.json",
+        cwd / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.json",
+    ):
+        upstream = env_base(candidate)
+        if upstream and not is_agentbro_url(upstream):
+            break
+if not upstream or is_agentbro_url(upstream):
+    upstream = default
+
+encoded = base64.urlsafe_b64encode(upstream.rstrip("/").encode()).decode().rstrip("=")
+route = proxy.rstrip("/") + "/__agentbro_route/" + encoded
+print(route)
+PY
+)"
+
+if [ -n "$AGENTBRO_ROUTE_BASE_URL" ]; then
+  ANTHROPIC_BASE_URL="$AGENTBRO_ROUTE_BASE_URL" exec "$REAL_CLAUDE" "$@"
+fi
+
+exec "$REAL_CLAUDE" "$@"
+"#
 }
 
 fn session_summary(session: SessionState) -> MonitorSessionSummary {
@@ -375,6 +609,29 @@ fn raw_event_detail(raw: &serde_json::Value) -> Option<String> {
         .or_else(|| raw_status(raw))
 }
 
+fn monitor_transcript_path(session: &SessionState, raw_events: &[RawHookEvent]) -> Option<String> {
+    raw_events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            event
+                .raw
+                .get("transcript_path")
+                .or_else(|| event.raw.get("transcriptPath"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            if session.agent_type == "codex" {
+                discover_codex_session_file(&session.id)
+            } else {
+                discover_session_file(&session.id, &session.cwd)
+            }
+            .map(|path| path.display().to_string())
+        })
+}
+
 fn truncate_detail(value: &str) -> String {
     let trimmed = value.trim();
     let mut chars = trimmed.chars();
@@ -388,4 +645,23 @@ fn truncate_detail(value: &str) -> String {
 
 fn seconds_to_ms(seconds: i64) -> u64 {
     seconds.max(0) as u64 * 1000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_wrapper_preserves_hooks_by_avoiding_settings_override() {
+        let script = claude_wrapper_script();
+
+        assert!(
+            !script.contains("--settings"),
+            "wrapper must not pass generated --settings because that can bypass Claude Code hooks"
+        );
+        assert!(script.contains("AGENTBRO_ROUTE_BASE_URL"));
+        assert!(script.contains(
+            "ANTHROPIC_BASE_URL=\"$AGENTBRO_ROUTE_BASE_URL\" exec \"$REAL_CLAUDE\" \"$@\""
+        ));
+    }
 }

@@ -141,6 +141,7 @@ export interface SessionState {
   sessionTitle?: string
   pid?: number
   tty?: string
+  termProgram?: string
   termBundleId?: string
   weztermPane?: string
   zellijPaneId?: string

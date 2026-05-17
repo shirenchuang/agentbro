@@ -360,12 +360,11 @@ function OverviewTab() {
             <span className="overview-hero__stripe overview-hero__stripe--gold" />
           </div>
           <div className="overview-live-pill">
-            <span className="overview-live-pill__mark">A</span>
+            <img src="/agentbro-app-icon.png" className="overview-live-pill__icon" alt="AgentBro" />
             <span className="overview-live-pill__copy">
-              <strong>{t('settings.island.overview.previewTitle', { defaultValue: 'Codex is running tests' })}</strong>
-              <span>{t('settings.island.overview.previewMeta', { defaultValue: 'agentBro · bun test:run · 2m' })}</span>
+              <strong>AgentBro</strong>
+              <span>让Agent更好用</span>
             </span>
-            <span className="overview-live-pill__count">11</span>
           </div>
         </div>
 
@@ -581,6 +580,7 @@ function DisplayTab() {
   const isZh = i18n.language?.startsWith('zh')
   const [displays, setDisplays] = useState<BackendDisplayInfo[]>([])
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const compactPillWidthValue = Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))
 
   useEffect(() => {
     listDisplays().then(setDisplays)
@@ -604,6 +604,7 @@ function DisplayTab() {
       contentFontSize: state.contentFontSize,
       completionCardHeight: state.completionCardHeight,
       maxPanelHeight: state.maxPanelHeight,
+      detailPanelMaxHeight: state.detailPanelMaxHeight,
       ...overrides,
     }).catch((e) => console.error('Failed to preview island layout:', e))
     if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
@@ -618,12 +619,14 @@ function DisplayTab() {
     clearIslandLayoutPreview().catch(() => {})
   }, [])
 
-  const themeOptions = themes.map((th) => ({
-    value: th.name,
-    label: th.displayName
-      ? th.isCodexPet ? `Codex Pet: ${th.displayName}` : th.displayName
-      : th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' '),
-  }))
+  const themeOptions = themes.map((th) => {
+    const label = th.name === 'ink-amber'
+      ? isZh ? 'AgentBro 经典' : 'AgentBro Classic'
+      : th.displayName
+        ? th.isCodexPet ? `Codex Pet: ${th.displayName}` : th.displayName
+        : th.name.charAt(0).toUpperCase() + th.name.slice(1).replace(/[-:]/g, ' ')
+    return { value: th.name, label }
+  })
   const fontSizeOptions = [
     { value: '11px', label: `11px - ${t('settings.fontSizeSmall', { defaultValue: 'Small' })}` },
     { value: '12px', label: `12px - ${t('settings.fontSizeCompact', { defaultValue: 'Compact' })}` },
@@ -754,10 +757,6 @@ function DisplayTab() {
           <Dropdown value={String(config.maxVisibleSessions)} options={maxVisibleSessionOptions}
             onChange={(v) => { config.updateConfig('maxVisibleSessions', Number(v)); previewLayout('expanded') }} minWidth={120} />
         </SettingRow>
-        <SettingRow label={t('settings.collapsedWidthScale')} description={`${config.collapsedWidthScale}%`}>
-          <Slider value={config.collapsedWidthScale} min={50} max={150} step={5}
-            onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact', { collapsedWidthScale: v }) }} unit="%" />
-        </SettingRow>
         <SettingRow label={t('settings.notchHeightMode')} description={t('settings.notchHeightModeDesc')}>
           <Dropdown value={config.notchHeightMode}
             options={[
@@ -777,15 +776,19 @@ function DisplayTab() {
               onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact', { notchHeightMode: 'custom', customNotchHeight: v }) }} unit="px" />
           </SettingRow>
         )}
-        <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Idle Pill Width' })} description={`${config.microPillWidth}px`}>
+        <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Micro Pill Width' })} description={`${config.microPillWidth}px`}>
           <Slider value={config.microPillWidth} min={84} max={180} step={4}
             onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro', { microPillWidth: v }) }} unit="px" />
         </SettingRow>
-        <SettingRow label={t('settings.compactPillWidth', { defaultValue: 'Compact Island Width' })} description={`${Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))}px`}>
-          <Slider value={config.compactPillWidth} min={260} max={520} step={10}
-            onChange={(v) => { config.updateConfig('compactPillWidth', v); previewLayout('compact', { compactPillWidth: v }) }} unit="px" />
+        <SettingRow label={t('settings.compactPillWidth', { defaultValue: 'Compact Pill Width' })} description={`${compactPillWidthValue}px`}>
+          <Slider value={compactPillWidthValue} min={260} max={520} step={10}
+            onChange={(v) => {
+              config.updateConfig('compactPillWidth', v)
+              config.updateConfig('collapsedWidthScale', 100)
+              previewLayout('compact', { compactPillWidth: v, collapsedWidthScale: 100 })
+            }} unit="px" />
         </SettingRow>
-        <SettingRow label={t('settings.panelMaxWidth', { defaultValue: 'Expanded Island Width' })} description={`${config.panelMaxWidth}px`}>
+        <SettingRow label={t('settings.panelMaxWidth', { defaultValue: 'Expanded Panel Width' })} description={`${config.panelMaxWidth}px`}>
           <Slider value={config.panelMaxWidth} min={480} max={760} step={10}
             onChange={(v) => { config.updateConfig('panelMaxWidth', v); previewLayout('expanded', { panelMaxWidth: v }) }} unit="px" />
         </SettingRow>
@@ -807,6 +810,10 @@ function DisplayTab() {
         <SettingRow label={t('settings.maxPanelHeight')} description={`${config.maxPanelHeight}px`}>
           <Slider value={config.maxPanelHeight} min={300} max={800} step={20}
             onChange={(v) => { config.updateConfig('maxPanelHeight', v); previewLayout('expanded', { maxPanelHeight: v }) }} unit="px" />
+        </SettingRow>
+        <SettingRow label={t('settings.detailPanelMaxHeight')} description={`${config.detailPanelMaxHeight}px`}>
+          <Slider value={config.detailPanelMaxHeight} min={260} max={1200} step={20}
+            onChange={(v) => { config.updateConfig('detailPanelMaxHeight', v); previewLayout('expanded', { detailPanelMaxHeight: v }) }} unit="px" />
         </SettingRow>
       </SettingGroup>
 

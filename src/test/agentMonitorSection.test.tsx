@@ -10,6 +10,9 @@ const monitorMocks = vi.hoisted(() => ({
   getMonitorSessionDetail: vi.fn(),
   getMonitorTimeline: vi.fn(),
   getNetworkMonitorStatus: vi.fn(),
+  getClaudeWrapperStatus: vi.fn(),
+  installClaudeWrapper: vi.fn(),
+  removeClaudeWrapper: vi.fn(),
   setNetworkMonitorEnabled: vi.fn(),
   getNetworkMonitorRequests: vi.fn(),
   getNetworkMonitorRequestDetail: vi.fn(),
@@ -18,6 +21,7 @@ const monitorMocks = vi.hoisted(() => ({
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(),
   jumpToTerminal: vi.fn(() => Promise.resolve()),
+  openSystemPath: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../services/monitorApi', () => ({
@@ -25,6 +29,9 @@ vi.mock('../services/monitorApi', () => ({
   getMonitorSessionDetail: monitorMocks.getMonitorSessionDetail,
   getMonitorTimeline: monitorMocks.getMonitorTimeline,
   getNetworkMonitorStatus: monitorMocks.getNetworkMonitorStatus,
+  getClaudeWrapperStatus: monitorMocks.getClaudeWrapperStatus,
+  installClaudeWrapper: monitorMocks.installClaudeWrapper,
+  removeClaudeWrapper: monitorMocks.removeClaudeWrapper,
   setNetworkMonitorEnabled: monitorMocks.setNetworkMonitorEnabled,
   getNetworkMonitorRequests: monitorMocks.getNetworkMonitorRequests,
   getNetworkMonitorRequestDetail: monitorMocks.getNetworkMonitorRequestDetail,
@@ -36,6 +43,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     ...actual,
     getChatHistory: tauriMocks.getChatHistory,
     jumpToTerminal: tauriMocks.jumpToTerminal,
+    openSystemPath: tauriMocks.openSystemPath,
   }
 })
 
@@ -76,6 +84,7 @@ const detail = {
     project: 'agentbro',
     cwd: '/Users/me/code/agentbro',
     terminal: 'iTerm',
+    termProgram: null,
     phase: 'waiting_approval',
     startedAt: 1_700_000_000,
     duration: 125,
@@ -145,6 +154,7 @@ const detail = {
     eventName: 'PreToolUse',
     raw: { event: 'PreToolUse', session_id: 'session-1', tool_name: 'Edit' },
   }],
+  transcriptPath: '/Users/me/.claude/projects/agentbro/session-1.jsonl',
 } as MonitorSessionDetail
 
 describe('AgentMonitorSection', () => {
@@ -160,6 +170,24 @@ describe('AgentMonitorSection', () => {
       upstreamBaseUrl: 'https://api.anthropic.com',
       requestCount: 0,
       activeRequestCount: 0,
+    })
+    monitorMocks.getClaudeWrapperStatus.mockResolvedValue({
+      installed: false,
+      shimPath: '/Users/me/.agentbro/bin/claude',
+      pathHintInstalled: false,
+      shellConfigPath: '/Users/me/.zshrc',
+    })
+    monitorMocks.installClaudeWrapper.mockResolvedValue({
+      installed: true,
+      shimPath: '/Users/me/.agentbro/bin/claude',
+      pathHintInstalled: true,
+      shellConfigPath: '/Users/me/.zshrc',
+    })
+    monitorMocks.removeClaudeWrapper.mockResolvedValue({
+      installed: false,
+      shimPath: '/Users/me/.agentbro/bin/claude',
+      pathHintInstalled: false,
+      shellConfigPath: '/Users/me/.zshrc',
     })
     monitorMocks.setNetworkMonitorEnabled.mockResolvedValue({
       enabled: false,
@@ -186,7 +214,13 @@ describe('AgentMonitorSection', () => {
     await waitFor(() => expect(screen.getAllByText('agentbro · monitor').length).toBeGreaterThan(0))
     expect(screen.getAllByText('Edit').length).toBeGreaterThan(0)
     expect(screen.getByText('权限')).toBeInTheDocument()
-    expect(screen.getByText('原生网络请求监控')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开 JSON' })).toBeEnabled())
+
+    fireEvent.click(screen.getByRole('button', { name: '打开 JSON' }))
+    await waitFor(() => expect(tauriMocks.openSystemPath).toHaveBeenCalledWith('/Users/me/.claude/projects/agentbro/session-1.jsonl'))
+
+    fireEvent.click(screen.getByRole('button', { name: '打开目录' }))
+    await waitFor(() => expect(tauriMocks.openSystemPath).toHaveBeenCalledWith('/Users/me/.claude/projects/agentbro'))
 
     fireEvent.click(screen.getByRole('button', { name: '工具时间线' }))
     await waitFor(() => expect(screen.getAllByText('running').length).toBeGreaterThan(0))
@@ -208,15 +242,119 @@ describe('AgentMonitorSection', () => {
       activeRequestCount: 0,
     })
 
-    render(<AgentMonitorSection />)
+    render(<AgentMonitorSection activeView="access" />)
 
     await waitFor(() => expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false'))
     expect(screen.getByText('关闭')).toBeInTheDocument()
+    expect(screen.getByText('Claude 命令无感接入')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('switch'))
     await waitFor(() => expect(monitorMocks.setNetworkMonitorEnabled).toHaveBeenCalledWith(true, 'https://api.anthropic.com'))
     expect(await screen.findByText('已开启')).toBeInTheDocument()
     expect(screen.getByText('ANTHROPIC_BASE_URL=http://127.0.0.1:4567 claude')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '安装接入' }))
+    await waitFor(() => expect(monitorMocks.installClaudeWrapper).toHaveBeenCalled())
+    expect(await screen.findByText('移除接入')).toBeInTheDocument()
+  })
+
+  it('renders classified network request detail tabs', async () => {
+    monitorMocks.getNetworkMonitorStatus.mockResolvedValue({
+      enabled: true,
+      proxyUrl: 'http://127.0.0.1:4567',
+      upstreamBaseUrl: 'https://api.anthropic.com',
+      requestCount: 1,
+      activeRequestCount: 0,
+    })
+    monitorMocks.getNetworkMonitorRequests.mockResolvedValue([{
+      id: 'req-1',
+      timestampMs: 1_700_000_052_000,
+      provider: 'anthropic',
+      method: 'POST',
+      url: '/v1/messages',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      sessionId: null,
+      project: null,
+      model: 'claude-sonnet-4',
+      status: 200,
+      durationMs: 321,
+      requestBytes: 1234,
+      responseBytes: 2345,
+      isStream: true,
+      mainAgent: true,
+      requestType: 'MainAgent',
+      requestSubType: null,
+      messageCount: 2,
+      toolCount: 1,
+      systemPreview: 'You are Claude Code.',
+      usage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 40,
+      },
+      usageSummary: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationInputTokens: 10,
+        cacheReadInputTokens: 40,
+        totalTokens: 170,
+        cacheHitRate: 80,
+      },
+      error: null,
+      inProgress: false,
+    }])
+    monitorMocks.getNetworkMonitorRequestDetail.mockResolvedValue({
+      summary: {
+        id: 'req-1',
+        timestampMs: 1_700_000_052_000,
+        provider: 'anthropic',
+        method: 'POST',
+        url: '/v1/messages',
+        upstreamUrl: 'https://api.anthropic.com/v1/messages',
+        sessionId: null,
+        project: null,
+        model: 'claude-sonnet-4',
+        status: 200,
+        durationMs: 321,
+        requestBytes: 1234,
+        responseBytes: 2345,
+        isStream: true,
+        mainAgent: true,
+        requestType: 'MainAgent',
+        requestSubType: null,
+        messageCount: 2,
+        toolCount: 1,
+        systemPreview: 'You are Claude Code.',
+        usage: null,
+        usageSummary: null,
+        error: null,
+        inProgress: false,
+      },
+      requestHeaders: { authorization: '****' },
+      requestBody: {
+        model: 'claude-sonnet-4',
+        system: [{ type: 'text', text: 'You are Claude Code.' }],
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ name: 'Edit', description: 'edit files' }],
+      },
+      responseHeaders: { 'content-type': 'text/event-stream' },
+      responseBody: 'data: {"type":"message_delta","usage":{"output_tokens":20}}\n',
+      responseBodyTruncated: false,
+      streamEventCount: 1,
+    })
+
+    render(<AgentMonitorSection activeView="capture" />)
+
+    await waitFor(() => expect(screen.getByText('已开启')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByText('MainAgent').length).toBeGreaterThan(0))
+    expect(screen.getByText('cache read 40')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }))
+    await waitFor(() => expect(screen.getAllByText('Edit').length).toBeGreaterThan(0))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Response' }))
+    expect(await screen.findByText('event #1')).toBeInTheDocument()
   })
 
   it('is reachable from the top-level settings menu and has an empty state', async () => {
@@ -226,8 +364,11 @@ describe('AgentMonitorSection', () => {
     render(<SettingsApp onClose={vi.fn()} />)
 
     fireEvent.click(screen.getByText('settings.agentMonitor'))
+    await waitFor(() => expect(screen.getByText('请求抓包')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('会话追踪'))
     await waitFor(() => expect(screen.getByText('暂无匹配的 Agent 会话。')).toBeInTheDocument())
 
+    fireEvent.click(screen.getByText('‹ settings.title'))
     fireEvent.click(screen.getByText('settings.agents'))
     expect(screen.queryByRole('button', { name: /Agent监控|settings\.agentMonitor/ })).not.toBeInTheDocument()
   })

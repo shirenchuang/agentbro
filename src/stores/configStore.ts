@@ -107,6 +107,7 @@ interface ConfigState {
   contentFontSize: string
   completionCardHeight: number
   maxPanelHeight: number
+  detailPanelMaxHeight: number
   showAgentActivityDetails: boolean
 
   // Token & Cost
@@ -336,6 +337,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     contentFontSize: '13px',
     completionCardHeight: 200,
     maxPanelHeight: 600,
+    detailPanelMaxHeight: 500,
     showAgentActivityDetails: true,
     showUsageQuota: true,
     tokenDisplayMode: 'both',
@@ -369,7 +371,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     panelHorizontalOffset: 0,
     collapsedWidthScale: 118,
     microPillWidth: 112,
-    compactPillWidth: 330,
+    compactPillWidth: 280,
     panelMaxWidth: 630,
     notchHeightMode: 'matchNotch',
     customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
@@ -423,6 +425,7 @@ export const useConfigStore = create<ConfigStore>()(
   contentFontSize: '13px',
   completionCardHeight: 200,
   maxPanelHeight: 600,
+  detailPanelMaxHeight: 500,
   showAgentActivityDetails: true,
 
   // Token & Cost
@@ -649,6 +652,7 @@ export const useConfigStore = create<ConfigStore>()(
       merge: (persistedState, currentState) => ({
         ...currentState,
         ...(persistedState as Partial<ConfigState>),
+        detailPanelMaxHeight: (persistedState as Partial<ConfigState> | undefined)?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
         notificationMode: 'turnEnd',
       }),
     }

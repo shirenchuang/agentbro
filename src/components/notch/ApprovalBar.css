@@ -1,6 +1,7 @@
 .approval-bar {
   padding: 8px 16px;
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 8px;
   border-top: 1px solid var(--island-border);
