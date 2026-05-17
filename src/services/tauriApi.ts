@@ -633,6 +633,11 @@ export async function setNotchIgnoreCursorEvents(ignore: boolean): Promise<void>
   return invoke('set_notch_ignore_cursor_events', { ignore })
 }
 
+export async function openSettingsWindow(): Promise<void> {
+  if (!isTauri()) return
+  return invoke('open_settings_window')
+}
+
 // ── Suppression Commands ────────────────────────────────────────
 
 /** Check if a session's terminal is currently focused (smart suppression). */

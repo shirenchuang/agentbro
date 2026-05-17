@@ -7,7 +7,7 @@ import { computePriority, PRIORITY } from '../../types/priority'
 import { MascotRouter } from './mascots'
 import { TipDisplay } from './TipDisplay'
 import { useTick } from '../../hooks/useTick'
-import { isTauri, setSoundEnabled } from '../../services/tauriApi'
+import { openSettingsWindow, setSoundEnabled } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { sessionNeedsAttention } from '../../utils/islandInteraction'
@@ -166,19 +166,10 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
   async function openSettings(e: React.MouseEvent) {
     e.stopPropagation()
-    if (isTauri()) {
-      try {
-        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-        const { invoke } = await import('@tauri-apps/api/core')
-        const settingsWin = await WebviewWindow.getByLabel('settings')
-        if (settingsWin) {
-          await invoke('set_dock_visible', { visible: true })
-          await settingsWin.show()
-          await settingsWin.setFocus()
-        }
-      } catch (err) {
-        console.error('[settings] Failed to open settings window:', err)
-      }
+    try {
+      await openSettingsWindow()
+    } catch (err) {
+      console.error('[settings] Failed to open settings window:', err)
     }
   }
 

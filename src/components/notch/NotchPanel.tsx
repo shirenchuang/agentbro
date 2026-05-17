@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState } from '../../types/agent'
@@ -855,12 +855,7 @@ export function NotchPanel() {
       const settingsBinding = findShortcut('open-settings')
       if (settingsBinding && matchesShortcut(e, settingsBinding)) {
         e.preventDefault()
-        import('@tauri-apps/api/webviewWindow').then(({ WebviewWindow }) => {
-          import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke('set_dock_visible', { visible: true })
-            WebviewWindow.getByLabel('settings').then(win => { win?.show(); win?.setFocus() })
-          })
-        })
+        openSettingsWindow().catch((error) => console.warn('[notch] openSettingsWindow:', error))
         return
       }
 

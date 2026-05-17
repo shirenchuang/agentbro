@@ -1017,6 +1017,88 @@ fn set_dock_visible(app: tauri::AppHandle, visible: bool) {
 #[cfg(not(target_os = "macos"))]
 fn set_dock_visible(_app: tauri::AppHandle, _visible: bool) {}
 
+#[cfg(target_os = "macos")]
+fn activate_agentbro_app() {
+    unsafe {
+        let cls = objc2::runtime::AnyClass::get("NSApplication").unwrap();
+        let ns_app: *mut objc2::runtime::AnyObject = objc2::msg_send![cls, sharedApplication];
+        let _: () = objc2::msg_send![ns_app, activateIgnoringOtherApps: objc2::runtime::Bool::YES];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_settings_window_for_spaces(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let _ = window.set_visible_on_all_workspaces(true);
+    if let Ok(ptr) = window.ns_window() {
+        unsafe {
+            let ns_window = ptr as *const NSWindow;
+            let mut behavior = (*ns_window).collectionBehavior();
+
+            behavior &= !(NSWindowCollectionBehavior::Primary
+                | NSWindowCollectionBehavior::Auxiliary
+                | NSWindowCollectionBehavior::Managed
+                | NSWindowCollectionBehavior::Transient
+                | NSWindowCollectionBehavior::MoveToActiveSpace
+                | NSWindowCollectionBehavior::FullScreenPrimary
+                | NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenAllowsTiling
+                | NSWindowCollectionBehavior::FullScreenDisallowsTiling);
+            behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::CanJoinAllApplications
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::ParticipatesInCycle;
+            (*ns_window).setCollectionBehavior(behavior);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_settings_window_for_spaces(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+fn focus_settings_window_native(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+
+    if let Ok(ptr) = window.ns_window() {
+        unsafe {
+            let ns_window = ptr as *const NSWindow;
+            (*ns_window).makeKeyAndOrderFront(None);
+            (*ns_window).orderFrontRegardless();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn focus_settings_window_native(_window: &tauri::WebviewWindow) {}
+
+fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+        }
+
+        if let Some(window) = handle.get_webview_window("settings") {
+            apply_settings_window_for_spaces(&window);
+            let _ = window.show();
+            let _ = window.set_focus();
+
+            #[cfg(target_os = "macos")]
+            activate_agentbro_app();
+            focus_settings_window_native(&window);
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_window(&app)
+}
+
 // ── Sound Commands ───────────────────────────────────────────────
 
 fn custom_sounds_dir() -> PathBuf {
@@ -2972,10 +3054,7 @@ pub fn run() {
                         show_notch_window(app);
                     }
                     "settings" => {
-                        if let Some(window) = app.get_webview_window("settings") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        let _ = show_settings_window(app);
                     }
                     "quit" => {
                         std::process::exit(0);
@@ -3055,6 +3134,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             quit_app,
             set_dock_visible,
+            open_settings_window,
             commands::get_sessions,
             commands::respond_permission,
             commands::respond_auto_approve,
