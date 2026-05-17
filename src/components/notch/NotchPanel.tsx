@@ -1032,7 +1032,7 @@ export function NotchPanel() {
     ? 460
     : activeOverlay?.type === 'question'
       ? 380
-      : 420
+      : 340
   const panelHeight =
     isPetMode
       ? 360
@@ -1043,7 +1043,7 @@ export function NotchPanel() {
           : previewMode === 'expanded'
             ? (maxPanelHeight || 560)
             : hasBlockingOverlayContent
-              ? Math.min(Math.max(measuredAlertContentHeight || blockingOverlayFallbackHeight, 220), maxPanelHeight || 600)
+              ? Math.min(Math.max(measuredAlertContentHeight, blockingOverlayFallbackHeight, 220), maxPanelHeight || 600)
             : feedbackPresentationOpen
               ? Math.min(Math.max(measuredFeedbackContentHeight || completionCardHeight + 168, 220), maxPanelHeight || 600)
             : overlayPresentationOpen
@@ -1134,7 +1134,8 @@ export function NotchPanel() {
     if (!element) return
 
     const measure = () => {
-      const nextHeight = Math.ceil(element.getBoundingClientRect().height || element.scrollHeight)
+      const visibleHeight = element.getBoundingClientRect().height
+      const nextHeight = Math.ceil(Math.max(visibleHeight, element.scrollHeight))
       if (nextHeight > 0) setMeasuredAlertContentHeight(nextHeight)
     }
 
@@ -1162,7 +1163,8 @@ export function NotchPanel() {
     if (!element) return
 
     const measure = () => {
-      const nextHeight = Math.ceil(element.getBoundingClientRect().height || element.scrollHeight)
+      const visibleHeight = element.getBoundingClientRect().height
+      const nextHeight = Math.ceil(Math.max(visibleHeight, element.scrollHeight))
       if (nextHeight > 0) setMeasuredFeedbackContentHeight(nextHeight)
     }
 
@@ -1530,6 +1532,7 @@ export function NotchPanel() {
                     ref={setAlertContentNode}
                     key={`alert-${activeOverlay.id}`}
                     className="notch-panel__alert-content"
+                    data-overlay-type={activeOverlay.type}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}

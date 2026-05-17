@@ -445,7 +445,7 @@ describe('NotchPanel island shell', () => {
     })
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'feedback')
-    expect(screen.getByText('Can you continue the migration?')).toBeInTheDocument()
+    expect(screen.getAllByText('Can you continue the migration?').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Ready for the next integration step').length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'notch.jumpToTerminal' })).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
@@ -582,6 +582,12 @@ describe('NotchPanel island shell', () => {
     expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
     expect(document.querySelector('.hover-list')).not.toBeInTheDocument()
     expect(screen.queryByText('agent-island · Port dynamic island')).not.toBeInTheDocument()
+
+    const scrollRegion = document.querySelector('.perm-card__scroll')
+    const actions = document.querySelector('.perm-card__actions')
+    expect(scrollRegion).toBeInTheDocument()
+    expect(actions).toBeInTheDocument()
+    expect(scrollRegion).not.toContainElement(actions as HTMLElement)
   })
 
   it('keeps suppressed blocking overlays queued without auto-expanding the island', async () => {
@@ -769,6 +775,9 @@ describe('NotchPanel island shell', () => {
       },
       createdAt: Date.now(),
     })
+
+    expect(document.querySelector('.overlay-feedback__message--user')?.textContent).toContain('Continue?')
+    expect(document.querySelector('.overlay-feedback__message--assistant')?.textContent).toContain('Ready for the next step')
 
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__detail')!)
 

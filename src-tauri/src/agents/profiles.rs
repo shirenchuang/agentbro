@@ -733,7 +733,10 @@ pub fn install_custom_at(
     Ok(target)
 }
 
-pub fn custom_installation_path(profile: &AgentIntegrationProfile, base_directory: &Path) -> PathBuf {
+pub fn custom_installation_path(
+    profile: &AgentIntegrationProfile,
+    base_directory: &Path,
+) -> PathBuf {
     let file_name = Path::new(profile.configuration_path)
         .file_name()
         .map(|name| name.to_owned())
@@ -761,7 +764,10 @@ pub fn custom_installation_path(profile: &AgentIntegrationProfile, base_director
     }
 }
 
-fn custom_activation_path(profile: &AgentIntegrationProfile, base_directory: &Path) -> Option<PathBuf> {
+fn custom_activation_path(
+    profile: &AgentIntegrationProfile,
+    base_directory: &Path,
+) -> Option<PathBuf> {
     profile.activation_path?;
     if matches!(profile.installation_kind, InstallationKind::PluginFile) {
         let activation_file = Path::new(profile.activation_path?).file_name()?.to_owned();
@@ -770,7 +776,9 @@ fn custom_activation_path(profile: &AgentIntegrationProfile, base_directory: &Pa
             .and_then(|name| name.to_str())
             .is_some_and(|name| name == "plugins")
         {
-            return base_directory.parent().map(|parent| parent.join(activation_file));
+            return base_directory
+                .parent()
+                .map(|parent| parent.join(activation_file));
         }
         return Some(base_directory.join(activation_file));
     }
@@ -1108,9 +1116,10 @@ fn strip_json_hooks(settings: &mut Value) {
 }
 
 fn is_agentbro_command(command: &str) -> bool {
-    command.contains("agentbro")
-        || command.contains("agent-island")
-        || command.contains("vibe-island")
+    command.contains("agentbro-bridge")
+        || command.contains("/.agentbro/")
+        || command.contains("AGENTBRO_")
+        || command.contains(MARKER_PREFIX)
 }
 
 fn update_yaml_hooks(
@@ -1859,6 +1868,63 @@ name = "also keep"
         assert!(cleaned.contains("[providers]"));
         assert!(cleaned.contains("[models.default]"));
         assert!(!cleaned.contains("pre_tool_use"));
+    }
+
+    #[test]
+    fn json_cleanup_preserves_other_island_hooks() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Notification": [
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/usr/bin/env AGENTBRO_CONFIG_ROOT='/Users/me/.claude' '/Users/me/.agentbro/bin/agentbro-bridge'"
+                            }
+                        ]
+                    },
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/bin/sh -c '[ -x \"$HOME/.vibe-island/bin/vibe-island-bridge\" ] && \"$HOME/.vibe-island/bin/vibe-island-bridge\" --source claude; exit 0'"
+                            }
+                        ]
+                    },
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/Users/me/.agent-island/bin/agent-island-bridge"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        strip_json_hooks(&mut settings);
+
+        let entries = settings["hooks"]["Notification"].as_array().unwrap();
+        let commands: Vec<&str> = entries
+            .iter()
+            .flat_map(|entry| entry["hooks"].as_array().unwrap())
+            .filter_map(|hook| hook["command"].as_str())
+            .collect();
+
+        assert_eq!(commands.len(), 2);
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("vibe-island")));
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("agent-island")));
+        assert!(!commands
+            .iter()
+            .any(|command| command.contains("agentbro-bridge")));
     }
 
     #[test]

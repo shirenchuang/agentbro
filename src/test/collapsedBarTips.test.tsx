@@ -23,7 +23,7 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
 
 describe('CollapsedBar idle tips', () => {
   beforeEach(() => {
-    useConfigStore.setState({ tipsEnabled: true })
+    useConfigStore.setState({ tipsEnabled: true, showToolStatus: true })
   })
 
   it('shows tips when there are no sessions', () => {
@@ -74,5 +74,64 @@ describe('CollapsedBar idle tips', () => {
     )
 
     expect(container.querySelector('.collapsed-bar__alert-badge')?.textContent).toBe('2')
+  })
+
+  it('uses thinking text instead of internal processing prompt text', () => {
+    render(
+      <CollapsedBar
+        sessions={[
+          session({ project: '', phase: 'processing', description: 'Processing user input' }),
+        ]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('notch.thinking')).toBeInTheDocument()
+    expect(screen.queryByText('Processing user input')).not.toBeInTheDocument()
+  })
+
+  it('shows live tool status as the primary collapsed island text when enabled', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[
+          session({
+            phase: 'processing',
+            lastToolName: 'Edit',
+            lastToolTarget: 'OverlayFeedbackPanel.tsx +68 -41',
+          }),
+        ]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('notch.tool.editing')).toBeInTheDocument()
+    expect(screen.getByText('OverlayFeedbackPanel.tsx')).toBeInTheDocument()
+    expect(screen.getByText('+68')).toHaveClass('collapsed-bar__tool-count--add')
+    expect(screen.getByText('-41')).toHaveClass('collapsed-bar__tool-count--del')
+    expect(container.querySelector('.collapsed-bar__tool-inline')).toBeInTheDocument()
+  })
+
+  it('hides live tool status from the collapsed island when disabled', () => {
+    useConfigStore.setState({ showToolStatus: false })
+
+    render(
+      <CollapsedBar
+        sessions={[
+          session({
+            phase: 'processing',
+            lastToolName: 'Edit',
+            lastToolTarget: 'OverlayFeedbackPanel.tsx +68 -41',
+          }),
+        ]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText('notch.tool.editing')).not.toBeInTheDocument()
+    expect(screen.queryByText('OverlayFeedbackPanel.tsx')).not.toBeInTheDocument()
+    expect(screen.getByText('project')).toBeInTheDocument()
   })
 })

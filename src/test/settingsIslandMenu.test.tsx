@@ -119,4 +119,23 @@ describe('settings island menu', () => {
     }))
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
+
+  it('previews the notification card max height from display settings', async () => {
+    useConfigStore.setState({ completionCardHeight: 200 })
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.island.title'))
+    fireEvent.click(screen.getByRole('button', { name: /Display/ }))
+
+    await waitFor(() => expect(screen.getByText('settings.completionCardHeight')).toBeInTheDocument())
+    const row = screen.getByText('settings.completionCardHeight').closest('.setting-row')
+    const slider = row!.querySelector<HTMLInputElement>('input[type="range"]')!
+    expect(slider).toHaveAttribute('max', '420')
+
+    fireEvent.change(slider, { target: { value: '360' } })
+
+    expect(tauriMocks.previewIslandLayout).toHaveBeenCalledWith('completion', expect.objectContaining({
+      completionCardHeight: 360,
+    }))
+  })
 })

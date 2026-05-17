@@ -35,12 +35,14 @@ export function OverlayFeedbackPanel({
   const [inputValue, setInputValue] = useState('')
   const [sending, setSending] = useState(false)
   const [isTimerPaused, setIsTimerPaused] = useState(false)
+  const [progressRatio, setProgressRatio] = useState(1)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const inputFocusedRef = useRef(false)
   const remainingRef = useRef(dwellMs)
   const startedAtRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const shownUserMessage = userMessage || session.lastUserMessage
@@ -48,33 +50,58 @@ export function OverlayFeedbackPanel({
   const terminalLabel = getSessionTerminalLabel(session)
   const agentName = getAgentDisplayName(session)
 
+  const updateProgress = useCallback(() => {
+    if (timerRef.current) {
+      const elapsed = Date.now() - startedAtRef.current
+      setProgressRatio(Math.max(0, (remainingRef.current - elapsed) / dwellMs))
+    } else {
+      setProgressRatio(Math.max(0, remainingRef.current / dwellMs))
+    }
+  }, [dwellMs])
+
+  const scheduleDismiss = useCallback((delayMs: number) => {
+    startedAtRef.current = Date.now()
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      remainingRef.current = 0
+      setProgressRatio(0)
+      onDismiss()
+    }, Math.max(0, delayMs))
+  }, [onDismiss])
+
   useEffect(() => {
     remainingRef.current = dwellMs
-    startedAtRef.current = Date.now()
-    timerRef.current = setTimeout(onDismiss, dwellMs)
+    setProgressRatio(1)
+    scheduleDismiss(dwellMs)
+    progressIntervalRef.current = setInterval(updateProgress, 100)
     setIsTimerPaused(false)
     inputFocusedRef.current = false
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
       if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
     }
-  }, [dwellMs, onDismiss])
+  }, [dwellMs, scheduleDismiss, updateProgress])
 
   const pauseTimer = useCallback(() => {
     if (!timerRef.current) return
     clearTimeout(timerRef.current)
     timerRef.current = null
     remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAtRef.current))
+    setProgressRatio(Math.max(0, remainingRef.current / dwellMs))
     setIsTimerPaused(true)
-  }, [])
+  }, [dwellMs])
 
   const resumeTimer = useCallback(() => {
     if (timerRef.current) return
-    startedAtRef.current = Date.now()
+    if (remainingRef.current <= 0) {
+      onDismiss()
+      return
+    }
     setIsTimerPaused(false)
-    timerRef.current = setTimeout(onDismiss, remainingRef.current)
-  }, [onDismiss])
+    scheduleDismiss(remainingRef.current)
+  }, [onDismiss, scheduleDismiss])
 
   useEffect(() => {
     if (!isTimerPaused) return
@@ -194,19 +221,26 @@ export function OverlayFeedbackPanel({
 
       <button type="button" className="overlay-feedback__detail" onMouseDown={handleJump}>
         <div className="overlay-feedback__scroll" style={maxHeight ? { maxHeight } : undefined}>
-          <div className="overlay-feedback__assistant-row">
-            <div className="overlay-feedback__bot-avatar">
-              <MascotRouter toolType={session.agentType} phase="done" size={18} />
-            </div>
-            <div className="overlay-feedback__assistant-copy">
-              <div className="overlay-feedback__status">
+          <div className="overlay-feedback__transcript">
+            <div className="overlay-feedback__transcript-head">
+              <span className="overlay-feedback__status">
                 <span className="overlay-feedback__status-dot" />
                 {statusLabel}
-              </div>
-              <div className="overlay-feedback__markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {text}
-                </ReactMarkdown>
+              </span>
+            </div>
+            <div className="overlay-feedback__conversation">
+              {shownUserMessage && (
+                <div className="overlay-feedback__message overlay-feedback__message--user">
+                  <span className="overlay-feedback__message-prefix">{t('notch.you', '你')}：</span>
+                  <span className="overlay-feedback__message-text">{shownUserMessage}</span>
+                </div>
+              )}
+              <div className="overlay-feedback__message overlay-feedback__message--assistant">
+                <div className="overlay-feedback__markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {text}
+                  </ReactMarkdown>
+                </div>
               </div>
             </div>
           </div>
@@ -250,7 +284,7 @@ export function OverlayFeedbackPanel({
       </div>
 
       <div className="overlay-feedback__progress" aria-hidden>
-        <div className="overlay-feedback__progress-bar" style={{ animationDuration: `${dwellMs}ms` }} />
+        <div className="overlay-feedback__progress-bar" style={{ transform: `scaleX(${progressRatio})` }} />
       </div>
     </div>
   )

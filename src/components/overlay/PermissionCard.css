@@ -1,7 +1,30 @@
 /* PermissionCard — Queue + Tool Preview + Feedback + Actions */
 
+.perm-card {
+  min-height: 0;
+}
+
+.perm-card__scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding-right: 2px;
+  overflow-y: auto;
+}
+
+.perm-card__scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.perm-card__scroll::-webkit-scrollbar-thumb {
+  background: var(--island-scrollbar, rgba(255, 255, 255, 0.15));
+  border-radius: 999px;
+}
+
 .perm-card__queue {
-  margin-bottom: 8px;
+  flex: 0 0 auto;
 }
 
 .perm-card__queue-info {
@@ -31,7 +54,7 @@
 
 /* Tool header */
 .perm-card__tool {
-  margin-bottom: 10px;
+  flex: 0 0 auto;
 }
 
 .perm-card__tool-header {
@@ -66,7 +89,7 @@
   background: var(--island-input-bg, rgba(255, 255, 255, 0.04));
   border-radius: 8px;
   padding: 10px;
-  margin-bottom: 10px;
+  flex: 0 0 auto;
 }
 
 .perm-card__detail-tool-label {
@@ -192,10 +215,11 @@
 
 /* Diff view */
 .perm-card__diff {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 150px;
   overflow-y: auto;
   border-radius: 6px;
-  margin-bottom: 10px;
 }
 
 .perm-card__diff .diff-view {
@@ -204,7 +228,7 @@
 
 /* Feedback */
 .perm-card__feedback {
-  margin-bottom: 10px;
+  flex: 0 0 auto;
 }
 
 .perm-card__feedback-input {
@@ -231,6 +255,7 @@
 /* Actions */
 .perm-card__actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 6px;
 }
 
@@ -277,6 +302,7 @@
 /* Secondary */
 .perm-card__secondary {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   margin-top: 6px;
 }

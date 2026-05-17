@@ -801,7 +801,7 @@ function DisplayTab() {
           <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
         </SettingRow>
         <SettingRow label={t('settings.completionCardHeight')} description={`${config.completionCardHeight}px`}>
-          <Slider value={config.completionCardHeight} min={80} max={200} step={10}
+          <Slider value={config.completionCardHeight} min={80} max={420} step={10}
             onChange={(v) => { config.updateConfig('completionCardHeight', v); previewLayout('completion', { completionCardHeight: v }) }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.maxPanelHeight')} description={`${config.maxPanelHeight}px`}>

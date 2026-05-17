@@ -118,7 +118,7 @@ describe('HoverList interactions', () => {
   })
 
   it('labels Codex App sessions by app instead of cwd-derived Evolab', () => {
-    render(
+    const { container } = render(
       <HoverList
         sessions={[session({
           project: 'free-chat',
@@ -132,6 +132,65 @@ describe('HoverList interactions', () => {
 
     expect(screen.getByText('Codex App')).toBeInTheDocument()
     expect(screen.queryByText('Evolab')).not.toBeInTheDocument()
+    expect(container.querySelector('.mascot-image')).toHaveAttribute('data-mascot-source', 'codex')
+    expect(container.querySelector('.pixel-indicator')).not.toBeInTheDocument()
+  })
+
+  it('renders Codex list items with title, latest user prompt, and response fallback rows', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'idle',
+          sessionTitle: undefined,
+          lastUserMessage: undefined,
+          responseText: undefined,
+          description: undefined,
+          chatHistory: [
+            { role: 'user', content: '第三个自定义高度怎么都不生效', timestamp: 1 },
+            { role: 'assistant', content: '确实，第三个自定义高度之前没有正确同步。', timestamp: 2 },
+          ],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('agent-island · 第三个自定义高度怎么都不生效')).toBeInTheDocument()
+    expect(screen.getByText('第三个自定义高度怎么都不生效')).toBeInTheDocument()
+    expect(screen.getByText('确实，第三个自定义高度之前没有正确同步。')).toBeInTheDocument()
+  })
+
+  it('shows generic thinking text for processing sessions without a tool', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'processing',
+          lastToolName: undefined,
+          description: 'Processing user input',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('notch.thinking')).toBeInTheDocument()
+    expect(screen.queryByText('Processing user input')).not.toBeInTheDocument()
+  })
+
+  it('renders Codex edit targets with change counts', () => {
+    const { container } = render(
+      <HoverList
+        sessions={[session({
+          lastToolName: 'Edit',
+          lastToolTarget: 'OverlayFeedbackPanel.tsx +68 -41',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('notch.tool.editing')).toBeInTheDocument()
+    expect(screen.getByText('OverlayFeedbackPanel.tsx')).toHaveClass('hover-list__tool-target-name')
+    expect(screen.getByText('+68')).toHaveClass('hover-list__tool-count--add')
+    expect(screen.getByText('-41')).toHaveClass('hover-list__tool-count--del')
+    expect(container.querySelector('.hover-list__tool-target--changes')).toBeInTheDocument()
   })
 
   it('supports keyboard navigation and Enter jump like the island panel', () => {

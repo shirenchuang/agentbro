@@ -237,17 +237,20 @@ impl AgentAdapter for CodexAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let tool_name = raw
+        let raw_tool_name = raw
             .get("tool")
             .or_else(|| raw.get("tool_name"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let tool_input_value = raw.get("tool_input").or_else(|| raw.get("toolInput"));
         let tool_input = raw
             .get("tool_input")
             .or_else(|| raw.get("toolInput"))
             .map(|v| v.to_string())
             .unwrap_or_default();
+        let tool_name = normalize_codex_tool_name(&raw_tool_name);
+        let tool_target = extract_codex_tool_target(&tool_name, tool_input_value);
 
         match event.as_str() {
             "SessionStart" => Ok(AgentEvent::SessionStart {
@@ -266,21 +269,21 @@ impl AgentAdapter for CodexAdapter {
                 session_id,
                 tool_name,
                 tool_input,
-                tool_target: None,
+                tool_target,
                 status: "running".to_string(),
             }),
             "PostToolUse" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
-                tool_target: None,
+                tool_target,
                 status: "success".to_string(),
             }),
             "PostToolUseFailure" | "PermissionDenied" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name,
                 tool_input,
-                tool_target: None,
+                tool_target,
                 status: "error".to_string(),
             }),
             "PermissionRequest" => Ok(AgentEvent::PermissionRequest {
@@ -295,6 +298,8 @@ impl AgentAdapter for CodexAdapter {
                 session_id,
                 text: raw
                     .get("summary")
+                    .or_else(|| raw.get("last_assistant_message"))
+                    .or_else(|| raw.get("lastAssistantMessage"))
                     .or_else(|| raw.get("message"))
                     .and_then(|v| v.as_str())
                     .filter(|v| !v.trim().is_empty())
@@ -372,6 +377,188 @@ fn normalize_event_name(event: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+fn normalize_codex_tool_name(tool_name: &str) -> String {
+    let trimmed = tool_name.trim();
+    if trimmed.starts_with("mcp__") {
+        return trimmed.to_string();
+    }
+    let normalized = trimmed
+        .trim_start_matches("functions.")
+        .replace(['-', ' '], "_")
+        .to_lowercase();
+
+    match normalized.as_str() {
+        "read" | "read_file" | "readfile" | "open_file" | "view_file" | "sed" | "cat" => {
+            "Read".to_string()
+        }
+        "write" | "write_file" | "writefile" | "create_file" => "Write".to_string(),
+        "edit" | "edit_file" | "editfile" | "apply_patch" | "patch" | "str_replace"
+        | "update_file" | "notebook_edit" => "Edit".to_string(),
+        "grep" | "rg" | "search" | "find" | "glob" | "list_files" | "ls" => "Grep".to_string(),
+        "bash" | "shell" | "exec" | "exec_command" | "terminal" | "run_command" | "command" => {
+            "Bash".to_string()
+        }
+        "web_search" | "search_query" => "WebSearch".to_string(),
+        "web_fetch" | "open" | "fetch" => "WebFetch".to_string(),
+        "update_plan" | "todo_write" => "TodoWrite".to_string(),
+        "spawn_agent" | "send_input" | "wait_agent" => "Agent".to_string(),
+        _ if trimmed.is_empty() => "Tool".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn extract_codex_tool_target(
+    normalized_tool_name: &str,
+    tool_input: Option<&serde_json::Value>,
+) -> Option<String> {
+    let input = parse_embedded_json(tool_input);
+
+    if matches!(normalized_tool_name, "Edit" | "Write") {
+        if let Some(patch) = string_field(&input, &["patch", "input", "diff"]) {
+            if let Some(target) = patch_target_with_stats(&patch) {
+                return Some(target);
+            }
+        }
+    }
+
+    match normalized_tool_name {
+        "Read" | "Edit" | "Write" | "Grep" | "Glob" | "NotebookEdit" => {
+            let path = string_field(
+                &input,
+                &[
+                    "file_path",
+                    "filePath",
+                    "path",
+                    "filepath",
+                    "filename",
+                    "target",
+                    "relative_path",
+                ],
+            )?;
+            Some(display_path_name(&path))
+        }
+        "Bash" => string_field(&input, &["command", "cmd"])
+            .map(|command| truncate_display_text(command.trim(), 50)),
+        "WebSearch" | "WebFetch" => string_field(&input, &["query", "url"])
+            .map(|value| truncate_display_text(value.trim(), 50)),
+        "TodoWrite" => Some("tasks".to_string()),
+        "Agent" => string_field(&input, &["message", "prompt", "task", "description"])
+            .map(|value| truncate_display_text(value.trim(), 50)),
+        _ => string_field(&input, &["target", "path", "file_path"])
+            .map(|value| truncate_display_text(value.trim(), 50)),
+    }
+}
+
+fn parse_embedded_json(tool_input: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(value) = tool_input else {
+        return serde_json::Value::Null;
+    };
+    if let Some(text) = value.as_str() {
+        serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_string()))
+    } else {
+        value.clone()
+    }
+}
+
+fn string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(text) = map
+                    .get(*key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    return Some(text.to_string());
+                }
+            }
+            for nested_key in ["args", "arguments", "params", "input"] {
+                if let Some(nested) = map.get(nested_key) {
+                    if let Some(value) = string_field(nested, keys) {
+                        return Some(value);
+                    }
+                }
+            }
+            None
+        }
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn patch_target_with_stats(patch: &str) -> Option<String> {
+    let mut path: Option<String> = None;
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+
+    for line in patch.lines() {
+        if path.is_none() {
+            path = line
+                .strip_prefix("*** Update File: ")
+                .or_else(|| line.strip_prefix("*** Add File: "))
+                .or_else(|| line.strip_prefix("*** Delete File: "))
+                .map(|value| value.trim().to_string())
+                .or_else(|| parse_diff_path_marker(line));
+        }
+
+        if line.starts_with('+') && !line.starts_with("+++") {
+            additions += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            deletions += 1;
+        }
+    }
+
+    let path = path?;
+    let name = display_path_name(&path);
+    if additions == 0 && deletions == 0 {
+        Some(name)
+    } else {
+        Some(format!("{name} +{additions} -{deletions}"))
+    }
+}
+
+fn parse_diff_path_marker(line: &str) -> Option<String> {
+    let value = line
+        .strip_prefix("+++ ")
+        .or_else(|| line.strip_prefix("--- "))?
+        .trim();
+    if value == "/dev/null" {
+        return None;
+    }
+    Some(
+        value
+            .trim_start_matches("a/")
+            .trim_start_matches("b/")
+            .to_string(),
+    )
+}
+
+fn display_path_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn truncate_display_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let take_chars = max_chars.saturating_sub(3);
+    format!("{}...", text.chars().take(take_chars).collect::<String>())
 }
 
 fn parse_question_event(
@@ -736,10 +923,90 @@ trust_level = "trusted"
 
         match event {
             AgentEvent::ToolUse {
-                tool_name, status, ..
+                tool_name,
+                tool_target,
+                status,
+                ..
             } => {
                 assert_eq!(tool_name, "Bash");
+                assert_eq!(tool_target.as_deref(), Some("pnpm test"));
                 assert_eq!(status, "running");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalizes_codex_file_tools_with_targets() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "read_file",
+                "tool_input": { "path": "src/components/notch/HoverList.tsx" }
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::ToolUse {
+                tool_name,
+                tool_target,
+                status,
+                ..
+            } => {
+                assert_eq!(tool_name, "Read");
+                assert_eq!(tool_target.as_deref(), Some("HoverList.tsx"));
+                assert_eq!(status, "running");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_codex_patch_target_and_change_counts() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "apply_patch",
+                "tool_input": {
+                    "patch": "*** Begin Patch\n*** Update File: src/components/overlay/OverlayFeedbackPanel.tsx\n@@\n-old\n+new\n+again\n*** End Patch\n"
+                }
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::ToolUse {
+                tool_name,
+                tool_target,
+                ..
+            } => {
+                assert_eq!(tool_name, "Edit");
+                assert_eq!(
+                    tool_target.as_deref(),
+                    Some("OverlayFeedbackPanel.tsx +2 -1")
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_stop_last_assistant_message() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "Stop",
+                "session_id": "s1",
+                "last_assistant_message": "Fixed the layout."
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::AssistantResponseComplete { text, .. } => {
+                assert_eq!(text, "Fixed the layout.");
             }
             other => panic!("unexpected event: {other:?}"),
         }

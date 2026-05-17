@@ -8,11 +8,16 @@ interface OverlayCardProps {
   children: ReactNode
   onDismiss?: () => void
   maxHeight?: number
+  className?: string
+  bodyClassName?: string
 }
 
-export function OverlayCard({ session, children, onDismiss, maxHeight }: OverlayCardProps) {
+export function OverlayCard({ session, children, onDismiss, maxHeight, className, bodyClassName }: OverlayCardProps) {
+  const cardClassName = ['overlay-card', className].filter(Boolean).join(' ')
+  const bodyClass = ['overlay-card__body', bodyClassName].filter(Boolean).join(' ')
+
   return (
-    <div className="overlay-card" style={maxHeight ? ({ maxHeight } as CSSProperties) : undefined}>
+    <div className={cardClassName} style={maxHeight ? ({ maxHeight } as CSSProperties) : undefined}>
       <div className="overlay-card__header">
         <SessionContextHeader session={session} />
         {onDismiss && (
@@ -27,7 +32,7 @@ export function OverlayCard({ session, children, onDismiss, maxHeight }: Overlay
           </button>
         )}
       </div>
-      <div className="overlay-card__body">
+      <div className={bodyClass}>
         {children}
       </div>
     </div>

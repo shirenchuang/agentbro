@@ -5,9 +5,11 @@
   border: 1px solid var(--island-border);
   padding: 10px 12px;
   box-shadow: var(--island-shadow);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 100%;
   overflow: hidden;
 }
 
@@ -40,10 +42,15 @@
 
 .overlay-card__body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
   min-height: 0;
   overflow: auto;
+}
+
+.overlay-card--permission .overlay-card__body {
+  overflow: hidden;
 }
 
 /* Session context header */

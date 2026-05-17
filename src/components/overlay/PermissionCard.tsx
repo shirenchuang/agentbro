@@ -227,44 +227,46 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
   }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump, overlay.id])
 
   return (
-    <OverlayCard session={session} onDismiss={onDismiss}>
-      {/* Queue progress bar */}
-      {queueLength > 1 && (
-        <div className="perm-card__queue">
-          <div className="perm-card__queue-info">
-            <span className="perm-card__queue-text">1 / {queueLength}</span>
-            {queueNext && <span className="perm-card__queue-text">Next: {queueNext}</span>}
+    <OverlayCard session={session} onDismiss={onDismiss} className="overlay-card--permission" bodyClassName="perm-card">
+      <div className="perm-card__scroll">
+        {/* Queue progress bar */}
+        {queueLength > 1 && (
+          <div className="perm-card__queue">
+            <div className="perm-card__queue-info">
+              <span className="perm-card__queue-text">1 / {queueLength}</span>
+              {queueNext && <span className="perm-card__queue-text">Next: {queueNext}</span>}
+            </div>
+            <div className="perm-card__queue-bar">
+              <div className="perm-card__queue-fill" style={{ width: `${(1 / queueLength) * 100}%` }} />
+            </div>
           </div>
-          <div className="perm-card__queue-bar">
-            <div className="perm-card__queue-fill" style={{ width: `${(1 / queueLength) * 100}%` }} />
-          </div>
-        </div>
-      )}
+        )}
 
-      {/* Tool header */}
-      <div className="perm-card__tool">
-        <div className="perm-card__tool-header">
-          <div className="perm-card__tool-icon-wrap">
-            <svg className="perm-card__tool-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
+        {/* Tool header */}
+        <div className="perm-card__tool">
+          <div className="perm-card__tool-header">
+            <div className="perm-card__tool-icon-wrap">
+              <svg className="perm-card__tool-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <span className="perm-card__tool-name">{toolLabel}</span>
           </div>
-          <span className="perm-card__tool-name">{toolLabel}</span>
         </div>
+
+        {/* Tool detail box with preview */}
+        <div className="perm-card__detail-box">
+          <div className="perm-card__detail-tool-label">{toolLabel}</div>
+          <ToolPreview toolName={data.toolName} toolInput={parsedInput} />
+        </div>
+
+        {/* Diff view */}
+        {data.diff && (
+          <div className="perm-card__diff">
+            <DiffView diff={data.diff} />
+          </div>
+        )}
       </div>
-
-      {/* Tool detail box with preview */}
-      <div className="perm-card__detail-box">
-        <div className="perm-card__detail-tool-label">{toolLabel}</div>
-        <ToolPreview toolName={data.toolName} toolInput={parsedInput} />
-      </div>
-
-      {/* Diff view */}
-      {data.diff && (
-        <div className="perm-card__diff">
-          <DiffView diff={data.diff} />
-        </div>
-      )}
 
       {/* Feedback input */}
       {showFeedback && (

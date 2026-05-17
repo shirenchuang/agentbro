@@ -17,8 +17,8 @@ use super::session_store::{
 };
 use crate::agents::{AgentAdapter, AgentEvent};
 use crate::hooks::conversation_parser::{
-    discover_session_file, extract_cache_ttl_info, extract_latest_assistant_text,
-    extract_session_title,
+    discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
+    extract_latest_assistant_text, extract_session_title,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
@@ -615,12 +615,29 @@ impl HookServer {
                 store.update_phase(session_id, SessionPhase::Idle);
 
                 // Try to extract session title from the JSONL conversation file
-                if let Some(file_path) = discover_session_file(session_id, cwd) {
+                if let Some(file_path) = discover_session_file(session_id, cwd).or_else(|| {
+                    if agent_type == "codex" {
+                        discover_codex_session_file(session_id)
+                    } else {
+                        None
+                    }
+                }) {
                     if let Some(title) = extract_session_title(&file_path) {
                         store.update_session(session_id, |s| {
                             s.session_title = Some(title);
                         });
                     }
+                }
+
+                if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
+                    store.update_session(session_id, |s| {
+                        if s.session_title.is_none() {
+                            s.session_title = Some(prompt.clone());
+                        }
+                        if s.last_user_message.is_none() {
+                            s.last_user_message = Some(prompt);
+                        }
+                    });
                 }
 
                 // Detect YOLO mode for Cursor sessions
@@ -707,7 +724,12 @@ impl HookServer {
                     .unwrap_or("")
                     .to_string();
 
-                log::info!("[ToolUse] session={} tool={} status={}", session_id, tool_name, status);
+                log::info!(
+                    "[ToolUse] session={} tool={} status={}",
+                    session_id,
+                    tool_name,
+                    status
+                );
                 store.update_session(session_id, |s| {
                     s.last_tool_name = Some(tool_name.clone());
                     s.last_tool_target = tool_target.clone();
@@ -1185,6 +1207,23 @@ impl HookServer {
         raw: &serde_json::Value,
     ) {
         let lower = message.to_lowercase();
+        let notification_type = raw
+            .get("notification_type")
+            .or_else(|| raw.get("notificationType"))
+            .and_then(|v| v.as_str());
+
+        if notification_type == Some("assistant_message") {
+            if let Some(text) = Self::useful_completion_text(Some(message)) {
+                store.update_session(session_id, |s| {
+                    s.description = Some(text.clone());
+                    s.last_response = Some(text);
+                    s.last_tool_name = None;
+                    s.last_tool_target = None;
+                    s.last_tool_status = None;
+                });
+            }
+            return;
+        }
 
         if lower.contains("clear") || lower.contains("compact") {
             store.update_session(session_id, |s| {
@@ -1408,7 +1447,18 @@ impl HookServer {
             .map(std::path::PathBuf::from)
             .or_else(|| {
                 let session = store.get_session(session_id)?;
-                discover_session_file(session_id, &session.cwd)
+                discover_session_file(session_id, &session.cwd).or_else(|| {
+                    if session.agent_type == "codex"
+                        || raw
+                            .get("agent")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|agent| agent == "codex")
+                    {
+                        discover_codex_session_file(session_id)
+                    } else {
+                        None
+                    }
+                })
             })
     }
 
@@ -1609,6 +1659,7 @@ impl HookServer {
 fn canonical_agent_id(agent: &str) -> &str {
     match agent {
         "codybuddycn" => "codebuddycn",
+        "claude" => "claude-code",
         other => other,
     }
 }

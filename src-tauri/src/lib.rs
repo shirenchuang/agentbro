@@ -2294,9 +2294,7 @@ fn position_notch_window(
     horizontal_offset: f64,
 ) -> f64 {
     let (x, y, anchor_offset_x) = notch_window_geometry(monitor, width, horizontal_offset);
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        x, y,
-    )));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
     anchor_offset_x
 }
 
@@ -2769,7 +2767,8 @@ async fn resize_notch(
 
         if let Some(monitor) = monitor {
             if config.island_surface_mode == "pet" {
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+                let _ =
+                    window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
                 if let Ok(size) = window.outer_size() {
                     position_pet_window(
                         &window,
@@ -2848,7 +2847,8 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = app_handle.get_webview_window("settings").map(|w| w.hide());
-                        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        let _ =
+                            app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                         if let Some(notch) = app_handle.get_webview_window("notch") {
                             let _ = notch.show();
                         }

@@ -184,7 +184,7 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeSessionId).toBeNull()
   })
 
-  it('keeps Codex prompt-looking sessions when they still have a detail anchor', () => {
+  it('hides Codex internal prompt sessions even when Codex App metadata is present', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
         agentType: 'codex',
@@ -199,7 +199,43 @@ describe('sessionStore backend overlays', () => {
       }),
     ])
 
-    expect(useSessionStore.getState().sessionList).toHaveLength(1)
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.activeSessionId).toBeNull()
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('does not show completion overlays for Codex internal prompt sessions', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agentbro',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'processing',
+        sessionTitle: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        lastUserMessage: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        description: 'Processing user input',
+      }),
+    ])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agentbro',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'done',
+        sessionTitle: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        lastUserMessage: 'You are a helpful assistant. You will be presented with a user prompt, and your job is to help.',
+        description: 'Task completed',
+        responseText: 'Task completed',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
   })
 
   it('keeps normal Codex sessions even when their completion text is generic', () => {

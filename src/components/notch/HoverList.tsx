@@ -11,7 +11,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -109,6 +109,93 @@ function formatCacheTtl(session: SessionState): string | null {
   if (minutes <= 0) return 'cache expired'
   if (minutes >= 60) return `cache ${Math.floor(minutes / 60)}h${minutes % 60}m`
   return `cache ${minutes}m`
+}
+
+const INTERNAL_CODEX_PROMPT_PREFIXES = [
+  'you are a helpful assistant. you will be presented with a user prompt',
+  'you are codex, a coding agent',
+  'you are an ai assistant accessed via an api',
+]
+
+function isInternalCodexPrompt(text: string | undefined): boolean {
+  const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return INTERNAL_CODEX_PROMPT_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+}
+
+function latestChatText(session: SessionState, role: 'user' | 'assistant'): string | undefined {
+  for (let index = session.chatHistory.length - 1; index >= 0; index -= 1) {
+    const message = session.chatHistory[index]
+    const text = role === 'assistant'
+      ? (message.role === 'assistant' ? (message.trailingContent || message.content) : '')
+      : (message.role === 'user' ? message.content : '')
+    const cleaned = stripMarkdown(text || '')
+    if (cleaned && !isInternalCodexPrompt(cleaned)) return cleaned
+  }
+  return undefined
+}
+
+function latestUserMessage(session: SessionState): string | undefined {
+  const direct = stripMarkdown(session.lastUserMessage || '')
+  if (direct && !isInternalCodexPrompt(direct)) return direct
+  return latestChatText(session, 'user')
+}
+
+function latestAssistantPreview(session: SessionState): string | undefined {
+  const direct = stripMarkdown(session.responseText || '')
+  if (direct) return direct
+  const chat = latestChatText(session, 'assistant')
+  if (chat) return chat
+  if (session.description && session.phase !== 'processing') {
+    return stripMarkdown(session.description)
+  }
+  return undefined
+}
+
+function getHoverSessionTitle(session: SessionState, recentUserMessage?: string): string {
+  const project = (session.project || '').trim()
+  const explicitTitle = stripMarkdown(session.sessionTitle || '')
+  const title = explicitTitle && !isInternalCodexPrompt(explicitTitle)
+    ? explicitTitle
+    : (recentUserMessage || '')
+
+  if (project && title && title !== project && !title.startsWith(`${project} ·`)) {
+    return `${project} · ${truncateText(title, 80)}`
+  }
+  return title || project || 'Session'
+}
+
+function isGenericProcessingDescription(text: string | undefined): boolean {
+  const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return normalized === 'processing user input' || normalized.startsWith('processing user input:')
+}
+
+function splitToolTargetChanges(target: string): { name: string; additions?: string; deletions?: string } | null {
+  const match = target.match(/^(.*?)\s+(\+\d+)(?:\s+(-\d+))?$/)
+    || target.match(/^(.*?)\s+(-\d+)$/)
+  if (!match) return null
+  const name = match[1].trim()
+  if (!name) return null
+  const firstCount = match[2]
+  return {
+    name,
+    additions: firstCount?.startsWith('+') ? firstCount : undefined,
+    deletions: firstCount?.startsWith('-') ? firstCount : match[3],
+  }
+}
+
+function ToolTarget({ target }: { target: string }) {
+  const changes = splitToolTargetChanges(target)
+  if (!changes) {
+    return <span className="hover-list__tool-target">{target}</span>
+  }
+
+  return (
+    <span className="hover-list__tool-target hover-list__tool-target--changes" title={target}>
+      <span className="hover-list__tool-target-name">{changes.name}</span>
+      {changes.additions && <span className="hover-list__tool-count hover-list__tool-count--add">{changes.additions}</span>}
+      {changes.deletions && <span className="hover-list__tool-count hover-list__tool-count--del">{changes.deletions}</span>}
+    </span>
+  )
 }
 
 /* ── Subagent Row ── */
@@ -489,8 +576,9 @@ function SessionCard({
   const terminalLabel = getSessionTerminalLabel(session)
   const showAgentBadge = shouldShowAgentBadge(session)
   const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || null) : null
-  const title = getSessionTitle(session)
-  const assistantPreview = session.responseText || (session.description && session.phase !== 'processing' ? session.description : undefined)
+  const recentUserMessage = latestUserMessage(session)
+  const title = getHoverSessionTitle(session, recentUserMessage)
+  const assistantPreview = latestAssistantPreview(session)
   const priority = computePriority(session)
   const showCacheTTL = useConfigStore((s) => s.showCacheTTL)
   const cacheTtl = showCacheTTL ? formatCacheTtl(session) : null
@@ -503,6 +591,8 @@ function SessionCard({
   const showInlinePermission = !isAlertActive && !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
+  const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
+  const shouldShowAgentIcon = isStatic || appLabel === 'Codex App' || session.agentType === 'codex'
   const handleOpen = () => onSessionClick(session.id)
   const shouldIgnoreOpen = (target: EventTarget | null): boolean => {
     return target instanceof Element && Boolean(
@@ -546,8 +636,11 @@ function SessionCard({
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
           <div className="hover-list__status-col">
-            {isStatic ? (
-              <MascotRouter toolType={session.agentType} phase={session.phase} size={18} />
+            {shouldShowAgentIcon ? (
+              <span className="hover-list__status-icon">
+                <MascotRouter toolType={iconAgentType} phase={session.phase} size={18} />
+                {!isStatic && <span className="hover-list__status-activity" />}
+              </span>
             ) : (
               <PixelIndicator priority={priority} size={16} />
             )}
@@ -619,10 +712,10 @@ function SessionCard({
             </div>
 
             {/* Row 2: user's last message */}
-            {session.lastUserMessage && (
+            {recentUserMessage && (
               <div className="hover-list__row2">
                 <span className="hover-list__you-label">{t('notch.you', '你')}：</span>
-                <span className="hover-list__user-msg">{truncateText(stripMarkdown(session.lastUserMessage), 80)}</span>
+                <span className="hover-list__user-msg">{truncateText(recentUserMessage, 100)}</span>
               </div>
             )}
 
@@ -633,17 +726,19 @@ function SessionCard({
                   {getToolActivityLabel(t, session.lastToolName)}
                 </span>
                 {session.lastToolTarget && (
-                  <span className="hover-list__tool-target">{session.lastToolTarget}</span>
+                  <ToolTarget target={session.lastToolTarget} />
                 )}
               </div>
             ) : session.phase === 'processing' ? (
               <div className="hover-list__row3">
                 <span className="hover-list__tool-label">
-                  {session.description ? truncateText(stripMarkdown(session.description), 100) : `${t('notch.working')}...`}
+                  {session.description && !isGenericProcessingDescription(session.description)
+                    ? truncateText(stripMarkdown(session.description), 100)
+                    : t('notch.thinking')}
                 </span>
               </div>
             ) : assistantPreview ? (
-              <div className="hover-list__row3-preview">{truncateText(stripMarkdown(assistantPreview), 100)}</div>
+              <div className="hover-list__row3-preview">{truncateText(assistantPreview, 120)}</div>
             ) : null}
 
             {(session.statusLineText || session.contextWindow || cacheTtl) && (

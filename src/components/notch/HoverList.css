@@ -63,13 +63,16 @@
 /* Multi-row layout */
 .hover-list__row-layout {
   display: flex;
+  align-items: stretch;
   gap: 12px;
 }
 
 .hover-list__status-col {
   display: flex;
-  align-items: flex-start;
-  padding-top: 2px;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  padding-top: 0;
   flex-shrink: 0;
 }
 
@@ -78,6 +81,27 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
+}
+
+.hover-list__status-icon {
+  position: relative;
+  display: flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+}
+
+.hover-list__status-activity {
+  position: absolute;
+  right: -1px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--island-bg, #000);
+  border-radius: 999px;
+  background: var(--island-accent, #007aff);
+  box-shadow: 0 0 8px var(--island-accent, rgba(0, 122, 255, 0.55));
 }
 
 .hover-list__content-col {
@@ -295,6 +319,36 @@
   font-size: 11px;
   line-height: 1.5;
   color: var(--island-text-muted);
+}
+
+.hover-list__tool-target--changes {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.hover-list__tool-target-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2f8cff;
+}
+
+.hover-list__tool-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.hover-list__tool-count--add {
+  color: #22c55e;
+}
+
+.hover-list__tool-count--del {
+  color: #ef4444;
 }
 
 .hover-list__row3-preview {

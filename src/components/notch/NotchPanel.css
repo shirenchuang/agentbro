@@ -189,8 +189,10 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
 
 /* Overlay layer — floats above base content */
 .notch-panel__alert-content {
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  max-height: 100%;
   padding: 12px 14px 14px;
   box-sizing: border-box;
 }
@@ -198,6 +200,15 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
 .notch-panel__alert-content > .overlay-card {
   width: 100%;
   min-height: 0;
+  max-height: 100%;
+}
+
+.notch-panel__alert-content[data-overlay-type="permission"] {
+  height: 100%;
+}
+
+.notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card {
+  flex: 1 1 auto;
 }
 
 .notch-panel__feedback-content {

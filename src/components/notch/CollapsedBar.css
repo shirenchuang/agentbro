@@ -168,6 +168,52 @@
   font-weight: 400;
 }
 
+.collapsed-bar__tool-inline {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.collapsed-bar__tool-label {
+  flex-shrink: 0;
+  color: #fa216e;
+}
+
+.collapsed-bar__tool-target,
+.collapsed-bar__tool-target-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2f8cff;
+}
+
+.collapsed-bar__tool-target {
+  color: var(--island-text-secondary);
+}
+
+.collapsed-bar__tool-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.collapsed-bar__tool-count--add {
+  color: #22c55e;
+}
+
+.collapsed-bar__tool-count--del {
+  color: #ef4444;
+}
+
 /* Alert badge — evolab-style: gray bg + amber dot + count */
 .collapsed-bar__alert-badge {
   display: inline-flex;

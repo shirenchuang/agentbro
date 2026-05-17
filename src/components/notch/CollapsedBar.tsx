@@ -30,7 +30,7 @@ function getLeadSession(sessions: SessionState[]): SessionState | undefined {
 
 const PHASE_LABELS: Record<SessionPhase, string> = {
   idle: 'notch.idle',
-  processing: 'notch.working',
+  processing: 'notch.thinking',
   waiting_approval: 'notch.needsApproval',
   waiting_input: 'notch.waitingInput',
   compacting: 'notch.compactingShort',
@@ -39,13 +39,56 @@ const PHASE_LABELS: Record<SessionPhase, string> = {
   interrupted: 'notch.interrupted',
 }
 
+function isGenericProcessingDescription(text: string | undefined): boolean {
+  const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  return normalized === 'processing user input' || normalized.startsWith('processing user input:')
+}
+
+function splitToolTargetChanges(target: string): { name: string; additions?: string; deletions?: string } | null {
+  const match = target.match(/^(.*?)\s+(\+\d+)(?:\s+(-\d+))?$/)
+    || target.match(/^(.*?)\s+(-\d+)$/)
+  if (!match) return null
+  const name = match[1].trim()
+  if (!name) return null
+  const firstCount = match[2]
+  return {
+    name,
+    additions: firstCount?.startsWith('+') ? firstCount : undefined,
+    deletions: firstCount?.startsWith('-') ? firstCount : match[3],
+  }
+}
+
+function CollapsedToolStatus({
+  label,
+  target,
+}: {
+  label: string
+  target?: string
+}) {
+  const changes = target ? splitToolTargetChanges(target) : null
+  return (
+    <span className="collapsed-bar__tool-inline" title={target ? `${label} ${target}` : label}>
+      <span className="collapsed-bar__tool-label">{label}</span>
+      {changes ? (
+        <>
+          <span className="collapsed-bar__tool-target-name">{changes.name}</span>
+          {changes.additions && <span className="collapsed-bar__tool-count collapsed-bar__tool-count--add">{changes.additions}</span>}
+          {changes.deletions && <span className="collapsed-bar__tool-count collapsed-bar__tool-count--del">{changes.deletions}</span>}
+        </>
+      ) : target ? (
+        <span className="collapsed-bar__tool-target">{target}</span>
+      ) : null}
+    </span>
+  )
+}
+
 function getCarouselSlides(session: SessionState, t: (key: string) => string): string[] {
   const slides: string[] = [session.project]
 
   if (session.lastToolName) {
     const target = session.lastToolTarget ? `: ${session.lastToolTarget}` : ''
     slides.push(`${getToolActivityLabel(t, session.lastToolName)}${target}`)
-  } else if (session.description) {
+  } else if (session.description && !isGenericProcessingDescription(session.description)) {
     slides.push(session.description.split('\n')[0])
   }
 
@@ -104,6 +147,8 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
 
   const effectiveToolName = lingeredToolName
   const effectiveToolTarget = lingeredToolTarget
+  const liveToolName = lead?.lastToolName
+  const liveToolTarget = lead?.lastToolTarget
 
   const getSlides = (session: SessionState) => {
     const base = getCarouselSlides(session, t)
@@ -128,6 +173,8 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
 
   const safeIndex = slidesCount > 0 ? slideIndex % slidesCount : 0
   const currentSlide = slides[safeIndex] ?? ''
+  const primaryToolName = showToolStatus ? (liveToolName || effectiveToolName) : undefined
+  const primaryToolTarget = liveToolName ? liveToolTarget : effectiveToolTarget
 
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
@@ -252,7 +299,12 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
             <>
               {renderMascot(lead, 22)}
               <div className="collapsed-bar__carousel">
-                {showTips ? (
+                {primaryToolName ? (
+                  <CollapsedToolStatus
+                    label={getToolActivityLabel(t, primaryToolName)}
+                    target={primaryToolTarget}
+                  />
+                ) : showTips ? (
                   <TipDisplay show />
                 ) : (
                   <AnimatePresence mode="wait" initial={false}>

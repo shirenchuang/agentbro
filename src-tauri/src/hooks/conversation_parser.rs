@@ -793,6 +793,49 @@ fn assistant_text_from_json(json: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn user_text_from_json(json: &serde_json::Value) -> Option<String> {
+    match json.get("type").and_then(|v| v.as_str())? {
+        "user" => {
+            if json
+                .get("isMeta")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            let message = json.get("message")?;
+            if message
+                .get("role")
+                .and_then(|v| v.as_str())
+                .is_some_and(|role| role != "user")
+            {
+                return None;
+            }
+            let text = extract_text_from_content(message.get("content")?);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        "response_item" => {
+            let payload = json.get("payload")?;
+            if payload.get("type").and_then(|v| v.as_str()) != Some("message")
+                || payload.get("role").and_then(|v| v.as_str()) != Some("user")
+            {
+                return None;
+            }
+            let text = extract_text_from_content(payload.get("content")?);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        _ => None,
+    }
+}
+
 fn text_from_content(content: &serde_json::Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         return useful_text_block(text).map(|text| text.to_string());
@@ -1083,21 +1126,8 @@ fn parse_session_header(file_path: &std::path::Path) -> Option<DiscoveredSession
 
         // Extract first user message text as title
         if first_user_text.is_none() {
-            let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let is_meta = json
-                .get("isMeta")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            if msg_type == "user" && !is_meta {
-                if let Some(message) = json.get("message") {
-                    if let Some(content) = message.get("content") {
-                        let text = extract_text_from_content(content);
-                        if !text.is_empty() {
-                            first_user_text = Some(text);
-                        }
-                    }
-                }
+            if let Some(text) = user_text_from_json(&json) {
+                first_user_text = Some(text);
             }
         }
 
@@ -1136,7 +1166,10 @@ fn extract_text_from_content(content: &serde_json::Value) -> String {
         // Array of blocks — find the first text block
         let mut found = String::new();
         for block in arr {
-            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+            if matches!(
+                block.get("type").and_then(|v| v.as_str()),
+                Some("text" | "input_text" | "output_text")
+            ) {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                     if !text.starts_with("<command-name>") && !text.starts_with("[Image") {
                         found = text.to_string();
@@ -1189,21 +1222,8 @@ pub fn extract_session_title(file_path: &std::path::Path) -> Option<String> {
             Err(_) => continue,
         };
 
-        let msg_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let is_meta = json
-            .get("isMeta")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        if msg_type == "user" && !is_meta {
-            if let Some(message) = json.get("message") {
-                if let Some(content) = message.get("content") {
-                    let text = extract_text_from_content(content);
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
-                }
-            }
+        if let Some(text) = user_text_from_json(&json) {
+            return Some(text);
         }
     }
 
@@ -1236,6 +1256,22 @@ mod tests {
         assert_eq!(
             extract_latest_assistant_text(&path).as_deref(),
             Some("Hi! How can I help you today?")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn extracts_codex_response_item_user_as_session_title() {
+        let path = write_temp_jsonl(
+            "codex-title",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix Codex session list layout"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}
+"#,
+        );
+
+        assert_eq!(
+            extract_session_title(&path).as_deref(),
+            Some("Fix Codex session list layout")
         );
         let _ = std::fs::remove_file(path);
     }

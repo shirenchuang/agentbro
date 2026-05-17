@@ -689,7 +689,10 @@ pub async fn simulate_hook_event(
             session_start.clone(),
             permission_payload(
                 &event_name,
-                &format!("正在测试 {}：模拟一次需要用户确认的 Bash 操作。", event_name),
+                &format!(
+                    "正在测试 {}：模拟一次需要用户确认的 Bash 操作。",
+                    event_name
+                ),
             ),
         ],
         "SubagentStop" => vec![
@@ -1764,7 +1767,9 @@ mod tests {
         // Desktop: no tty, terminal is empty or contains "codex"
         assert!(is_codex_desktop_session(&session("codex", "", None)));
         assert!(is_codex_desktop_session(&session("codex", "Codex", None)));
-        assert!(!is_codex_desktop_session(&session("codex", "AgentBro", None)));
+        assert!(!is_codex_desktop_session(&session(
+            "codex", "AgentBro", None
+        )));
         // CLI: terminal is a tty path — not desktop even if tty field is None
         assert!(!is_codex_desktop_session(&session(
             "codex",

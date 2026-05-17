@@ -137,28 +137,11 @@ function isInternalCodexPromptText(text: string | undefined | null): boolean {
   return INTERNAL_CODEX_PROMPT_PREFIXES.some((prefix) => normalized.startsWith(prefix))
 }
 
-function hasCodexDetailAnchor(session: SessionState): boolean {
-  return Boolean(
-    session.chatHistory.length > 0
-    || session.pid
-    || session.tty
-    || session.termBundleId
-    || session.weztermPane
-    || session.zellijPaneId
-    || session.zellijSessionName
-    || session.cmuxSurfaceId
-    || session.cmuxWorkspaceId
-    || session.terminal?.trim()
-  )
-}
-
 function isInternalCodexPromptSession(session: SessionState): boolean {
   if (session.agentType !== 'codex') return false
-  if (session.phase !== 'idle' && session.phase !== 'done') return false
   if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
   if (!isInternalCodexPromptText(session.sessionTitle) && !isInternalCodexPromptText(session.lastUserMessage)) return false
   if (usefulCompletionText(session.responseText) || usefulCompletionText(session.description)) return false
-  if (hasCodexDetailAnchor(session)) return false
   return true
 }
 
