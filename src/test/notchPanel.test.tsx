@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/configStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { OverlayItem, SessionState } from '../types/agent'
+import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
@@ -289,7 +290,7 @@ describe('NotchPanel island shell', () => {
 
     expect(hitboxWidthVar()).toBe('140px')
     await waitFor(() => {
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, 32)
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT)
     })
     await waitFor(() => {
       expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)

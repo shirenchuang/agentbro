@@ -681,9 +681,23 @@ export async function repositionNotch(displayId?: string, horizontalOffset?: num
   return invoke('reposition_notch', { displayId, horizontalOffset })
 }
 
-export async function previewIslandLayout(mode: 'micro' | 'compact' | 'expanded' | 'completion'): Promise<void> {
+export type IslandLayoutPreviewMode = 'micro' | 'compact' | 'expanded' | 'completion'
+
+export interface IslandLayoutPreviewOptions {
+  collapsedWidthScale?: number
+  microPillWidth?: number
+  compactPillWidth?: number
+  panelMaxWidth?: number
+  notchHeightMode?: 'matchNotch' | 'matchMenuBar' | 'custom'
+  customNotchHeight?: number
+  contentFontSize?: string
+  completionCardHeight?: number
+  maxPanelHeight?: number
+}
+
+export async function previewIslandLayout(mode: IslandLayoutPreviewMode, options?: IslandLayoutPreviewOptions): Promise<void> {
   if (!isTauri()) return
-  return invoke('preview_island_layout', { mode })
+  return invoke('preview_island_layout', { mode, options: options ?? null })
 }
 
 export async function clearIslandLayoutPreview(): Promise<void> {

@@ -2,6 +2,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AgentType } from '../types/agent'
+import { CUSTOM_NOTCH_HEIGHT_DEFAULT } from '../utils/islandLayout'
 
 export interface AgentHook {
   agentType: AgentType
@@ -371,7 +372,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     compactPillWidth: 330,
     panelMaxWidth: 630,
     notchHeightMode: 'matchNotch',
-    customNotchHeight: 37,
+    customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
     pluginSessionMode: 'separate',
     excludedHookCwdSubstrings: '',
     autoApproveTools: [
@@ -519,7 +520,7 @@ export const useConfigStore = create<ConfigStore>()(
   compactPillWidth: 330,
   panelMaxWidth: 630,
   notchHeightMode: 'matchNotch',
-  customNotchHeight: 37,
+  customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
 
   // Behavior
   pluginSessionMode: 'separate',

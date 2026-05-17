@@ -9,6 +9,8 @@ const tauriMocks = vi.hoisted(() => ({
   repositionNotch: vi.fn(() => Promise.resolve()),
   setDisplayId: vi.fn(() => Promise.resolve()),
   setIslandFeatureFlags: vi.fn(() => Promise.resolve()),
+  previewIslandLayout: vi.fn(() => Promise.resolve()),
+  clearIslandLayoutPreview: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -19,6 +21,8 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     repositionNotch: tauriMocks.repositionNotch,
     setDisplayId: tauriMocks.setDisplayId,
     setIslandFeatureFlags: tauriMocks.setIslandFeatureFlags,
+    previewIslandLayout: tauriMocks.previewIslandLayout,
+    clearIslandLayoutPreview: tauriMocks.clearIslandLayoutPreview,
   }
 })
 
@@ -95,5 +99,24 @@ describe('settings island menu', () => {
       expect(screen.getByText('settings.mainDisplay · Color LCD (1728x1117)')).toBeInTheDocument()
     })
     expect(screen.queryByText('14035')).not.toBeInTheDocument()
+  })
+
+  it('passes custom notch height through the layout preview event', async () => {
+    useConfigStore.setState({ notchHeightMode: 'custom', customNotchHeight: 40 })
+    const { container } = render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.island.title'))
+    fireEvent.click(screen.getByRole('button', { name: /Display/ }))
+
+    await waitFor(() => expect(screen.getByText('settings.customNotchHeight')).toBeInTheDocument())
+    const customRow = screen.getByText('settings.customNotchHeight').closest('.setting-row')
+    const slider = customRow!.querySelector<HTMLInputElement>('input[type="range"]')!
+    fireEvent.change(slider, { target: { value: '55' } })
+
+    expect(tauriMocks.previewIslandLayout).toHaveBeenCalledWith('compact', expect.objectContaining({
+      notchHeightMode: 'custom',
+      customNotchHeight: 55,
+    }))
+    expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
 })

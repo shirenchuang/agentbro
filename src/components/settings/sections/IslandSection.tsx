@@ -6,6 +6,7 @@ import { useConfigStore } from '../../../stores/configStore'
 import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
 import { MODEL_PRICING } from '../../../utils/tokens'
+import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
 import {
   listDisplays, isTauri,
   setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
@@ -19,6 +20,7 @@ import {
   removeCustomHookTemplate, installCustomHookTemplate, removeCustomHookTemplateHooks,
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
+import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
@@ -590,8 +592,20 @@ function DisplayTab() {
     return () => { unlisten?.() }
   }, [])
 
-  const previewLayout = useCallback((mode: 'micro' | 'compact' | 'expanded' | 'completion') => {
-    previewIslandLayout(mode).catch((e) => console.error('Failed to preview island layout:', e))
+  const previewLayout = useCallback((mode: IslandLayoutPreviewMode, overrides: IslandLayoutPreviewOptions = {}) => {
+    const state = useConfigStore.getState()
+    previewIslandLayout(mode, {
+      collapsedWidthScale: state.collapsedWidthScale,
+      microPillWidth: state.microPillWidth,
+      compactPillWidth: state.compactPillWidth,
+      panelMaxWidth: state.panelMaxWidth,
+      notchHeightMode: state.notchHeightMode,
+      customNotchHeight: state.customNotchHeight,
+      contentFontSize: state.contentFontSize,
+      completionCardHeight: state.completionCardHeight,
+      maxPanelHeight: state.maxPanelHeight,
+      ...overrides,
+    }).catch((e) => console.error('Failed to preview island layout:', e))
     if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
     previewTimerRef.current = setTimeout(() => {
       clearIslandLayoutPreview().catch(() => {})
@@ -742,7 +756,7 @@ function DisplayTab() {
         </SettingRow>
         <SettingRow label={t('settings.collapsedWidthScale')} description={`${config.collapsedWidthScale}%`}>
           <Slider value={config.collapsedWidthScale} min={50} max={150} step={5}
-            onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact') }} unit="%" />
+            onChange={(v) => { config.updateConfig('collapsedWidthScale', v); previewLayout('compact', { collapsedWidthScale: v }) }} unit="%" />
         </SettingRow>
         <SettingRow label={t('settings.notchHeightMode')} description={t('settings.notchHeightModeDesc')}>
           <Dropdown value={config.notchHeightMode}
@@ -751,25 +765,29 @@ function DisplayTab() {
               { value: 'matchMenuBar', label: t('settings.heightMatchMenuBar') },
               { value: 'custom', label: t('settings.heightCustom') },
             ]}
-            onChange={(v) => { config.updateConfig('notchHeightMode', v as 'matchNotch' | 'matchMenuBar' | 'custom'); previewLayout('compact') }} minWidth={160} />
+            onChange={(v) => {
+              const notchHeightMode = v as 'matchNotch' | 'matchMenuBar' | 'custom'
+              config.updateConfig('notchHeightMode', notchHeightMode)
+              previewLayout('compact', { notchHeightMode })
+            }} minWidth={160} />
         </SettingRow>
         {config.notchHeightMode === 'custom' && (
           <SettingRow label={t('settings.customNotchHeight')} description={`${config.customNotchHeight}px`}>
-            <Slider value={config.customNotchHeight} min={24} max={60} step={1}
-              onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact') }} unit="px" />
+            <Slider value={config.customNotchHeight} min={CUSTOM_NOTCH_HEIGHT_MIN} max={CUSTOM_NOTCH_HEIGHT_MAX} step={1}
+              onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact', { notchHeightMode: 'custom', customNotchHeight: v }) }} unit="px" />
           </SettingRow>
         )}
         <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Idle Pill Width' })} description={`${config.microPillWidth}px`}>
           <Slider value={config.microPillWidth} min={84} max={180} step={4}
-            onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro') }} unit="px" />
+            onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro', { microPillWidth: v }) }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.compactPillWidth', { defaultValue: 'Compact Island Width' })} description={`${Math.round(config.compactPillWidth * (config.collapsedWidthScale / 100))}px`}>
           <Slider value={config.compactPillWidth} min={260} max={520} step={10}
-            onChange={(v) => { config.updateConfig('compactPillWidth', v); previewLayout('compact') }} unit="px" />
+            onChange={(v) => { config.updateConfig('compactPillWidth', v); previewLayout('compact', { compactPillWidth: v }) }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.panelMaxWidth', { defaultValue: 'Expanded Island Width' })} description={`${config.panelMaxWidth}px`}>
           <Slider value={config.panelMaxWidth} min={480} max={760} step={10}
-            onChange={(v) => { config.updateConfig('panelMaxWidth', v); previewLayout('expanded') }} unit="px" />
+            onChange={(v) => { config.updateConfig('panelMaxWidth', v); previewLayout('expanded', { panelMaxWidth: v }) }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.hoverSpeed')} description={t('settings.hoverSpeedDesc')}>
           <Dropdown value={config.hoverSpeed} options={hoverSpeedOptions}
@@ -777,18 +795,18 @@ function DisplayTab() {
         </SettingRow>
         <SettingRow label={t('settings.contentFontSize')}>
           <Dropdown value={config.contentFontSize} options={fontSizeOptions}
-            onChange={(v) => { config.updateConfig('contentFontSize', v); previewLayout('expanded') }} minWidth={160} />
+            onChange={(v) => { config.updateConfig('contentFontSize', v); previewLayout('expanded', { contentFontSize: v }) }} minWidth={160} />
         </SettingRow>
         <SettingRow label={t('settings.showToolStatus')} description={t('settings.showToolStatusDesc')}>
           <Toggle checked={config.showToolStatus} onChange={(v) => config.updateConfig('showToolStatus', v)} />
         </SettingRow>
         <SettingRow label={t('settings.completionCardHeight')} description={`${config.completionCardHeight}px`}>
           <Slider value={config.completionCardHeight} min={80} max={200} step={10}
-            onChange={(v) => { config.updateConfig('completionCardHeight', v); previewLayout('completion') }} unit="px" />
+            onChange={(v) => { config.updateConfig('completionCardHeight', v); previewLayout('completion', { completionCardHeight: v }) }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.maxPanelHeight')} description={`${config.maxPanelHeight}px`}>
           <Slider value={config.maxPanelHeight} min={300} max={800} step={20}
-            onChange={(v) => { config.updateConfig('maxPanelHeight', v); previewLayout('expanded') }} unit="px" />
+            onChange={(v) => { config.updateConfig('maxPanelHeight', v); previewLayout('expanded', { maxPanelHeight: v }) }} unit="px" />
         </SettingRow>
       </SettingGroup>
 

@@ -8,6 +8,7 @@ import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionNeedsAttention } from '../../utils/islandInteraction'
+import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
@@ -143,6 +144,15 @@ function OverlayRenderer({ overlay, onDismiss }: { overlay: OverlayItem; onDismi
 
 type IslandLayoutPreview = {
   mode: 'micro' | 'compact' | 'expanded' | 'completion'
+  collapsedWidthScale?: number
+  microPillWidth?: number
+  compactPillWidth?: number
+  panelMaxWidth?: number
+  notchHeightMode?: 'matchNotch' | 'matchMenuBar' | 'custom'
+  customNotchHeight?: number
+  contentFontSize?: string
+  completionCardHeight?: number
+  maxPanelHeight?: number
 }
 
 function LayoutPreviewBody({ mode }: { mode: IslandLayoutPreview['mode'] }) {
@@ -340,6 +350,19 @@ export function NotchPanel() {
 
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<IslandLayoutPreview>('island-layout-preview', (event) => {
+        const store = useConfigStore.getState()
+        const next = event.payload
+        if (typeof next.collapsedWidthScale === 'number') store.updateConfig('collapsedWidthScale', next.collapsedWidthScale)
+        if (typeof next.microPillWidth === 'number') store.updateConfig('microPillWidth', next.microPillWidth)
+        if (typeof next.compactPillWidth === 'number') store.updateConfig('compactPillWidth', next.compactPillWidth)
+        if (typeof next.panelMaxWidth === 'number') store.updateConfig('panelMaxWidth', next.panelMaxWidth)
+        if (next.notchHeightMode === 'matchNotch' || next.notchHeightMode === 'matchMenuBar' || next.notchHeightMode === 'custom') {
+          store.updateConfig('notchHeightMode', next.notchHeightMode)
+        }
+        if (typeof next.customNotchHeight === 'number') store.updateConfig('customNotchHeight', next.customNotchHeight)
+        if (typeof next.contentFontSize === 'string') store.updateConfig('contentFontSize', next.contentFontSize)
+        if (typeof next.completionCardHeight === 'number') store.updateConfig('completionCardHeight', next.completionCardHeight)
+        if (typeof next.maxPanelHeight === 'number') store.updateConfig('maxPanelHeight', next.maxPanelHeight)
         setLayoutPreview(event.payload)
         setNotchOpacity(1).catch(() => {})
       }).then((fn) => { unlistenPreview = fn }).catch(() => {})
@@ -983,11 +1006,7 @@ export function NotchPanel() {
     && isNonBlockingOverlay(activeOverlay)
     && effectivePanelState !== 'collapsed',
   )
-  const collapsedHeight = notchHeightMode === 'custom'
-    ? customNotchHeight
-    : notchHeightMode === 'matchMenuBar'
-      ? 28
-      : 32
+  const collapsedHeight = getCollapsedIslandHeight(notchHeightMode, customNotchHeight)
   const contentWidth = isPetMode
     ? 820
     : previewMode === 'micro'

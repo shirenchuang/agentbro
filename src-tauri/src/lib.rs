@@ -2465,7 +2465,11 @@ async fn reposition_notch(
 }
 
 #[tauri::command]
-async fn preview_island_layout(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+async fn preview_island_layout(
+    app: tauri::AppHandle,
+    mode: String,
+    options: Option<serde_json::Value>,
+) -> Result<(), String> {
     if !matches!(
         mode.as_str(),
         "micro" | "compact" | "expanded" | "completion"
@@ -2473,8 +2477,13 @@ async fn preview_island_layout(app: tauri::AppHandle, mode: String) -> Result<()
         return Err(format!("Unknown island layout preview mode: {mode}"));
     }
     if let Some(window) = app.get_webview_window("notch") {
+        let mut payload = options.unwrap_or_else(|| serde_json::json!({}));
+        if !payload.is_object() {
+            payload = serde_json::json!({});
+        }
+        payload["mode"] = serde_json::Value::String(mode);
         window
-            .emit("island-layout-preview", serde_json::json!({ "mode": mode }))
+            .emit("island-layout-preview", payload)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
