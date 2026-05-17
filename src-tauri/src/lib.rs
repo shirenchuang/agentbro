@@ -2327,7 +2327,7 @@ fn set_notch_window_frame(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     x: f64,
-    _top_y: f64,
+    top_y: f64,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
@@ -2335,6 +2335,20 @@ fn set_notch_window_frame(
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     let handle = window.clone();
+    let scale = handle
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or(1.0);
+    if let Ok(position) = handle.outer_position() {
+        let current_top_y = position.y as f64 / scale;
+        if (current_top_y - top_y).abs() > 0.5 {
+            let _ = handle.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                x, top_y,
+            )));
+        }
+    }
     app.run_on_main_thread(move || {
         if let Ok(ptr) = handle.ns_window() {
             unsafe {
@@ -2361,7 +2375,7 @@ fn set_notch_window_frame(
         } else {
             let _ = handle.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
             let _ = handle.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-                x, _top_y,
+                x, top_y,
             )));
         }
     })
@@ -2812,7 +2826,7 @@ pub fn run() {
                     let window_width = 420.0; // 400 panel + 20 shadow padding
                     let x = (screen_width - window_width) / 2.0;
                     let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, -6.0),
+                        tauri::LogicalPosition::new(x, 0.0),
                     ));
                 }
 
