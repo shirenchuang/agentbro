@@ -45,3 +45,4 @@ tauri-plugin-dialog = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.3", features = ["std", "NSWindow", "NSApplication", "NSImage", "NSDockTile"] }
+objc2-foundation = { version = "0.3", features = ["objc2-core-foundation"] }

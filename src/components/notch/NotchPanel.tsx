@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState } from '../../types/agent'
@@ -46,6 +46,10 @@ const NOTCH_HIT_SLOP_Y_EXPANDED = 12
 const DRAG_START_THRESHOLD_PX = 4
 const OPEN_NATIVE_PREPARE_FALLBACK_MS = 120
 const CLOSE_NATIVE_RESIZE_DELAY_MS = 520
+
+function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
+  return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
+}
 
 function scaleTransitionDuration<T extends { duration?: number }>(transition: T, scale: number): T {
   return typeof transition.duration === 'number'
@@ -226,7 +230,7 @@ export function NotchPanel() {
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
-  const hoverHitboxSizeRef = useRef({ width: 420, height: 52 })
+  const nativeHoverHitboxSizeRef = useRef({ width: 420, height: 52 })
 
   useEffect(() => {
     if (idleTimeoutMinutes <= 0) return
@@ -529,6 +533,10 @@ export function NotchPanel() {
   const openPrepareTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const openPrepareFrameRef = useRef<number | undefined>(undefined)
   const nativeHoverInsideRef = useRef(false)
+  const lastIgnoreCursorEventsRef = useRef<boolean | null>(null)
+  const lastNativeHostResizeKeyRef = useRef<string | null>(null)
+  const inFlightNativeHostResizeKeysRef = useRef(new Set<string>())
+  const nativeHostResizeWaitersRef = useRef(new Map<string, Array<(anchorOffsetX: number) => void>>())
   const interactionLockUntilRef = useRef(0)
   const detailModeRef = useRef(false)
   const detailBackGuardUntilRef = useRef(0)
@@ -680,11 +688,30 @@ export function NotchPanel() {
       if (cancelled || inFlight || isDragging) return
       inFlight = true
       try {
-        const { width, height } = hoverHitboxSizeRef.current
+        const { width, height } = nativeHoverHitboxSizeRef.current
         const isOver = await isCursorOverNotch(width, height)
         if (cancelled) return
+        const currentPanelState = useSessionStore.getState().panelState
+        const overlayKeepsWindowInteractive = Boolean(activeOverlay && isNonBlockingOverlay(activeOverlay) && !interaction.isHidden)
+        const ignoreTransparentHost = !islandEnabled
+          || (
+            islandSurfaceMode !== 'pet'
+            && !isDragging
+            && !isOver
+            && !preparingOpen
+            && currentPanelState === 'collapsed'
+            && !overlayKeepsWindowInteractive
+          )
+        if (lastIgnoreCursorEventsRef.current !== ignoreTransparentHost) {
+          lastIgnoreCursorEventsRef.current = ignoreTransparentHost
+          setNotchIgnoreCursorEvents(ignoreTransparentHost).catch(() => {})
+        }
         const wasOver = nativeHoverInsideRef.current
         if (isOver && !wasOver) {
+          if (lastIgnoreCursorEventsRef.current !== false) {
+            lastIgnoreCursorEventsRef.current = false
+            setNotchIgnoreCursorEvents(false).catch(() => {})
+          }
           handleMouseEnter()
         } else if (!isOver && wasOver) {
           handleMouseLeave()
@@ -702,9 +729,11 @@ export function NotchPanel() {
 
     return () => {
       cancelled = true
+      lastIgnoreCursorEventsRef.current = null
+      setNotchIgnoreCursorEvents(false).catch(() => {})
       window.clearInterval(interval)
     }
-  }, [handleMouseEnter, handleMouseLeave, isDragging])
+  }, [activeOverlay, handleMouseEnter, handleMouseLeave, interaction.isHidden, islandEnabled, islandSurfaceMode, isDragging, preparingOpen])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1012,9 +1041,13 @@ export function NotchPanel() {
   const hitSlopY = effectivePanelState === 'collapsed' || isDragging
     ? NOTCH_HIT_SLOP_Y_COLLAPSED
     : NOTCH_HIT_SLOP_Y_EXPANDED
-  const hitboxWidth = shellWidth + hitSlopX * 2
-  const hitboxHeight = panelHeight + hitSlopY
-  hoverHitboxSizeRef.current = { width: hitboxWidth, height: hitboxHeight }
+  const sloppedHitboxWidth = shellWidth + hitSlopX * 2
+  const sloppedHitboxHeight = panelHeight + hitSlopY
+  const usesVisibleCollapsedHitbox = effectivePanelState === 'collapsed' && !isDragging
+  const hitboxWidth = usesVisibleCollapsedHitbox ? shellWidth : sloppedHitboxWidth
+  const hitboxHeight = usesVisibleCollapsedHitbox ? panelHeight : sloppedHitboxHeight
+  const hitboxPadX = usesVisibleCollapsedHitbox ? 0 : hitSlopX
+  nativeHoverHitboxSizeRef.current = { width: hitboxWidth, height: hitboxHeight }
   const maxHostSlopX = Math.max(NOTCH_HIT_SLOP_X_COLLAPSED, NOTCH_HIT_SLOP_X_EXPANDED)
   const maxHostSlopY = Math.max(NOTCH_HIT_SLOP_Y_COLLAPSED, NOTCH_HIT_SLOP_Y_EXPANDED)
   const expandedHostContentWidth = isPetMode
@@ -1024,9 +1057,9 @@ export function NotchPanel() {
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || (!layoutPreview && interaction.isHidden)
-  const hostUsesExpandedCanvas = !isDragging && !islandHidden && (preparingOpen || effectivePanelState !== 'collapsed')
-  const hostTargetHitboxWidth = hostUsesExpandedCanvas ? stableHostHitboxWidth : hitboxWidth
-  const hostTargetHitboxHeight = hostUsesExpandedCanvas ? stableHostHitboxHeight : hitboxHeight
+  const hostUsesStableCanvas = !isDragging && !isPetMode && islandEnabled
+  const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
+  const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
     width: hostTargetHitboxWidth,
     height: hostTargetHitboxHeight,
@@ -1140,9 +1173,53 @@ export function NotchPanel() {
     }
   }, [])
 
-  // Use a larger native host only while the island is open/animating. In the
-  // collapsed resting state the native window must shrink back to the real pill
-  // hitbox so transparent pixels do not block clicks in the app underneath.
+  const requestNativeHostResize = useCallback((
+    width: number,
+    height: number,
+    horizontalOffset: number,
+    displayId: string | undefined,
+    onComplete: (anchorOffsetX: number) => void,
+    options?: { force?: boolean },
+  ) => {
+    const key = nativeHostResizeKey(width, height, horizontalOffset, displayId)
+    if (!options?.force && lastNativeHostResizeKeyRef.current === key) {
+      onComplete(hostAnchorOffsetXRef.current)
+      return
+    }
+
+    const waiters = nativeHostResizeWaitersRef.current
+    const existingWaiters = waiters.get(key)
+    if (existingWaiters) {
+      existingWaiters.push(onComplete)
+    } else {
+      waiters.set(key, [onComplete])
+    }
+
+    const inFlightKeys = inFlightNativeHostResizeKeysRef.current
+    if (inFlightKeys.has(key)) return
+    inFlightKeys.add(key)
+
+    resizeNotch(width, height, horizontalOffset, displayId)
+      .then((result) => {
+        inFlightKeys.delete(key)
+        lastNativeHostResizeKeyRef.current = key
+        const callbacks = waiters.get(key) ?? []
+        waiters.delete(key)
+        callbacks.forEach((callback) => callback(result.anchorOffsetX))
+      })
+      .catch(() => {
+        inFlightKeys.delete(key)
+        const callbacks = waiters.get(key) ?? []
+        waiters.delete(key)
+        callbacks.forEach((callback) => callback(hostAnchorOffsetXRef.current))
+      })
+  }, [])
+
+  // Keep the native transparent host at a stable max canvas. macOS can briefly
+  // show the old WebView backing store when a transparent NSWindow is resized
+  // during hover/collapse; fixed host geometry avoids that repaint path.
+  // Cursor passthrough for the transparent area is handled with
+  // set_ignore_cursor_events while collapsed.
   useLayoutEffect(() => {
     if (isDragging) return
     const current = hostHitboxSizeRef.current
@@ -1166,39 +1243,29 @@ export function NotchPanel() {
       }
     }
 
+    const resizeNativeHost = () => {
+      requestNativeHostResize(next.width, next.height, effectiveHorizontalOffset, displayMonitor, completeResize)
+    }
+
     if (sameSize) {
-      resizeNotch(next.width, next.height, effectiveHorizontalOffset, displayMonitor)
-        .then((result) => completeResize(result.anchorOffsetX))
-        .catch(() => completeResize(0))
+      resizeNativeHost()
       return () => { cancelled = true }
     }
 
     if (next.width > current.width || next.height > current.height) {
-      resizeNotch(next.width, next.height, effectiveHorizontalOffset, displayMonitor)
-        .then((result) => {
-          if (commitHostSize()) completeResize(result.anchorOffsetX)
-        })
-        .catch(() => {
-          if (commitHostSize()) completeResize(0)
-        })
+      if (commitHostSize()) resizeNativeHost()
       return () => { cancelled = true }
     }
 
     const timer = window.setTimeout(() => {
-      resizeNotch(next.width, next.height, effectiveHorizontalOffset, displayMonitor)
-        .then((result) => {
-          if (commitHostSize()) completeResize(result.anchorOffsetX)
-        })
-        .catch(() => {
-          if (commitHostSize()) completeResize(0)
-        })
+      if (commitHostSize()) resizeNativeHost()
     }, CLOSE_NATIVE_RESIZE_DELAY_MS * islandAnimationScale)
 
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, effectiveHorizontalOffset, displayMonitor, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, updateHostAnchorOffset])
+  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, effectiveHorizontalOffset, displayMonitor, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, requestNativeHostResize, updateHostAnchorOffset])
 
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
@@ -1206,15 +1273,22 @@ export function NotchPanel() {
     const repositionToCursorDisplay = () => {
       if (inFlight) return
       inFlight = true
-      resizeNotch(hostHitboxSize.width, hostHitboxSize.height, effectiveHorizontalOffset, 'auto')
-        .then((result) => updateHostAnchorOffset(result.anchorOffsetX))
-        .catch((error) => console.warn('[notch] follow cursor display:', error))
-        .finally(() => { inFlight = false })
+      requestNativeHostResize(
+        hostHitboxSize.width,
+        hostHitboxSize.height,
+        effectiveHorizontalOffset,
+        'auto',
+        (anchorOffsetX) => {
+          updateHostAnchorOffset(anchorOffsetX)
+          inFlight = false
+        },
+        { force: true },
+      )
     }
     const interval = window.setInterval(repositionToCursorDisplay, 500)
     repositionToCursorDisplay()
     return () => window.clearInterval(interval)
-  }, [displayMonitor, effectiveHorizontalOffset, hostHitboxSize.height, hostHitboxSize.width, isDragging, updateHostAnchorOffset])
+  }, [displayMonitor, effectiveHorizontalOffset, hostHitboxSize.height, hostHitboxSize.width, isDragging, requestNativeHostResize, updateHostAnchorOffset])
 
   const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {
     const activePointerId = dragPointerIdRef.current
@@ -1327,7 +1401,7 @@ export function NotchPanel() {
         '--notch-host-height': `${hostHitboxSize.height}px`,
         '--notch-hitbox-width': `${hitboxWidth}px`,
         '--notch-hitbox-height': `${hitboxHeight}px`,
-        '--notch-hitbox-pad-x': `${hitSlopX}px`,
+        '--notch-hitbox-pad-x': `${hitboxPadX}px`,
         pointerEvents: islandEnabled ? 'auto' : 'none',
       } as CSSProperties}
     >

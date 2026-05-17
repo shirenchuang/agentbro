@@ -15,6 +15,14 @@ const tauriMocks = vi.hoisted(() => ({
   respondQuestion: vi.fn(() => Promise.resolve()),
   sendMessage: vi.fn(() => Promise.resolve()),
   setNotchFocusable: vi.fn(() => Promise.resolve()),
+  setNotchIgnoreCursorEvents: vi.fn(() => Promise.resolve()),
+  isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
+  isTauri: vi.fn(() => false),
+  resizeNotch: vi.fn(() => Promise.resolve({ anchorOffsetX: 0 })),
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -29,6 +37,10 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     respondQuestion: tauriMocks.respondQuestion,
     sendMessage: tauriMocks.sendMessage,
     setNotchFocusable: tauriMocks.setNotchFocusable,
+    setNotchIgnoreCursorEvents: tauriMocks.setNotchIgnoreCursorEvents,
+    isCursorOverNotch: tauriMocks.isCursorOverNotch,
+    isTauri: tauriMocks.isTauri,
+    resizeNotch: tauriMocks.resizeNotch,
   }
 })
 
@@ -79,6 +91,14 @@ function mountIsland(activeOverlay: OverlayItem | null = null, sessionOverrides:
   render(<NotchPanel />)
 }
 
+function hostWidthVar(): string {
+  return (document.querySelector('.notch-container') as HTMLElement).style.getPropertyValue('--notch-host-width')
+}
+
+function hitboxWidthVar(): string {
+  return (document.querySelector('.notch-container') as HTMLElement).style.getPropertyValue('--notch-hitbox-width')
+}
+
 describe('NotchPanel island shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -90,6 +110,10 @@ describe('NotchPanel island shell', () => {
     tauriMocks.respondQuestion.mockResolvedValue(undefined)
     tauriMocks.sendMessage.mockResolvedValue(undefined)
     tauriMocks.setNotchFocusable.mockResolvedValue(undefined)
+    tauriMocks.setNotchIgnoreCursorEvents.mockResolvedValue(undefined)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(false)
+    tauriMocks.isTauri.mockReturnValue(false)
+    tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 0 })
     useThemeStore.getState().loadThemes([])
     useThemeStore.getState().setActiveTheme('default')
     useConfigStore.setState({
@@ -101,9 +125,13 @@ describe('NotchPanel island shell', () => {
       confettiEnabled: false,
       followFocus: false,
       hoverExpandDelay: 0,
+      microHoverExpandDelay: 0,
       interactionMode: 'persistent',
+      islandAnimationScale: 1,
       islandSurfaceMode: 'island',
       maxPanelHeight: 600,
+      microPillWidth: 112,
+      notchStyle: 'compact',
       panelMaxWidth: 630,
       pixelCursorEnabled: false,
       showCacheTTL: false,
@@ -141,6 +169,116 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
+  })
+
+  it('keeps a stable native host canvas while opening from micro', () => {
+    vi.useFakeTimers()
+    try {
+      tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
+      const currentSession = session({ phase: 'idle' })
+      useSessionStore.setState({
+        sessions: { [currentSession.id]: currentSession },
+        sessionList: [currentSession],
+        activeSessionId: currentSession.id,
+        panelState: 'collapsed',
+        activeOverlay: null,
+        overlayQueue: [],
+        rateLimits: undefined,
+        hookNotification: null,
+        wakeSilencedUntil: 0,
+        focusedTerminal: null,
+      })
+
+      render(<NotchPanel />)
+
+      expect(hostWidthVar()).toBe('754px')
+      expect(hitboxWidthVar()).toBe('140px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+
+      fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+      act(() => {
+        vi.advanceTimersByTime(120)
+      })
+
+      expect(useSessionStore.getState().panelState).toBe('hover')
+      expect(hostWidthVar()).toBe('754px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a stable native host canvas while returning to micro', () => {
+    vi.useFakeTimers()
+    try {
+      tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
+      useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
+      const currentSession = session({ phase: 'idle' })
+      useSessionStore.setState({
+        sessions: { [currentSession.id]: currentSession },
+        sessionList: [currentSession],
+        activeSessionId: currentSession.id,
+        panelState: 'hover',
+        activeOverlay: null,
+        overlayQueue: [],
+        rateLimits: undefined,
+        hookNotification: null,
+        wakeSilencedUntil: 0,
+        focusedTerminal: null,
+      })
+
+      render(<NotchPanel />)
+
+      expect(hostWidthVar()).toBe('754px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+
+      fireEvent.pointerLeave(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
+
+      expect(useSessionStore.getState().panelState).toBe('collapsed')
+      expect(hostWidthVar()).toBe('754px')
+
+      act(() => {
+        vi.advanceTimersByTime(520)
+      })
+
+      expect(hostWidthVar()).toBe('754px')
+      expect(hitboxWidthVar()).toBe('140px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses only the visible micro pill for native hover passthrough', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const currentSession = session({ phase: 'idle' })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    expect(hitboxWidthVar()).toBe('140px')
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, 32)
+    })
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
+    })
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
   it('uses Evolab-style progressive Escape: collapse first, then hide from compact', async () => {

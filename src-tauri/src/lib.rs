@@ -2211,6 +2211,18 @@ fn position_notch_window(
     width: f64,
     horizontal_offset: f64,
 ) -> f64 {
+    let (x, y, anchor_offset_x) = notch_window_geometry(monitor, width, horizontal_offset);
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        x, y,
+    )));
+    anchor_offset_x
+}
+
+fn notch_window_geometry(
+    monitor: &tauri::Monitor,
+    width: f64,
+    horizontal_offset: f64,
+) -> (f64, f64, f64) {
     let scale = monitor.scale_factor();
     let screen_width = monitor.size().width as f64 / scale;
     let monitor_x = monitor.position().x as f64 / scale;
@@ -2225,10 +2237,69 @@ fn position_notch_window(
     } else {
         base_x
     };
+    (x, monitor_y, desired_x - x)
+}
+
+#[cfg(target_os = "macos")]
+fn set_notch_window_frame(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    x: f64,
+    _top_y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use objc2_app_kit::NSWindow;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let handle = window.clone();
+    app.run_on_main_thread(move || {
+        if let Ok(ptr) = handle.ns_window() {
+            unsafe {
+                let ns_window = ptr as *const NSWindow;
+                let current = (*ns_window).frame();
+                let top = current.origin.y + current.size.height;
+                let target_x = x.round();
+                let target_width = width.round();
+                let target_height = height.round();
+                let target_y = top - target_height;
+                let frame_is_unchanged = (current.origin.x - target_x).abs() < 0.5
+                    && (current.origin.y - target_y).abs() < 0.5
+                    && (current.size.width - target_width).abs() < 0.5
+                    && (current.size.height - target_height).abs() < 0.5;
+                if frame_is_unchanged {
+                    return;
+                }
+                let frame = NSRect::new(
+                    NSPoint::new(target_x, target_y),
+                    NSSize::new(target_width, target_height),
+                );
+                (*ns_window).setFrame_display(frame, true);
+            }
+        } else {
+            let _ = handle.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+            let _ = handle.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                x, _top_y,
+            )));
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_notch_window_frame(
+    _app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    x: f64,
+    top_y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        x, monitor_y,
+        x, top_y,
     )));
-    desired_x - x
+    Ok(())
 }
 
 const PET_HIT_SIZE: f64 = 160.0;
@@ -2578,8 +2649,6 @@ async fn resize_notch(
     display_id: Option<String>,
 ) -> Result<ResizeNotchResult, String> {
     if let Some(window) = app.get_webview_window("notch") {
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-
         // Determine which monitor to center on from config
         let config_store = app.state::<AppState>();
         let config = config_store.config_store.get();
@@ -2595,6 +2664,7 @@ async fn resize_notch(
 
         if let Some(monitor) = monitor {
             if config.island_surface_mode == "pet" {
+                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
                 if let Ok(size) = window.outer_size() {
                     position_pet_window(
                         &window,
@@ -2607,23 +2677,17 @@ async fn resize_notch(
                             config.island_pet_window_origin.as_ref()
                         },
                     );
-                    configure_notch_window_for_spaces(&app);
                     return Ok(ResizeNotchResult {
                         anchor_offset_x: 0.0,
                     });
                 }
             }
-            let anchor_offset_x = position_notch_window(
-                &app,
-                &window,
-                &monitor,
-                width,
-                horizontal_offset.unwrap_or(0.0),
-            );
-            configure_notch_window_for_spaces(&app);
+            let (x, y, anchor_offset_x) =
+                notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
+            set_notch_window_frame(&app, &window, x, y, width, height)?;
             return Ok(ResizeNotchResult { anchor_offset_x });
         }
-        configure_notch_window_for_spaces(&app);
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
     }
     Ok(ResizeNotchResult {
         anchor_offset_x: 0.0,
