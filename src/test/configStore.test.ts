@@ -17,6 +17,15 @@ describe('configStore island defaults', () => {
     expect(state.volume).toBe(70)
   })
 
+  it('uses tuned island interaction timing defaults', () => {
+    const state = useConfigStore.getState()
+
+    expect(state.hoverExpandDelay).toBe(50)
+    expect(state.microHoverExpandDelay).toBe(50)
+    expect(state.collapseDelay).toBe(200)
+    expect(state.islandAnimationScale).toBe(1)
+  })
+
   it('keeps evolab-safe tools in the default auto-approve list', () => {
     expect(useConfigStore.getState().autoApproveTools).toEqual(
       expect.arrayContaining([
