@@ -2,16 +2,17 @@
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
+import type { PermissionRequest, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
 import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
 import { useSessionStore } from '../../stores/sessionStore'
-import { respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
+import { respondAutoApprove, respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { DiffView } from './DiffView'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -48,13 +49,18 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
 }
 
 const TERMINAL_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
-  'iTerm2': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
+  'iTerm2': { bg: 'rgba(255, 255, 255, 0.08)', text: '#8d8d93' },
   'Terminal': { bg: 'rgba(107, 114, 128, 0.15)', text: '#9ca3af' },
   'Warp': { bg: 'rgba(99, 102, 241, 0.15)', text: '#818cf8' },
   'Alacritty': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'Kitty': { bg: 'rgba(236, 72, 153, 0.15)', text: '#ec4899' },
   'WezTerm': { bg: 'rgba(168, 85, 247, 0.15)', text: '#a855f7' },
   'VS Code': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
+  'Cursor': { bg: 'rgba(139, 92, 246, 0.15)', text: '#a78bfa' },
+  'Ghostty': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
+  'Windsurf': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
+  'Zed': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
+  'cmux': { bg: 'rgba(255, 255, 255, 0.08)', text: '#9ca3af' },
 }
 
 const DEFAULT_BADGE = { bg: 'rgba(107, 114, 128, 0.15)', text: '#9ca3af' }
@@ -290,34 +296,146 @@ function TaskStatusIcon({ status }: { status: TaskInfo['status'] }) {
 }
 
 /* ── Inline Permission Preview ── */
+function parsePermissionInput(toolInput?: string): Record<string, unknown> {
+  if (!toolInput) return {}
+  try {
+    const parsed = JSON.parse(toolInput)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // Plain command/path input is still useful as a fallback preview.
+  }
+  return { raw: toolInput }
+}
+
+function getStringField(input: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return ''
+}
+
+function shortenMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const head = Math.max(8, Math.floor(maxLength * 0.35))
+  const tail = Math.max(12, maxLength - head - 3)
+  return `${value.slice(0, head)}...${value.slice(-tail)}`
+}
+
+function getPermissionTarget(perm: PermissionRequest, input: Record<string, unknown>): string {
+  if (perm.diff?.filePath) return perm.diff.filePath
+  return getStringField(input, ['file_path', 'filePath', 'path', 'url'])
+}
+
+function getPermissionPreviewText(input: Record<string, unknown>): string {
+  const primary = getStringField(input, ['command', 'query', 'file_path', 'filePath', 'path', 'url', 'pattern', 'raw'])
+  if (primary) return primary
+
+  const entries = Object.entries(input)
+    .filter(([, value]) => value != null && ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 3)
+  if (entries.length === 0) return ''
+  return entries.map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
+}
+
 function InlinePermissionPreview({ session }: { session: SessionState }) {
   const { t } = useTranslation()
   const perm = session.pendingPermission
   if (!perm) return null
 
-  const filePath = perm.toolInput ? (typeof perm.toolInput === 'string' ? perm.toolInput : '') : ''
-  const param = filePath
+  const parsedInput = parsePermissionInput(perm.toolInput)
+  const toolLabel = getToolActivityLabel(t, perm.toolName)
+  const target = getPermissionTarget(perm, parsedInput)
+  const previewText = getPermissionPreviewText(parsedInput)
+
+  const clearAfter = (work: Promise<void>) => {
+    work
+      .then(() => useSessionStore.getState().clearPermission(session.id))
+      .catch((error) => console.warn('[notch] inline permission response:', error))
+  }
 
   return (
-    <div className="hover-list__inline-perm" onClick={(e) => e.stopPropagation()}>
-      <div className="hover-list__inline-perm-header">
-        <span className="hover-list__inline-perm-icon">⚠️</span>
-        <span className="hover-list__inline-perm-tool">{getToolActivityLabel(t, perm.toolName)}</span>
-        {param && <span className="hover-list__inline-perm-param">{param.length > 50 ? `…${param.slice(-50)}` : param}</span>}
+    <div
+      className="hover-list__inline-perm"
+      data-no-open
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="hover-list__inline-perm-titlebar">
+        <span className="hover-list__inline-perm-alert" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.3 3.9 1.8 18.1A2 2 0 0 0 3.5 21h17a2 2 0 0 0 1.7-2.9L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            <path d="M12 9v4" />
+            <path d="M12 17h.01" />
+          </svg>
+        </span>
+        <span className="hover-list__inline-perm-tool">{toolLabel}</span>
+        <span className="hover-list__inline-perm-tool-name">{perm.toolName}</span>
       </div>
+
+      {perm.diff ? (
+        <div className="hover-list__inline-perm-diff">
+          <DiffView diff={perm.diff} />
+        </div>
+      ) : (
+        <div className="hover-list__inline-perm-preview">
+          <div className="hover-list__inline-perm-preview-label">{getToolActivityLabel(t, perm.toolName)}</div>
+          {(target || previewText) && (
+            <code className="hover-list__inline-perm-preview-text">
+              {shortenMiddle(target || previewText, 140)}
+            </code>
+          )}
+        </div>
+      )}
+
       <div className="hover-list__inline-perm-actions">
         <button
+          type="button"
           className="hover-list__inline-btn hover-list__inline-btn--deny"
-          onClick={() => respondPermission(session.id, false)}
-        >拒绝</button>
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            clearAfter(respondPermission(session.id, false))
+          }}
+        >
+          {t('notch.deny', { defaultValue: '拒绝' })}
+        </button>
         <button
+          type="button"
           className="hover-list__inline-btn hover-list__inline-btn--allow"
-          onClick={() => respondPermission(session.id, true)}
-        >允许</button>
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            clearAfter(respondPermission(session.id, true))
+          }}
+        >
+          {t('notch.allowOnce', { defaultValue: '允许一次' })}
+        </button>
         <button
+          type="button"
           className="hover-list__inline-btn hover-list__inline-btn--always"
-          onClick={() => respondPermission(session.id, true, true)}
-        >始终允许</button>
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            clearAfter(respondPermission(session.id, true, true))
+          }}
+        >
+          <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
+          <kbd>^A</kbd>
+        </button>
+        <button
+          type="button"
+          className="hover-list__inline-btn hover-list__inline-btn--auto"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            clearAfter(respondAutoApprove(session.id))
+          }}
+        >
+          {t('notch.autoApprove', { defaultValue: '自动批准' })}
+        </button>
       </div>
     </div>
   )
@@ -575,7 +693,7 @@ function SessionCard({
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
   const showAgentBadge = shouldShowAgentBadge(session)
-  const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || null) : null
+  const termBadge = terminalLabel ? (TERMINAL_BADGE_COLORS[terminalLabel] || DEFAULT_BADGE) : null
   const recentUserMessage = latestUserMessage(session)
   const title = getHoverSessionTitle(session, recentUserMessage)
   const assistantPreview = latestAssistantPreview(session)
@@ -588,11 +706,12 @@ function SessionCard({
   const isMuted = Boolean(mutedSessions[session.id])
 
   const isStatic = session.phase === 'idle' || session.phase === 'done'
-  const showInlinePermission = !isAlertActive && !!session.pendingPermission
+  const showPassiveDot = isPassiveSession(session)
+  const showInlinePermission = !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
-  const shouldShowAgentIcon = isStatic || appLabel === 'Codex App' || session.agentType === 'codex'
+  const shouldShowAgentIcon = !showPassiveDot && (isStatic || appLabel === 'Codex App' || session.agentType === 'codex')
   const handleOpen = () => onSessionClick(session.id)
   const shouldIgnoreOpen = (target: EventTarget | null): boolean => {
     return target instanceof Element && Boolean(
@@ -629,14 +748,16 @@ function SessionCard({
         role="button"
         tabIndex={0}
         aria-selected={selected}
-        className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
+        className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
         onClickCapture={handleClickCapture}
         onKeyDown={handleKeyDown}
       >
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
           <div className="hover-list__status-col">
-            {shouldShowAgentIcon ? (
+            {showPassiveDot ? (
+              <span className="hover-list__expired-dot" aria-hidden="true" />
+            ) : shouldShowAgentIcon ? (
               <span className="hover-list__status-icon">
                 <MascotRouter toolType={iconAgentType} phase={session.phase} size={18} />
                 {!isStatic && <span className="hover-list__status-activity" />}

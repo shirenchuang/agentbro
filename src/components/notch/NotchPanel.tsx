@@ -215,6 +215,7 @@ export function NotchPanel() {
   const idleCompactDwellSeconds = useConfigStore((s) => s.idleCompactDwellSeconds)
   const noSessionsHideDelay = useConfigStore((s) => s.noSessionsHideDelay)
   const idleTimeoutMinutes = useConfigStore((s) => s.idleTimeoutMinutes)
+  const sessionTimeoutMinutes = useConfigStore((s) => s.sessionTimeoutMinutes)
   const escSilenceDuration = useConfigStore((s) => s.escSilenceDuration)
   const interactionMode = useConfigStore((s) => s.interactionMode)
   const taskCompleteDwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds)
@@ -231,6 +232,9 @@ export function NotchPanel() {
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const idleHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const overlayDismissTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const overlayDismissPendingRef = useRef<string | null>(null)
+  const inlineBlockingOverlayIdsRef = useRef(new Set<string>())
+  const nativeHoverInsideRef = useRef(false)
   const alertContentRef = useRef<HTMLDivElement | null>(null)
   const feedbackContentRef = useRef<HTMLDivElement | null>(null)
   const hoverContentRef = useRef<HTMLDivElement | null>(null)
@@ -249,11 +253,11 @@ export function NotchPanel() {
   const nativeHoverHitboxSizeRef = useRef({ width: 420, height: 52 })
 
   useEffect(() => {
-    if (idleTimeoutMinutes <= 0) return
+    if (idleTimeoutMinutes <= 0 && sessionTimeoutMinutes <= 0) return
     applyIdleTimeout()
     const timer = window.setInterval(() => applyIdleTimeout(), 2000)
     return () => window.clearInterval(timer)
-  }, [applyIdleTimeout, idleTimeoutMinutes])
+  }, [applyIdleTimeout, idleTimeoutMinutes, sessionTimeoutMinutes])
 
   useEffect(() => {
     if (!followFocus) {
@@ -538,30 +542,12 @@ export function NotchPanel() {
     }
   }, [hideInFullscreen, islandEnabled])
 
-  // Non-blocking overlays still need to expire while the island is collapsed.
-  useEffect(() => {
-    if (overlayDismissTimerRef.current) {
-      clearTimeout(overlayDismissTimerRef.current)
-      overlayDismissTimerRef.current = undefined
-    }
-    if (!activeOverlay || !isNonBlockingOverlay(activeOverlay) || panelState !== 'collapsed') return
-
-    overlayDismissTimerRef.current = setTimeout(() => {
-      useSessionStore.getState().dismissOverlay(activeOverlay.id)
-    }, Math.max(1, taskCompleteDwellSeconds) * 1000)
-
-    return () => {
-      if (overlayDismissTimerRef.current) clearTimeout(overlayDismissTimerRef.current)
-    }
-  }, [activeOverlay, panelState, taskCompleteDwellSeconds])
-
   const hapticOnHover = useConfigStore((s) => s.hapticOnHover)
   const hapticIntensity = useConfigStore((s) => s.hapticIntensity)
 
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const openPrepareTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const openPrepareFrameRef = useRef<number | undefined>(undefined)
-  const nativeHoverInsideRef = useRef(false)
   const desiredIgnoreCursorEventsRef = useRef(false)
   const appliedIgnoreCursorEventsRef = useRef(false)
   const forceIgnoreCursorEventsRef = useRef(false)
@@ -573,6 +559,62 @@ export function NotchPanel() {
   const detailModeRef = useRef(false)
   const detailBackGuardUntilRef = useRef(0)
   const pendingDetailOpenTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const markActivePermissionOverlayInline = useCallback(() => {
+    const overlay = useSessionStore.getState().activeOverlay
+    if (overlay?.type === 'permission') {
+      inlineBlockingOverlayIdsRef.current.add(overlay.id)
+    }
+  }, [])
+
+  const dismissNonBlockingOverlay = useCallback((overlayId: string, options?: { collapse?: boolean }) => {
+    overlayDismissPendingRef.current = null
+    useSessionStore.getState().dismissOverlay(overlayId)
+    if (!options?.collapse) return
+
+    detailModeRef.current = false
+    detailBackGuardUntilRef.current = 0
+    setNotchFocusable(false).catch(() => {})
+    if (useSessionStore.getState().panelState !== 'collapsed') {
+      setPanelState('collapsed')
+    }
+  }, [setPanelState])
+
+  // Non-blocking overlays expire from their creation time. Hover only defers
+  // the final dismiss/collapse action once that deadline has already passed.
+  useEffect(() => {
+    if (overlayDismissTimerRef.current) {
+      clearTimeout(overlayDismissTimerRef.current)
+      overlayDismissTimerRef.current = undefined
+    }
+    overlayDismissPendingRef.current = null
+
+    if (!activeOverlay || !isNonBlockingOverlay(activeOverlay)) return
+
+    const overlayId = activeOverlay.id
+    const deadline = activeOverlay.createdAt + Math.max(1, taskCompleteDwellSeconds) * 1000
+    const delay = Math.max(0, deadline - Date.now())
+
+    overlayDismissTimerRef.current = setTimeout(() => {
+      overlayDismissTimerRef.current = undefined
+      const currentOverlay = useSessionStore.getState().activeOverlay
+      if (currentOverlay?.id !== overlayId) return
+
+      if (nativeHoverInsideRef.current) {
+        overlayDismissPendingRef.current = overlayId
+        return
+      }
+
+      dismissNonBlockingOverlay(overlayId, { collapse: true })
+    }, delay)
+
+    return () => {
+      if (overlayDismissTimerRef.current) {
+        clearTimeout(overlayDismissTimerRef.current)
+        overlayDismissTimerRef.current = undefined
+      }
+    }
+  }, [activeOverlay, dismissNonBlockingOverlay, taskCompleteDwellSeconds])
 
   const flushNativeIgnoreCursorEvents = useCallback(function flushNativeIgnoreCursorEvents() {
     if (!isTauri() || ignoreCursorEventsInFlightRef.current) return
@@ -730,6 +772,15 @@ export function NotchPanel() {
       openPrepareFrameRef.current = undefined
     }
     setPreparingOpen(false)
+    const pendingOverlayId = overlayDismissPendingRef.current
+    if (pendingOverlayId) {
+      const currentOverlay = useSessionStore.getState().activeOverlay
+      if (currentOverlay?.id === pendingOverlayId && isNonBlockingOverlay(currentOverlay)) {
+        dismissNonBlockingOverlay(pendingOverlayId, { collapse: true })
+        return
+      }
+      overlayDismissPendingRef.current = null
+    }
     if (!autoCollapse) return
     const currentPanelState = useSessionStore.getState().panelState
     if (currentPanelState === 'hover' || currentPanelState === 'expanded') {
@@ -739,12 +790,13 @@ export function NotchPanel() {
         if (current === 'hover' || current === 'expanded') {
           detailModeRef.current = false
           detailBackGuardUntilRef.current = 0
+          markActivePermissionOverlayInline()
           setNotchFocusable(false).catch(() => {})
           setPanelState('collapsed')
         }
       }, delay)
     }
-  }, [autoCollapse, collapseDelay, dwellDuration, isDragging, setPanelState])
+  }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActivePermissionOverlayInline, setPanelState])
 
   useEffect(() => {
     return () => {
@@ -842,6 +894,9 @@ export function NotchPanel() {
             store.dismissOverlay(overlay.id)
           } else {
             detailModeRef.current = false
+            if (overlay.type === 'permission') {
+              inlineBlockingOverlayIdsRef.current.add(overlay.id)
+            }
             setNotchFocusable(false).catch(() => {})
             setPanelState('collapsed')
           }
@@ -865,6 +920,7 @@ export function NotchPanel() {
       if (collapseBinding && matchesShortcut(e, collapseBinding)) {
         setWakeSilencedUntil(Date.now() + escSilenceDuration * 1000)
         detailModeRef.current = false
+        markActivePermissionOverlayInline()
         setNotchFocusable(false).catch(() => {})
         setPanelState('collapsed')
         return
@@ -920,7 +976,7 @@ export function NotchPanel() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [escSilenceDuration, setPanelState, setWakeSilencedUntil, shortcuts])
+  }, [escSilenceDuration, markActivePermissionOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
   const handleSessionClick = (sessionId: string) => {
     if (!clickToDetail) {
@@ -973,6 +1029,7 @@ export function NotchPanel() {
       clearTimeout(pendingDetailOpenTimerRef.current)
       pendingDetailOpenTimerRef.current = undefined
     }
+    markActivePermissionOverlayInline()
     setNotchFocusable(false).catch(() => {})
     setPanelState('collapsed')
   }
@@ -1010,10 +1067,15 @@ export function NotchPanel() {
       : overlayPresentationOpen
         ? 'hover'
         : panelState
+  const showBlockingOverlayAsInline = Boolean(
+    activeOverlay?.type === 'permission'
+    && inlineBlockingOverlayIdsRef.current.has(activeOverlay.id),
+  )
   const hasBlockingOverlayContent = Boolean(
     !layoutPreview
     && activeOverlay
     && isBlockingOverlay(activeOverlay)
+    && !showBlockingOverlayAsInline
     && effectivePanelState !== 'collapsed',
   )
   const feedbackPresentationOpen = Boolean(
@@ -1042,8 +1104,14 @@ export function NotchPanel() {
     const sorted = [...displayedSessions].sort((a, b) => computePriority(b) - computePriority(a))
     return maxVisibleSessions > 0 ? sorted.slice(0, maxVisibleSessions) : sorted
   }, [displayedSessions, maxVisibleSessions])
-  const projectCount = new Set(visibleHoverSessions.map((session) => session.project)).size
-  const hoverListHeight = 96 + Math.max(visibleHoverSessions.length, 1) * 76 + Math.max(projectCount, 1) * 32
+  const hoverListHeight = 22 + Math.max(visibleHoverSessions.length, 1) * 74 + visibleHoverSessions.reduce((extra, session) => {
+    if (session.pendingPermission) return extra + 260
+    if (session.pendingQuestion) return extra + 120
+    if (session.planTitle || session.planContent) return extra + 170
+    return extra
+      + (session.subagents.length > 0 ? 58 : 0)
+      + (session.tasks && session.tasks.length > 0 ? 92 : 0)
+  }, 0)
   const blockingOverlayFallbackHeight = activeOverlay?.type === 'plan'
     ? 460
     : activeOverlay?.type === 'question'

@@ -17,7 +17,6 @@
     "deny": "拒绝",
     "allowOnce": "允许一次",
     "allowAlways": "始终允许",
-    "allowAll": "全部允许",
     "typeMessage": "输入消息... (Enter)",
     "typeReply": "输入回复... (Enter)",
     "send": "发送",

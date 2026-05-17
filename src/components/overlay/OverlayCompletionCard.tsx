@@ -24,6 +24,7 @@ export function OverlayCompletionCard({ overlay, session, onJumpToTerminal, onDi
       text={data.summary}
       maxHeight={completionCardHeight}
       dwellMs={dwellMs}
+      startedAt={overlay.createdAt}
       statusLabel={t('notch.completed', { defaultValue: '完成' })}
       onJumpToTerminal={onJumpToTerminal}
       onDismiss={onDismiss}

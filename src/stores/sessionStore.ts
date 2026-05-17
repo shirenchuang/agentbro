@@ -4,6 +4,7 @@ import { useConfigStore } from './configStore'
 import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
+import { isSessionPastDisplayTimeout } from '../utils/sessionDisplay'
 import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
@@ -62,8 +63,8 @@ interface SessionStore {
   setFocusedTerminal: (name: string | null) => void
 }
 
-function toList(sessions: Record<string, SessionState>): SessionState[] {
-  return Object.values(sessions).filter(isDisplayableSession)
+function toList(sessions: Record<string, SessionState>, now = Date.now()): SessionState[] {
+  return Object.values(sessions).filter((session) => isDisplayableSession(session, now))
 }
 
 function hasSessionContent(session: SessionState): boolean {
@@ -102,20 +103,20 @@ function isCodexAppPlaceholder(session: SessionState): boolean {
   )
 }
 
-function isDisplayableSession(session: SessionState): boolean {
+function isDisplayableSession(session: SessionState, now = Date.now()): boolean {
   if (session.phase === 'waiting_approval' || session.phase === 'waiting_input' || session.phase === 'error') {
     return true
   }
   if (session.phase === 'done' && (sessionEndedText(session.responseText) || sessionEndedText(session.description))) {
     return false
   }
-  if (isExpiredClaudeListItem(session)) {
-    return false
-  }
   if (isInternalCodexPromptSession(session)) {
     return false
   }
   if (isCodexAppPlaceholder(session) && !hasSessionContent(session)) {
+    return false
+  }
+  if (isSessionPastDisplayTimeout(session, useConfigStore.getState().sessionTimeoutMinutes, now)) {
     return false
   }
   return true
@@ -142,18 +143,6 @@ function isInternalCodexPromptSession(session: SessionState): boolean {
   if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
   if (!isInternalCodexPromptText(session.sessionTitle) && !isInternalCodexPromptText(session.lastUserMessage)) return false
   if (usefulCompletionText(session.responseText) || usefulCompletionText(session.description)) return false
-  return true
-}
-
-function isExpiredClaudeListItem(session: SessionState): boolean {
-  if (session.agentType !== 'claude-code') return false
-  if (session.phase !== 'idle' && session.phase !== 'done') return false
-  if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
-  if (usefulCompletionText(session.responseText) || usefulCompletionText(session.description)) return false
-  if (session.lastToolName || session.statusLineText || session.contextWindow || session.rateLimits) return false
-  if (session.activeTools.some((tool) => tool.status === 'running')) return false
-  if (session.subagents.some((agent) => agent.status === 'running')) return false
-  if (session.tasks?.some((task) => task.status !== 'completed')) return false
   return true
 }
 
@@ -572,18 +561,29 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     const prevState = useSessionStore.getState()
     const newOverlays: OverlayItem[] = []
     const suppressed = options?.suppressed === true
+    const now = Date.now()
 
     set((state) => {
       const sessions: Record<string, SessionState> = {}
-      for (const s of newSessions) {
-        sessions[s.id] = {
-          ...s,
-          chatHistory: state.sessions[s.id]?.chatHistory ?? s.chatHistory ?? [],
-          subagents: s.subagents ?? [],
-          activeTools: s.activeTools ?? [],
+      for (const incoming of newSessions) {
+        const prev = prevState.sessions[incoming.id]
+        const existing = state.sessions[incoming.id]
+        const enteredIdle = incoming.phase === 'idle' && existing?.phase !== 'idle'
+        const enteredDone = incoming.phase === 'done' && existing?.phase !== 'done'
+        const s: SessionState = {
+          ...incoming,
+          chatHistory: incoming.chatHistory?.length ? incoming.chatHistory : existing?.chatHistory ?? [],
+          subagents: incoming.subagents ?? [],
+          activeTools: incoming.activeTools ?? [],
+          idleSince: incoming.phase === 'idle'
+            ? incoming.idleSince ?? existing?.idleSince ?? (enteredIdle ? now : undefined)
+            : incoming.idleSince,
+          taskCompletedAt: incoming.phase === 'done'
+            ? incoming.taskCompletedAt ?? existing?.taskCompletedAt ?? (enteredDone ? now : undefined)
+            : incoming.taskCompletedAt,
+          lastActivityAt: incoming.lastActivityAt ?? existing?.lastActivityAt,
         }
-
-        const prev = prevState.sessions[s.id]
+        sessions[s.id] = s
 
         // Detect new pendingQuestion — create question overlay
         if (s.pendingQuestion && !prev?.pendingQuestion) {
@@ -677,8 +677,8 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
       }
       let activeSessionId = state.activeSessionId
-      const sessionList = toList(sessions)
-      if (activeSessionId && (!sessions[activeSessionId] || !isDisplayableSession(sessions[activeSessionId]))) {
+      const sessionList = toList(sessions, now)
+      if (activeSessionId && (!sessions[activeSessionId] || !isDisplayableSession(sessions[activeSessionId], now))) {
         activeSessionId = sessionList[0]?.id ?? null
       }
       const overlayQueue = state.overlayQueue.filter((overlay) => {
@@ -768,29 +768,38 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
   applyIdleTimeout: (now = Date.now()) => {
     const idleTimeoutMinutes = useConfigStore.getState().idleTimeoutMinutes
-    if (idleTimeoutMinutes <= 0) return
     const timeoutMs = idleTimeoutMinutes * 60 * 1000
     let changed = false
+    let shouldSave = false
 
     set((state) => {
       const sessions = { ...state.sessions }
-      for (const session of Object.values(state.sessions)) {
-        if (session.phase !== 'processing' && session.phase !== 'compacting') continue
-        if (session.activeTools.some((tool) => tool.status === 'running')) continue
-        const lastActivityAt = session.lastActivityAt ?? session.startedAt
-        if (now - lastActivityAt <= timeoutMs) continue
-        sessions[session.id] = {
-          ...session,
-          phase: 'idle',
-          idleSince: session.idleSince ?? now,
-          description: session.description,
+      if (idleTimeoutMinutes > 0) {
+        for (const session of Object.values(state.sessions)) {
+          if (session.phase !== 'processing' && session.phase !== 'compacting') continue
+          if (session.activeTools.some((tool) => tool.status === 'running')) continue
+          const lastActivityAt = session.lastActivityAt ?? session.startedAt
+          if (now - lastActivityAt <= timeoutMs) continue
+          sessions[session.id] = {
+            ...session,
+            phase: 'idle',
+            idleSince: session.idleSince ?? now,
+            description: session.description,
+          }
+          changed = true
         }
-        changed = true
       }
-      return changed ? { sessions, sessionList: toList(sessions) } : state
+
+      const sessionList = toList(changed ? sessions : state.sessions, now)
+      const listChanged = sessionList.length !== state.sessionList.length
+        || sessionList.some((session, index) => session.id !== state.sessionList[index]?.id)
+
+      if (!changed && !listChanged) return state
+      shouldSave = changed
+      return { sessions: changed ? sessions : state.sessions, sessionList }
     })
 
-    if (changed) saveSessionsDebounced()
+    if (shouldSave) saveSessionsDebounced()
   },
 
   setBaseLayer: (baseLayer) => {

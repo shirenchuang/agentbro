@@ -16,7 +16,10 @@ const tauriMocks = vi.hoisted(() => ({
   respondQuestion: vi.fn(() => Promise.resolve()),
   sendMessage: vi.fn(() => Promise.resolve()),
   setNotchFocusable: vi.fn(() => Promise.resolve()),
-  setNotchIgnoreCursorEvents: vi.fn((_ignore: boolean) => Promise.resolve()),
+  setNotchIgnoreCursorEvents: vi.fn((ignore: boolean) => {
+    void ignore
+    return Promise.resolve()
+  }),
   isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
   resizeNotch: vi.fn(() => Promise.resolve({ anchorOffsetX: 0 })),
@@ -483,6 +486,56 @@ describe('NotchPanel island shell', () => {
     expect(screen.getAllByText('Collapsed response should still pop up').length).toBeGreaterThan(0)
   })
 
+  it('keeps the feedback countdown running while hovered and collapses as soon as hover leaves after expiry', () => {
+    vi.useFakeTimers()
+    try {
+      useConfigStore.setState({ autoCollapse: true, taskCompleteDwellSeconds: 3 })
+      const activeOverlay: OverlayItem = {
+        id: 'response-s1-countdown',
+        sessionId: 's1',
+        type: 'response',
+        data: {
+          responseText: 'Countdown should not restart on hover',
+          userMessage: 'Did it finish?',
+        },
+        createdAt: Date.now(),
+      }
+      const currentSession = session()
+      useSessionStore.setState({
+        sessions: { [currentSession.id]: currentSession },
+        sessionList: [currentSession],
+        activeSessionId: currentSession.id,
+        panelState: 'collapsed',
+        activeOverlay,
+        overlayQueue: [activeOverlay],
+        rateLimits: undefined,
+        hookNotification: null,
+        wakeSilencedUntil: 0,
+        focusedTerminal: null,
+      })
+
+      render(<NotchPanel />)
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+
+      act(() => {
+        vi.advanceTimersByTime(2_000)
+      })
+      fireEvent.pointerEnter(hitbox)
+      act(() => {
+        vi.advanceTimersByTime(1_100)
+      })
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe(activeOverlay.id)
+
+      fireEvent.pointerLeave(hitbox)
+
+      expect(useSessionStore.getState().activeOverlay).toBeNull()
+      expect(useSessionStore.getState().panelState).toBe('collapsed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('can open detail again after returning to the hover list without leaving the island', async () => {
     mountIsland()
 
@@ -641,6 +694,49 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
     expect(useSessionStore.getState().panelState).toBe('collapsed')
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'compact')
+  })
+
+  it('shows the same permission request inline in the session list after the alert is collapsed', async () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: {
+        toolName: 'Edit',
+        toolInput: JSON.stringify({ file_path: 'src/i18n/locales/zh.json' }),
+        diff: {
+          filePath: 'src/i18n/locales/zh.json',
+          lines: [
+            { type: 'remove', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 Claude Code。"' },
+            { type: 'add', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 AI Agent。"' },
+          ],
+        },
+      },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: {
+        toolName: 'Edit',
+        toolInput: JSON.stringify({ file_path: 'src/i18n/locales/zh.json' }),
+        diff: {
+          filePath: 'src/i18n/locales/zh.json',
+          lines: [
+            { type: 'remove', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 Claude Code。"' },
+            { type: 'add', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 AI Agent。"' },
+          ],
+        },
+      },
+    })
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+    await waitFor(() => expect(document.querySelector('.hover-list')).toBeInTheDocument())
+    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+    expect(screen.getByText('agent-island · Port dynamic island')).toBeInTheDocument()
+    expect(screen.getByText('Edit')).toBeInTheDocument()
+    expect(screen.getByText('src/i18n/locales/zh.json')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
   })
 
   it('routes question overlay answers to respondQuestion and clears the pending question', () => {
@@ -844,7 +940,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().overlayQueue).toEqual([])
   })
 
-  it('pauses feedback overlay dismissal while hovered', () => {
+  it('defers feedback overlay dismissal after expiry until the cursor leaves', () => {
     vi.useFakeTimers()
     try {
       mountIsland({
@@ -855,19 +951,18 @@ describe('NotchPanel island shell', () => {
         createdAt: Date.now(),
       })
 
-      fireEvent.mouseEnter(document.querySelector('.overlay-feedback')!)
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+      fireEvent.pointerEnter(hitbox)
       act(() => {
         vi.advanceTimersByTime(3_000)
       })
 
       expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
 
-      fireEvent.mouseLeave(document.querySelector('.overlay-feedback')!)
-      act(() => {
-        vi.advanceTimersByTime(3_000)
-      })
+      fireEvent.pointerLeave(hitbox)
 
       expect(useSessionStore.getState().activeOverlay).toBeNull()
+      expect(useSessionStore.getState().panelState).toBe('collapsed')
     } finally {
       vi.useRealTimers()
     }

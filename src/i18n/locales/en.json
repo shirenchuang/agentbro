@@ -17,7 +17,6 @@
     "deny": "Deny",
     "allowOnce": "Allow Once",
     "allowAlways": "Allow Always",
-    "allowAll": "Allow All",
     "typeMessage": "Type a message... (Enter)",
     "typeReply": "Type a reply... (Enter)",
     "send": "Send",

@@ -22,7 +22,7 @@ function session(overrides: Partial<SessionState>): SessionState {
 
 describe('sessionStore backend overlays', () => {
   beforeEach(() => {
-    useConfigStore.setState({ idleTimeoutMinutes: 0 })
+    useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 30 })
     useSessionStore.setState({
       sessions: {},
       sessionList: [],
@@ -144,7 +144,7 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeOverlay?.type).toBe('completion')
   })
 
-  it('hides expired Claude rows that only have a title or last user message', () => {
+  it('keeps inactive Claude rows visible until the session timeout', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
         phase: 'idle',
@@ -157,9 +157,48 @@ describe('sessionStore backend overlays', () => {
     ])
 
     const state = useSessionStore.getState()
+    expect(state.sessionList.map((item) => item.id)).toEqual(['s1'])
+    expect(state.sessionList[0].idleSince).toEqual(expect.any(Number))
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('hides inactive sessions after the configured session timeout', () => {
+    const now = Date.now()
+    useConfigStore.setState({ sessionTimeoutMinutes: 5 })
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'idle',
+        sessionTitle: 'old work',
+        lastUserMessage: 'old work',
+        idleSince: now - 6 * 60 * 1000,
+        lastActivityAt: now - 6 * 60 * 1000,
+      }),
+    ])
+
+    const state = useSessionStore.getState()
     expect(state.sessionList).toEqual([])
     expect(state.activeSessionId).toBeNull()
-    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('refreshes visible sessions when an inactive row crosses the session timeout', () => {
+    const now = Date.now()
+    useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 5 })
+    const inactive = session({
+      phase: 'idle',
+      sessionTitle: 'recent work',
+      lastUserMessage: 'recent work',
+      idleSince: now - 4 * 60 * 1000,
+      lastActivityAt: now - 4 * 60 * 1000,
+    })
+    useSessionStore.setState({
+      sessions: { s1: inactive },
+      sessionList: [inactive],
+    })
+
+    useSessionStore.getState().applyIdleTimeout(now + 2 * 60 * 1000)
+
+    expect(useSessionStore.getState().sessionList).toEqual([])
+    expect(useSessionStore.getState().sessions.s1).toBeDefined()
   })
 
   it('hides completed Codex internal prompt sessions from the visible list', () => {

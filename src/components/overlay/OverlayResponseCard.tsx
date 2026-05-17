@@ -25,6 +25,7 @@ export function OverlayResponseCard({ overlay, session, onJumpToTerminal, onDism
       text={data.responseText}
       maxHeight={completionCardHeight}
       dwellMs={dwellMs}
+      startedAt={overlay.createdAt}
       statusLabel={t('notch.completed', { defaultValue: '完成' })}
       onJumpToTerminal={onJumpToTerminal}
       onDismiss={onDismiss}

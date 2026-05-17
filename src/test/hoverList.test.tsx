@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
 import { useConfigStore } from '../stores/configStore'
@@ -6,6 +6,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import type { SessionState } from '../types/agent'
 
 const tauriMocks = vi.hoisted(() => ({
+  respondAutoApprove: vi.fn(() => Promise.resolve()),
   respondPermission: vi.fn(() => Promise.resolve()),
   respondPlan: vi.fn(() => Promise.resolve()),
   respondQuestion: vi.fn(() => Promise.resolve()),
@@ -15,6 +16,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
+    respondAutoApprove: tauriMocks.respondAutoApprove,
     respondPermission: tauriMocks.respondPermission,
     respondPlan: tauriMocks.respondPlan,
     respondQuestion: tauriMocks.respondQuestion,
@@ -136,6 +138,37 @@ describe('HoverList interactions', () => {
     expect(container.querySelector('.pixel-indicator')).not.toBeInTheDocument()
   })
 
+  it('infers terminal source from bundle metadata when terminal is a tty', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          agentType: 'claude-code',
+          terminal: '/dev/ttys001',
+          termBundleId: 'com.googlecode.iterm2',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Claude')).toBeInTheDocument()
+    expect(screen.getByText('iTerm2')).toBeInTheDocument()
+  })
+
+  it('uses a subdued dot for inactive sessions', () => {
+    const { container } = render(
+      <HoverList
+        sessions={[session({
+          phase: 'idle',
+          idleSince: Date.now() - 60_000,
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(container.querySelector('.hover-list__expired-dot')).toBeInTheDocument()
+    expect(container.querySelector('.mascot-image')).not.toBeInTheDocument()
+  })
+
   it('renders Codex list items with title, latest user prompt, and response fallback rows', () => {
     render(
       <HoverList
@@ -227,14 +260,61 @@ describe('HoverList interactions', () => {
       />,
     )
 
-    fireEvent.click(screen.getByText('允许'))
-    fireEvent.click(screen.getByText('始终允许'))
-    fireEvent.click(screen.getByText('拒绝'))
+    const permissionCard = document.querySelector('.hover-list__inline-perm') as HTMLElement
+    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '允许一次' }))
+    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: /始终允许/ }))
+    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '自动批准' }))
+    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '拒绝' }))
 
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
+    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1')
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
     expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('renders the generic authorization card from pendingPermission with a diff preview', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          pendingPermission: {
+            toolName: 'Edit',
+            toolInput: JSON.stringify({ file_path: 'src/i18n/locales/zh.json' }),
+            diff: {
+              filePath: 'src/i18n/locales/zh.json',
+              lines: [
+                { type: 'remove', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 Claude Code。"' },
+                { type: 'add', lineNumber: 7, content: '"noSessionsHint": "在终端中启动 AI Agent。"' },
+              ],
+            },
+          },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Edit')).toBeInTheDocument()
+    expect(screen.getByText('src/i18n/locales/zh.json')).toBeInTheDocument()
+    expect(screen.getByText('+1')).toBeInTheDocument()
+    expect(screen.getByText('-1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
+  })
+
+  it('does not render an authorization card for a normal edit tool row', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          lastToolName: 'Edit',
+          lastToolTarget: 'src/App.tsx +1 -1',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('notch.tool.editing')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '允许一次' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '拒绝' })).not.toBeInTheDocument()
   })
 
   it('routes inline question options without opening the row', async () => {

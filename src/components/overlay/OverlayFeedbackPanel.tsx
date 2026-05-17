@@ -16,6 +16,7 @@ interface OverlayFeedbackPanelProps {
   text: string
   maxHeight?: number
   dwellMs: number
+  startedAt?: number
   statusLabel: string
   onJumpToTerminal: () => void
   onDismiss: () => void
@@ -27,6 +28,7 @@ export function OverlayFeedbackPanel({
   text,
   maxHeight,
   dwellMs,
+  startedAt,
   statusLabel,
   onJumpToTerminal,
   onDismiss,
@@ -34,90 +36,47 @@ export function OverlayFeedbackPanel({
   const { t } = useTranslation()
   const [inputValue, setInputValue] = useState('')
   const [sending, setSending] = useState(false)
-  const [isTimerPaused, setIsTimerPaused] = useState(false)
   const [progressRatio, setProgressRatio] = useState(1)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const inputFocusedRef = useRef(false)
-  const remainingRef = useRef(dwellMs)
-  const startedAtRef = useRef(0)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fallbackStartedAtRef = useRef(startedAt ?? Date.now())
+  const onDismissRef = useRef(onDismiss)
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
+  const countdownDeadline = countdownStartedAt + dwellMs
 
   const shownUserMessage = userMessage || session.lastUserMessage
   const appLabel = getSessionAppLabel(session)
   const terminalLabel = getSessionTerminalLabel(session)
   const agentName = getAgentDisplayName(session)
 
-  const updateProgress = useCallback(() => {
-    if (timerRef.current) {
-      const elapsed = Date.now() - startedAtRef.current
-      setProgressRatio(Math.max(0, (remainingRef.current - elapsed) / dwellMs))
-    } else {
-      setProgressRatio(Math.max(0, remainingRef.current / dwellMs))
-    }
-  }, [dwellMs])
-
-  const scheduleDismiss = useCallback((delayMs: number) => {
-    startedAtRef.current = Date.now()
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null
-      remainingRef.current = 0
-      setProgressRatio(0)
-      onDismiss()
-    }, Math.max(0, delayMs))
+  useEffect(() => {
+    onDismissRef.current = onDismiss
   }, [onDismiss])
 
-  useEffect(() => {
-    remainingRef.current = dwellMs
-    setProgressRatio(1)
-    scheduleDismiss(dwellMs)
-    progressIntervalRef.current = setInterval(updateProgress, 100)
-    setIsTimerPaused(false)
-    inputFocusedRef.current = false
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
-      if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
-    }
-  }, [dwellMs, scheduleDismiss, updateProgress])
-
-  const pauseTimer = useCallback(() => {
-    if (!timerRef.current) return
-    clearTimeout(timerRef.current)
-    timerRef.current = null
-    remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAtRef.current))
-    setProgressRatio(Math.max(0, remainingRef.current / dwellMs))
-    setIsTimerPaused(true)
-  }, [dwellMs])
-
-  const resumeTimer = useCallback(() => {
-    if (timerRef.current) return
-    if (remainingRef.current <= 0) {
-      onDismiss()
+  const updateProgress = useCallback(() => {
+    if (dwellMs <= 0) {
+      setProgressRatio(0)
       return
     }
-    setIsTimerPaused(false)
-    scheduleDismiss(remainingRef.current)
-  }, [onDismiss, scheduleDismiss])
+    const remaining = countdownDeadline - Date.now()
+    setProgressRatio(Math.max(0, Math.min(1, remaining / dwellMs)))
+  }, [countdownDeadline, dwellMs])
 
   useEffect(() => {
-    if (!isTimerPaused) return
+    updateProgress()
+    progressIntervalRef.current = setInterval(updateProgress, 100)
 
-    const interval = window.setInterval(() => {
-      if (inputFocusedRef.current) return
-      const isActuallyHovered = overlayRef.current?.matches(':hover') ?? false
-      if (!isActuallyHovered) resumeTimer()
-    }, 250)
-
-    return () => window.clearInterval(interval)
-  }, [isTimerPaused, resumeTimer])
+    return () => {
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
+      if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+      progressIntervalRef.current = null
+      blurTimerRef.current = null
+    }
+  }, [updateProgress])
 
   const focusInput = useCallback(() => {
-    inputFocusedRef.current = true
-    pauseTimer()
     if (blurTimerRef.current) {
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
@@ -129,17 +88,15 @@ export function OverlayFeedbackPanel({
       .catch(() => {
         inputRef.current?.focus()
       })
-  }, [pauseTimer])
+  }, [])
 
   const releaseInputFocus = useCallback(() => {
     if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
-      inputFocusedRef.current = false
       setNotchFocusable(false).catch(() => {})
-      if (!(overlayRef.current?.matches(':hover') ?? false)) resumeTimer()
     }, 200)
-  }, [resumeTimer])
+  }, [])
 
   const handleSend = useCallback(async () => {
     const value = inputValue.trim()
@@ -153,11 +110,11 @@ export function OverlayFeedbackPanel({
         content: value,
       })
       setInputValue('')
-      setTimeout(onDismiss, 500)
+      setTimeout(() => onDismissRef.current(), 500)
     } finally {
       setSending(false)
     }
-  }, [inputValue, onDismiss, sending, session.id])
+  }, [inputValue, sending, session.id])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation()
@@ -167,23 +124,19 @@ export function OverlayFeedbackPanel({
     } else if (event.key === 'Escape') {
       event.preventDefault()
       if (inputValue) setInputValue('')
-      else onDismiss()
+      else onDismissRef.current()
     }
-  }, [handleSend, inputValue, onDismiss])
+  }, [handleSend, inputValue])
 
   const handleJump = useCallback(() => {
     onJumpToTerminal()
-    onDismiss()
-  }, [onDismiss, onJumpToTerminal])
+    onDismissRef.current()
+  }, [onJumpToTerminal])
 
   return (
     <div
       ref={overlayRef}
-      className={`overlay-feedback${isTimerPaused ? ' overlay-feedback--paused' : ''}`}
-      onMouseEnter={pauseTimer}
-      onMouseLeave={() => {
-        if (!inputFocusedRef.current) resumeTimer()
-      }}
+      className="overlay-feedback"
     >
       <div className="overlay-feedback__session" data-no-drag>
         <div className="overlay-feedback__avatar">
