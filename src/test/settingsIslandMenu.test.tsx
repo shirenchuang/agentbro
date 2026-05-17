@@ -1,9 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsApp } from '../components/settings'
+import type { BackendDisplayInfo } from '../services/tauriApi'
 import { useConfigStore } from '../stores/configStore'
 
 const tauriMocks = vi.hoisted(() => ({
+  listDisplays: vi.fn(() => Promise.resolve([] as BackendDisplayInfo[])),
+  repositionNotch: vi.fn(() => Promise.resolve()),
+  setDisplayId: vi.fn(() => Promise.resolve()),
   setIslandFeatureFlags: vi.fn(() => Promise.resolve()),
 }))
 
@@ -11,6 +15,9 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
+    listDisplays: tauriMocks.listDisplays,
+    repositionNotch: tauriMocks.repositionNotch,
+    setDisplayId: tauriMocks.setDisplayId,
     setIslandFeatureFlags: tauriMocks.setIslandFeatureFlags,
   }
 })
@@ -25,6 +32,8 @@ vi.mock('react-i18next', () => ({
 describe('settings island menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    tauriMocks.listDisplays.mockResolvedValue([])
+    useConfigStore.setState({ displayMonitor: 'auto', followFocus: false, tipsEnabled: true })
   })
 
   it('uses the left settings menu for island pages instead of top tabs', async () => {
@@ -61,5 +70,30 @@ describe('settings island menu', () => {
       tipsEnabled: false,
       followFocus: true,
     }))
+  })
+
+  it('shows the primary display label instead of a stale raw display id', async () => {
+    useConfigStore.setState({ displayMonitor: '14035' })
+    tauriMocks.listDisplays.mockResolvedValue([
+      {
+        id: 'Color LCD',
+        name: 'Color LCD',
+        label: 'Color LCD (1728x1117)',
+        width: 3456,
+        height: 2234,
+        scaleFactor: 2,
+        isPrimary: true,
+      },
+    ])
+
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.island.title'))
+    fireEvent.click(screen.getByRole('button', { name: /Display/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('settings.mainDisplay · Color LCD (1728x1117)')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('14035')).not.toBeInTheDocument()
   })
 })

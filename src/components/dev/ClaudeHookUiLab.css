@@ -1,0 +1,175 @@
+.claude-hook-lab {
+  position: relative;
+  min-width: 100vw;
+  min-height: 100vh;
+  overflow: hidden;
+  color: #161616;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(241, 242, 244, 0.94)),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.035) 0 1px, transparent 1px 80px);
+}
+
+.claude-hook-lab__stage {
+  position: fixed;
+  inset: 0;
+}
+
+.claude-hook-lab__panel {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10000;
+  width: min(760px, calc(100vw - 36px));
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px solid rgba(20, 20, 20, 0.13);
+  border-radius: 8px;
+  background: rgba(252, 252, 252, 0.86);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.claude-hook-lab__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.claude-hook-lab__eyebrow {
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  color: #6a6a6a;
+  text-transform: uppercase;
+}
+
+.claude-hook-lab__header h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.claude-hook-lab__reset,
+.claude-hook-lab__scenario,
+.claude-hook-lab__modes button {
+  font: inherit;
+}
+
+.claude-hook-lab__reset {
+  min-width: 64px;
+  height: 32px;
+  border: 1px solid rgba(0, 0, 0, 0.13);
+  border-radius: 6px;
+  color: #1d1d1f;
+  background: #fff;
+  cursor: pointer;
+}
+
+.claude-hook-lab__scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.claude-hook-lab__scenario {
+  display: flex;
+  min-width: 0;
+  min-height: 58px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 9px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  border-radius: 6px;
+  color: #232326;
+  background: rgba(255, 255, 255, 0.74);
+  text-align: left;
+  cursor: pointer;
+}
+
+.claude-hook-lab__scenario[data-active="true"] {
+  color: #fff;
+  border-color: rgba(20, 20, 20, 0.72);
+  background: #17171a;
+}
+
+.claude-hook-lab__scenario-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-hook-lab__scenario-hook {
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #777;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-hook-lab__scenario[data-active="true"] .claude-hook-lab__scenario-hook {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.claude-hook-lab__modes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 4px;
+  margin-top: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.claude-hook-lab__modes button {
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  color: #444;
+  background: transparent;
+  cursor: pointer;
+}
+
+.claude-hook-lab__modes button[data-active="true"] {
+  color: #111;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.12);
+}
+
+.claude-hook-lab__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #666;
+}
+
+.claude-hook-lab__status span {
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.055);
+}
+
+@media (max-width: 760px) {
+  .claude-hook-lab__panel {
+    right: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
+  }
+
+  .claude-hook-lab__scenario-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

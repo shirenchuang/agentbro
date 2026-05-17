@@ -30,10 +30,17 @@ import { PlatformIcon } from '../../platform/PlatformIcon'
 import { HookEventConfigDialog } from '../HookEventConfigDialog'
 import type { IslandSettingsView } from '../../../types/capability'
 
+function displayMatchesConfiguredValue(display: BackendDisplayInfo, value: string): boolean {
+  return display.id === value || display.name === value || display.label === value
+}
+
 function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInfo[]): string {
-  if (value === 'primary' || value === 'auto' || !value) return value
-  const display = displays.find((d) => d.id === value || d.name === value)
-  if (!display) return value
+  const normalizedValue = value.trim()
+  if (normalizedValue === 'primary' || normalizedValue === 'auto' || !normalizedValue) return normalizedValue
+  const display = displays.find((d) => displayMatchesConfiguredValue(d, normalizedValue))
+  if (!display) {
+    return displays.some((d) => d.isPrimary) && displays.every((d) => d.isPrimary) ? 'primary' : normalizedValue
+  }
   return display.isPrimary ? 'primary' : display.id
 }
 
