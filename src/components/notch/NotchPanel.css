@@ -69,7 +69,6 @@
   content: "";
   border-radius: inherit;
   background:
-    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent) top / 100% 1px no-repeat,
     radial-gradient(80% 110% at 50% 100%, rgba(255, 255, 255, 0.04), transparent 62%);
   opacity: 0.42;
 }
@@ -83,8 +82,7 @@
 .notch-panel[data-island-state="compact"] {
   border-radius: 0 0 22px 22px;
   box-shadow:
-    inset 0 -1px 0 rgba(255, 255, 255, 0.10),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10);
 }
 
 .notch-panel[data-island-state="micro"]::after,
@@ -96,6 +94,18 @@
   background:
     radial-gradient(120% 100% at 50% -30%, rgba(255, 255, 255, 0.07), transparent 56%),
     linear-gradient(180deg, #111114 0%, var(--island-bg) 58%, var(--island-bg) 100%);
+}
+
+html[data-island-color-theme="midnight"] .notch-panel,
+html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"] {
+  background: var(--island-bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-island-color-theme="system"] .notch-panel,
+  html[data-island-color-theme="system"] .notch-panel[data-island-state="micro"] {
+    background: var(--island-bg);
+  }
 }
 
 .notch-panel[data-island-state="hover"],
@@ -147,6 +157,20 @@
 .notch-panel[data-dragging="true"] {
   cursor: grabbing;
   transition: none;
+}
+
+.notch-panel__drag-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  height: 8px;
+  cursor: grab;
+}
+
+.notch-panel[data-dragging="true"] .notch-panel__drag-handle {
+  cursor: grabbing;
 }
 
 .notch-panel[data-dragging="true"]::before {

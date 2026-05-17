@@ -15,10 +15,12 @@ const tauriMocks = vi.hoisted(() => ({
   respondQuestion: vi.fn(() => Promise.resolve()),
   sendMessage: vi.fn(() => Promise.resolve()),
   setNotchFocusable: vi.fn(() => Promise.resolve()),
-  setNotchIgnoreCursorEvents: vi.fn(() => Promise.resolve()),
+  setNotchIgnoreCursorEvents: vi.fn((_ignore: boolean) => Promise.resolve()),
   isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
   resizeNotch: vi.fn(() => Promise.resolve({ anchorOffsetX: 0 })),
+  startNotchDrag: vi.fn(() => Promise.resolve(true)),
+  endNotchDrag: vi.fn(() => Promise.resolve(null)),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -41,6 +43,8 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
     isCursorOverNotch: tauriMocks.isCursorOverNotch,
     isTauri: tauriMocks.isTauri,
     resizeNotch: tauriMocks.resizeNotch,
+    startNotchDrag: tauriMocks.startNotchDrag,
+    endNotchDrag: tauriMocks.endNotchDrag,
   }
 })
 
@@ -99,6 +103,16 @@ function hitboxWidthVar(): string {
   return (document.querySelector('.notch-container') as HTMLElement).style.getPropertyValue('--notch-hitbox-width')
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 describe('NotchPanel island shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -114,6 +128,8 @@ describe('NotchPanel island shell', () => {
     tauriMocks.isCursorOverNotch.mockResolvedValue(false)
     tauriMocks.isTauri.mockReturnValue(false)
     tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 0 })
+    tauriMocks.startNotchDrag.mockResolvedValue(true)
+    tauriMocks.endNotchDrag.mockResolvedValue(null)
     useThemeStore.getState().loadThemes([])
     useThemeStore.getState().setActiveTheme('default')
     useConfigStore.setState({
@@ -279,6 +295,92 @@ describe('NotchPanel island shell', () => {
       expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
     })
     expect(useSessionStore.getState().panelState).toBe('collapsed')
+  })
+
+  it('forces native cursor events back on while the hover list is interactive', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    mountIsland(null, { phase: 'idle' })
+
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    })
+    expect(screen.getByText('agent-island · Port dynamic island')).toBeInTheDocument()
+  })
+
+  it('serializes native cursor passthrough so a stale collapsed request cannot disable hover', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const pendingCollapsedPassthrough = deferred()
+    tauriMocks.setNotchIgnoreCursorEvents
+      .mockImplementationOnce(() => pendingCollapsedPassthrough.promise)
+      .mockResolvedValue(undefined)
+
+    const currentSession = session({ phase: 'idle' })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
+    })
+
+    act(() => {
+      useSessionStore.getState().setPanelState('hover')
+    })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingCollapsedPassthrough.resolve()
+      await pendingCollapsedPassthrough.promise
+    })
+
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    })
+    expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls.map(([ignore]) => ignore)).toEqual([true, false])
+  })
+
+  it('starts native repositioning from the expanded top drag handle', async () => {
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const dragHandle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(dragHandle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(dragHandle, { pointerId: 7, clientX: 118, clientY: 2 })
+
+    await waitFor(() => {
+      expect(tauriMocks.startNotchDrag).toHaveBeenCalledWith(0, 754, 624, 'auto')
+    })
+    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-dragging', 'true')
+    expect(screen.getByText('agent-island · Port dynamic island')).toBeInTheDocument()
+
+    fireEvent.pointerUp(dragHandle, { pointerId: 7 })
+
+    await waitFor(() => {
+      expect(tauriMocks.endNotchDrag).toHaveBeenCalled()
+    })
+  })
+
+  it('keeps native interaction enabled when opening session detail', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    mountIsland()
+
+    fireEvent.click(screen.getByText('agent-island · Port dynamic island'))
+
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
+    expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
   })
 
   it('uses Evolab-style progressive Escape: collapse first, then hide from compact', async () => {
