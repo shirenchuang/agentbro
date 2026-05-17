@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { HookEventStatus, HookStatus } from '../../services/tauriApi'
 import { simulateHookEvent } from '../../services/tauriApi'
 import { PlatformIcon } from '../platform/PlatformIcon'
@@ -23,6 +23,10 @@ function defaultHookEventSelection(hook: HookStatus) {
   return events.map((event) => event.name)
 }
 
+function hookSimulationToolId(hook: HookStatus) {
+  return hook.adapterId || hook.profileId || hook.toolId || hook.name
+}
+
 export function HookEventConfigDialog({
   hook,
   busy,
@@ -44,10 +48,7 @@ export function HookEventConfigDialog({
       .map(({ event }) => event)
   }, [hook.events])
   const [enabled, setEnabled] = useState<Set<string>>(() => new Set(defaultHookEventSelection(hook)))
-
-  useEffect(() => {
-    setEnabled(new Set(defaultHookEventSelection(hook)))
-  }, [hook])
+  const simulationToolId = hookSimulationToolId(hook)
 
   const groups = useMemo(() => {
     return hookCategoryOrder
@@ -88,10 +89,31 @@ export function HookEventConfigDialog({
   }
 
   const [firing, setFiring] = useState<string | null>(null)
+  const [testNotice, setTestNotice] = useState<string | null>(null)
 
   const fireEvent = async (eventName: string) => {
     setFiring(eventName)
-    try { await simulateHookEvent(eventName) } finally { setFiring(null) }
+    setTestNotice(`正在测试 ${eventName} 事件，请查看顶部岛屿中的模拟会话。`)
+    let settled = false
+    const releaseTimer = window.setTimeout(() => {
+      if (settled) return
+      setFiring(null)
+      setTestNotice(`${eventName} 事件已发送；审批或提问类事件会等待你在岛屿中响应。`)
+    }, 1200)
+
+    simulateHookEvent(eventName, simulationToolId)
+      .then(() => {
+        settled = true
+        setTestNotice(`${eventName} 事件已触发，岛屿会显示当前测试内容。`)
+      })
+      .catch((error) => {
+        settled = true
+        setTestNotice(`${eventName} 事件测试失败：${String(error)}`)
+      })
+      .finally(() => {
+        window.clearTimeout(releaseTimer)
+        setFiring(null)
+      })
   }
 
   return (
@@ -162,9 +184,14 @@ export function HookEventConfigDialog({
                         <button
                           type="button"
                           className="hook-options-fire-btn"
-                          disabled={firing === event.name}
-                          onClick={() => fireEvent(event.name)}
-                          title={`触发 ${event.name}`}
+                          disabled={firing !== null}
+                          onMouseDown={(clickEvent) => clickEvent.stopPropagation()}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation()
+                            fireEvent(event.name)
+                          }}
+                          title={`测试 ${event.name} 事件`}
+                          aria-label={`测试 ${event.name} 事件`}
                         >
                           {firing === event.name ? '…' : '▶'}
                         </button>
@@ -179,7 +206,9 @@ export function HookEventConfigDialog({
 
         <div className="hook-options-footer">
           <span className={selectedEvents.length === 0 ? 'hook-options-warning' : ''}>
-            {selectedEvents.length === 0
+            {testNotice
+              ? testNotice
+              : selectedEvents.length === 0
               ? '至少需要启用一个事件。'
               : `已启用 ${selectedEvents.length}/${events.length} 个事件；关闭后对应通知或审批将不再触发。`}
           </span>

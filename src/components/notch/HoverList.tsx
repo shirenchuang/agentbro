@@ -638,7 +638,9 @@ function SessionCard({
               </div>
             ) : session.phase === 'processing' ? (
               <div className="hover-list__row3">
-                <span className="hover-list__tool-label">{t('notch.working')}...</span>
+                <span className="hover-list__tool-label">
+                  {session.description ? truncateText(stripMarkdown(session.description), 100) : `${t('notch.working')}...`}
+                </span>
               </div>
             ) : assistantPreview ? (
               <div className="hover-list__row3-preview">{truncateText(stripMarkdown(assistantPreview), 100)}</div>

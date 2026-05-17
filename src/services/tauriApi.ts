@@ -878,9 +878,9 @@ export async function configureAgentHookEvents(toolName: string, enabledEvents: 
   return invoke('configure_agent_hook_events', { toolName, enabledEvents })
 }
 
-export async function simulateHookEvent(eventName: string): Promise<void> {
+export async function simulateHookEvent(eventName: string, toolName?: string): Promise<void> {
   if (!isTauri()) return
-  return invoke('simulate_hook_event', { eventName })
+  return invoke('simulate_hook_event', { eventName, toolName })
 }
 
 export async function simulateHookLifecycle(): Promise<void> {

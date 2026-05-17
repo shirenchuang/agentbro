@@ -179,6 +179,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let tool_name = raw
             .get("tool")
             .and_then(|v| v.as_str())
+            .or_else(|| raw.get("tool_name").and_then(|v| v.as_str()))
             .unwrap_or("")
             .to_string();
 
@@ -211,10 +212,34 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 agent_type: "claude-code".to_string(),
             }),
             "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
-            "UserPromptSubmit" => Ok(AgentEvent::Processing {
-                session_id,
-                description: "Processing user input".to_string(),
-            }),
+            "UserPromptSubmit" => {
+                let description = raw
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| v.to_string())
+                    .or_else(|| {
+                        raw.get("prompt")
+                            .or_else(|| raw.get("user_prompt"))
+                            .and_then(|v| v.as_str())
+                            .filter(|v| !v.trim().is_empty())
+                            .map(|prompt| {
+                                let first_line = prompt.lines().next().unwrap_or(prompt).trim();
+                                let preview: String = first_line.chars().take(80).collect();
+                                let suffix = if first_line.chars().count() > 80 {
+                                    "..."
+                                } else {
+                                    ""
+                                };
+                                format!("Processing user input: {preview}{suffix}")
+                            })
+                    })
+                    .unwrap_or_else(|| "Processing user input".to_string());
+                Ok(AgentEvent::Processing {
+                    session_id,
+                    description,
+                })
+            }
             "PreToolUse" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name,
@@ -540,7 +565,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
             }),
             "PreCompact" | "PostCompact" => Ok(AgentEvent::Processing {
                 session_id,
-                description: "Compacting context".to_string(),
+                description: raw
+                    .get("message")
+                    .or_else(|| raw.get("description"))
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Compacting context")
+                    .to_string(),
             }),
             "beforeShellExecution" => {
                 let command = raw
@@ -788,11 +819,7 @@ fn extract_tool_target(tool_name: &str, tool_input: &serde_json::Value) -> Optio
             .map(|s| s.to_string()),
         "Bash" | "shell" => tool_input.get("command").and_then(|v| v.as_str()).map(|s| {
             let cmd = s.trim();
-            if cmd.len() > 50 {
-                format!("{}...", &cmd[..47])
-            } else {
-                cmd.to_string()
-            }
+            truncate_display_text(cmd, 50)
         }),
         "TaskCreate" | "TaskUpdate" | "TaskList" => tool_input
             .get("subject")
@@ -802,15 +829,20 @@ fn extract_tool_target(tool_name: &str, tool_input: &serde_json::Value) -> Optio
         "WebSearch" | "mcp__web_browser__browse" => {
             tool_input.get("query").and_then(|v| v.as_str()).map(|s| {
                 let q = s.trim();
-                if q.len() > 50 {
-                    format!("{}...", &q[..47])
-                } else {
-                    q.to_string()
-                }
+                truncate_display_text(q, 50)
             })
         }
         _ => None,
     }
+}
+
+fn truncate_display_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let take_chars = max_chars.saturating_sub(3);
+    format!("{}...", text.chars().take(take_chars).collect::<String>())
 }
 
 impl ClaudeCodeAdapter {

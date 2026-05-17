@@ -427,33 +427,298 @@ pub async fn verify_hooks(
 // ── Hook Lifecycle Simulation ─────────────────────────────────────
 
 #[tauri::command]
-pub async fn simulate_hook_event(event_name: String) -> Result<(), String> {
+pub async fn simulate_hook_event(
+    event_name: String,
+    tool_name: Option<String>,
+) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
+    fn canonical_agent_id(agent: &str) -> &str {
+        match agent {
+            "gemini-cli" => "gemini",
+            "traecli" | "trae-cli" => "traecli",
+            "codybuddycn" => "codebuddycn",
+            other => other,
+        }
+    }
+
+    fn canonical_event_name(event: &str) -> &str {
+        match event {
+            "session_start" => "SessionStart",
+            "session_end" => "SessionEnd",
+            "user_prompt_submit" => "UserPromptSubmit",
+            "pre_tool_use" => "PreToolUse",
+            "post_tool_use" => "PostToolUse",
+            "post_tool_use_failure" => "PostToolUseFailure",
+            "permission_request" => "PermissionRequest",
+            "permission_denied" => "PermissionDenied",
+            "stop" => "Stop",
+            "stop_failure" => "StopFailure",
+            "SubagentsStop" => "SubagentStop",
+            "SubagentEnd" => "SubagentStop",
+            other => other,
+        }
+    }
+
+    fn session_start_event_name(event: &str) -> &'static str {
+        if event.contains('_') {
+            "session_start"
+        } else {
+            "SessionStart"
+        }
+    }
+
+    async fn send_payload(payload: serde_json::Value) -> Result<(), String> {
+        let line = format!("{payload}\n");
+        let bytes = line.as_bytes();
+
+        if let Ok(mut stream) = tokio::net::UnixStream::connect("/tmp/agentbro.sock").await {
+            stream.write_all(bytes).await.map_err(|e| e.to_string())
+        } else {
+            let mut stream = tokio::net::TcpStream::connect("127.0.0.1:17892")
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.write_all(bytes).await.map_err(|e| e.to_string())
+        }
+    }
+
     let sid = format!("simulate-{}", uuid::Uuid::new_v4());
-    let payload = match event_name.as_str() {
-        "SessionStart" => serde_json::json!({"agent":"claude-code","event":"SessionStart","session_id":sid,"cwd":"/Users/demo/my-project","tty":""}),
-        "SessionEnd" => serde_json::json!({"agent":"claude-code","event":"SessionEnd","session_id":sid}),
-        "UserPromptSubmit" => serde_json::json!({"agent":"claude-code","event":"UserPromptSubmit","session_id":sid}),
-        "PreToolUse" => serde_json::json!({"agent":"claude-code","event":"PreToolUse","session_id":sid,"tool":"Bash","tool_input":{"command":"ls -la /Users/demo/my-project"}}),
-        "PostToolUse" => serde_json::json!({"agent":"claude-code","event":"PostToolUse","session_id":sid,"tool":"Bash","tool_input":{"command":"ls -la /Users/demo/my-project"}}),
-        "PermissionRequest" => serde_json::json!({"agent":"claude-code","event":"PermissionRequest","session_id":sid,"tool_name":"Bash","tool_input":{"command":"cat ~/.ssh/id_rsa"},"diff":"[验证 PermissionRequest Hook]\n\n即将执行：cat ~/.ssh/id_rsa\n\n这是一个读取 SSH 私钥的敏感操作，需要用户确认。"}),
-        "Notification" => serde_json::json!({"agent":"claude-code","event":"Notification","session_id":sid,"message":"[验证 Notification Hook]\n\n这是一条来自 Claude Code 的通知消息，当 AI 需要提醒用户时触发。"}),
-        "Stop" => serde_json::json!({"agent":"claude-code","event":"Stop","session_id":sid,"summary":"[验证 Stop Hook] 模拟会话已完成。"}),
-        "SubagentStop" => serde_json::json!({"agent":"claude-code","event":"SubagentStop","session_id":sid,"agent_id":"subagent-demo-001","agent_status":"completed","message":"[验证 SubagentStop Hook]\n\n子 Agent 已完成任务：分析代码依赖关系。"}),
-        "PreCompact" => serde_json::json!({"agent":"claude-code","event":"PreCompact","session_id":sid,"message":"[验证 PreCompact Hook]\n\n对话上下文即将被压缩以节省 token。"}),
-        other => return Err(format!("No simulation payload for event: {other}")),
+    let agent = canonical_agent_id(
+        tool_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("claude-code"),
+    );
+    let cwd = format!("/Users/demo/{}-hook-test", agent);
+    let canonical_event = canonical_event_name(&event_name);
+    let start_event = session_start_event_name(&event_name);
+    let session_start = serde_json::json!({
+        "agent": agent,
+        "event": start_event,
+        "session_id": sid,
+        "cwd": cwd,
+        "tty": "AgentBro Hook Tester",
+        "terminal": "AgentBro Hook Tester",
+    });
+
+    let processing_payload = |event: &str, message: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "prompt": message,
+            "description": message,
+        })
     };
 
-    let line = format!("{payload}\n");
-    let bytes = line.as_bytes();
+    let tool_payload = |event: &str, message: &str, status_text: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "description": message,
+            "status": status_text,
+            "tool": "Bash",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": format!("echo '{}'", message.replace('\'', "'\\''"))
+            },
+            "toolInput": {
+                "command": format!("echo '{}'", message.replace('\'', "'\\''"))
+            },
+        })
+    };
 
-    if let Ok(mut stream) = tokio::net::UnixStream::connect("/tmp/agentbro.sock").await {
-        stream.write_all(bytes).await.map_err(|e| e.to_string())
-    } else {
-        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:17892").await.map_err(|e| e.to_string())?;
-        stream.write_all(bytes).await.map_err(|e| e.to_string())
+    let permission_payload = |event: &str, message: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "description": message,
+            "tool": "Bash",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "cat ~/.ssh/id_rsa # AgentBro PermissionRequest 测试"
+            },
+            "toolInput": {
+                "command": "cat ~/.ssh/id_rsa # AgentBro PermissionRequest 测试"
+            },
+            "diff": format!("[{}]\n\n{}", event, message),
+        })
+    };
+
+    let notification_payload = |event: &str, message: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "message": message,
+        })
+    };
+
+    let completion_payload = |event: &str, message: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "summary": message,
+            "message": message,
+            "last_assistant_message": message,
+        })
+    };
+
+    let error_payload = |event: &str, message: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "error": message,
+            "message": message,
+        })
+    };
+
+    let subagent_payload = |event: &str, message: &str, status_text: &str| {
+        serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "session_id": sid,
+            "cwd": cwd,
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+            "description": message,
+            "message": message,
+            "last_assistant_message": message,
+            "agent_id": "subagent-demo-001",
+            "agent_status": status_text,
+            "agent_type": "research",
+        })
+    };
+
+    let test_message = format!(
+        "正在测试 {} 的 {} 事件：这是 AgentBro 生成的模拟 Hook payload。",
+        agent, event_name
+    );
+
+    let mut payloads = match canonical_event {
+        "SessionStart" => vec![serde_json::json!({
+            "agent": agent,
+            "event": event_name,
+            "session_id": sid,
+            "cwd": format!("/Users/demo/{}-SessionStart-Hook", agent),
+            "tty": "AgentBro Hook Tester",
+            "terminal": "AgentBro Hook Tester",
+        })],
+        "SessionEnd" => vec![
+            session_start.clone(),
+            notification_payload(
+                if event_name.contains('_') {
+                    "notification"
+                } else {
+                    "Notification"
+                },
+                &format!("正在测试 {}：模拟会话即将结束。", event_name),
+            ),
+            processing_payload(&event_name, &test_message),
+        ],
+        "UserPromptSubmit" => vec![
+            session_start.clone(),
+            processing_payload(
+                &event_name,
+                &format!("正在测试 {}：模拟用户刚刚提交了一条新需求。", event_name),
+            ),
+        ],
+        "PreToolUse" => vec![
+            session_start.clone(),
+            tool_payload(&event_name, &test_message, "running"),
+        ],
+        "PostToolUse" => vec![
+            session_start.clone(),
+            tool_payload(&event_name, &test_message, "success"),
+        ],
+        "PostToolUseFailure" | "PermissionDenied" => vec![
+            session_start.clone(),
+            tool_payload(&event_name, &test_message, "error"),
+        ],
+        "Notification" => vec![
+            session_start.clone(),
+            notification_payload(
+                &event_name,
+                &format!("正在测试 {}：这是一条模拟通知消息。", event_name),
+            ),
+        ],
+        "Stop" => vec![
+            session_start.clone(),
+            completion_payload(
+                &event_name,
+                &format!("正在测试 {}：模拟任务已完成。", event_name),
+            ),
+        ],
+        "StopFailure" => vec![
+            session_start.clone(),
+            error_payload(
+                &event_name,
+                &format!("正在测试 {}：模拟任务失败。", event_name),
+            ),
+        ],
+        "PreCompact" | "PostCompact" => vec![
+            session_start.clone(),
+            processing_payload(
+                &event_name,
+                &format!("正在测试 {}：模拟上下文压缩阶段。", event_name),
+            ),
+        ],
+        "PermissionRequest" => vec![
+            session_start.clone(),
+            permission_payload(
+                &event_name,
+                &format!("正在测试 {}：模拟一次需要用户确认的 Bash 操作。", event_name),
+            ),
+        ],
+        "SubagentStop" => vec![
+            session_start.clone(),
+            subagent_payload(
+                "SubagentStart",
+                &format!("正在测试 {}：子 Agent 正在分析代码依赖关系。", event_name),
+                "running",
+            ),
+            subagent_payload(&event_name, &test_message, "completed"),
+        ],
+        "SubagentStart" => vec![
+            session_start.clone(),
+            subagent_payload(&event_name, &test_message, "running"),
+        ],
+        other => return Err(format!("No simulation payload for event: {other}")),
+    };
+    if payloads.is_empty() {
+        payloads.push(session_start);
     }
+
+    let payload_count = payloads.len();
+    for (index, payload) in payloads.into_iter().enumerate() {
+        send_payload(payload).await?;
+        if index + 1 < payload_count {
+            tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+        }
+    }
+    Ok(())
 }
 
 // ── Terminal Commands ─────────────────────────────────────────────

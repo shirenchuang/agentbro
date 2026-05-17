@@ -1311,6 +1311,7 @@ function IntegrationTab() {
       </SettingGroup>
       {configuringTool && (
         <HookEventConfigDialog
+          key={hookToolId(configuringTool)}
           hook={configuringTool}
           busy={actionLoading[hookToolId(configuringTool)] === 'configure'}
           onClose={() => setConfiguringTool(null)}

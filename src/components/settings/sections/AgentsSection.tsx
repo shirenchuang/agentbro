@@ -760,6 +760,7 @@ export function AgentsSection({
       />
       {configuringHook && (
         <HookEventConfigDialog
+          key={hookToolId(configuringHook)}
           hook={configuringHook}
           busy={hookActions[hookToolId(configuringHook)] === 'configure'}
           onClose={() => setConfiguringHook(null)}
