@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod hooks;
 pub mod license;
+pub mod network_monitor;
 pub mod platform;
 pub mod remote;
 pub mod skills;
@@ -30,6 +31,7 @@ use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
 use hooks::session_store::{SessionPhase, SessionState, SessionStore};
 use license::LicenseManager;
+use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack};
 
@@ -3127,6 +3129,7 @@ pub fn run() {
 
             // Initialize diagnostic ring buffer
             let diagnostic_buffer = Arc::new(hooks::diagnostics::DiagnosticRingBuffer::new());
+            let network_monitor = Arc::new(NetworkMonitor::new());
 
             let app_state = AppState {
                 session_store,
@@ -3139,6 +3142,7 @@ pub fn run() {
                 display_controller,
                 remote_manager,
                 diagnostic_buffer,
+                network_monitor,
             };
             let buddy_device_config = app_state.config_store.get().buddy_device;
             commands::buddy::start_buddy_device_server(
@@ -3189,6 +3193,13 @@ pub fn run() {
             commands::deactivate_license,
             commands::get_chat_history,
             commands::get_subagent_chat_history,
+            commands::monitor::get_monitor_sessions,
+            commands::monitor::get_monitor_session_detail,
+            commands::monitor::get_monitor_timeline,
+            commands::monitor::get_network_monitor_status,
+            commands::monitor::set_network_monitor_enabled,
+            commands::monitor::get_network_monitor_requests,
+            commands::monitor::get_network_monitor_request_detail,
             commands::export_diagnostics,
             commands::add_engine_instance,
             commands::remove_engine_instance,

@@ -2,10 +2,10 @@
 // Accepts JSON-line protocol from hook scripts, routes to adapters,
 // and keeps connections alive for permission request/response flow.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{oneshot, Mutex};
@@ -28,6 +28,57 @@ pub const UNIX_SOCKET_PATH: &str = "/tmp/agentbro.sock";
 
 /// TCP port for hook connections
 pub const TCP_PORT: u16 = 17892;
+
+const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
+const SESSION_END_CLEANUP_SECS: u64 = 5;
+const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 120 * 60;
+
+/// Raw hook event snapshot retained for Agent monitor diagnostics.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawHookEvent {
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub session_id: String,
+    pub agent: Option<String>,
+    pub event_name: String,
+    pub raw: serde_json::Value,
+}
+
+struct RawHookEventStore {
+    next_seq: u64,
+    by_session: HashMap<String, VecDeque<RawHookEvent>>,
+}
+
+impl RawHookEventStore {
+    fn new() -> Self {
+        Self {
+            next_seq: 0,
+            by_session: HashMap::new(),
+        }
+    }
+
+    fn push(&mut self, mut event: RawHookEvent) {
+        event.seq = self.next_seq;
+        self.next_seq += 1;
+
+        let events = self
+            .by_session
+            .entry(event.session_id.clone())
+            .or_insert_with(|| VecDeque::with_capacity(RAW_EVENT_BUFFER_PER_SESSION));
+        if events.len() == RAW_EVENT_BUFFER_PER_SESSION {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+
+    fn session_events(&self, session_id: &str) -> Vec<RawHookEvent> {
+        self.by_session
+            .get(session_id)
+            .map(|events| events.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 /// Permission response sent back to hook script
 #[derive(Debug, Clone, serde::Serialize)]
@@ -82,6 +133,8 @@ pub struct HookServer {
     sound_engine: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
     /// App handle for sending notifications
     app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
+    /// Recent raw hook events grouped by session for monitor diagnostics.
+    raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
 }
 
 #[derive(Clone)]
@@ -93,6 +146,7 @@ struct HookConnectionContext {
     adapters: Arc<Vec<Arc<dyn AgentAdapter>>>,
     sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
     app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
+    raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
 }
 
 impl HookServer {
@@ -108,6 +162,7 @@ impl HookServer {
             adapters,
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
         }
     }
 
@@ -220,6 +275,7 @@ impl HookServer {
             adapters: self.adapters.clone(),
             sound: self.sound_engine.clone(),
             app: self.app_handle.clone(),
+            raw_events: self.raw_events.clone(),
         };
 
         // Start Unix socket listener
@@ -312,6 +368,7 @@ impl HookServer {
         let adapters = context.adapters;
         let sound = context.sound;
         let app = context.app;
+        let raw_events = context.raw_events;
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
@@ -340,6 +397,7 @@ impl HookServer {
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
+        Self::record_raw_event(&raw_events, &raw, event.as_ref());
         if let Some(ref agent_event) = event {
             Self::ensure_session_for_event(&store, agent_event, &raw);
         }
@@ -573,6 +631,120 @@ impl HookServer {
         Ok(())
     }
 
+    /// Return recent raw hook events for a session, oldest first.
+    pub fn raw_events_for_session(&self, session_id: &str) -> Vec<RawHookEvent> {
+        self.raw_events
+            .lock()
+            .map(|events| events.session_events(session_id))
+            .unwrap_or_default()
+    }
+
+    fn record_raw_event(
+        raw_events: &Arc<std::sync::Mutex<RawHookEventStore>>,
+        raw: &serde_json::Value,
+        event: Option<&AgentEvent>,
+    ) {
+        let Some(session_id) = Self::session_id_from_raw_or_event(raw, event) else {
+            return;
+        };
+        if session_id.trim().is_empty() || session_id == "unknown" {
+            return;
+        }
+
+        let agent = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .map(|value| canonical_agent_id(value).to_string());
+        let event_name = raw
+            .get("event")
+            .or_else(|| raw.get("hook_event_name"))
+            .or_else(|| raw.get("hookEventName"))
+            .or_else(|| raw.get("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| Self::event_kind_label(event))
+            .to_string();
+
+        let hook_event = RawHookEvent {
+            seq: 0,
+            timestamp_ms: current_time_ms(),
+            session_id,
+            agent,
+            event_name,
+            raw: raw.clone(),
+        };
+
+        if let Ok(mut events) = raw_events.lock() {
+            events.push(hook_event);
+        }
+    }
+
+    fn session_id_from_raw_or_event(
+        raw: &serde_json::Value,
+        event: Option<&AgentEvent>,
+    ) -> Option<String> {
+        raw.get("session_id")
+            .or_else(|| raw.get("sessionId"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .or_else(|| Self::session_id_from_event(event).map(ToString::to_string))
+    }
+
+    fn session_id_from_event(event: Option<&AgentEvent>) -> Option<&str> {
+        let event = event?;
+        Some(match event {
+            AgentEvent::SessionStart { session_id, .. }
+            | AgentEvent::SessionEnd { session_id }
+            | AgentEvent::Processing { session_id, .. }
+            | AgentEvent::ToolUse { session_id, .. }
+            | AgentEvent::PermissionRequest { session_id, .. }
+            | AgentEvent::AskQuestion { session_id, .. }
+            | AgentEvent::PlanApproval { session_id, .. }
+            | AgentEvent::TaskComplete { session_id, .. }
+            | AgentEvent::AssistantResponseComplete { session_id, .. }
+            | AgentEvent::Error { session_id, .. }
+            | AgentEvent::Interrupt { session_id }
+            | AgentEvent::TokenUsage { session_id, .. }
+            | AgentEvent::RateLimitUpdate { session_id, .. }
+            | AgentEvent::Notification { session_id, .. }
+            | AgentEvent::SubagentStart { session_id, .. }
+            | AgentEvent::SubagentStop { session_id, .. }
+            | AgentEvent::ShellExecutionStart { session_id, .. }
+            | AgentEvent::ShellExecutionEnd { session_id, .. }
+            | AgentEvent::MCPExecutionStart { session_id, .. }
+            | AgentEvent::MCPExecutionEnd { session_id, .. }
+            | AgentEvent::AgentResponse { session_id, .. }
+            | AgentEvent::AgentThought { session_id, .. } => session_id.as_str(),
+        })
+    }
+
+    fn event_kind_label(event: Option<&AgentEvent>) -> &'static str {
+        match event {
+            Some(AgentEvent::SessionStart { .. }) => "session_start",
+            Some(AgentEvent::SessionEnd { .. }) => "session_end",
+            Some(AgentEvent::Processing { .. }) => "processing",
+            Some(AgentEvent::ToolUse { .. }) => "tool_use",
+            Some(AgentEvent::PermissionRequest { .. }) => "permission_request",
+            Some(AgentEvent::AskQuestion { .. }) => "ask_question",
+            Some(AgentEvent::PlanApproval { .. }) => "plan_approval",
+            Some(AgentEvent::TaskComplete { .. }) => "task_complete",
+            Some(AgentEvent::AssistantResponseComplete { .. }) => "assistant_response_complete",
+            Some(AgentEvent::Error { .. }) => "error",
+            Some(AgentEvent::Interrupt { .. }) => "interrupt",
+            Some(AgentEvent::TokenUsage { .. }) => "token_usage",
+            Some(AgentEvent::RateLimitUpdate { .. }) => "rate_limit_update",
+            Some(AgentEvent::Notification { .. }) => "notification",
+            Some(AgentEvent::SubagentStart { .. }) => "subagent_start",
+            Some(AgentEvent::SubagentStop { .. }) => "subagent_stop",
+            Some(AgentEvent::ShellExecutionStart { .. }) => "shell_execution_start",
+            Some(AgentEvent::ShellExecutionEnd { .. }) => "shell_execution_end",
+            Some(AgentEvent::MCPExecutionStart { .. }) => "mcp_execution_start",
+            Some(AgentEvent::MCPExecutionEnd { .. }) => "mcp_execution_end",
+            Some(AgentEvent::AgentResponse { .. }) => "agent_response",
+            Some(AgentEvent::AgentThought { .. }) => "agent_thought",
+            None => "unknown",
+        }
+    }
+
     /// Try to parse with registered adapters
     fn parse_with_adapters(
         adapters: &[Arc<dyn AgentAdapter>],
@@ -660,7 +832,7 @@ impl HookServer {
                     s.last_response = Some(summary.clone());
                 });
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
-                Self::schedule_done_session_cleanup(store, session_id, 5);
+                Self::schedule_done_session_cleanup(store, session_id, SESSION_END_CLEANUP_SECS);
             }
             AgentEvent::Processing {
                 session_id,
@@ -824,7 +996,11 @@ impl HookServer {
                     }
                 }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
-                Self::schedule_done_session_cleanup(store, session_id, 30);
+                Self::schedule_done_session_cleanup(
+                    store,
+                    session_id,
+                    DONE_SESSION_HISTORY_CLEANUP_SECS,
+                );
             }
             AgentEvent::AssistantResponseComplete { session_id, text } => {
                 let truncated = Self::resolve_completion_summary(
@@ -1263,7 +1439,11 @@ impl HookServer {
                 s.last_response = Some(summary.clone());
             });
             Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
-            Self::schedule_done_session_cleanup(store, session_id, 30);
+            Self::schedule_done_session_cleanup(
+                store,
+                session_id,
+                DONE_SESSION_HISTORY_CLEANUP_SECS,
+            );
             return;
         }
 
@@ -1668,6 +1848,13 @@ fn optional_nonempty_string<'a>(raw: &'a serde_json::Value, key: &str) -> Option
     raw.get(key)
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty())
+}
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl Drop for HookServer {

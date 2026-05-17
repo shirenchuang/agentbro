@@ -113,6 +113,95 @@ export interface BackendSession {
   lastThought: string | null
 }
 
+export interface MonitorSessionSummary {
+  id: string
+  agentType: string
+  engineLabel: string | null
+  project: string
+  cwd: string
+  terminal: string
+  phase: string
+  startedAt: number
+  duration: number
+  tokenTotal: number
+  lastToolName: string | null
+  lastToolTarget: string | null
+  lastToolStatus: string | null
+  waitingUser: boolean
+  pendingKind: 'permission' | 'question' | 'plan' | string | null
+  subagentCount: number
+  activeToolCount: number
+  title: string | null
+}
+
+export interface MonitorRawEvent {
+  seq: number
+  timestampMs: number
+  sessionId: string
+  agent: string | null
+  eventName: string
+  raw: unknown
+}
+
+export interface MonitorTimelineItem {
+  id: string
+  timestampMs: number
+  kind: 'session' | 'tool' | 'hook' | 'hook_tool' | 'approval' | 'question' | 'plan' | 'subagent' | string
+  title: string
+  detail: string | null
+  status: string | null
+  toolName: string | null
+  rawEventSeq: number | null
+}
+
+export interface MonitorSessionDetail {
+  session: BackendSession
+  timeline: MonitorTimelineItem[]
+  rawEvents: MonitorRawEvent[]
+}
+
+export interface NetworkMonitorStatus {
+  enabled: boolean
+  proxyUrl: string | null
+  upstreamBaseUrl: string
+  requestCount: number
+  activeRequestCount: number
+}
+
+export interface NetworkRequestSummary {
+  id: string
+  timestampMs: number
+  provider: string
+  method: string
+  url: string
+  upstreamUrl: string
+  sessionId: string | null
+  project: string | null
+  model: string | null
+  status: number | null
+  durationMs: number | null
+  requestBytes: number
+  responseBytes: number
+  isStream: boolean
+  mainAgent: boolean
+  messageCount: number
+  toolCount: number
+  systemPreview: string | null
+  usage: Record<string, unknown> | null
+  error: string | null
+  inProgress: boolean
+}
+
+export interface NetworkRequestDetail {
+  summary: NetworkRequestSummary
+  requestHeaders: unknown
+  requestBody: unknown
+  responseHeaders: unknown
+  responseBody: string | null
+  responseBodyTruncated: boolean
+  streamEventCount: number
+}
+
 export interface BackendConfig {
   soundEnabled: boolean
   soundVolume: number
@@ -175,6 +264,57 @@ export interface BackendAdapterInfo {
 export async function getSessions(): Promise<BackendSession[]> {
   if (!isTauri()) return []
   return invoke<BackendSession[]>('get_sessions')
+}
+
+export async function getMonitorSessions(): Promise<MonitorSessionSummary[]> {
+  if (!isTauri()) return []
+  return invoke<MonitorSessionSummary[]>('get_monitor_sessions')
+}
+
+export async function getMonitorSessionDetail(sessionId: string): Promise<MonitorSessionDetail | null> {
+  if (!isTauri()) return null
+  return invoke<MonitorSessionDetail>('get_monitor_session_detail', { sessionId })
+}
+
+export async function getMonitorTimeline(sessionId: string): Promise<MonitorTimelineItem[]> {
+  if (!isTauri()) return []
+  return invoke<MonitorTimelineItem[]>('get_monitor_timeline', { sessionId })
+}
+
+export async function getNetworkMonitorStatus(): Promise<NetworkMonitorStatus> {
+  if (!isTauri()) {
+    return {
+      enabled: false,
+      proxyUrl: null,
+      upstreamBaseUrl: 'https://api.anthropic.com',
+      requestCount: 0,
+      activeRequestCount: 0,
+    }
+  }
+  return invoke<NetworkMonitorStatus>('get_network_monitor_status')
+}
+
+export async function setNetworkMonitorEnabled(enabled: boolean, upstreamBaseUrl?: string): Promise<NetworkMonitorStatus> {
+  if (!isTauri()) {
+    return {
+      enabled: false,
+      proxyUrl: null,
+      upstreamBaseUrl: upstreamBaseUrl || 'https://api.anthropic.com',
+      requestCount: 0,
+      activeRequestCount: 0,
+    }
+  }
+  return invoke<NetworkMonitorStatus>('set_network_monitor_enabled', { enabled, upstreamBaseUrl })
+}
+
+export async function getNetworkMonitorRequests(): Promise<NetworkRequestSummary[]> {
+  if (!isTauri()) return []
+  return invoke<NetworkRequestSummary[]>('get_network_monitor_requests')
+}
+
+export async function getNetworkMonitorRequestDetail(requestId: string): Promise<NetworkRequestDetail | null> {
+  if (!isTauri()) return null
+  return invoke<NetworkRequestDetail | null>('get_network_monitor_request_detail', { requestId })
 }
 
 export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean): Promise<void> {

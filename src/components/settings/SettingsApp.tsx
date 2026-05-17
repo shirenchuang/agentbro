@@ -6,6 +6,7 @@ import { SettingsSidebar } from './SettingsSidebar'
 import { GeneralSection } from './sections/GeneralSection'
 import { IslandSection } from './sections/IslandSection'
 import { AgentsSection } from './sections/AgentsSection'
+import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
 import type { CapabilityView, IslandSettingsView } from '../../types/capability'
@@ -13,6 +14,7 @@ import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
+  'monitor': AgentMonitorSection,
   'license': LicenseSection,
   'about': AboutSection,
 }

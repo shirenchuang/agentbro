@@ -1,0 +1,695 @@
+.agent-monitor {
+  min-width: 0;
+  color: var(--settings-text-primary);
+}
+
+.agent-monitor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-right: 76px;
+}
+
+.agent-monitor__header h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.agent-monitor__header p {
+  margin: 0;
+  color: var(--settings-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.agent-monitor__refresh,
+.agent-monitor__detail-header button,
+.agent-monitor__pending button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-monitor__refresh:hover,
+.agent-monitor__detail-header button:hover,
+.agent-monitor__pending button:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.agent-monitor__network-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.agent-monitor__network-control--on {
+  border-color: rgba(52, 199, 89, 0.38);
+  background: rgba(52, 199, 89, 0.06);
+}
+
+.agent-monitor__network-copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-monitor__network-copy strong {
+  font-size: 13px;
+}
+
+.agent-monitor__network-copy span {
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.agent-monitor__network-copy label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-monitor__network-copy input {
+  width: min(420px, 100%);
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 7px;
+  background: #f7f7fa;
+  color: var(--settings-text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.agent-monitor__network-copy code {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: #f2f2f7;
+  color: var(--settings-text-primary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__network-actions {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-monitor__stats,
+.agent-monitor__filters,
+.agent-monitor__layout {
+  border: 1px solid var(--settings-card-border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.agent-monitor__stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.agent-monitor__stats div {
+  min-width: 0;
+  padding: 11px 14px;
+  border-right: 1px solid var(--settings-separator);
+}
+
+.agent-monitor__stats div:last-child {
+  border-right: 0;
+}
+
+.agent-monitor__stats span,
+.agent-monitor__kv-grid span,
+.agent-monitor__metric-row span {
+  display: block;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.agent-monitor__stats strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 19px;
+  line-height: 1.1;
+}
+
+.agent-monitor__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+
+.agent-monitor__filters label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-monitor__filters select {
+  height: 28px;
+  min-width: 116px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 7px;
+  background: #f7f7fa;
+  color: var(--settings-text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.agent-monitor__layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.1fr) minmax(360px, 0.9fr);
+  min-height: 520px;
+  overflow: hidden;
+}
+
+.agent-monitor__sessions {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--settings-separator);
+}
+
+.agent-monitor__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.agent-monitor__table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 34px;
+  padding: 0 10px;
+  background: #f7f7fa;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.agent-monitor__table td {
+  max-width: 170px;
+  height: 48px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--settings-separator);
+  vertical-align: middle;
+}
+
+.agent-monitor__table tr {
+  cursor: pointer;
+}
+
+.agent-monitor__table tbody tr:hover {
+  background: rgba(0, 122, 255, 0.05);
+}
+
+.agent-monitor__row--active {
+  background: rgba(0, 122, 255, 0.1);
+}
+
+.agent-monitor__table td strong,
+.agent-monitor__table td span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__table td strong {
+  font-size: 12px;
+}
+
+.agent-monitor__table td span {
+  margin-top: 2px;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.agent-monitor__dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--settings-status-idle);
+}
+
+.agent-monitor__dot--processing,
+.agent-monitor__dot--compacting {
+  background: var(--settings-status-active);
+}
+
+.agent-monitor__dot--waiting_approval,
+.agent-monitor__dot--waiting_input {
+  background: var(--settings-status-waiting);
+}
+
+.agent-monitor__dot--error {
+  background: var(--settings-status-error);
+}
+
+.agent-monitor__detail {
+  min-width: 0;
+  padding: 14px;
+  overflow: auto;
+}
+
+.agent-monitor__detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.agent-monitor__detail-header span {
+  color: var(--settings-accent);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.agent-monitor__detail-header h3 {
+  margin: 2px 0 2px;
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__detail-header code {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.agent-monitor__tabs {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 12px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #f0f0f4;
+}
+
+.agent-monitor__tabs button {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--settings-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-monitor__tabs button.active {
+  background: #ffffff;
+  color: var(--settings-text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.agent-monitor__kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.agent-monitor__kv-grid div,
+.agent-monitor__metric-row > div,
+.agent-monitor__subagent,
+.agent-monitor__message,
+.agent-monitor__pending section,
+.agent-monitor__raw-item {
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #fbfbfd;
+}
+
+.agent-monitor__kv-grid div {
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.agent-monitor__kv-grid strong {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__metric-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-monitor__metric-row > div {
+  min-width: 0;
+  padding: 10px;
+}
+
+.agent-monitor__metric-row strong {
+  display: block;
+  margin: 3px 0;
+  font-size: 18px;
+}
+
+.agent-monitor__metric-row em,
+.agent-monitor__timeline-item em,
+.agent-monitor__raw-item em {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.agent-monitor__subagents h4,
+.agent-monitor__pending h4 {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.agent-monitor__subagent {
+  margin-bottom: 7px;
+  padding: 9px 10px;
+}
+
+.agent-monitor__subagent span {
+  float: right;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.agent-monitor__subagent p,
+.agent-monitor__timeline-item p,
+.agent-monitor__message p {
+  margin: 4px 0 0;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.agent-monitor__conversation,
+.agent-monitor__timeline,
+.agent-monitor__pending,
+.agent-monitor__raw,
+.agent-monitor__network-tab,
+.agent-monitor__network-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-monitor__network-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+}
+
+.agent-monitor__network-toolbar button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-monitor__network-list {
+  display: grid;
+  gap: 6px;
+  max-height: 210px;
+  overflow: auto;
+}
+
+.agent-monitor__network-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 7px 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #fbfbfd;
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-monitor__network-row--active {
+  border-color: rgba(0, 122, 255, 0.32);
+  background: rgba(0, 122, 255, 0.08);
+}
+
+.agent-monitor__network-row span,
+.agent-monitor__network-row em,
+.agent-monitor__network-row small {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.agent-monitor__network-row strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__network-row small {
+  grid-column: 2 / 4;
+}
+
+.agent-monitor__network-section {
+  border: 1px solid var(--settings-card-border);
+  border-radius: 8px;
+  background: #fbfbfd;
+  padding: 10px;
+}
+
+.agent-monitor__network-section h4 {
+  margin: 0 0 7px;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.agent-monitor__network-section p {
+  margin: 0;
+  color: var(--settings-text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-monitor__message {
+  padding: 9px 10px;
+}
+
+.agent-monitor__message > span {
+  color: var(--settings-accent);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.agent-monitor__message p,
+.agent-monitor__pending pre,
+.agent-monitor__raw pre,
+.agent-monitor__network-section pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-monitor__tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.agent-monitor__tool-chips em {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #ececf2;
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.agent-monitor__timeline-item {
+  display: grid;
+  grid-template-columns: 72px 74px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--settings-separator);
+}
+
+.agent-monitor__timeline-item:last-child {
+  border-bottom: 0;
+}
+
+.agent-monitor__timeline-item time,
+.agent-monitor__timeline-item > span {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.agent-monitor__timeline-item > span {
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.agent-monitor__timeline-item strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__pending section {
+  padding: 10px;
+}
+
+.agent-monitor__pending pre,
+.agent-monitor__raw pre,
+.agent-monitor__network-section pre {
+  max-height: 260px;
+  margin: 8px 0 0;
+  overflow: auto;
+  border-radius: 7px;
+  background: #f2f2f7;
+  color: #1d1d1f;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 9px;
+}
+
+.agent-monitor__raw-item summary {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.agent-monitor__raw-item summary span {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+}
+
+.agent-monitor__raw-item summary strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-monitor__empty,
+.agent-monitor__inline,
+.agent-monitor__notice {
+  padding: 14px;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+}
+
+.agent-monitor__empty--detail {
+  display: flex;
+  min-height: 320px;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-monitor__notice {
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 149, 0, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 149, 0, 0.08);
+  color: #9a5a00;
+}
+
+@media (max-width: 980px) {
+  .agent-monitor__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-monitor__network-control {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-monitor__sessions {
+    max-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid var(--settings-separator);
+  }
+
+  .agent-monitor__stats,
+  .agent-monitor__metric-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -1,6 +1,7 @@
 // Tauri IPC Commands — Bridge between frontend and Rust backend
 
 pub mod buddy;
+pub mod monitor;
 pub mod persistence;
 
 use crate::agents::{AdapterInfo, AgentAdapter};
@@ -14,6 +15,7 @@ use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
 use crate::hooks::session_store::{SessionState, SessionStore};
 use crate::license::{LicenseManager, LicenseStatus};
+use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
@@ -38,6 +40,7 @@ pub struct AppState {
     pub display_controller: Arc<DisplayController>,
     pub remote_manager: Arc<RemoteManager>,
     pub diagnostic_buffer: Arc<DiagnosticRingBuffer>,
+    pub network_monitor: Arc<NetworkMonitor>,
 }
 
 // ── Session Commands ──────────────────────────────────────────────
@@ -1283,11 +1286,16 @@ pub async fn launch_agent_session(
 
     let base = agent_launch_command(&request.agent_id)
         .ok_or_else(|| format!("Unsupported launch agent: {}", request.agent_id))?;
-    let command = if request.extra_args.trim().is_empty() {
+    let mut command = if request.extra_args.trim().is_empty() {
         base.to_string()
     } else {
         format!("{} {}", base, request.extra_args.trim())
     };
+    if matches!(request.agent_id.as_str(), "claude-code" | "claude") {
+        if let Some(proxy_url) = state.network_monitor.proxy_url() {
+            command = format!("ANTHROPIC_BASE_URL={} {}", shell_quote(&proxy_url), command);
+        }
+    }
     launch_in_terminal(
         if request.terminal.trim().is_empty() {
             "Terminal"
