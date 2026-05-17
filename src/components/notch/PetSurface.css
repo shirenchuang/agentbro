@@ -40,7 +40,8 @@
   cursor: grabbing;
 }
 
-.pet-surface__pet canvas {
+.pet-surface__pet canvas,
+.pet-surface__pet .mascot-image {
   display: block;
   pointer-events: none;
 }

@@ -457,7 +457,22 @@ function BehaviorTab() {
     { value: 'codex', label: 'Codex' },
     { value: 'gemini-cli', label: 'Gemini CLI' },
     { value: 'cursor', label: 'Cursor' },
+    { value: 'cursor-cli', label: 'Cursor CLI' },
     { value: 'copilot', label: 'GitHub Copilot' },
+    { value: 'trae', label: 'Trae' },
+    { value: 'qoder', label: 'Qoder' },
+    { value: 'codebuddy', label: 'CodeBuddy' },
+    { value: 'qwen', label: 'Qwen' },
+    { value: 'kimi', label: 'Kimi' },
+    { value: 'opencode', label: 'OpenCode' },
+    { value: 'droid', label: 'Factory Droid' },
+    { value: 'stepfun', label: 'StepFun' },
+    { value: 'antigravity', label: 'Antigravity' },
+    { value: 'workbuddy', label: 'WorkBuddy' },
+    { value: 'hermes', label: 'Hermes' },
+    { value: 'pi', label: 'Pi' },
+    { value: 'kiro', label: 'Kiro' },
+    { value: 'cline', label: 'Cline' },
   ]
 
   const pluginSessionOptions = [
