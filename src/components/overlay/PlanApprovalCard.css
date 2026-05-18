@@ -10,45 +10,45 @@
   --plan-text-muted: var(--island-text-secondary);
   gap: 7px;
   width: 100%;
-  padding: 14px 22px 16px;
+  padding: 12px 16px 14px;
   border: 0;
-  border-radius: 0 0 28px 28px;
+  border-radius: 0 0 26px 26px;
   background: var(--plan-panel);
   box-shadow: none;
 }
 
 .overlay-card--plan-approval .overlay-card__header {
   align-items: flex-start;
-  min-height: 40px;
+  min-height: 34px;
 }
 
 .overlay-card--plan-approval .overlay-card__close {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   color: var(--island-text-secondary);
   background: var(--island-subtle);
 }
 
 .overlay-card--plan-approval .overlay-ctx {
-  gap: 5px;
+  gap: 2px;
 }
 
 .overlay-card--plan-approval .overlay-ctx__row1 {
-  gap: 8px;
-  font-size: 18px;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 800;
   line-height: 1.16;
   color: var(--plan-text);
 }
 
 .overlay-card--plan-approval .overlay-ctx__row1 .pixel-indicator {
-  margin-right: 5px;
-  transform: scale(1.9);
+  margin-right: 3px;
+  transform: scale(1.45);
   transform-origin: center;
 }
 
 .overlay-card--plan-approval .overlay-ctx__title {
-  max-width: 380px;
+  max-width: 300px;
 }
 
 .overlay-card--plan-approval .overlay-ctx__sep,
@@ -58,8 +58,8 @@
 }
 
 .overlay-card--plan-approval .overlay-ctx__row2 {
-  gap: 6px;
-  font-size: 15px;
+  gap: 4px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.24;
   color: var(--island-text-muted);
@@ -71,7 +71,7 @@
 }
 
 .overlay-card--plan-approval .overlay-ctx__msg {
-  max-width: 600px;
+  max-width: 430px;
 }
 
 .overlay-card--plan-approval .overlay-card__body {
@@ -82,7 +82,7 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
 }
 
 .plan-approval__subagents {
@@ -181,16 +181,16 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   border-left: 3px solid var(--plan-accent);
-  padding-left: 14px;
+  padding-left: 10px;
 }
 
 .plan-approval__title {
   flex: 1;
   overflow: hidden;
   color: var(--plan-text);
-  font-size: 18px;
+  font-size: 13px;
   font-weight: 800;
   line-height: 1.28;
   text-overflow: ellipsis;
@@ -199,26 +199,26 @@
 
 .plan-approval__tag {
   flex-shrink: 0;
-  padding: 4px 12px;
+  padding: 3px 8px;
   border-radius: 8px;
   color: var(--island-text-secondary);
   background: var(--island-subtle);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1.1;
 }
 
 .plan-approval__content {
-  flex: 0 1 96px;
-  min-height: 82px;
-  max-height: 112px;
+  flex: 0 1 84px;
+  min-height: 72px;
+  max-height: 98px;
   overflow-y: auto;
-  padding: 8px 11px;
+  padding: 7px 9px;
   border: 1px solid var(--plan-border);
   border-radius: 12px;
   background: var(--plan-surface-strong);
   color: var(--plan-text);
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 620;
   line-height: 1.42;
 }
@@ -237,7 +237,7 @@
 .plan-approval__content h3 {
   margin: 8px 0 4px;
   color: var(--plan-text);
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 850;
   line-height: 1.25;
 }
@@ -291,7 +291,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 10px;
-  padding: 7px 10px;
+  padding: 6px 8px;
   border: 1px solid var(--plan-border);
   border-radius: 12px;
   background: var(--plan-surface);
@@ -301,7 +301,7 @@
   display: inline-flex;
   margin: 0;
   color: var(--island-text-muted);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 750;
   line-height: 1.2;
 }
@@ -312,7 +312,7 @@
   gap: 5px;
   margin: 0;
   color: var(--plan-text-muted);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 650;
   line-height: 1.24;
 }
@@ -342,14 +342,14 @@
 .plan-approval__input {
   width: 100%;
   box-sizing: border-box;
-  padding: 7px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--plan-border);
   border-radius: 12px;
   outline: none;
   color: var(--plan-text);
   background: var(--plan-surface-strong);
   font-family: var(--font-sans, system-ui);
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -371,13 +371,13 @@
 
 .plan-approval__btn {
   flex: 1;
-  height: 38px;
+  height: 30px;
   min-width: 0;
-  padding: 0 14px;
+  padding: 0 8px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   font-family: var(--font-sans, system-ui);
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 850;
   cursor: pointer;
   transition: opacity 0.15s, filter 0.15s, transform 0.15s;
@@ -411,12 +411,15 @@
 
 @media (max-width: 760px) {
   .overlay-card.overlay-card--plan-approval {
-    padding: 18px 18px 20px;
+    padding: 12px 14px 14px;
   }
 
-  .overlay-card--plan-approval .overlay-ctx__row1,
+  .overlay-card--plan-approval .overlay-ctx__row1 {
+    font-size: 12px;
+  }
+
   .plan-approval__title {
-    font-size: 18px;
+    font-size: 13px;
   }
 
   .overlay-card--plan-approval .overlay-ctx__row2,
@@ -425,14 +428,14 @@
   .plan-approval__perms-label,
   .plan-approval__perm-item,
   .plan-approval__input {
-    font-size: 14px;
+    font-size: 11px;
   }
 
   .plan-approval__content,
   .plan-approval__content h1,
   .plan-approval__content h2,
   .plan-approval__content h3 {
-    font-size: 16px;
+    font-size: 11px;
   }
 
   .plan-approval__actions {
@@ -440,9 +443,9 @@
   }
 
   .plan-approval__btn {
-    height: 44px;
-    padding: 0 8px;
-    border-radius: 9px;
-    font-size: 13px;
+    height: 30px;
+    padding: 0 7px;
+    border-radius: 8px;
+    font-size: 11px;
   }
 }

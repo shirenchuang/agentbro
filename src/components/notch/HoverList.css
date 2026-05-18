@@ -499,9 +499,29 @@
 }
 
 .hover-list__subagent-item {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.hover-list__subagent-item--clickable {
+  cursor: pointer;
+}
+
+.hover-list__subagent-item--clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hover-list__subagent-item:disabled {
+  cursor: default;
 }
 
 .hover-list__subagent-dot {

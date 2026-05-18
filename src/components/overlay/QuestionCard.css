@@ -5,43 +5,43 @@
   --question-panel: var(--island-bg);
   --question-surface: color-mix(in srgb, var(--island-card) 88%, var(--question-accent) 5%);
   --question-border: color-mix(in srgb, var(--island-border) 78%, var(--question-accent) 22%);
-  gap: 12px;
+  gap: 9px;
   width: 100%;
-  min-height: 360px;
-  padding: 20px 24px 22px;
+  min-height: 0;
+  padding: 12px 16px 14px;
   border: 0;
-  border-radius: 0 0 32px 32px;
+  border-radius: 0 0 26px 26px;
   background: var(--question-panel);
   box-shadow: none;
 }
 
 .overlay-card--question .overlay-card__header {
   align-items: flex-start;
-  min-height: 44px;
+  min-height: 34px;
 }
 
 .overlay-card--question .overlay-card__close {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   color: var(--island-text-secondary);
   background: var(--island-subtle);
 }
 
 .overlay-card--question .overlay-ctx {
-  gap: 4px;
+  gap: 2px;
 }
 
 .overlay-card--question .overlay-ctx__row1 {
-  gap: 10px;
-  font-size: 18px;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 800;
   line-height: 1.18;
   color: var(--island-text);
 }
 
 .overlay-card--question .overlay-ctx__row1 .pixel-indicator {
-  margin-right: 5px;
-  transform: scale(1.9);
+  margin-right: 3px;
+  transform: scale(1.45);
   transform-origin: center;
 }
 
@@ -52,8 +52,8 @@
 }
 
 .overlay-card--question .overlay-ctx__row2 {
-  gap: 6px;
-  font-size: 15px;
+  gap: 4px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.28;
   color: var(--island-text-muted);
@@ -65,7 +65,7 @@
 }
 
 .overlay-card--question .overlay-ctx__msg {
-  max-width: 600px;
+  max-width: 430px;
 }
 
 .overlay-card--question .overlay-card__body {
@@ -76,25 +76,25 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .question-card__header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 0;
 }
 
 .question-card__header-icon {
   color: #fb923c;
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
 }
 
 .question-card__header-title {
-  font-size: 19px;
+  font-size: 14px;
   font-weight: 800;
   color: #fb923c;
   flex: 1;
@@ -111,7 +111,7 @@
 }
 
 .question-card__multi-badge {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 750;
   color: #fdba74;
   background: rgba(251, 146, 60, 0.15);
@@ -120,7 +120,7 @@
 }
 
 .question-card__text {
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 1.4;
   color: var(--island-text);
@@ -135,7 +135,7 @@
 .question-card__options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
@@ -145,8 +145,8 @@
 .question-card__option-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 11px;
+  gap: 8px;
+  padding: 7px 9px;
   border: 1px solid var(--question-border);
   border-radius: 8px;
   background: var(--question-surface);
@@ -173,12 +173,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
   background: rgba(249, 115, 22, 0.7);
   color: white;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -193,7 +193,7 @@
 }
 
 .question-card__option-label {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--island-text);
   overflow: hidden;
@@ -202,7 +202,7 @@
 }
 
 .question-card__option-desc {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   color: var(--island-text-muted);
   margin-top: 2px;
@@ -228,7 +228,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 9px 12px;
+  padding: 7px 10px;
   border: 1px dashed rgba(249, 115, 22, 0.15);
   border-radius: 8px;
   font-size: 11px;
@@ -246,13 +246,13 @@
 /* Input */
 .question-card__input {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: var(--island-input-bg);
   border: 1px solid rgba(249, 115, 22, 0.25);
   border-radius: 8px;
   color: var(--island-text);
   font-family: var(--font-sans, system-ui);
-  font-size: 12px;
+  font-size: 11px;
   outline: none;
   box-sizing: border-box;
 }
@@ -268,12 +268,12 @@
 /* Confirm button */
 .question-card__confirm {
   width: 100%;
-  padding: 10px 16px;
+  padding: 8px 14px;
   border: none;
   border-radius: 8px;
   background: #ea580c;
   color: white;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
@@ -292,14 +292,14 @@
 .question-card__multi {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
 }
 
 .question-card__multi-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
@@ -309,11 +309,11 @@
   border: 1px solid var(--question-border);
   border-radius: 8px;
   background: var(--question-surface);
-  padding: 9px 11px;
+  padding: 7px 9px;
 }
 
 .question-card__multi-q {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
   color: var(--island-text);
@@ -334,16 +334,16 @@
 .question-card__multi-opts {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .question-card__chip {
-  padding: 4px 10px;
+  padding: 3px 8px;
   border: none;
   border-radius: 6px;
   background: color-mix(in srgb, var(--island-btn-bg) 88%, #f97316 8%);
   color: var(--island-text-secondary);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -401,13 +401,13 @@
   justify-content: center;
   gap: 6px;
   width: 100%;
-  height: 40px;
+  height: 34px;
   padding: 0 16px;
   border: none;
   border-radius: 8px;
   background: rgba(249, 115, 22, 0.15);
   color: #fed7aa;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -415,17 +415,20 @@
 
 @media (max-width: 760px) {
   .overlay-card.overlay-card--question {
-    padding: 18px 18px 20px;
+    padding: 12px 14px 14px;
   }
 
-  .overlay-card--question .overlay-ctx__row1,
+  .overlay-card--question .overlay-ctx__row1 {
+    font-size: 12px;
+  }
+
   .question-card__header-title {
-    font-size: 18px;
+    font-size: 14px;
   }
 
   .overlay-card--question .overlay-ctx__row2,
   .question-card__text {
-    font-size: 14px;
+    font-size: 11px;
   }
 }
 

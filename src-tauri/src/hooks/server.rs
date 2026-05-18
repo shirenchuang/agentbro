@@ -14,13 +14,14 @@ use tokio::sync::{oneshot, Mutex};
 use super::session_store::{
     ContextWindowInfo, PendingPermission, PendingPlan, PendingQuestion,
     QuestionItem as PendingQuestionItem, QuestionOption as PendingQuestionOption, RateLimitInfo,
-    SessionPhase, SessionStore, SubagentStopUpdate,
+    SessionPhase, SessionStore, SubagentInfo, SubagentStopUpdate,
 };
 use crate::agents::{AgentAdapter, AgentEvent};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
-    extract_latest_assistant_text, extract_session_title,
+    extract_latest_assistant_text, extract_session_title, extract_subagents_from_transcript,
+    TranscriptSubagentInfo,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
@@ -992,6 +993,7 @@ impl HookServer {
                     s.last_response = Some(summary.clone());
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
+                Self::refresh_subagents_from_transcript(store, session_id, _raw);
                 let is_suppressed = Self::check_suppression(store, session_id);
                 if is_suppressed {
                     if let Ok(guard) = app.lock() {
@@ -1039,6 +1041,7 @@ impl HookServer {
                     }
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
+                Self::refresh_subagents_from_transcript(store, session_id, _raw);
                 let is_suppressed = Self::check_suppression(store, session_id);
                 if is_suppressed {
                     if let Ok(guard) = app.lock() {
@@ -1774,6 +1777,59 @@ impl HookServer {
             Some(info.timestamp_ms),
             Some(info.ttl_ms),
         );
+    }
+
+    fn refresh_subagents_from_transcript(
+        store: &SessionStore,
+        session_id: &str,
+        raw: &serde_json::Value,
+    ) {
+        let Some(path) = Self::transcript_path_for_session(store, session_id, raw) else {
+            return;
+        };
+        let recovered = extract_subagents_from_transcript(&path);
+        if recovered.is_empty() {
+            return;
+        }
+
+        store.update_session(session_id, |session| {
+            for subagent in recovered {
+                Self::merge_recovered_subagent(session, subagent);
+            }
+            session.subagents.sort_by(|a, b| {
+                a.started_at
+                    .cmp(&b.started_at)
+                    .then_with(|| a.agent_id.cmp(&b.agent_id))
+            });
+        });
+    }
+
+    fn merge_recovered_subagent(
+        session: &mut super::session_store::SessionState,
+        recovered: TranscriptSubagentInfo,
+    ) {
+        let incoming = SubagentInfo {
+            agent_id: recovered.agent_id,
+            agent_type: recovered.agent_type,
+            description: recovered.description,
+            transcript_path: recovered.transcript_path,
+            agent_transcript_path: recovered.agent_transcript_path,
+            last_assistant_message: recovered.last_assistant_message,
+            started_at: recovered.started_at,
+            completed_at: recovered.completed_at,
+            status: recovered.status,
+            tools: recovered.tools,
+        };
+
+        if let Some(existing) = session
+            .subagents
+            .iter_mut()
+            .find(|subagent| subagent.agent_id == incoming.agent_id)
+        {
+            *existing = incoming;
+        } else {
+            session.subagents.push(incoming);
+        }
     }
 
     /// Check if a session's terminal is focused (smart suppression).

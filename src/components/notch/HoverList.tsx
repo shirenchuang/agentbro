@@ -19,6 +19,7 @@ import './HoverList.css'
 interface HoverListProps {
   sessions: SessionState[]
   onSessionClick: (sessionId: string) => void
+  onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (sessionId: string) => void
   focusFilteredEmpty?: boolean
 }
@@ -289,7 +290,7 @@ function ActiveToolDiffPreview({ session }: { session: SessionState }) {
 }
 
 /* ── Subagent Row ── */
-function SubagentRow({ subagents }: { subagents: SubagentInfo[] }) {
+function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: string; subagents: SubagentInfo[]; onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void }) {
   if (subagents.length === 0) return null
   return (
     <div className="hover-list__subagents">
@@ -299,14 +300,26 @@ function SubagentRow({ subagents }: { subagents: SubagentInfo[] }) {
       </div>
       <div className="hover-list__subagents-list">
         {subagents.map((sa) => (
-          <div key={sa.agentId} className="hover-list__subagent-item">
+          <button
+            key={sa.agentId}
+            type="button"
+            className={`hover-list__subagent-item${sa.agentTranscriptPath ? ' hover-list__subagent-item--clickable' : ''}`}
+            disabled={!sa.agentTranscriptPath}
+            title={sa.agentTranscriptPath ? 'Open subagent history' : undefined}
+            data-no-open
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (sa.agentTranscriptPath) onSubagentClick?.(sessionId, sa)
+            }}
+          >
             <span className={`hover-list__subagent-dot${sa.status === 'running' ? ' hover-list__subagent-dot--running' : ''}`} />
             <span className="hover-list__subagent-type">{sa.agentType || sa.description.split(':')[0] || 'agent'}</span>
             <span className="hover-list__subagent-desc">({sa.lastAssistantMessage || sa.description})</span>
             {sa.status === 'completed' && (
               <span className="hover-list__subagent-done">完成</span>
             )}
-          </div>
+          </button>
         ))}
       </div>
     </div>
@@ -999,7 +1012,7 @@ function SessionCard({
 
         {/* Row 5: subagents */}
         {session.subagents && session.subagents.length > 0 && (
-          <SubagentRow subagents={session.subagents} />
+          <SubagentRow sessionId={session.id} subagents={session.subagents} onSubagentClick={onSubagentClick} />
         )}
 
         {/* Row 6: tasks */}
@@ -1020,7 +1033,7 @@ function SessionCard({
   )
 }
 
-export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFilteredEmpty = false }: HoverListProps) {
+export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, focusFilteredEmpty = false }: HoverListProps) {
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)

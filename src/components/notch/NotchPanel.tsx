@@ -6,7 +6,7 @@ import { useConfigStore } from '../../stores/configStore'
 import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
-import type { OverlayItem, PanelState } from '../../types/agent'
+import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { CollapsedBar } from './CollapsedBar'
@@ -51,7 +51,7 @@ const HOVER_PANEL_MIN_HEIGHT = 180
 const EXPANDED_PREVIEW_SESSION_COUNT = 4
 const EXPANDED_PREVIEW_ROW_HEIGHT = 58
 const EXPANDED_PREVIEW_VERTICAL_PADDING = 48
-const APPROVAL_PANEL_WIDTH = 640
+const APPROVAL_PANEL_WIDTH = 500
 
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
   return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
@@ -259,6 +259,7 @@ export function NotchPanel() {
   const [measuredFeedbackContentHeight, setMeasuredFeedbackContentHeight] = useState(0)
   const [measuredHoverContentHeight, setMeasuredHoverContentHeight] = useState(0)
   const [focusedSessionIds, setFocusedSessionIds] = useState<Set<string> | null>(null)
+  const [pendingSubagentOpen, setPendingSubagentOpen] = useState<{ sessionId: string; agentId: string } | null>(null)
   const [preparingOpen, setPreparingOpen] = useState(false)
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
   const [inlinePermissionOverlayIds, setInlinePermissionOverlayIds] = useState<Set<string>>(() => new Set())
@@ -1020,8 +1021,8 @@ export function NotchPanel() {
     return () => window.removeEventListener('keydown', handler)
   }, [escSilenceDuration, markActivePermissionInlineAfterCollapse, markActivePermissionOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
-  const handleSessionClick = (sessionId: string) => {
-    if (!clickToDetail) {
+  const handleSessionClick = (sessionId: string, options?: { forceDetail?: boolean }) => {
+    if (!clickToDetail && !options?.forceDetail) {
       setNotchFocusable(false).catch(() => {})
       jumpToTerminal(sessionId).catch((error) => console.warn('[notch] jumpToTerminal:', error))
       return
@@ -1062,6 +1063,11 @@ export function NotchPanel() {
         }
       })
       .catch((e) => console.warn('[notch] getChatHistory:', e))
+  }
+
+  const handleSubagentClick = (sessionId: string, subagent: SubagentInfo) => {
+    setPendingSubagentOpen({ sessionId, agentId: subagent.agentId })
+    handleSessionClick(sessionId, { forceDetail: true })
   }
 
   const handleCollapse = () => {
@@ -1168,11 +1174,11 @@ export function NotchPanel() {
       + (session.tasks && session.tasks.length > 0 ? 92 : 0)
   }, 0)
   const blockingOverlayFallbackHeight = activeOverlay?.type === 'plan'
-    ? 460
+    ? 340
     : activeOverlay?.type === 'question'
-      ? 380
+      ? 300
       : activeOverlay?.type === 'permission'
-        ? 420
+        ? 320
         : 340
   const blockingOverlayMaxHeight = activeOverlay?.type === 'plan'
     ? Math.max(maxPanelHeight || 600, 600)
@@ -1793,6 +1799,7 @@ export function NotchPanel() {
                     <HoverList
                       sessions={displayedSessions}
                       onSessionClick={handleSessionClick}
+                      onSubagentClick={handleSubagentClick}
                       onJumpToTerminal={(id) => {
                         setNotchFocusable(false).catch(() => {})
                         jumpToTerminal(id).catch((error) => console.warn('[notch] jumpToTerminal:', error))
@@ -1812,10 +1819,14 @@ export function NotchPanel() {
                     exit={{ opacity: 0 }}
                     transition={scaledContentTransition}
                   >
-                    <ChatView onBack={() => {
+                    <ChatView
+                      initialSubagentId={pendingSubagentOpen?.sessionId === useSessionStore.getState().activeSessionId ? pendingSubagentOpen.agentId : undefined}
+                      onInitialSubagentHandled={() => setPendingSubagentOpen(null)}
+                      onBack={() => {
                       if (Date.now() < detailBackGuardUntilRef.current) return
                       detailModeRef.current = false
                       detailBackGuardUntilRef.current = 0
+                      setPendingSubagentOpen(null)
                       useSessionStore.getState().setActiveSession(null)
                       setPanelState('hover')
                     }} />

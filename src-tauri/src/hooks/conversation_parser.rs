@@ -75,6 +75,21 @@ pub struct CacheTtlInfo {
     pub ttl_ms: i64,
 }
 
+/// Subagent metadata recovered from Claude Code JSONL transcripts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptSubagentInfo {
+    pub agent_id: String,
+    pub agent_type: Option<String>,
+    pub description: String,
+    pub transcript_path: Option<String>,
+    pub agent_transcript_path: Option<String>,
+    pub last_assistant_message: Option<String>,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+    pub status: String,
+    pub tools: Vec<String>,
+}
+
 // ── Parser ──────────────────────────────────────────────────────
 
 /// Incremental JSONL conversation parser.
@@ -757,6 +772,403 @@ pub fn extract_latest_assistant_text(path: &Path) -> Option<String> {
     }
 
     latest
+}
+
+#[derive(Debug, Clone)]
+struct PendingSubagentTool {
+    tool_use_id: String,
+    description: String,
+    prompt: String,
+    agent_type: Option<String>,
+    started_at: i64,
+}
+
+/// Recover Claude Code subagent activity from a main session transcript.
+///
+/// Claude Code records subagent launches as assistant `tool_use` blocks named
+/// `Agent` (or `Task` in some builds), then records completion metadata on the
+/// matching user `tool_result` line under `toolUseResult`. The sidechain
+/// transcript lives beside the main file at:
+/// `<session-id>/subagents/agent-<agent-id>.jsonl`.
+pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentInfo> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(file);
+    let main_transcript_path = path.to_string_lossy().to_string();
+    let session_id = path.file_stem().and_then(|v| v.to_str()).unwrap_or("");
+    let mut pending: HashMap<String, PendingSubagentTool> = HashMap::new();
+    let mut subagents: Vec<TranscriptSubagentInfo> = Vec::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        for tool in subagent_tool_uses_from_json(&json) {
+            pending.insert(tool.tool_use_id.clone(), tool);
+        }
+
+        if let Some(mut subagent) =
+            completed_subagent_from_json(&json, path, session_id, &main_transcript_path, &pending)
+        {
+            pending.remove(&subagent.agent_id);
+            if let Some(tool_use_id) = tool_result_id_from_json(&json) {
+                pending.remove(&tool_use_id);
+            }
+            enrich_subagent_from_sidechain(path, session_id, &mut subagent);
+            upsert_transcript_subagent(&mut subagents, subagent);
+        }
+    }
+
+    for tool in pending.into_values() {
+        upsert_transcript_subagent(
+            &mut subagents,
+            TranscriptSubagentInfo {
+                agent_id: tool.tool_use_id,
+                agent_type: tool.agent_type,
+                description: choose_subagent_description(&tool.description, &tool.prompt),
+                transcript_path: Some(main_transcript_path.clone()),
+                agent_transcript_path: None,
+                last_assistant_message: None,
+                started_at: tool.started_at,
+                completed_at: None,
+                status: "running".to_string(),
+                tools: Vec::new(),
+            },
+        );
+    }
+
+    subagents.sort_by(|a, b| {
+        a.started_at
+            .cmp(&b.started_at)
+            .then(a.agent_id.cmp(&b.agent_id))
+    });
+    subagents
+}
+
+fn subagent_tool_uses_from_json(json: &serde_json::Value) -> Vec<PendingSubagentTool> {
+    if json.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+        return Vec::new();
+    }
+    if json
+        .get("isSidechain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Vec::new();
+    }
+
+    let timestamp = timestamp_seconds(json);
+    json.get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+        .filter(|block| {
+            matches!(
+                block.get("name").and_then(|v| v.as_str()),
+                Some("Agent" | "Task")
+            )
+        })
+        .filter_map(|block| {
+            let tool_use_id = block.get("id").and_then(|v| v.as_str())?.to_string();
+            let input = block.get("input").and_then(|v| v.as_object());
+            let description = input
+                .and_then(|obj| obj.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let prompt = input
+                .and_then(|obj| obj.get("prompt"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let agent_type = input
+                .and_then(|obj| {
+                    obj.get("agent_type")
+                        .or_else(|| obj.get("agentType"))
+                        .or_else(|| obj.get("subagent_type"))
+                        .or_else(|| obj.get("subagentType"))
+                })
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+
+            Some(PendingSubagentTool {
+                tool_use_id,
+                description,
+                prompt,
+                agent_type,
+                started_at: timestamp,
+            })
+        })
+        .collect()
+}
+
+fn completed_subagent_from_json(
+    json: &serde_json::Value,
+    main_path: &Path,
+    session_id: &str,
+    main_transcript_path: &str,
+    pending: &HashMap<String, PendingSubagentTool>,
+) -> Option<TranscriptSubagentInfo> {
+    if json.get("type").and_then(|v| v.as_str()) != Some("user") {
+        return None;
+    }
+
+    let result = json.get("toolUseResult")?;
+    let agent_id = result.get("agentId").and_then(|v| v.as_str())?.to_string();
+    let tool_use_id = tool_result_id_from_json(json);
+    let pending_tool = tool_use_id.as_ref().and_then(|id| pending.get(id));
+    let raw_status = result
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("completed");
+    let status = if raw_status.eq_ignore_ascii_case("completed")
+        || raw_status.eq_ignore_ascii_case("success")
+    {
+        "completed"
+    } else {
+        "error"
+    }
+    .to_string();
+    let prompt = result.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let description = pending_tool
+        .map(|tool| choose_subagent_description(&tool.description, &tool.prompt))
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| choose_subagent_description("", prompt));
+    let started_at = pending_tool
+        .map(|tool| tool.started_at)
+        .unwrap_or_else(|| timestamp_seconds(json));
+    let last_assistant_message = tool_use_result_text(result);
+    let agent_type = result
+        .get("agentType")
+        .or_else(|| result.get("agent_type"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .or_else(|| pending_tool.and_then(|tool| tool.agent_type.clone()));
+
+    Some(TranscriptSubagentInfo {
+        agent_id: agent_id.clone(),
+        agent_type,
+        description,
+        transcript_path: Some(main_transcript_path.to_string()),
+        agent_transcript_path: sidechain_transcript_path(main_path, session_id, &agent_id)
+            .filter(|path| path.exists())
+            .map(|path| path.to_string_lossy().to_string()),
+        last_assistant_message,
+        started_at,
+        completed_at: Some(timestamp_seconds(json)),
+        status,
+        tools: Vec::new(),
+    })
+}
+
+fn enrich_subagent_from_sidechain(
+    main_path: &Path,
+    session_id: &str,
+    subagent: &mut TranscriptSubagentInfo,
+) {
+    let Some(agent_path) = sidechain_transcript_path(main_path, session_id, &subagent.agent_id)
+    else {
+        return;
+    };
+
+    if subagent.agent_transcript_path.is_none() && agent_path.exists() {
+        subagent.agent_transcript_path = Some(agent_path.to_string_lossy().to_string());
+    }
+
+    if let Some(meta) = read_subagent_meta(&agent_path) {
+        if subagent.agent_type.is_none() {
+            subagent.agent_type = meta.agent_type;
+        }
+        if subagent.description.is_empty() {
+            subagent.description = meta.description.unwrap_or_default();
+        }
+    }
+
+    if agent_path.exists() {
+        let (first_ts, last_ts, latest_assistant, tools) = scan_sidechain_transcript(&agent_path);
+        if subagent.started_at == 0 {
+            if let Some(ts) = first_ts {
+                subagent.started_at = ts;
+            }
+        }
+        if subagent.completed_at.is_none() {
+            subagent.completed_at = last_ts;
+        }
+        if subagent.last_assistant_message.is_none() {
+            subagent.last_assistant_message = latest_assistant;
+        }
+        if subagent.tools.is_empty() {
+            subagent.tools = tools;
+        }
+    }
+}
+
+struct SubagentMeta {
+    agent_type: Option<String>,
+    description: Option<String>,
+}
+
+fn read_subagent_meta(agent_path: &Path) -> Option<SubagentMeta> {
+    let file_name = agent_path.file_name()?.to_str()?;
+    let meta_path = agent_path.with_file_name(file_name.replace(".jsonl", ".meta.json"));
+    let raw = std::fs::read_to_string(meta_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(SubagentMeta {
+        agent_type: json
+            .get("agentType")
+            .or_else(|| json.get("agent_type"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
+        description: json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string()),
+    })
+}
+
+fn scan_sidechain_transcript(
+    path: &Path,
+) -> (Option<i64>, Option<i64>, Option<String>, Vec<String>) {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return (None, None, None, Vec::new()),
+    };
+    let reader = BufReader::new(file);
+    let mut first_ts = None;
+    let mut last_ts = None;
+    let mut latest_assistant = None;
+    let mut tools = Vec::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let ts = timestamp_seconds(&json);
+        if ts > 0 {
+            first_ts.get_or_insert(ts);
+            last_ts = Some(ts);
+        }
+
+        if json.get("type").and_then(|v| v.as_str()) == Some("assistant") {
+            if let Some(text) = json
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(text_from_content)
+            {
+                latest_assistant = Some(text);
+            }
+            if let Some(content) = json
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.as_array())
+            {
+                for block in content {
+                    if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                            if !tools.iter().any(|tool| tool == name) {
+                                tools.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (first_ts, last_ts, latest_assistant, tools)
+}
+
+fn sidechain_transcript_path(
+    main_path: &Path,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<PathBuf> {
+    if session_id.is_empty() || agent_id.is_empty() {
+        return None;
+    }
+    Some(
+        main_path
+            .parent()?
+            .join(session_id)
+            .join("subagents")
+            .join(format!("agent-{}.jsonl", agent_id)),
+    )
+}
+
+fn choose_subagent_description(description: &str, prompt: &str) -> String {
+    let description = description.trim();
+    if !description.is_empty() {
+        return description.to_string();
+    }
+    prompt.lines().next().unwrap_or(prompt).trim().to_string()
+}
+
+fn tool_result_id_from_json(json: &serde_json::Value) -> Option<String> {
+    json.get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_array())
+        .and_then(|blocks| {
+            blocks.iter().find_map(|block| {
+                if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+                    return None;
+                }
+                block
+                    .get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+            })
+        })
+}
+
+fn tool_use_result_text(result: &serde_json::Value) -> Option<String> {
+    result
+        .get("content")
+        .and_then(|content| content.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn timestamp_seconds(json: &serde_json::Value) -> i64 {
+    json.get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp())
+        .unwrap_or(0)
+}
+
+fn upsert_transcript_subagent(
+    subagents: &mut Vec<TranscriptSubagentInfo>,
+    subagent: TranscriptSubagentInfo,
+) {
+    if let Some(existing) = subagents
+        .iter_mut()
+        .find(|item| item.agent_id == subagent.agent_id)
+    {
+        *existing = subagent;
+    } else {
+        subagents.push(subagent);
+    }
 }
 
 fn assistant_text_from_json(json: &serde_json::Value) -> Option<String> {
@@ -1527,6 +1939,55 @@ mod tests {
         assert_eq!(info.ttl_ms, 3_600_000);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn extracts_subagents_from_claude_agent_tool_results() {
+        let root = std::env::temp_dir().join(format!(
+            "agentbro-subagents-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let session_id = "session-abc";
+        let subagent_dir = root.join(session_id).join("subagents");
+        std::fs::create_dir_all(&subagent_dir).expect("create subagent dir");
+        let main_path = root.join(format!("{session_id}.jsonl"));
+        let agent_path = subagent_dir.join("agent-a123.jsonl");
+        let meta_path = subagent_dir.join("agent-a123.meta.json");
+
+        std::fs::write(
+            &main_path,
+            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-05-18T13:37:30.255Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"计算 1+1 (agent 1)","prompt":"请计算 1+1 等于几"}}]}}
+{"type":"user","timestamp":"2026-05-18T13:37:34.729Z","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":[{"type":"text","text":"2"}]}]},"toolUseResult":{"status":"completed","prompt":"请计算 1+1 等于几","agentId":"a123","agentType":"general-purpose","content":[{"type":"text","text":"2"}],"totalToolUseCount":0}}
+"#,
+        )
+        .expect("write main transcript");
+        std::fs::write(
+            &agent_path,
+            r#"{"isSidechain":true,"agentId":"a123","type":"user","timestamp":"2026-05-18T13:37:30.730Z","message":{"role":"user","content":"请计算 1+1 等于几"}}
+{"isSidechain":true,"agentId":"a123","type":"assistant","timestamp":"2026-05-18T13:37:33.604Z","message":{"role":"assistant","content":[{"type":"text","text":"1+1 = 2"}]}}
+"#,
+        )
+        .expect("write sidechain transcript");
+        std::fs::write(
+            &meta_path,
+            r#"{"agentType":"general-purpose","description":"计算 1+1 (agent 1)"}"#,
+        )
+        .expect("write meta");
+
+        let subagents = extract_subagents_from_transcript(&main_path);
+        assert_eq!(subagents.len(), 1);
+        assert_eq!(subagents[0].agent_id, "a123");
+        assert_eq!(subagents[0].agent_type.as_deref(), Some("general-purpose"));
+        assert_eq!(subagents[0].description, "计算 1+1 (agent 1)");
+        assert_eq!(subagents[0].status, "completed");
+        assert_eq!(subagents[0].last_assistant_message.as_deref(), Some("2"));
+        assert_eq!(
+            subagents[0].agent_transcript_path.as_deref(),
+            Some(agent_path.to_string_lossy().as_ref())
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

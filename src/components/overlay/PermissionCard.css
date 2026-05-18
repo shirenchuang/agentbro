@@ -17,19 +17,19 @@
   --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
   --perm-text: var(--island-text);
   --perm-text-secondary: var(--island-text-secondary);
-  gap: 16px;
+  gap: 10px;
   width: 100%;
-  min-height: 360px;
-  padding: 20px 24px 22px;
+  min-height: 0;
+  padding: 12px 16px 14px;
   border: 0;
-  border-radius: 0 0 36px 36px;
+  border-radius: 0 0 26px 26px;
   background: var(--perm-panel);
   box-shadow: none;
 }
 
 .overlay-card--permission .overlay-card__header {
   align-items: flex-start;
-  min-height: 48px;
+  min-height: 34px;
 }
 
 .overlay-card--permission .overlay-card__close {
@@ -37,20 +37,20 @@
 }
 
 .overlay-card--permission .overlay-ctx {
-  gap: 4px;
+  gap: 2px;
 }
 
 .overlay-card--permission .overlay-ctx__row1 {
-  gap: 10px;
-  font-size: 18px;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 800;
   line-height: 1.18;
   color: var(--perm-text);
 }
 
 .overlay-card--permission .overlay-ctx__row1 .pixel-indicator {
-  margin-right: 5px;
-  transform: scale(1.9);
+  margin-right: 3px;
+  transform: scale(1.45);
   transform-origin: center;
 }
 
@@ -61,8 +61,8 @@
 }
 
 .overlay-card--permission .overlay-ctx__row2 {
-  gap: 6px;
-  font-size: 15px;
+  gap: 4px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.28;
   color: var(--island-text-muted);
@@ -74,14 +74,14 @@
 }
 
 .overlay-card--permission .overlay-ctx__msg {
-  max-width: 600px;
+  max-width: 430px;
 }
 
 .perm-card__scroll {
   display: flex;
   flex: 0 1 auto;
   flex-direction: column;
-  gap: 14px;
+  gap: 9px;
   min-height: 0;
   padding-right: 2px;
   overflow-y: auto;
@@ -128,7 +128,7 @@
 .perm-card__tool-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex: 0 0 auto;
   padding: 0;
 }
@@ -137,8 +137,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 20px;
+  height: 20px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -147,15 +147,15 @@
 
 .perm-card__tool-icon-svg {
   color: var(--perm-accent);
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   fill: currentColor;
   stroke: var(--perm-panel);
 }
 
 .perm-card__tool-name {
   color: var(--perm-accent);
-  font-size: 21px;
+  font-size: 14px;
   font-weight: 800;
   line-height: 1.1;
 }
@@ -165,7 +165,7 @@
   background: var(--perm-command-bg);
   border: 1px solid var(--perm-command-border);
   border-radius: 0;
-  padding: 13px 14px 10px;
+  padding: 9px 10px 8px;
   flex: 0 0 auto;
 }
 
@@ -178,11 +178,11 @@
 
 /* Tool previews */
 .perm-card__preview-desc {
-  font-size: 16px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.22;
   color: var(--perm-text-secondary);
-  margin-top: 8px;
+  margin-top: 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -209,7 +209,7 @@
   border-radius: 0;
   background: transparent;
   padding: 0;
-  font-size: 18px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.18;
 }
@@ -220,7 +220,7 @@
   white-space: pre-wrap;
   word-break: break-all;
   font-family: var(--font-mono, monospace);
-  font-size: 18px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.18;
   color: var(--perm-text);
@@ -325,7 +325,7 @@
 .perm-card__diff {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 150px;
+  max-height: 112px;
   overflow-y: auto;
   border-radius: 6px;
 }
@@ -365,10 +365,10 @@
 .perm-card__actions {
   display: flex;
   flex: 0 0 auto;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: nowrap;
   justify-content: stretch;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .perm-card__btn {
@@ -377,12 +377,12 @@
   align-items: center;
   justify-content: center;
   min-width: 0;
-  height: 44px;
-  padding: 0 14px;
+  height: 30px;
+  padding: 0 8px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   font-family: var(--font-sans, system-ui);
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 800;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
@@ -415,8 +415,8 @@
 }
 
 .perm-card__kbd {
-  margin-left: 6px;
-  font-size: 12px;
+  margin-left: 4px;
+  font-size: 10px;
   color: inherit;
   opacity: 0.48;
   font-family: var(--font-mono, monospace);
@@ -426,22 +426,22 @@
 
 @media (max-width: 760px) {
   .overlay-card.overlay-card--permission {
-    padding: 20px 18px 22px;
+    padding: 12px 14px 14px;
   }
 
   .overlay-card--permission .overlay-ctx__row1 {
-    font-size: 18px;
+    font-size: 12px;
   }
 
   .overlay-card--permission .overlay-ctx__row2,
   .perm-card__preview-desc {
-    font-size: 15px;
+    font-size: 11px;
   }
 
   .perm-card__tool-name,
   .perm-card__preview-code--bash,
   .perm-card__preview-command {
-    font-size: 18px;
+    font-size: 13px;
   }
 
   .perm-card__actions {
@@ -449,10 +449,10 @@
   }
 
   .perm-card__btn {
-    height: 42px;
-    padding: 0 8px;
-    font-size: 14px;
-    border-radius: 9px;
+    height: 30px;
+    padding: 0 7px;
+    font-size: 12px;
+    border-radius: 8px;
   }
 
   .perm-card__kbd {

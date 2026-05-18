@@ -55,9 +55,11 @@ function groupMessages(messages: ChatMessage[]): MessageGroup[] {
 
 interface ChatViewProps {
   onBack: () => void
+  initialSubagentId?: string
+  onInitialSubagentHandled?: () => void
 }
 
-export function ChatView({ onBack }: ChatViewProps) {
+export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }: ChatViewProps) {
   const activeSession = useSessionStore(selectActiveSession)
   const contentFontSize = useConfigStore((s) => s.contentFontSize)
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
@@ -250,6 +252,14 @@ export function ChatView({ onBack }: ChatViewProps) {
         })
       })
   }, [activeSessionId])
+
+  useEffect(() => {
+    if (!initialSubagentId || !activeSession) return
+    const subagent = activeSession.subagents.find((item) => item.agentId === initialSubagentId)
+    if (!subagent?.agentTranscriptPath) return
+    handleOpenSubagentHistory(subagent)
+    onInitialSubagentHandled?.()
+  }, [activeSession, handleOpenSubagentHistory, initialSubagentId, onInitialSubagentHandled])
 
   if (!activeSession) {
     return null

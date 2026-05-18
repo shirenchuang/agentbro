@@ -9,12 +9,13 @@ use crate::config::CustomHookTemplate;
 use crate::config::{AppConfig, ConfigStore};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
-    all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs, ParsedMessage,
+    all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs,
+    extract_subagents_from_transcript, ParsedMessage, TranscriptSubagentInfo,
 };
 use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
-use crate::hooks::session_store::{SessionState, SessionStore};
+use crate::hooks::session_store::{SessionState, SessionStore, SubagentInfo};
 use crate::license::{LicenseManager, LicenseStatus};
 use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
@@ -50,6 +51,10 @@ pub struct AppState {
 
 #[tauri::command]
 pub async fn get_sessions(state: State<'_, AppState>) -> Result<Vec<SessionState>, String> {
+    let sessions = state.session_store.get_all_sessions();
+    for session in &sessions {
+        hydrate_subagents_for_session(&state.session_store, session);
+    }
     Ok(state.session_store.get_all_sessions())
 }
 
@@ -1577,6 +1582,8 @@ pub async fn get_chat_history(
     }
     .ok_or_else(|| format!("No JSONL file found for session {}", session_id))?;
 
+    hydrate_subagents_from_file(&state.session_store, &session_id, &file_path);
+
     // Try the watcher's parser first (it may already have state)
     if let Ok(watcher_guard) = state.conversation_watcher.lock() {
         if let Some(ref watcher) = *watcher_guard {
@@ -1591,6 +1598,83 @@ pub async fn get_chat_history(
     parser
         .parse_full()
         .map_err(|e| format!("Failed to parse conversation: {}", e))
+}
+
+fn hydrate_subagents_for_session(store: &SessionStore, session: &SessionState) {
+    if session
+        .subagents
+        .iter()
+        .any(|subagent| subagent.agent_transcript_path.is_some())
+    {
+        return;
+    }
+    if let Some(path) = discover_transcript_for_session(session) {
+        hydrate_subagents_from_file(store, &session.id, &path);
+    }
+}
+
+fn discover_transcript_for_session(session: &SessionState) -> Option<PathBuf> {
+    let mut projects_dirs = all_projects_dirs();
+    if let Some(root) = session
+        .engine_config_root
+        .as_ref()
+        .filter(|root| !root.is_empty())
+    {
+        let custom_projects = crate::agents::claude_code::expand_tilde(root).join("projects");
+        if custom_projects.is_dir() && !projects_dirs.iter().any(|d| d == &custom_projects) {
+            projects_dirs.push(custom_projects);
+        }
+    }
+
+    if session.agent_type == "codex" {
+        discover_codex_session_file(&session.id)
+            .or_else(|| discover_session_file_in_dirs(&session.id, &session.cwd, &projects_dirs))
+    } else {
+        discover_session_file_in_dirs(&session.id, &session.cwd, &projects_dirs)
+    }
+}
+
+fn hydrate_subagents_from_file(store: &SessionStore, session_id: &str, file_path: &Path) {
+    let recovered = extract_subagents_from_transcript(file_path);
+    if recovered.is_empty() {
+        return;
+    }
+
+    store.update_session(session_id, |session| {
+        for subagent in recovered {
+            merge_subagent(session, subagent);
+        }
+        session.subagents.sort_by(|a, b| {
+            a.started_at
+                .cmp(&b.started_at)
+                .then_with(|| a.agent_id.cmp(&b.agent_id))
+        });
+    });
+}
+
+fn merge_subagent(session: &mut SessionState, recovered: TranscriptSubagentInfo) {
+    let incoming = SubagentInfo {
+        agent_id: recovered.agent_id,
+        agent_type: recovered.agent_type,
+        description: recovered.description,
+        transcript_path: recovered.transcript_path,
+        agent_transcript_path: recovered.agent_transcript_path,
+        last_assistant_message: recovered.last_assistant_message,
+        started_at: recovered.started_at,
+        completed_at: recovered.completed_at,
+        status: recovered.status,
+        tools: recovered.tools,
+    };
+
+    if let Some(existing) = session
+        .subagents
+        .iter_mut()
+        .find(|item| item.agent_id == incoming.agent_id)
+    {
+        *existing = incoming;
+    } else {
+        session.subagents.push(incoming);
+    }
 }
 
 #[tauri::command]

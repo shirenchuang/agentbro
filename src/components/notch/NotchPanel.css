@@ -203,7 +203,7 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
 
 .notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card,
 .notch-panel__alert-content[data-overlay-type="question"] > .overlay-card {
-  min-height: 360px;
+  min-height: 0;
 }
 
 .notch-panel__alert-content[data-overlay-type="permission"] {
