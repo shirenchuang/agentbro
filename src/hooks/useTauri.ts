@@ -142,6 +142,10 @@ function transformSession(bs: BackendSession): SessionState {
   // Preserve existing chatHistory/subagents/activeTools from the store
   // so that replaceAllSessions doesn't wipe them on each backend update
   const existing = useSessionStore.getState().sessions[bs.id]
+  const backendSubagents = bs.subagents ?? []
+  const subagents = backendSubagents.length > 0
+    ? backendSubagents
+    : (existing?.subagents ?? [])
 
   return {
     id: bs.id,
@@ -189,7 +193,7 @@ function transformSession(bs: BackendSession): SessionState {
     cmuxSurfaceId: bs.cmuxSurfaceId ?? undefined,
     cmuxWorkspaceId: bs.cmuxWorkspaceId ?? undefined,
     chatHistory: existing?.chatHistory ?? [],
-    subagents: (bs.subagents ?? existing?.subagents ?? []).map((subagent) => ({
+    subagents: subagents.map((subagent) => ({
       agentId: subagent.agentId,
       agentType: subagent.agentType ?? undefined,
       description: subagent.description,

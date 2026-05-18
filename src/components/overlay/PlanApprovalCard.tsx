@@ -109,9 +109,6 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
       {/* Requested permissions */}
       {data.requestedPermissions && data.requestedPermissions.length > 0 && (
         <div className="plan-approval__perms">
-          <span className="plan-approval__perms-label">
-            {t('notch.requestedPermissions', { defaultValue: '请求的权限:' })}
-          </span>
           {data.requestedPermissions.map((p, i) => (
             <div key={i} className="plan-approval__perm-item">
               {typeof p === 'string' ? (

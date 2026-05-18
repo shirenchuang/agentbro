@@ -34,6 +34,11 @@
   pointer-events: none;
 }
 
+.notch-hitbox[data-island-hidden="true"] {
+  pointer-events: none;
+  background: transparent;
+}
+
 .notch-panel {
   position: relative;
   isolation: isolate;

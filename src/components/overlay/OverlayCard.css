@@ -115,21 +115,37 @@
   display: flex;
   flex: 0 0 auto;
   justify-content: center;
-  margin-top: 2px;
+  margin-top: auto;
+  padding-top: 8px;
 }
 
 .overlay-card__show-sessions {
-  background: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: transparent;
   border: none;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
+  line-height: 1.15;
   color: var(--island-text-muted);
   cursor: pointer;
-  transition: color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.overlay-card__brand-logo {
+  width: 22px;
+  height: 16px;
+  object-fit: contain;
+  opacity: 0.96;
+  flex: 0 0 auto;
 }
 
 .overlay-card__show-sessions:hover {
+  background: var(--island-subtle);
   color: var(--island-text);
+  transform: translateY(-1px);
 }

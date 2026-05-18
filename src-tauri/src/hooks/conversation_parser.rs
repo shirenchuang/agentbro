@@ -1375,12 +1375,32 @@ pub fn claude_projects_dir() -> Option<PathBuf> {
     }
 }
 
+fn known_claude_engine_projects_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+
+    [home
+        .join(".codefuse")
+        .join("engine")
+        .join("cc")
+        .join("projects")]
+    .into_iter()
+    .filter(|dir| dir.is_dir())
+    .collect()
+}
+
 /// Collect all known projects directories (default + custom engine instances).
 /// Used by file watcher and session discovery.
 pub fn all_projects_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = claude_projects_dir() {
         dirs.push(d);
+    }
+    for dir in known_claude_engine_projects_dirs() {
+        if !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
     }
     dirs
 }

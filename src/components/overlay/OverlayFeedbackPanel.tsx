@@ -305,10 +305,17 @@ export function OverlayFeedbackPanel({
         </button>
       </div>
 
-      {sessionCount != null && (
+      {onShowSessions && sessionCount != null && (
         <div className="overlay-card__secondary" data-no-drag>
-          <button className="overlay-card__show-sessions" onMouseDown={onShowSessions ?? onDismiss}>
-            {t('notch.showAllSessions', { count: sessionCount })}
+          <button
+            className="overlay-card__show-sessions"
+            onMouseDown={(event) => {
+              event.preventDefault()
+              onShowSessions()
+            }}
+          >
+            <img className="overlay-card__brand-logo" src="/agentbro-logo-dark.png" alt="" aria-hidden="true" />
+            <span>{t('notch.slogan', { defaultValue: '让 Agent 更好用' })}</span>
           </button>
         </div>
       )}

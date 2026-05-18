@@ -866,6 +866,7 @@ export function NotchPanel() {
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
         const ignoreTransparentHost = !islandEnabled
+          || interaction.isHidden
           || (
             islandSurfaceMode !== 'pet'
             && !isDragging
@@ -874,6 +875,10 @@ export function NotchPanel() {
             && currentPanelState === 'collapsed'
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
+        if (interaction.isHidden) {
+          nativeHoverInsideRef.current = false
+          return
+        }
         const wasOver = nativeHoverInsideRef.current
         if (isOver && !wasOver) {
           requestNativeIgnoreCursorEvents(false, { force: true })
@@ -1083,6 +1088,22 @@ export function NotchPanel() {
     setPanelState('collapsed')
   }
 
+  const showBlockingOverlayAsSessionList = useCallback(() => {
+    detailModeRef.current = false
+    detailBackGuardUntilRef.current = 0
+    if (pendingDetailOpenTimerRef.current) {
+      clearTimeout(pendingDetailOpenTimerRef.current)
+      pendingDetailOpenTimerRef.current = undefined
+    }
+    const overlay = useSessionStore.getState().activeOverlay
+    if (overlay && isBlockingOverlay(overlay)) {
+      inlineBlockingOverlayIdsRef.current.add(overlay.id)
+      setInlinePermissionOverlayIds((current) => new Set(current))
+    }
+    setNotchFocusable(true).catch(() => {})
+    setPanelState('hover')
+  }, [setPanelState])
+
   const collapsedWidthScale = useConfigStore((s) => s.collapsedWidthScale)
   const notchHeightMode = useConfigStore((s) => s.notchHeightMode)
   const customNotchHeight = useConfigStore((s) => s.customNotchHeight)
@@ -1117,19 +1138,22 @@ export function NotchPanel() {
       : overlayPresentationOpen
         ? 'hover'
         : panelState
+  const showBlockingOverlayInline = Boolean(
+    activeOverlay
+    && panelState === 'hover'
+    && inlineBlockingOverlayIdsRef.current.has(activeOverlay.id)
+  )
   const showPermissionInlineAfterCollapse = Boolean(
     activeOverlay?.type === 'permission'
     && panelState === 'hover'
-    && (
-      inlinePermissionOverlayIds.has(activeOverlay.id)
-      || inlineBlockingOverlayIdsRef.current.has(activeOverlay.id)
-    ),
+    && inlinePermissionOverlayIds.has(activeOverlay.id),
   )
   const hasBlockingOverlayContent = Boolean(
     !layoutPreview
     && activeOverlay
     && isBlockingOverlay(activeOverlay)
     && effectivePanelState !== 'collapsed'
+    && !showBlockingOverlayInline
     && !showPermissionInlineAfterCollapse,
   )
   const usesWideApprovalOverlay = hasBlockingOverlayContent
@@ -1659,7 +1683,7 @@ export function NotchPanel() {
         '--notch-hitbox-width': `${hitboxWidth}px`,
         '--notch-hitbox-height': `${hitboxHeight}px`,
         '--notch-hitbox-pad-x': `${hitboxPadX}px`,
-        pointerEvents: islandEnabled ? 'auto' : 'none',
+        pointerEvents: islandHidden ? 'none' : undefined,
       } as CSSProperties}
     >
       <div
@@ -1746,7 +1770,7 @@ export function NotchPanel() {
                     <OverlayRenderer
                       overlay={activeOverlay}
                       onDismiss={() => dismissOverlay(activeOverlay.id)}
-                      onShowSessions={handleCollapse}
+                      onShowSessions={showBlockingOverlayAsSessionList}
                       sessionCount={displayedSessions.length}
                     />
                   </motion.div>
