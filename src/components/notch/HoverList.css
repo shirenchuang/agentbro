@@ -3,7 +3,8 @@
 .hover-list {
   display: flex;
   flex-direction: column;
-  padding: 2px 0 7px;
+  padding: 2px 0 16px;
+  scroll-padding-bottom: 16px;
 }
 
 .hover-list__hook-notice {
@@ -1091,4 +1092,84 @@
 .hover-list__show-all:hover {
   background: var(--island-card-hover);
   opacity: 0.8;
+}
+
+.hover-list__brand-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 8px 12px 0;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--island-text) 10%, transparent);
+  color: var(--island-text-secondary);
+  pointer-events: none;
+}
+
+.hover-list__brand-footer--light {
+  color: color-mix(in srgb, var(--island-text-secondary) 82%, var(--island-text) 18%);
+}
+
+.hover-list__brand-footer--dark {
+  color: color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%);
+  border-top-color: rgba(255, 255, 255, 0.075);
+}
+
+.hover-list__brand-logo-stack {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.hover-list__brand-logo {
+  position: absolute;
+  inset: 0;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  transition: opacity 0.16s ease, filter 0.16s ease;
+}
+
+.hover-list__brand-logo--light {
+  filter: drop-shadow(0 1px 8px rgba(248, 164, 0, 0.16));
+  opacity: 1;
+}
+
+.hover-list__brand-logo--dark {
+  filter: drop-shadow(0 1px 8px rgba(255, 255, 255, 0.18));
+  opacity: 0;
+}
+
+.hover-list__brand-footer--dark .hover-list__brand-logo--light {
+  opacity: 0;
+}
+
+.hover-list__brand-footer--dark .hover-list__brand-logo--dark {
+  opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .hover-list__brand-footer--system {
+    color: color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%);
+    border-top-color: rgba(255, 255, 255, 0.075);
+  }
+
+  .hover-list__brand-footer--system .hover-list__brand-logo--light {
+    opacity: 0;
+  }
+
+  .hover-list__brand-footer--system .hover-list__brand-logo--dark {
+    opacity: 1;
+  }
+}
+
+.hover-list__brand-slogan {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

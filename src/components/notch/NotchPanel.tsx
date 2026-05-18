@@ -1748,6 +1748,7 @@ export function NotchPanel() {
                   <motion.div
                     ref={setHoverContentNode}
                     key="hover"
+                    className="notch-panel__hover-content"
                     data-testid="notch-hover-content"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}

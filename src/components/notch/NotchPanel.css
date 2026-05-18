@@ -216,6 +216,13 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
   flex-direction: column;
 }
 
+.notch-panel__hover-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .notch-panel__detail-content {
   display: flex;
   flex: 1 1 auto;

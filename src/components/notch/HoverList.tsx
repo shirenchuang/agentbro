@@ -971,6 +971,7 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
   const maxVisibleSessions = useConfigStore((s) => s.maxVisibleSessions)
   const colorTheme = useThemeStore((s) => s.colorTheme)
   const emptyLogoSrc = isDarkColorTheme(colorTheme) ? '/agentbro-logo-dark.png' : '/agentbro-logo.png'
+  const brandFooterTone = colorTheme === 'system' ? 'system' : isDarkColorTheme(colorTheme) ? 'dark' : 'light'
   const islandAnimationScale = Math.max(0.1, islandAnimationScaleValue || 1)
   const animDuration = (HOVER_SPEED_MS[hoverSpeed] ?? 0.2) * islandAnimationScale
 
@@ -1091,6 +1092,14 @@ export function HoverList({ sessions, onSessionClick, onJumpToTerminal, focusFil
           {t('notch.showAllSessions', { count: totalSessions })}
         </button>
       )}
+
+      <div className={`hover-list__brand-footer hover-list__brand-footer--${brandFooterTone}`} aria-hidden>
+        <span className="hover-list__brand-logo-stack">
+          <img className="hover-list__brand-logo hover-list__brand-logo--light" src="/agentbro-logo.png" alt="" />
+          <img className="hover-list__brand-logo hover-list__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
+        </span>
+        <span className="hover-list__brand-slogan">{t('notch.slogan')}</span>
+      </div>
     </div>
   )
 }
