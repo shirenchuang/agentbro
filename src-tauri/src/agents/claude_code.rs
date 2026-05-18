@@ -494,6 +494,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 Ok(AgentEvent::SubagentStart {
                     session_id,
                     agent_id,
+                    name: optional_string(raw, &["name", "agent_name", "agentName"]),
                     description,
                     agent_type: optional_string(raw, &["agent_type", "agentType", "type"]),
                     transcript_path: optional_string(raw, &["transcript_path", "transcriptPath"]),
@@ -518,6 +519,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     session_id,
                     agent_id,
                     status: stop_status,
+                    name: optional_string(raw, &["name", "agent_name", "agentName"]),
                     agent_type: optional_string(raw, &["agent_type", "agentType", "type"]),
                     transcript_path: optional_string(raw, &["transcript_path", "transcriptPath"]),
                     agent_transcript_path: optional_string(
@@ -1210,6 +1212,7 @@ mod tests {
                 "session_id": "session-1",
                 "cwd": "/tmp/project",
                 "agentId": "agent-1",
+                "name": "checkout-audit",
                 "description": "Research checkout flow",
                 "agentType": "research",
                 "transcriptPath": "/tmp/main.jsonl"
@@ -1220,12 +1223,14 @@ mod tests {
             AgentEvent::SubagentStart {
                 session_id,
                 agent_id,
+                name,
                 description,
                 agent_type,
                 transcript_path,
             } => {
                 assert_eq!(session_id, "session-1");
                 assert_eq!(agent_id, "agent-1");
+                assert_eq!(name.as_deref(), Some("checkout-audit"));
                 assert_eq!(description, "Research checkout flow");
                 assert_eq!(agent_type.as_deref(), Some("research"));
                 assert_eq!(transcript_path.as_deref(), Some("/tmp/main.jsonl"));
@@ -1244,6 +1249,7 @@ mod tests {
                 "cwd": "/tmp/project",
                 "agent_id": "agent-1",
                 "agent_status": "completed",
+                "name": "checkout-audit",
                 "agent_type": "research",
                 "transcript_path": "/tmp/main.jsonl",
                 "agent_transcript_path": "/tmp/agent.jsonl",
@@ -1256,6 +1262,7 @@ mod tests {
                 session_id,
                 agent_id,
                 status,
+                name,
                 agent_type,
                 transcript_path,
                 agent_transcript_path,
@@ -1264,6 +1271,7 @@ mod tests {
                 assert_eq!(session_id, "session-1");
                 assert_eq!(agent_id, "agent-1");
                 assert_eq!(status, "completed");
+                assert_eq!(name.as_deref(), Some("checkout-audit"));
                 assert_eq!(agent_type.as_deref(), Some("research"));
                 assert_eq!(transcript_path.as_deref(), Some("/tmp/main.jsonl"));
                 assert_eq!(agent_transcript_path.as_deref(), Some("/tmp/agent.jsonl"));

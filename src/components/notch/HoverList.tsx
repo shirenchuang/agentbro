@@ -299,28 +299,33 @@ function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: str
         <span>Subagents ({subagents.length})</span>
       </div>
       <div className="hover-list__subagents-list">
-        {subagents.map((sa) => (
-          <button
-            key={sa.agentId}
-            type="button"
-            className={`hover-list__subagent-item${sa.agentTranscriptPath ? ' hover-list__subagent-item--clickable' : ''}`}
-            disabled={!sa.agentTranscriptPath}
-            title={sa.agentTranscriptPath ? 'Open subagent history' : undefined}
-            data-no-open
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              if (sa.agentTranscriptPath) onSubagentClick?.(sessionId, sa)
-            }}
-          >
-            <span className={`hover-list__subagent-dot${sa.status === 'running' ? ' hover-list__subagent-dot--running' : ''}`} />
-            <span className="hover-list__subagent-type">{sa.agentType || sa.description.split(':')[0] || 'agent'}</span>
-            <span className="hover-list__subagent-desc">({sa.lastAssistantMessage || sa.description})</span>
-            {sa.status === 'completed' && (
-              <span className="hover-list__subagent-done">完成</span>
-            )}
-          </button>
-        ))}
+        {subagents.map((sa) => {
+          const title = sa.name ? `@${sa.name}` : (sa.agentType || `@${sa.agentId.slice(0, 8)}`)
+          const detail = sa.description || sa.lastAssistantMessage || sa.agentType || 'Agent'
+
+          return (
+            <button
+              key={sa.agentId}
+              type="button"
+              className={`hover-list__subagent-item${sa.agentTranscriptPath ? ' hover-list__subagent-item--clickable' : ''}`}
+              disabled={!sa.agentTranscriptPath}
+              title={sa.agentTranscriptPath ? 'Open subagent history' : undefined}
+              data-no-open
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                if (sa.agentTranscriptPath) onSubagentClick?.(sessionId, sa)
+              }}
+            >
+              <span className={`hover-list__subagent-dot${sa.status === 'running' ? ' hover-list__subagent-dot--running' : ''}`} />
+              <span className="hover-list__subagent-type">{title}</span>
+              <span className="hover-list__subagent-desc">{detail}</span>
+              {sa.status === 'completed' && (
+                <span className="hover-list__subagent-done">完成</span>
+              )}
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -770,6 +775,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
 function SessionCard({
   session,
   onSessionClick,
+  onSubagentClick,
   onJumpToTerminal,
   animDuration,
   animDelay,
@@ -778,6 +784,7 @@ function SessionCard({
 }: {
   session: SessionState
   onSessionClick: (id: string) => void
+  onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (id: string) => void
   animDuration: number
   animDelay: number
@@ -1145,6 +1152,7 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
             key={session.id}
             session={session}
             onSessionClick={onSessionClick}
+            onSubagentClick={onSubagentClick}
             onJumpToTerminal={onJumpToTerminal}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}

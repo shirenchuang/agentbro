@@ -112,7 +112,7 @@ function AssistantMessage({
             {expanded && (
               <div className="msg__process-detail selectable">
                 {message.thinking && (
-                  <div className="msg__process-section msg__process-section--thinking">
+                  <div className="msg__process-section msg__process-section--thinking markdown-body">
                     <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
                     <Markdown remarkPlugins={[remarkGfm]}>{message.thinking}</Markdown>
                   </div>

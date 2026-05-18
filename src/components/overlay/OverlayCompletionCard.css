@@ -43,8 +43,8 @@
 
 .overlay-completion__summary code {
   border-radius: 4px;
-  background: var(--island-subtle);
-  color: var(--island-text);
+  background: var(--island-inline-code-bg);
+  color: var(--island-inline-code-text);
   font-size: 10px;
   padding: 1px 4px;
 }
@@ -52,12 +52,14 @@
 .overlay-completion__summary pre {
   overflow: auto;
   border-radius: 6px;
-  background: var(--island-subtle);
+  background: var(--island-code-block-bg, var(--island-code-bg));
+  border: 1px solid var(--island-code-border);
   padding: 6px;
 }
 
 .overlay-completion__summary pre code {
   background: transparent;
+  color: var(--island-code-text);
   padding: 0;
 }
 

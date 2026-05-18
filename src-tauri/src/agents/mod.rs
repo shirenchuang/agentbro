@@ -128,6 +128,7 @@ pub enum AgentEvent {
     SubagentStart {
         session_id: String,
         agent_id: String,
+        name: Option<String>,
         description: String,
         agent_type: Option<String>,
         transcript_path: Option<String>,
@@ -136,6 +137,7 @@ pub enum AgentEvent {
         session_id: String,
         agent_id: String,
         status: String,
+        name: Option<String>,
         agent_type: Option<String>,
         transcript_path: Option<String>,
         agent_transcript_path: Option<String>,

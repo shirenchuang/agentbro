@@ -71,8 +71,8 @@
 
 .overlay-response__markdown code {
   border-radius: 4px;
-  background: var(--island-subtle);
-  color: var(--island-text);
+  background: var(--island-inline-code-bg);
+  color: var(--island-inline-code-text);
   font-size: 10px;
   padding: 1px 4px;
 }
@@ -80,19 +80,21 @@
 .overlay-response__markdown pre {
   overflow: auto;
   border-radius: 6px;
-  background: var(--island-subtle);
+  background: var(--island-code-block-bg, var(--island-code-bg));
+  border: 1px solid var(--island-code-border);
   padding: 6px;
 }
 
 .overlay-response__markdown pre code {
   background: transparent;
+  color: var(--island-code-text);
   padding: 0;
 }
 
 .overlay-response__jump {
   display: block;
   font-size: 11px;
-  color: var(--island-accent, #7b78ff);
+  color: var(--island-link, var(--island-accent));
   margin-top: 4px;
   opacity: 0.8;
 }
@@ -137,7 +139,7 @@
   border: 0;
   border-radius: 7px;
   background: var(--island-accent, #7b78ff);
-  color: white;
+  color: var(--island-on-accent, #ffffff);
   font-size: 10px;
   font-weight: 600;
   padding: 0 8px;

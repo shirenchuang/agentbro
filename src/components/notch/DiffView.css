@@ -1,8 +1,8 @@
 .diff-view {
   border-radius: 6px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.42)) 86%, #000 14%) !important;
-  border: 1px solid var(--island-subtle) !important;
+  background: var(--island-code-block-bg, var(--island-code-bg)) !important;
+  border: 1px solid var(--island-code-border) !important;
 }
 
 .diff-view__header {
@@ -10,7 +10,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 4px 12px;
-  border-bottom: 1px solid var(--island-subtle);
+  border-bottom: 1px solid var(--island-code-border);
   gap: 8px;
 }
 
@@ -39,7 +39,7 @@
 .diff-view__filepath {
   font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10.5px;
-  color: var(--island-text-secondary);
+  color: var(--island-code-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -54,11 +54,11 @@
 }
 
 .diff-view__stats-add {
-  color: var(--status-active);
+  color: var(--island-success-text);
 }
 
 .diff-view__stats-remove {
-  color: var(--status-error);
+  color: var(--island-danger-text);
 }
 
 .diff-view__lines {
@@ -79,19 +79,19 @@
 }
 
 .diff-view__line--add {
-  background: rgba(48, 209, 88, 0.16);
-  border-left-color: #30D158;
-  color: #3ee46e;
+  background: var(--island-success-bg);
+  border-left-color: var(--island-success);
+  color: var(--island-success-text);
 }
 
 .diff-view__line--remove {
-  background: rgba(255, 69, 58, 0.16);
-  border-left-color: #FF453A;
-  color: #ff6b62;
+  background: var(--island-danger-bg);
+  border-left-color: var(--island-danger);
+  color: var(--island-danger-text);
 }
 
 .diff-view__line--context {
-  color: var(--island-text-secondary);
+  color: var(--island-code-muted);
   border-left-color: transparent;
 }
 
@@ -120,10 +120,10 @@
 .diff-view__expand-btn {
   display: block;
   width: 100%;
-  background: rgba(255, 255, 255, 0.04);
+  background: transparent;
   border: none;
-  border-top: 1px solid var(--island-subtle);
-  color: var(--island-text-muted);
+  border-top: 1px solid var(--island-code-border);
+  color: var(--island-code-muted);
   font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10px;
   padding: 5px 12px;
@@ -134,6 +134,6 @@
 }
 
 .diff-view__expand-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--island-text-secondary);
+  background: var(--island-subtle);
+  color: var(--island-code-text);
 }

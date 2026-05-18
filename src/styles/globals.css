@@ -24,7 +24,7 @@ html, body, #root {
 }
 
 a {
-  color: var(--accent);
+  color: var(--island-link, var(--accent));
   text-decoration: none;
 }
 

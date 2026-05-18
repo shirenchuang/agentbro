@@ -112,6 +112,7 @@ const detail = {
     cmuxWorkspaceId: null,
     subagents: [{
       agentId: 'sub-1',
+      name: null,
       agentType: 'explorer',
       description: 'Inspect monitor wiring',
       transcriptPath: null,

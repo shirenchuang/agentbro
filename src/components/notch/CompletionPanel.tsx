@@ -139,7 +139,7 @@ function SubagentDoneVariant({ subagents, onDismiss }: SubagentDoneProps) {
               {agent.status === 'completed' ? '✓' : agent.status === 'error' ? '✕' : '●'}
             </span>
             <span className="completion-panel__subagent-desc">
-              {agent.lastAssistantMessage || agent.description || `Agent ${agent.agentId.slice(0, 8)}`}
+              {agent.name ? `@${agent.name} ${agent.description || agent.lastAssistantMessage || ''}` : (agent.lastAssistantMessage || agent.description || `Agent ${agent.agentId.slice(0, 8)}`)}
             </span>
           </div>
         ))}

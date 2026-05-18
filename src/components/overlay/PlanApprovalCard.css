@@ -1,7 +1,7 @@
 /* PlanApprovalCard — approval overlay aligned with permission-card shell */
 
 .overlay-card.overlay-card--plan-approval {
-  --plan-accent: #f59e0b;
+  --plan-accent: var(--island-warning);
   --plan-panel: var(--island-bg);
   --plan-surface: color-mix(in srgb, var(--island-card) 88%, var(--plan-accent) 5%);
   --plan-surface-strong: color-mix(in srgb, var(--island-card) 82%, var(--plan-accent) 8%);
@@ -133,15 +133,15 @@
   height: 10px;
   border-radius: 999px;
   flex-shrink: 0;
-  background: #ef4444;
+  background: var(--island-danger);
 }
 
 .plan-approval__subagent-dot--running {
-  background: #f59e0b;
+  background: var(--island-warning);
 }
 
 .plan-approval__subagent-dot--completed {
-  background: #22c55e;
+  background: var(--island-success);
 }
 
 .plan-approval__subagent-title,
@@ -170,11 +170,11 @@
 }
 
 .plan-approval__subagent-status--running {
-  color: rgba(245, 158, 11, 0.84);
+  color: var(--island-warning-text);
 }
 
 .plan-approval__subagent-status--error {
-  color: rgba(248, 113, 113, 0.84);
+  color: var(--island-danger-text);
 }
 
 .plan-approval__header {
@@ -266,8 +266,8 @@
 .plan-approval__content code {
   padding: 1px 6px;
   border-radius: 6px;
-  color: var(--plan-text);
-  background: var(--island-subtle);
+  color: var(--island-inline-code-text);
+  background: var(--island-inline-code-bg);
   font-family: var(--font-mono, monospace);
   font-size: 0.92em;
 }
@@ -277,12 +277,14 @@
   margin: 12px 0;
   padding: 12px;
   border-radius: 8px;
-  background: var(--island-code-bg);
+  background: var(--island-code-block-bg, var(--island-code-bg));
+  border: 1px solid var(--island-code-border);
 }
 
 .plan-approval__content pre code {
   padding: 0;
   background: none;
+  color: var(--island-code-text);
 }
 
 .plan-approval__perms {
@@ -359,7 +361,7 @@
 }
 
 .plan-approval__input:focus {
-  border-color: rgba(245, 158, 11, 0.38);
+  border-color: color-mix(in srgb, var(--plan-accent) 45%, var(--plan-border));
 }
 
 .plan-approval__actions {
@@ -401,13 +403,13 @@
 }
 
 .plan-approval__btn--accept {
-  color: white;
-  background: #e98100;
+  color: var(--island-on-accent, #ffffff);
+  background: var(--plan-accent);
 }
 
 .plan-approval__btn--auto {
-  color: white;
-  background: #e3272d;
+  color: var(--island-on-accent, #ffffff);
+  background: var(--island-danger);
 }
 
 @media (max-width: 760px) {

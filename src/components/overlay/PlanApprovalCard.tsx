@@ -35,8 +35,8 @@ function CompactSubagentSummary({ subagents }: { subagents: SubagentInfo[] }) {
       </div>
       <div className="plan-approval__subagents-list">
         {subagents.map((subagent) => {
-          const title = subagent.agentType || subagent.description || subagent.agentId.slice(0, 8)
-          const detail = subagent.lastAssistantMessage || subagent.description
+          const title = subagent.name ? `@${subagent.name}` : (subagent.agentType || `@${subagent.agentId.slice(0, 8)}`)
+          const detail = subagent.description || subagent.lastAssistantMessage
 
           return (
             <div key={subagent.agentId} className="plan-approval__subagent">

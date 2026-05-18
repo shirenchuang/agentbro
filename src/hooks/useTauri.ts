@@ -195,6 +195,7 @@ function transformSession(bs: BackendSession): SessionState {
     chatHistory: existing?.chatHistory ?? [],
     subagents: subagents.map((subagent) => ({
       agentId: subagent.agentId,
+      name: subagent.name ?? undefined,
       agentType: subagent.agentType ?? undefined,
       description: subagent.description,
       transcriptPath: subagent.transcriptPath ?? undefined,

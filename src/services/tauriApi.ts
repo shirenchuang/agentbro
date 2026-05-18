@@ -85,6 +85,7 @@ export interface BackendSession {
   cmuxWorkspaceId: string | null
   subagents: Array<{
     agentId: string
+    name: string | null
     agentType: string | null
     description: string
     transcriptPath: string | null

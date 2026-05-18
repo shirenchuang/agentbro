@@ -79,6 +79,7 @@ pub struct CacheTtlInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptSubagentInfo {
     pub agent_id: String,
+    pub name: Option<String>,
     pub agent_type: Option<String>,
     pub description: String,
     pub transcript_path: Option<String>,
@@ -777,6 +778,7 @@ pub fn extract_latest_assistant_text(path: &Path) -> Option<String> {
 #[derive(Debug, Clone)]
 struct PendingSubagentTool {
     tool_use_id: String,
+    name: Option<String>,
     description: String,
     prompt: String,
     agent_type: Option<String>,
@@ -832,6 +834,7 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             &mut subagents,
             TranscriptSubagentInfo {
                 agent_id: tool.tool_use_id,
+                name: tool.name,
                 agent_type: tool.agent_type,
                 description: choose_subagent_description(&tool.description, &tool.prompt),
                 transcript_path: Some(main_transcript_path.clone()),
@@ -900,9 +903,19 @@ fn subagent_tool_uses_from_json(json: &serde_json::Value) -> Vec<PendingSubagent
                 })
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string());
+            let name = input
+                .and_then(|obj| {
+                    obj.get("name")
+                        .or_else(|| obj.get("agent_name"))
+                        .or_else(|| obj.get("agentName"))
+                })
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
 
             Some(PendingSubagentTool {
                 tool_use_id,
+                name,
                 description,
                 prompt,
                 agent_type,
@@ -954,9 +967,18 @@ fn completed_subagent_from_json(
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
         .or_else(|| pending_tool.and_then(|tool| tool.agent_type.clone()));
+    let name = result
+        .get("name")
+        .or_else(|| result.get("agentName"))
+        .or_else(|| result.get("agent_name"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| pending_tool.and_then(|tool| tool.name.clone()));
 
     Some(TranscriptSubagentInfo {
         agent_id: agent_id.clone(),
+        name,
         agent_type,
         description,
         transcript_path: Some(main_transcript_path.to_string()),
@@ -986,6 +1008,9 @@ fn enrich_subagent_from_sidechain(
     }
 
     if let Some(meta) = read_subagent_meta(&agent_path) {
+        if subagent.name.is_none() {
+            subagent.name = meta.name;
+        }
         if subagent.agent_type.is_none() {
             subagent.agent_type = meta.agent_type;
         }
@@ -1014,6 +1039,7 @@ fn enrich_subagent_from_sidechain(
 }
 
 struct SubagentMeta {
+    name: Option<String>,
     agent_type: Option<String>,
     description: Option<String>,
 }
@@ -1024,6 +1050,13 @@ fn read_subagent_meta(agent_path: &Path) -> Option<SubagentMeta> {
     let raw = std::fs::read_to_string(meta_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
     Some(SubagentMeta {
+        name: json
+            .get("name")
+            .or_else(|| json.get("agentName"))
+            .or_else(|| json.get("agent_name"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
         agent_type: json
             .get("agentType")
             .or_else(|| json.get("agent_type"))
@@ -1977,7 +2010,7 @@ mod tests {
 
         std::fs::write(
             &main_path,
-            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-05-18T13:37:30.255Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"计算 1+1 (agent 1)","prompt":"请计算 1+1 等于几"}}]}}
+            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-05-18T13:37:30.255Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"计算 1+1 (agent 1)","prompt":"请计算 1+1 等于几","name":"calc-a"}}]}}
 {"type":"user","timestamp":"2026-05-18T13:37:34.729Z","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":[{"type":"text","text":"2"}]}]},"toolUseResult":{"status":"completed","prompt":"请计算 1+1 等于几","agentId":"a123","agentType":"general-purpose","content":[{"type":"text","text":"2"}],"totalToolUseCount":0}}
 "#,
         )
@@ -1991,13 +2024,14 @@ mod tests {
         .expect("write sidechain transcript");
         std::fs::write(
             &meta_path,
-            r#"{"agentType":"general-purpose","description":"计算 1+1 (agent 1)"}"#,
+            r#"{"agentType":"general-purpose","description":"计算 1+1 (agent 1)","name":"calc-a"}"#,
         )
         .expect("write meta");
 
         let subagents = extract_subagents_from_transcript(&main_path);
         assert_eq!(subagents.len(), 1);
         assert_eq!(subagents[0].agent_id, "a123");
+        assert_eq!(subagents[0].name.as_deref(), Some("calc-a"));
         assert_eq!(subagents[0].agent_type.as_deref(), Some("general-purpose"));
         assert_eq!(subagents[0].description, "计算 1+1 (agent 1)");
         assert_eq!(subagents[0].status, "completed");

@@ -172,6 +172,8 @@ pub struct PendingPlan {
 pub struct SubagentInfo {
     pub agent_id: String,
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub agent_type: Option<String>,
     pub description: String,
     #[serde(default)]
@@ -190,6 +192,7 @@ pub struct SubagentInfo {
 #[derive(Debug, Clone)]
 pub struct SubagentStopUpdate {
     pub status: String,
+    pub name: Option<String>,
     pub agent_type: Option<String>,
     pub transcript_path: Option<String>,
     pub agent_transcript_path: Option<String>,
@@ -539,6 +542,7 @@ impl SessionStore {
         &self,
         session_id: &str,
         agent_id: &str,
+        name: Option<String>,
         description: &str,
         agent_type: Option<String>,
         transcript_path: Option<String>,
@@ -552,6 +556,9 @@ impl SessionStore {
             {
                 existing.status = "running".to_string();
                 existing.completed_at = None;
+                if name.is_some() {
+                    existing.name = name;
+                }
                 if !description.is_empty() {
                     existing.description = description.to_string();
                 }
@@ -564,6 +571,7 @@ impl SessionStore {
             } else {
                 session.subagents.push(SubagentInfo {
                     agent_id: agent_id.to_string(),
+                    name,
                     agent_type,
                     description: description.to_string(),
                     transcript_path,
@@ -590,6 +598,9 @@ impl SessionStore {
             {
                 existing.status = update.status;
                 existing.completed_at = Some(Utc::now().timestamp());
+                if update.name.is_some() {
+                    existing.name = update.name;
+                }
                 if update.agent_type.is_some() {
                     existing.agent_type = update.agent_type;
                 }
@@ -858,6 +869,7 @@ mod tests {
         store.add_subagent(
             "s1",
             "agent-1",
+            Some("island-audit".to_string()),
             "Inspect evolab island",
             Some("research".to_string()),
             Some("/tmp/main.jsonl".to_string()),
@@ -867,6 +879,7 @@ mod tests {
             "agent-1",
             SubagentStopUpdate {
                 status: "completed".to_string(),
+                name: None,
                 agent_type: None,
                 transcript_path: None,
                 agent_transcript_path: Some("/tmp/agent.jsonl".to_string()),
@@ -886,6 +899,7 @@ mod tests {
         let json = serde_json::to_value(session).expect("session should serialize");
 
         assert_eq!(json["subagents"][0]["agentId"], "agent-1");
+        assert_eq!(json["subagents"][0]["name"], "island-audit");
         assert_eq!(json["subagents"][0]["agentType"], "research");
         assert_eq!(json["subagents"][0]["transcriptPath"], "/tmp/main.jsonl");
         assert_eq!(

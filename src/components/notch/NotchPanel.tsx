@@ -866,7 +866,6 @@ export function NotchPanel() {
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
         const ignoreTransparentHost = !islandEnabled
-          || interaction.isHidden
           || (
             islandSurfaceMode !== 'pet'
             && !isDragging
@@ -875,10 +874,6 @@ export function NotchPanel() {
             && currentPanelState === 'collapsed'
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
-        if (interaction.isHidden) {
-          nativeHoverInsideRef.current = false
-          return
-        }
         const wasOver = nativeHoverInsideRef.current
         if (isOver && !wasOver) {
           requestNativeIgnoreCursorEvents(false, { force: true })
@@ -1683,7 +1678,7 @@ export function NotchPanel() {
         '--notch-hitbox-width': `${hitboxWidth}px`,
         '--notch-hitbox-height': `${hitboxHeight}px`,
         '--notch-hitbox-pad-x': `${hitboxPadX}px`,
-        pointerEvents: islandHidden ? 'none' : undefined,
+        pointerEvents: !islandEnabled ? 'none' : undefined,
       } as CSSProperties}
     >
       <div

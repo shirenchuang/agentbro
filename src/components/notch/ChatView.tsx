@@ -220,7 +220,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
     if (!activeSessionId || !subagent.agentTranscriptPath) return
-    const title = subagent.agentType || 'Subagent'
+    const title = subagent.name ? `@${subagent.name}` : (subagent.agentType || 'Subagent')
     const subtitle = subagent.description || subagent.lastAssistantMessage
     setSubagentHistory({
       sessionId: activeSessionId,

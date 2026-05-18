@@ -1655,6 +1655,7 @@ fn hydrate_subagents_from_file(store: &SessionStore, session_id: &str, file_path
 fn merge_subagent(session: &mut SessionState, recovered: TranscriptSubagentInfo) {
     let incoming = SubagentInfo {
         agent_id: recovered.agent_id,
+        name: recovered.name,
         agent_type: recovered.agent_type,
         description: recovered.description,
         transcript_path: recovered.transcript_path,
@@ -1981,6 +1982,7 @@ mod tests {
         let mut session = session("claude-code", "iTerm", Some("/dev/ttys001"));
         session.subagents.push(SubagentInfo {
             agent_id: "agent-1".to_string(),
+            name: Some("audit-agent".to_string()),
             agent_type: Some("research".to_string()),
             description: "Audit".to_string(),
             transcript_path: None,

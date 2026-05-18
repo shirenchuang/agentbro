@@ -1129,6 +1129,7 @@ impl HookServer {
             AgentEvent::SubagentStart {
                 session_id,
                 agent_id,
+                name,
                 description,
                 agent_type,
                 transcript_path,
@@ -1142,6 +1143,7 @@ impl HookServer {
                 store.add_subagent(
                     session_id,
                     agent_id,
+                    name.clone(),
                     description,
                     agent_type.clone(),
                     transcript_path.clone(),
@@ -1151,6 +1153,7 @@ impl HookServer {
                 session_id,
                 agent_id,
                 status,
+                name,
                 agent_type,
                 transcript_path,
                 agent_transcript_path,
@@ -1167,6 +1170,7 @@ impl HookServer {
                     agent_id,
                     SubagentStopUpdate {
                         status: status.clone(),
+                        name: name.clone(),
                         agent_type: agent_type.clone(),
                         transcript_path: transcript_path.clone(),
                         agent_transcript_path: agent_transcript_path.clone(),
@@ -1810,6 +1814,7 @@ impl HookServer {
     ) {
         let incoming = SubagentInfo {
             agent_id: recovered.agent_id,
+            name: recovered.name,
             agent_type: recovered.agent_type,
             description: recovered.description,
             transcript_path: recovered.transcript_path,

@@ -81,6 +81,41 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
+  it('shows named subagents and opens their history rows', () => {
+    const onSubagentClick = vi.fn()
+    const current = session({
+      subagents: [{
+        agentId: 'ae7a77784c43f40e1',
+        name: 'calc-a',
+        agentType: 'general-purpose',
+        description: 'Calculate 1+1 (Agent A)',
+        transcriptPath: '/tmp/main.jsonl',
+        agentTranscriptPath: '/tmp/agent-ae7a77784c43f40e1.jsonl',
+        lastAssistantMessage: '2',
+        startedAt: Date.now() - 2_000,
+        completedAt: Date.now() - 1_000,
+        status: 'completed',
+        tools: [],
+      }],
+    })
+
+    render(
+      <HoverList
+        sessions={[current]}
+        onSessionClick={vi.fn()}
+        onSubagentClick={onSubagentClick}
+      />,
+    )
+
+    expect(screen.getByText('Subagents (1)')).toBeInTheDocument()
+    expect(screen.getByText('@calc-a')).toBeInTheDocument()
+    expect(screen.getByText('Calculate 1+1 (Agent A)')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('@calc-a'))
+
+    expect(onSubagentClick).toHaveBeenCalledWith('s1', current.subagents[0])
+  })
+
   it('jumps from the arrow without opening detail', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()

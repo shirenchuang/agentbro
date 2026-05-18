@@ -1,7 +1,7 @@
 /* PermissionCard — Queue + Tool Preview + Feedback + Actions */
 
 .perm-card {
-  --perm-accent: #f59e0b;
+  --perm-accent: var(--island-warning);
   --perm-panel: var(--island-bg);
   --perm-command-bg: color-mix(in srgb, var(--island-card) 82%, var(--perm-accent) 8%);
   --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
@@ -11,7 +11,7 @@
 }
 
 .overlay-card.overlay-card--permission {
-  --perm-accent: #f59e0b;
+  --perm-accent: var(--island-warning);
   --perm-panel: var(--island-bg);
   --perm-command-bg: color-mix(in srgb, var(--island-card) 82%, var(--perm-accent) 8%);
   --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
@@ -172,7 +172,7 @@
 .perm-card__detail-tool-label {
   font-size: 11px;
   font-weight: 600;
-  color: #34d399;
+  color: var(--island-success-text);
   margin-bottom: 6px;
 }
 
@@ -194,14 +194,14 @@
   white-space: pre-wrap;
   word-break: break-all;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--island-code-bg) 88%, #000 12%);
-  border: 1px solid var(--perm-command-border);
+  background: var(--island-code-block-bg, var(--island-code-bg));
+  border: 1px solid var(--island-code-border);
   padding: 10px 12px;
   font-family: var(--font-mono, monospace);
   font-size: 11.5px;
   font-weight: 560;
   line-height: 1.48;
-  color: var(--perm-text);
+  color: var(--island-code-text);
   margin: 0;
 }
 
@@ -233,7 +233,7 @@
 }
 
 .perm-card__preview-prompt {
-  color: #a46417;
+  color: var(--island-warning-text);
   margin-right: 7px;
 }
 
@@ -255,8 +255,8 @@
 .perm-card__preview-new-badge {
   font-size: 9px;
   font-weight: 500;
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.2);
+  color: var(--island-success-text);
+  background: var(--island-success-bg);
   border-radius: 4px;
   padding: 1px 6px;
   flex-shrink: 0;
@@ -265,17 +265,17 @@
 .perm-card__preview-pattern {
   font-family: var(--font-mono, monospace);
   font-size: 10px;
-  background: var(--island-code-bg, rgba(0, 0, 0, 0.3));
+  background: var(--island-inline-code-bg);
   padding: 2px 6px;
   border-radius: 4px;
-  color: var(--island-text);
+  color: var(--island-inline-code-text);
 }
 
 .perm-card__preview-diff {
   max-height: 128px;
   overflow-y: auto;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.3)) 90%, #000 10%);
+  background: var(--island-code-block-bg, var(--island-code-bg));
   padding: 8px;
   font-family: var(--font-mono, monospace);
   font-size: 10.5px;
@@ -283,11 +283,11 @@
 }
 
 .perm-card__preview-diff--remove {
-  color: rgba(248, 113, 113, 0.92);
+  color: var(--island-danger-text);
 }
 
 .perm-card__preview-diff--add {
-  color: rgba(52, 211, 153, 0.92);
+  color: var(--island-success-text);
   margin-top: 4px;
 }
 
@@ -299,7 +299,7 @@
 
 .perm-card__preview-kv {
   border-radius: 6px;
-  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.3)) 90%, #000 10%);
+  background: var(--island-code-block-bg, var(--island-code-bg));
   padding: 8px;
   font-size: 10.5px;
   line-height: 1.46;
@@ -406,13 +406,13 @@
 }
 
 .perm-card__btn--always {
-  background: #3c78dc;
-  color: white;
+  background: var(--island-info);
+  color: var(--island-on-accent, #ffffff);
 }
 
 .perm-card__btn--auto {
-  background: #bd2f31;
-  color: white;
+  background: var(--island-danger);
+  color: var(--island-on-accent, #ffffff);
 }
 
 .perm-card__kbd {

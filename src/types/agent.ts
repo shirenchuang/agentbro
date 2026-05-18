@@ -160,6 +160,7 @@ export interface SessionState {
 
 export interface SubagentInfo {
   agentId: string
+  name?: string
   agentType?: string
   description: string
   transcriptPath?: string

@@ -55,9 +55,10 @@ function SubagentRow({ agent, onOpenHistory }: { agent: SubagentInfo; onOpenHist
 
   const lastTool = agent.tools.length > 0 ? agent.tools[agent.tools.length - 1] : null
   const canOpenHistory = Boolean(agent.agentTranscriptPath && onOpenHistory)
-  const title = agent.agentType
-    ? `${agent.agentType}: ${agent.description || agent.agentId.slice(0, 8)}`
-    : agent.description || `Agent ${agent.agentId.slice(0, 8)}`
+  const displayName = agent.name ? `@${agent.name}` : (agent.agentType || `@${agent.agentId.slice(0, 8)}`)
+  const title = agent.description
+    ? `${displayName} ${agent.description}`
+    : displayName
   const summary = agent.status !== 'running' ? agent.lastAssistantMessage : null
 
   return (

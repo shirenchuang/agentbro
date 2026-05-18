@@ -30,7 +30,7 @@
 .response-card__done-badge {
   font-size: 10px;
   font-weight: 600;
-  color: #22c55e;
+  color: var(--island-success-text);
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -45,7 +45,7 @@
 }
 
 .response-card__content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--island-scrollbar);
   border-radius: 2px;
 }
 

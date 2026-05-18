@@ -35,7 +35,7 @@
 }
 
 .notch-hitbox[data-island-hidden="true"] {
-  pointer-events: none;
+  pointer-events: auto;
   background: transparent;
 }
 

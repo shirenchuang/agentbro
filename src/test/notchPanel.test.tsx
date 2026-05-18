@@ -312,6 +312,34 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('agent-island · Port dynamic island')).toBeInTheDocument()
   })
 
+  it('keeps the hidden minimal island hotspot available for native hover', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.isCursorOverNotch.mockResolvedValue(true)
+    useConfigStore.setState({ interactionMode: 'minimal' })
+    const currentSession = session({ phase: 'processing' })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+    })
+    await waitFor(() => {
+      expect(useSessionStore.getState().panelState).toBe('hover')
+    })
+  })
+
   it('serializes native cursor passthrough so a stale collapsed request cannot disable hover', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const pendingCollapsedPassthrough = deferred()
@@ -898,7 +926,6 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('Explore')).toBeInTheDocument()
     expect(screen.getByText('完成')).toBeInTheDocument()
     expect(document.querySelector('.plan-approval__content')?.textContent).toContain('Fix jump')
-    expect(document.querySelector('.plan-approval__perms')?.textContent).toContain('请求的权限:')
     expect(document.querySelector('.plan-approval__perms')?.textContent).toContain('Bash')
 
     fireEvent.click(screen.getByText('Accept Edits'))

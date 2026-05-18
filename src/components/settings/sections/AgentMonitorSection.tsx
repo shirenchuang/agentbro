@@ -1003,7 +1003,7 @@ function OverviewTab({
           <h4>Subagents</h4>
           {session.subagents.map((subagent) => (
             <div key={subagent.agentId} className="agent-monitor__subagent">
-              <strong>{subagent.agentType || 'subagent'}</strong>
+              <strong>{subagent.name ? `@${subagent.name}` : (subagent.agentType || 'subagent')}</strong>
               <span>{subagent.status}</span>
               <p>{subagent.description}</p>
             </div>
