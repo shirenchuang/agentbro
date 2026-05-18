@@ -72,6 +72,15 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
+  it('opens session detail on mouse down so hover state cannot swallow the click', () => {
+    const onSessionClick = vi.fn()
+    render(<HoverList sessions={[session()]} onSessionClick={onSessionClick} />)
+
+    fireEvent.mouseDown(screen.getByText('agent-island · Fix island interactions'), { button: 0 })
+
+    expect(onSessionClick).toHaveBeenCalledWith('s1')
+  })
+
   it('jumps from the arrow without opening detail', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -121,6 +130,18 @@ describe('HoverList interactions', () => {
 
     expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
     expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('hides jump for recovered sessions without terminal metadata', () => {
+    render(
+      <HoverList
+        sessions={[session({ terminal: '', pid: undefined, tty: undefined, termBundleId: undefined })]}
+        onSessionClick={vi.fn()}
+        onJumpToTerminal={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'notch.jumpToTerminal' })).not.toBeInTheDocument()
   })
 
   it('labels Codex App sessions by app instead of cwd-derived Evolab', () => {
@@ -261,14 +282,14 @@ describe('HoverList interactions', () => {
         sessions={[session({
           phase: 'processing',
           lastToolName: undefined,
-          description: 'Processing user input',
+          description: 'Processing user input: Please fix the island',
         })]}
         onSessionClick={vi.fn()}
       />,
     )
 
     expect(screen.getByText('notch.thinking')).toBeInTheDocument()
-    expect(screen.queryByText('Processing user input')).not.toBeInTheDocument()
+    expect(screen.queryByText('Processing user input: Please fix the island')).not.toBeInTheDocument()
   })
 
   it('localizes compacting context tool labels', () => {

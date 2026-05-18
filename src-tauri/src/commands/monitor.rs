@@ -416,6 +416,7 @@ fn pending_kind(session: &SessionState) -> Option<String> {
 
 fn phase_label(phase: &SessionPhase) -> &'static str {
     match phase {
+        SessionPhase::Ready => "ready",
         SessionPhase::Idle => "idle",
         SessionPhase::Processing => "processing",
         SessionPhase::WaitingApproval => "waiting_approval",

@@ -1,6 +1,7 @@
 import type { SessionPhase } from '../../types/agent'
 
 const phaseToStatus: Record<SessionPhase, string> = {
+  ready: 'active',
   idle: 'idle',
   processing: 'active',
   waiting_approval: 'waiting',

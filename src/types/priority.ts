@@ -25,12 +25,12 @@ export function computePriority(session: {
     return PRIORITY.attention
   if (session.phase === 'compacting') return PRIORITY.compacting
   if (session.phase === 'done') return PRIORITY.done
+  if (session.phase === 'ready') return PRIORITY.done
   if (session.phase === 'processing') {
     return session.lastToolName ? PRIORITY.working : PRIORITY.thinking
   }
   if (session.phase === 'idle') {
-    const idleMs = Date.now() - (session.idleSince ?? session.startedAt)
-    return idleMs > 10 * 60 * 1000 ? PRIORITY.idle : PRIORITY.done
+    return PRIORITY.idle
   }
   return PRIORITY.idle
 }

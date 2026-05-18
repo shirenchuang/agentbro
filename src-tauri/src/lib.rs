@@ -2844,8 +2844,13 @@ pub fn run() {
                 let mut projects_dirs = all_projects_dirs();
                 projects_dirs.extend(projects_dirs_from_roots(&extra_roots));
 
+                let bootstrap_age_secs = if config.idle_timeout_minutes > 0 {
+                    u64::from(config.idle_timeout_minutes) * 60
+                } else {
+                    5 * 60
+                };
                 let discovered = discover_active_sessions_in_dirs(
-                    std::time::Duration::from_secs(7200),
+                    std::time::Duration::from_secs(bootstrap_age_secs.max(60)),
                     &projects_dirs,
                 );
                 if !discovered.is_empty() {
@@ -2874,6 +2879,10 @@ pub fn run() {
                             &ds.cwd,
                             "", // terminal unknown at startup
                         );
+                        session_store.update_session(&ds.session_id, |s| {
+                            s.started_at = ds.modified_at;
+                            s.duration = chrono::Utc::now().timestamp() - ds.modified_at;
+                        });
                         // Set session title if we extracted one
                         if let Some(ref title) = ds.session_title {
                             session_store.update_session(&ds.session_id, |s| {

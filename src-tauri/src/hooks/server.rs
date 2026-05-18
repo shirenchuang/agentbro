@@ -784,7 +784,7 @@ impl HookServer {
                 agent_type,
             } => {
                 store.get_or_create_session(session_id, agent_type, project, cwd, terminal);
-                store.update_phase(session_id, SessionPhase::Idle);
+                store.update_phase(session_id, SessionPhase::Ready);
 
                 // Try to extract session title from the JSONL conversation file
                 if let Some(file_path) = discover_session_file(session_id, cwd).or_else(|| {
@@ -1014,7 +1014,7 @@ impl HookServer {
                     s.phase = if s.has_unfinished_tasks() {
                         SessionPhase::WaitingInput
                     } else {
-                        SessionPhase::Idle
+                        SessionPhase::Ready
                     };
                     s.description = Some(truncated.clone());
                     s.last_response = Some(truncated.clone());
@@ -1346,7 +1346,7 @@ impl HookServer {
         // Map status to phase
         let phase = match status {
             "processing" | "running_tool" | "starting" => SessionPhase::Processing,
-            "waiting_for_input" => SessionPhase::Idle,
+            "waiting_for_input" => SessionPhase::Ready,
             "waiting_for_approval" => {
                 Self::play_sound(sound, SoundEvent::NeedsApproval);
                 SessionPhase::WaitingApproval
@@ -1449,7 +1449,7 @@ impl HookServer {
 
         if status.as_deref() == Some("waiting_for_input") {
             store.update_session(session_id, |s| {
-                s.phase = SessionPhase::Idle;
+                s.phase = SessionPhase::Ready;
                 s.description = Some("Waiting for input".to_string());
             });
         }
@@ -1571,7 +1571,9 @@ impl HookServer {
             || normalized == "task completed"
             || normalized == "session ended"
             || normalized == "processing user input"
+            || normalized.starts_with("processing user input:")
             || normalized == "compacting context"
+            || normalized.starts_with("compacting context:")
             || normalized == "waiting for input"
     }
 
@@ -1897,6 +1899,20 @@ mod tests {
         assert_eq!(session.project, "my-project");
         assert_eq!(session.cwd, "/tmp/my-project");
         assert_eq!(session.terminal, "/dev/ttys001");
+    }
+
+    #[test]
+    fn completion_summary_ignores_processing_prompt_preview() {
+        let store = SessionStore::new();
+        let summary = HookServer::resolve_completion_summary(
+            &store,
+            "missing-session",
+            "Processing user input: hi",
+            "Task completed",
+            None,
+        );
+
+        assert_eq!(summary, "Task completed");
     }
 
     #[test]

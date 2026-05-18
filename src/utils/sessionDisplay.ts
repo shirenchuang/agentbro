@@ -58,7 +58,7 @@ const TERMINAL_NAME_LABELS: Array<[string, string]> = [
   ['kaku', 'Kaku'],
 ]
 
-const PASSIVE_PHASES = new Set<SessionPhase>(['idle', 'done', 'interrupted'])
+const PASSIVE_PHASES = new Set<SessionPhase>(['ready', 'idle', 'done', 'interrupted'])
 
 export function getAgentDisplayName(session: SessionState): string {
   if (session.agentType === 'claude-code' && session.engineLabel && session.engineLabel !== 'Claude Code') {
@@ -159,11 +159,17 @@ export function isPassiveSession(session: SessionState): boolean {
     && !session.subagents.some((agent) => agent.status === 'running')
 }
 
+export function timestampToMs(timestamp: number | undefined): number | undefined {
+  if (timestamp == null) return undefined
+  return timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp
+}
+
 export function getSessionExpiryAnchor(session: SessionState): number {
-  return session.taskCompletedAt
-    ?? session.idleSince
-    ?? session.lastActivityAt
-    ?? session.startedAt
+  return timestampToMs(session.taskCompletedAt)
+    ?? timestampToMs(session.idleSince)
+    ?? timestampToMs(session.lastActivityAt)
+    ?? timestampToMs(session.startedAt)
+    ?? Date.now()
 }
 
 export function isSessionPastDisplayTimeout(session: SessionState, timeoutMinutes: number, now = Date.now()): boolean {

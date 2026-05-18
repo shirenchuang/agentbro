@@ -12,7 +12,7 @@ import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { respondAutoApprove, respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -94,21 +94,14 @@ function getTerminalBadge(label: string): { bg: string; text: string } {
   return matchedKey ? TERMINAL_BADGE_COLORS[matchedKey] : DEFAULT_TERMINAL_BADGE
 }
 
-function appBadgeMark(label: string): string {
-  const normalized = label.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  if (normalized.includes('iterm')) return 'iT'
-  if (normalized.includes('terminal')) return 'T'
-  if (normalized.includes('ghostty')) return 'G'
-  if (normalized.includes('warp')) return 'W'
-  if (normalized.includes('wezterm')) return 'Wz'
-  if (normalized.includes('kitty')) return 'K'
-  if (normalized.includes('alacritty')) return 'A'
-  if (normalized.includes('vscode')) return 'VS'
-  if (normalized.includes('cursor')) return 'Cu'
-  if (normalized.includes('windsurf')) return 'Ws'
-  if (normalized.includes('codex')) return 'Cx'
-  if (normalized.includes('chatgpt')) return 'GPT'
-  return label.slice(0, 2)
+function canJumpToSession(session: SessionState): boolean {
+  const terminal = (session.terminal || '').trim()
+  return Boolean(
+    session.pid
+    || session.tty
+    || session.termBundleId
+    || (terminal && !isTtyLabel(terminal)),
+  )
 }
 
 function stripMarkdown(text: string): string {
@@ -740,11 +733,13 @@ function SessionCard({
   const mutedSessions = useSessionStore((s) => s.mutedSessions)
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
+  const openedOnMouseDownRef = useRef(false)
   const isMuted = Boolean(mutedSessions[session.id])
   const isCompactingContext = session.phase === 'compacting' || isCompactingContextDescription(session.description)
 
-  const isStatic = session.phase === 'idle' || session.phase === 'done'
-  const showPassiveDot = isPassiveSession(session)
+  const isStatic = session.phase === 'ready' || session.phase === 'idle' || session.phase === 'done'
+  const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
+  const canJump = canJumpToSession(session)
   const showInlinePermission = !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
@@ -757,9 +752,20 @@ function SessionCard({
     )
   }
   const handleClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+    if (openedOnMouseDownRef.current) {
+      openedOnMouseDownRef.current = false
+      return
+    }
     if (shouldIgnoreOpen(event.target)) return
     event.preventDefault()
     event.stopPropagation()
+    handleOpen()
+  }
+  const handleMouseDownCapture = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || shouldIgnoreOpen(event.target)) return
+    event.preventDefault()
+    event.stopPropagation()
+    openedOnMouseDownRef.current = true
     handleOpen()
   }
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -787,6 +793,7 @@ function SessionCard({
         tabIndex={0}
         aria-selected={selected}
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
+        onMouseDownCapture={handleMouseDownCapture}
         onClickCapture={handleClickCapture}
         onKeyDown={handleKeyDown}
       >
@@ -818,12 +825,12 @@ function SessionCard({
                   </span>
                 )}
                 {appLabel && (
-                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__source-badge" data-app-mark={appBadgeMark(appLabel)}>
+                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__source-badge">
                     {appLabel}
                   </span>
                 )}
                 {terminalLabel && termBadge && (
-                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__terminal-badge" data-app-mark={appBadgeMark(terminalLabel)} style={{ background: termBadge.bg, color: termBadge.text }}>
+                  <span className="hover-list__agent-badge hover-list__app-badge hover-list__terminal-badge" style={{ background: termBadge.bg, color: termBadge.text }}>
                     {terminalLabel}
                   </span>
                 )}
@@ -856,17 +863,19 @@ function SessionCard({
                     </svg>
                   )}
                 </button>
-                <button
-                  type="button"
-                  data-no-drag
-                  className="hover-list__jump"
-                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
-                  onClick={handleJump}
-                  title={t('notch.jumpToTerminal')}
-                  aria-label={t('notch.jumpToTerminal')}
-                >
-                  ↗
-                </button>
+                {canJump && (
+                  <button
+                    type="button"
+                    data-no-drag
+                    className="hover-list__jump"
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+                    onClick={handleJump}
+                    title={t('notch.jumpToTerminal')}
+                    aria-label={t('notch.jumpToTerminal')}
+                  >
+                    ↗
+                  </button>
+                )}
               </div>
             </div>
 

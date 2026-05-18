@@ -73,6 +73,17 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeOverlay).toBeNull()
   })
 
+  it('does not show response overlays for transient processing text with a prompt preview', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'idle', responseText: 'Processing user input: hi', lastUserMessage: 'hi' }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
   it('creates a completion overlay on transition to done', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
     useSessionStore.getState().replaceAllSessions([
@@ -376,7 +387,7 @@ describe('sessionStore backend overlays', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
         phase: 'done',
-        description: 'Processing user input',
+        description: 'Processing user input: hi',
         responseText: 'Hi! How can I help you today?',
       }),
     ])
@@ -469,6 +480,24 @@ describe('sessionStore backend overlays', () => {
     expect(useSessionStore.getState().sessionList).toHaveLength(1)
   })
 
+  it('hides internal probe sessions from the visible session list', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'claude-code',
+        project: 'ClaudeProbe',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'ready',
+        sessionTitle: 'ClaudeProbe',
+        lastUserMessage: 'health check',
+        responseText: 'ok',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toEqual([])
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+  })
+
   it('removes stale blocking overlays when backend clears pending state', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
@@ -550,5 +579,62 @@ describe('sessionStore backend overlays', () => {
     expect(useSessionStore.getState().sessions.idle.phase).toBe('idle')
     expect(useSessionStore.getState().sessions.idle.idleSince).toBe(now)
     expect(useSessionStore.getState().sessions.activeTool.phase).toBe('processing')
+  })
+
+  it('does not refresh recovered ready sessions to the current time', () => {
+    const now = Date.now()
+    useConfigStore.setState({ idleTimeoutMinutes: 5 })
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'recovered',
+        phase: 'ready',
+        startedAt: Math.floor((now - 6 * 60 * 1000) / 1000),
+        lastActivityAt: undefined,
+        sessionTitle: 'Recovered transcript',
+      }),
+    ])
+
+    useSessionStore.getState().applyIdleTimeout(now)
+
+    const recovered = useSessionStore.getState().sessions.recovered
+    expect(recovered.phase).toBe('idle')
+    expect(recovered.lastActivityAt).toBeUndefined()
+  })
+
+  it('does not revive an idle session when backend repeats ready without new activity', () => {
+    const now = Date.now()
+    const old = now - 8 * 60 * 60 * 1000
+    useConfigStore.setState({ idleTimeoutMinutes: 5, sessionTimeoutMinutes: 30 })
+    const expired = session({
+      id: 'stale',
+      phase: 'idle',
+      startedAt: old,
+      idleSince: old,
+      lastActivityAt: old,
+      sessionTitle: 'Old transcript',
+      description: 'No new activity',
+    })
+    useSessionStore.setState({
+      sessions: { stale: expired },
+      sessionList: [expired],
+    })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'stale',
+        phase: 'ready',
+        startedAt: old,
+        lastActivityAt: undefined,
+        idleSince: undefined,
+        sessionTitle: 'Old transcript',
+        description: 'No new activity',
+      }),
+    ])
+
+    const stale = useSessionStore.getState().sessions.stale
+    expect(stale.phase).toBe('idle')
+    expect(stale.idleSince).toBe(old)
+    expect(stale.lastActivityAt).toBe(old)
+    expect(useSessionStore.getState().sessionList).toEqual([])
   })
 })

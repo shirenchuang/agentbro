@@ -756,6 +756,9 @@ pub async fn jump_to_terminal(
 
     let pid = session.pid.unwrap_or(0);
     if pid == 0 && session.tty.as_deref().unwrap_or("").is_empty() {
+        if session.terminal.trim().is_empty() || !can_fallback_to_terminal_app(&session.terminal) {
+            return Err("Session has no terminal metadata to jump to".to_string());
+        }
         return jump_to_terminal_fallback(&session.terminal, &session.cwd);
     }
 

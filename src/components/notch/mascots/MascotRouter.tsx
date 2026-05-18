@@ -15,6 +15,7 @@ function phaseToAnimState(phase: SessionPhase): MascotAnimState {
     case 'processing': return 'running'
     case 'waiting_approval':
     case 'waiting_input': return 'alert'
+    case 'ready':
     case 'idle':
     case 'done': return 'idle'
     default: return 'processing'

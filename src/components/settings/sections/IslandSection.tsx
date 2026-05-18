@@ -454,6 +454,7 @@ function BehaviorTab() {
 
   const idleTimeoutOptions = [
     { value: '0', label: t('settings.idleTimeoutDisabled') },
+    { value: '1', label: t('settings.idleTimeoutMinutes', { minutes: 1 }) },
     { value: '5', label: t('settings.idleTimeoutMinutes', { minutes: 5 }) },
     { value: '10', label: t('settings.idleTimeoutMinutes', { minutes: 10 }) },
     { value: '15', label: t('settings.idleTimeoutMinutes', { minutes: 15 }) },
@@ -525,10 +526,6 @@ function BehaviorTab() {
       </SettingGroup>
 
       <SettingGroup label={t('settings.island.section.dwell', { defaultValue: 'Dwell Time' })}>
-        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
-          <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
-            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
-        </SettingRow>
         <SettingRow label={t('settings.taskCompleteDwell')} description={t('settings.taskCompleteDwellDesc')}>
           <Slider value={config.taskCompleteDwellSeconds} min={1} max={30} step={1}
             onChange={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
@@ -559,12 +556,12 @@ function BehaviorTab() {
           <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
             onChange={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
         </SettingRow>
-        <SettingRow label={t('settings.processingTimeout')} description={t('settings.processingTimeoutDesc')}>
-          <Slider value={config.processingTimeoutSecs} min={30} max={300} step={10}
-            onChange={(v) => config.updateConfig('processingTimeoutSecs', v)} unit="s" />
+        <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
+          <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
+            onChange={(v) => config.updateConfig('idleTimeoutMinutes', Number(v))} minWidth={130} />
         </SettingRow>
         <SettingRow label={t('settings.sessionTimeout')} description={t('settings.sessionTimeoutDesc')}>
-          <Slider value={config.sessionTimeoutMinutes} min={5} max={120} step={5}
+          <Slider value={config.sessionTimeoutMinutes} min={1} max={120} step={1}
             onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
         </SettingRow>
       </SettingGroup>

@@ -170,24 +170,6 @@
 .hover-list__app-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding-left: 3px;
-}
-
-.hover-list__app-badge::before {
-  content: attr(data-app-mark);
-  display: inline-grid;
-  place-items: center;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
-  color: currentColor;
-  font-family: var(--font-mono);
-  font-size: 7px;
-  font-weight: 700;
-  line-height: 1;
 }
 
 .hover-list__terminal-badge {

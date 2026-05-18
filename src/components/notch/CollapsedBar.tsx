@@ -29,6 +29,7 @@ function getLeadSession(sessions: SessionState[]): SessionState | undefined {
 }
 
 const PHASE_LABELS: Record<SessionPhase, string> = {
+  ready: 'notch.ready',
   idle: 'notch.idle',
   processing: 'notch.thinking',
   waiting_approval: 'notch.needsApproval',

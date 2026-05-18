@@ -14,6 +14,7 @@ export type AgentType =
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 
 export type SessionPhase =
+  | 'ready'
   | 'idle'
   | 'processing'
   | 'waiting_approval'

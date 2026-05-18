@@ -292,6 +292,11 @@ fn jump_session_from_store(store: &Arc<SessionStore>, session_id: &str) -> Resul
         .ok_or_else(|| format!("Session {session_id} not found"))?;
     let pid = session.pid.unwrap_or(0);
     if pid == 0 {
+        if session.terminal.trim().is_empty()
+            || !crate::terminal::registry::is_terminal(&session.terminal)
+        {
+            return Err("Session has no terminal metadata to jump to".to_string());
+        }
         return crate::terminal::jump::jump_to_terminal_app(&session.terminal).into_result();
     }
 

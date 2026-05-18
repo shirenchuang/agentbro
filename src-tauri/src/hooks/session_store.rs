@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 #[serde(rename_all = "snake_case")]
 pub enum SessionPhase {
     #[default]
+    Ready,
     Idle,
     Processing,
     WaitingApproval,
@@ -28,26 +29,42 @@ impl SessionPhase {
         use SessionPhase::*;
         matches!(
             (self, next),
-            (Idle, Processing)
+            (Ready, Processing)
+                | (Ready, WaitingApproval)
+                | (Ready, Compacting)
+                | (Ready, Idle)
+                | (Ready, Done)
+                | (Idle, Ready)
+                | (Idle, Processing)
                 | (Idle, WaitingApproval)
                 | (Idle, Compacting)
                 | (Processing, WaitingApproval)
                 | (Processing, WaitingInput)
                 | (Processing, Done)
+                | (Processing, Ready)
                 | (Processing, Error)
                 | (Processing, Interrupted)
                 | (Processing, Compacting)
                 | (Processing, Idle)
+                | (WaitingApproval, Ready)
                 | (WaitingApproval, Processing)
                 | (WaitingApproval, Idle)
+                | (WaitingInput, Ready)
                 | (WaitingInput, Processing)
+                | (WaitingInput, Idle)
+                | (Compacting, Ready)
                 | (Compacting, Processing)
+                | (Compacting, Idle)
+                | (Done, Ready)
                 | (Done, Idle)
                 | (Done, Processing)
+                | (Error, Ready)
                 | (Error, Idle)
                 | (Error, Processing)
+                | (Interrupted, Ready)
                 | (Interrupted, Idle)
                 | (Interrupted, Processing)
+                | (_, Ready)
                 | (_, Idle) // Reset to Idle is always valid
         )
     }
@@ -263,7 +280,7 @@ impl SessionState {
             project,
             cwd,
             terminal,
-            phase: SessionPhase::Idle,
+            phase: SessionPhase::Ready,
             started_at: Utc::now().timestamp(),
             duration: 0,
             tokens: TokenUsage::default(),

@@ -995,6 +995,7 @@ pub struct DiscoveredSession {
     pub project: String,
     pub session_title: Option<String>,
     pub projects_dir: PathBuf,
+    pub modified_at: i64,
 }
 
 /// Scan projects directories for recently-active JSONL files.
@@ -1068,6 +1069,10 @@ pub fn discover_active_sessions_in_dirs(
                 // Parse the first ~30 lines to extract metadata
                 if let Some(mut session) = parse_session_header(&file_path) {
                     session.projects_dir = projects_dir.clone();
+                    session.modified_at = modified
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs() as i64)
+                        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
                     results.push(session);
                 }
             }
@@ -1147,6 +1152,7 @@ fn parse_session_header(file_path: &std::path::Path) -> Option<DiscoveredSession
         project,
         session_title: first_user_text,
         projects_dir: PathBuf::new(),
+        modified_at: chrono::Utc::now().timestamp(),
     })
 }
 

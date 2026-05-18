@@ -4,7 +4,7 @@ import { useConfigStore } from './configStore'
 import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
-import { isSessionPastDisplayTimeout } from '../utils/sessionDisplay'
+import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
 import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
@@ -126,7 +126,32 @@ function isCodexAppPlaceholder(session: SessionState): boolean {
   )
 }
 
+function isProbeSession(session: SessionState): boolean {
+  const fields = [
+    session.project,
+    session.sessionTitle,
+    session.lastUserMessage,
+    session.cwd,
+    session.description,
+  ]
+  const normalized = fields
+    .filter(Boolean)
+    .join(' ')
+    .trim()
+    .replace(/[\s_-]+/g, '')
+    .toLowerCase()
+
+  if (!normalized) return false
+  return normalized.includes('claudeprobe')
+    || normalized.includes('healthcheck')
+    || normalized.includes('codexbar')
+    || /\bprobe\b/i.test(fields.filter(Boolean).join(' '))
+}
+
 function isDisplayableSession(session: SessionState, now = Date.now()): boolean {
+  if (isProbeSession(session)) {
+    return false
+  }
   if (session.phase === 'waiting_approval' || session.phase === 'waiting_input' || session.phase === 'error') {
     return true
   }
@@ -180,7 +205,9 @@ function isGenericCompletionText(text: string | undefined | null): boolean {
     || normalized === 'task completed'
     || normalized === 'session ended'
     || normalized === 'processing user input'
+    || normalized.startsWith('processing user input:')
     || normalized === 'compacting context'
+    || normalized.startsWith('compacting context:')
     || normalized === 'waiting for input'
 }
 
@@ -223,6 +250,28 @@ function shouldSuppressCompletionOverlay(session: SessionState, incoming?: strin
     || sessionEndedText(session.responseText)
     || sessionEndedText(session.description)
   )
+}
+
+function isActivityPhase(phase: SessionState['phase']): boolean {
+  return phase === 'processing'
+    || phase === 'compacting'
+    || phase === 'waiting_input'
+    || phase === 'waiting_approval'
+}
+
+function didBackendActivityChange(incoming: SessionState, existing?: SessionState): boolean {
+  if (!existing) return true
+  const passivePhaseRefresh = (incoming.phase === 'ready' && existing.phase === 'idle')
+    || (incoming.phase === 'idle' && existing.phase === 'ready')
+  return incoming.phase !== existing.phase
+    && !passivePhaseRefresh
+    || incoming.description !== existing.description
+    || incoming.responseText !== existing.responseText
+    || incoming.lastUserMessage !== existing.lastUserMessage
+    || incoming.lastToolName !== existing.lastToolName
+    || incoming.lastToolTarget !== existing.lastToolTarget
+    || incoming.lastToolStatus !== existing.lastToolStatus
+    || incoming.activeTools?.length !== existing.activeTools?.length
 }
 
 export const selectSessionList = (s: SessionStore) => s.sessionList
@@ -269,7 +318,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             project: event.project,
             cwd: 'cwd' in event ? (event as { cwd?: string }).cwd : undefined,
             terminal: event.terminal,
-            phase: 'idle',
+            phase: 'ready',
             startedAt: Date.now(),
             duration: 0,
             tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
@@ -626,18 +675,26 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         const existing = state.sessions[incoming.id]
         const enteredIdle = incoming.phase === 'idle' && existing?.phase !== 'idle'
         const enteredDone = incoming.phase === 'done' && existing?.phase !== 'done'
+        const activityChanged = isActivityPhase(incoming.phase) || (incoming.phase === 'ready' && Boolean(existing))
+          ? didBackendActivityChange(incoming, existing)
+          : false
+        const phase = incoming.phase === 'ready' && existing?.phase === 'idle' && !activityChanged
+          ? 'idle'
+          : incoming.phase
+        const enteredEffectiveIdle = phase === 'idle' && existing?.phase !== 'idle'
         const s: SessionState = {
           ...incoming,
+          phase,
           chatHistory: incoming.chatHistory?.length ? incoming.chatHistory : existing?.chatHistory ?? [],
           subagents: incoming.subagents ?? [],
           activeTools: incoming.activeTools ?? [],
-          idleSince: incoming.phase === 'idle'
-            ? incoming.idleSince ?? existing?.idleSince ?? (enteredIdle ? now : undefined)
+          idleSince: phase === 'idle'
+            ? incoming.idleSince ?? existing?.idleSince ?? (enteredIdle || enteredEffectiveIdle ? now : undefined)
             : incoming.idleSince,
           taskCompletedAt: incoming.phase === 'done'
             ? incoming.taskCompletedAt ?? existing?.taskCompletedAt ?? (enteredDone ? now : undefined)
             : incoming.taskCompletedAt,
-          lastActivityAt: incoming.lastActivityAt ?? existing?.lastActivityAt,
+          lastActivityAt: incoming.lastActivityAt ?? (activityChanged ? now : existing?.lastActivityAt),
         }
         sessions[s.id] = s
 
@@ -703,16 +760,18 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
         }
 
-        const hideNonBlockingOverlays = isInternalCodexPromptSession(s)
+        const hideNonBlockingOverlays = isInternalCodexPromptSession(s) || isProbeSession(s)
 
         // Detect a newly available assistant response and show the response overlay.
-        if (!hideNonBlockingOverlays && s.phase !== 'done' && s.responseText && s.responseText !== prev?.responseText && !sessionEndedText(s.responseText)) {
+        const responseText = usefulCompletionText(s.responseText)
+        const previousResponseText = usefulCompletionText(prev?.responseText)
+        if (!hideNonBlockingOverlays && s.phase !== 'done' && responseText && responseText !== previousResponseText && !sessionEndedText(s.responseText)) {
           newOverlays.push({
             id: `response-${s.id}-${Date.now()}`,
             sessionId: s.id,
             type: 'response',
             data: {
-              responseText: s.responseText,
+              responseText,
               userMessage: s.lastUserMessage,
             },
             createdAt: Date.now(),
@@ -832,9 +891,9 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       const sessions = { ...state.sessions }
       if (idleTimeoutMinutes > 0) {
         for (const session of Object.values(state.sessions)) {
-          if (session.phase !== 'processing' && session.phase !== 'compacting') continue
+          if (session.phase !== 'ready' && session.phase !== 'processing' && session.phase !== 'compacting') continue
           if (session.activeTools.some((tool) => tool.status === 'running')) continue
-          const lastActivityAt = session.lastActivityAt ?? session.startedAt
+          const lastActivityAt = timestampToMs(session.lastActivityAt ?? session.startedAt) ?? now
           if (now - lastActivityAt <= timeoutMs) continue
           sessions[session.id] = {
             ...session,
