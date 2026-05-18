@@ -9,8 +9,6 @@ use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-const SOCKET_PATH: &str = "/tmp/agentbro.sock";
-const TCP_ADDR: &str = "127.0.0.1:17892";
 const TIMEOUT_SECONDS: u64 = 21_600;
 
 /// Polymorphic stream: Unix socket or TCP
@@ -52,31 +50,69 @@ impl Stream {
     }
 }
 
-/// Get the TTY of the parent Claude process
-fn get_tty() -> Option<String> {
-    let ppid = std::os::unix::process::parent_id();
+fn normalize_tty(raw: &str) -> Option<String> {
+    let tty = raw.trim();
+    if tty.is_empty() || tty == "??" || tty == "?" || tty == "-" {
+        return None;
+    }
+    Some(if tty.starts_with("/dev/") {
+        tty.to_string()
+    } else {
+        format!("/dev/{}", tty)
+    })
+}
+
+fn ps_tty_and_ppid(pid: u32) -> Option<(Option<String>, Option<u32>)> {
     if let Ok(output) = std::process::Command::new("ps")
-        .args(["-p", &ppid.to_string(), "-o", "tty="])
+        .args(["-p", &pid.to_string(), "-o", "tty=,ppid="])
         .output()
     {
-        let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !tty.is_empty() && tty != "??" && tty != "-" {
-            return Some(if tty.starts_with("/dev/") {
-                tty
-            } else {
-                format!("/dev/{}", tty)
-            });
+        let output = String::from_utf8_lossy(&output.stdout);
+        let mut parts = output.split_whitespace();
+        let tty = parts.next().and_then(normalize_tty);
+        let ppid = parts.next().and_then(|value| value.parse::<u32>().ok());
+        if tty.is_some() || ppid.is_some() {
+            return Some((tty, ppid));
         }
     }
     None
 }
 
+/// Get the TTY of the invoking agent process.
+fn get_tty() -> Option<String> {
+    let mut pid = std::process::id();
+    for _ in 0..8 {
+        let Some((tty, ppid)) = ps_tty_and_ppid(pid) else {
+            break;
+        };
+        if tty.is_some() {
+            return tty;
+        }
+        let Some(parent) = ppid else {
+            break;
+        };
+        if parent <= 1 || parent == pid {
+            break;
+        }
+        pid = parent;
+    }
+
+    if let Ok(tty) = std::env::var("TTY") {
+        if let Some(normalized) = normalize_tty(&tty) {
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
 /// Connect to AgentBro: try Unix socket first, fall back to TCP
 fn connect() -> Option<Stream> {
-    if let Ok(s) = UnixStream::connect(SOCKET_PATH) {
+    let endpoint = agentbro_lib::hook_endpoint::current();
+    if let Ok(s) = UnixStream::connect(&endpoint.socket_path) {
         return Some(Stream::Unix(s));
     }
-    if let Ok(s) = TcpStream::connect(TCP_ADDR) {
+    if let Ok(s) = TcpStream::connect(endpoint.tcp_addr()) {
         return Some(Stream::Tcp(s));
     }
     None
@@ -647,6 +683,18 @@ fn main() {
         }
         "Stop" => {
             obj.insert("status".into(), "waiting_for_input".into());
+            copy_optional_field(
+                obj,
+                &data,
+                "summary",
+                &[
+                    "last_assistant_message",
+                    "lastAssistantMessage",
+                    "summary",
+                    "message",
+                    "result",
+                ],
+            );
         }
         "StopFailure" => {
             obj.insert("status".into(), "waiting_for_input".into());

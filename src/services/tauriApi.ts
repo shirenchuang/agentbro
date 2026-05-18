@@ -102,6 +102,7 @@ export interface BackendSession {
     startedAt: number
     completedAt: number | null
     error: string | null
+    toolInput?: string | null
   }>
   tasks: Array<{
     id: string
@@ -1058,13 +1059,15 @@ export interface HookStatus {
   name: string
   displayName: string
   installed: boolean
-  installStatus?: 'installed' | 'not_installed' | 'error' | string
+  installStatus?: 'installed' | 'not_installed' | 'needs_reinstall' | 'settings_corrupted' | 'error' | string
   configPath?: string
   configDir?: string
   status: string
   supportsEventSelection?: boolean
   events?: HookEventStatus[]
   enabledEventNames?: string[]
+  isCustom?: boolean
+  customId?: string
 }
 
 export async function detectTools(): Promise<DetectedTool[]> {

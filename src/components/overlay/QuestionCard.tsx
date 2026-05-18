@@ -22,7 +22,9 @@ interface QuestionCardProps {
   overlay: OverlayItem
   session: SessionState
   onAnswer: (answer: string) => void
+  onShowSessions?: () => void
   onDismiss: () => void
+  sessionCount?: number
 }
 
 function normalizeOption(opt: string | QuestionOption): QuestionOption {
@@ -182,7 +184,7 @@ function MultiQuestionView({ data, onAnswer }: { data: QuestionData; onAnswer: (
   )
 }
 
-export function QuestionCard({ overlay, session, onAnswer, onDismiss }: QuestionCardProps) {
+export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDismiss, sessionCount }: QuestionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as QuestionData
   const options = (data.options || []).map(normalizeOption)
@@ -205,7 +207,14 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
 
   if (data.questions && data.questions.length > 1) {
     return (
-      <OverlayCard session={session} onDismiss={onDismiss}>
+      <OverlayCard
+        session={session}
+        onDismiss={onDismiss}
+        onShowSessions={onShowSessions}
+        sessionCount={sessionCount}
+        className="overlay-card--question"
+        bodyClassName="question-card"
+      >
         <MultiQuestionView data={data} onAnswer={onAnswer} />
       </OverlayCard>
     )
@@ -240,7 +249,14 @@ export function QuestionCard({ overlay, session, onAnswer, onDismiss }: Question
   }
 
   return (
-    <OverlayCard session={session} onDismiss={onDismiss}>
+    <OverlayCard
+      session={session}
+      onDismiss={onDismiss}
+      onShowSessions={onShowSessions}
+      sessionCount={sessionCount}
+      className="overlay-card--question"
+      bodyClassName="question-card"
+    >
       {/* Header */}
       <div className="question-card__header">
         <svg className="question-card__header-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">

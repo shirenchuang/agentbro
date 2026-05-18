@@ -215,6 +215,7 @@ pub struct ToolResult {
     pub started_at: i64,
     pub completed_at: Option<i64>,
     pub error: Option<String>,
+    pub tool_input: Option<String>,
 }
 
 /// State of a single agent session
@@ -639,7 +640,13 @@ impl SessionStore {
     }
 
     /// Track a tool starting (PreToolUse)
-    pub fn start_tool(&self, session_id: &str, tool_use_id: &str, tool_name: &str) {
+    pub fn start_tool(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        tool_name: &str,
+        tool_input: Option<String>,
+    ) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             // Don't add duplicate entries
             if !session
@@ -654,10 +661,19 @@ impl SessionStore {
                     started_at: Utc::now().timestamp(),
                     completed_at: None,
                     error: None,
+                    tool_input,
                 });
                 // Keep only last 20 tools
                 if session.active_tools.len() > 20 {
                     session.active_tools.remove(0);
+                }
+            } else if let Some(input) = tool_input {
+                if let Some(existing) = session
+                    .active_tools
+                    .iter_mut()
+                    .find(|t| t.tool_use_id == tool_use_id)
+                {
+                    existing.tool_input = Some(input);
                 }
             }
             // Also track tool against active subagent
@@ -857,7 +873,12 @@ mod tests {
                 last_assistant_message: Some("Subagent completed its audit".to_string()),
             },
         );
-        store.start_tool("s1", "tool-1", "Read");
+        store.start_tool(
+            "s1",
+            "tool-1",
+            "Read",
+            Some("{\"file_path\":\"src/lib.rs\"}".to_string()),
+        );
         store.complete_tool("s1", "tool-1", true, None);
         store.upsert_task("s1", "task-1", "Verify parity", "in_progress");
 
@@ -879,6 +900,7 @@ mod tests {
         assert_eq!(json["subagents"][0]["tools"][0], "Read");
         assert_eq!(json["activeTools"][0]["toolUseId"], "tool-1");
         assert_eq!(json["activeTools"][0]["status"], "success");
+        assert_eq!(json["activeTools"][0]["toolInput"], "{\"file_path\":\"src/lib.rs\"}");
         assert_eq!(json["tasks"][0]["id"], "task-1");
         assert_eq!(json["tasks"][0]["status"], "in_progress");
     }

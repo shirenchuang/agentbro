@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ClaudeHookUiLab } from '../components/dev/ClaudeHookUiLab'
 import { useSessionStore } from '../stores/sessionStore'
+import { useThemeStore } from '../stores/themeStore'
 
 function renderLab() {
   render(
@@ -28,6 +29,7 @@ describe('ClaudeHookUiLab', () => {
       wakeSilencedUntil: 0,
       focusedTerminal: null,
     })
+    useThemeStore.getState().setColorTheme('ink-amber')
   })
 
   afterEach(() => {
@@ -129,6 +131,71 @@ describe('ClaudeHookUiLab', () => {
       expect(session?.phase).toBe('compacting')
       expect(session?.lastToolName).toBe('Compacting')
       expect(state.activeOverlay).toBeNull()
+    })
+  })
+
+  it('switches the lab color appearance through the shared theme store', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByTitle('午夜 · Evolab'))
+
+    await waitFor(() => {
+      expect(useThemeStore.getState().colorTheme).toBe('midnight')
+      expect(document.documentElement.getAttribute('data-island-color-theme')).toBe('midnight')
+    })
+  })
+
+  it('loads the empty island state without sessions or overlays', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Empty').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      expect(state.sessionList).toHaveLength(0)
+      expect(state.activeSessionId).toBeNull()
+      expect(state.activeOverlay).toBeNull()
+      expect(state.panelState).toBe('collapsed')
+    })
+  })
+
+  it('loads a non-blocking response overlay scenario', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Response').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      expect(state.sessions['claude-hook-lab']?.phase).toBe('processing')
+      expect(state.sessions['claude-hook-lab']?.responseText).toContain('response overlay')
+      expect(state.activeOverlay?.type).toBe('response')
+    })
+  })
+
+  it('loads the blocking overlay priority queue scenario', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Queue').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      expect(state.sessionList).toHaveLength(3)
+      expect(state.overlayQueue.map((overlay) => overlay.type)).toEqual(['permission', 'plan', 'question'])
+      expect(state.activeOverlay?.type).toBe('permission')
+    })
+  })
+
+  it('loads a mixed multi-session island scenario', async () => {
+    renderLab()
+
+    fireEvent.click(screen.getByText('Multi Mix').closest('button')!)
+
+    await waitFor(() => {
+      const state = useSessionStore.getState()
+      expect(state.sessionList).toHaveLength(5)
+      expect(state.sessions['lab-multi-processing']?.phase).toBe('processing')
+      expect(state.sessions['lab-multi-error']?.phase).toBe('error')
+      expect(state.activeOverlay?.type).toBe('permission')
     })
   })
 })

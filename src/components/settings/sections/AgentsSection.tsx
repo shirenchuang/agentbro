@@ -94,14 +94,24 @@ function hookToolId(hook: HookStatus) {
   return hook.toolId || hook.name
 }
 
-function hookInstallStatus(hook: HookStatus) {
-  if (hook.installStatus) return hook.installStatus
+type HookInstallStatus = 'installed' | 'not_installed' | 'needs_reinstall' | 'settings_corrupted' | 'error'
+
+function hookInstallStatus(hook: HookStatus): HookInstallStatus {
+  if (
+    hook.installStatus === 'installed'
+    || hook.installStatus === 'not_installed'
+    || hook.installStatus === 'needs_reinstall'
+    || hook.installStatus === 'settings_corrupted'
+    || hook.installStatus === 'error'
+  ) return hook.installStatus
   return hook.installed ? 'installed' : 'not_installed'
 }
 
 function hookStatusLabel(hook: HookStatus) {
   const status = hookInstallStatus(hook)
   if (status === 'installed') return '已安装'
+  if (status === 'needs_reinstall') return '需重新安装'
+  if (status === 'settings_corrupted') return '配置异常'
   if (status === 'error') return '异常'
   return '未安装'
 }

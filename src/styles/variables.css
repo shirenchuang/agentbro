@@ -80,7 +80,7 @@
 
   /* Typography */
   --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
   --font-size-xs: 10px;
   --font-size-sm: 12px;
   --font-size-base: 13px;

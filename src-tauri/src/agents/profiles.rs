@@ -59,6 +59,32 @@ pub struct HookEventStatus {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HookInstallHealth {
+    Installed,
+    NotInstalled,
+    NeedsReinstall,
+    SettingsCorrupted,
+    Error,
+}
+
+impl HookInstallHealth {
+    pub fn as_status_str(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::NotInstalled => "not_installed",
+            Self::NeedsReinstall => "needs_reinstall",
+            Self::SettingsCorrupted => "settings_corrupted",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn is_present(self) -> bool {
+        !matches!(self, Self::NotInstalled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum HookEventCategory {
     Approvals,
@@ -716,17 +742,73 @@ pub fn install_at(
     Ok(())
 }
 
+fn install_at_labeled(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    hook_manager::ensure_bridge_binary()?;
+    let command = managed_bridge_command_labeled(profile, engine_label, config_root)?;
+    match profile.installation_kind {
+        InstallationKind::JsonHooks { nested: true, .. } => {
+            update_nested_json_hooks(profile, path, &command)?;
+        }
+        InstallationKind::JsonHooks { nested: false, .. } => {
+            let InstallationKind::JsonHooks { entry, nested: false } = profile.installation_kind else {
+                unreachable!();
+            };
+            let mut settings = hook_manager::read_json_config(path);
+            if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
+                settings["hooks"] = serde_json::json!({});
+            }
+            strip_json_hooks(&mut settings);
+            let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
+            for event in effective_events(profile) {
+                let value = hooks.entry(event.name.to_string()).or_insert_with(|| serde_json::json!([]));
+                if !value.is_array() {
+                    *value = serde_json::json!([]);
+                }
+                let entries = value.as_array_mut().expect("event hook list is array");
+                entries.retain(|entry| !json_hook_contains_agentbro(entry));
+                entries.push(flat_json_hook_entry(entry, &event, &command));
+            }
+            hook_manager::write_json_config(path, &settings)?;
+        }
+        _ => {
+            install_at(profile, path)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn install_custom_at(
     profile: &AgentIntegrationProfile,
     base_directory: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    install_custom_at_labeled(profile, base_directory, None, None)
+}
+
+pub fn install_custom_at_labeled(
+    profile: &AgentIntegrationProfile,
+    base_directory: &Path,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let target = custom_installation_path(profile, base_directory);
+    let has_label = engine_label.is_some() || config_root.is_some();
     if matches!(profile.installation_kind, InstallationKind::PluginFile) {
         hook_manager::ensure_bridge_binary()?;
-        write_plugin_file(profile, &target)?;
+        if has_label {
+            write_plugin_file_labeled(profile, &target, engine_label, config_root)?;
+        } else {
+            write_plugin_file(profile, &target)?;
+        }
         if let Some(activation_path) = custom_activation_path(profile, base_directory) {
             set_plugin_enabled(&activation_path, &target, true)?;
         }
+    } else if has_label {
+        install_at_labeled(profile, &target, engine_label, config_root)?;
     } else {
         install_at(profile, &target)?;
     }
@@ -857,21 +939,300 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
     }
 }
 
+pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    if !path.exists() {
+        return HookInstallHealth::NotInstalled;
+    }
+
+    match profile.installation_kind {
+        InstallationKind::JsonHooks { nested, .. } => json_hooks_health(profile, path, nested),
+        InstallationKind::YamlHooks | InstallationKind::TomlHooks => {
+            text_hooks_health(profile, path)
+        }
+        InstallationKind::CursorSettings => cursor_settings_health(profile, path),
+        InstallationKind::KiroAgentFile => kiro_agent_file_health(profile, path),
+        InstallationKind::PluginFile => plugin_file_health(profile, path),
+        InstallationKind::PluginDirectory => plugin_directory_health(profile, path),
+    }
+}
+
+pub fn install_health_for_profile(profile: &AgentIntegrationProfile) -> HookInstallHealth {
+    install_health(profile, &configuration_url(profile))
+}
+
+fn expected_command(profile: &AgentIntegrationProfile) -> Result<String, HookInstallHealth> {
+    managed_bridge_command(profile).map_err(|_| HookInstallHealth::Error)
+}
+
+fn agentbro_command_is_current(profile: &AgentIntegrationProfile, command: &str) -> bool {
+    if !is_agentbro_command(command) {
+        return false;
+    }
+
+    let bridge = hook_manager::bridge_binary_path();
+    let bridge_path = bridge.display().to_string();
+    if !command.contains(&bridge_path) {
+        return false;
+    }
+
+    if hook_manager::endpoint_env_assignments()
+        .iter()
+        .any(|assignment| !command.contains(assignment))
+    {
+        return false;
+    }
+
+    profile.id == "claude-code"
+        || command.contains(&format!("--source {}", profile.source))
+        || command.contains(&format!("--source={}", profile.source))
+}
+
+fn bridge_health() -> Option<HookInstallHealth> {
+    (!hook_manager::bridge_binary_is_current()).then_some(HookInstallHealth::NeedsReinstall)
+}
+
+fn read_json_health(path: &Path) -> Result<Value, HookInstallHealth> {
+    let content =
+        std::fs::read_to_string(path).map_err(|_| HookInstallHealth::SettingsCorrupted)?;
+    serde_json::from_str(&content).map_err(|_| HookInstallHealth::SettingsCorrupted)
+}
+
+fn json_hooks_health(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    nested: bool,
+) -> HookInstallHealth {
+    let settings = match read_json_health(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(hooks) = settings.get("hooks").and_then(Value::as_object) else {
+        return if json_hook_contains_agentbro(&settings) {
+            HookInstallHealth::SettingsCorrupted
+        } else {
+            HookInstallHealth::NotInstalled
+        };
+    };
+
+    if !json_hook_contains_agentbro(&settings) {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+
+    let mut commands = Vec::new();
+    collect_json_agentbro_commands(&settings, &mut commands);
+    if commands
+        .iter()
+        .any(|candidate| agentbro_command_is_current(profile, candidate))
+    {
+        return HookInstallHealth::Installed;
+    }
+
+    if nested
+        && hooks.values().any(|entries| {
+            entries.as_array().is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    json_hook_contains_agentbro(entry)
+                        && entry.get("hooks").and_then(Value::as_array).is_none()
+                })
+            })
+        })
+    {
+        return HookInstallHealth::SettingsCorrupted;
+    }
+
+    HookInstallHealth::NeedsReinstall
+}
+
+fn collect_json_agentbro_commands(value: &Value, commands: &mut Vec<String>) {
+    if let Some(command) = value.get("command").and_then(Value::as_str) {
+        if is_agentbro_command(command) {
+            commands.push(command.to_string());
+        }
+    }
+    if let Some(hooks) = value.get("hooks").and_then(Value::as_array) {
+        for hook in hooks {
+            collect_json_agentbro_commands(hook, commands);
+        }
+    }
+    if let Some(hooks) = value.get("hooks").and_then(Value::as_object) {
+        for entries in hooks.values() {
+            if let Some(entries) = entries.as_array() {
+                for entry in entries {
+                    collect_json_agentbro_commands(entry, commands);
+                }
+            }
+        }
+    }
+}
+
+fn text_hooks_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return HookInstallHealth::SettingsCorrupted,
+    };
+    let marker = marker(profile);
+    if !content.contains(&marker) && !content.contains("agentbro-bridge") {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+
+    let command = match expected_command(profile) {
+        Ok(command) => command,
+        Err(status) => return status,
+    };
+    if !content.contains(&command) {
+        return HookInstallHealth::NeedsReinstall;
+    }
+    if effective_events(profile)
+        .iter()
+        .any(|event| !content.contains(event.name))
+    {
+        return HookInstallHealth::NeedsReinstall;
+    }
+
+    HookInstallHealth::Installed
+}
+
+fn cursor_settings_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    let settings = match read_json_health(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(hooks) = settings.get("agentIslandHooks") else {
+        return HookInstallHealth::NotInstalled;
+    };
+    if !hooks
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+    let command = match expected_command(profile) {
+        Ok(command) => command,
+        Err(status) => return status,
+    };
+    match hooks.get("command").and_then(Value::as_str) {
+        Some(candidate) if candidate == command => HookInstallHealth::Installed,
+        Some(_) => HookInstallHealth::NeedsReinstall,
+        None => HookInstallHealth::SettingsCorrupted,
+    }
+}
+
+fn kiro_agent_file_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    let settings = match read_json_health(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if settings
+        .get("_agentbro")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value != marker(profile))
+    {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+
+    let Some(hooks) = settings.get("hooks").and_then(Value::as_object) else {
+        return HookInstallHealth::SettingsCorrupted;
+    };
+    let command = match expected_command(profile) {
+        Ok(command) => command,
+        Err(status) => return status,
+    };
+    for event in effective_events(profile) {
+        let Some(candidate) = hooks
+            .get(event.name)
+            .and_then(|hook| hook.get("command"))
+            .and_then(Value::as_str)
+        else {
+            return HookInstallHealth::NeedsReinstall;
+        };
+        if candidate != command {
+            return HookInstallHealth::NeedsReinstall;
+        }
+    }
+
+    HookInstallHealth::Installed
+}
+
+fn plugin_file_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    let current = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return HookInstallHealth::SettingsCorrupted,
+    };
+    if !current.contains(&marker(profile)) {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+    match opencode_plugin_source(profile) {
+        Ok(expected) if current == expected => HookInstallHealth::Installed,
+        Ok(_) => HookInstallHealth::NeedsReinstall,
+        Err(_) => HookInstallHealth::Error,
+    }
+}
+
+fn plugin_directory_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    if !path.is_dir() {
+        return HookInstallHealth::NotInstalled;
+    }
+    if !contains_marker(path, profile) {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+
+    let expected_files = match hermes_plugin_files(profile) {
+        Ok(files) => files,
+        Err(_) => return HookInstallHealth::Error,
+    };
+    for (name, expected) in expected_files {
+        match std::fs::read_to_string(path.join(name)) {
+            Ok(current) if current == expected => {}
+            Ok(_) => return HookInstallHealth::NeedsReinstall,
+            Err(_) => return HookInstallHealth::NeedsReinstall,
+        }
+    }
+    HookInstallHealth::Installed
+}
+
 pub fn managed_bridge_command(
     profile: &AgentIntegrationProfile,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    managed_bridge_command_labeled(profile, None, None)
+}
+
+pub fn managed_bridge_command_labeled(
+    profile: &AgentIntegrationProfile,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let bridge = hook_manager::ensure_bridge_binary()?;
-    let mut parts = vec![
-        hook_manager::shell_quote(&bridge.display().to_string()),
-        "--source".to_string(),
-        hook_manager::shell_quote(profile.source),
-    ];
-    parts.extend(
-        profile
-            .extra_args
-            .iter()
-            .map(|arg| hook_manager::shell_quote(arg)),
-    );
+    let mut args = vec!["--source".to_string(), profile.source.to_string()];
+    args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
+    let mut parts = hook_manager::bridge_command_parts(&bridge, &args);
+    if let Some(label) = engine_label {
+        parts.insert(1, format!("AGENTBRO_ENGINE_LABEL={}", hook_manager::shell_quote(label)));
+    }
+    if let Some(root) = config_root {
+        parts.insert(
+            if engine_label.is_some() { 2 } else { 1 },
+            format!("AGENTBRO_CONFIG_ROOT={}", hook_manager::shell_quote(root)),
+        );
+    }
     Ok(parts.join(" "))
 }
 
@@ -886,6 +1247,28 @@ fn bridge_args_json(
     ];
     args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
     Ok(serde_json::to_string(&args)?)
+}
+
+fn bridge_env_json() -> Result<String, Box<dyn std::error::Error>> {
+    bridge_env_json_labeled(None, None)
+}
+
+fn bridge_env_json_labeled(
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let endpoint = crate::hook_endpoint::current();
+    let mut env = serde_json::json!({
+        crate::hook_endpoint::HOOK_SOCKET_ENV: endpoint.socket_path,
+        crate::hook_endpoint::HOOK_PORT_ENV: endpoint.tcp_port.to_string(),
+    });
+    if let Some(label) = engine_label {
+        env["AGENTBRO_ENGINE_LABEL"] = serde_json::Value::String(label.to_string());
+    }
+    if let Some(root) = config_root {
+        env["AGENTBRO_CONFIG_ROOT"] = serde_json::Value::String(root.to_string());
+    }
+    Ok(serde_json::to_string(&env)?)
 }
 
 fn enabled_event_names_json(
@@ -1097,6 +1480,16 @@ fn json_hook_contains_agentbro(value: &Value) -> bool {
             .get("hooks")
             .and_then(Value::as_array)
             .is_some_and(|hooks| hooks.iter().any(json_hook_contains_agentbro))
+        || value
+            .get("hooks")
+            .and_then(Value::as_object)
+            .is_some_and(|hooks| {
+                hooks.values().any(|entries| {
+                    entries
+                        .as_array()
+                        .is_some_and(|entries| entries.iter().any(json_hook_contains_agentbro))
+                })
+            })
 }
 
 fn strip_json_hooks(settings: &mut Value) {
@@ -1201,6 +1594,25 @@ fn write_plugin_file(
     };
     std::fs::create_dir_all(parent)?;
     std::fs::write(path, opencode_plugin_source(profile)?)?;
+    Ok(())
+}
+
+fn write_plugin_file_labeled(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(parent) = path.parent() else {
+        return Err("Plugin path has no parent directory".into());
+    };
+    std::fs::create_dir_all(parent)?;
+    let marker = marker(profile);
+    let args_json = bridge_args_json(profile)?;
+    let env_json = bridge_env_json_labeled(engine_label, config_root)?;
+    let enabled_events_json = enabled_event_names_json(profile)?;
+    let source = opencode_plugin_source_from_parts(&marker, &args_json, &env_json, &enabled_events_json)?;
+    std::fs::write(path, source)?;
     Ok(())
 }
 
@@ -1386,6 +1798,7 @@ fn hermes_plugin_files(
 ) -> Result<Vec<(&'static str, String)>, Box<dyn std::error::Error>> {
     let marker = marker(profile);
     let args_json = bridge_args_json(profile)?;
+    let env_json = bridge_env_json()?;
     let enabled_events_json = enabled_event_names_json(profile)?;
     let plugin_yaml = format!(
         r#"# {marker}
@@ -1418,6 +1831,7 @@ import subprocess
 import threading
 
 BRIDGE_ARGS = json.loads(r'''{args_json}''')
+BRIDGE_ENV = json.loads(r'''{env_json}''')
 ENABLED_EVENTS = set(json.loads(r'''{enabled_events_json}'''))
 ENV_KEYS = ["TERM_PROGRAM", "ITERM_SESSION_ID", "TERM_SESSION_ID", "TMUX", "TMUX_PANE", "KITTY_WINDOW_ID", "__CFBundleIdentifier", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_SOCKET_PATH"]
 _SESSION_STATE = {{}}
@@ -1504,6 +1918,7 @@ def _bridge_payload(session_id, **payload):
 
 def _spawn_bridge(payload):
     env = os.environ.copy()
+    env.update(BRIDGE_ENV)
     bridged_env = payload.pop("_env", None)
     tty = payload.pop("_tty", None)
     if isinstance(bridged_env, dict):
@@ -1607,12 +2022,23 @@ fn opencode_plugin_source(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let marker = marker(profile);
     let args_json = bridge_args_json(profile)?;
+    let env_json = bridge_env_json()?;
     let enabled_events_json = enabled_event_names_json(profile)?;
+    opencode_plugin_source_from_parts(&marker, &args_json, &env_json, &enabled_events_json)
+}
+
+fn opencode_plugin_source_from_parts(
+    marker: &str,
+    args_json: &str,
+    env_json: &str,
+    enabled_events_json: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     Ok(format!(
         r#"// {marker}
 // Generated by AgentBro. Reinstall from settings if you need to refresh it.
 
 const BRIDGE_ARGS = {args_json};
+const BRIDGE_ENV = {env_json};
 const ENABLED_EVENTS = new Set({enabled_events_json});
 const ENV_KEYS = ["TERM_PROGRAM", "ITERM_SESSION_ID", "TERM_SESSION_ID", "TMUX", "TMUX_PANE", "KITTY_WINDOW_ID", "__CFBundleIdentifier", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_SOCKET_PATH"];
 
@@ -1767,6 +2193,7 @@ function mapEvent(event) {{
 
 async function runBridge(payload, captureResponse = false) {{
   const env = {{ ...(globalThis.process?.env ?? {{}}) }};
+  Object.assign(env, BRIDGE_ENV);
   if (isObject(payload?._env)) Object.assign(env, payload._env);
   if (typeof payload?._tty === "string" && payload._tty.length > 0) env.TTY = payload._tty;
   try {{

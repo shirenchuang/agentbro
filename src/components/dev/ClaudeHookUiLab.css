@@ -148,6 +148,107 @@
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.12);
 }
 
+.claude-hook-lab__island-themes {
+  margin-top: 10px;
+}
+
+.claude-hook-lab__section-label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.claude-hook-lab__island-theme-grid {
+  display: grid;
+  max-height: 244px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  background: rgba(245, 246, 249, 0.74);
+}
+
+.claude-hook-lab__island-theme {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.11);
+  border-radius: 12px;
+  color: #232326;
+  background: rgba(255, 255, 255, 0.7);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.claude-hook-lab__island-theme:hover {
+  border-color: rgba(0, 122, 255, 0.42);
+}
+
+.claude-hook-lab__island-theme[data-active="true"] {
+  border-color: #007aff;
+  background: rgba(0, 122, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(0, 122, 255, 0.66);
+}
+
+.claude-hook-lab__island-theme-swatch {
+  position: relative;
+  width: 100%;
+  height: 54px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+}
+
+.claude-hook-lab__island-theme-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: min(76%, 130px);
+  height: 24px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 0 0 12px 12px;
+}
+
+.claude-hook-lab__island-theme-dot {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.claude-hook-lab__island-theme-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-hook-lab__island-theme-tag {
+  display: block;
+  margin-top: -5px;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.1;
+  color: #85858d;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .claude-hook-lab__status {
   display: flex;
   flex-wrap: wrap;
@@ -173,6 +274,10 @@
   }
 
   .claude-hook-lab__scenario-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .claude-hook-lab__island-theme-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

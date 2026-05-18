@@ -1,20 +1,101 @@
 /* QuestionCard — evolab-style with numbered options, custom input, multi-select */
 
+.overlay-card.overlay-card--question {
+  --question-accent: #fb923c;
+  --question-panel: var(--island-bg);
+  --question-surface: color-mix(in srgb, var(--island-card) 88%, var(--question-accent) 5%);
+  --question-border: color-mix(in srgb, var(--island-border) 78%, var(--question-accent) 22%);
+  gap: 12px;
+  width: 100%;
+  min-height: 360px;
+  padding: 20px 24px 22px;
+  border: 0;
+  border-radius: 0 0 32px 32px;
+  background: var(--question-panel);
+  box-shadow: none;
+}
+
+.overlay-card--question .overlay-card__header {
+  align-items: flex-start;
+  min-height: 44px;
+}
+
+.overlay-card--question .overlay-card__close {
+  width: 32px;
+  height: 32px;
+  color: var(--island-text-secondary);
+  background: var(--island-subtle);
+}
+
+.overlay-card--question .overlay-ctx {
+  gap: 4px;
+}
+
+.overlay-card--question .overlay-ctx__row1 {
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.18;
+  color: var(--island-text);
+}
+
+.overlay-card--question .overlay-ctx__row1 .pixel-indicator {
+  margin-right: 5px;
+  transform: scale(1.9);
+  transform-origin: center;
+}
+
+.overlay-card--question .overlay-ctx__sep,
+.overlay-card--question .overlay-ctx__agent {
+  color: var(--island-text-secondary);
+  opacity: 1;
+}
+
+.overlay-card--question .overlay-ctx__row2 {
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.28;
+  color: var(--island-text-muted);
+}
+
+.overlay-card--question .overlay-ctx__you {
+  color: var(--island-text-secondary);
+  font-weight: 800;
+}
+
+.overlay-card--question .overlay-ctx__msg {
+  max-width: 600px;
+}
+
+.overlay-card--question .overlay-card__body {
+  overflow: hidden;
+}
+
+.question-card {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .question-card__header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 0;
 }
 
 .question-card__header-icon {
   color: #fb923c;
   flex-shrink: 0;
+  width: 22px;
+  height: 22px;
 }
 
 .question-card__header-title {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 19px;
+  font-weight: 800;
   color: #fb923c;
   flex: 1;
   min-width: 0;
@@ -30,8 +111,8 @@
 }
 
 .question-card__multi-badge {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 750;
   color: #fdba74;
   background: rgba(251, 146, 60, 0.15);
   padding: 2px 8px;
@@ -39,11 +120,11 @@
 }
 
 .question-card__text {
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.5;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
   color: var(--island-text);
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .question-card__tag {
@@ -55,6 +136,9 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 /* Option Row — numbered block + label + description + chevron */
@@ -62,17 +146,17 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(249, 115, 22, 0.1);
+  padding: 9px 11px;
+  border: 1px solid var(--question-border);
   border-radius: 8px;
-  background: rgba(38, 20, 7, 0.6);
+  background: var(--question-surface);
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, transform 0.1s;
 }
 
 .question-card__option-row:hover {
   border-color: rgba(249, 115, 22, 0.4);
-  background: rgba(51, 27, 9, 0.6);
+  background: color-mix(in srgb, var(--island-card-hover) 86%, #f97316 10%);
 }
 
 .question-card__option-row:active {
@@ -81,7 +165,7 @@
 
 .question-card__option-row--selected {
   border-color: rgba(249, 115, 22, 0.45);
-  background: rgba(58, 33, 13, 0.6);
+  background: color-mix(in srgb, var(--island-card-hover) 78%, #f97316 14%);
   box-shadow: inset 0 0 0 1px rgba(251, 146, 60, 0.12);
 }
 
@@ -89,8 +173,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 6px;
   background: rgba(249, 115, 22, 0.7);
   color: white;
@@ -110,7 +194,7 @@
 
 .question-card__option-label {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--island-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -144,7 +228,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: 1px dashed rgba(249, 115, 22, 0.15);
   border-radius: 8px;
   font-size: 11px;
@@ -209,19 +293,23 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
 }
 
 .question-card__multi-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .question-card__multi-item {
-  border: 1px solid rgba(249, 115, 22, 0.1);
+  border: 1px solid var(--question-border);
   border-radius: 8px;
-  background: rgba(18, 10, 4, 0.6);
-  padding: 10px 12px;
+  background: var(--question-surface);
+  padding: 9px 11px;
 }
 
 .question-card__multi-q {
@@ -253,7 +341,7 @@
   padding: 4px 10px;
   border: none;
   border-radius: 6px;
-  background: rgba(38, 20, 7, 0.8);
+  background: color-mix(in srgb, var(--island-btn-bg) 88%, #f97316 8%);
   color: var(--island-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -262,7 +350,7 @@
 }
 
 .question-card__chip:hover {
-  background: rgba(51, 27, 9, 0.8);
+  background: color-mix(in srgb, var(--island-btn-hover) 84%, #f97316 12%);
   color: var(--island-text);
 }
 
@@ -272,8 +360,8 @@
 }
 
 .question-card__chip--custom {
-  background: rgba(249, 115, 22, 0.2);
-  color: #fed7aa;
+  background: color-mix(in srgb, var(--island-card-hover) 70%, #f97316 22%);
+  color: var(--island-text);
   cursor: default;
   ring: 1px solid rgba(249, 115, 22, 0.4);
 }
@@ -313,7 +401,8 @@
   justify-content: center;
   gap: 6px;
   width: 100%;
-  padding: 10px 16px;
+  height: 40px;
+  padding: 0 16px;
   border: none;
   border-radius: 8px;
   background: rgba(249, 115, 22, 0.15);
@@ -322,6 +411,22 @@
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+}
+
+@media (max-width: 760px) {
+  .overlay-card.overlay-card--question {
+    padding: 18px 18px 20px;
+  }
+
+  .overlay-card--question .overlay-ctx__row1,
+  .question-card__header-title {
+    font-size: 18px;
+  }
+
+  .overlay-card--question .overlay-ctx__row2,
+  .question-card__text {
+    font-size: 14px;
+  }
 }
 
 .question-card__submit-all:hover {

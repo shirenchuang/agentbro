@@ -83,12 +83,18 @@ impl ClaudeCodeAdapter {
     /// Build the hook command string and stamp instance metadata into the bridge env.
     fn hook_command(&self) -> Result<String, Box<dyn std::error::Error>> {
         let bridge_path = hook_manager::ensure_bridge_binary()?;
-        Ok(format!(
-            "/usr/bin/env AGENTBRO_ENGINE_LABEL={} AGENTBRO_CONFIG_ROOT={} {}",
-            shell_quote(&self.label),
-            shell_quote(&self.config_root.display().to_string()),
-            shell_quote(&bridge_path.display().to_string()),
-        ))
+        let mut parts = vec!["/usr/bin/env".to_string()];
+        parts.extend(hook_manager::endpoint_env_assignments());
+        parts.push(format!(
+            "AGENTBRO_ENGINE_LABEL={}",
+            shell_quote(&self.label)
+        ));
+        parts.push(format!(
+            "AGENTBRO_CONFIG_ROOT={}",
+            shell_quote(&self.config_root.display().to_string())
+        ));
+        parts.push(shell_quote(&bridge_path.display().to_string()));
+        Ok(parts.join(" "))
     }
 
     /// Remove old Python hook artifacts (migration from Python to Rust bridge)

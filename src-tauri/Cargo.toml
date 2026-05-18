@@ -38,7 +38,7 @@ uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 base64 = "0.22"
 rodio = "0.19"
-notify = { version = "7", features = ["macos_kqueue"] }
+notify = "7"
 zip = "2"
 tauri-plugin-dialog = "2"
 axum = "0.7"

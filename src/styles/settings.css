@@ -438,6 +438,16 @@
   border-color: rgba(0, 0, 0, 0.16);
 }
 
+.settings-mini-button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.settings-mini-button:disabled:hover {
+  background: var(--settings-card-bg);
+  border-color: var(--settings-card-border);
+}
+
 /* ── Section ── */
 .setting-section {
   margin-bottom: 32px;
@@ -480,9 +490,13 @@
   gap: 24px;
 }
 
-.setting-section--compact .setting-group__label {
+.setting-section--compact .setting-group__header {
   margin-bottom: 10px;
   padding-left: 8px;
+}
+
+.setting-section--compact .setting-group__label {
+  padding-left: 0;
   color: #1f2328;
   font-size: 15px;
   font-weight: 700;
@@ -638,14 +652,29 @@
   padding: 0 16px;
 }
 
+.setting-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  padding-left: 2px;
+}
+
 .setting-group__label {
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
   color: var(--settings-text-secondary);
-  margin-bottom: 6px;
-  padding-left: 2px;
+}
+
+.setting-group__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* ── Row ── */
@@ -1621,6 +1650,18 @@
   background: rgba(174, 174, 178, 0.12);
   color: var(--settings-text-secondary);
   border: 1px solid rgba(174, 174, 178, 0.25);
+}
+
+.hook-status-badge--needs_reinstall {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.hook-status-badge--settings_corrupted {
+  background: rgba(255, 59, 48, 0.1);
+  color: var(--settings-danger);
+  border: 1px solid rgba(255, 59, 48, 0.2);
 }
 
 .hook-status-badge--error {

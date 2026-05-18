@@ -2,16 +2,86 @@
 
 .perm-card {
   --perm-accent: #f59e0b;
-  --perm-accent-soft: rgba(245, 158, 11, 0.14);
-  --perm-accent-border: rgba(245, 158, 11, 0.24);
+  --perm-panel: var(--island-bg);
+  --perm-command-bg: color-mix(in srgb, var(--island-card) 82%, var(--perm-accent) 8%);
+  --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
+  --perm-text: var(--island-text);
+  --perm-text-secondary: var(--island-text-secondary);
   min-height: 0;
+}
+
+.overlay-card.overlay-card--permission {
+  --perm-accent: #f59e0b;
+  --perm-panel: var(--island-bg);
+  --perm-command-bg: color-mix(in srgb, var(--island-card) 82%, var(--perm-accent) 8%);
+  --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
+  --perm-text: var(--island-text);
+  --perm-text-secondary: var(--island-text-secondary);
+  gap: 16px;
+  width: 100%;
+  min-height: 360px;
+  padding: 20px 24px 22px;
+  border: 0;
+  border-radius: 0 0 36px 36px;
+  background: var(--perm-panel);
+  box-shadow: none;
+}
+
+.overlay-card--permission .overlay-card__header {
+  align-items: flex-start;
+  min-height: 48px;
+}
+
+.overlay-card--permission .overlay-card__close {
+  display: none;
+}
+
+.overlay-card--permission .overlay-ctx {
+  gap: 4px;
+}
+
+.overlay-card--permission .overlay-ctx__row1 {
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.18;
+  color: var(--perm-text);
+}
+
+.overlay-card--permission .overlay-ctx__row1 .pixel-indicator {
+  margin-right: 5px;
+  transform: scale(1.9);
+  transform-origin: center;
+}
+
+.overlay-card--permission .overlay-ctx__sep,
+.overlay-card--permission .overlay-ctx__agent {
+  color: var(--island-text-secondary);
+  opacity: 1;
+}
+
+.overlay-card--permission .overlay-ctx__row2 {
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.28;
+  color: var(--island-text-muted);
+}
+
+.overlay-card--permission .overlay-ctx__you {
+  color: var(--island-text-secondary);
+  font-weight: 800;
+}
+
+.overlay-card--permission .overlay-ctx__msg {
+  max-width: 600px;
 }
 
 .perm-card__scroll {
   display: flex;
   flex: 0 1 auto;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   min-height: 0;
   padding-right: 2px;
   overflow-y: auto;
@@ -55,58 +125,47 @@
   transition: width 0.2s;
 }
 
-.perm-card__hero {
+.perm-card__tool-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex: 0 0 auto;
-  padding: 2px 0 4px;
+  padding: 0;
 }
 
 .perm-card__tool-icon-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9999px;
-  background:
-    linear-gradient(180deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
-  border: 1px solid var(--perm-accent-border);
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   flex-shrink: 0;
 }
 
 .perm-card__tool-icon-svg {
   color: var(--perm-accent);
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+  stroke: var(--perm-panel);
 }
 
-.perm-card__hero-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.perm-card__hero-title {
+.perm-card__tool-name {
   color: var(--perm-accent);
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.15;
-}
-
-.perm-card__hero-subtitle {
-  color: var(--island-text-secondary);
-  font-size: 12px;
-  line-height: 1.25;
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1.1;
 }
 
 /* Detail box */
 .perm-card__detail-box {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.025));
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-  padding: 12px;
+  background: var(--perm-command-bg);
+  border: 1px solid var(--perm-command-border);
+  border-radius: 0;
+  padding: 13px 14px 10px;
   flex: 0 0 auto;
 }
 
@@ -119,9 +178,11 @@
 
 /* Tool previews */
 .perm-card__preview-desc {
-  font-size: 13px;
-  color: var(--island-text-secondary);
-  margin-bottom: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.22;
+  color: var(--perm-text-secondary);
+  margin-top: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -133,19 +194,46 @@
   white-space: pre-wrap;
   word-break: break-all;
   border-radius: 9px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--island-code-bg);
+  border: 1px solid var(--perm-command-border);
   padding: 10px 12px;
   font-family: var(--font-mono, monospace);
   font-size: 12px;
   line-height: 1.5;
-  color: var(--island-text-secondary);
+  color: var(--perm-text);
   margin: 0;
 }
 
+.perm-card__preview-code--bash {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.18;
+}
+
+.perm-card__preview-command {
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--font-mono, monospace);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.18;
+  color: var(--perm-text);
+  margin: 0;
+}
+
+.perm-card__preview-command {
+  display: block;
+}
+
 .perm-card__preview-prompt {
-  color: #34d399;
-  margin-right: 4px;
+  color: #a46417;
+  margin-right: 8px;
 }
 
 .perm-card__preview-file {
@@ -153,7 +241,7 @@
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: var(--island-text-secondary);
+  color: var(--perm-text-secondary);
 }
 
 .perm-card__preview-path {
@@ -204,7 +292,7 @@
 
 .perm-card__preview-more {
   font-size: 9px;
-  color: var(--island-text-muted);
+  color: var(--perm-text-secondary);
   margin-top: 4px;
 }
 
@@ -219,12 +307,12 @@
 .perm-card__preview-kv-row {
   display: flex;
   gap: 6px;
-  color: var(--island-text-secondary);
+  color: var(--perm-text);
 }
 
 .perm-card__preview-kv-key {
   flex-shrink: 0;
-  color: var(--island-text-muted);
+  color: var(--perm-text-secondary);
 }
 
 .perm-card__preview-kv-val {
@@ -277,25 +365,25 @@
 .perm-card__actions {
   display: flex;
   flex: 0 0 auto;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  margin-top: 2px;
+  gap: 10px;
+  flex-wrap: nowrap;
+  justify-content: stretch;
+  margin-top: 4px;
 }
 
 .perm-card__btn {
-  flex: 0 0 auto;
+  flex: 1 1 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 86px;
-  min-height: 30px;
-  padding: 6px 12px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   font-family: var(--font-sans, system-ui);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 800;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
   white-space: nowrap;
@@ -307,48 +395,67 @@
 }
 
 .perm-card__btn--deny {
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--island-btn-bg);
   color: var(--island-text);
 }
 
 .perm-card__btn--allow {
-  background: linear-gradient(180deg, #3478f6, #2563eb);
-  color: white;
+  background: color-mix(in srgb, var(--island-card) 72%, #ffffff 28%);
+  color: var(--island-text);
 }
 
 .perm-card__btn--always {
-  background: linear-gradient(180deg, #ef2b2b, #dc2626);
+  background: #3c78dc;
+  color: white;
+}
+
+.perm-card__btn--auto {
+  background: #bd2f31;
   color: white;
 }
 
 .perm-card__kbd {
-  margin-left: 5px;
-  font-size: 9px;
+  margin-left: 6px;
+  font-size: 12px;
   color: inherit;
-  opacity: 0.58;
+  opacity: 0.48;
   font-family: var(--font-mono, monospace);
-  font-weight: 600;
+  font-weight: 800;
 }
 
-/* Secondary */
-.perm-card__secondary {
-  display: flex;
-  flex: 0 0 auto;
-  justify-content: flex-end;
-  margin-top: 0;
-}
 
-.perm-card__jump-btn {
-  background: none;
-  border: none;
-  padding: 4px 2px;
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--island-text-secondary);
-  cursor: pointer;
-  transition: color 0.15s;
-}
+@media (max-width: 760px) {
+  .overlay-card.overlay-card--permission {
+    padding: 20px 18px 22px;
+  }
 
-.perm-card__jump-btn:hover {
-  color: var(--island-text);
+  .overlay-card--permission .overlay-ctx__row1 {
+    font-size: 18px;
+  }
+
+  .overlay-card--permission .overlay-ctx__row2,
+  .perm-card__preview-desc {
+    font-size: 15px;
+  }
+
+  .perm-card__tool-name,
+  .perm-card__preview-code--bash,
+  .perm-card__preview-command {
+    font-size: 18px;
+  }
+
+  .perm-card__actions {
+    gap: 8px;
+  }
+
+  .perm-card__btn {
+    height: 42px;
+    padding: 0 8px;
+    font-size: 14px;
+    border-radius: 9px;
+  }
+
+  .perm-card__kbd {
+    display: none;
+  }
 }

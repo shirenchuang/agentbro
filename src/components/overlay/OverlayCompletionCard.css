@@ -71,7 +71,7 @@
 .overlay-completion__progress-bar {
   height: 100%;
   width: 100%;
-  background: #22c55e;
+  background: var(--island-accent);
   border-radius: 1px;
   transform-origin: left center;
   animation: overlay-completion-countdown linear forwards;

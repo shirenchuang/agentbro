@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod commands;
 pub mod config;
+pub mod hook_endpoint;
 pub mod hooks;
 pub mod license;
 pub mod network_monitor;
@@ -247,6 +248,27 @@ async fn install_agent_hook(
     state: tauri::State<'_, commands::AppState>,
     tool_name: String,
 ) -> Result<(), String> {
+    if let Some(custom_id) = tool_name.strip_prefix("custom:") {
+        let cfg = state.config_store.get();
+        let entry = cfg
+            .custom_hook_installs
+            .iter()
+            .find(|e| e.id == custom_id)
+            .ok_or_else(|| format!("Unknown custom hook: {}", custom_id))?
+            .clone();
+        let profile = agents::profiles::profile_for_agent(&entry.profile_id)
+            .ok_or_else(|| format!("Unknown hook profile: {}", entry.profile_id))?;
+        let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+        let dir_str = base_dir.display().to_string();
+        agents::profiles::install_custom_at_labeled(
+            &profile,
+            &base_dir,
+            Some(&entry.display_name),
+            Some(&dir_str),
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let adapter = state
         .adapters
         .iter()
@@ -257,8 +279,10 @@ async fn install_agent_hook(
 
 #[tauri::command]
 async fn install_custom_agent_hook(
+    state: tauri::State<'_, commands::AppState>,
     profile_id: String,
     install_directory: String,
+    custom_name: Option<String>,
 ) -> Result<String, String> {
     let profile = agents::profiles::profile_for_agent(&profile_id)
         .ok_or_else(|| format!("Unknown hook profile: {}", profile_id))?;
@@ -269,9 +293,65 @@ async fn install_custom_agent_hook(
             base_directory.display()
         ));
     }
-    let target = agents::profiles::install_custom_at(&profile, &base_directory)
-        .map_err(|e| e.to_string())?;
-    Ok(display_path_with_home(&target))
+
+    // Validate the directory looks like a valid config root for this agent.
+    // For JSON-based hooks (claude-code, codex, etc.), the parent of configuration_path
+    // must exist. E.g. for claude-code, configuration_path is ".claude/settings.json",
+    // so the base_directory should look like a .claude directory or contain one.
+    let config_file_name = std::path::Path::new(profile.configuration_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let target_path = agents::profiles::custom_installation_path(&profile, &base_directory);
+    if let Some(parent) = target_path.parent() {
+        if !parent.is_dir() {
+            return Err(format!(
+                "Config parent directory does not exist: {}. Expected a valid config root for {}.",
+                parent.display(),
+                profile.id
+            ));
+        }
+    }
+
+    // Check for duplicate install directory
+    let cfg = state.config_store.get();
+    let dir_lower = install_directory.trim().to_lowercase();
+    if cfg.custom_hook_installs.iter().any(|e| e.install_directory.to_lowercase() == dir_lower && e.profile_id == profile_id) {
+        return Err(format!(
+            "A custom hook for {} at this directory already exists.",
+            profile.id
+        ));
+    }
+    drop(cfg);
+
+    let display_name = custom_name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| format!("{} ({})", profile.id, install_directory));
+    let dir_str = base_directory.display().to_string();
+    let target = agents::profiles::install_custom_at_labeled(
+        &profile,
+        &base_directory,
+        Some(&display_name),
+        Some(&dir_str),
+    )
+    .map_err(|e| e.to_string())?;
+    let entry = config::CustomHookInstall {
+        id: uuid::Uuid::new_v4().to_string(),
+        profile_id: profile_id.clone(),
+        display_name,
+        install_directory,
+    };
+    let mut cfg = state.config_store.get();
+    cfg.custom_hook_installs.push(entry);
+    state.config_store.update(cfg).map_err(|e| e.to_string())?;
+
+    // Provide a helpful hint about what was validated
+    let hint = if target_path.exists() || config_file_name.is_empty() {
+        String::new()
+    } else {
+        format!(" (note: {} was created at this path)", config_file_name)
+    };
+    Ok(format!("{}{}", display_path_with_home(&target), hint))
 }
 
 #[tauri::command]
@@ -279,6 +359,26 @@ async fn uninstall_agent_hook(
     state: tauri::State<'_, commands::AppState>,
     tool_name: String,
 ) -> Result<(), String> {
+    if let Some(custom_id) = tool_name.strip_prefix("custom:") {
+        let mut cfg = state.config_store.get();
+        let idx = cfg
+            .custom_hook_installs
+            .iter()
+            .position(|e| e.id == custom_id)
+            .ok_or_else(|| format!("Unknown custom hook: {}", custom_id))?;
+        let entry = cfg.custom_hook_installs[idx].clone();
+        let profile = agents::profiles::profile_for_agent(&entry.profile_id)
+            .ok_or_else(|| format!("Unknown hook profile: {}", entry.profile_id))?;
+        let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+        let target = agents::profiles::custom_installation_path(&profile, &base_dir);
+        if target.exists() {
+            agents::profiles::uninstall_at(&profile, &target)
+                .map_err(|e| e.to_string())?;
+        }
+        cfg.custom_hook_installs.remove(idx);
+        state.config_store.update(cfg).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let adapter = state
         .adapters
         .iter()
@@ -308,7 +408,7 @@ async fn configure_agent_hook_events(
 async fn get_all_hook_status(
     state: tauri::State<'_, commands::AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    Ok(state
+    let mut results: Vec<serde_json::Value> = state
         .adapters
         .iter()
         .map(|a| {
@@ -331,7 +431,21 @@ async fn get_all_hook_status(
                 .map(agents::profiles::selected_event_names)
                 .unwrap_or_default();
             let paths = a.hook_config_paths();
-            let installed = a.hooks_installed();
+            let hook_health = profile
+                .as_ref()
+                .and_then(|profile| {
+                    paths
+                        .first()
+                        .map(|path| agents::profiles::install_health(profile, path))
+                })
+                .unwrap_or_else(|| {
+                    if a.hooks_installed() {
+                        agents::profiles::HookInstallHealth::Installed
+                    } else {
+                        agents::profiles::HookInstallHealth::NotInstalled
+                    }
+                });
+            let installed = hook_health.is_present();
             let config_path = paths
                 .first()
                 .map(|path| display_path_with_home(path))
@@ -341,11 +455,7 @@ async fn get_all_hook_status(
                 .and_then(|path| path.parent())
                 .map(display_path_with_home)
                 .unwrap_or_default();
-            let install_status = if installed {
-                "installed"
-            } else {
-                "not_installed"
-            };
+            let install_status = hook_health.as_status_str();
             serde_json::json!({
                 "toolId": tool_id,
                 "adapterId": a.name(),
@@ -362,7 +472,64 @@ async fn get_all_hook_status(
                 "enabledEventNames": enabled_event_names,
             })
         })
-        .collect())
+        .collect();
+
+    // Append custom hook installs from config
+    let cfg = state.config_store.get();
+    for entry in &cfg.custom_hook_installs {
+        let profile = agents::profiles::profile_for_agent(&entry.profile_id);
+        let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+        let target_path = profile.as_ref().map(|p| {
+            agents::profiles::custom_installation_path(p, &base_dir)
+        });
+        let hook_health = match (&profile, &target_path) {
+            (Some(p), Some(path)) => agents::profiles::install_health(p, path),
+            _ => agents::profiles::HookInstallHealth::NotInstalled,
+        };
+        let installed = hook_health.is_present();
+        let config_path = target_path
+            .as_ref()
+            .map(|p| display_path_with_home(p))
+            .unwrap_or_default();
+        let config_dir = target_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(display_path_with_home)
+            .unwrap_or_default();
+        let install_status = hook_health.as_status_str();
+        let supports_event_selection = profile
+            .as_ref()
+            .map(agents::profiles::supports_event_selection)
+            .unwrap_or(false);
+        let events = profile
+            .as_ref()
+            .map(agents::profiles::event_statuses)
+            .unwrap_or_default();
+        let enabled_event_names = profile
+            .as_ref()
+            .map(agents::profiles::selected_event_names)
+            .unwrap_or_default();
+        let tool_id = format!("custom:{}", entry.id);
+        results.push(serde_json::json!({
+            "toolId": tool_id,
+            "adapterId": entry.profile_id,
+            "profileId": entry.profile_id,
+            "name": entry.profile_id,
+            "displayName": entry.display_name,
+            "installed": installed,
+            "installStatus": install_status,
+            "configPath": config_path,
+            "configDir": config_dir,
+            "status": if installed { "Installed" } else { "NotInstalled" },
+            "supportsEventSelection": supports_event_selection,
+            "events": events,
+            "enabledEventNames": enabled_event_names,
+            "isCustom": true,
+            "customId": entry.id,
+        }));
+    }
+
+    Ok(results)
 }
 
 fn display_path_with_home(path: &std::path::Path) -> String {
@@ -382,6 +549,21 @@ async fn reinstall_all_hooks(
     for adapter in &state.adapters {
         if let Err(e) = adapter.install_hooks() {
             errors.push(format!("{}: {}", adapter.name(), e));
+        }
+    }
+    let cfg = state.config_store.get();
+    for entry in &cfg.custom_hook_installs {
+        if let Some(profile) = agents::profiles::profile_for_agent(&entry.profile_id) {
+            let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+            let dir_str = base_dir.display().to_string();
+            if let Err(e) = agents::profiles::install_custom_at_labeled(
+                &profile,
+                &base_dir,
+                Some(&entry.display_name),
+                Some(&dir_str),
+            ) {
+                errors.push(format!("{}: {}", entry.display_name, e));
+            }
         }
     }
     Ok(errors)
@@ -3032,7 +3214,7 @@ pub fn run() {
                 .item(&quit_item)
                 .build()?;
 
-            let _tray = TrayIconBuilder::new()
+            let tray_icon = TrayIconBuilder::new()
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .tooltip("AgentBro")
@@ -3117,6 +3299,7 @@ pub fn run() {
                 remote_manager,
                 diagnostic_buffer,
                 network_monitor,
+                tray_icon,
             };
             let buddy_device_config = app_state.config_store.get().buddy_device;
             commands::buddy::start_buddy_device_server(

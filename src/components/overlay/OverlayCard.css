@@ -71,10 +71,15 @@
   color: var(--island-text-secondary);
 }
 
-.overlay-ctx__project {
+.overlay-ctx__project,
+.overlay-ctx__title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.overlay-ctx__title {
+  min-width: 0;
 }
 
 .overlay-ctx__sep {
@@ -103,4 +108,28 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Show all sessions footer */
+.overlay-card__secondary {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.overlay-card__show-sessions {
+  background: none;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--island-text-muted);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.overlay-card__show-sessions:hover {
+  color: var(--island-text);
 }

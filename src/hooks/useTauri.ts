@@ -75,6 +75,69 @@ function parseDiff(raw: string | null): DiffContent | undefined {
   }
 }
 
+function parseToolInput(raw?: string | null): Record<string, unknown> | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+function getInputString(input: Record<string, unknown>, key: string): string {
+  const value = input[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function buildDiffFromToolInput(name: string, input: Record<string, unknown>): DiffContent | undefined {
+  const filePath = getInputString(input, 'file_path')
+    || getInputString(input, 'filePath')
+    || getInputString(input, 'path')
+    || getInputString(input, 'notebook_path')
+  if (!filePath) return undefined
+
+  if (name === 'Edit' || name === 'NotebookEdit') {
+    const oldContent = getInputString(input, 'old_string')
+    const newContent = getInputString(input, 'new_string')
+    if (!oldContent && !newContent) return undefined
+    return contentPairToDiff(filePath, oldContent, newContent)
+  }
+
+  if (name === 'Write') {
+    const newContent = getInputString(input, 'content')
+    if (!newContent) return undefined
+    return contentPairToDiff(filePath, '', newContent)
+  }
+
+  if (name === 'MultiEdit') {
+    const rawEdits = input.edits
+    let edits: Array<{ old_string?: string; new_string?: string }> = []
+    if (Array.isArray(rawEdits)) {
+      edits = rawEdits.filter((item): item is { old_string?: string; new_string?: string } => (
+        Boolean(item) && typeof item === 'object'
+      ))
+    } else if (typeof rawEdits === 'string') {
+      try {
+        const parsed = JSON.parse(rawEdits)
+        if (Array.isArray(parsed)) edits = parsed
+      } catch {
+        return undefined
+      }
+    }
+
+    const oldContent = edits.map((edit) => edit.old_string ?? '').filter(Boolean).join('\n...\n')
+    const newContent = edits.map((edit) => edit.new_string ?? '').filter(Boolean).join('\n...\n')
+    if (!oldContent && !newContent) return undefined
+    return contentPairToDiff(filePath, oldContent, newContent)
+  }
+
+  return undefined
+}
+
 function transformSession(bs: BackendSession): SessionState {
   // Preserve existing chatHistory/subagents/activeTools from the store
   // so that replaceAllSessions doesn't wipe them on each backend update
@@ -153,6 +216,8 @@ function transformSession(bs: BackendSession): SessionState {
       startedAt: tool.startedAt,
       completedAt: tool.completedAt ?? undefined,
       error: tool.error ?? undefined,
+      toolInput: tool.toolInput ?? undefined,
+      diff: buildDiffFromToolInput(tool.toolName, parseToolInput(tool.toolInput) ?? {}),
     })),
     tasks: (bs.tasks ?? existing?.tasks ?? []).map((task) => ({
       id: task.id,
@@ -371,38 +436,6 @@ export function mapParsedMessages(parsed: ParsedMessage[]): ChatMessage[] {
 
   const formatToolInput = (input: Record<string, string>) =>
     Object.entries(input).map(([k, v]) => `${k}: ${v}`).join('\n')
-
-  const buildDiffFromToolInput = (name: string, input: Record<string, string>): DiffContent | undefined => {
-    const filePath = input.file_path || input.path || input.notebook_path
-    if (!filePath) return undefined
-
-    if (name === 'Edit' || name === 'NotebookEdit') {
-      const oldContent = input.old_string || ''
-      const newContent = input.new_string || ''
-      if (!oldContent && !newContent) return undefined
-      return contentPairToDiff(filePath, oldContent, newContent)
-    }
-
-    if (name === 'Write') {
-      const newContent = input.content || ''
-      if (!newContent) return undefined
-      return contentPairToDiff(filePath, '', newContent)
-    }
-
-    if (name === 'MultiEdit' && input.edits) {
-      try {
-        const edits = JSON.parse(input.edits) as Array<{ old_string?: string; new_string?: string }>
-        const oldContent = edits.map((edit) => edit.old_string ?? '').filter(Boolean).join('\n...\n')
-        const newContent = edits.map((edit) => edit.new_string ?? '').filter(Boolean).join('\n...\n')
-        if (!oldContent && !newContent) return undefined
-        return contentPairToDiff(filePath, oldContent, newContent)
-      } catch {
-        return undefined
-      }
-    }
-
-    return undefined
-  }
 
   const applyToolResult = (block: Extract<ParsedMessageBlock, { type: 'tool_result' }>) => {
     const assistant = lastAssistant()

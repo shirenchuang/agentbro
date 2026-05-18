@@ -871,12 +871,35 @@ describe('NotchPanel island shell', () => {
       id: 'plan-s1',
       sessionId: 's1',
       type: 'plan',
-      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      data: {
+        planTitle: 'Implementation plan',
+        planContent: '# Fix jump\n\nContext\n\n1. Fix jump',
+        requestedPermissions: [{ tool: 'Bash', prompt: 'run tests' }],
+      },
       createdAt: Date.now(),
     }, {
       planTitle: 'Implementation plan',
-      planContent: '1. Fix jump',
+      planContent: '# Fix jump\n\nContext\n\n1. Fix jump',
+      sessionTitle: 'Fix jump flow',
+      subagents: [{
+        agentId: 'agent-1',
+        agentType: 'Explore',
+        description: 'inspect jump flow',
+        startedAt: Date.now() - 2_000,
+        completedAt: Date.now() - 1_000,
+        status: 'completed',
+        tools: ['Read'],
+        lastAssistantMessage: 'jump path is wired',
+      }],
     })
+
+    expect(document.querySelector('.overlay-ctx__row1')?.textContent).toContain('agent-island·Fix jump flow·Claude')
+    expect(screen.getByText('Subagents (1)')).toBeInTheDocument()
+    expect(screen.getByText('Explore')).toBeInTheDocument()
+    expect(screen.getByText('完成')).toBeInTheDocument()
+    expect(document.querySelector('.plan-approval__content')?.textContent).toContain('Fix jump')
+    expect(document.querySelector('.plan-approval__perms')?.textContent).toContain('请求的权限:')
+    expect(document.querySelector('.plan-approval__perms')?.textContent).toContain('Bash')
 
     fireEvent.click(screen.getByText('Accept Edits'))
 
@@ -884,6 +907,37 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().activeOverlay).toBeNull()
     expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()
     expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')
+  })
+
+  it('routes plan overlay manual review and auto approval actions', () => {
+    mountIsland({
+      id: 'plan-s1-manual',
+      sessionId: 's1',
+      type: 'plan',
+      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      createdAt: Date.now(),
+    }, {
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix jump',
+    })
+
+    fireEvent.click(screen.getByText('Manual Review'))
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+
+    cleanup()
+    mountIsland({
+      id: 'plan-s1-auto',
+      sessionId: 's1',
+      type: 'plan',
+      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      createdAt: Date.now(),
+    }, {
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix jump',
+    })
+
+    fireEvent.click(screen.getByText('Auto'))
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions')
   })
 
   it('routes response overlay jump and reply actions to terminal APIs', async () => {

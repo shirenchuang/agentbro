@@ -56,6 +56,15 @@ pub struct CustomHookTemplate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CustomHookInstall {
+    pub id: String,
+    pub profile_id: String,
+    pub display_name: String,
+    pub install_directory: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuddyDeviceConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -119,6 +128,9 @@ pub struct AppConfig {
     /// Custom engine instances (Claude Code at non-default paths)
     #[serde(default)]
     pub engine_instances: Vec<EngineInstance>,
+    /// Custom hook installations at non-standard paths
+    #[serde(default)]
+    pub custom_hook_installs: Vec<CustomHookInstall>,
     /// Webhook forwarding configurations (DingTalk / Feishu)
     #[serde(default)]
     pub webhook_configs: Vec<crate::webhook::WebhookConfig>,
@@ -268,6 +280,7 @@ impl Default for AppConfig {
             idle_timeout_minutes: default_idle_timeout_minutes(),
             notification_mode: "turnEnd".to_string(),
             engine_instances: Vec::new(),
+            custom_hook_installs: Vec::new(),
             webhook_configs: Vec::new(),
             remote_hosts: Vec::new(),
             volume: default_volume(),

@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { SessionContextHeader } from './SessionContextHeader'
 import './OverlayCard.css'
@@ -7,12 +8,15 @@ interface OverlayCardProps {
   session: SessionState
   children: ReactNode
   onDismiss?: () => void
+  onShowSessions?: () => void
+  sessionCount?: number
   maxHeight?: number
   className?: string
   bodyClassName?: string
 }
 
-export function OverlayCard({ session, children, onDismiss, maxHeight, className, bodyClassName }: OverlayCardProps) {
+export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, className, bodyClassName }: OverlayCardProps) {
+  const { t } = useTranslation()
   const cardClassName = ['overlay-card', className].filter(Boolean).join(' ')
   const bodyClass = ['overlay-card__body', bodyClassName].filter(Boolean).join(' ')
 
@@ -35,6 +39,13 @@ export function OverlayCard({ session, children, onDismiss, maxHeight, className
       <div className={bodyClass}>
         {children}
       </div>
+      {(onShowSessions || onDismiss) && sessionCount != null && (
+        <div className="overlay-card__secondary">
+          <button className="overlay-card__show-sessions" onMouseDown={onShowSessions ?? onDismiss}>
+            {t('notch.showAllSessions', { count: sessionCount })}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -19,7 +19,9 @@ interface OverlayFeedbackPanelProps {
   startedAt?: number
   statusLabel: string
   onJumpToTerminal: () => void
+  onShowSessions?: () => void
   onDismiss: () => void
+  sessionCount?: number
 }
 
 export function OverlayFeedbackPanel({
@@ -31,7 +33,9 @@ export function OverlayFeedbackPanel({
   startedAt,
   statusLabel,
   onJumpToTerminal,
+  onShowSessions,
   onDismiss,
+  sessionCount,
 }: OverlayFeedbackPanelProps) {
   const { t } = useTranslation()
   const [inputValue, setInputValue] = useState('')
@@ -300,6 +304,14 @@ export function OverlayFeedbackPanel({
           {sending ? '...' : t('notch.send', { defaultValue: 'Send' })}
         </button>
       </div>
+
+      {sessionCount != null && (
+        <div className="overlay-card__secondary" data-no-drag>
+          <button className="overlay-card__show-sessions" onMouseDown={onShowSessions ?? onDismiss}>
+            {t('notch.showAllSessions', { count: sessionCount })}
+          </button>
+        </div>
+      )}
 
       <div className="overlay-feedback__progress" aria-hidden>
         <div className="overlay-feedback__progress-bar" style={{ transform: `scaleX(${progressRatio})` }} />

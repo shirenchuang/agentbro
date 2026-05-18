@@ -201,6 +201,11 @@ html[data-island-color-theme="midnight"] .notch-panel[data-island-state="micro"]
   max-height: 100%;
 }
 
+.notch-panel__alert-content[data-overlay-type="permission"] > .overlay-card,
+.notch-panel__alert-content[data-overlay-type="question"] > .overlay-card {
+  min-height: 360px;
+}
+
 .notch-panel__alert-content[data-overlay-type="permission"] {
   justify-content: flex-start;
 }

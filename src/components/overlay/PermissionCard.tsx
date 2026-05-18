@@ -12,10 +12,13 @@ interface PermissionCardProps {
   session: SessionState
   onAllow: () => void
   onAllowAlways: () => void
+  onAutoApprove: () => void
+  onShowSessions?: () => void
   onDeny: (message?: string) => void
   onDismiss: () => void
   queueLength?: number
   queueNext?: string
+  sessionCount?: number
 }
 
 function shortenPath(filePath: string, maxSegments = 3): string {
@@ -27,7 +30,7 @@ function shortenPath(filePath: string, maxSegments = 3): string {
 function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Record<string, unknown> }) {
   switch (toolName) {
     case 'Bash': {
-      const command = (toolInput.command as string) ?? ''
+      const command = (toolInput.command as string) ?? (toolInput.raw as string) ?? ''
       const lines = command.split('\n')
       const maxLines = 5
       const truncated = lines.length > maxLines
@@ -35,13 +38,15 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
 
       return (
         <div>
-          {toolInput.description != null && (
-            <div className="perm-card__preview-desc">{String(toolInput.description)}</div>
-          )}
-          <pre className="perm-card__preview-code">
-            <span className="perm-card__preview-prompt">$ </span>
-            {displayLines.join('\n')}
-          </pre>
+          <div className="perm-card__preview-code perm-card__preview-code--bash">
+            <pre className="perm-card__preview-command">
+              <span className="perm-card__preview-prompt">$ </span>
+              {displayLines.join('\n')}
+            </pre>
+            {toolInput.description != null && (
+              <div className="perm-card__preview-desc">{String(toolInput.description)}</div>
+            )}
+          </div>
           {truncated && (
             <div className="perm-card__preview-more">+{lines.length - maxLines} lines</div>
           )}
@@ -166,7 +171,7 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
   }
 }
 
-export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDeny, onDismiss, queueLength = 1, queueNext }: PermissionCardProps) {
+export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAutoApprove, onShowSessions, onDeny, onDismiss, queueLength = 1, queueNext, sessionCount = 1 }: PermissionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
   const [feedbackState, setFeedbackState] = useState({ overlayId: overlay.id, text: '', show: false })
@@ -227,7 +232,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
   }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump, overlay.id])
 
   return (
-    <OverlayCard session={session} onDismiss={onDismiss} className="overlay-card--permission" bodyClassName="perm-card">
+    <OverlayCard session={session} onDismiss={onDismiss} onShowSessions={onShowSessions} sessionCount={sessionCount} className="overlay-card--permission" bodyClassName="perm-card">
       <div className="perm-card__scroll">
         {/* Queue progress bar */}
         {queueLength > 1 && (
@@ -242,16 +247,13 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
           </div>
         )}
 
-        <div className="perm-card__hero">
+        <div className="perm-card__tool-row">
           <div className="perm-card__tool-icon-wrap">
             <svg className="perm-card__tool-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
           </div>
-          <div className="perm-card__hero-copy">
-            <div className="perm-card__hero-title">{t('notch.needsApproval')}</div>
-            <div className="perm-card__hero-subtitle">{toolLabel}</div>
-          </div>
+          <div className="perm-card__tool-name">{data.toolName || toolLabel}</div>
         </div>
 
         {/* Tool detail box with preview */}
@@ -311,12 +313,8 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onDen
           <span>{t('notch.allowAlways')}</span>
           <kbd className="perm-card__kbd">A</kbd>
         </button>
-      </div>
-
-      {/* Secondary action: Jump to terminal */}
-      <div className="perm-card__secondary">
-        <button className="perm-card__jump-btn" onMouseDown={handleJump}>
-          Go to Terminal <kbd className="perm-card__kbd">T</kbd>
+        <button className="perm-card__btn perm-card__btn--auto" onMouseDown={onAutoApprove}>
+          <span>{t('notch.autoApprove')}</span>
         </button>
       </div>
     </OverlayCard>

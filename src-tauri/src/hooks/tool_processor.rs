@@ -33,7 +33,13 @@ impl ToolProcessor {
     }
 
     /// Called on PreToolUse — register a new active tool
-    pub fn on_pre_tool_use(&self, session_id: &str, tool_use_id: &str, tool_name: &str) {
+    pub fn on_pre_tool_use(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        tool_name: &str,
+        tool_input: Option<String>,
+    ) {
         if tool_use_id.is_empty() {
             return;
         }
@@ -50,7 +56,8 @@ impl ToolProcessor {
             active.insert(tool_use_id.to_string(), tool);
         }
 
-        self.store.start_tool(session_id, tool_use_id, tool_name);
+        self.store
+            .start_tool(session_id, tool_use_id, tool_name, tool_input);
     }
 
     /// Called on PostToolUse — mark tool as successfully completed

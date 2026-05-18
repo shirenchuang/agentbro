@@ -7,6 +7,7 @@ pub mod persistence;
 use crate::agents::{AdapterInfo, AgentAdapter};
 use crate::config::CustomHookTemplate;
 use crate::config::{AppConfig, ConfigStore};
+use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     all_projects_dirs, discover_codex_session_file, discover_session_file_in_dirs, ParsedMessage,
 };
@@ -41,6 +42,8 @@ pub struct AppState {
     pub remote_manager: Arc<RemoteManager>,
     pub diagnostic_buffer: Arc<DiagnosticRingBuffer>,
     pub network_monitor: Arc<NetworkMonitor>,
+    #[allow(dead_code)]
+    pub tray_icon: tauri::tray::TrayIcon,
 }
 
 // ── Session Commands ──────────────────────────────────────────────
@@ -137,13 +140,16 @@ pub async fn send_message(
         }
     }
 
-    let tty = session
-        .tty
-        .as_deref()
-        .ok_or_else(|| "Session has no TTY".to_string())?;
+    let tty = resolve_session_tty(&session).ok_or_else(|| "Session has no TTY".to_string())?;
+    if session.tty.as_deref() != Some(tty.as_str()) {
+        let resolved_tty = tty.clone();
+        state.session_store.update_session(&session_id, |s| {
+            s.tty = Some(resolved_tty);
+        });
+    }
 
     crate::agents::claude_code::send_message_to_terminal(
-        tty,
+        &tty,
         &message,
         &session.terminal,
         session.pid,
@@ -157,6 +163,35 @@ fn is_codex_desktop_session(session: &SessionState) -> bool {
         && session.tty.is_none()
         && !session.terminal.starts_with("/dev/")
         && (session.terminal.is_empty() || session.terminal.to_ascii_lowercase().contains("codex"))
+}
+
+fn resolve_session_tty(session: &SessionState) -> Option<String> {
+    session
+        .tty
+        .as_deref()
+        .filter(|tty| !tty.trim().is_empty())
+        .map(normalize_tty_path)
+        .or_else(|| {
+            session
+                .terminal
+                .starts_with("/dev/tty")
+                .then(|| session.terminal.clone())
+        })
+        .or_else(|| {
+            let pid = session.pid?;
+            let tree = crate::terminal::process_tree::build_tree();
+            crate::terminal::process_tree::get_tty(pid, &tree)
+                .as_deref()
+                .map(normalize_tty_path)
+        })
+}
+
+fn normalize_tty_path(tty: &str) -> String {
+    if tty.starts_with("/dev/") {
+        tty.to_string()
+    } else {
+        format!("/dev/{}", tty)
+    }
 }
 
 fn open_codex_desktop_session(session_id: &str) -> Result<(), String> {
@@ -474,11 +509,12 @@ pub async fn simulate_hook_event(
     async fn send_payload(payload: serde_json::Value) -> Result<(), String> {
         let line = format!("{payload}\n");
         let bytes = line.as_bytes();
+        let endpoint = hook_endpoint::current();
 
-        if let Ok(mut stream) = tokio::net::UnixStream::connect("/tmp/agentbro.sock").await {
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(&endpoint.socket_path).await {
             stream.write_all(bytes).await.map_err(|e| e.to_string())
         } else {
-            let mut stream = tokio::net::TcpStream::connect("127.0.0.1:17892")
+            let mut stream = tokio::net::TcpStream::connect(endpoint.tcp_addr())
                 .await
                 .map_err(|e| e.to_string())?;
             stream.write_all(bytes).await.map_err(|e| e.to_string())
@@ -1205,13 +1241,13 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
     checks.push(HookDoctorCheck {
         id: "hook-server".to_string(),
         label: "Hook server socket".to_string(),
-        status: if std::path::Path::new(crate::hooks::server::UNIX_SOCKET_PATH).exists() {
+        status: if std::path::Path::new(&hook_endpoint::current().socket_path).exists() {
             "ok"
         } else {
             "warn"
         }
         .to_string(),
-        detail: crate::hooks::server::UNIX_SOCKET_PATH.to_string(),
+        detail: hook_endpoint::current().socket_path,
     });
 
     let adapters = state
@@ -1742,7 +1778,7 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 mod tests {
     use super::{
         can_fallback_to_terminal_app, codex_exec_resume_args, fallback_terminal_app_name,
-        is_codex_desktop_session, parse_subagent_chat_history_for_session,
+        is_codex_desktop_session, parse_subagent_chat_history_for_session, resolve_session_tty,
     };
     use crate::hooks::session_store::{SessionState, SubagentInfo};
     use std::fs;
@@ -1815,6 +1851,18 @@ mod tests {
         assert_eq!(fallback_terminal_app_name("Ghostty"), "Ghostty");
         assert_eq!(fallback_terminal_app_name("AntCC"), "Terminal");
         assert_eq!(fallback_terminal_app_name(""), "Terminal");
+    }
+
+    #[test]
+    fn send_message_resolves_tty_from_stored_tty_or_terminal_path() {
+        assert_eq!(
+            resolve_session_tty(&session("claude-code", "iTerm2", Some("ttys001"))),
+            Some("/dev/ttys001".to_string())
+        );
+        assert_eq!(
+            resolve_session_tty(&session("claude-code", "/dev/ttys002", None)),
+            Some("/dev/ttys002".to_string())
+        );
     }
 
     #[test]

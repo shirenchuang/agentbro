@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter};
 
 use super::conversation_parser::{
@@ -35,7 +35,7 @@ pub struct ConversationUpdatePayload {
 /// kqueue-backed recursive watches keep one descriptor per file on macOS.
 pub struct ConversationWatcher {
     /// The underlying notify watcher (kept alive to maintain the watch).
-    _watcher: RecommendedWatcher,
+    _watcher: PollWatcher,
     /// Shared parser state: session_id -> ConversationParser
     parsers: Arc<Mutex<HashMap<String, ConversationParser>>>,
 }
@@ -74,7 +74,7 @@ impl ConversationWatcher {
             Arc::new(Mutex::new(HashMap::new()));
         let debounce_duration = Duration::from_millis(100);
 
-        let mut watcher = match RecommendedWatcher::new(
+        let mut watcher = match PollWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 let event = match res {
                     Ok(e) => e,
@@ -164,7 +164,7 @@ impl ConversationWatcher {
                     }
                 }
             },
-            Config::default(),
+            Config::default().with_poll_interval(Duration::from_secs(2)),
         ) {
             Ok(w) => w,
             Err(e) => {

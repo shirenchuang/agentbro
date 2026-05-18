@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, PollWatcher, RecursiveMode, Watcher};
 use tokio::sync::Mutex;
 
 use crate::agents::AgentAdapter;
@@ -115,7 +115,7 @@ pub fn start_hook_recovery(
             let _watcher = {
                 let tx = tx.clone();
                 let watched = watch_paths_inner.clone();
-                let mut watcher = RecommendedWatcher::new(
+                let mut watcher = PollWatcher::new(
                     move |res: Result<Event, notify::Error>| {
                         if let Ok(event) = res {
                             let is_settings_change =
@@ -156,18 +156,25 @@ pub fn start_hook_recovery(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 while rx.try_recv().is_ok() {}
 
-                // Check if any adapter needs hook restoration
+                // Check if any existing AgentBro hook needs a managed refresh.
+                // Missing configs are normal for tools the user has not installed;
+                // auto-recovery should not turn those into repeated bulk installs.
                 let needs_restore = adapters_inner.iter().any(|a| {
-                    let paths = a.hook_config_paths();
-                    paths.iter().any(|p| {
-                        if !p.exists() {
-                            return true;
-                        }
-                        let content = match std::fs::read_to_string(p) {
-                            Ok(c) => c,
-                            Err(_) => return true,
-                        };
-                        !content.contains("agentbro-bridge")
+                    let Some(profile) = crate::agents::profiles::profile_for_agent(a.name()) else {
+                        return a.hook_config_paths().iter().any(|p| {
+                            std::fs::read_to_string(p)
+                                .map(|content| {
+                                    content.contains("agentbro-bridge")
+                                        && !content.contains(crate::hook_endpoint::HOOK_PORT_ENV)
+                                })
+                                .unwrap_or(false)
+                        });
+                    };
+                    a.hook_config_paths().iter().any(|p| {
+                        matches!(
+                            crate::agents::profiles::install_health(&profile, p),
+                            crate::agents::profiles::HookInstallHealth::NeedsReinstall
+                        )
                     })
                 });
 

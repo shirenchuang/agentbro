@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
+import { COLOR_THEMES, useThemeStore } from '../../stores/themeStore'
 import type { DiffContent, PanelState, SessionState, TaskInfo } from '../../types/agent'
 import './ClaudeHookUiLab.css'
 
 type LabScenarioId =
+  | 'empty-idle'
+  | 'multi-session-mixed'
+  | 'response-overlay'
+  | 'overlay-queue'
+  | 'long-content'
+  | 'status-badges'
   | 'pre-tool-use'
   | 'post-tool-use'
   | 'permission-request'
@@ -31,7 +38,9 @@ interface LabScenario {
   hookName: string
   title: string
   caption: string
-  buildSession: (now: number) => SessionState
+  buildSession?: (now: number) => SessionState
+  buildSessions?: (now: number) => SessionState[]
+  configureStore?: (now: number, sessions: SessionState[]) => void
 }
 
 interface ClaudeHookUiLabProps {
@@ -113,6 +122,14 @@ function baseSession(now: number, overrides: Partial<SessionState> = {}): Sessio
   }
 }
 
+function withSessionId(session: SessionState, id: string, overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    ...session,
+    id,
+    ...overrides,
+  }
+}
+
 function recordedSession(now: number, overrides: Partial<SessionState> = {}): SessionState {
   return {
     id: RECORDED_SESSION_ID,
@@ -187,7 +204,13 @@ function recordedWriteSession(now: number): SessionState {
     lastToolTarget: `${RECORDED_CWD}/src/auth/middleware.ts`,
     lastToolStatus: 'running',
     activeTools: [
-      { toolUseId: 'tooluse_3wObTzgiqWYNnU4G7tMQwH', toolName: 'Write', status: 'running', startedAt: now - 2_000 },
+      {
+        toolUseId: 'tooluse_3wObTzgiqWYNnU4G7tMQwH',
+        toolName: 'Write',
+        status: 'running',
+        startedAt: now - 2_000,
+        diff: recordedEditDiff(),
+      },
     ],
     chatHistory: [
       {
@@ -725,7 +748,194 @@ function stopFailureSession(now: number): SessionState {
   })
 }
 
+function emptyIdleSessions(): SessionState[] {
+  return []
+}
+
+function multiSessionMixedSessions(now: number): SessionState[] {
+  return [
+    withSessionId(preToolSession(now), 'lab-multi-processing', {
+      project: 'agentbro',
+      sessionTitle: 'Running focused tests',
+      lastUserMessage: '跑一下灵动岛回归测试',
+    }),
+    withSessionId(permissionSession(now), 'lab-multi-permission', {
+      project: 'frontend',
+      sessionTitle: 'Edit island state styles',
+      unattendedSince: now - 72_000,
+    }),
+    withSessionId(questionSession(now), 'lab-multi-question', {
+      project: 'release',
+      sessionTitle: 'Choose release target',
+      unattendedSince: now - 42_000,
+    }),
+    withSessionId(stopFailureSession(now), 'lab-multi-error', {
+      project: 'hooks',
+      sessionTitle: 'Hook recovery failed',
+    }),
+    withSessionId(recordedSubagentSession(now), 'lab-multi-subagent', {
+      project: 'audit',
+      sessionTitle: 'Subagent coverage scan',
+    }),
+  ]
+}
+
+function responseOverlaySession(now: number): SessionState {
+  return baseSession(now, {
+    phase: 'processing',
+    description: 'Assistant produced a response while the session stays active.',
+    responseText: `我已经完成第一轮检查，发现两个风险点：
+
+- 颜色外观只影响 CSS token，不应该覆盖 alert / feedback 状态。
+- response overlay 在任务未结束时也会弹出，需要单独验证。
+
+接下来继续跑 UI 场景矩阵。`,
+    lastUserMessage: '检查灵动岛状态覆盖情况，先给我一个中间结论。',
+    sessionTitle: 'Mid-run response overlay',
+    lastToolName: 'Read',
+    lastToolStatus: 'success',
+    chatHistory: [
+      { role: 'user', content: '检查灵动岛状态覆盖情况，先给我一个中间结论。', timestamp: now - 34_000 },
+      {
+        role: 'assistant',
+        content: '我已经完成第一轮检查，发现两个风险点：颜色外观和状态样式需要分开验证。',
+        timestamp: now - 3_000,
+      },
+    ],
+  })
+}
+
+function overlayQueueSessions(now: number): SessionState[] {
+  return [
+    withSessionId(permissionSession(now), 'lab-queue-permission', {
+      project: 'auth',
+      sessionTitle: 'Permission has highest priority',
+      unattendedSince: now - 66_000,
+    }),
+    withSessionId(planSession(now), 'lab-queue-plan', {
+      project: 'planner',
+      sessionTitle: 'Plan waits behind permission',
+      unattendedSince: now - 54_000,
+    }),
+    withSessionId(questionSession(now), 'lab-queue-question', {
+      project: 'release',
+      sessionTitle: 'Question waits behind plan',
+      unattendedSince: now - 38_000,
+    }),
+  ]
+}
+
+function longContentSession(now: number): SessionState {
+  const longDiff: DiffContent = {
+    filePath: '/Users/demo/projects/agentbro/src/components/notch/super-long-path-for-regression/ExtremelyLongPermissionCardAndDynamicIslandLayoutRegressionFixture.tsx',
+    lines: [
+      { type: 'context', lineNumber: 118, content: 'const previous = buildIslandAppearancePreview(colorTheme, scenario, viewport)' },
+      { type: 'remove', lineNumber: 119, content: 'return previous.render({ compact: true })' },
+      { type: 'add', lineNumber: 119, content: 'return previous.render({ compact: true, preserveAlertState: true, allowLongLocalizedLabels: true })' },
+      { type: 'context', lineNumber: 120, content: '}' },
+      { type: 'add', lineNumber: 121, content: 'const stressLabel = "这是一个非常长的中文说明，用来验证灵动岛授权卡片在长路径、长 diff、长按钮标签下不会溢出。"' },
+    ],
+  }
+
+  return baseSession(now, {
+    phase: 'waiting_approval',
+    description: 'Stress test for long permission content, long file names, and wrapped copy.',
+    pendingPermission: {
+      toolName: 'MultiEdit',
+      toolInput: JSON.stringify({
+        file_path: longDiff.filePath,
+        edits: [
+          {
+            old_string: 'return previous.render({ compact: true })',
+            new_string: 'return previous.render({ compact: true, preserveAlertState: true, allowLongLocalizedLabels: true })',
+          },
+        ],
+      }, null, 2),
+      diff: longDiff,
+    },
+    lastUserMessage: '补齐灵动岛 UI Lab 的长内容压力场景，确认不要溢出。',
+    sessionTitle: 'Long content permission stress',
+    lastToolName: 'MultiEdit',
+    lastToolTarget: longDiff.filePath,
+    lastToolStatus: 'running',
+    unattendedSince: now - 84_000,
+  })
+}
+
+function statusBadgeSession(now: number): SessionState {
+  return baseSession(now, {
+    phase: 'error',
+    project: 'agentbro',
+    description: 'Rate limit warning, YOLO badge, error badge, and unattended red state.',
+    sessionTitle: 'Status badge matrix',
+    lastUserMessage: '验证折叠态的状态徽标是否都能看见。',
+    lastToolName: 'Bash',
+    lastToolTarget: 'pnpm test:run src/test/notchPanel.test.tsx',
+    lastToolStatus: 'error',
+    isYoloMode: true,
+    unattendedSince: now - 125_000,
+    rateLimits: {
+      fiveHourUsage: 91,
+      fiveHourRemaining: '23m',
+      sevenDayUsage: 63,
+      sevenDayRemaining: '2d4h',
+    },
+    activeTools: [
+      {
+        toolUseId: 'lab-status-test',
+        toolName: 'Bash',
+        status: 'error',
+        startedAt: now - 55_000,
+        completedAt: now - 14_000,
+        error: 'Visual regression mismatch in collapsed badge row',
+      },
+    ],
+  })
+}
+
 const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
+  {
+    id: 'empty-idle',
+    hookName: 'Island Empty / Idle',
+    title: 'Empty',
+    caption: 'no sessions: brand empty, idle, micro/compact shell',
+    buildSessions: emptyIdleSessions,
+  },
+  {
+    id: 'multi-session-mixed',
+    hookName: 'Island Multi Session',
+    title: 'Multi Mix',
+    caption: 'mixed processing, waiting, error, done, and subagent rows',
+    buildSessions: multiSessionMixedSessions,
+  },
+  {
+    id: 'response-overlay',
+    hookName: 'Island Response Overlay',
+    title: 'Response',
+    caption: 'non-blocking response overlay while session is still processing',
+    buildSession: responseOverlaySession,
+  },
+  {
+    id: 'overlay-queue',
+    hookName: 'Island Overlay Queue',
+    title: 'Queue',
+    caption: 'permission > plan > question blocking overlay priority',
+    buildSessions: overlayQueueSessions,
+  },
+  {
+    id: 'long-content',
+    hookName: 'Island Long Content',
+    title: 'Long',
+    caption: 'long file path, long diff, and wrapped permission content',
+    buildSession: longContentSession,
+  },
+  {
+    id: 'status-badges',
+    hookName: 'Island Status Badges',
+    title: 'Badges',
+    caption: 'rate limit, YOLO, error, and unattended collapsed badges',
+    buildSession: statusBadgeSession,
+  },
   {
     id: 'real-edit-pending',
     hookName: 'Real Edit Permission',
@@ -870,10 +1080,11 @@ function resetLabState() {
   })
 }
 
-function defaultPanelState(session: SessionState, viewMode: LabViewMode): PanelState {
+function defaultPanelState(session: SessionState | undefined, viewMode: LabViewMode): PanelState {
   if (viewMode === 'detail') return 'expanded'
   if (viewMode === 'list') return 'hover'
   if (viewMode === 'compact') return 'collapsed'
+  if (!session) return 'collapsed'
   if (session.phase === 'done') return 'collapsed'
   return 'hover'
 }
@@ -882,17 +1093,21 @@ function applyClaudeHookLabScenario(scenarioId: LabScenarioId, viewMode: LabView
   const scenario = CLAUDE_HOOK_LAB_SCENARIOS.find((candidate) => candidate.id === scenarioId)
   if (!scenario) return
 
-  const session = scenario.buildSession(Date.now())
+  const now = Date.now()
+  const sessions = scenario.buildSessions?.(now) ?? (scenario.buildSession ? [scenario.buildSession(now)] : [])
   resetLabState()
-  useSessionStore.getState().replaceAllSessions([session], { suppressed: viewMode === 'compact' })
+  useSessionStore.getState().replaceAllSessions(sessions, { suppressed: viewMode === 'compact' })
   const store = useSessionStore.getState()
-  store.setActiveSession(session.id)
+  store.setActiveSession(sessions[0]?.id ?? null)
+  scenario.configureStore?.(now, sessions)
 
   if (viewMode === 'detail' || viewMode === 'list') {
-    store.clearSessionOverlays(session.id)
+    for (const session of sessions) {
+      store.clearSessionOverlays(session.id)
+    }
   }
 
-  store.setPanelState(defaultPanelState(session, viewMode))
+  store.setPanelState(defaultPanelState(sessions[0], viewMode))
 }
 
 export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
@@ -901,6 +1116,8 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
   const [replayToken, setReplayToken] = useState(0)
   const activeOverlay = useSessionStore((state) => state.activeOverlay)
   const activeSession = useSessionStore((state) => state.activeSessionId ? state.sessions[state.activeSessionId] : undefined)
+  const colorTheme = useThemeStore((state) => state.colorTheme)
+  const setColorTheme = useThemeStore((state) => state.setColorTheme)
 
   useEffect(() => {
     const previousAutoCollapse = useConfigStore.getState().autoCollapse
@@ -929,6 +1146,11 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
     setViewMode(mode)
     setReplayToken((token) => token + 1)
   }, [])
+
+  const applyColorAppearance = useCallback((themeId: string) => {
+    setColorTheme(themeId)
+    setReplayToken((token) => token + 1)
+  }, [setColorTheme])
 
   return (
     <div className="claude-hook-lab">
@@ -975,8 +1197,32 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
           ))}
         </div>
 
+        <section className="claude-hook-lab__island-themes" aria-label="灵动岛颜色外观">
+          <div className="claude-hook-lab__section-label">灵动岛颜色外观</div>
+          <div className="claude-hook-lab__island-theme-grid">
+            {COLOR_THEMES.map((theme) => (
+              <button
+                key={theme.id}
+                className="claude-hook-lab__island-theme"
+                type="button"
+                data-active={colorTheme === theme.id}
+                title={`${theme.labelZh} · ${theme.tag}`}
+                onClick={() => applyColorAppearance(theme.id)}
+              >
+                <span className="claude-hook-lab__island-theme-swatch" style={{ background: theme.bg }}>
+                  <span className="claude-hook-lab__island-theme-notch" style={{ background: theme.card }} />
+                  <span className="claude-hook-lab__island-theme-dot" style={{ background: theme.accent }} />
+                </span>
+                <span className="claude-hook-lab__island-theme-name">{theme.labelZh}</span>
+                <span className="claude-hook-lab__island-theme-tag">{theme.tag}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <footer className="claude-hook-lab__status">
           <span>{activeScenario.caption}</span>
+          <span>灵动岛外观: {COLOR_THEMES.find((theme) => theme.id === colorTheme)?.labelZh ?? colorTheme}</span>
           <span>session: {activeSession?.id === RECORDED_SESSION_ID ? 'real e336326d' : activeSession?.id ?? 'none'}</span>
           <span>phase: {activeSession?.phase ?? 'none'}</span>
           <span>tool: {activeSession?.lastToolName ?? 'none'}</span>

@@ -233,11 +233,19 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)
   const elapsedText = unattendedLevel !== 'none' ? formatElapsed(lead?.unattendedSince) : ''
   const renderMascot = (session: SessionState | undefined, size: number) => {
+    if (!session) {
+      return (
+        <span className="collapsed-bar__idle-logo-wrap" style={{ width: size, height: size }} aria-hidden="true">
+          <img className="collapsed-bar__idle-logo" src="/agentbro-app-icon.png" alt="" />
+        </span>
+      )
+    }
+
     if (activeTheme.character) {
       return (
         <span className="collapsed-bar__theme-avatar" style={{ width: size, height: size }}>
           <SpriteCanvas
-            priority={session ? computePriority(session) : PRIORITY.idle}
+            priority={computePriority(session)}
             size={size}
             theme={activeTheme}
           />
@@ -262,7 +270,9 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
     return (
       <div className="collapsed-bar collapsed-bar--micro">
         <div className="collapsed-bar__micro-main">
-          {renderMascot(lead, 22)}
+          {workingCount > 0 && lead
+            ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={22} />
+            : renderMascot(undefined, 22)}
           <span className="collapsed-bar__micro-count">{count}</span>
         </div>
       </div>
@@ -275,7 +285,9 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
       {isExpanded && (
         <div className="collapsed-bar__status-row">
           <div className="collapsed-bar__left" style={{ gap: 8 }}>
-            {renderMascot(lead, 20)}
+            {workingCount > 0 && lead
+              ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={20} />
+              : renderMascot(undefined, 20)}
             <div className="collapsed-bar__counter-pills">
               <span className={`collapsed-bar__counter-pill${count > 0 ? ' collapsed-bar__counter-pill--active' : ''}`}>
                 <span>ALL</span><span className="collapsed-bar__counter-pill-val">{count}</span>
@@ -335,7 +347,9 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
         <div className="collapsed-bar__left">
           {lead ? (
             <>
-              {renderMascot(lead, 22)}
+              {workingCount > 0 && lead
+                ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={22} />
+                : renderMascot(undefined, 22)}
               <div className="collapsed-bar__carousel">
                 {primaryToolName ? (
                   <CollapsedToolStatus

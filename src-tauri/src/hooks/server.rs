@@ -4,10 +4,11 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::{oneshot, Mutex};
 
 use super::session_store::{
@@ -16,18 +17,13 @@ use super::session_store::{
     SessionPhase, SessionStore, SubagentStopUpdate,
 };
 use crate::agents::{AgentAdapter, AgentEvent};
+use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
     extract_latest_assistant_text, extract_session_title,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
-
-/// Socket path for Unix domain socket
-pub const UNIX_SOCKET_PATH: &str = "/tmp/agentbro.sock";
-
-/// TCP port for hook connections
-pub const TCP_PORT: u16 = 17892;
 
 const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
 const SESSION_END_CLEANUP_SECS: u64 = 5;
@@ -135,6 +131,9 @@ pub struct HookServer {
     app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     /// Recent raw hook events grouped by session for monitor diagnostics.
     raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
+    /// IPC endpoint owned by this server instance.
+    endpoint: hook_endpoint::HookEndpoint,
+    socket_owned: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -163,6 +162,8 @@ impl HookServer {
             sound_engine: Arc::new(std::sync::Mutex::new(None)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
             raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            endpoint: hook_endpoint::current(),
+            socket_owned: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -267,6 +268,12 @@ impl HookServer {
 
     /// Start listening on both Unix socket and TCP
     pub async fn start(&self) -> anyhow::Result<()> {
+        let endpoint = self.endpoint.clone();
+        let tcp_addr = endpoint.tcp_addr();
+        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
+        let unix_listener = Self::bind_unix(&endpoint.socket_path).await?;
+        self.socket_owned.store(true, Ordering::SeqCst);
+
         let context = HookConnectionContext {
             pending: self.pending_permissions.clone(),
             pending_q: self.pending_questions.clone(),
@@ -280,45 +287,43 @@ impl HookServer {
 
         // Start Unix socket listener
         let unix_context = context.clone();
-        tokio::spawn(async move {
-            if let Err(e) = Self::listen_unix(unix_context).await {
-                log::error!("Unix socket listener error: {}", e);
-            }
-        });
+        tokio::spawn(async move { Self::accept_unix(unix_listener, unix_context).await });
 
-        // Start TCP listener — bind eagerly so port conflicts are detected at startup
-        let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", TCP_PORT)).await?;
-        log::info!("Listening on TCP: 127.0.0.1:{}", TCP_PORT);
+        log::info!("Listening on TCP: {}", tcp_addr);
         let tcp_context = context.clone();
         tokio::spawn(async move { Self::accept_tcp(tcp_listener, tcp_context).await });
 
         log::info!(
-            "HookServer started on {} and 127.0.0.1:{}",
-            UNIX_SOCKET_PATH,
-            TCP_PORT
+            "HookServer started on {} and {}",
+            endpoint.socket_path,
+            tcp_addr
         );
         Ok(())
     }
 
-    /// Listen on Unix domain socket
-    async fn listen_unix(context: HookConnectionContext) -> anyhow::Result<()> {
-        // Remove stale socket file
-        let socket_path = Path::new(UNIX_SOCKET_PATH);
+    async fn bind_unix(socket_path: &str) -> anyhow::Result<UnixListener> {
+        let socket_path = Path::new(socket_path);
         if socket_path.exists() {
-            std::fs::remove_file(socket_path)?;
+            match UnixStream::connect(socket_path).await {
+                Ok(_) => anyhow::bail!("Unix socket already in use: {}", socket_path.display()),
+                Err(_) => std::fs::remove_file(socket_path)?,
+            }
         }
 
-        let listener = UnixListener::bind(UNIX_SOCKET_PATH)?;
+        let listener = UnixListener::bind(socket_path)?;
 
         // Set socket permissions to owner-only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(UNIX_SOCKET_PATH, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
 
-        log::info!("Listening on Unix socket: {}", UNIX_SOCKET_PATH);
+        log::info!("Listening on Unix socket: {}", socket_path.display());
+        Ok(listener)
+    }
 
+    async fn accept_unix(listener: UnixListener, context: HookConnectionContext) {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
@@ -775,6 +780,7 @@ impl HookServer {
         sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
         app: &Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     ) {
+        Self::update_session_metadata_from_raw(store, _raw);
         match event {
             AgentEvent::SessionStart {
                 session_id,
@@ -947,7 +953,12 @@ impl HookServer {
                 if !tool_use_id.is_empty() {
                     match status.as_str() {
                         "running" => {
-                            store.start_tool(session_id, &tool_use_id, tool_name);
+                            store.start_tool(
+                                session_id,
+                                &tool_use_id,
+                                tool_name,
+                                Some(tool_input.clone()),
+                            );
                         }
                         "success" => {
                             store.complete_tool(session_id, &tool_use_id, true, None);
@@ -1028,6 +1039,16 @@ impl HookServer {
                     }
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);
+                let is_suppressed = Self::check_suppression(store, session_id);
+                if is_suppressed {
+                    if let Ok(guard) = app.lock() {
+                        if let Some(ref handle) = *guard {
+                            crate::platform::notifications::send_completion_notification(
+                                handle, &truncated,
+                            );
+                        }
+                    }
+                }
                 Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskComplete);
             }
             AgentEvent::Error {
@@ -1867,8 +1888,9 @@ fn current_time_ms() -> u64 {
 
 impl Drop for HookServer {
     fn drop(&mut self) {
-        // Clean up Unix socket file
-        let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
+        if self.socket_owned.swap(false, Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&self.endpoint.socket_path);
+        }
     }
 }
 

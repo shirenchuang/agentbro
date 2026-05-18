@@ -204,7 +204,7 @@ interface ToolHookStatus {
   name: string
   displayName: string
   installed: boolean
-  installStatus?: 'installed' | 'not_installed' | 'error' | string
+  installStatus?: 'installed' | 'not_installed' | 'needs_reinstall' | 'settings_corrupted' | 'error' | string
   configPath?: string
   configDir?: string
   status: string
@@ -212,15 +212,33 @@ interface ToolHookStatus {
   supportsEventSelection?: boolean
   events?: HookEventStatus[]
   enabledEventNames?: string[]
+  isCustom?: boolean
+  customId?: string
 }
 
 function hookToolId(tool: ToolHookStatus) {
   return tool.toolId || tool.name
 }
 
-function hookInstallStatus(tool: ToolHookStatus): 'installed' | 'not_installed' | 'error' {
-  if (tool.installStatus === 'installed' || tool.installStatus === 'not_installed' || tool.installStatus === 'error') return tool.installStatus
+type HookInstallStatus = 'installed' | 'not_installed' | 'needs_reinstall' | 'settings_corrupted' | 'error'
+
+function hookInstallStatus(tool: ToolHookStatus): HookInstallStatus {
+  if (
+    tool.installStatus === 'installed'
+    || tool.installStatus === 'not_installed'
+    || tool.installStatus === 'needs_reinstall'
+    || tool.installStatus === 'settings_corrupted'
+    || tool.installStatus === 'error'
+  ) return tool.installStatus
   return tool.installed ? 'installed' : 'not_installed'
+}
+
+function hookInstallStatusLabel(t: (key: string, options?: Record<string, unknown>) => string, status: HookInstallStatus): string {
+  if (status === 'installed') return t('settings.hookInstalled')
+  if (status === 'needs_reinstall') return t('settings.hookNeedsReinstall', { defaultValue: '需重新安装' })
+  if (status === 'settings_corrupted') return t('settings.hookSettingsCorrupted', { defaultValue: '配置异常' })
+  if (status === 'error') return t('settings.hookError', { defaultValue: '异常' })
+  return t('settings.hookNotInstalled')
 }
 
 // ── Webhook helpers ──
@@ -1111,8 +1129,10 @@ function IntegrationTab() {
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({})
   const [selectedCustomProfileId, setSelectedCustomProfileId] = useState('')
   const [customInstallDir, setCustomInstallDir] = useState('')
+  const [customName, setCustomName] = useState('')
   const [addingCustom, setAddingCustom] = useState(false)
   const [configuringTool, setConfiguringTool] = useState<ToolHookStatus | null>(null)
+  const [bulkInstalling, setBulkInstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -1136,6 +1156,43 @@ function IntegrationTab() {
     const timer = window.setTimeout(() => { fetchStatus() }, 0)
     return () => window.clearTimeout(timer)
   }, [fetchStatus, config.islandExternalEnabled])
+
+  const detectNow = async () => {
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    await fetchStatus()
+    setNotice(t('settings.hookDetectDone', { defaultValue: '检测完成。' }))
+  }
+
+  const installAll = async () => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    setBulkInstalling(true)
+    try {
+      const targets = visibleTools.map((tool) => hookToolId(tool))
+      const errors: string[] = []
+      for (const toolId of targets) {
+        setToolAction(toolId, 'install')
+        try {
+          await invoke('install_agent_hook', { toolName: toolId })
+        } catch (err) {
+          errors.push(`${toolId}: ${String(err)}`)
+        } finally {
+          setToolAction(toolId, null)
+        }
+      }
+      await fetchStatus()
+      setNotice(errors.length > 0
+        ? t('settings.hookInstallAllDoneWithErrors', { defaultValue: '部分 Hook 安装失败：{{errors}}', errors: errors.join('；') })
+        : t('settings.hookInstallAllDone', { defaultValue: '全部 Hook 已安装。请重启对应 CLI 会话以加载最新配置。' }))
+    } catch (e) { setError(String(e)) }
+    setBulkInstalling(false)
+  }
 
   const setToolAction = (toolId: string, action: string | null) =>
     setActionLoading(prev => { const next = { ...prev }; if (action === null) delete next[toolId]; else next[toolId] = action; return next })
@@ -1223,9 +1280,11 @@ function IntegrationTab() {
       const targetPath = await invoke<string>('install_custom_agent_hook', {
         profileId: selectedCustomProfileId,
         installDirectory: customInstallDir.trim(),
+        customName: customName.trim() || null,
       })
       setSelectedCustomProfileId('')
       setCustomInstallDir('')
+      setCustomName('')
       setAddingCustom(false)
       await fetchStatus()
       setNotice(t('settings.customHookInstalled', {
@@ -1260,16 +1319,28 @@ function IntegrationTab() {
 {error && <div className="hook-error-card">{error}</div>}
       {notice && <div className="hook-notice-card">{notice}</div>}
 
-      <SettingGroup label={t('settings.detectedTools')}>
+      <SettingGroup
+        actions={config.islandExternalEnabled ? (
+          <>
+            <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={detectNow} type="button">
+              {loading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.detectNow', { defaultValue: '一键检测' })}
+            </button>
+            <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={installAll} type="button">
+              {bulkInstalling ? t('settings.installing', { defaultValue: '安装中...' }) : t('settings.installAllHooks', { defaultValue: '一键全部安装' })}
+            </button>
+          </>
+        ) : null}
+        label={t('settings.detectedTools')}
+      >
         {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
         {config.islandExternalEnabled && visibleTools.length === 0 && !loading && <div className="hook-empty">{t('settings.noToolsDetected')}</div>}
         {config.islandExternalEnabled && loading && visibleTools.length === 0 && <div className="hook-empty">{t('settings.detectingTools')}</div>}
         {visibleTools.map((tool) => {
           const toolId = hookToolId(tool)
           const installStatus = hookInstallStatus(tool)
-          const busy = actionLoading[toolId] !== undefined
-          const isInstalled = installStatus === 'installed'
-          const canConfigureHook = isInstalled && tool.supportsEventSelection && tool.events && tool.events.length > 0
+          const busy = actionLoading[toolId] !== undefined || bulkInstalling
+          const isInstalled = installStatus === 'installed' || installStatus === 'needs_reinstall' || installStatus === 'settings_corrupted'
+          const canConfigureHook = installStatus === 'installed' && tool.supportsEventSelection && tool.events && tool.events.length > 0
           return (
             <div key={toolId} className="hook-tool-row">
               <div className="hook-tool-row__icon">
@@ -1280,7 +1351,7 @@ function IntegrationTab() {
                 <div className="hook-tool-row__path">{tool.configPath || tool.status || toolId}</div>
               </div>
               <div className={`hook-status-badge hook-status-badge--${installStatus}`}>
-                {installStatus === 'installed' ? t('settings.hookInstalled') : installStatus === 'error' ? t('settings.hookError') : t('settings.hookNotInstalled')}
+                {hookInstallStatusLabel(t, installStatus)}
               </div>
               <div className="hook-tool-row__actions">
                 {canConfigureHook && (
@@ -1319,6 +1390,15 @@ function IntegrationTab() {
         ) : (
           <div className="engine-add-form">
             <div className="engine-add-form__row">
+              <label>{t('settings.customHookName', { defaultValue: '名称' })}</label>
+              <GlassInput
+                placeholder={t('settings.customHookNamePlaceholder', { defaultValue: '例如 CodeFuse Engine' })}
+                value={customName}
+                onChange={(e) => setCustomName((e.target as HTMLInputElement).value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            <div className="engine-add-form__row">
               <label>{t('settings.selectApp', { defaultValue: '选择应用' })}</label>
               <select
                 className="glass-input"
@@ -1336,7 +1416,7 @@ function IntegrationTab() {
               <label>{t('settings.installDir', { defaultValue: '安装目录' })}</label>
               <div className="engine-add-form__path-input">
                 <GlassInput
-                  placeholder="例如 /path/to/.claude"
+                  placeholder={t('settings.installDirPlaceholder', { defaultValue: '例如 /path/to/.claude' })}
                   value={customInstallDir}
                   onChange={(e) => setCustomInstallDir((e.target as HTMLInputElement).value)}
                   style={{ flex: 1 }}
@@ -1347,7 +1427,7 @@ function IntegrationTab() {
               </div>
             </div>
             <div className="engine-add-form__actions">
-              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setSelectedCustomProfileId(''); setCustomInstallDir('') }}>{t('settings.cancel')}</button>
+              <button className="engine-add-form__cancel" onClick={() => { setAddingCustom(false); setSelectedCustomProfileId(''); setCustomInstallDir(''); setCustomName('') }}>{t('settings.cancel')}</button>
               <button className="engine-add-form__submit" disabled={!selectedCustomProfileId || !customInstallDir.trim()} onClick={addCustomHook}>{t('settings.install')}</button>
             </div>
           </div>

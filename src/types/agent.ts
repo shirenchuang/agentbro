@@ -178,6 +178,8 @@ export interface ToolResult {
   startedAt: number
   completedAt?: number
   error?: string
+  toolInput?: string
+  diff?: DiffContent
 }
 
 export interface TaskInfo {

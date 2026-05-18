@@ -163,6 +163,21 @@
   display: block;
 }
 
+.collapsed-bar__idle-logo-wrap {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: visible;
+}
+
+.collapsed-bar__idle-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 6px rgba(248, 164, 0, 0.28));
+}
+
 .collapsed-bar__right {
   display: flex;
   align-items: center;

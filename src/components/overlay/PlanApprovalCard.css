@@ -1,107 +1,324 @@
-/* PlanApprovalCard — evolab-style with amber accent, scrollable content, 3 actions */
+/* PlanApprovalCard — approval overlay aligned with permission-card shell */
 
-.plan-approval__header {
+.overlay-card.overlay-card--plan-approval {
+  --plan-accent: #f59e0b;
+  --plan-panel: var(--island-bg);
+  --plan-surface: color-mix(in srgb, var(--island-card) 88%, var(--plan-accent) 5%);
+  --plan-surface-strong: color-mix(in srgb, var(--island-card) 82%, var(--plan-accent) 8%);
+  --plan-border: color-mix(in srgb, var(--island-border) 78%, var(--plan-accent) 22%);
+  --plan-text: var(--island-text);
+  --plan-text-muted: var(--island-text-secondary);
+  gap: 7px;
+  width: 100%;
+  padding: 14px 22px 16px;
+  border: 0;
+  border-radius: 0 0 28px 28px;
+  background: var(--plan-panel);
+  box-shadow: none;
+}
+
+.overlay-card--plan-approval .overlay-card__header {
+  align-items: flex-start;
+  min-height: 40px;
+}
+
+.overlay-card--plan-approval .overlay-card__close {
+  width: 32px;
+  height: 32px;
+  color: var(--island-text-secondary);
+  background: var(--island-subtle);
+}
+
+.overlay-card--plan-approval .overlay-ctx {
+  gap: 5px;
+}
+
+.overlay-card--plan-approval .overlay-ctx__row1 {
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.16;
+  color: var(--plan-text);
+}
+
+.overlay-card--plan-approval .overlay-ctx__row1 .pixel-indicator {
+  margin-right: 5px;
+  transform: scale(1.9);
+  transform-origin: center;
+}
+
+.overlay-card--plan-approval .overlay-ctx__title {
+  max-width: 380px;
+}
+
+.overlay-card--plan-approval .overlay-ctx__sep,
+.overlay-card--plan-approval .overlay-ctx__agent {
+  color: var(--island-text-secondary);
+  opacity: 1;
+}
+
+.overlay-card--plan-approval .overlay-ctx__row2 {
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.24;
+  color: var(--island-text-muted);
+}
+
+.overlay-card--plan-approval .overlay-ctx__you {
+  color: var(--island-text-secondary);
+  font-weight: 800;
+}
+
+.overlay-card--plan-approval .overlay-ctx__msg {
+  max-width: 600px;
+}
+
+.overlay-card--plan-approval .overlay-card__body {
+  overflow: hidden;
+}
+
+.plan-approval {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-approval__subagents {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--plan-border);
+  border-radius: 10px;
+  background: var(--plan-surface);
+}
+
+.plan-approval__subagents-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-left: 2px solid #f59e0b;
-  padding-left: 10px;
+  color: var(--plan-text-muted);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.1;
 }
 
-.plan-approval__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--island-text);
-  flex: 1;
+.plan-approval__subagents-icon {
+  color: var(--island-text-muted);
+  font-size: 14px;
+}
+
+.plan-approval__subagents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.plan-approval__subagent {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--plan-text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.24;
+}
+
+.plan-approval__subagent-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: #ef4444;
+}
+
+.plan-approval__subagent-dot--running {
+  background: #f59e0b;
+}
+
+.plan-approval__subagent-dot--completed {
+  background: #22c55e;
+}
+
+.plan-approval__subagent-title,
+.plan-approval__subagent-detail {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 1.4;
+}
+
+.plan-approval__subagent-title {
+  flex-shrink: 0;
+  color: var(--plan-text);
+}
+
+.plan-approval__subagent-detail {
+  min-width: 0;
+}
+
+.plan-approval__subagent-status {
+  flex-shrink: 0;
+  color: var(--island-text-muted);
+}
+
+.plan-approval__subagent-status--completed {
+  color: var(--island-text-secondary);
+}
+
+.plan-approval__subagent-status--running {
+  color: rgba(245, 158, 11, 0.84);
+}
+
+.plan-approval__subagent-status--error {
+  color: rgba(248, 113, 113, 0.84);
+}
+
+.plan-approval__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  border-left: 3px solid var(--plan-accent);
+  padding-left: 14px;
+}
+
+.plan-approval__title {
+  flex: 1;
+  overflow: hidden;
+  color: var(--plan-text);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.28;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-approval__tag {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--island-text-secondary);
-  background: var(--island-subtle-hover, rgba(255, 255, 255, 0.06));
-  padding: 2px 8px;
-  border-radius: 4px;
   flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 8px;
+  color: var(--island-text-secondary);
+  background: var(--island-subtle);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
 }
 
 .plan-approval__content {
-  max-height: 250px;
+  flex: 0 1 96px;
+  min-height: 82px;
+  max-height: 112px;
   overflow-y: auto;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--island-text);
-  padding: 8px 0;
+  padding: 8px 11px;
+  border: 1px solid var(--plan-border);
+  border-radius: 12px;
+  background: var(--plan-surface-strong);
+  color: var(--plan-text);
+  font-size: 15px;
+  font-weight: 620;
+  line-height: 1.42;
 }
 
 .plan-approval__content::-webkit-scrollbar {
-  display: none;
+  width: 4px;
+}
+
+.plan-approval__content::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--island-scrollbar);
 }
 
 .plan-approval__content h1,
 .plan-approval__content h2,
 .plan-approval__content h3 {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--island-text);
   margin: 8px 0 4px;
+  color: var(--plan-text);
+  font-size: 16px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.plan-approval__content h1:first-child,
+.plan-approval__content h2:first-child,
+.plan-approval__content h3:first-child,
+.plan-approval__content p:first-child {
+  margin-top: 0;
 }
 
 .plan-approval__content p {
-  margin: 4px 0;
+  margin: 5px 0;
 }
 
 .plan-approval__content ul,
 .plan-approval__content ol {
-  padding-left: 16px;
-  margin: 4px 0;
+  padding-left: 20px;
+  margin: 5px 0;
+}
+
+.plan-approval__content li + li {
+  margin-top: 3px;
 }
 
 .plan-approval__content code {
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  color: var(--plan-text);
   background: var(--island-subtle);
-  padding: 1px 4px;
-  border-radius: 3px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.88em;
 }
 
 .plan-approval__content pre {
-  background: var(--island-input-bg);
-  border-radius: 6px;
-  padding: 8px;
   overflow-x: auto;
-  margin: 4px 0;
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--island-code-bg);
 }
 
 .plan-approval__content pre code {
-  background: none;
   padding: 0;
+  background: none;
 }
 
-/* Permissions list */
 .plan-approval__perms {
-  border-top: 1px solid var(--island-border);
-  padding: 8px 0;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--plan-border);
+  border-radius: 12px;
+  background: var(--plan-surface);
 }
 
 .plan-approval__perms-label {
-  font-size: 10px;
+  display: inline-flex;
+  margin: 0;
   color: var(--island-text-muted);
-  display: block;
-  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.2;
 }
 
 .plan-approval__perm-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--island-text-secondary);
-  margin-bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--plan-text-muted);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.24;
+}
+
+.plan-approval__perm-item:last-child {
+  margin-bottom: 0;
 }
 
 .plan-approval__perm-item::before {
@@ -111,27 +328,29 @@
 }
 
 .plan-approval__perm-tool {
-  color: #4ade80;
   flex-shrink: 0;
+  color: var(--plan-accent);
+  font-weight: 800;
 }
 
-/* Feedback input */
 .plan-approval__input-row {
-  border-top: 1px solid var(--island-border);
-  padding-top: 8px;
+  flex: 0 0 auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--plan-border);
 }
 
 .plan-approval__input {
   width: 100%;
-  padding: 8px 12px;
-  background: var(--island-card);
-  border: 1px solid var(--island-border);
-  border-radius: 8px;
-  color: var(--island-text);
-  font-family: var(--font-sans, system-ui);
-  font-size: 11px;
-  outline: none;
   box-sizing: border-box;
+  padding: 7px 12px;
+  border: 1px solid var(--plan-border);
+  border-radius: 12px;
+  outline: none;
+  color: var(--plan-text);
+  background: var(--plan-surface-strong);
+  font-family: var(--font-sans, system-ui);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .plan-approval__input::placeholder {
@@ -139,32 +358,35 @@
 }
 
 .plan-approval__input:focus {
-  border-color: var(--island-text-muted);
+  border-color: rgba(245, 158, 11, 0.38);
 }
 
-/* Actions — 3 full-width buttons */
 .plan-approval__actions {
   display: flex;
-  gap: 6px;
-  border-top: 1px solid var(--island-border);
-  padding-top: 8px;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--plan-border);
 }
 
 .plan-approval__btn {
   flex: 1;
-  padding: 8px 8px;
+  height: 38px;
+  min-width: 0;
+  padding: 0 14px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   font-family: var(--font-sans, system-ui);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 850;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, filter 0.15s, transform 0.15s;
   white-space: nowrap;
 }
 
 .plan-approval__btn:hover {
-  opacity: 0.85;
+  filter: brightness(1.06);
+  transform: translateY(-1px);
 }
 
 .plan-approval__btn:disabled {
@@ -173,16 +395,54 @@
 }
 
 .plan-approval__btn--feedback {
-  background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
-  color: var(--island-text);
+  color: var(--plan-text);
+  background: var(--island-btn-bg);
 }
 
 .plan-approval__btn--accept {
-  background: #d97706;
   color: white;
+  background: #e98100;
 }
 
 .plan-approval__btn--auto {
-  background: #dc2626;
   color: white;
+  background: #e3272d;
+}
+
+@media (max-width: 760px) {
+  .overlay-card.overlay-card--plan-approval {
+    padding: 18px 18px 20px;
+  }
+
+  .overlay-card--plan-approval .overlay-ctx__row1,
+  .plan-approval__title {
+    font-size: 18px;
+  }
+
+  .overlay-card--plan-approval .overlay-ctx__row2,
+  .plan-approval__subagents-header,
+  .plan-approval__subagent,
+  .plan-approval__perms-label,
+  .plan-approval__perm-item,
+  .plan-approval__input {
+    font-size: 14px;
+  }
+
+  .plan-approval__content,
+  .plan-approval__content h1,
+  .plan-approval__content h2,
+  .plan-approval__content h3 {
+    font-size: 16px;
+  }
+
+  .plan-approval__actions {
+    gap: 8px;
+  }
+
+  .plan-approval__btn {
+    height: 44px;
+    padding: 0 8px;
+    border-radius: 9px;
+    font-size: 13px;
+  }
 }

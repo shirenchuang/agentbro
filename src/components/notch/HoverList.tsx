@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { PermissionRequest, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
+import type { DiffContent, PermissionRequest, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
 import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
@@ -219,18 +219,72 @@ function splitToolTargetChanges(target: string): { name: string; additions?: str
   }
 }
 
-function ToolTarget({ target }: { target: string }) {
+const PATH_TARGET_TOOLS = new Set([
+  'Read',
+  'ReadFile',
+  'Edit',
+  'EditFile',
+  'Write',
+  'WriteFile',
+  'Glob',
+  'GlobSearch',
+  'Grep',
+  'GrepGrep',
+  'GrepGlob',
+  'NotebookEdit',
+])
+
+function basename(value: string): string {
+  const normalized = value.trim().replace(/^["']|["']$/g, '').replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts.at(-1) || normalized
+}
+
+function getToolTargetDisplay(toolName: string, target: string): string {
+  if (PATH_TARGET_TOOLS.has(toolName)) return basename(target)
+  return target
+}
+
+function ToolTarget({ target, toolName }: { target: string; toolName: string }) {
   const changes = splitToolTargetChanges(target)
   if (!changes) {
-    return <span className="hover-list__tool-target">{target}</span>
+    const displayTarget = getToolTargetDisplay(toolName, target)
+    return <span className="hover-list__tool-target" title={displayTarget === target ? undefined : target}>{displayTarget}</span>
   }
 
+  const displayName = getToolTargetDisplay(toolName, changes.name)
   return (
     <span className="hover-list__tool-target hover-list__tool-target--changes" title={target}>
-      <span className="hover-list__tool-target-name">{changes.name}</span>
+      <span className="hover-list__tool-target-name">{displayName}</span>
       {changes.additions && <span className="hover-list__tool-count hover-list__tool-count--add">{changes.additions}</span>}
       {changes.deletions && <span className="hover-list__tool-count hover-list__tool-count--del">{changes.deletions}</span>}
     </span>
+  )
+}
+
+function getActiveToolDiff(session: SessionState): DiffContent | undefined {
+  if (!session.lastToolName) return undefined
+  const editableTools = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+  if (!editableTools.has(session.lastToolName)) return undefined
+
+  const tools = session.activeTools
+    .filter((tool) => tool.toolName === session.lastToolName && tool.diff)
+    .sort((a, b) => {
+      if (a.status === 'running' && b.status !== 'running') return -1
+      if (b.status === 'running' && a.status !== 'running') return 1
+      return b.startedAt - a.startedAt
+    })
+  return tools[0]?.diff
+}
+
+function ActiveToolDiffPreview({ session }: { session: SessionState }) {
+  const diff = getActiveToolDiff(session)
+  if (!diff || session.pendingPermission) return null
+
+  return (
+    <div className="hover-list__active-tool-diff" data-no-open>
+      <DiffView diff={diff} />
+    </div>
   )
 }
 
@@ -889,14 +943,17 @@ function SessionCard({
 
             {/* Row 3: tool action or status */}
             {session.lastToolName ? (
-              <div className="hover-list__row3">
-                <span className={`hover-list__tool-label${session.lastToolName.startsWith('Compacting') ? ' hover-list__tool-label--compact' : ''}`}>
-                  {getToolActivityLabel(t, session.lastToolName)}
-                </span>
-                {session.lastToolTarget && (
-                  <ToolTarget target={session.lastToolTarget} />
-                )}
-              </div>
+              <>
+                <div className="hover-list__row3">
+                  <span className={`hover-list__tool-label${session.lastToolName.startsWith('Compacting') ? ' hover-list__tool-label--compact' : ''}`}>
+                    {getToolActivityLabel(t, session.lastToolName)}
+                  </span>
+                  {session.lastToolTarget && (
+                    <ToolTarget target={session.lastToolTarget} toolName={session.lastToolName} />
+                  )}
+                </div>
+                <ActiveToolDiffPreview session={session} />
+              </>
             ) : session.phase === 'processing' || session.phase === 'compacting' ? (
               <div className="hover-list__row3">
                 <span className={`hover-list__tool-label${isCompactingContext ? ' hover-list__tool-label--compact' : ''}`}>

@@ -341,6 +341,21 @@ describe('HoverList interactions', () => {
     expect(container.querySelector('.hover-list__tool-target--changes')).toBeInTheDocument()
   })
 
+  it('shows only file names for path-based tool targets in the session list', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          lastToolName: 'Read',
+          lastToolTarget: '/Users/shirenchuang/code/aidelivery/vibeIsland/agentbro/src-tauri/src/hooks/tool_processor.rs',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('tool_processor.rs')).toBeInTheDocument()
+    expect(screen.queryByText(/\/Users\/shirenchuang\/code/)).not.toBeInTheDocument()
+  })
+
   it('supports keyboard navigation and Enter jump like the island panel', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -430,6 +445,37 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('notch.tool.editing')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '允许一次' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '拒绝' })).not.toBeInTheDocument()
+  })
+
+  it('renders a compact diff preview for active edit tools without approval actions', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          lastToolName: 'Edit',
+          lastToolTarget: 'src/App.tsx +1 -1',
+          activeTools: [{
+            toolUseId: 'edit-1',
+            toolName: 'Edit',
+            status: 'running',
+            startedAt: Date.now() - 1000,
+            diff: {
+              filePath: 'src/App.tsx',
+              lines: [
+                { type: 'remove', lineNumber: 10, content: 'const label = "old"' },
+                { type: 'add', lineNumber: 10, content: 'const label = "new"' },
+              ],
+            },
+          }],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('App.tsx')).toHaveClass('hover-list__tool-target-name')
+    expect(screen.getByText('src/App.tsx')).toBeInTheDocument()
+    expect(screen.getByText('const label = "old"')).toBeInTheDocument()
+    expect(screen.getByText('const label = "new"')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '允许一次' })).not.toBeInTheDocument()
   })
 
   it('routes inline question options without opening the row', async () => {

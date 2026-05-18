@@ -8,10 +8,12 @@ interface OverlayResponseCardProps {
   overlay: OverlayItem
   session: SessionState
   onJumpToTerminal: () => void
+  onShowSessions?: () => void
   onDismiss: () => void
+  sessionCount?: number
 }
 
-export function OverlayResponseCard({ overlay, session, onJumpToTerminal, onDismiss }: OverlayResponseCardProps) {
+export function OverlayResponseCard({ overlay, session, onJumpToTerminal, onShowSessions, onDismiss, sessionCount }: OverlayResponseCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { responseText: string; userMessage?: string }
   const dwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds) || 6
@@ -28,7 +30,9 @@ export function OverlayResponseCard({ overlay, session, onJumpToTerminal, onDism
       startedAt={overlay.createdAt}
       statusLabel={t('notch.completed', { defaultValue: '完成' })}
       onJumpToTerminal={onJumpToTerminal}
+      onShowSessions={onShowSessions}
       onDismiss={onDismiss}
+      sessionCount={sessionCount}
     />
   )
 }

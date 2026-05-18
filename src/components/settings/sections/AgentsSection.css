@@ -594,6 +594,14 @@
   background: #34c759;
 }
 
+.agent-hook-card__dot--needs_reinstall {
+  background: #f59e0b;
+}
+
+.agent-hook-card__dot--settings_corrupted {
+  background: #ff3b30;
+}
+
 .agent-hook-card__dot--error {
   background: #ff3b30;
 }
@@ -647,6 +655,16 @@
 .agent-hook-badge--installed {
   background: rgba(52, 199, 89, 0.14);
   color: #16833a;
+}
+
+.agent-hook-badge--needs_reinstall {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.agent-hook-badge--settings_corrupted {
+  background: rgba(255, 59, 48, 0.12);
+  color: #d70015;
 }
 
 .agent-hook-badge--error {

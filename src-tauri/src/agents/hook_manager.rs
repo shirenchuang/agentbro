@@ -244,9 +244,49 @@ pub fn bridge_binary_path() -> PathBuf {
     ensure_bridge_binary().unwrap_or_else(|_| raw_bridge_binary_path())
 }
 
+pub fn bridge_binary_is_current() -> bool {
+    let dest = raw_bridge_binary_path();
+    if !dest.exists() {
+        return false;
+    }
+
+    let Some(source) = find_source_bridge() else {
+        return true;
+    };
+
+    match (std::fs::read(dest), std::fs::read(source)) {
+        (Ok(dest_bytes), Ok(source_bytes)) => dest_bytes == source_bytes,
+        _ => false,
+    }
+}
+
 fn raw_bridge_binary_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
     home.join(".agentbro").join("bin").join("agentbro-bridge")
+}
+
+pub fn endpoint_env_assignments() -> Vec<String> {
+    let endpoint = crate::hook_endpoint::current();
+    vec![
+        format!(
+            "{}={}",
+            crate::hook_endpoint::HOOK_SOCKET_ENV,
+            shell_quote(&endpoint.socket_path)
+        ),
+        format!(
+            "{}={}",
+            crate::hook_endpoint::HOOK_PORT_ENV,
+            endpoint.tcp_port
+        ),
+    ]
+}
+
+pub fn bridge_command_parts(bridge: &Path, args: &[String]) -> Vec<String> {
+    let mut parts = vec!["/usr/bin/env".to_string()];
+    parts.extend(endpoint_env_assignments());
+    parts.push(shell_quote(&bridge.display().to_string()));
+    parts.extend(args.iter().map(|arg| shell_quote(arg)));
+    parts
 }
 
 /// Ensure the bridge binary is deployed to ~/.agentbro/bin.
@@ -257,11 +297,10 @@ pub fn ensure_bridge_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     }
 
     if let Some(source) = find_source_bridge() {
-        let should_copy = std::fs::metadata(&dest)
-            .and_then(|dest_meta| {
-                std::fs::metadata(&source).map(|source_meta| dest_meta.len() != source_meta.len())
-            })
-            .unwrap_or(true);
+        let should_copy = match (std::fs::read(&dest), std::fs::read(&source)) {
+            (Ok(dest_bytes), Ok(source_bytes)) => dest_bytes != source_bytes,
+            _ => true,
+        };
         if should_copy {
             std::fs::copy(source, &dest)?;
         }
