@@ -116,6 +116,42 @@ describe('HoverList interactions', () => {
     expect(onSubagentClick).toHaveBeenCalledWith('s1', current.subagents[0])
   })
 
+  it('summarizes running subagents like a child-agent team', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          subagents: [
+            {
+              agentId: 'agent-a',
+              name: 'ui-state',
+              agentType: 'explorer',
+              description: 'Map Vibe states',
+              startedAt: Date.now() - 2_000,
+              status: 'running',
+              tools: ['Read'],
+            },
+            {
+              agentId: 'agent-b',
+              name: 'parser',
+              agentType: 'worker',
+              description: 'Parse transcript sidechains',
+              startedAt: Date.now() - 3_000,
+              completedAt: Date.now() - 1_000,
+              status: 'completed',
+              tools: [],
+              lastAssistantMessage: 'Sidechain transcript is ready.',
+            },
+          ],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Running 1 agent')).toBeInTheDocument()
+    expect(screen.getByText('1 done')).toBeInTheDocument()
+    expect(screen.getByText('Sidechain transcript is ready.')).toBeInTheDocument()
+  })
+
   it('jumps from the arrow without opening detail', () => {
     const onSessionClick = vi.fn()
     const onJumpToTerminal = vi.fn()
@@ -327,6 +363,21 @@ describe('HoverList interactions', () => {
     expect(screen.queryByText('Processing user input: Please fix the island')).not.toBeInTheDocument()
   })
 
+  it('shows done and needs-attention list ribbons', () => {
+    render(
+      <HoverList
+        sessions={[
+          session({ id: 'done', phase: 'done', sessionTitle: 'Completed task' }),
+          session({ id: 'error', phase: 'error', sessionTitle: 'Failed task', description: 'Hook failed' }),
+        ]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+  })
+
   it('localizes compacting context tool labels', () => {
     render(
       <HoverList
@@ -464,6 +515,66 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('+1')).toBeInTheDocument()
     expect(screen.getByText('-1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
+  })
+
+  it('renders terminal-routed approval notices with a jump action', () => {
+    const onJumpToTerminal = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          description: 'Continue in Terminal to approve this command.',
+          notice: {
+            kind: 'terminal_approval',
+            title: 'Continue in Terminal',
+            detail: 'Approval is delegated to the active tab',
+            actionLabel: 'Go to Terminal',
+          },
+        })]}
+        onSessionClick={vi.fn()}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Go to Terminal' }))
+
+    expect(screen.getByText('Continue in Terminal')).toBeInTheDocument()
+    expect(screen.getByText('Approval is delegated to the active tab')).toBeInTheDocument()
+    expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
+  })
+
+  it('renders setup and trust notices without replacing deep session rows', () => {
+    render(
+      <HoverList
+        sessions={[
+          session({
+            id: 'restart',
+            phase: 'idle',
+            sessionTitle: 'Restart required',
+            notice: {
+              kind: 'restart',
+              title: 'Restart your sessions',
+              detail: 'Hooks just installed - restart running sessions to connect',
+            },
+          }),
+          session({
+            id: 'trust',
+            phase: 'waiting_approval',
+            sessionTitle: 'Codex trust',
+            notice: {
+              kind: 'trust',
+              title: 'Codex updated - confirm authorization',
+              detail: 'Confirm once to keep approvals working',
+            },
+          }),
+        ]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Restart your sessions')).toBeInTheDocument()
+    expect(screen.getByText('Codex updated - confirm authorization')).toBeInTheDocument()
+    expect(screen.getByText('Hooks just installed - restart running sessions to connect')).toBeInTheDocument()
   })
 
   it('does not render an authorization card for a normal edit tool row', () => {

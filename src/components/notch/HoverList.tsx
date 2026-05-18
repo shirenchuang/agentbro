@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { DiffContent, PermissionRequest, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
+import type { DiffContent, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
 import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
@@ -289,15 +289,157 @@ function ActiveToolDiffPreview({ session }: { session: SessionState }) {
   )
 }
 
+function inferSessionNotice(session: SessionState): SessionNotice | null {
+  if (session.notice) return session.notice
+
+  const text = [session.statusLineText, session.description]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  if (!text) return null
+
+  if ((session.pendingPermission || session.phase === 'waiting_approval') && (text.includes('terminal') || text.includes('终端'))) {
+    return {
+      kind: 'terminal_approval',
+      title: 'Continue in Terminal',
+      detail: session.statusLineText || session.description || undefined,
+      actionLabel: 'Go to Terminal',
+    }
+  }
+
+  if ((session.pendingQuestion || session.phase === 'waiting_input') && (text.includes('terminal') || text.includes('终端'))) {
+    return {
+      kind: 'terminal_question',
+      title: 'Answer in Terminal',
+      detail: session.statusLineText || session.description || undefined,
+      actionLabel: 'Go to Terminal',
+    }
+  }
+
+  if (text.includes('restart') || text.includes('重启')) {
+    return {
+      kind: 'restart',
+      title: 'Restart your sessions',
+      detail: session.statusLineText || session.description || undefined,
+    }
+  }
+
+  if (text.includes('trust') || text.includes('authorize') || text.includes('授权')) {
+    return {
+      kind: 'trust',
+      title: 'Confirm authorization',
+      detail: session.statusLineText || session.description || undefined,
+    }
+  }
+
+  if (text.includes('compact complete') || text.includes('conversation compacted') || text.includes('对话已压缩')) {
+    return {
+      kind: 'compact_complete',
+      title: 'Conversation compacted',
+      detail: session.statusLineText || session.description || undefined,
+    }
+  }
+
+  return null
+}
+
+function noticeIcon(kind: SessionNotice['kind']): string {
+  switch (kind) {
+    case 'terminal_approval':
+    case 'terminal_question':
+      return '⌘'
+    case 'restart':
+      return '↻'
+    case 'trust':
+      return '✓'
+    case 'extension':
+      return '＋'
+    case 'compact_complete':
+      return '◇'
+    case 'status_warning':
+    default:
+      return '!'
+  }
+}
+
+function SessionNoticeRow({ notice, onJump }: { notice: SessionNotice; onJump?: () => void }) {
+  const actionable = Boolean(notice.actionLabel && onJump)
+  return (
+    <div className={`hover-list__notice hover-list__notice--${notice.kind}`} data-no-open>
+      <span className="hover-list__notice-icon" aria-hidden="true">{noticeIcon(notice.kind)}</span>
+      <span className="hover-list__notice-copy">
+        <span className="hover-list__notice-title">{notice.title}</span>
+        {notice.detail && <span className="hover-list__notice-detail">{notice.detail}</span>}
+      </span>
+      {actionable && (
+        <button
+          type="button"
+          className="hover-list__notice-action"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onJump?.()
+          }}
+        >
+          {notice.actionLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function SessionStateRibbon({ session }: { session: SessionState }) {
+  if (session.phase === 'error') {
+    return (
+      <div className="hover-list__state-ribbon hover-list__state-ribbon--warning">
+        <span>Needs attention</span>
+      </div>
+    )
+  }
+
+  if (session.phase === 'done') {
+    return (
+      <div className="hover-list__state-ribbon hover-list__state-ribbon--done">
+        <span>Done</span>
+      </div>
+    )
+  }
+
+  if (session.phase === 'compacting' || isCompactingContextDescription(session.description)) {
+    return (
+      <div className="hover-list__state-ribbon hover-list__state-ribbon--compact">
+        <span>Compacting</span>
+      </div>
+    )
+  }
+
+  return null
+}
+
 /* ── Subagent Row ── */
 function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: string; subagents: SubagentInfo[]; onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void }) {
   if (subagents.length === 0) return null
+  const running = subagents.filter((agent) => agent.status === 'running').length
+  const completed = subagents.filter((agent) => agent.status === 'completed').length
+  const errored = subagents.filter((agent) => agent.status === 'error').length
+  const latest = [...subagents]
+    .sort((a, b) => (b.completedAt ?? b.startedAt) - (a.completedAt ?? a.startedAt))[0]
+  const latestLabel = latest?.lastAssistantMessage || latest?.description || latest?.agentType || latest?.agentId
   return (
     <div className="hover-list__subagents">
       <div className="hover-list__subagents-header">
         <span className="hover-list__subagents-icon">⑂</span>
-        <span>Subagents ({subagents.length})</span>
+        <span>{running > 0 ? `Running ${running} agent${running > 1 ? 's' : ''}` : `Subagents (${subagents.length})`}</span>
+        <span className="hover-list__subagents-stats">
+          {completed > 0 && `${completed} done`}
+          {completed > 0 && errored > 0 && ' · '}
+          {errored > 0 && `${errored} failed`}
+        </span>
       </div>
+      {latestLabel && (
+        <div className="hover-list__subagents-summary">{truncateText(latestLabel, 96)}</div>
+      )}
       <div className="hover-list__subagents-list">
         {subagents.map((sa) => {
           const title = sa.name ? `@${sa.name}` : (sa.agentType || `@${sa.agentId.slice(0, 8)}`)
@@ -817,6 +959,7 @@ function SessionCard({
   const showInlinePermission = !!session.pendingPermission
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
+  const notice = inferSessionNotice(session)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
   const shouldShowAgentIcon = !showPassiveDot && (isStatic || appLabel === 'Codex App' || session.agentType === 'codex')
   const handleOpen = () => onSessionClick(session.id)
@@ -1008,6 +1151,15 @@ function SessionCard({
             )}
           </div>
         </div>
+
+        {notice && (
+          <SessionNoticeRow
+            notice={notice}
+            onJump={canJump ? () => onJumpToTerminal?.(session.id) : undefined}
+          />
+        )}
+
+        <SessionStateRibbon session={session} />
 
         {/* Row 4: error */}
         {session.phase === 'error' && session.description && (
