@@ -1,7 +1,7 @@
 .diff-view {
   border-radius: 6px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.35) !important;
+  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.42)) 86%, #000 14%) !important;
   border: 1px solid var(--island-subtle) !important;
 }
 
@@ -38,7 +38,7 @@
 
 .diff-view__filepath {
   font-family: var(--font-mono, 'SF Mono', monospace);
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--island-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -49,7 +49,7 @@
   display: flex;
   gap: 8px;
   font-family: var(--font-mono, 'SF Mono', monospace);
-  font-size: 10px;
+  font-size: 10.5px;
   flex-shrink: 0;
 }
 
@@ -65,8 +65,9 @@
   max-height: 200px;
   overflow-y: auto;
   font-family: var(--font-mono, 'SF Mono', monospace);
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: 10.75px;
+  font-weight: 540;
+  line-height: 1.5;
 }
 
 /* Line rows */
@@ -78,15 +79,15 @@
 }
 
 .diff-view__line--add {
-  background: rgba(48, 209, 88, 0.12);
+  background: rgba(48, 209, 88, 0.16);
   border-left-color: #30D158;
-  color: #30D158;
+  color: #3ee46e;
 }
 
 .diff-view__line--remove {
-  background: rgba(255, 69, 58, 0.12);
+  background: rgba(255, 69, 58, 0.16);
   border-left-color: #FF453A;
-  color: #FF453A;
+  color: #ff6b62;
 }
 
 .diff-view__line--context {
@@ -112,6 +113,7 @@
 
 .diff-view__line-content {
   flex: 1;
+  min-width: 0;
 }
 
 /* Expand button */

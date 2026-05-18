@@ -101,7 +101,7 @@
   align-items: center;
   gap: 8px;
   color: var(--plan-text-muted);
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 800;
   line-height: 1.1;
 }
@@ -123,8 +123,8 @@
   align-items: center;
   gap: 8px;
   color: var(--plan-text-muted);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11.5px;
+  font-weight: 650;
   line-height: 1.24;
 }
 
@@ -203,7 +203,7 @@
   border-radius: 8px;
   color: var(--island-text-secondary);
   background: var(--island-subtle);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 800;
   line-height: 1.1;
 }
@@ -213,14 +213,14 @@
   min-height: 72px;
   max-height: 98px;
   overflow-y: auto;
-  padding: 7px 9px;
+  padding: 8px 10px;
   border: 1px solid var(--plan-border);
   border-radius: 12px;
   background: var(--plan-surface-strong);
   color: var(--plan-text);
-  font-size: 11px;
-  font-weight: 620;
-  line-height: 1.42;
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.44;
 }
 
 .plan-approval__content::-webkit-scrollbar {
@@ -237,8 +237,8 @@
 .plan-approval__content h3 {
   margin: 8px 0 4px;
   color: var(--plan-text);
-  font-size: 12px;
-  font-weight: 850;
+  font-size: 12.5px;
+  font-weight: 780;
   line-height: 1.25;
 }
 
@@ -255,7 +255,7 @@
 
 .plan-approval__content ul,
 .plan-approval__content ol {
-  padding-left: 20px;
+  padding-left: 18px;
   margin: 5px 0;
 }
 
@@ -264,12 +264,12 @@
 }
 
 .plan-approval__content code {
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 6px;
   color: var(--plan-text);
   background: var(--island-subtle);
   font-family: var(--font-mono, monospace);
-  font-size: 0.88em;
+  font-size: 0.92em;
 }
 
 .plan-approval__content pre {
@@ -290,8 +290,8 @@
   flex: 0 0 auto;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  padding: 6px 8px;
+  gap: 5px 9px;
+  padding: 6px 9px;
   border: 1px solid var(--plan-border);
   border-radius: 12px;
   background: var(--plan-surface);
@@ -301,7 +301,7 @@
   display: inline-flex;
   margin: 0;
   color: var(--island-text-muted);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 750;
   line-height: 1.2;
 }
@@ -312,8 +312,8 @@
   gap: 5px;
   margin: 0;
   color: var(--plan-text-muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 10.5px;
+  font-weight: 620;
   line-height: 1.24;
 }
 
@@ -349,8 +349,8 @@
   color: var(--plan-text);
   background: var(--plan-surface-strong);
   font-family: var(--font-sans, system-ui);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 11.5px;
+  font-weight: 650;
 }
 
 .plan-approval__input::placeholder {
@@ -377,8 +377,8 @@
   border: none;
   border-radius: 8px;
   font-family: var(--font-sans, system-ui);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 11.5px;
+  font-weight: 780;
   cursor: pointer;
   transition: opacity 0.15s, filter 0.15s, transform 0.15s;
   white-space: nowrap;

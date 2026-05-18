@@ -155,7 +155,7 @@
 
 .perm-card__tool-name {
   color: var(--perm-accent);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   line-height: 1.1;
 }
@@ -178,9 +178,9 @@
 
 /* Tool previews */
 .perm-card__preview-desc {
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.22;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.28;
   color: var(--perm-text-secondary);
   margin-top: 5px;
   overflow: hidden;
@@ -194,12 +194,13 @@
   white-space: pre-wrap;
   word-break: break-all;
   border-radius: 9px;
-  background: var(--island-code-bg);
+  background: color-mix(in srgb, var(--island-code-bg) 88%, #000 12%);
   border: 1px solid var(--perm-command-border);
   padding: 10px 12px;
   font-family: var(--font-mono, monospace);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.48;
   color: var(--perm-text);
   margin: 0;
 }
@@ -209,9 +210,9 @@
   border-radius: 0;
   background: transparent;
   padding: 0;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.18;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.32;
 }
 
 .perm-card__preview-command {
@@ -220,9 +221,9 @@
   white-space: pre-wrap;
   word-break: break-all;
   font-family: var(--font-mono, monospace);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.18;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.32;
   color: var(--perm-text);
   margin: 0;
 }
@@ -233,7 +234,7 @@
 
 .perm-card__preview-prompt {
   color: #a46417;
-  margin-right: 8px;
+  margin-right: 7px;
 }
 
 .perm-card__preview-file {
@@ -271,22 +272,22 @@
 }
 
 .perm-card__preview-diff {
-  max-height: 120px;
+  max-height: 128px;
   overflow-y: auto;
   border-radius: 6px;
-  background: var(--island-code-bg, rgba(0, 0, 0, 0.3));
+  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.3)) 90%, #000 10%);
   padding: 8px;
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 1.46;
 }
 
 .perm-card__preview-diff--remove {
-  color: rgba(248, 113, 113, 0.8);
+  color: rgba(248, 113, 113, 0.92);
 }
 
 .perm-card__preview-diff--add {
-  color: rgba(52, 211, 153, 0.8);
+  color: rgba(52, 211, 153, 0.92);
   margin-top: 4px;
 }
 
@@ -298,10 +299,10 @@
 
 .perm-card__preview-kv {
   border-radius: 6px;
-  background: var(--island-code-bg, rgba(0, 0, 0, 0.3));
+  background: color-mix(in srgb, var(--island-code-bg, rgba(0, 0, 0, 0.3)) 90%, #000 10%);
   padding: 8px;
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 1.46;
 }
 
 .perm-card__preview-kv-row {
@@ -325,7 +326,7 @@
 .perm-card__diff {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 112px;
+  max-height: 124px;
   overflow-y: auto;
   border-radius: 6px;
 }
@@ -441,7 +442,7 @@
   .perm-card__tool-name,
   .perm-card__preview-code--bash,
   .perm-card__preview-command {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .perm-card__actions {
