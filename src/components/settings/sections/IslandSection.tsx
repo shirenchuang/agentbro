@@ -5,7 +5,6 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
 import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
-import { MODEL_PRICING } from '../../../utils/tokens'
 import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
 import {
   listDisplays, isTauri,
@@ -1205,13 +1204,9 @@ function IntegrationTab() {
 
   const setUsageQueryEnabled = (enabled: boolean) => {
     config.updateConfig('usageQueryEnabled', enabled)
-    persistUsageQuerySettings({ usageQueryEnabled: enabled })
-    window.setTimeout(() => { fetchUsageProviders() }, 150)
-  }
-
-  const setShowUsageQuota = (enabled: boolean) => {
     config.updateConfig('showUsageQuota', enabled)
-    persistUsageQuerySettings({ showUsageQuota: enabled })
+    persistUsageQuerySettings({ usageQueryEnabled: enabled, showUsageQuota: enabled })
+    window.setTimeout(() => { fetchUsageProviders() }, 150)
   }
 
   const authorizeProvider = async (provider: string) => {
@@ -1405,9 +1400,6 @@ function IntegrationTab() {
           description={t('settings.usageQueryEnabledDesc', { defaultValue: '后台读取已集成 Agent 的 Token 配额，用于灵动岛顶部显示。' })}
         >
           <Toggle checked={config.usageQueryEnabled} onChange={setUsageQueryEnabled} />
-        </SettingRow>
-        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
-          <Toggle checked={config.showUsageQuota} onChange={setShowUsageQuota} />
         </SettingRow>
 
         {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
@@ -1771,13 +1763,6 @@ function AdvancedTab() {
     return t(`settings.${status.state}`, { defaultValue: status.state })
   }
 
-  const costModelOptions = Object.entries(MODEL_PRICING).map(([id, m]) => ({ value: id, label: m.label }))
-  const tokenDisplayOptions = [
-    { value: 'both', label: t('settings.tokensBoth') },
-    { value: 'tokens', label: t('settings.tokensOnly') },
-    { value: 'cost', label: t('settings.costOnly') },
-    { value: 'hidden', label: t('settings.hidden') },
-  ]
   const updateAutoApproveTools = (value: string) => {
     config.updateConfig('autoApproveTools', value.split(',').map((item) => item.trim()).filter(Boolean))
   }
@@ -1902,17 +1887,6 @@ function AdvancedTab() {
       <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
         <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
           <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.tokenCostDisplay')}>
-        <SettingRow label={t('settings.tokenDisplayMode')} description={t('settings.tokenDisplayModeDesc')}>
-          <Dropdown value={config.tokenDisplayMode} options={tokenDisplayOptions}
-            onChange={(v) => config.updateConfig('tokenDisplayMode', v as 'tokens' | 'cost' | 'both' | 'hidden')} minWidth={150} />
-        </SettingRow>
-        <SettingRow label={t('settings.costModel')} description={t('settings.costModelDesc')}>
-          <Dropdown value={config.costModel} options={costModelOptions}
-            onChange={(v) => config.updateConfig('costModel', v)} minWidth={170} />
         </SettingRow>
       </SettingGroup>
 
