@@ -27,8 +27,8 @@ use std::fs;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tauri::State;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
@@ -137,10 +137,20 @@ pub async fn authorize_usage_provider(provider: String) -> Result<(), String> {
     launch_in_terminal("Terminal", &cwd, &command)
 }
 
+#[derive(Clone)]
 struct UsageRateLimitSnapshot {
     rate_limits: RateLimitInfo,
     captured_at: Option<chrono::DateTime<chrono::Utc>>,
 }
+
+#[derive(Default)]
+struct CodexUsageLiveCache {
+    fetched_at: Option<Instant>,
+    snapshot: Option<UsageRateLimitSnapshot>,
+}
+
+const CODEX_USAGE_LIVE_CACHE_TTL: Duration = Duration::from_secs(300);
+const CODEX_USAGE_LIVE_FAILURE_TTL: Duration = Duration::from_secs(60);
 
 async fn load_usage_snapshots() -> Vec<RateLimitInfo> {
     [
@@ -379,12 +389,34 @@ fn load_claude_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
 }
 
 async fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
-    load_codex_usage_rate_limits_live()
+    load_codex_usage_rate_limits_live_cached()
         .await
         .or_else(load_codex_usage_rate_limits_from_jsonl)
 }
 
-async fn load_codex_usage_rate_limits_live() -> Option<UsageRateLimitSnapshot> {
+async fn load_codex_usage_rate_limits_live_cached() -> Option<UsageRateLimitSnapshot> {
+    static CACHE: OnceLock<tokio::sync::Mutex<CodexUsageLiveCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| tokio::sync::Mutex::new(CodexUsageLiveCache::default()));
+    let mut guard = cache.lock().await;
+
+    if let Some(fetched_at) = guard.fetched_at {
+        let ttl = if guard.snapshot.is_some() {
+            CODEX_USAGE_LIVE_CACHE_TTL
+        } else {
+            CODEX_USAGE_LIVE_FAILURE_TTL
+        };
+        if fetched_at.elapsed() < ttl {
+            return guard.snapshot.clone();
+        }
+    }
+
+    let snapshot = load_codex_usage_rate_limits_live_uncached().await;
+    guard.fetched_at = Some(Instant::now());
+    guard.snapshot = snapshot.clone();
+    snapshot
+}
+
+async fn load_codex_usage_rate_limits_live_uncached() -> Option<UsageRateLimitSnapshot> {
     let binary = find_binary("codex")?;
     let mut child = TokioCommand::new(binary)
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])

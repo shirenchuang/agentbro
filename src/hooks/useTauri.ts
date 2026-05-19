@@ -388,9 +388,22 @@ function syncThemesFromBackend(configTheme?: string) {
   }).catch(e => console.error('[tauri] listThemes:', e))
 }
 
-function refreshUsageRateLimits() {
-  if (!useConfigStore.getState().usageQueryEnabled) return
+let usageRateLimitRefreshInFlight = false
+let usageRateLimitLastRefreshAt = 0
+let usageRateLimitRefreshQueued = false
+const USAGE_RATE_LIMIT_REFRESH_INTERVAL_MS = 60_000
 
+function refreshUsageRateLimits(force = false) {
+  if (!useConfigStore.getState().usageQueryEnabled) return
+  const now = Date.now()
+  if (!force && now - usageRateLimitLastRefreshAt < USAGE_RATE_LIMIT_REFRESH_INTERVAL_MS) return
+  if (usageRateLimitRefreshInFlight) {
+    usageRateLimitRefreshQueued = true
+    return
+  }
+
+  usageRateLimitRefreshInFlight = true
+  usageRateLimitLastRefreshAt = now
   getUsageSnapshots()
     .then(async (snapshots) => {
       if (snapshots.length > 0) {
@@ -403,6 +416,13 @@ function refreshUsageRateLimits() {
       }
     })
     .catch(e => console.error('[tauri] getUsageSnapshots:', e))
+    .finally(() => {
+      usageRateLimitRefreshInFlight = false
+      if (usageRateLimitRefreshQueued) {
+        usageRateLimitRefreshQueued = false
+        window.setTimeout(() => refreshUsageRateLimits(), 500)
+      }
+    })
 }
 
 // ── Hooks ────────────────────────────────────────────────────────
@@ -422,7 +442,7 @@ export function useSessionEvents() {
       store.replaceAllSessions(transformed)
       const usageSnapshots = sessionUsageSnapshots(transformed)
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
-      refreshUsageRateLimits()
+      refreshUsageRateLimits(true)
     }).catch(e => console.error('[tauri] getSessions:', e))
 
     // Listen for live updates (dynamic import to avoid crash in browser dev mode)
