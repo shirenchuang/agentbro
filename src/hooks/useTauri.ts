@@ -234,6 +234,7 @@ function transformSession(bs: BackendSession): SessionState {
           : 'pending',
     })),
     isYoloMode: bs.isYoloMode || undefined,
+    notice: bs.notice ?? existing?.notice,
     lastUserMessage: bs.lastUserMessage ?? existing?.lastUserMessage,
     responseText: bs.lastResponse ?? undefined,
     description: bs.lastThought ?? bs.description ?? undefined,

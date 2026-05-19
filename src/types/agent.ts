@@ -124,6 +124,22 @@ export interface TerminalInfo {
   paneId?: string
 }
 
+export type SessionNoticeKind =
+  | 'terminal_approval'
+  | 'terminal_question'
+  | 'restart'
+  | 'trust'
+  | 'extension'
+  | 'status_warning'
+  | 'compact_complete'
+
+export interface SessionNotice {
+  kind: SessionNoticeKind
+  title: string
+  detail?: string
+  actionLabel?: string
+}
+
 export interface SessionState {
   id: string
   agentType: AgentType
@@ -170,6 +186,7 @@ export interface SessionState {
   responseText?: string
   taskCompletedAt?: number // timestamp when task completed
   isYoloMode?: boolean
+  notice?: SessionNotice
   lastActivityAt?: number // timestamp for processing timeout
 }
 

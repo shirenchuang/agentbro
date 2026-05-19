@@ -2,7 +2,7 @@
  * Typed wrappers for Tauri commands with graceful browser-dev-mode fallbacks.
  */
 
-import type { RateLimitInfo, SessionState } from '../types/agent'
+import type { RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
 
 /** Returns true when running inside a Tauri webview. */
@@ -116,6 +116,7 @@ export interface BackendSession {
     status: string
   }>
   isYoloMode: boolean
+  notice?: SessionNotice | null
   lastUserMessage: string | null
   lastResponse: string | null
   lastThought: string | null

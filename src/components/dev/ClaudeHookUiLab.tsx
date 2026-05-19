@@ -12,6 +12,9 @@ type LabScenarioId =
   | 'overlay-queue'
   | 'long-content'
   | 'status-badges'
+  | 'terminal-routed'
+  | 'setup-notices'
+  | 'subagent-team'
   | 'pre-tool-use'
   | 'post-tool-use'
   | 'permission-request'
@@ -893,6 +896,123 @@ function statusBadgeSession(now: number): SessionState {
   })
 }
 
+function terminalRoutedSessions(now: number): SessionState[] {
+  return [
+    withSessionId(recordedBashPendingSession(now), 'lab-terminal-approval', {
+      project: 'terminal',
+      sessionTitle: 'Approval routed to terminal',
+      description: 'Continue in Terminal to approve this Bash command.',
+      statusLineText: 'Continue in Terminal',
+      notice: {
+        kind: 'terminal_approval',
+        title: 'Continue in Terminal',
+        detail: 'Vibe-style terminal-routed approval hint',
+        actionLabel: 'Go to Terminal',
+      },
+    }),
+    withSessionId(recordedQuestionSession(now), 'lab-terminal-question', {
+      project: 'terminal',
+      sessionTitle: 'Question routed to terminal',
+      description: 'Please answer in the terminal.',
+      statusLineText: 'Please answer in Terminal',
+      notice: {
+        kind: 'terminal_question',
+        title: 'Answer in Terminal',
+        detail: 'Question UI is delegated to the active terminal tab',
+        actionLabel: 'Go to Terminal',
+      },
+    }),
+  ]
+}
+
+function setupNoticeSessions(now: number): SessionState[] {
+  return [
+    baseSession(now, {
+      id: 'lab-restart-notice',
+      phase: 'idle',
+      project: 'setup',
+      sessionTitle: 'Restart your sessions',
+      lastUserMessage: 'Hooks just installed',
+      description: 'Hooks just installed — restart running sessions to connect.',
+      statusLineText: 'Restart running sessions to connect',
+      notice: {
+        kind: 'restart',
+        title: 'Restart your sessions',
+        detail: 'Hooks just installed — restart running sessions to connect',
+      },
+    }),
+    baseSession(now, {
+      id: 'lab-trust-notice',
+      phase: 'waiting_approval',
+      project: 'codex',
+      sessionTitle: 'Codex updated — confirm authorization',
+      lastUserMessage: 'Confirm Vibe Island once',
+      description: 'Codex refreshed its security model. Confirm authorization once to keep session tracking and approvals.',
+      statusLineText: 'Confirming authorization...',
+      notice: {
+        kind: 'trust',
+        title: 'Codex updated — confirm authorization',
+        detail: 'Confirm once to keep session tracking and approvals',
+      },
+    }),
+    baseSession(now, {
+      id: 'lab-extension-notice',
+      phase: 'ready',
+      project: 'extension',
+      sessionTitle: 'Install terminal extension',
+      description: 'Install iTerm extension to enable precise terminal tab jumping.',
+      statusLineText: 'Install extension for precise jumping',
+      notice: {
+        kind: 'extension',
+        title: 'Install terminal extension',
+        detail: 'Enables precise terminal tab jumping',
+      },
+    }),
+  ]
+}
+
+function subagentTeamSession(now: number): SessionState {
+  return recordedSession(now, {
+    phase: 'processing',
+    project: 'agent-team',
+    sessionTitle: 'Agent team running',
+    lastUserMessage: 'Parallelize the Vibe alignment audit with subagents.',
+    description: 'Running 3 subagents across UI state coverage, transcript parsing, and visual QA.',
+    subagents: [
+      {
+        agentId: 'agent-ui-state',
+        name: 'ui-state',
+        agentType: 'explorer',
+        description: 'Map Vibe visible states to AgentBro list cards',
+        startedAt: now - 28_000,
+        status: 'running',
+        tools: ['Read', 'Grep'],
+      },
+      {
+        agentId: 'agent-parser',
+        name: 'parser',
+        agentType: 'worker',
+        description: 'Check subagent transcript hydration and sidechain history',
+        startedAt: now - 24_000,
+        completedAt: now - 6_000,
+        status: 'completed',
+        tools: ['Read'],
+        lastAssistantMessage: 'Sidechain transcript history is available for completed child agents.',
+        agentTranscriptPath: '/tmp/agent-parser.jsonl',
+      },
+      {
+        agentId: 'agent-visual',
+        name: 'visual',
+        agentType: 'explorer',
+        description: 'Review compact list density and status glyphs',
+        startedAt: now - 18_000,
+        status: 'running',
+        tools: ['Screenshot'],
+      },
+    ],
+  })
+}
+
 const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
   {
     id: 'empty-idle',
@@ -935,6 +1055,27 @@ const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
     title: 'Badges',
     caption: 'rate limit, YOLO, error, and unattended collapsed badges',
     buildSession: statusBadgeSession,
+  },
+  {
+    id: 'terminal-routed',
+    hookName: 'Vibe Terminal Routed',
+    title: 'Terminal',
+    caption: 'approval and question delegated to terminal with jump affordance',
+    buildSessions: terminalRoutedSessions,
+  },
+  {
+    id: 'setup-notices',
+    hookName: 'Vibe Setup Notices',
+    title: 'Setup',
+    caption: 'restart, trust, and extension setup notices',
+    buildSessions: setupNoticeSessions,
+  },
+  {
+    id: 'subagent-team',
+    hookName: 'Vibe Subagent Team',
+    title: 'Agent Team',
+    caption: 'running and completed child agents compressed into the session card',
+    buildSession: subagentTeamSession,
   },
   {
     id: 'real-edit-pending',
