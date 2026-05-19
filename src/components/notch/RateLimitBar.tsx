@@ -21,17 +21,37 @@ function usageClass(pct: number): string {
 export function RateLimitBar({ rateLimits }: RateLimitBarProps) {
   if (!rateLimits) return null
 
-  const { fiveHourUsage, fiveHourRemaining, sevenDayUsage, sevenDayRemaining } = rateLimits
+  const windows = rateLimits.windows && rateLimits.windows.length > 0
+    ? rateLimits.windows.slice(0, 2)
+    : [
+      {
+        id: 'five_hour',
+        title: '5h',
+        usedPercent: rateLimits.fiveHourUsage,
+        remainingLabel: rateLimits.fiveHourRemaining,
+      },
+      {
+        id: 'seven_day',
+        title: '7d',
+        usedPercent: rateLimits.sevenDayUsage,
+        remainingLabel: rateLimits.sevenDayRemaining,
+      },
+    ]
+
+  const source = rateLimits.providerLabel || rateLimits.provider || 'Usage'
+  const sourceDetail = [rateLimits.source, rateLimits.updatedAt ? new Date(rateLimits.updatedAt).toLocaleTimeString() : null]
+    .filter(Boolean)
+    .join(' · ')
+  const title = `${source}: ${windows.map((window) => `${window.title}: ${Math.round(window.usedPercent)}% used${window.remainingLabel ? ` (${window.remainingLabel} left)` : ''}`).join(' | ')}${sourceDetail ? ` · ${sourceDetail}` : ''}`
 
   return (
-    <div className="rate-limit" title={`5h: ${fiveHourUsage}% used (${fiveHourRemaining} left) | 7d: ${sevenDayUsage}% used (${sevenDayRemaining} left)`}>
-      <span className={`rate-limit__segment ${usageClass(fiveHourUsage)}`} style={{ color: usageColor(fiveHourUsage) }}>
-        5h {fiveHourUsage}% {fiveHourRemaining}
-      </span>
-      <span className="rate-limit__divider">|</span>
-      <span className={`rate-limit__segment ${usageClass(sevenDayUsage)}`} style={{ color: usageColor(sevenDayUsage) }}>
-        7d {sevenDayUsage}% {sevenDayRemaining}
-      </span>
+    <div className="rate-limit" title={title}>
+      {windows.map((window, index) => (
+        <span key={window.id} className={`rate-limit__segment ${usageClass(window.usedPercent)}`} style={{ color: usageColor(window.usedPercent) }}>
+          {index > 0 && <span className="rate-limit__divider">|</span>}
+          {window.title} {Math.round(window.usedPercent)}% {window.remainingLabel || ''}
+        </span>
+      ))}
     </div>
   )
 }

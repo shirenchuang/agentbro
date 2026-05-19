@@ -104,6 +104,53 @@ pub struct RateLimitInfo {
     pub five_hour_remaining: String,
     pub seven_day_usage: f64,
     pub seven_day_remaining: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<UsageRateWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRateWindow {
+    pub id: String,
+    pub title: String,
+    pub used_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<i64>,
+}
+
+impl RateLimitInfo {
+    pub fn legacy(
+        five_hour_usage: f64,
+        five_hour_remaining: String,
+        seven_day_usage: f64,
+        seven_day_remaining: String,
+    ) -> Self {
+        Self {
+            five_hour_usage,
+            five_hour_remaining,
+            seven_day_usage,
+            seven_day_remaining,
+            provider: None,
+            provider_label: None,
+            source: None,
+            updated_at: None,
+            windows: Vec::new(),
+        }
+    }
 }
 
 /// Context-window usage reported by an agent statusline.

@@ -1,7 +1,7 @@
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectActiveOverlay } from '../../stores/sessionStore'
+import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
@@ -210,6 +210,7 @@ export function NotchPanel() {
   const setPanelState = useSessionStore((s) => s.setPanelState)
   const sessions = useSessionStore(selectSessionList)
   const rateLimits = useSessionStore(selectRateLimits)
+  const usageSnapshots = useSessionStore(selectUsageSnapshots)
   const activeOverlay = useSessionStore(selectActiveOverlay)
   const dismissOverlay = useSessionStore((s) => s.dismissOverlay)
   const dwellDuration = useConfigStore((s) => s.dwellDuration)
@@ -1744,6 +1745,7 @@ export function NotchPanel() {
                   sessions={displayedSessions}
                   panelState={preparingOpen ? 'collapsed' : effectivePanelState}
                   rateLimits={rateLimits}
+                  usageSnapshots={usageSnapshots}
                   onCollapse={handleCollapse}
                   isMicro={isMicro}
                   focusFilteredEmpty={focusFilteredEmpty}

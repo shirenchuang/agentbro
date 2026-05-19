@@ -165,6 +165,7 @@ interface ConfigState {
 
   // General — UI
   showUsageQuota: boolean
+  usageQueryEnabled: boolean
 
   // About
   telemetryEnabled: boolean
@@ -340,6 +341,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     detailPanelMaxHeight: 500,
     showAgentActivityDetails: true,
     showUsageQuota: true,
+    usageQueryEnabled: true,
     tokenDisplayMode: 'both',
     soundEnabled: true,
     volume: 70,
@@ -483,6 +485,7 @@ export const useConfigStore = create<ConfigStore>()(
 
   // General — UI
   showUsageQuota: true,
+  usageQueryEnabled: true,
 
   // About
   telemetryEnabled: true,

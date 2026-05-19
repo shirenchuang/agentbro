@@ -2,7 +2,7 @@
  * Typed wrappers for Tauri commands with graceful browser-dev-mode fallbacks.
  */
 
-import type { SessionState } from '../types/agent'
+import type { RateLimitInfo, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
 
 /** Returns true when running inside a Tauri webview. */
@@ -35,6 +35,11 @@ export interface BackendSession {
     fiveHourRemaining: string
     sevenDayUsage: number
     sevenDayRemaining: string
+    provider?: string
+    providerLabel?: string
+    source?: string
+    updatedAt?: number
+    windows?: RateLimitInfo['windows']
   } | null
   statusLineText: string | null
   contextWindow: {
@@ -164,6 +169,20 @@ export interface MonitorSessionDetail {
   transcriptPath: string | null
 }
 
+export interface UsageProviderStatus {
+  provider: string
+  label: string
+  enabled: boolean
+  available: boolean
+  catalogSupported: boolean
+  implementationStatus: 'active' | 'available' | 'unsupported'
+  source: string | null
+  detail: string
+  authStatus: 'authorized' | 'missing' | 'unknown'
+  authPath: string | null
+  canAuthorize: boolean
+}
+
 export interface NetworkMonitorStatus {
   enabled: boolean
   proxyUrl: string | null
@@ -232,6 +251,7 @@ export interface BackendConfig {
   hideInFullscreen: boolean
   completionTimeout: number
   showTokenUsage: boolean
+  usageQueryEnabled: boolean
   theme: string
   displayId: string
   autoHideNoSessions: boolean
@@ -285,6 +305,26 @@ export interface BackendAdapterInfo {
 export async function getSessions(): Promise<BackendSession[]> {
   if (!isTauri()) return []
   return invoke<BackendSession[]>('get_sessions')
+}
+
+export async function getUsageRateLimits(): Promise<RateLimitInfo | null> {
+  if (!isTauri()) return null
+  return invoke<RateLimitInfo | null>('get_usage_rate_limits')
+}
+
+export async function getUsageSnapshots(): Promise<RateLimitInfo[]> {
+  if (!isTauri()) return []
+  return invoke<RateLimitInfo[]>('get_usage_snapshots')
+}
+
+export async function listUsageProviders(): Promise<UsageProviderStatus[]> {
+  if (!isTauri()) return []
+  return invoke<UsageProviderStatus[]>('list_usage_providers')
+}
+
+export async function authorizeUsageProvider(provider: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('authorize_usage_provider', { provider })
 }
 
 export async function getMonitorSessions(): Promise<MonitorSessionSummary[]> {
@@ -421,6 +461,7 @@ export async function getConfig(): Promise<BackendConfig> {
       hideInFullscreen: false,
       completionTimeout: 5,
       showTokenUsage: true,
+      usageQueryEnabled: true,
       theme: 'ink-amber',
       displayId: 'primary',
       autoHideNoSessions: false,

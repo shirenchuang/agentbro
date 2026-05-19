@@ -12,6 +12,7 @@ import { useConfigStore } from '../../stores/configStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { RateLimitBar } from './RateLimitBar'
 import { SpriteCanvas } from './SpriteCanvas'
 import './CollapsedBar.css'
 
@@ -19,6 +20,7 @@ interface CollapsedBarProps {
   sessions: SessionState[]
   panelState: PanelState
   rateLimits?: RateLimitInfo
+  usageSnapshots?: Record<string, RateLimitInfo>
   onCollapse: () => void
   isMicro?: boolean
   focusFilteredEmpty?: boolean
@@ -151,9 +153,11 @@ function formatElapsed(unattendedSince: number | undefined): string {
   return s > 0 ? `${m}m${s}s` : `${m}m`
 }
 
-export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusFilteredEmpty = false }: CollapsedBarProps) {
+export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots, onCollapse, isMicro, focusFilteredEmpty = false }: CollapsedBarProps) {
   const { t } = useTranslation()
   const showToolStatus = useConfigStore((s) => s.showToolStatus)
+  const showUsageQuota = useConfigStore((s) => s.showUsageQuota)
+  const usageQueryEnabled = useConfigStore((s) => s.usageQueryEnabled)
   const defaultMascotSource = useConfigStore((s) => s.defaultMascotSource)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
   const activeTheme = useThemeStore((s) => s.activeTheme)
@@ -225,7 +229,15 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
   const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
   const isYolo = lead?.isYoloMode
   const hasError = lead?.phase === 'error'
-  const ratePct = lead?.rateLimits?.fiveHourUsage
+  const providerKey = lead?.agentType === 'claude-code' ? 'claude-code' : lead?.agentType
+  const providerMatchedGlobalRateLimits = !providerKey || !rateLimits?.provider || rateLimits.provider === providerKey
+    ? rateLimits
+    : undefined
+  const effectiveRateLimits = (providerKey ? usageSnapshots?.[providerKey] : undefined)
+    ?? lead?.rateLimits
+    ?? providerMatchedGlobalRateLimits
+  const shouldShowUsageQuota = usageQueryEnabled && showUsageQuota && Boolean(effectiveRateLimits)
+  const ratePct = shouldShowUsageQuota ? effectiveRateLimits?.fiveHourUsage : undefined
   const rateColor = ratePct != null
     ? ratePct > 80 ? '#ef4444' : ratePct > 50 ? '#f59e0b' : '#4ade80'
     : undefined
@@ -288,17 +300,21 @@ export function CollapsedBar({ sessions, panelState, onCollapse, isMicro, focusF
             {workingCount > 0 && lead
               ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={20} />
               : renderMascot(undefined, 20)}
-            <div className="collapsed-bar__counter-pills">
-              <span className={`collapsed-bar__counter-pill${count > 0 ? ' collapsed-bar__counter-pill--active' : ''}`}>
-                <span>ALL</span><span className="collapsed-bar__counter-pill-val">{count}</span>
-              </span>
-              <span className={`collapsed-bar__counter-pill${workingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--act' : ''}`}>
-                <span>ACT</span><span className="collapsed-bar__counter-pill-val">{workingCount}</span>
-              </span>
-              <span className={`collapsed-bar__counter-pill${waitingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--wait' : ''}`}>
-                <span>WAIT</span><span className="collapsed-bar__counter-pill-val">{waitingCount}</span>
-              </span>
-            </div>
+            {shouldShowUsageQuota && effectiveRateLimits ? (
+              <RateLimitBar rateLimits={effectiveRateLimits} />
+            ) : (
+              <div className="collapsed-bar__counter-pills">
+                <span className={`collapsed-bar__counter-pill${count > 0 ? ' collapsed-bar__counter-pill--active' : ''}`}>
+                  <span>ALL</span><span className="collapsed-bar__counter-pill-val">{count}</span>
+                </span>
+                <span className={`collapsed-bar__counter-pill${workingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--act' : ''}`}>
+                  <span>ACT</span><span className="collapsed-bar__counter-pill-val">{workingCount}</span>
+                </span>
+                <span className={`collapsed-bar__counter-pill${waitingCount > 0 ? ' collapsed-bar__counter-pill--active collapsed-bar__counter-pill--wait' : ''}`}>
+                  <span>WAIT</span><span className="collapsed-bar__counter-pill-val">{waitingCount}</span>
+                </span>
+              </div>
+            )}
           </div>
           {showTips && !focusFilteredEmpty && (
             <div className="collapsed-bar__header-tip">

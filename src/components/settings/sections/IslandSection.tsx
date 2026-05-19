@@ -18,8 +18,9 @@ import {
   disconnectRemote, installRemoteHooks, getRemoteStatus, listSshConfigHosts,
   runHookDoctor, launchAgentSession, listCustomHookTemplates, upsertCustomHookTemplate,
   removeCustomHookTemplate, installCustomHookTemplate, removeCustomHookTemplateHooks,
+  getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
 } from '../../../services/tauriApi'
-import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost } from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -77,6 +78,17 @@ function persistAdvancedToolFlags(next: Partial<{
     sessionLauncherEnabled: next.sessionLauncherEnabled ?? state.sessionLauncherEnabled,
     customHookTemplatesEnabled: next.customHookTemplatesEnabled ?? state.customHookTemplatesEnabled,
   }).catch((err) => console.error('Failed to persist advanced tool flags:', err))
+}
+
+function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
+  const state = useConfigStore.getState()
+  getConfig()
+    .then((backendConfig) => updateBackendConfig({
+      ...backendConfig,
+      usageQueryEnabled: next.usageQueryEnabled ?? state.usageQueryEnabled,
+      showTokenUsage: next.showUsageQuota ?? state.showUsageQuota,
+    }))
+    .catch((err) => console.error('Failed to persist usage query settings:', err))
 }
 
 function SurfaceModeSegmentedControl({
@@ -1135,6 +1147,9 @@ function IntegrationTab() {
   const [bulkInstalling, setBulkInstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [usageProviders, setUsageProviders] = useState<UsageProviderStatus[]>([])
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageAction, setUsageAction] = useState<string | null>(null)
 
   const fetchStatus = useCallback(async () => {
     setLoading(true); setError(null); setNotice(null)
@@ -1151,11 +1166,32 @@ function IntegrationTab() {
     setLoading(false)
   }, [])
 
+  const fetchUsageProviders = useCallback(async () => {
+    if (!isTauri()) {
+      setUsageProviders([])
+      return
+    }
+    setUsageLoading(true)
+    try {
+      setUsageProviders(await listUsageProviders())
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setUsageLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     if (!config.islandExternalEnabled) return
     const timer = window.setTimeout(() => { fetchStatus() }, 0)
     return () => window.clearTimeout(timer)
   }, [fetchStatus, config.islandExternalEnabled])
+
+  useEffect(() => {
+    if (!config.islandExternalEnabled) return
+    const timer = window.setTimeout(() => { fetchUsageProviders() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [fetchUsageProviders, config.islandExternalEnabled, config.usageQueryEnabled])
 
   const detectNow = async () => {
     if (!isTauri()) {
@@ -1163,7 +1199,36 @@ function IntegrationTab() {
       return
     }
     await fetchStatus()
+    await fetchUsageProviders()
     setNotice(t('settings.hookDetectDone', { defaultValue: '检测完成。' }))
+  }
+
+  const setUsageQueryEnabled = (enabled: boolean) => {
+    config.updateConfig('usageQueryEnabled', enabled)
+    persistUsageQuerySettings({ usageQueryEnabled: enabled })
+    window.setTimeout(() => { fetchUsageProviders() }, 150)
+  }
+
+  const setShowUsageQuota = (enabled: boolean) => {
+    config.updateConfig('showUsageQuota', enabled)
+    persistUsageQuerySettings({ showUsageQuota: enabled })
+  }
+
+  const authorizeProvider = async (provider: string) => {
+    setError(null); setNotice(null)
+    if (!isTauri()) {
+      setNotice(t('settings.desktopOnlyHooks', { defaultValue: 'Hook management is available in the desktop app.' }))
+      return
+    }
+    setUsageAction(provider)
+    try {
+      await authorizeUsageProvider(provider)
+      setNotice(t('settings.usageAuthStarted', { defaultValue: '已打开终端授权，完成登录后点检测刷新状态。' }))
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setUsageAction(null)
+    }
   }
 
   const installAll = async () => {
@@ -1313,11 +1378,72 @@ function IntegrationTab() {
       label: tool.displayName || tool.name,
     }))
     .filter((tool, index, all) => all.findIndex((item) => item.id === tool.id) === index)
+  const usageStatusLabel = (provider: UsageProviderStatus) => {
+    if (!provider.enabled) return t('settings.disabled', { defaultValue: 'Disabled' })
+    if (provider.available) return t('settings.connected', { defaultValue: 'Connected' })
+    if (provider.implementationStatus === 'available') return t('settings.usageReaderAvailable', { defaultValue: '可接入' })
+    if (provider.implementationStatus === 'unsupported') return t('settings.notSupported', { defaultValue: '未支持' })
+    if (provider.authStatus === 'authorized') return t('settings.waitingData', { defaultValue: 'Waiting for data' })
+    return t('settings.needsAuth', { defaultValue: 'Needs authorization' })
+  }
 
   return (
     <>
 {error && <div className="hook-error-card">{error}</div>}
       {notice && <div className="hook-notice-card">{notice}</div>}
+
+      <SettingGroup
+        actions={config.islandExternalEnabled ? (
+          <button className="settings-mini-button" disabled={usageLoading} onClick={fetchUsageProviders} type="button">
+            {usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.refresh', { defaultValue: '刷新' })}
+          </button>
+        ) : null}
+        label={t('settings.usageQueryIntegration', { defaultValue: '用量查询' })}
+      >
+        <SettingRow
+          label={t('settings.usageQueryEnabled', { defaultValue: '启用用量查询' })}
+          description={t('settings.usageQueryEnabledDesc', { defaultValue: '后台读取已集成 Agent 的 Token 配额，用于灵动岛顶部显示。' })}
+        >
+          <Toggle checked={config.usageQueryEnabled} onChange={setUsageQueryEnabled} />
+        </SettingRow>
+        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
+          <Toggle checked={config.showUsageQuota} onChange={setShowUsageQuota} />
+        </SettingRow>
+
+        {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
+        {config.islandExternalEnabled && usageProviders.map((provider) => (
+          <div key={provider.provider} className="hook-tool-row">
+            <div className="hook-tool-row__icon">
+              <PlatformIcon agentId={provider.provider} displayName={provider.label} size={30} />
+            </div>
+            <div className="hook-tool-row__info">
+              <div className="hook-tool-row__name">{provider.label}</div>
+              <div className="hook-tool-row__path" title={provider.authPath || provider.detail}>
+                {provider.source ? `${provider.source} · ${provider.detail}` : provider.detail}
+              </div>
+            </div>
+            <div className={`hook-status-badge hook-status-badge--${provider.available ? 'installed' : provider.implementationStatus === 'available' ? 'needs_reinstall' : 'not_installed'}`}>
+              {usageStatusLabel(provider)}
+            </div>
+            <div className="hook-tool-row__actions">
+              {provider.authPath && (
+                <GlassButton variant="ghost" onClick={() => invoke('open_system_path', { path: provider.authPath })}>
+                  {t('settings.openConfigDir', { defaultValue: '打开配置目录' })}
+                </GlassButton>
+              )}
+              <GlassButton
+                variant="secondary"
+                onClick={() => authorizeProvider(provider.provider)}
+                disabled={!provider.canAuthorize || usageAction === provider.provider}
+              >
+                {usageAction === provider.provider
+                  ? t('settings.authorizing', { defaultValue: '授权中...' })
+                  : t('settings.authorize', { defaultValue: '授权' })}
+              </GlassButton>
+            </div>
+          </div>
+        ))}
+      </SettingGroup>
 
       <SettingGroup
         actions={config.islandExternalEnabled ? (
@@ -1774,9 +1900,6 @@ function AdvancedTab() {
       )}
 
       <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
-        <SettingRow label={t('settings.showUsageQuota')} description={t('settings.showUsageQuotaDesc')}>
-          <Toggle checked={config.showUsageQuota} onChange={(v) => config.updateConfig('showUsageQuota', v)} />
-        </SettingRow>
         <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
           <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
         </SettingRow>

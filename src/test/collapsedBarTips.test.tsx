@@ -23,7 +23,7 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
 
 describe('CollapsedBar idle tips', () => {
   beforeEach(() => {
-    useConfigStore.setState({ tipsEnabled: true, showToolStatus: true })
+    useConfigStore.setState({ tipsEnabled: true, showToolStatus: true, showUsageQuota: true, usageQueryEnabled: true })
   })
 
   it('shows tips when there are no sessions', () => {
@@ -59,6 +59,135 @@ describe('CollapsedBar idle tips', () => {
     )
 
     expect(container.querySelector('.collapsed-bar__counter-pill--wait')?.textContent).toBe('WAIT1')
+  })
+
+  it('shows 5h and 7d usage in the expanded header when usage quota is enabled', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[session()]}
+        panelState="hover"
+        rateLimits={{
+          fiveHourUsage: 36,
+          fiveHourRemaining: '1h1m',
+          sevenDayUsage: 50,
+          sevenDayRemaining: '5d8h',
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('5h 36% 1h1m')).toBeInTheDocument()
+    expect(screen.getByText('7d 50% 5d8h')).toBeInTheDocument()
+    expect(container.querySelector('.collapsed-bar__counter-pills')).not.toBeInTheDocument()
+  })
+
+  it('uses the lead agent provider snapshot before the global fallback', () => {
+    render(
+      <CollapsedBar
+        sessions={[session({ agentType: 'codex' })]}
+        panelState="hover"
+        rateLimits={{
+          fiveHourUsage: 5,
+          fiveHourRemaining: '4h',
+          sevenDayUsage: 6,
+          sevenDayRemaining: '6d',
+        }}
+        usageSnapshots={{
+          codex: {
+            provider: 'codex',
+            providerLabel: 'Codex',
+            source: 'codex-jsonl',
+            fiveHourUsage: 66,
+            fiveHourRemaining: '31m',
+            sevenDayUsage: 22,
+            sevenDayRemaining: '4d',
+            windows: [
+              { id: 'five_hour', title: '5h', usedPercent: 66, remainingLabel: '31m' },
+              { id: 'seven_day', title: '7d', usedPercent: 22, remainingLabel: '4d' },
+            ],
+          },
+          'claude-code': {
+            provider: 'claude-code',
+            providerLabel: 'Claude',
+            fiveHourUsage: 11,
+            fiveHourRemaining: '3h',
+            sevenDayUsage: 12,
+            sevenDayRemaining: '5d',
+          },
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('5h 66% 31m')).toBeInTheDocument()
+    expect(screen.getByText('7d 22% 4d')).toBeInTheDocument()
+    expect(screen.queryByText('5h 5% 4h')).not.toBeInTheDocument()
+  })
+
+  it('does not show another provider snapshot for the active agent', () => {
+    const { container } = render(
+      <CollapsedBar
+        sessions={[session({ agentType: 'codex' })]}
+        panelState="hover"
+        rateLimits={{
+          provider: 'claude-code',
+          providerLabel: 'Claude',
+          fiveHourUsage: 88,
+          fiveHourRemaining: '2m',
+          sevenDayUsage: 44,
+          sevenDayRemaining: '5d',
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('.collapsed-bar__counter-pills')).toBeInTheDocument()
+    expect(screen.queryByText('5h 88% 2m')).not.toBeInTheDocument()
+  })
+
+  it('keeps ALL ACT WAIT in the expanded header when usage quota is disabled', () => {
+    useConfigStore.setState({ showUsageQuota: false })
+
+    const { container } = render(
+      <CollapsedBar
+        sessions={[session({ phase: 'processing' })]}
+        panelState="hover"
+        rateLimits={{
+          fiveHourUsage: 36,
+          fiveHourRemaining: '1h1m',
+          sevenDayUsage: 50,
+          sevenDayRemaining: '5d8h',
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('.collapsed-bar__counter-pills')).toBeInTheDocument()
+    expect(screen.getByText('ALL')).toBeInTheDocument()
+    expect(screen.getByText('ACT')).toBeInTheDocument()
+    expect(screen.getByText('WAIT')).toBeInTheDocument()
+    expect(screen.queryByText('5h 36% 1h1m')).not.toBeInTheDocument()
+  })
+
+  it('keeps ALL ACT WAIT when usage querying is disabled', () => {
+    useConfigStore.setState({ usageQueryEnabled: false, showUsageQuota: true })
+
+    const { container } = render(
+      <CollapsedBar
+        sessions={[session({ phase: 'processing' })]}
+        panelState="hover"
+        rateLimits={{
+          fiveHourUsage: 36,
+          fiveHourRemaining: '1h1m',
+          sevenDayUsage: 50,
+          sevenDayRemaining: '5d8h',
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('.collapsed-bar__counter-pills')).toBeInTheDocument()
+    expect(screen.queryByText('5h 36% 1h1m')).not.toBeInTheDocument()
   })
 
   it('counts error sessions as alerts above ordinary attention sessions', () => {

@@ -90,6 +90,8 @@ pub struct AppConfig {
     pub hide_in_fullscreen: bool,
     pub completion_timeout: u32,
     pub show_token_usage: bool,
+    #[serde(default = "default_true")]
+    pub usage_query_enabled: bool,
     pub theme: String,
     /// Which display to position on: "primary" or a monitor name
     #[serde(default = "default_display_id")]
@@ -266,6 +268,7 @@ impl Default for AppConfig {
             hide_in_fullscreen: false,
             completion_timeout: 5,
             show_token_usage: true,
+            usage_query_enabled: true,
             theme: "ink-amber".to_string(),
             display_id: "primary".to_string(),
             auto_hide_no_sessions: false,

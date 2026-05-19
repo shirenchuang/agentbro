@@ -2,13 +2,13 @@
  * Listens for backend events and syncs stores. No-ops in browser dev mode.
  */
 import { useEffect } from 'react'
-import { isTauri, getSessions, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours } from '../services/tauriApi'
+import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours } from '../services/tauriApi'
 import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { SoundChoice } from '../stores/configStore'
-import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage } from '../types/agent'
+import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage, RateLimitInfo } from '../types/agent'
 
 let lastBackendThemeName: string | null = null
 let pendingBackendThemeName: string | null = null
@@ -240,6 +240,54 @@ function transformSession(bs: BackendSession): SessionState {
   }
 }
 
+function usageProviderForAgent(agentType: AgentType | string): string {
+  if (agentType === 'claude-code') return 'claude-code'
+  return agentType
+}
+
+function providerLabelForAgent(agentType: AgentType | string, engineLabel?: string): string {
+  if (engineLabel) return engineLabel
+  if (agentType === 'claude-code') return 'Claude'
+  if (agentType === 'codex') return 'Codex'
+  return String(agentType)
+}
+
+function usageSnapshotFromSession(session: SessionState): RateLimitInfo | undefined {
+  if (!session.rateLimits) return undefined
+  const provider = usageProviderForAgent(session.agentType)
+  return {
+    ...session.rateLimits,
+    provider,
+    providerLabel: providerLabelForAgent(session.agentType, session.engineLabel),
+    source: session.rateLimits.source ?? 'agent-statusline',
+    updatedAt: session.rateLimits.updatedAt ?? Date.now(),
+    windows: session.rateLimits.windows && session.rateLimits.windows.length > 0
+      ? session.rateLimits.windows
+      : [
+        {
+          id: 'five_hour',
+          title: '5h',
+          usedPercent: session.rateLimits.fiveHourUsage,
+          remainingPercent: Math.max(0, 100 - session.rateLimits.fiveHourUsage),
+          remainingLabel: session.rateLimits.fiveHourRemaining,
+          windowMinutes: 300,
+        },
+        {
+          id: 'seven_day',
+          title: '7d',
+          usedPercent: session.rateLimits.sevenDayUsage,
+          remainingPercent: Math.max(0, 100 - session.rateLimits.sevenDayUsage),
+          remainingLabel: session.rateLimits.sevenDayRemaining,
+          windowMinutes: 10080,
+        },
+      ],
+  }
+}
+
+function sessionUsageSnapshots(sessions: SessionState[]): RateLimitInfo[] {
+  return sessions.map(usageSnapshotFromSession).filter(Boolean) as RateLimitInfo[]
+}
+
 function applyBackendConfig(config: BackendConfig) {
   const store = useConfigStore.getState()
   store.updateConfig('soundEnabled', config.soundEnabled)
@@ -248,6 +296,8 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('autoHide', config.autoHide)
   store.updateConfig('smartSuppression', config.smartSuppression)
   store.updateConfig('hideInFullscreen', config.hideInFullscreen ?? false)
+  store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
+  store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
   store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)
   store.updateConfig('displayMonitor', config.displayId)
   store.updateConfig('globalShortcut', config.globalShortcut)
@@ -337,6 +387,23 @@ function syncThemesFromBackend(configTheme?: string) {
   }).catch(e => console.error('[tauri] listThemes:', e))
 }
 
+function refreshUsageRateLimits() {
+  if (!useConfigStore.getState().usageQueryEnabled) return
+
+  getUsageSnapshots()
+    .then(async (snapshots) => {
+      if (snapshots.length > 0) {
+        useSessionStore.getState().setUsageSnapshots(snapshots)
+        return
+      }
+      const rateLimits = await getUsageRateLimits()
+      if (rateLimits) {
+        useSessionStore.getState().setUsageSnapshots([rateLimits])
+      }
+    })
+    .catch(e => console.error('[tauri] getUsageSnapshots:', e))
+}
+
 // ── Hooks ────────────────────────────────────────────────────────
 
 /** Listen for session-update events from the backend and sync sessionStore. */
@@ -345,14 +412,16 @@ export function useSessionEvents() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, 60_000)
 
     // Load initial sessions
     getSessions().then(sessions => {
       const transformed = sessions.map(transformSession)
       const store = useSessionStore.getState()
       store.replaceAllSessions(transformed)
-      const rateLimitSession = transformed.find((session) => session.rateLimits)
-      if (rateLimitSession?.rateLimits) store.setRateLimits(rateLimitSession.rateLimits)
+      const usageSnapshots = sessionUsageSnapshots(transformed)
+      if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
+      refreshUsageRateLimits()
     }).catch(e => console.error('[tauri] getSessions:', e))
 
     // Listen for live updates (dynamic import to avoid crash in browser dev mode)
@@ -361,10 +430,9 @@ export function useSessionEvents() {
         const store = useSessionStore.getState()
         const sessions = event.payload.sessions.map(transformSession)
         store.replaceAllSessions(sessions, { suppressed: event.payload.suppressed === true })
-        const rateLimitSession = sessions.find((session) => session.rateLimits)
-        if (rateLimitSession?.rateLimits) {
-          store.setRateLimits(rateLimitSession.rateLimits)
-        }
+        const usageSnapshots = sessionUsageSnapshots(sessions)
+        if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
+        refreshUsageRateLimits()
         // When suppressed, the backend signals that the user is looking at
         // the terminal — do NOT auto-expand the panel.
         if (event.payload.suppressed) {
@@ -379,7 +447,10 @@ export function useSessionEvents() {
         .catch(e => console.error('[tauri] listen session-update:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
-    return () => { unlisten?.() }
+    return () => {
+      window.clearInterval(usageRateLimitTimer)
+      unlisten?.()
+    }
   }, [])
 }
 

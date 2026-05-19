@@ -79,6 +79,7 @@ pub struct CacheTtlInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptSubagentInfo {
     pub agent_id: String,
+    pub launch_tool_use_id: Option<String>,
     pub name: Option<String>,
     pub agent_type: Option<String>,
     pub description: String,
@@ -834,6 +835,7 @@ pub fn extract_subagents_from_transcript(path: &Path) -> Vec<TranscriptSubagentI
             &mut subagents,
             TranscriptSubagentInfo {
                 agent_id: tool.tool_use_id,
+                launch_tool_use_id: None,
                 name: tool.name,
                 agent_type: tool.agent_type,
                 description: choose_subagent_description(&tool.description, &tool.prompt),
@@ -978,6 +980,7 @@ fn completed_subagent_from_json(
 
     Some(TranscriptSubagentInfo {
         agent_id: agent_id.clone(),
+        launch_tool_use_id: tool_use_id,
         name,
         agent_type,
         description,

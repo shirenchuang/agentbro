@@ -42,6 +42,12 @@ pub struct RawHookEvent {
     pub raw: serde_json::Value,
 }
 
+struct SubagentToolMetadata {
+    name: Option<String>,
+    description: String,
+    agent_type: Option<String>,
+}
+
 struct RawHookEventStore {
     next_seq: u64,
     by_session: HashMap<String, VecDeque<RawHookEvent>>,
@@ -260,7 +266,6 @@ impl HookServer {
             "health_check",
             "probe",
             "ping",
-            "codexbar",
             "healthcheck",
         ]
         .iter()
@@ -899,6 +904,8 @@ impl HookServer {
                 // Extract tool_use_id from raw event for tool tracking
                 let tool_use_id = _raw
                     .get("tool_use_id")
+                    .or_else(|| _raw.get("toolUseId"))
+                    .or_else(|| _raw.get("toolUseID"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -971,6 +978,48 @@ impl HookServer {
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
                             store.complete_tool(session_id, &tool_use_id, false, error_msg);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if Self::is_subagent_tool(tool_name) && !tool_use_id.is_empty() {
+                    match status.as_str() {
+                        "running" => {
+                            let metadata = Self::subagent_metadata_from_tool_input(_raw, tool_input);
+                            let transcript_path = Self::transcript_path_for_session(
+                                store,
+                                session_id,
+                                _raw,
+                            )
+                            .map(|path| path.to_string_lossy().to_string());
+                            store.add_subagent(
+                                session_id,
+                                &tool_use_id,
+                                metadata.name,
+                                &metadata.description,
+                                metadata.agent_type,
+                                transcript_path,
+                            );
+                            Self::refresh_subagents_from_transcript(store, session_id, _raw);
+                        }
+                        "success" => {
+                            Self::refresh_subagents_from_transcript(store, session_id, _raw);
+                        }
+                        "error" => {
+                            let metadata = Self::subagent_metadata_from_tool_input(_raw, tool_input);
+                            store.stop_subagent(
+                                session_id,
+                                &tool_use_id,
+                                SubagentStopUpdate {
+                                    status: "error".to_string(),
+                                    name: metadata.name,
+                                    agent_type: metadata.agent_type,
+                                    transcript_path: None,
+                                    agent_transcript_path: None,
+                                    last_assistant_message: None,
+                                },
+                            );
                         }
                         _ => {}
                     }
@@ -1093,12 +1142,12 @@ impl HookServer {
             } => {
                 store.set_rate_limits(
                     session_id,
-                    RateLimitInfo {
-                        five_hour_usage: *five_hour_usage,
-                        five_hour_remaining: five_hour_remaining.clone(),
-                        seven_day_usage: *seven_day_usage,
-                        seven_day_remaining: seven_day_remaining.clone(),
-                    },
+                    RateLimitInfo::legacy(
+                        *five_hour_usage,
+                        five_hour_remaining.clone(),
+                        *seven_day_usage,
+                        seven_day_remaining.clone(),
+                    ),
                     status_line_text.clone(),
                 );
                 let context_window =
@@ -1645,6 +1694,40 @@ impl HookServer {
         Self::useful_completion_text(extract_latest_assistant_text(&path).as_deref())
     }
 
+    fn is_subagent_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "Agent" | "Task")
+    }
+
+    fn subagent_metadata_from_tool_input(
+        raw: &serde_json::Value,
+        tool_input: &str,
+    ) -> SubagentToolMetadata {
+        let input = serde_json::from_str::<serde_json::Value>(tool_input)
+            .ok()
+            .or_else(|| raw.get("tool_input").cloned())
+            .unwrap_or(serde_json::Value::Null);
+
+        let field = |keys: &[&str]| -> Option<String> {
+            keys.iter()
+                .find_map(|key| input.get(*key).and_then(|value| value.as_str()))
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
+
+        let name = field(&["name", "agent_name", "agentName"]);
+        let prompt = field(&["prompt"]);
+        let description = field(&["description"])
+            .or_else(|| prompt.clone())
+            .unwrap_or_else(|| "Subagent".to_string());
+        let agent_type = field(&["agent_type", "agentType", "subagent_type", "subagentType"]);
+
+        SubagentToolMetadata {
+            name,
+            description,
+            agent_type,
+        }
+    }
+
     fn transcript_path_for_session(
         store: &SessionStore,
         session_id: &str,
@@ -1812,6 +1895,7 @@ impl HookServer {
         session: &mut super::session_store::SessionState,
         recovered: TranscriptSubagentInfo,
     ) {
+        let launch_tool_use_id = recovered.launch_tool_use_id.clone();
         let incoming = SubagentInfo {
             agent_id: recovered.agent_id,
             name: recovered.name,
@@ -1829,7 +1913,12 @@ impl HookServer {
         if let Some(existing) = session
             .subagents
             .iter_mut()
-            .find(|subagent| subagent.agent_id == incoming.agent_id)
+            .find(|subagent| {
+                subagent.agent_id == incoming.agent_id
+                    || launch_tool_use_id
+                        .as_deref()
+                        .is_some_and(|tool_use_id| subagent.agent_id == tool_use_id)
+            })
         {
             *existing = incoming;
         } else {
@@ -2020,5 +2109,73 @@ mod tests {
             .expect("permission request should create a session");
         assert_eq!(session.agent_type, "codex");
         assert_eq!(session.project, "my-project");
+    }
+
+    #[test]
+    fn parses_running_agent_tool_metadata_for_subagent_rows() {
+        let raw = serde_json::json!({
+            "tool_input": {
+                "name": "calc-a",
+                "description": "计算 1+1",
+                "prompt": "请计算 1+1 等于几",
+                "agentType": "general-purpose"
+            }
+        });
+
+        let metadata = HookServer::subagent_metadata_from_tool_input(&raw, "");
+
+        assert_eq!(metadata.name.as_deref(), Some("calc-a"));
+        assert_eq!(metadata.description, "计算 1+1");
+        assert_eq!(metadata.agent_type.as_deref(), Some("general-purpose"));
+    }
+
+    #[test]
+    fn recovered_subagent_replaces_running_tool_placeholder() {
+        let mut session = crate::hooks::session_store::SessionState::new(
+            "s1".to_string(),
+            "claude-code".to_string(),
+            "agentbro".to_string(),
+            "/tmp/agentbro".to_string(),
+            "iTerm".to_string(),
+        );
+        session.subagents.push(SubagentInfo {
+            agent_id: "toolu-1".to_string(),
+            name: Some("calc-a".to_string()),
+            agent_type: Some("general-purpose".to_string()),
+            description: "计算 1+1".to_string(),
+            transcript_path: Some("/tmp/main.jsonl".to_string()),
+            agent_transcript_path: None,
+            last_assistant_message: None,
+            started_at: 10,
+            completed_at: None,
+            status: "running".to_string(),
+            tools: Vec::new(),
+        });
+
+        HookServer::merge_recovered_subagent(
+            &mut session,
+            TranscriptSubagentInfo {
+                agent_id: "agent-a123".to_string(),
+                launch_tool_use_id: Some("toolu-1".to_string()),
+                name: Some("calc-a".to_string()),
+                agent_type: Some("general-purpose".to_string()),
+                description: "计算 1+1".to_string(),
+                transcript_path: Some("/tmp/main.jsonl".to_string()),
+                agent_transcript_path: Some("/tmp/agent-a123.jsonl".to_string()),
+                last_assistant_message: Some("2".to_string()),
+                started_at: 10,
+                completed_at: Some(20),
+                status: "completed".to_string(),
+                tools: Vec::new(),
+            },
+        );
+
+        assert_eq!(session.subagents.len(), 1);
+        assert_eq!(session.subagents[0].agent_id, "agent-a123");
+        assert_eq!(session.subagents[0].status, "completed");
+        assert_eq!(
+            session.subagents[0].agent_transcript_path.as_deref(),
+            Some("/tmp/agent-a123.jsonl")
+        );
     }
 }

@@ -15,13 +15,16 @@ use crate::hooks::conversation_parser::{
 use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
-use crate::hooks::session_store::{SessionState, SessionStore, SubagentInfo};
+use crate::hooks::session_store::{
+    RateLimitInfo, SessionState, SessionStore, SubagentInfo, UsageRateWindow,
+};
 use crate::license::{LicenseManager, LicenseStatus};
 use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
-use std::io::Write;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -56,6 +59,555 @@ pub async fn get_sessions(state: State<'_, AppState>) -> Result<Vec<SessionState
         hydrate_subagents_for_session(&state.session_store, session);
     }
     Ok(state.session_store.get_all_sessions())
+}
+
+#[tauri::command]
+pub async fn get_usage_rate_limits(state: State<'_, AppState>) -> Result<Option<RateLimitInfo>, String> {
+    if !state.config_store.get().usage_query_enabled {
+        return Ok(None);
+    }
+    Ok(load_latest_usage_rate_limits())
+}
+
+#[tauri::command]
+pub async fn get_usage_snapshots(state: State<'_, AppState>) -> Result<Vec<RateLimitInfo>, String> {
+    if !state.config_store.get().usage_query_enabled {
+        return Ok(Vec::new());
+    }
+    Ok(load_usage_snapshots())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProviderStatus {
+    provider: String,
+    label: String,
+    enabled: bool,
+    available: bool,
+    catalog_supported: bool,
+    implementation_status: String,
+    source: Option<String>,
+    detail: String,
+    auth_status: String,
+    auth_path: Option<String>,
+    can_authorize: bool,
+}
+
+#[tauri::command]
+pub async fn list_usage_providers(state: State<'_, AppState>) -> Result<Vec<UsageProviderStatus>, String> {
+    let enabled = state.config_store.get().usage_query_enabled;
+    let mut providers = vec![
+        codex_usage_provider_status(enabled),
+        claude_usage_provider_status(enabled),
+    ];
+    providers.extend(catalog_supported_agent_usage_providers(enabled));
+    providers.extend(catalog_unsupported_agent_usage_providers(enabled));
+    Ok(providers)
+}
+
+#[tauri::command]
+pub async fn authorize_usage_provider(provider: String) -> Result<(), String> {
+    let (binary, args): (&str, &[&str]) = match provider.as_str() {
+        "codex" => ("codex", &["login"]),
+        "claude-code" | "claude" => ("claude", &["login"]),
+        "gemini" | "gemini-cli" => ("gemini", &["auth"]),
+        "copilot" => ("gh", &["auth", "login"]),
+        "kiro" => ("kiro-cli", &["login"]),
+        _ => return Err(format!("Unsupported usage provider: {provider}")),
+    };
+
+    let Some(binary_path) = find_binary(binary) else {
+        return Err(format!("{} CLI not found in PATH.", binary));
+    };
+    let command = std::iter::once(shell_quote(&binary_path))
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cwd = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .to_string_lossy()
+        .to_string();
+    launch_in_terminal("Terminal", &cwd, &command)
+}
+
+struct UsageRateLimitSnapshot {
+    rate_limits: RateLimitInfo,
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn load_usage_snapshots() -> Vec<RateLimitInfo> {
+    [load_codex_usage_rate_limits(), load_claude_usage_rate_limits()]
+        .into_iter()
+        .flatten()
+        .map(|snapshot| snapshot.rate_limits)
+        .collect()
+}
+
+fn codex_usage_provider_status(enabled: bool) -> UsageProviderStatus {
+    let auth_path = dirs::home_dir().map(|home| home.join(".codex").join("auth.json"));
+    let has_auth = auth_path.as_ref().is_some_and(|path| path.exists());
+    let snapshot = load_codex_usage_rate_limits();
+    let source = snapshot
+        .as_ref()
+        .and_then(|item| item.rate_limits.source.clone());
+    let updated = snapshot
+        .as_ref()
+        .and_then(|item| item.captured_at)
+        .map(|date| format!(" updated {}", date.format("%H:%M:%S")))
+        .unwrap_or_default();
+    UsageProviderStatus {
+        provider: "codex".to_string(),
+        label: "Codex".to_string(),
+        enabled,
+        available: snapshot.is_some(),
+        catalog_supported: true,
+        implementation_status: "active".to_string(),
+        source,
+        detail: if snapshot.is_some() {
+            format!("Local Codex session rate limits found.{updated}")
+        } else if has_auth {
+            "Codex auth found, waiting for local rate-limit events.".to_string()
+        } else {
+            "No Codex auth or local rate-limit events found.".to_string()
+        },
+        auth_status: if has_auth { "authorized" } else { "missing" }.to_string(),
+        auth_path: auth_path.map(|path| path.display().to_string()),
+        can_authorize: find_binary("codex").is_some(),
+    }
+}
+
+fn claude_usage_provider_status(enabled: bool) -> UsageProviderStatus {
+    let auth_path = dirs::home_dir().map(|home| home.join(".claude").join(".credentials.json"));
+    let has_auth = auth_path.as_ref().is_some_and(|path| path.exists());
+    let temp_path = Path::new("/tmp/island-rate-limits.json");
+    let has_temp = temp_path.exists();
+    let snapshot = load_claude_usage_rate_limits();
+    let source = snapshot
+        .as_ref()
+        .and_then(|item| item.rate_limits.source.clone());
+    UsageProviderStatus {
+        provider: "claude-code".to_string(),
+        label: "Claude Code".to_string(),
+        enabled,
+        available: snapshot.is_some(),
+        catalog_supported: true,
+        implementation_status: "active".to_string(),
+        source,
+        detail: if snapshot.is_some() {
+            "Claude island/statusline rate limits found.".to_string()
+        } else if has_temp {
+            "Claude rate-limit file exists but could not be parsed.".to_string()
+        } else if has_auth {
+            "Claude credentials found, waiting for statusline rate-limit data.".to_string()
+        } else {
+            "No Claude credentials or rate-limit statusline data found.".to_string()
+        },
+        auth_status: if has_auth { "authorized" } else { "missing" }.to_string(),
+        auth_path: auth_path.map(|path| path.display().to_string()),
+        can_authorize: find_binary("claude").is_some(),
+    }
+}
+
+fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
+    [
+        ("gemini-cli", "Gemini CLI", "Gemini", "api/oauth", Some("~/.gemini"), find_binary("gemini").is_some()),
+        ("cursor", "Cursor", "Cursor", "web/cookies", Some("~/.cursor"), false),
+        ("cursor-cli", "Cursor CLI", "Cursor", "web/cookies", Some("~/.cursor"), false),
+        ("copilot", "GitHub Copilot", "Copilot", "api/device-flow", None, find_binary("gh").is_some()),
+        ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
+        ("opencode", "OpenCode", "OpenCode", "web/cookies", Some("~/.opencode"), false),
+        ("droid", "Factory / Droid", "Droid/Factory", "web/local-storage", Some("~/.factory"), false),
+        ("stepfun", "StepFun", "StepFun", "web/token", None, false),
+        ("antigravity", "Antigravity", "Antigravity", "local-probe", None, false),
+        ("kiro", "Kiro", "Kiro", "cli", Some("~/.kiro"), find_binary("kiro-cli").is_some()),
+    ]
+    .into_iter()
+    .map(|(provider, label, source_name, source, auth_path, can_authorize)| {
+        known_provider_status(
+            enabled,
+            provider,
+            label,
+            true,
+            "available",
+            source,
+            &format!("{source_name} has a known usage strategy; AgentBro usage reader is not wired yet."),
+            "unknown",
+            auth_path,
+            can_authorize,
+        )
+    })
+    .collect()
+}
+
+fn catalog_unsupported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
+    [
+        ("trae", "Trae"),
+        ("traecli", "Trae CLI"),
+        ("traecn", "Trae CN"),
+        ("qoder", "Qoder"),
+        ("qoder-cli", "Qoder CLI"),
+        ("codebuddy", "CodeBuddy"),
+        ("codebuddycn", "CodeBuddy CN"),
+        ("qwen", "Qwen"),
+        ("workbuddy", "WorkBuddy"),
+        ("hermes", "Hermes"),
+        ("pi", "Pi"),
+    ]
+    .into_iter()
+    .map(|(provider, label)| {
+        known_provider_status(
+            enabled,
+            provider,
+            label,
+            false,
+            "unsupported",
+            None,
+            "No usage reader is available for this Agent yet.",
+            "unknown",
+            None,
+            false,
+        )
+    })
+    .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn known_provider_status(
+    enabled: bool,
+    provider: &str,
+    label: &str,
+    catalog_supported: bool,
+    implementation_status: &str,
+    source: impl Into<Option<&'static str>>,
+    detail: &str,
+    auth_status: &str,
+    auth_path: impl Into<Option<&'static str>>,
+    can_authorize: bool,
+) -> UsageProviderStatus {
+    let auth_path = auth_path
+        .into()
+        .and_then(|path| expand_home_path(path).map(|path| path.display().to_string()));
+    UsageProviderStatus {
+        provider: provider.to_string(),
+        label: label.to_string(),
+        enabled,
+        available: false,
+        catalog_supported,
+        implementation_status: implementation_status.to_string(),
+        source: source.into().map(str::to_string),
+        detail: detail.to_string(),
+        auth_status: auth_status.to_string(),
+        auth_path,
+        can_authorize,
+    }
+}
+
+fn expand_home_path(path: &str) -> Option<PathBuf> {
+    if path == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(rest));
+    }
+    Some(PathBuf::from(path))
+}
+
+fn load_latest_usage_rate_limits() -> Option<RateLimitInfo> {
+    let codex = load_codex_usage_rate_limits();
+    let claude = load_claude_usage_rate_limits();
+
+    match (codex, claude) {
+        (Some(codex), Some(claude)) => {
+            let codex_time = codex.captured_at.unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+            let claude_time = claude.captured_at.unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+            Some(if codex_time >= claude_time {
+                codex.rate_limits
+            } else {
+                claude.rate_limits
+            })
+        }
+        (Some(codex), None) => Some(codex.rate_limits),
+        (None, Some(claude)) => Some(claude.rate_limits),
+        (None, None) => None,
+    }
+}
+
+fn load_claude_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
+    let path = Path::new("/tmp/island-rate-limits.json");
+    let content = fs::read_to_string(path).ok()?;
+    let payload: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let metadata_time = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(chrono::DateTime::<chrono::Utc>::from);
+
+    let five_hour = payload.get("five_hour").or_else(|| payload.get("fiveHour"))?;
+    let seven_day = payload.get("seven_day").or_else(|| payload.get("sevenDay"))?;
+    let captured_at = metadata_time;
+
+    Some(UsageRateLimitSnapshot {
+        rate_limits: provider_rate_limits(
+            "claude-code",
+            "Claude",
+            "claude-island",
+            captured_at,
+            five_hour,
+            seven_day,
+        )?,
+        captured_at,
+    })
+}
+
+fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
+    let root = dirs::home_dir()?.join(".codex").join("sessions");
+    let mut candidates = Vec::new();
+    collect_codex_rollout_files(&root, &mut candidates);
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+
+    let mut best: Option<UsageRateLimitSnapshot> = None;
+    for (path, modified_at) in candidates.into_iter().take(40) {
+        let Some(snapshot) = load_codex_usage_rate_limits_from_file(&path, modified_at) else {
+            continue;
+        };
+        let snapshot_time = snapshot
+            .captured_at
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        let best_time = best
+            .as_ref()
+            .and_then(|candidate| candidate.captured_at)
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        if snapshot_time >= best_time {
+            best = Some(snapshot);
+        }
+    }
+    best
+}
+
+fn collect_codex_rollout_files(root: &Path, candidates: &mut Vec<(PathBuf, std::time::SystemTime)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+
+        if metadata.is_dir() {
+            collect_codex_rollout_files(&path, candidates);
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with("rollout-") && path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            candidates.push((path, metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)));
+        }
+    }
+}
+
+fn load_codex_usage_rate_limits_from_file(
+    path: &Path,
+    modified_at: std::time::SystemTime,
+) -> Option<UsageRateLimitSnapshot> {
+    let file = fs::File::open(path).ok()?;
+    let fallback_time = chrono::DateTime::<chrono::Utc>::from(modified_at);
+    let mut latest: Option<UsageRateLimitSnapshot> = None;
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Some(snapshot) = codex_usage_snapshot_from_line(&line, fallback_time) else {
+            continue;
+        };
+        latest = Some(snapshot);
+    }
+
+    latest
+}
+
+fn codex_usage_snapshot_from_line(
+    line: &str,
+    fallback_time: chrono::DateTime<chrono::Utc>,
+) -> Option<UsageRateLimitSnapshot> {
+    let object: serde_json::Value = serde_json::from_str(line).ok()?;
+    if object.get("type").and_then(|value| value.as_str()) != Some("event_msg") {
+        return None;
+    }
+
+    let payload = object.get("payload")?;
+    if payload.get("type").and_then(|value| value.as_str()) != Some("token_count") {
+        return None;
+    }
+
+    let rate_limits = payload.get("rate_limits")?;
+    let primary = rate_limits.get("primary")?;
+    let secondary = rate_limits.get("secondary")?;
+    let (five_hour, seven_day) = if window_minutes(primary).unwrap_or(0) >= 1_440 {
+        (secondary, primary)
+    } else {
+        (primary, secondary)
+    };
+
+    Some(UsageRateLimitSnapshot {
+        rate_limits: provider_rate_limits(
+            "codex",
+            "Codex",
+            "codex-jsonl",
+            object
+                .get("timestamp")
+                .and_then(date_from_value)
+                .or(Some(fallback_time)),
+            five_hour,
+            seven_day,
+        )?,
+        captured_at: object
+            .get("timestamp")
+            .and_then(date_from_value)
+            .or(Some(fallback_time)),
+    })
+}
+
+fn provider_rate_limits(
+    provider: &str,
+    provider_label: &str,
+    source: &str,
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
+    five_hour: &serde_json::Value,
+    seven_day: &serde_json::Value,
+) -> Option<RateLimitInfo> {
+    let five_hour_usage = used_percentage(five_hour)?;
+    let seven_day_usage = used_percentage(seven_day)?;
+    Some(RateLimitInfo {
+        five_hour_usage,
+        five_hour_remaining: remaining_label(five_hour),
+        seven_day_usage,
+        seven_day_remaining: remaining_label(seven_day),
+        provider: Some(provider.to_string()),
+        provider_label: Some(provider_label.to_string()),
+        source: Some(source.to_string()),
+        updated_at: captured_at.map(|date| date.timestamp_millis()),
+        windows: vec![
+            usage_window("five_hour", "5h", five_hour, Some(300))?,
+            usage_window("seven_day", "7d", seven_day, Some(10_080))?,
+        ],
+    })
+}
+
+fn usage_window(
+    id: &str,
+    title: &str,
+    value: &serde_json::Value,
+    fallback_minutes: Option<i64>,
+) -> Option<UsageRateWindow> {
+    let used_percent = used_percentage(value)?;
+    Some(UsageRateWindow {
+        id: id.to_string(),
+        title: title.to_string(),
+        used_percent,
+        remaining_percent: Some((100.0 - used_percent).clamp(0.0, 100.0)),
+        remaining_label: Some(remaining_label(value)).filter(|text| !text.is_empty()),
+        resets_at: reset_at_iso(value),
+        window_minutes: window_minutes(value).or(fallback_minutes),
+    })
+}
+
+fn usage_percentage(value: &serde_json::Value) -> Option<f64> {
+    number_field(value, "used_percentage")
+        .or_else(|| number_field(value, "usedPercentage"))
+        .or_else(|| number_field(value, "utilization"))
+}
+
+fn used_percentage(value: &serde_json::Value) -> Option<f64> {
+    usage_percentage(value).or_else(|| number_field(value, "used_percent"))
+}
+
+fn window_minutes(value: &serde_json::Value) -> Option<i64> {
+    value
+        .get("window_minutes")
+        .or_else(|| value.get("windowMinutes"))
+        .and_then(number_from_value)
+        .map(|value| value as i64)
+}
+
+fn reset_at_iso(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("resets_at")
+        .or_else(|| value.get("resetsAt"))
+        .and_then(date_from_value)
+        .map(|date| date.to_rfc3339())
+}
+
+fn number_field(value: &serde_json::Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(number_from_value)
+}
+
+fn number_from_value(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+}
+
+fn remaining_label(value: &serde_json::Value) -> String {
+    if let Some(text) = value
+        .get("remaining")
+        .or_else(|| value.get("remainingLabel"))
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.trim().is_empty())
+    {
+        return text.to_string();
+    }
+
+    value
+        .get("resets_at")
+        .or_else(|| value.get("resetsAt"))
+        .and_then(date_from_value)
+        .and_then(|date| format_remaining_duration(date, chrono::Utc::now()))
+        .unwrap_or_default()
+}
+
+fn date_from_value(value: &serde_json::Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Some(seconds) = number_from_value(value) {
+        return chrono::DateTime::<chrono::Utc>::from_timestamp(seconds as i64, 0);
+    }
+
+    let text = value.as_str()?.trim();
+    if let Ok(seconds) = text.parse::<f64>() {
+        return chrono::DateTime::<chrono::Utc>::from_timestamp(seconds as i64, 0);
+    }
+
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|date| date.with_timezone(&chrono::Utc))
+}
+
+fn format_remaining_duration(
+    reset_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let seconds = reset_at.signed_duration_since(now).num_seconds();
+    if seconds <= 0 {
+        return None;
+    }
+
+    let total_minutes = seconds / 60;
+    let days = total_minutes / 1_440;
+    let hours = (total_minutes % 1_440) / 60;
+    let minutes = total_minutes % 60;
+
+    if days > 0 && hours > 0 {
+        Some(format!("{days}d{hours}h"))
+    } else if days > 0 {
+        Some(format!("{days}d"))
+    } else if hours > 0 && minutes > 0 {
+        Some(format!("{hours}h{minutes}m"))
+    } else if hours > 0 {
+        Some(format!("{hours}h"))
+    } else if minutes > 0 {
+        Some(format!("{minutes}m"))
+    } else {
+        Some("<1m".to_string())
+    }
 }
 
 #[tauri::command]
@@ -1653,6 +2205,7 @@ fn hydrate_subagents_from_file(store: &SessionStore, session_id: &str, file_path
 }
 
 fn merge_subagent(session: &mut SessionState, recovered: TranscriptSubagentInfo) {
+    let launch_tool_use_id = recovered.launch_tool_use_id.clone();
     let incoming = SubagentInfo {
         agent_id: recovered.agent_id,
         name: recovered.name,
@@ -1670,7 +2223,12 @@ fn merge_subagent(session: &mut SessionState, recovered: TranscriptSubagentInfo)
     if let Some(existing) = session
         .subagents
         .iter_mut()
-        .find(|item| item.agent_id == incoming.agent_id)
+        .find(|item| {
+            item.agent_id == incoming.agent_id
+                || launch_tool_use_id
+                    .as_deref()
+                    .is_some_and(|tool_use_id| item.agent_id == tool_use_id)
+        })
     {
         *existing = incoming;
     } else {

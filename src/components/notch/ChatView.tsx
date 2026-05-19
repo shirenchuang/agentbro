@@ -220,8 +220,12 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }
 
   const handleOpenSubagentHistory = useCallback((subagent: SubagentInfo) => {
     if (!activeSessionId || !subagent.agentTranscriptPath) return
-    const title = subagent.name ? `@${subagent.name}` : (subagent.agentType || 'Subagent')
-    const subtitle = subagent.description || subagent.lastAssistantMessage
+    const title = subagent.name
+      ? `@${subagent.name}`
+      : (subagent.description || subagent.agentType || 'Subagent')
+    const subtitle = subagent.name
+      ? (subagent.description || subagent.agentType)
+      : (subagent.description ? subagent.agentType : undefined)
     setSubagentHistory({
       sessionId: activeSessionId,
       agentId: subagent.agentId,
@@ -357,7 +361,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }
         </button>
       )}
 
-      {sendError && (
+      {!currentSubagentHistory && sendError && (
         <div className="chat-view__send-error">
           <span>{sendError}</span>
           <button type="button" onClick={() => setSendError(null)}>
@@ -366,14 +370,16 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }
         </div>
       )}
 
-      <ApprovalBar
-        session={activeSession}
-        onAllow={handleAllow}
-        onAllowAlways={handleAllowAlways}
-        onDeny={handleDeny}
-        onAutoApprove={handleAutoApprove}
-        onSendMessage={handleSend}
-      />
+      {!currentSubagentHistory && (
+        <ApprovalBar
+          session={activeSession}
+          onAllow={handleAllow}
+          onAllowAlways={handleAllowAlways}
+          onDeny={handleDeny}
+          onAutoApprove={handleAutoApprove}
+          onSendMessage={handleSend}
+        />
+      )}
 
       <TokenBar tokens={activeSession.tokens} />
     </div>

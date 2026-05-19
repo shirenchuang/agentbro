@@ -28,6 +28,7 @@ interface SessionStore {
   activeSessionId: string | null
   panelState: PanelState
   rateLimits?: RateLimitInfo
+  usageSnapshots: Record<string, RateLimitInfo>
   hookNotification: 'restored' | 'rate_limited' | null
   // Layered state machine
   baseLayer: BaseLayer
@@ -51,6 +52,7 @@ interface SessionStore {
   clearQuestion: (sessionId: string) => void
   clearPlan: (sessionId: string) => void
   setRateLimits: (limits: RateLimitInfo) => void
+  setUsageSnapshots: (limits: RateLimitInfo[]) => void
   setHookNotification: (notification: 'restored' | 'rate_limited' | null) => void
   applyIdleTimeout: (now?: number) => void
   muteSession: (id: string, durationMs?: number) => void
@@ -144,7 +146,6 @@ function isProbeSession(session: SessionState): boolean {
   if (!normalized) return false
   return normalized.includes('claudeprobe')
     || normalized.includes('healthcheck')
-    || normalized.includes('codexbar')
     || /\bprobe\b/i.test(fields.filter(Boolean).join(' '))
 }
 
@@ -280,6 +281,7 @@ export const selectActiveSession = (s: SessionStore): SessionState | undefined =
 export const selectPanelState = (s: SessionStore) => s.panelState
 export const selectActiveSessionId = (s: SessionStore) => s.activeSessionId
 export const selectRateLimits = (s: SessionStore) => s.rateLimits
+export const selectUsageSnapshots = (s: SessionStore) => s.usageSnapshots
 export const selectBaseLayer = (s: SessionStore) => s.baseLayer
 export const selectActiveOverlay = (s: SessionStore) => s.activeOverlay
 export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
@@ -290,6 +292,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
   activeSessionId: null,
   panelState: 'collapsed',
   rateLimits: undefined,
+  usageSnapshots: {},
   hookNotification: null,
   baseLayer: 'compact',
   overlayQueue: [],
@@ -875,6 +878,20 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
   setRateLimits: (limits) => {
     set({ rateLimits: limits })
+  },
+
+  setUsageSnapshots: (limits) => {
+    set((state) => {
+      const usageSnapshots = { ...state.usageSnapshots }
+      for (const limit of limits) {
+        if (!limit.provider) continue
+        usageSnapshots[limit.provider] = limit
+      }
+      return {
+        usageSnapshots,
+        rateLimits: limits[0] ?? state.rateLimits,
+      }
+    })
   },
 
   setHookNotification: (notification) => {

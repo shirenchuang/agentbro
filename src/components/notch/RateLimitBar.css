@@ -10,7 +10,7 @@
 }
 
 .rate-limit__segment {
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .rate-limit__segment--green {

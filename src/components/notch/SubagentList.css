@@ -75,11 +75,37 @@
   color: var(--island-text);
 }
 
-.subagent-row__desc {
+.subagent-row__main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   flex: 1;
+  min-width: 0;
+}
+
+.subagent-row__name,
+.subagent-row__desc,
+.subagent-row__result {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.subagent-row__name {
+  flex-shrink: 0;
+  color: var(--island-text-secondary);
+}
+
+.subagent-row__desc {
+  min-width: 0;
+  color: var(--island-text-muted);
+}
+
+.subagent-row__result {
+  max-width: 120px;
+  flex-shrink: 1;
+  color: var(--island-text-muted);
+  font-size: 10px;
 }
 
 .subagent-row__tool {

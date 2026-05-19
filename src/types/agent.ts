@@ -87,11 +87,26 @@ export interface AskQuestion {
   }>
 }
 
+export interface UsageRateWindow {
+  id: string
+  title: string
+  usedPercent: number
+  remainingPercent?: number | null
+  remainingLabel?: string
+  resetsAt?: string | null
+  windowMinutes?: number | null
+}
+
 export interface RateLimitInfo {
   fiveHourUsage: number     // percentage 0-100
   fiveHourRemaining: string // "1d6h" format
   sevenDayUsage: number
   sevenDayRemaining: string
+  provider?: AgentType | string
+  providerLabel?: string
+  source?: string
+  updatedAt?: number
+  windows?: UsageRateWindow[]
 }
 
 export interface ContextWindowInfo {

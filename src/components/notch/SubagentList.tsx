@@ -55,11 +55,9 @@ function SubagentRow({ agent, onOpenHistory }: { agent: SubagentInfo; onOpenHist
 
   const lastTool = agent.tools.length > 0 ? agent.tools[agent.tools.length - 1] : null
   const canOpenHistory = Boolean(agent.agentTranscriptPath && onOpenHistory)
-  const displayName = agent.name ? `@${agent.name}` : (agent.agentType || `@${agent.agentId.slice(0, 8)}`)
-  const title = agent.description
-    ? `${displayName} ${agent.description}`
-    : displayName
-  const summary = agent.status !== 'running' ? agent.lastAssistantMessage : null
+  const displayName = agent.name ? `@${agent.name}` : (agent.description || agent.agentType || `@${agent.agentId.slice(0, 8)}`)
+  const detail = agent.name && agent.description ? agent.description : null
+  const result = agent.status !== 'running' ? agent.lastAssistantMessage : null
 
   return (
     <button
@@ -70,9 +68,11 @@ function SubagentRow({ agent, onOpenHistory }: { agent: SubagentInfo; onOpenHist
       title={canOpenHistory ? 'Open subagent history' : undefined}
     >
       <StatusDot phase={phaseForDot} size={6} />
-      <span className="subagent-row__desc">
-        {summary || title}
+      <span className="subagent-row__main">
+        <span className="subagent-row__name">{displayName}</span>
+        {detail && <span className="subagent-row__desc">{detail}</span>}
       </span>
+      {result && <span className="subagent-row__result">{result}</span>}
       {agent.status === 'running' && lastTool && (
         <span className="subagent-row__tool">
           <span className="subagent-row__spinner" />
