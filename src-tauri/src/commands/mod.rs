@@ -24,12 +24,15 @@ use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::State;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+use tokio::process::{ChildStdin, ChildStdout, Command as TokioCommand};
 
 /// Shared app state accessible from Tauri commands
 pub struct AppState {
@@ -62,11 +65,13 @@ pub async fn get_sessions(state: State<'_, AppState>) -> Result<Vec<SessionState
 }
 
 #[tauri::command]
-pub async fn get_usage_rate_limits(state: State<'_, AppState>) -> Result<Option<RateLimitInfo>, String> {
+pub async fn get_usage_rate_limits(
+    state: State<'_, AppState>,
+) -> Result<Option<RateLimitInfo>, String> {
     if !state.config_store.get().usage_query_enabled {
         return Ok(None);
     }
-    Ok(load_latest_usage_rate_limits())
+    Ok(load_latest_usage_rate_limits().await)
 }
 
 #[tauri::command]
@@ -74,7 +79,7 @@ pub async fn get_usage_snapshots(state: State<'_, AppState>) -> Result<Vec<RateL
     if !state.config_store.get().usage_query_enabled {
         return Ok(Vec::new());
     }
-    Ok(load_usage_snapshots())
+    Ok(load_usage_snapshots().await)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -94,10 +99,12 @@ pub struct UsageProviderStatus {
 }
 
 #[tauri::command]
-pub async fn list_usage_providers(state: State<'_, AppState>) -> Result<Vec<UsageProviderStatus>, String> {
+pub async fn list_usage_providers(
+    state: State<'_, AppState>,
+) -> Result<Vec<UsageProviderStatus>, String> {
     let enabled = state.config_store.get().usage_query_enabled;
     let mut providers = vec![
-        codex_usage_provider_status(enabled),
+        codex_usage_provider_status(enabled).await,
         claude_usage_provider_status(enabled),
     ];
     providers.extend(catalog_supported_agent_usage_providers(enabled));
@@ -135,18 +142,21 @@ struct UsageRateLimitSnapshot {
     captured_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-fn load_usage_snapshots() -> Vec<RateLimitInfo> {
-    [load_codex_usage_rate_limits(), load_claude_usage_rate_limits()]
-        .into_iter()
-        .flatten()
-        .map(|snapshot| snapshot.rate_limits)
-        .collect()
+async fn load_usage_snapshots() -> Vec<RateLimitInfo> {
+    [
+        load_codex_usage_rate_limits().await,
+        load_claude_usage_rate_limits(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|snapshot| snapshot.rate_limits)
+    .collect()
 }
 
-fn codex_usage_provider_status(enabled: bool) -> UsageProviderStatus {
+async fn codex_usage_provider_status(enabled: bool) -> UsageProviderStatus {
     let auth_path = dirs::home_dir().map(|home| home.join(".codex").join("auth.json"));
     let has_auth = auth_path.as_ref().is_some_and(|path| path.exists());
-    let snapshot = load_codex_usage_rate_limits();
+    let snapshot = load_codex_usage_rate_limits().await;
     let source = snapshot
         .as_ref()
         .and_then(|item| item.rate_limits.source.clone());
@@ -164,11 +174,11 @@ fn codex_usage_provider_status(enabled: bool) -> UsageProviderStatus {
         implementation_status: "active".to_string(),
         source,
         detail: if snapshot.is_some() {
-            format!("Local Codex session rate limits found.{updated}")
+            format!("Codex account rate limits found.{updated}")
         } else if has_auth {
-            "Codex auth found, waiting for local rate-limit events.".to_string()
+            "Codex auth found, waiting for account quota data.".to_string()
         } else {
-            "No Codex auth or local rate-limit events found.".to_string()
+            "No Codex auth or account quota data found.".to_string()
         },
         auth_status: if has_auth { "authorized" } else { "missing" }.to_string(),
         auth_path: auth_path.map(|path| path.display().to_string()),
@@ -314,14 +324,18 @@ fn expand_home_path(path: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
-fn load_latest_usage_rate_limits() -> Option<RateLimitInfo> {
-    let codex = load_codex_usage_rate_limits();
+async fn load_latest_usage_rate_limits() -> Option<RateLimitInfo> {
+    let codex = load_codex_usage_rate_limits().await;
     let claude = load_claude_usage_rate_limits();
 
     match (codex, claude) {
         (Some(codex), Some(claude)) => {
-            let codex_time = codex.captured_at.unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
-            let claude_time = claude.captured_at.unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+            let codex_time = codex
+                .captured_at
+                .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+            let claude_time = claude
+                .captured_at
+                .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
             Some(if codex_time >= claude_time {
                 codex.rate_limits
             } else {
@@ -343,8 +357,12 @@ fn load_claude_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
         .and_then(|metadata| metadata.modified().ok())
         .map(chrono::DateTime::<chrono::Utc>::from);
 
-    let five_hour = payload.get("five_hour").or_else(|| payload.get("fiveHour"))?;
-    let seven_day = payload.get("seven_day").or_else(|| payload.get("sevenDay"))?;
+    let five_hour = payload
+        .get("five_hour")
+        .or_else(|| payload.get("fiveHour"))?;
+    let seven_day = payload
+        .get("seven_day")
+        .or_else(|| payload.get("sevenDay"))?;
     let captured_at = metadata_time;
 
     Some(UsageRateLimitSnapshot {
@@ -360,7 +378,125 @@ fn load_claude_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
     })
 }
 
-fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
+async fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
+    load_codex_usage_rate_limits_live()
+        .await
+        .or_else(load_codex_usage_rate_limits_from_jsonl)
+}
+
+async fn load_codex_usage_rate_limits_live() -> Option<UsageRateLimitSnapshot> {
+    let binary = find_binary("codex")?;
+    let mut child = TokioCommand::new(binary)
+        .args(["-s", "read-only", "-a", "untrusted", "app-server"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let mut lines = TokioBufReader::new(stdout).lines();
+
+    let result = tokio::time::timeout(Duration::from_secs(8), async {
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "AgentBro",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }
+            }),
+        )
+        .await?;
+        read_json_rpc_response(&mut lines, 1).await?;
+
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "method": "initialized",
+                "params": {}
+            }),
+        )
+        .await?;
+
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "id": 2,
+                "method": "account/rateLimits/read",
+                "params": {}
+            }),
+        )
+        .await?;
+        let response = read_json_rpc_response(&mut lines, 2).await?;
+        codex_usage_snapshot_from_rpc_message(&response)
+    })
+    .await
+    .ok()
+    .flatten();
+
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    result
+}
+
+async fn write_json_rpc(stdin: &mut ChildStdin, payload: serde_json::Value) -> Option<()> {
+    let mut line = serde_json::to_vec(&payload).ok()?;
+    line.push(b'\n');
+    stdin.write_all(&line).await.ok()?;
+    stdin.flush().await.ok()?;
+    Some(())
+}
+
+async fn read_json_rpc_response(
+    lines: &mut tokio::io::Lines<TokioBufReader<ChildStdout>>,
+    expected_id: i64,
+) -> Option<serde_json::Value> {
+    while let Some(line) = lines.next_line().await.ok()? {
+        let value: serde_json::Value = serde_json::from_str(&line).ok()?;
+        if value.get("id").and_then(|id| id.as_i64()) != Some(expected_id) {
+            continue;
+        }
+        if value.get("error").is_some() {
+            return None;
+        }
+        return Some(value);
+    }
+    None
+}
+
+fn codex_usage_snapshot_from_rpc_message(
+    message: &serde_json::Value,
+) -> Option<UsageRateLimitSnapshot> {
+    let rate_limits = message
+        .get("result")?
+        .get("rateLimits")
+        .or_else(|| message.get("result")?.get("rate_limits"))?;
+    let (five_hour, seven_day) = codex_window_pair(rate_limits)?;
+    let captured_at = Some(chrono::Utc::now());
+
+    Some(UsageRateLimitSnapshot {
+        rate_limits: provider_rate_limits(
+            "codex",
+            "Codex",
+            "codex-cli",
+            captured_at,
+            five_hour,
+            seven_day,
+        )?,
+        captured_at,
+    })
+}
+
+fn load_codex_usage_rate_limits_from_jsonl() -> Option<UsageRateLimitSnapshot> {
     let root = dirs::home_dir()?.join(".codex").join("sessions");
     let mut candidates = Vec::new();
     collect_codex_rollout_files(&root, &mut candidates);
@@ -371,6 +507,9 @@ fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
         let Some(snapshot) = load_codex_usage_rate_limits_from_file(&path, modified_at) else {
             continue;
         };
+        if !usage_snapshot_within_age(&snapshot, chrono::Duration::hours(6)) {
+            continue;
+        }
         let snapshot_time = snapshot
             .captured_at
             .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
@@ -385,7 +524,10 @@ fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
     best
 }
 
-fn collect_codex_rollout_files(root: &Path, candidates: &mut Vec<(PathBuf, std::time::SystemTime)>) {
+fn collect_codex_rollout_files(
+    root: &Path,
+    candidates: &mut Vec<(PathBuf, std::time::SystemTime)>,
+) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -404,8 +546,15 @@ fn collect_codex_rollout_files(root: &Path, candidates: &mut Vec<(PathBuf, std::
         let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if file_name.starts_with("rollout-") && path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
-            candidates.push((path, metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)));
+        if file_name.starts_with("rollout-")
+            && path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+        {
+            candidates.push((
+                path,
+                metadata
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            ));
         }
     }
 }
@@ -418,7 +567,7 @@ fn load_codex_usage_rate_limits_from_file(
     let fallback_time = chrono::DateTime::<chrono::Utc>::from(modified_at);
     let mut latest: Option<UsageRateLimitSnapshot> = None;
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in StdBufReader::new(file).lines().map_while(Result::ok) {
         let Some(snapshot) = codex_usage_snapshot_from_line(&line, fallback_time) else {
             continue;
         };
@@ -443,13 +592,7 @@ fn codex_usage_snapshot_from_line(
     }
 
     let rate_limits = payload.get("rate_limits")?;
-    let primary = rate_limits.get("primary")?;
-    let secondary = rate_limits.get("secondary")?;
-    let (five_hour, seven_day) = if window_minutes(primary).unwrap_or(0) >= 1_440 {
-        (secondary, primary)
-    } else {
-        (primary, secondary)
-    };
+    let (five_hour, seven_day) = codex_window_pair(rate_limits)?;
 
     Some(UsageRateLimitSnapshot {
         rate_limits: provider_rate_limits(
@@ -468,6 +611,31 @@ fn codex_usage_snapshot_from_line(
             .and_then(date_from_value)
             .or(Some(fallback_time)),
     })
+}
+
+fn codex_window_pair(
+    rate_limits: &serde_json::Value,
+) -> Option<(&serde_json::Value, &serde_json::Value)> {
+    let primary = rate_limits.get("primary")?;
+    let secondary = rate_limits.get("secondary")?;
+    let primary_minutes = positive_window_minutes(primary)?;
+    let secondary_minutes = positive_window_minutes(secondary)?;
+    let primary_is_long = primary_minutes >= 1_440;
+    let secondary_is_long = secondary_minutes >= 1_440;
+
+    match (primary_is_long, secondary_is_long) {
+        (false, true) => Some((primary, secondary)),
+        (true, false) => Some((secondary, primary)),
+        _ => None,
+    }
+}
+
+fn usage_snapshot_within_age(snapshot: &UsageRateLimitSnapshot, max_age: chrono::Duration) -> bool {
+    let Some(captured_at) = snapshot.captured_at else {
+        return false;
+    };
+    let age = chrono::Utc::now().signed_duration_since(captured_at);
+    age >= -chrono::Duration::minutes(5) && age <= max_age
 }
 
 fn provider_rate_limits(
@@ -521,21 +689,38 @@ fn usage_percentage(value: &serde_json::Value) -> Option<f64> {
 }
 
 fn used_percentage(value: &serde_json::Value) -> Option<f64> {
-    usage_percentage(value).or_else(|| number_field(value, "used_percent"))
+    usage_percentage(value)
+        .or_else(|| number_field(value, "used_percent"))
+        .or_else(|| number_field(value, "usedPercent"))
 }
 
 fn window_minutes(value: &serde_json::Value) -> Option<i64> {
     value
         .get("window_minutes")
         .or_else(|| value.get("windowMinutes"))
+        .or_else(|| value.get("windowDurationMins"))
         .and_then(number_from_value)
         .map(|value| value as i64)
+        .or_else(|| {
+            value
+                .get("limit_window_seconds")
+                .or_else(|| value.get("limitWindowSeconds"))
+                .and_then(number_from_value)
+                .map(|value| (value / 60.0).round() as i64)
+        })
+        .filter(|minutes| *minutes > 0)
+}
+
+fn positive_window_minutes(value: &serde_json::Value) -> Option<i64> {
+    window_minutes(value).filter(|minutes| *minutes > 0)
 }
 
 fn reset_at_iso(value: &serde_json::Value) -> Option<String> {
     value
         .get("resets_at")
         .or_else(|| value.get("resetsAt"))
+        .or_else(|| value.get("reset_at"))
+        .or_else(|| value.get("resetAt"))
         .and_then(date_from_value)
         .map(|date| date.to_rfc3339())
 }
@@ -563,6 +748,8 @@ fn remaining_label(value: &serde_json::Value) -> String {
     value
         .get("resets_at")
         .or_else(|| value.get("resetsAt"))
+        .or_else(|| value.get("reset_at"))
+        .or_else(|| value.get("resetAt"))
         .and_then(date_from_value)
         .and_then(|date| format_remaining_duration(date, chrono::Utc::now()))
         .unwrap_or_default()

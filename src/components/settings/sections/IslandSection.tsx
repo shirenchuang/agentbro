@@ -1460,6 +1460,9 @@ function IntegrationTab() {
   }
 
   const visibleTools = config.islandExternalEnabled ? tools : []
+  const accountUsageProviders = usageProviders.filter((provider) =>
+    ['claude-code', 'codex', 'gemini-cli', 'copilot'].includes(provider.provider),
+  )
   const customProfileOptions = tools
     .filter((tool) => tool.adapterId || tool.name)
     .map((tool) => ({
@@ -1470,11 +1473,18 @@ function IntegrationTab() {
   const usageStatusLabel = (provider: UsageProviderStatus) => {
     if (!provider.enabled) return t('settings.disabled', { defaultValue: 'Disabled' })
     if (provider.available) return t('settings.connected', { defaultValue: 'Connected' })
+    if (provider.authStatus === 'authorized') return t('settings.waitingData', { defaultValue: 'Waiting for data' })
+    if (provider.authStatus === 'missing') return t('settings.needsAuth', { defaultValue: 'Needs authorization' })
     if (provider.implementationStatus === 'available') return t('settings.usageReaderAvailable', { defaultValue: '可接入' })
     if (provider.implementationStatus === 'unsupported') return t('settings.notSupported', { defaultValue: '未支持' })
-    if (provider.authStatus === 'authorized') return t('settings.waitingData', { defaultValue: 'Waiting for data' })
     return t('settings.needsAuth', { defaultValue: 'Needs authorization' })
   }
+
+  const shouldShowUsageAuthorize = (provider: UsageProviderStatus) =>
+    config.usageQueryEnabled
+    && provider.canAuthorize
+    && provider.authStatus !== 'authorized'
+    && !provider.available
 
   return (
     <>
@@ -1483,59 +1493,9 @@ function IntegrationTab() {
 
       <SettingGroup
         actions={config.islandExternalEnabled ? (
-          <button className="settings-mini-button" disabled={usageLoading} onClick={fetchUsageProviders} type="button">
-            {usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.refresh', { defaultValue: '刷新' })}
-          </button>
-        ) : null}
-        label={t('settings.usageQueryIntegration', { defaultValue: '用量查询' })}
-      >
-        <SettingRow
-          label={t('settings.usageQueryEnabled', { defaultValue: '启用用量查询' })}
-          description={t('settings.usageQueryEnabledDesc', { defaultValue: '后台读取已集成 Agent 的 Token 配额，用于灵动岛顶部显示。' })}
-        >
-          <Toggle checked={config.usageQueryEnabled} onChange={setUsageQueryEnabled} />
-        </SettingRow>
-
-        {!config.islandExternalEnabled && <div className="hook-empty">{t('settings.island.integration.disabled', { defaultValue: 'External tracking disabled' })}</div>}
-        {config.islandExternalEnabled && usageProviders.map((provider) => (
-          <div key={provider.provider} className="hook-tool-row">
-            <div className="hook-tool-row__icon">
-              <PlatformIcon agentId={provider.provider} displayName={provider.label} size={30} />
-            </div>
-            <div className="hook-tool-row__info">
-              <div className="hook-tool-row__name">{provider.label}</div>
-              <div className="hook-tool-row__path" title={provider.authPath || provider.detail}>
-                {provider.source ? `${provider.source} · ${provider.detail}` : provider.detail}
-              </div>
-            </div>
-            <div className={`hook-status-badge hook-status-badge--${provider.available ? 'installed' : provider.implementationStatus === 'available' ? 'needs_reinstall' : 'not_installed'}`}>
-              {usageStatusLabel(provider)}
-            </div>
-            <div className="hook-tool-row__actions">
-              {provider.authPath && (
-                <GlassButton variant="ghost" onClick={() => invoke('open_system_path', { path: provider.authPath })}>
-                  {t('settings.openConfigDir', { defaultValue: '打开配置目录' })}
-                </GlassButton>
-              )}
-              <GlassButton
-                variant="secondary"
-                onClick={() => authorizeProvider(provider.provider)}
-                disabled={!provider.canAuthorize || usageAction === provider.provider}
-              >
-                {usageAction === provider.provider
-                  ? t('settings.authorizing', { defaultValue: '授权中...' })
-                  : t('settings.authorize', { defaultValue: '授权' })}
-              </GlassButton>
-            </div>
-          </div>
-        ))}
-      </SettingGroup>
-
-      <SettingGroup
-        actions={config.islandExternalEnabled ? (
           <>
             <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={detectNow} type="button">
-              {loading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.detectNow', { defaultValue: '一键检测' })}
+              {loading || usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.detectNow', { defaultValue: '一键检测' })}
             </button>
             <button className="settings-mini-button" disabled={loading || bulkInstalling} onClick={installAll} type="button">
               {bulkInstalling ? t('settings.installing', { defaultValue: '安装中...' }) : t('settings.installAllHooks', { defaultValue: '一键全部安装' })}
@@ -1592,6 +1552,61 @@ function IntegrationTab() {
             </div>
           )
         })}
+      </SettingGroup>
+
+      <SettingGroup
+        actions={(
+          <button className="settings-mini-button" disabled={usageLoading} onClick={fetchUsageProviders} type="button">
+            {usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.refresh', { defaultValue: '刷新' })}
+          </button>
+        )}
+        label={t('settings.accountQuota', { defaultValue: '账号配额' })}
+      >
+        <SettingRow
+          label={t('settings.usageQueryEnabled', { defaultValue: '启用用量查询' })}
+          description={t('settings.usageQueryEnabledDesc', { defaultValue: '后台读取官方账号或 CLI 的 Token 配额，用于灵动岛顶部显示。第三方 API/中转站用量后续在单独模块配置。' })}
+        >
+          <Toggle checked={config.usageQueryEnabled} onChange={setUsageQueryEnabled} />
+        </SettingRow>
+        {accountUsageProviders.length === 0 && (
+          <div className="hook-empty">
+            {t('settings.noAccountQuotaProviders', { defaultValue: '暂无可查询的官方账号配额。' })}
+          </div>
+        )}
+        {accountUsageProviders.map((provider) => (
+          <div className="usage-provider-row" key={provider.provider}>
+            <div className="usage-provider-row__main">
+              <div className="usage-provider-row__title">
+                <span>{provider.label}</span>
+                <strong>{usageStatusLabel(provider)}</strong>
+              </div>
+              <div className="usage-provider-row__detail" title={provider.authPath || provider.detail}>
+                {provider.source ? `${provider.source} · ${provider.detail}` : provider.detail}
+              </div>
+              {provider.authPath && (
+                <div className="usage-provider-row__path">{provider.authPath}</div>
+              )}
+            </div>
+            <div className="usage-provider-row__actions">
+              {provider.authPath && (
+                <GlassButton variant="ghost" onClick={() => invoke('open_system_path', { path: provider.authPath })}>
+                  {t('settings.openCredential', { defaultValue: '打开凭据' })}
+                </GlassButton>
+              )}
+              {shouldShowUsageAuthorize(provider) && (
+                <GlassButton
+                  variant="secondary"
+                  onClick={() => authorizeProvider(provider.provider)}
+                  disabled={usageAction === provider.provider}
+                >
+                  {usageAction === provider.provider
+                    ? t('settings.authorizing', { defaultValue: '授权中...' })
+                    : t('settings.authorizeUsage', { defaultValue: '用量授权' })}
+                </GlassButton>
+              )}
+            </div>
+          </div>
+        ))}
       </SettingGroup>
 
       <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
