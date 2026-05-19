@@ -32,6 +32,8 @@
     "scrollToBottom": "滚动到底部",
     "subagents": "子代理",
     "subagentsPlural": "子代理",
+    "expandSubagents": "展开",
+    "collapseSubagents": "收起",
     "cached": "已缓存",
     "complete": "完成",
     "compactingShort": "压缩中...",

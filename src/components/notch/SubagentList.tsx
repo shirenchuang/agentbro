@@ -12,9 +12,13 @@ interface SubagentListProps {
 
 export function SubagentList({ subagents, onOpenHistory }: SubagentListProps) {
   const { t } = useTranslation()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
 
   if (subagents.length === 0) return null
+
+  const toggleLabel = collapsed
+    ? t('notch.expandSubagents', 'Expand')
+    : t('notch.collapseSubagents', 'Collapse')
 
   return (
     <div className="subagent-list">
@@ -22,6 +26,7 @@ export function SubagentList({ subagents, onOpenHistory }: SubagentListProps) {
         className="subagent-list__toggle"
         onClick={() => setCollapsed(!collapsed)}
         aria-label={collapsed ? 'Expand subagents' : 'Collapse subagents'}
+        aria-expanded={!collapsed}
       >
         <svg
           className={`subagent-list__chevron ${collapsed ? '' : 'subagent-list__chevron--open'}`}
@@ -35,6 +40,7 @@ export function SubagentList({ subagents, onOpenHistory }: SubagentListProps) {
         <span className="subagent-list__label">
           {subagents.length} {t('notch.subagents', 'Subagents')}
         </span>
+        <span className="subagent-list__hint">{toggleLabel}</span>
       </button>
 
       {!collapsed && (

@@ -9,7 +9,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 0;
+  padding: 5px 0;
   background: none;
   border: none;
   color: var(--island-text-muted);
@@ -27,6 +27,7 @@
 .subagent-list__chevron {
   transition: transform 0.15s ease-out;
   flex-shrink: 0;
+  opacity: 0.72;
 }
 
 .subagent-list__chevron--open {
@@ -35,6 +36,18 @@
 
 .subagent-list__label {
   font-weight: 500;
+}
+
+.subagent-list__hint {
+  margin-left: auto;
+  color: var(--island-text-muted);
+  font-size: 9px;
+  opacity: 0.72;
+}
+
+.subagent-list__toggle:hover .subagent-list__chevron,
+.subagent-list__toggle:hover .subagent-list__hint {
+  opacity: 1;
 }
 
 .subagent-list__items {

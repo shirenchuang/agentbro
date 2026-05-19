@@ -32,6 +32,8 @@
     "scrollToBottom": "Scroll to bottom",
     "subagents": "subagent",
     "subagentsPlural": "subagents",
+    "expandSubagents": "Expand",
+    "collapseSubagents": "Collapse",
     "cached": "cached",
     "complete": "Complete",
     "compactingShort": "Compacting...",

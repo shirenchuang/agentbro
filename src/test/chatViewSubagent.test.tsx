@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '../components/notch/ChatView'
 import { useConfigStore } from '../stores/configStore'
@@ -51,6 +51,8 @@ vi.mock('react-i18next', () => ({
     t: (key: string, fallback?: string | { defaultValue?: string }) => {
       const translations: Record<string, string> = {
         'notch.subagents': '子代理',
+        'notch.expandSubagents': '展开',
+        'notch.collapseSubagents': '收起',
         'notch.typeMessage': '输入消息...',
       }
       if (translations[key]) return translations[key]
@@ -148,6 +150,12 @@ describe('ChatView subagent history', () => {
 
     const list = screen.getByText('1 子代理').closest('.subagent-list')
     expect(list).not.toBeNull()
+    expect(within(list as HTMLElement).getByText('展开')).toBeInTheDocument()
+    expect(within(list as HTMLElement).queryByText('2')).not.toBeInTheDocument()
+
+    fireEvent.click(within(list as HTMLElement).getByRole('button', { name: 'Expand subagents' }))
+
+    expect(within(list as HTMLElement).getByText('收起')).toBeInTheDocument()
     expect(within(list as HTMLElement).getByText('计算1+1 #2')).toBeInTheDocument()
     expect(within(list as HTMLElement).getByText('2')).toBeInTheDocument()
   })
