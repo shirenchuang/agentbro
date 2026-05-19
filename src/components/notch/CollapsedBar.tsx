@@ -175,8 +175,11 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   useEffect(() => {
     if (liveTool) {
       if (lingerTimerRef.current) { clearTimeout(lingerTimerRef.current); lingerTimerRef.current = null }
-      setLingeredToolName(liveTool)
-      setLingeredToolTarget(lead?.lastToolTarget)
+      const id = window.setTimeout(() => {
+        setLingeredToolName(liveTool)
+        setLingeredToolTarget(lead?.lastToolTarget)
+      }, 0)
+      return () => window.clearTimeout(id)
     } else {
       lingerTimerRef.current = setTimeout(() => {
         setLingeredToolName(undefined)
@@ -207,9 +210,14 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const leadId = lead?.id
 
   // Jump to tool slide when tool becomes active; reset on session change
-  useEffect(() => { setSlideIndex(0) }, [leadId])
   useEffect(() => {
-    if (effectiveToolName) setSlideIndex(1)
+    const id = window.setTimeout(() => setSlideIndex(0), 0)
+    return () => window.clearTimeout(id)
+  }, [leadId])
+  useEffect(() => {
+    if (!effectiveToolName) return
+    const id = window.setTimeout(() => setSlideIndex(1), 0)
+    return () => window.clearTimeout(id)
   }, [effectiveToolName])
 
   const safeIndex = slidesCount > 0 ? slideIndex % slidesCount : 0
@@ -225,7 +233,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)
   const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
   const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')
-  const showBrandEmpty = sessions.length === 0 && !focusFilteredEmpty
+  const showBrandEmpty = sessions.length === 0 && !focusFilteredEmpty && !showTips
   const isCompacting = lead?.phase === 'compacting'
   const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
   const isYolo = lead?.isYoloMode

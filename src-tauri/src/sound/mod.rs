@@ -4,7 +4,7 @@
 use chrono::Timelike;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -484,8 +484,21 @@ impl SoundEngine {
         true
     }
 
+    fn play_audio_bytes(&self, sink: &Sink, bytes: &'static [u8]) -> bool {
+        let Ok(source) = Decoder::new(Cursor::new(bytes)) else {
+            return false;
+        };
+        sink.append(source);
+        true
+    }
+
     fn play_builtin(&self, sink: &Sink, id: &str) {
         match id {
+            "hey-bro" => {
+                if !self.play_audio_bytes(sink, include_bytes!("assets/hey-bro.wav")) {
+                    self.play_synth(sink, SoundEvent::Boot);
+                }
+            }
             "hero" => {
                 sink.append(sine_wave(392.0, Duration::from_millis(105)));
                 sink.append(sine_wave(523.0, Duration::from_millis(105)));

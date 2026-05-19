@@ -20,7 +20,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [draft, setDraft] = useState('')
+  const [draftState, setDraftState] = useState({ sessionId: session.id, value: '' })
+  const draft = draftState.sessionId === session.id ? draftState.value : ''
   const hasDraft = draft.trim().length > 0
 
   useEffect(() => {
@@ -28,9 +29,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }, [hasDraft, onDraftStateChange])
 
   useEffect(() => {
-    setDraft('')
     return () => onDraftStateChange?.(false)
-  }, [onDraftStateChange, session.id])
+  }, [onDraftStateChange])
 
   const handleInputFocus = useCallback(() => {
     if (blurTimerRef.current) {
@@ -51,8 +51,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     const val = draft.trim()
     if (!val) return
     onSendMessage(draft)
-    setDraft('')
-  }, [draft, onSendMessage])
+    setDraftState({ sessionId: session.id, value: '' })
+  }, [draft, onSendMessage, session.id])
 
   if (session.phase === 'waiting_approval') {
     const toolName = session.pendingPermission?.toolName || ''
@@ -122,7 +122,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.typeReply')}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             onKeyDown={(e) => {
@@ -147,7 +147,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             onKeyDown={(e) => {
@@ -182,7 +182,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           data-has-draft={hasDraft ? 'true' : 'false'}
           placeholder={t('notch.typeMessage')}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
           onFocus={handleInputFocus}
           onBlur={handleInputBlur}
           onKeyDown={(e) => {

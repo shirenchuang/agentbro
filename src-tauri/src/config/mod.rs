@@ -111,6 +111,9 @@ pub struct AppConfig {
     /// Active sound pack
     #[serde(default = "default_sound_pack")]
     pub sound_pack: String,
+    /// Migrate the legacy boot sound default to the built-in Hey Bro sound once.
+    #[serde(default)]
+    pub boot_sound_default_migrated: bool,
     /// Filter out sounds for probe/health-check sessions
     #[serde(default)]
     pub probe_session_filter: bool,
@@ -278,6 +281,7 @@ impl Default for AppConfig {
             sound_rules: std::collections::HashMap::new(),
             custom_sounds: Vec::new(),
             sound_pack: "synth".to_string(),
+            boot_sound_default_migrated: true,
             probe_session_filter: false,
             quiet_hours_enabled: false,
             quiet_hours_start: default_quiet_hours_start(),
@@ -327,6 +331,32 @@ impl AppConfig {
             self.shortcut_deny_enabled = false;
         }
         self.permission_shortcut_defaults_migrated = true;
+    }
+
+    fn migrate_boot_sound_default(&mut self) {
+        if self.boot_sound_default_migrated {
+            return;
+        }
+
+        let use_hey_bro_default = self
+            .sound_rules
+            .get("boot")
+            .map(|rule| rule.sound == "default")
+            .unwrap_or(true);
+
+        if use_hey_bro_default {
+            let enabled = self.sound_events.get("boot").copied().unwrap_or(true);
+            self.sound_events.insert("boot".to_string(), enabled);
+            self.sound_rules.insert(
+                "boot".to_string(),
+                SoundRuleConfig {
+                    enabled,
+                    sound: "builtin:hey-bro".to_string(),
+                },
+            );
+        }
+
+        self.boot_sound_default_migrated = true;
     }
 }
 
@@ -388,6 +418,7 @@ impl ConfigStore {
         let content = std::fs::read_to_string(path).ok()?;
         let mut config: AppConfig = serde_json::from_str(&content).ok()?;
         config.migrate_permission_shortcut_defaults();
+        config.migrate_boot_sound_default();
         Some(config)
     }
 
@@ -458,6 +489,7 @@ mod tests {
         assert!(!config.shortcut_approve_enabled);
         assert!(!config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
+        assert!(config.boot_sound_default_migrated);
     }
 
     #[test]
@@ -492,5 +524,58 @@ mod tests {
         assert!(config.shortcut_approve_enabled);
         assert!(config.shortcut_deny_enabled);
         assert!(config.permission_shortcut_defaults_migrated);
+    }
+
+    #[test]
+    fn migrates_legacy_boot_sound_default_to_hey_bro() {
+        let mut config = AppConfig {
+            boot_sound_default_migrated: false,
+            ..AppConfig::default()
+        };
+        config.sound_events.insert("boot".to_string(), true);
+        config.sound_rules.insert(
+            "boot".to_string(),
+            super::SoundRuleConfig {
+                enabled: true,
+                sound: "default".to_string(),
+            },
+        );
+
+        config.migrate_boot_sound_default();
+
+        assert_eq!(
+            config
+                .sound_rules
+                .get("boot")
+                .map(|rule| rule.sound.as_str()),
+            Some("builtin:hey-bro")
+        );
+        assert!(config.boot_sound_default_migrated);
+    }
+
+    #[test]
+    fn preserves_custom_boot_sound_during_migration() {
+        let mut config = AppConfig {
+            boot_sound_default_migrated: false,
+            ..AppConfig::default()
+        };
+        config.sound_rules.insert(
+            "boot".to_string(),
+            super::SoundRuleConfig {
+                enabled: true,
+                sound: "custom:startup".to_string(),
+            },
+        );
+
+        config.migrate_boot_sound_default();
+
+        assert_eq!(
+            config
+                .sound_rules
+                .get("boot")
+                .map(|rule| rule.sound.as_str()),
+            Some("custom:startup")
+        );
+        assert!(config.boot_sound_default_migrated);
     }
 }

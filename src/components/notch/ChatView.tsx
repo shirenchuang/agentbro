@@ -262,8 +262,11 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     if (!initialSubagentId || !activeSession) return
     const subagent = activeSession.subagents.find((item) => item.agentId === initialSubagentId)
     if (!subagent?.agentTranscriptPath) return
-    handleOpenSubagentHistory(subagent)
-    onInitialSubagentHandled?.()
+    const id = window.setTimeout(() => {
+      handleOpenSubagentHistory(subagent)
+      onInitialSubagentHandled?.()
+    }, 0)
+    return () => window.clearTimeout(id)
   }, [activeSession, handleOpenSubagentHistory, initialSubagentId, onInitialSubagentHandled])
 
   if (!activeSession) {

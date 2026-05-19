@@ -133,6 +133,7 @@ interface ConfigState {
   customSounds: CustomSound[]
   probeSessionFilter: boolean
   soundPack: 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom'
+  bootSoundDefaultMigrated: boolean
 
   // Display toggles
   islandEnabled: boolean
@@ -321,7 +322,7 @@ const defaultSoundRules: Record<string, SoundRule> = {
   'task-complete': { enabled: true, sound: 'builtin:glass' },
   'context-compact': { enabled: false, sound: 'builtin:sosumi' },
   'token-limit': { enabled: true, sound: 'builtin:sosumi' },
-  'boot': { enabled: true, sound: 'default' },
+  'boot': { enabled: true, sound: 'builtin:hey-bro' },
 }
 
 const DEFAULT_GLOBAL_APPROVE_SHORTCUT = 'CommandOrControl+Shift+A'
@@ -384,6 +385,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     customSounds: [],
     probeSessionFilter: false,
     soundPack: 'synth',
+    bootSoundDefaultMigrated: true,
     islandEnabled: true,
     islandExternalEnabled: true,
     islandMonitorSubagents: true,
@@ -479,6 +481,7 @@ export const useConfigStore = create<ConfigStore>()(
   customSounds: [],
   probeSessionFilter: false,
   soundPack: 'synth',
+  bootSoundDefaultMigrated: true,
 
   // Display toggles
   islandEnabled: true,
@@ -748,11 +751,26 @@ export const useConfigStore = create<ConfigStore>()(
           merged.shortcuts = migrateInWindowPermissionShortcuts(merged.shortcuts)
         }
 
+        if (persisted?.bootSoundDefaultMigrated !== true) {
+          const bootRule = merged.soundRules?.boot
+          const canUseHeyBroDefault = !bootRule || bootRule.sound === 'default'
+          if (canUseHeyBroDefault) {
+            merged.soundRules = {
+              ...merged.soundRules,
+              boot: {
+                enabled: bootRule?.enabled ?? true,
+                sound: 'builtin:hey-bro',
+              },
+            }
+          }
+        }
+
         return {
           ...merged,
           detailPanelMaxHeight: persisted?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
           sessionSilenceRules: Array.isArray(persisted?.sessionSilenceRules) ? persisted.sessionSilenceRules : currentState.sessionSilenceRules,
           permissionShortcutDefaultsMigrated: true,
+          bootSoundDefaultMigrated: true,
           notificationMode: 'turnEnd',
         }
       },

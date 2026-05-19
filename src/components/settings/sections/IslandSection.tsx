@@ -978,6 +978,7 @@ function SoundTab() {
   ]
   const soundChoiceOptions = [
     { value: 'default', label: t('settings.soundDefault', { defaultValue: 'Default' }) },
+    { value: 'builtin:hey-bro', label: 'Hey Bro' },
     { value: 'builtin:hero', label: 'Hero' },
     { value: 'builtin:glass', label: 'Glass' },
     { value: 'builtin:ping', label: 'Ping' },

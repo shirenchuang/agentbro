@@ -1327,6 +1327,10 @@ const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
     title: 'Real Compact',
     caption: 'recorded /compact PreCompact success checkpoint',
     buildSession: recordedCompactSession,
+    configureStore: (_now, sessions) => {
+      const sessionId = sessions[0]?.id
+      if (sessionId) useSessionStore.getState().clearSessionOverlays(sessionId)
+    },
   },
   {
     id: 'real-write',
@@ -1564,7 +1568,7 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
   const [selectedScenarioId, setSelectedScenarioId] = useState<LabScenarioId>('empty-idle')
   const [viewMode, setViewMode] = useState<LabViewMode>('overlay')
   const [replayToken, setReplayToken] = useState(0)
-  const [panelCollapsed, setPanelCollapsed] = useState(true)
+  const [panelCollapsed, setPanelCollapsed] = useState(false)
   const activeOverlay = useSessionStore((state) => state.activeOverlay)
   const activeSession = useSessionStore((state) => state.activeSessionId ? state.sessions[state.activeSessionId] : undefined)
   const colorTheme = useThemeStore((state) => state.colorTheme)
@@ -1668,7 +1672,10 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
                   type="button"
                   onClick={() => applyScenario(scenario.id)}
                 >
-                  <span className="claude-hook-lab__scenario-title">{String(index + 1).padStart(2, '0')} · {scenario.title}</span>
+                  <span className="claude-hook-lab__scenario-title">
+                    <span>{String(index + 1).padStart(2, '0')} · </span>
+                    <span>{scenario.title}</span>
+                  </span>
                   <span className="claude-hook-lab__scenario-hook">{scenario.hookName}</span>
                 </button>
               ))}

@@ -73,7 +73,8 @@ function useTipRotation(active: boolean, tips: string[]): string | null {
   useEffect(() => {
     shuffledRef.current = []
     indexRef.current = 0
-    setTip(tips[0] ?? null)
+    const id = window.setTimeout(() => setTip(tips[0] ?? null), 0)
+    return () => window.clearTimeout(id)
   }, [tips])
 
   useEffect(() => {

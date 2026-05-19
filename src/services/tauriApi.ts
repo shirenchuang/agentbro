@@ -260,6 +260,7 @@ export interface BackendConfig {
   soundRules: Record<string, { enabled: boolean; sound: string }>
   customSounds: Array<{ id: string; name: string; path: string; dataUrl?: string }>
   soundPack: string
+  bootSoundDefaultMigrated?: boolean
   probeSessionFilter: boolean
   hookDoctorEnabled: boolean
   sessionLauncherEnabled: boolean

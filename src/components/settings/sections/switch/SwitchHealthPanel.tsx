@@ -15,11 +15,23 @@ export function SwitchHealthPanel() {
   const [total, setTotal] = useState(0)
 
   useEffect(() => {
-    setLoading(true)
-    switchApi
-      .getProviderHealth(activeAppType)
-      .then(setProviders)
-      .finally(() => setLoading(false))
+    let cancelled = false
+    const id = window.setTimeout(() => {
+      setLoading(true)
+      switchApi
+        .getProviderHealth(activeAppType)
+        .then((nextProviders) => {
+          if (!cancelled) setProviders(nextProviders)
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }, 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(id)
+    }
   }, [activeAppType])
 
   const runTest = async (providerId: string) => {

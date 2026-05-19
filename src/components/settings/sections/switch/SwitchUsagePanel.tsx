@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useSwitchStore } from '../../../../stores/switchStore'
 import type { UsageSummary, ProviderUsage, ModelUsage, DailyCost } from '../../../../services/switchApi'
 import { switchApi } from '../../../../services/switchApi'
@@ -28,7 +28,7 @@ export function SwitchUsagePanel() {
   const [daily, setDaily] = useState<DailyCost[]>([])
   const [loading, setLoading] = useState(false)
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true)
     try {
       const [s, p, m, d] = await Promise.all([
@@ -45,11 +45,14 @@ export function SwitchUsagePanel() {
       // silent
     }
     setLoading(false)
-  }
+  }, [activeAppType, days])
 
   useEffect(() => {
-    loadData()
-  }, [activeAppType, days])
+    const id = window.setTimeout(() => {
+      void loadData()
+    }, 0)
+    return () => window.clearTimeout(id)
+  }, [loadData])
 
   const maxDailyCost = Math.max(...daily.map((d) => d.cost_usd), 0.01)
 
