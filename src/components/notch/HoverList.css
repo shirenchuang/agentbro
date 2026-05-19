@@ -42,6 +42,7 @@
 
 /* Session card — compact rounded-lg card */
 .hover-list__card {
+  position: relative;
   margin: 0 9px;
   padding: 8px 11px 9px;
   color: var(--island-text);
@@ -298,6 +299,62 @@
 
 .hover-list__card--passive {
   color: var(--island-text-secondary);
+}
+
+.hover-list__context-menu {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 20;
+  width: min(240px, calc(100% - 14px));
+  padding: 5px;
+  border: 1px solid var(--island-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--island-bg) 92%, #000 8%);
+  box-shadow: var(--island-shadow);
+}
+
+.hover-list__context-item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--island-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.hover-list__context-item:hover:not(:disabled) {
+  background: var(--island-card-hover);
+}
+
+.hover-list__context-item:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.hover-list__context-title {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hover-list__context-detail {
+  overflow: hidden;
+  color: var(--island-text-muted);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Row 2: user message */

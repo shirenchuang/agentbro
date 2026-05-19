@@ -81,6 +81,31 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
+  it('opens a right-click silence menu without opening the session', () => {
+    const onSessionClick = vi.fn()
+    const onSilenceDirectory = vi.fn()
+    const onSilencePrompt = vi.fn()
+    const current = session({ cwd: '/tmp/agent-island' })
+    render(
+      <HoverList
+        sessions={[current]}
+        onSessionClick={onSessionClick}
+        onSilenceDirectory={onSilenceDirectory}
+        onSilencePrompt={onSilencePrompt}
+      />,
+    )
+
+    fireEvent.contextMenu(screen.getByText('agent-island · Fix island interactions'))
+
+    expect(onSessionClick).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Hide this directory'))
+
+    expect(onSilenceDirectory).toHaveBeenCalledWith(current)
+    expect(onSilencePrompt).not.toHaveBeenCalled()
+  })
+
   it('shows named subagents and opens their history rows', () => {
     const onSubagentClick = vi.fn()
     const current = session({

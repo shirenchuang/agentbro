@@ -13,6 +13,7 @@ import { respondAutoApprove, respondPermission, respondPlan, respondQuestion } f
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
+import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -21,6 +22,8 @@ interface HoverListProps {
   onSessionClick: (sessionId: string) => void
   onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (sessionId: string) => void
+  onSilenceDirectory?: (session: SessionState) => void
+  onSilencePrompt?: (session: SessionState) => void
   focusFilteredEmpty?: boolean
 }
 
@@ -925,6 +928,8 @@ function SessionCard({
   onSessionClick,
   onSubagentClick,
   onJumpToTerminal,
+  onSilenceDirectory,
+  onSilencePrompt,
   animDuration,
   animDelay,
   isAlertActive,
@@ -934,6 +939,8 @@ function SessionCard({
   onSessionClick: (id: string) => void
   onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (id: string) => void
+  onSilenceDirectory?: (session: SessionState) => void
+  onSilencePrompt?: (session: SessionState) => void
   animDuration: number
   animDelay: number
   isAlertActive: boolean
@@ -956,8 +963,11 @@ function SessionCard({
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
   const openedOnMouseDownRef = useRef(false)
+  const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const isMuted = Boolean(mutedSessions[session.id])
   const isCompactingContext = session.phase === 'compacting' || isCompactingContextDescription(session.description)
+  const directoryTarget = getSessionDirectorySilenceTarget(session)
+  const promptTarget = getSessionPromptSilenceTarget(session)
 
   const isStatic = session.phase === 'ready' || session.phase === 'idle' || session.phase === 'done'
   const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
@@ -1001,6 +1011,32 @@ function SessionCard({
     event.stopPropagation()
     onJumpToTerminal?.(session.id)
   }
+  const handleContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+    if (!onSilenceDirectory && !onSilencePrompt) return
+    event.preventDefault()
+    event.stopPropagation()
+    setContextMenuOpen(true)
+  }
+  const runContextAction = (action: (() => void) | undefined) => (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setContextMenuOpen(false)
+    action?.()
+  }
+
+  useEffect(() => {
+    if (!contextMenuOpen) return
+    const close = () => setContextMenuOpen(false)
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [contextMenuOpen])
 
   return (
     <motion.div
@@ -1018,8 +1054,33 @@ function SessionCard({
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
         onMouseDownCapture={handleMouseDownCapture}
         onClickCapture={handleClickCapture}
+        onContextMenu={handleContextMenu}
         onKeyDown={handleKeyDown}
       >
+        {contextMenuOpen && (
+          <div className="hover-list__context-menu" data-no-open role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              className="hover-list__context-item"
+              disabled={!directoryTarget || !onSilenceDirectory}
+              onClick={runContextAction(onSilenceDirectory ? () => onSilenceDirectory(session) : undefined)}
+            >
+              <span className="hover-list__context-title">{t('notch.silenceDirectory', { defaultValue: 'Hide this directory' })}</span>
+              <span className="hover-list__context-detail">{directoryTarget || t('notch.silenceUnavailable', { defaultValue: 'Unavailable' })}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="hover-list__context-item"
+              disabled={!promptTarget || !onSilencePrompt}
+              onClick={runContextAction(onSilencePrompt ? () => onSilencePrompt(session) : undefined)}
+            >
+              <span className="hover-list__context-title">{t('notch.silencePrompt', { defaultValue: 'Hide prompts like this' })}</span>
+              <span className="hover-list__context-detail">{promptTarget ? truncateText(promptTarget, 54) : t('notch.silenceUnavailable', { defaultValue: 'Unavailable' })}</span>
+            </button>
+          </div>
+        )}
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
           <div className="hover-list__status-col">
@@ -1198,7 +1259,7 @@ function SessionCard({
   )
 }
 
-export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, focusFilteredEmpty = false }: HoverListProps) {
+export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onSilenceDirectory, onSilencePrompt, focusFilteredEmpty = false }: HoverListProps) {
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
@@ -1312,6 +1373,8 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
             onSessionClick={onSessionClick}
             onSubagentClick={onSubagentClick}
             onJumpToTerminal={onJumpToTerminal}
+            onSilenceDirectory={onSilenceDirectory}
+            onSilencePrompt={onSilencePrompt}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}
             isAlertActive={isAlertActive}
