@@ -22,7 +22,7 @@ function session(overrides: Partial<SessionState>): SessionState {
 
 describe('sessionStore backend overlays', () => {
   beforeEach(() => {
-    useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 30 })
+    useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 30, sessionSilenceRules: [], excludedHookCwdSubstrings: '' })
     useSessionStore.setState({
       sessions: {},
       sessionList: [],
@@ -636,5 +636,66 @@ describe('sessionStore backend overlays', () => {
     expect(stale.idleSince).toBe(old)
     expect(stale.lastActivityAt).toBe(old)
     expect(useSessionStore.getState().sessionList).toEqual([])
+  })
+
+  it('hides non-blocking sessions that match a custom directory silence rule', () => {
+    useConfigStore.setState({
+      sessionSilenceRules: [{
+        id: 'rule-cwd',
+        kind: 'cwd',
+        pattern: '/tmp/noisy-project',
+        enabled: true,
+        createdAt: 1,
+      }],
+    })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({ id: 'hidden', cwd: '/tmp/noisy-project/packages/app', project: 'noisy' }),
+      session({ id: 'visible', cwd: '/tmp/active-project', project: 'active' }),
+    ])
+
+    expect(useSessionStore.getState().sessionList.map((item) => item.id)).toEqual(['visible'])
+  })
+
+  it('hides non-blocking sessions that match a prompt silence rule', () => {
+    useConfigStore.setState({
+      sessionSilenceRules: [{
+        id: 'rule-prompt',
+        kind: 'prompt',
+        pattern: 'refresh generated docs',
+        enabled: true,
+        createdAt: 1,
+      }],
+    })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({ id: 'hidden', lastUserMessage: 'Refresh generated docs for status page' }),
+      session({ id: 'visible', lastUserMessage: 'Ship the island UI' }),
+    ])
+
+    expect(useSessionStore.getState().sessionList.map((item) => item.id)).toEqual(['visible'])
+  })
+
+  it('keeps blocking sessions visible even when they match a silence rule', () => {
+    useConfigStore.setState({
+      sessionSilenceRules: [{
+        id: 'rule-cwd',
+        kind: 'cwd',
+        pattern: '/tmp/noisy-project',
+        enabled: true,
+        createdAt: 1,
+      }],
+    })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'approval',
+        cwd: '/tmp/noisy-project',
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Edit', toolInput: '{}' },
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList.map((item) => item.id)).toEqual(['approval'])
   })
 })

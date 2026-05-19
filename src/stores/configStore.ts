@@ -86,6 +86,17 @@ export interface EngineInstance {
   enabled: boolean
 }
 
+export type SessionSilenceRuleKind = 'cwd' | 'prompt'
+
+export interface SessionSilenceRule {
+  id: string
+  kind: SessionSilenceRuleKind
+  pattern: string
+  label?: string
+  enabled: boolean
+  createdAt: number
+}
+
 interface ConfigState {
   // General
   launchAtLogin: boolean
@@ -208,6 +219,7 @@ interface ConfigState {
   // Behavior
   pluginSessionMode: 'separate' | 'merge' | 'hide'
   excludedHookCwdSubstrings: string
+  sessionSilenceRules: SessionSilenceRule[]
   autoApproveTools: string[]
   hapticOnHover: boolean
   hapticIntensity: number // 1-3
@@ -251,6 +263,9 @@ interface ConfigActions {
   addRemoteHostEntry: (host: RemoteHostEntry) => void
   removeRemoteHostEntry: (id: string) => void
   updateRemoteHostStatus: (id: string, status: RemoteHostEntry['connectionStatus']) => void
+  addSessionSilenceRule: (rule: Omit<SessionSilenceRule, 'id' | 'enabled' | 'createdAt'> & Partial<Pick<SessionSilenceRule, 'enabled'>>) => void
+  removeSessionSilenceRule: (id: string) => void
+  toggleSessionSilenceRule: (id: string) => void
 }
 
 type ConfigStore = ConfigState & ConfigActions
@@ -379,6 +394,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
     pluginSessionMode: 'separate',
     excludedHookCwdSubstrings: '',
+    sessionSilenceRules: [],
     autoApproveTools: [
       'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
       'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode', 'Read',
@@ -531,6 +547,7 @@ export const useConfigStore = create<ConfigStore>()(
   // Behavior
   pluginSessionMode: 'separate',
   excludedHookCwdSubstrings: '',
+  sessionSilenceRules: [],
   autoApproveTools: [
     'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
     'TaskOutput', 'TaskStop', 'TodoRead', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode', 'Read',
@@ -649,15 +666,58 @@ export const useConfigStore = create<ConfigStore>()(
       ),
     }))
   },
+
+  addSessionSilenceRule: (rule) => {
+    const pattern = rule.pattern.trim()
+    if (!pattern) return
+    set((state) => {
+      const exists = state.sessionSilenceRules.some((item) => (
+        item.kind === rule.kind
+        && item.pattern.trim().toLowerCase() === pattern.toLowerCase()
+      ))
+      if (exists) return state
+      return {
+        sessionSilenceRules: [
+          ...state.sessionSilenceRules,
+          {
+            id: `silence-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: rule.kind,
+            pattern,
+            label: rule.label?.trim() || undefined,
+            enabled: rule.enabled ?? true,
+            createdAt: Date.now(),
+          },
+        ],
+      }
+    })
+  },
+
+  removeSessionSilenceRule: (id) => {
+    set((state) => ({
+      sessionSilenceRules: state.sessionSilenceRules.filter((rule) => rule.id !== id),
+    }))
+  },
+
+  toggleSessionSilenceRule: (id) => {
+    set((state) => ({
+      sessionSilenceRules: state.sessionSilenceRules.map((rule) => (
+        rule.id === id ? { ...rule, enabled: !rule.enabled } : rule
+      )),
+    }))
+  },
     }),
     {
       name: 'agentbro-config',
-      merge: (persistedState, currentState) => ({
-        ...currentState,
-        ...(persistedState as Partial<ConfigState>),
-        detailPanelMaxHeight: (persistedState as Partial<ConfigState> | undefined)?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
-        notificationMode: 'turnEnd',
-      }),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<ConfigState> | undefined
+        return {
+          ...currentState,
+          ...persisted,
+          detailPanelMaxHeight: persisted?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
+          sessionSilenceRules: Array.isArray(persisted?.sessionSilenceRules) ? persisted.sessionSilenceRules : currentState.sessionSilenceRules,
+          notificationMode: 'turnEnd',
+        }
+      },
     }
   )
 )

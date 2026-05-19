@@ -5,6 +5,7 @@ import type { AgentEvent, BaseLayer, ChatMessage, OverlayItem, PanelState, RateL
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
+import { sessionMatchesLegacyCwdExclusion, sessionMatchesSilenceRule } from '../utils/sessionSilence'
 import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
@@ -153,7 +154,7 @@ function isDisplayableSession(session: SessionState, now = Date.now()): boolean 
   if (isProbeSession(session)) {
     return false
   }
-  if (session.phase === 'waiting_approval' || session.phase === 'waiting_input' || session.phase === 'error') {
+  if (session.phase === 'waiting_approval' || session.phase === 'waiting_input' || session.phase === 'error' || hasPendingInteraction(session)) {
     return true
   }
   if (session.phase === 'done' && (sessionEndedText(session.responseText) || sessionEndedText(session.description))) {
@@ -162,10 +163,17 @@ function isDisplayableSession(session: SessionState, now = Date.now()): boolean 
   if (isInternalCodexPromptSession(session)) {
     return false
   }
+  const config = useConfigStore.getState()
+  if (
+    config.sessionSilenceRules.some((rule) => sessionMatchesSilenceRule(session, rule))
+    || sessionMatchesLegacyCwdExclusion(session, config.excludedHookCwdSubstrings)
+  ) {
+    return false
+  }
   if (isCodexAppPlaceholder(session) && !hasSessionContent(session)) {
     return false
   }
-  if (isSessionPastDisplayTimeout(session, useConfigStore.getState().sessionTimeoutMinutes, now)) {
+  if (isSessionPastDisplayTimeout(session, config.sessionTimeoutMinutes, now)) {
     return false
   }
   return true
