@@ -384,6 +384,41 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls.map(([ignore]) => ignore)).toEqual([true, false])
   })
 
+  it('cancels delayed collapsed cursor passthrough when the hover list opens first', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const currentSession = session({ phase: 'idle' })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalled()
+    })
+    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
+
+    act(() => {
+      useSessionStore.getState().setPanelState('hover')
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents).not.toHaveBeenCalledWith(true)
+    expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(false)
+  })
+
   it('starts native repositioning from the expanded top drag handle', async () => {
     useConfigStore.setState({ allowHorizontalDrag: true })
     mountIsland(null, { phase: 'idle' })

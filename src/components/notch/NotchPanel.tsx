@@ -51,6 +51,7 @@ const NOTCH_HIT_SLOP_Y_EXPANDED = 12
 const DRAG_START_THRESHOLD_PX = 4
 const OPEN_NATIVE_PREPARE_FALLBACK_MS = 120
 const CLOSE_NATIVE_RESIZE_DELAY_MS = 520
+const NATIVE_CURSOR_PASSTHROUGH_DELAY_MS = 120
 const HOVER_PANEL_MIN_HEIGHT = 180
 const EXPANDED_PREVIEW_SESSION_COUNT = 4
 const EXPANDED_PREVIEW_ROW_HEIGHT = 58
@@ -617,6 +618,7 @@ export function NotchPanel() {
   const appliedIgnoreCursorEventsRef = useRef(false)
   const forceIgnoreCursorEventsRef = useRef(false)
   const ignoreCursorEventsInFlightRef = useRef(false)
+  const ignoreCursorEventsDelayTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const lastNativeHostResizeKeyRef = useRef<string | null>(null)
   const inFlightNativeHostResizeKeysRef = useRef(new Set<string>())
   const nativeHostResizeWaitersRef = useRef(new Map<string, Array<(anchorOffsetX: number) => void>>())
@@ -717,6 +719,21 @@ export function NotchPanel() {
   const requestNativeIgnoreCursorEvents = useCallback((ignore: boolean, options?: { force?: boolean }) => {
     if (!isTauri()) return
     desiredIgnoreCursorEventsRef.current = ignore
+
+    if (ignoreCursorEventsDelayTimerRef.current && (!ignore || options?.force)) {
+      clearTimeout(ignoreCursorEventsDelayTimerRef.current)
+      ignoreCursorEventsDelayTimerRef.current = undefined
+    }
+
+    if (ignore && !options?.force) {
+      if (appliedIgnoreCursorEventsRef.current || ignoreCursorEventsDelayTimerRef.current) return
+      ignoreCursorEventsDelayTimerRef.current = setTimeout(() => {
+        ignoreCursorEventsDelayTimerRef.current = undefined
+        if (desiredIgnoreCursorEventsRef.current) flushNativeIgnoreCursorEvents()
+      }, NATIVE_CURSOR_PASSTHROUGH_DELAY_MS)
+      return
+    }
+
     if (options?.force) {
       forceIgnoreCursorEventsRef.current = true
     }
@@ -869,6 +886,7 @@ export function NotchPanel() {
       if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current)
       if (expandTimerRef.current) clearTimeout(expandTimerRef.current)
       if (openPrepareTimerRef.current) clearTimeout(openPrepareTimerRef.current)
+      if (ignoreCursorEventsDelayTimerRef.current) clearTimeout(ignoreCursorEventsDelayTimerRef.current)
       if (openPrepareFrameRef.current != null) window.cancelAnimationFrame(openPrepareFrameRef.current)
       if (pendingDetailOpenTimerRef.current) clearTimeout(pendingDetailOpenTimerRef.current)
     }
