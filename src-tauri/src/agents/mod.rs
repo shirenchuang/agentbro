@@ -7,6 +7,7 @@ pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod cursor_cli;
+pub mod deepseek;
 pub mod detection;
 pub mod droid;
 pub mod gemini;
@@ -226,6 +227,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(codebuddycn::CodeBuddyCNAdapter::new()),
         Box::new(qwen::QwenAdapter::new()),
         Box::new(kimi::KimiAdapter::new()),
+        Box::new(deepseek::DeepSeekAdapter::new()),
         Box::new(opencode::OpenCodeAdapter::new()),
         Box::new(droid::DroidAdapter::new()),
         Box::new(stepfun::StepFunAdapter::new()),
@@ -258,6 +260,7 @@ impl_default_adapter!(
     copilot::CopilotAdapter,
     cursor::CursorAdapter,
     cursor_cli::CursorCliAdapter,
+    deepseek::DeepSeekAdapter,
     droid::DroidAdapter,
     gemini::GeminiAdapter,
     hermes::HermesAdapter,

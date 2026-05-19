@@ -215,6 +215,7 @@ fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderSt
         ("cursor-cli", "Cursor CLI", "Cursor", "web/cookies", Some("~/.cursor"), false),
         ("copilot", "GitHub Copilot", "Copilot", "api/device-flow", None, find_binary("gh").is_some()),
         ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
+        ("deepseek", "DeepSeek", "DeepSeek", "api/key", Some("~/.deepseek"), false),
         ("opencode", "OpenCode", "OpenCode", "web/cookies", Some("~/.opencode"), false),
         ("droid", "Factory / Droid", "Droid/Factory", "web/local-storage", Some("~/.factory"), false),
         ("stepfun", "StepFun", "StepFun", "web/token", None, false),
@@ -249,6 +250,7 @@ fn catalog_unsupported_agent_usage_providers(enabled: bool) -> Vec<UsageProvider
         ("codebuddy", "CodeBuddy"),
         ("codebuddycn", "CodeBuddy CN"),
         ("qwen", "Qwen"),
+        ("deepseek", "DeepSeek"),
         ("workbuddy", "WorkBuddy"),
         ("hermes", "Hermes"),
         ("pi", "Pi"),
@@ -1544,6 +1546,7 @@ fn agent_launch_command(agent_id: &str) -> Option<&'static str> {
         "qoder-cli" => Some("qoder"),
         "qwen" => Some("qwen"),
         "kimi" => Some("kimi"),
+        "deepseek" => Some("deepseek"),
         "opencode" => Some("opencode"),
         _ => None,
     }

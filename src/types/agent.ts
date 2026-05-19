@@ -7,7 +7,7 @@ export type AgentType =
   | 'trae' | 'traecli' | 'traecn'
   | 'qoder' | 'qoder-cli'
   | 'codebuddy' | 'codebuddycn'
-  | 'qwen' | 'kimi' | 'opencode'
+  | 'qwen' | 'kimi' | 'deepseek' | 'opencode'
   | 'droid' | 'stepfun' | 'antigravity'
   | 'workbuddy' | 'hermes' | 'pi' | 'kiro'
 

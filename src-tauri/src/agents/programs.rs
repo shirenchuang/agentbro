@@ -638,6 +638,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "traecli" => "TraeCli",
         "traecn" | "trae-cn" => "Trae CN",
         "qwen" => "Qwen Code",
+        "deepseek" => "DeepSeek",
         "kimi" => "Kimi",
         "droid" | "factory-droid" => "Factory Droid",
         "stepfun" => "StepFun",
@@ -794,6 +795,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "/Applications/Qwen Code.app",
             "~/.qwen",
             "https://qwenlm.github.io",
+        ),
+        "deepseek" => app(
+            "deepseek",
+            "/Applications/DeepSeek.app",
+            "~/.deepseek",
+            "https://www.deepseek.com",
         ),
         "kimi" => app(
             "kimi",

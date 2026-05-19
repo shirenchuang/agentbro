@@ -263,6 +263,7 @@ fn buddy_source_slot(agent_type: &str) -> u8 {
         "workbuddy" => 13,
         "hermes" => 14,
         "kimi" => 15,
+        "deepseek" => 16,
         _ => 255,
     }
 }

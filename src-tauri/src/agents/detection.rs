@@ -27,6 +27,7 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("codebuddy", "CodeBuddy", &["codebuddy"], &[".codebuddy"]),
         detect_tool("qwen", "Qwen Coder", &["qwen-coder", "qwen"], &[".qwen"]),
         detect_tool("kimi", "Kimi", &["kimi"], &[".kimi"]),
+        detect_tool("deepseek", "DeepSeek", &["deepseek"], &[".deepseek"]),
         detect_tool("opencode", "OpenCode", &["opencode"], &[".opencode"]),
     ]
 }

@@ -598,6 +598,18 @@ pub fn kimi_profile() -> AgentIntegrationProfile {
     }
 }
 
+pub fn deepseek_profile() -> AgentIntegrationProfile {
+    AgentIntegrationProfile {
+        id: "deepseek",
+        installation_kind: InstallationKind::TomlHooks,
+        configuration_path: ".deepseek/config.toml",
+        activation_path: None,
+        source: "deepseek",
+        extra_args: &[],
+        events: KIMI_EVENTS,
+    }
+}
+
 pub fn configuration_url(profile: &AgentIntegrationProfile) -> PathBuf {
     resolve_home_path(profile.configuration_path)
 }
@@ -616,6 +628,7 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "copilot" => Some(copilot_profile()),
         "cursor" => Some(cursor_profile()),
         "cursor-cli" => Some(cursor_cli_profile()),
+        "deepseek" => Some(deepseek_profile()),
         "droid" | "factory-droid" => Some(droid_profile()),
         "gemini" => Some(gemini_profile()),
         "hermes" => Some(hermes_profile()),
@@ -2361,6 +2374,16 @@ name = "also keep"
         assert!(rendered.contains("event = \"SessionStart\""));
         assert!(rendered.contains("event = \"PermissionRequest\""));
         assert!(rendered.contains("timeout = 86400"));
+        assert!(rendered.contains(MARKER_PREFIX));
+    }
+
+    #[test]
+    fn rendered_deepseek_hooks_use_deepseek_source() {
+        let profile = deepseek_profile();
+        let rendered = render_toml_hooks(&profile, "/tmp/agentbro-bridge --source deepseek");
+        assert!(rendered.contains("event = \"SessionStart\""));
+        assert!(rendered.contains("event = \"PermissionRequest\""));
+        assert!(rendered.contains("--source deepseek"));
         assert!(rendered.contains(MARKER_PREFIX));
     }
 }

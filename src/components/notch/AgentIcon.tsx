@@ -4,6 +4,7 @@ import type { AgentType } from '../../types/agent'
 const agentColors: Record<string, string> = {
   'claude-code': '#D97706',
   'codex': '#10B981',
+  'deepseek': '#2563EB',
   'gemini-cli': '#6366F1',
   'cursor': '#3B82F6',
   'opencode': '#8B5CF6',
@@ -18,6 +19,7 @@ const agentColors: Record<string, string> = {
 const agentLabels: Record<string, string> = {
   'claude-code': 'C',
   'codex': 'X',
+  'deepseek': 'DS',
   'gemini-cli': 'G',
   'cursor': 'Cu',
   'opencode': 'O',
