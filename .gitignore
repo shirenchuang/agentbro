@@ -12,6 +12,7 @@ dist
 dist-ssr
 tmp/
 *.local
+.playwright-cli/
 
 # Tauri
 src-tauri/target
