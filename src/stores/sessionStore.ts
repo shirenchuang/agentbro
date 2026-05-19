@@ -216,8 +216,23 @@ function isGenericCompletionText(text: string | undefined | null): boolean {
     || normalized === 'processing user input'
     || normalized.startsWith('processing user input:')
     || normalized === 'compacting context'
-    || normalized.startsWith('compacting context:')
+    || normalized.startsWith('compacting context')
+    || normalized === 'compacting conversation'
+    || normalized.startsWith('compacting conversation')
     || normalized === 'waiting for input'
+}
+
+function isCompactingContextText(text: string | undefined | null): boolean {
+  const normalized = (text || '')
+    .trim()
+    .replace(/[.!。！]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+  return normalized === 'compacting'
+    || normalized === 'compacting context'
+    || normalized.startsWith('compacting context')
+    || normalized === 'compacting conversation'
+    || normalized.startsWith('compacting conversation')
 }
 
 function usefulCompletionText(text: string | undefined | null): string | null {
@@ -373,6 +388,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               ...clearBlockingState(session),
               phase: 'processing',
               lastUserMessage: event.content,
+              lastUserMessageAt: Date.now(),
               chatHistory: [...session.chatHistory, msg],
               idleSince: undefined,
               lastActivityAt: Date.now(),
@@ -626,6 +642,27 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             sessions[event.sessionId] = {
               ...session,
               phase: event.phase === 'pre' ? 'compacting' : 'processing',
+              description: event.phase === 'pre'
+                ? 'Compacting context'
+                : isCompactingContextText(session.description)
+                  ? undefined
+                  : session.description,
+              lastToolName: event.phase === 'pre' ? 'Compacting' : undefined,
+              lastToolTarget: event.phase === 'pre' ? 'context' : undefined,
+              lastToolStatus: event.phase === 'pre' ? 'running' : undefined,
+              lastActivityAt: Date.now(),
+            }
+            if (event.phase === 'pre') {
+              const compactingOverlay: OverlayItem = {
+                id: `compacting-${event.sessionId}-${Date.now()}`,
+                sessionId: event.sessionId,
+                type: 'compacting',
+                data: {},
+                createdAt: Date.now(),
+              }
+              setTimeout(() => useSessionStore.getState().pushOverlay(compactingOverlay), 0)
+            } else {
+              overlayQueue = overlayQueue.filter((overlay) => !(overlay.sessionId === event.sessionId && overlay.type === 'compacting'))
             }
           }
           break
@@ -686,19 +723,47 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         const existing = state.sessions[incoming.id]
         const enteredIdle = incoming.phase === 'idle' && existing?.phase !== 'idle'
         const enteredDone = incoming.phase === 'done' && existing?.phase !== 'done'
+        const lastUserMessageChanged = Boolean(incoming.lastUserMessage)
+          && incoming.lastUserMessage !== existing?.lastUserMessage
         const activityChanged = isActivityPhase(incoming.phase) || (incoming.phase === 'ready' && Boolean(existing))
           ? didBackendActivityChange(incoming, existing)
           : false
-        const phase = incoming.phase === 'ready' && existing?.phase === 'idle' && !activityChanged
+        const basePhase = incoming.phase === 'ready' && existing?.phase === 'idle' && !activityChanged
           ? 'idle'
           : incoming.phase
+        const hasCompactingHint = isCompactingContextText(incoming.description) || isCompactingContextText(incoming.lastToolName)
+        const phase = basePhase === 'processing' && hasCompactingHint && existing?.phase !== 'compacting'
+          ? 'compacting'
+          : basePhase
         const enteredEffectiveIdle = phase === 'idle' && existing?.phase !== 'idle'
         const s: SessionState = {
           ...incoming,
           phase,
+          description: phase === 'compacting'
+            ? incoming.description ?? 'Compacting context'
+            : isCompactingContextText(incoming.description)
+              ? undefined
+              : incoming.description,
+          lastToolName: phase === 'compacting'
+            ? incoming.lastToolName
+            : isCompactingContextText(incoming.lastToolName)
+              ? undefined
+              : incoming.lastToolName,
+          lastToolTarget: phase === 'compacting'
+            ? incoming.lastToolTarget
+            : isCompactingContextText(incoming.lastToolName)
+              ? undefined
+              : incoming.lastToolTarget,
+          lastToolStatus: phase === 'compacting'
+            ? incoming.lastToolStatus
+            : isCompactingContextText(incoming.lastToolName)
+              ? undefined
+              : incoming.lastToolStatus,
           chatHistory: incoming.chatHistory?.length ? incoming.chatHistory : existing?.chatHistory ?? [],
           subagents: incoming.subagents ?? [],
           activeTools: incoming.activeTools ?? [],
+          lastUserMessageAt: incoming.lastUserMessageAt
+            ?? (lastUserMessageChanged ? now : existing?.lastUserMessageAt),
           idleSince: phase === 'idle'
             ? incoming.idleSince ?? existing?.idleSince ?? (enteredIdle || enteredEffectiveIdle ? now : undefined)
             : incoming.idleSince,
@@ -773,6 +838,21 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
 
         const hideNonBlockingOverlays = isInternalCodexPromptSession(s) || isProbeSession(s)
 
+        // Detect context compaction starting from backend session snapshots.
+        if (!hideNonBlockingOverlays && s.phase === 'compacting' && prev?.phase !== 'compacting') {
+          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'compacting')
+          if (!existingOverlay) {
+            newOverlays.push({
+              id: `compacting-${s.id}-${Date.now()}`,
+              sessionId: s.id,
+              type: 'compacting',
+              data: {},
+              createdAt: Date.now(),
+              suppressed,
+            })
+          }
+        }
+
         // Detect a newly available assistant response and show the response overlay.
         const responseText = usefulCompletionText(s.responseText)
         const previousResponseText = usefulCompletionText(prev?.responseText)
@@ -813,6 +893,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (overlay.type === 'permission') return Boolean(session.pendingPermission)
         if (overlay.type === 'question') return Boolean(session.pendingQuestion)
         if (overlay.type === 'plan') return Boolean(session.planTitle || session.planContent)
+        if (overlay.type === 'compacting') return session.phase === 'compacting'
         return true
       })
       return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
@@ -952,8 +1033,8 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     const muted = useSessionStore.getState().mutedSessions[item.sessionId]
     if (muted && Date.now() < muted) return
 
-    // During quiet hours, suppress non-blocking overlays (response/completion)
-    const isNonBlocking = item.type === 'response' || item.type === 'completion'
+    // During quiet hours, suppress non-blocking overlays.
+    const isNonBlocking = item.type === 'response' || item.type === 'completion' || item.type === 'compacting'
     if (isNonBlocking && isQuietHours()) return
     if (isNonBlocking && useSessionStore.getState().isWakeSilenced()) return
 

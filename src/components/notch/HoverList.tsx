@@ -14,6 +14,7 @@ import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
+import { getSessionListSubagents } from '../../utils/subagents'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -206,7 +207,10 @@ function isGenericProcessingDescription(text: string | undefined): boolean {
 
 function isCompactingContextDescription(text: string | undefined): boolean {
   const normalized = (text || '').trim().replace(/\s+/g, ' ').toLowerCase()
-  return normalized === 'compacting context' || normalized.startsWith('compacting context:')
+  return normalized === 'compacting context'
+    || normalized.startsWith('compacting context')
+    || normalized === 'compacting conversation'
+    || normalized.startsWith('compacting conversation')
 }
 
 function splitToolTargetChanges(target: string): { name: string; additions?: string; deletions?: string } | null {
@@ -415,7 +419,7 @@ function SessionStateRibbon({ session }: { session: SessionState }) {
     )
   }
 
-  if (session.phase === 'compacting' || isCompactingContextDescription(session.description)) {
+  if (session.phase === 'compacting') {
     return (
       <div className="hover-list__state-ribbon hover-list__state-ribbon--compact">
         <span>Compacting</span>
@@ -647,8 +651,7 @@ function InlinePermissionPreview({ session }: { session: SessionState }) {
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--deny"
-          onMouseDown={(e) => {
-            e.preventDefault()
+          onClick={(e) => {
             e.stopPropagation()
             clearAfter(respondPermission(session.id, false))
           }}
@@ -658,8 +661,7 @@ function InlinePermissionPreview({ session }: { session: SessionState }) {
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--allow"
-          onMouseDown={(e) => {
-            e.preventDefault()
+          onClick={(e) => {
             e.stopPropagation()
             clearAfter(respondPermission(session.id, true))
           }}
@@ -669,20 +671,17 @@ function InlinePermissionPreview({ session }: { session: SessionState }) {
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--always"
-          onMouseDown={(e) => {
-            e.preventDefault()
+          onClick={(e) => {
             e.stopPropagation()
             clearAfter(respondPermission(session.id, true, true))
           }}
         >
           <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
-          <kbd>^A</kbd>
         </button>
         <button
           type="button"
           className="hover-list__inline-btn hover-list__inline-btn--auto"
-          onMouseDown={(e) => {
-            e.preventDefault()
+          onClick={(e) => {
             e.stopPropagation()
             clearAfter(respondAutoApprove(session.id))
           }}
@@ -839,9 +838,17 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
 }
 
 /* ── Inline Plan Preview ── */
+function parsePlanPermission(permission: string): { tool: string; prompt?: string } {
+  const match = permission.match(/^([^:：]+)[:：]\s*(.*)$/)
+  if (!match) return { tool: permission }
+  return { tool: match[1].trim(), prompt: match[2].trim() }
+}
+
 function InlinePlanPreview({ session }: { session: SessionState }) {
+  const { t } = useTranslation()
   const [feedback, setFeedback] = useState('')
   if (!session.planTitle && !session.planContent) return null
+  const permissions = session.planPermissions || []
 
   const submitPlan = (mode: string, message?: string) => {
     respondPlan(session.id, mode, message)
@@ -859,7 +866,23 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
       </div>
       {session.planContent && (
         <div className="hover-list__inline-plan-content">
-          {truncateText(stripMarkdown(session.planContent), 200)}
+          {truncateText(stripMarkdown(session.planContent), 520)}
+        </div>
+      )}
+      {permissions.length > 0 && (
+        <div className="hover-list__inline-plan-perms">
+          <span className="hover-list__inline-plan-perms-label">
+            {t('notch.requestedPermissions', { defaultValue: '请求的权限:' })}
+          </span>
+          {permissions.map((permission, index) => {
+            const parsed = parsePlanPermission(permission)
+            return (
+              <span key={`${permission}-${index}`} className="hover-list__inline-plan-perm">
+                <span className="hover-list__inline-plan-perm-tool">{parsed.tool}</span>
+                {parsed.prompt && <span>: {parsed.prompt}</span>}
+              </span>
+            )
+          })}
         </div>
       )}
       <div className="hover-list__inline-plan-feedback">
@@ -965,7 +988,8 @@ function SessionCard({
   const openedOnMouseDownRef = useRef(false)
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const isMuted = Boolean(mutedSessions[session.id])
-  const isCompactingContext = session.phase === 'compacting' || isCompactingContextDescription(session.description)
+  const isCompactingContext = session.phase === 'compacting'
+    || (session.phase === 'processing' && !session.lastToolName && isCompactingContextDescription(session.description))
   const directoryTarget = getSessionDirectorySilenceTarget(session)
   const promptTarget = getSessionPromptSilenceTarget(session)
 
@@ -976,6 +1000,7 @@ function SessionCard({
   const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
   const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
   const notice = inferSessionNotice(session)
+  const listSubagents = getSessionListSubagents(session)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
   const shouldShowAgentIcon = !showPassiveDot && (isStatic || appLabel === 'Codex App' || session.agentType === 'codex')
   const handleOpen = () => onSessionClick(session.id)
@@ -1191,7 +1216,7 @@ function SessionCard({
                     ? t('notch.tool.compactingContext')
                     : session.description && !isGenericProcessingDescription(session.description)
                     ? truncateText(stripMarkdown(session.description), 100)
-                    : t('notch.thinking')}
+                    : t('notch.working')}
                 </span>
               </div>
             ) : assistantPreview ? (
@@ -1237,8 +1262,8 @@ function SessionCard({
         )}
 
         {/* Row 5: subagents */}
-        {session.subagents && session.subagents.length > 0 && (
-          <SubagentRow sessionId={session.id} subagents={session.subagents} onSubagentClick={onSubagentClick} />
+        {listSubagents.length > 0 && (
+          <SubagentRow sessionId={session.id} subagents={listSubagents} onSubagentClick={onSubagentClick} />
         )}
 
         {/* Row 6: tasks */}

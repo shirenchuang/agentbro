@@ -29,7 +29,7 @@ export type PanelState = 'collapsed' | 'hover' | 'expanded'
 export type BaseLayer = 'compact' | 'expanded' | 'detail'
 export type DisplayLevel = 'dormant' | 'compact' | 'visible'
 
-export type OverlayType = 'permission' | 'question' | 'plan' | 'completion' | 'response'
+export type OverlayType = 'permission' | 'question' | 'plan' | 'completion' | 'response' | 'compacting'
 
 export const OVERLAY_PRIORITY: Record<OverlayType, number> = {
   permission: 100,
@@ -37,6 +37,7 @@ export const OVERLAY_PRIORITY: Record<OverlayType, number> = {
   question: 80,
   completion: 20,
   response: 10,
+  compacting: 15,
 }
 
 export interface OverlayItem {
@@ -170,6 +171,7 @@ export interface SessionState {
   activeTools: ToolResult[]
   tasks?: TaskInfo[]
   lastUserMessage?: string
+  lastUserMessageAt?: number
   sessionTitle?: string
   pid?: number
   tty?: string

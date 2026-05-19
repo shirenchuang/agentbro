@@ -1172,17 +1172,48 @@
 }
 
 .hover-list__inline-plan-content {
-  padding: 8px 12px;
+  padding: 10px 12px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--island-text);
-  max-height: 120px;
+  max-height: 190px;
   overflow-y: auto;
+}
+
+.hover-list__inline-plan-perms {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-height: 58px;
+  overflow-y: auto;
+  border-top: 1px solid var(--island-border);
+  padding: 6px 12px;
+  color: var(--island-text-secondary);
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1.25;
+}
+
+.hover-list__inline-plan-perms-label {
+  flex: 0 0 auto;
+  color: var(--island-text-muted);
+  font-weight: 760;
+}
+
+.hover-list__inline-plan-perm {
+  min-width: 0;
+  color: inherit;
+}
+
+.hover-list__inline-plan-perm-tool {
+  color: inherit;
+  font-weight: 720;
 }
 
 .hover-list__inline-plan-feedback {
   border-top: 1px solid var(--island-border);
-  padding: 8px 12px;
+  padding: 7px 12px;
 }
 
 .hover-list__inline-plan-input {
@@ -1358,18 +1389,18 @@
   gap: 7px;
   margin: 8px 12px 0;
   padding-top: 8px;
-  border-top: 1px solid color-mix(in srgb, var(--island-text) 10%, transparent);
-  color: var(--island-text-secondary);
+  border-top: 1px solid var(--island-brand-footer-border, color-mix(in srgb, var(--island-text) 10%, transparent));
+  color: var(--island-brand-slogan, var(--island-text-secondary));
   pointer-events: none;
 }
 
 .hover-list__brand-footer--light {
-  color: color-mix(in srgb, var(--island-text-secondary) 82%, var(--island-text) 18%);
+  color: var(--island-brand-slogan, color-mix(in srgb, var(--island-text-secondary) 82%, var(--island-text) 18%));
 }
 
 .hover-list__brand-footer--dark {
-  color: color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%);
-  border-top-color: rgba(255, 255, 255, 0.075);
+  color: var(--island-brand-slogan, color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%));
+  border-top-color: var(--island-brand-footer-border, rgba(255, 255, 255, 0.075));
 }
 
 .hover-list__brand-logo-stack {
@@ -1391,34 +1422,18 @@
 
 .hover-list__brand-logo--light {
   filter: drop-shadow(0 1px 8px rgba(248, 164, 0, 0.16));
-  opacity: 1;
+  opacity: var(--island-brand-logo-light-opacity, 1);
 }
 
 .hover-list__brand-logo--dark {
   filter: drop-shadow(0 1px 8px rgba(255, 255, 255, 0.18));
-  opacity: 0;
-}
-
-.hover-list__brand-footer--dark .hover-list__brand-logo--light {
-  opacity: 0;
-}
-
-.hover-list__brand-footer--dark .hover-list__brand-logo--dark {
-  opacity: 1;
+  opacity: var(--island-brand-logo-dark-opacity, 0);
 }
 
 @media (prefers-color-scheme: dark) {
   .hover-list__brand-footer--system {
-    color: color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%);
-    border-top-color: rgba(255, 255, 255, 0.075);
-  }
-
-  .hover-list__brand-footer--system .hover-list__brand-logo--light {
-    opacity: 0;
-  }
-
-  .hover-list__brand-footer--system .hover-list__brand-logo--dark {
-    opacity: 1;
+    color: var(--island-brand-slogan, color-mix(in srgb, var(--island-text-secondary) 76%, var(--island-text) 24%));
+    border-top-color: var(--island-brand-footer-border, rgba(255, 255, 255, 0.075));
   }
 }
 

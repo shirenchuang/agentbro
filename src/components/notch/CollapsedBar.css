@@ -302,6 +302,62 @@
   color: #ef4444;
 }
 
+.collapsed-bar__compacting-inline {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.collapsed-bar__compacting-label {
+  flex: 0 0 auto;
+  color: #c084fc;
+}
+
+.collapsed-bar__compacting-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #c084fc;
+  box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.42);
+  animation: compacting-dot-pulse 1.2s ease-out infinite;
+}
+
+.collapsed-bar--compacting .collapsed-bar__main {
+  position: relative;
+  overflow: hidden;
+}
+
+.collapsed-bar--compacting .collapsed-bar__main::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(168, 85, 247, 0.14) 50%,
+    transparent 100%
+  );
+  animation: shimmer-slide 1.8s ease-in-out infinite;
+}
+
+@keyframes compacting-dot-pulse {
+  70% {
+    box-shadow: 0 0 0 6px rgba(192, 132, 252, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0);
+  }
+}
+
 /* Alert badge — evolab-style: gray bg + amber dot + count */
 .collapsed-bar__alert-badge {
   display: inline-flex;

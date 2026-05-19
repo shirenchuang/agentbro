@@ -1650,7 +1650,9 @@ impl HookServer {
             || normalized == "processing user input"
             || normalized.starts_with("processing user input:")
             || normalized == "compacting context"
-            || normalized.starts_with("compacting context:")
+            || normalized.starts_with("compacting context")
+            || normalized == "compacting conversation"
+            || normalized.starts_with("compacting conversation")
             || normalized == "waiting for input"
     }
 

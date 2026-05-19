@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -15,6 +15,7 @@ interface PlanApprovalCardProps {
   onAutoApprove: () => void
   onShowSessions?: () => void
   onDismiss: () => void
+  onDraftStateChange?: (hasDraft: boolean) => void
   sessionCount?: number
 }
 
@@ -68,11 +69,24 @@ function formatPlanMarkdown(content: string): string {
     .join('\n')
 }
 
-export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onShowSessions, onDismiss, sessionCount }: PlanApprovalCardProps) {
+function parsePlanPermission(permission: string): { tool: string; prompt?: string } {
+  const match = permission.match(/^([^:：]+)[:：]\s*(.*)$/)
+  if (!match) return { tool: permission }
+  return { tool: match[1].trim(), prompt: match[2].trim() }
+}
+
+export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: PlanApprovalCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { planTitle?: string; planContent: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
   const [feedback, setFeedback] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const hasDraft = feedback.trim().length > 0
+
+  useEffect(() => {
+    onDraftStateChange?.(hasDraft)
+  }, [hasDraft, onDraftStateChange])
+
+  useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
   const handleSendFeedback = () => {
     const val = feedback.trim()
@@ -109,15 +123,15 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
       {/* Requested permissions */}
       {data.requestedPermissions && data.requestedPermissions.length > 0 && (
         <div className="plan-approval__perms">
-          {data.requestedPermissions.map((p, i) => (
-            <div key={i} className="plan-approval__perm-item">
-              {typeof p === 'string' ? (
-                <span>{p}</span>
-              ) : (
-                <span><span className="plan-approval__perm-tool">{p.tool}</span>: {p.prompt}</span>
-              )}
-            </div>
-          ))}
+          <span className="plan-approval__perms-label">{t('notch.requestedPermissions', { defaultValue: '请求的权限:' })}</span>
+          {data.requestedPermissions.map((p, i) => {
+            const permission = typeof p === 'string' ? parsePlanPermission(p) : p
+            return (
+              <div key={i} className="plan-approval__perm-item">
+                <span><span className="plan-approval__perm-tool">{permission.tool}</span>{permission.prompt ? `: ${permission.prompt}` : ''}</span>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -126,6 +140,7 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
         <input
           ref={inputRef}
           className="plan-approval__input"
+          data-has-draft={hasDraft ? 'true' : 'false'}
           placeholder={t('notch.planFeedback', { defaultValue: 'Tell Claude what to change...' })}
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}

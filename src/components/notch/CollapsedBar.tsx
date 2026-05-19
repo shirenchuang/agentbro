@@ -33,7 +33,7 @@ function getLeadSession(sessions: SessionState[]): SessionState | undefined {
 const PHASE_LABELS: Record<SessionPhase, string> = {
   ready: 'notch.ready',
   idle: 'notch.idle',
-  processing: 'notch.thinking',
+  processing: 'notch.working',
   waiting_approval: 'notch.needsApproval',
   waiting_input: 'notch.waitingInput',
   compacting: 'notch.compactingShort',
@@ -226,6 +226,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
   const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')
   const showBrandEmpty = sessions.length === 0 && !focusFilteredEmpty
+  const isCompacting = lead?.phase === 'compacting'
   const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
   const isYolo = lead?.isYoloMode
   const hasError = lead?.phase === 'error'
@@ -292,7 +293,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   }
 
   return (
-    <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''} ${isThinking ? 'collapsed-bar--shimmer' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
+    <div className={`collapsed-bar ${isExpanded ? 'collapsed-bar--expanded' : ''} ${isThinking ? 'collapsed-bar--shimmer' : ''} ${isCompacting ? 'collapsed-bar--compacting' : ''}`} onClick={panelState === 'expanded' ? onCollapse : undefined}>
       {/* Top row: rate limits (left) + icons (right) — only in expanded */}
       {isExpanded && (
         <div className="collapsed-bar__status-row">
@@ -367,7 +368,13 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
                 ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={22} />
                 : renderMascot(undefined, 22)}
               <div className="collapsed-bar__carousel">
-                {primaryToolName ? (
+                {isCompacting ? (
+                  <span className="collapsed-bar__compacting-inline" title={t('notch.compacting')}>
+                    <span className="collapsed-bar__tool-project">{lead.project}</span>
+                    <span className="collapsed-bar__compacting-dot" />
+                    <span className="collapsed-bar__compacting-label">{t('notch.tool.compactingContext')}</span>
+                  </span>
+                ) : primaryToolName ? (
                   <CollapsedToolStatus
                     label={getToolActivityLabel(t, primaryToolName)}
                     project={lead.project}

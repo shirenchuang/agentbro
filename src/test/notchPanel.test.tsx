@@ -416,6 +416,29 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
   })
 
+  it('does not auto-collapse while the detail input has draft text', async () => {
+    useConfigStore.setState({ autoCollapse: true, collapseDelay: 1 })
+    mountIsland(null, { phase: 'idle' })
+
+    fireEvent.click(screen.getByText('agent-island · Port dynamic island'))
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
+
+    const input = await screen.findByRole('textbox') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'keep this draft' } })
+    expect(input).toHaveAttribute('data-has-draft', 'true')
+
+    fireEvent.pointerLeave(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(useSessionStore.getState().panelState).toBe('expanded')
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+
+    fireEvent.change(input, { target: { value: '' } })
+    expect(input).toHaveAttribute('data-has-draft', 'false')
+    fireEvent.pointerLeave(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+    await waitFor(() => expect(useSessionStore.getState().panelState).toBe('collapsed'))
+  })
+
   it('uses Evolab-style progressive Escape: collapse first, then hide from compact', async () => {
     mountIsland()
 
@@ -641,10 +664,50 @@ describe('NotchPanel island shell', () => {
       pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
     })
 
-    fireEvent.mouseDown(screen.getByText('notch.allowOnce'))
+    const allowButton = document.querySelector('.perm-card__btn--allow') as HTMLElement
+    expect(allowButton).toBeInTheDocument()
+    fireEvent.click(allowButton)
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+  })
+
+  it('ignores legacy single-letter permission shortcuts', () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: 'pnpm test' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+    })
+
+    fireEvent.keyDown(document.body, { key: 'y' })
+    fireEvent.keyDown(document.body, { key: 'A' })
+    fireEvent.keyDown(document.body, { key: 'n' })
+
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
+  })
+
+  it('does not approve permission requests with the old default window shortcut', () => {
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: 'pnpm test' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+    })
+
+    fireEvent.keyDown(window, { key: 'Enter', metaKey: true })
+
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
   })
 
   it('renders fresh blocking permission as the primary island content', () => {
@@ -660,6 +723,8 @@ describe('NotchPanel island shell', () => {
     })
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'alert_permission')
+    expect(hostWidthVar()).toBe('754px')
+    expect(hitboxWidthVar()).toBe('686px')
     expect(document.querySelector('.notch-panel__alert-content')).toBeInTheDocument()
     expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
     expect(document.querySelector('.hover-list')).not.toBeInTheDocument()
@@ -805,6 +870,7 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick one', options: ['Ship it', 'Revise'] },
     })
 
+    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
@@ -902,7 +968,7 @@ describe('NotchPanel island shell', () => {
       data: {
         planTitle: 'Implementation plan',
         planContent: '# Fix jump\n\nContext\n\n1. Fix jump',
-        requestedPermissions: [{ tool: 'Bash', prompt: 'run tests' }],
+        requestedPermissions: [{ tool: 'Bash', prompt: 'run tests' }, 'Edit: src/App.tsx'],
       },
       createdAt: Date.now(),
     }, {
@@ -927,6 +993,10 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('完成')).toBeInTheDocument()
     expect(document.querySelector('.plan-approval__content')?.textContent).toContain('Fix jump')
     expect(document.querySelector('.plan-approval__perms')?.textContent).toContain('Bash')
+    expect(screen.getByText('请求的权限:')).toHaveClass('plan-approval__perms-label')
+    expect(screen.getByText('Bash')).toHaveClass('plan-approval__perm-tool')
+    expect(screen.getByText('Edit')).toHaveClass('plan-approval__perm-tool')
+    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Accept Edits'))
 
@@ -973,7 +1043,14 @@ describe('NotchPanel island shell', () => {
       sessionId: 's1',
       type: 'response',
       data: {
-        responseText: 'Ready for the next step',
+        responseText: [
+          'Ready for the next step',
+          '',
+          '| 级别 | 问题 | 修复 |',
+          '| --- | --- | --- |',
+          '| Critical | `set_current` 非原子 | 事务 + 行数校验 |',
+          '| Medium | `count_table` 格式化 SQL | 白名单校验 |',
+        ].join('\n'),
         userMessage: 'Continue?',
       },
       createdAt: Date.now(),
@@ -981,11 +1058,15 @@ describe('NotchPanel island shell', () => {
 
     expect(document.querySelector('.overlay-feedback__message--user')?.textContent).toContain('Continue?')
     expect(document.querySelector('.overlay-feedback__message--assistant')?.textContent).toContain('Ready for the next step')
+    expect(document.querySelector('.overlay-feedback__markdown table')).toBeInTheDocument()
+    expect(screen.getByText('级别')).toBeInTheDocument()
+    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
 
-    fireEvent.mouseDown(document.querySelector('.overlay-feedback__detail')!)
+    tauriMocks.jumpToTerminal.mockClear()
+    fireEvent.mouseDown(document.querySelector('.overlay-feedback__session')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1')
 
     cleanup()
     mountIsland({
@@ -1001,8 +1082,10 @@ describe('NotchPanel island shell', () => {
 
     const replyInput = screen.getByPlaceholderText('Send a message...')
     tauriMocks.setNotchFocusable.mockClear()
+    tauriMocks.jumpToTerminal.mockClear()
     expect(fireEvent.mouseDown(replyInput)).toBe(false)
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+    expect(tauriMocks.jumpToTerminal).not.toHaveBeenCalled()
 
     fireEvent.change(replyInput, {
       target: { value: 'thanks, keep going' },
@@ -1010,6 +1093,122 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', 'thanks, keep going'))
+  })
+
+  it('keeps response feedback open after sending a reply until hover leaves', async () => {
+    vi.useFakeTimers()
+    try {
+      mountIsland({
+        id: 'response-s1-reply-stays-open',
+        sessionId: 's1',
+        type: 'response',
+        data: {
+          responseText: 'Still working on it',
+          userMessage: 'Confirm?',
+        },
+        createdAt: Date.now(),
+      })
+
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+      const overlay = document.querySelector('.overlay-feedback')!
+      fireEvent.pointerEnter(hitbox)
+      fireEvent.mouseEnter(overlay)
+
+      const replyInput = screen.getByPlaceholderText('Send a message...')
+      fireEvent.change(replyInput, { target: { value: 'confirmed, continue' } })
+
+      await act(async () => {
+        fireEvent.mouseDown(screen.getByRole('button', { name: 'Send' }))
+        await Promise.resolve()
+      })
+
+      expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', 'confirmed, continue')
+
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1-reply-stays-open')
+      expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'feedback')
+
+      act(() => {
+        vi.advanceTimersByTime(2_500)
+      })
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1-reply-stays-open')
+
+      fireEvent.mouseLeave(overlay)
+
+      expect(useSessionStore.getState().activeOverlay).toBeNull()
+      expect(useSessionStore.getState().panelState).toBe('collapsed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not dismiss feedback overlays on mouse leave while the reply input has draft text', () => {
+    vi.useFakeTimers()
+    try {
+      mountIsland({
+        id: 'response-s1-draft',
+        sessionId: 's1',
+        type: 'response',
+        data: {
+          responseText: 'Draft should hold this open',
+          userMessage: 'Continue?',
+        },
+        createdAt: Date.now(),
+      })
+
+      const hitbox = screen.getByRole('region', { name: 'AgentBro' }).parentElement!
+      const overlay = document.querySelector('.overlay-feedback')!
+      const replyInput = screen.getByPlaceholderText('Send a message...')
+
+      fireEvent.pointerEnter(hitbox)
+      fireEvent.mouseEnter(overlay)
+      fireEvent.change(replyInput, { target: { value: 'not ready yet' } })
+      expect(replyInput).toHaveAttribute('data-has-draft', 'true')
+
+      act(() => {
+        vi.advanceTimersByTime(3_000)
+      })
+      fireEvent.mouseLeave(overlay)
+      fireEvent.pointerLeave(hitbox)
+
+      expect(useSessionStore.getState().activeOverlay?.id).toBe('response-s1-draft')
+      expect(useSessionStore.getState().panelState).toBe('hover')
+
+      fireEvent.change(replyInput, { target: { value: '' } })
+      expect(replyInput).toHaveAttribute('data-has-draft', 'false')
+      fireEvent.mouseLeave(overlay)
+
+      expect(useSessionStore.getState().activeOverlay).toBeNull()
+      expect(useSessionStore.getState().panelState).toBe('collapsed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renders a dedicated compacting overlay while context compaction is running', () => {
+    mountIsland({
+      id: 'compacting-s1',
+      sessionId: 's1',
+      type: 'compacting',
+      data: {},
+      createdAt: Date.now(),
+    }, {
+      phase: 'compacting',
+      lastUserMessage: 'Please compact the context',
+    })
+
+    expect(screen.getByText('Compacting context...')).toBeInTheDocument()
+    expect(screen.getByText('Please compact the context')).toBeInTheDocument()
+    expect(document.querySelector('.overlay-compacting')).toBeInTheDocument()
+
+    fireEvent.mouseDown(document.querySelector('.overlay-compacting__body')!)
+
+    expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
   })
 
   it('auto-collapses after the cursor leaves the detail view', async () => {
@@ -1031,7 +1230,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('dismisses feedback overlays when the feedback body jumps to the terminal', () => {
+  it('keeps feedback overlays visible when the feedback body jumps to the terminal', () => {
     mountIsland({
       id: 'completion-s1',
       sessionId: 's1',
@@ -1043,8 +1242,8 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(document.querySelector('.overlay-feedback__detail')!)
 
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
-    expect(useSessionStore.getState().overlayQueue).toEqual([])
+    expect(useSessionStore.getState().activeOverlay?.id).toBe('completion-s1')
+    expect(useSessionStore.getState().overlayQueue.map((overlay) => overlay.id)).toContain('completion-s1')
   })
 
   it('keeps the feedback countdown running while hovered', () => {

@@ -15,8 +15,8 @@ export interface ColorThemeInfo {
 }
 
 export const COLOR_THEMES: ColorThemeInfo[] = [
-  { id: 'ink-amber', label: 'AgentBro Classic', labelZh: 'AgentBro 经典', tag: 'Default', isDark: false, bg: '#fff7ec', card: '#fffdf8', accent: '#f8a400' },
-  { id: 'midnight', label: 'Midnight', labelZh: '午夜', tag: 'Evolab', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#7b78ff' },
+  { id: 'ink-amber', label: 'AgentBro Classic', labelZh: 'AgentBro 经典', tag: 'Classic', isDark: false, bg: '#fff7ec', card: '#fffdf8', accent: '#f8a400' },
+  { id: 'midnight', label: 'Midnight', labelZh: '午夜', tag: 'Default', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#7b78ff' },
   { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '磨砂玻璃', tag: 'Light', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#352eff' },
   { id: 'apple', label: 'Apple', labelZh: '苹果', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
   { id: 'smoke', label: 'Smoke', labelZh: '烟灰', tag: 'Neutral', isDark: false, bg: '#e8e8ec', card: '#f4f4f6', accent: '#64748b' },
@@ -68,6 +68,7 @@ const DEFAULT_THEME: ThemeConfig = {
 const INK_AMBER_THEME = inkAmberThemeConfig as ThemeConfig
 const BUILTIN_THEMES = [INK_AMBER_THEME, DEFAULT_THEME]
 const DEFAULT_ROLE_THEME_NAME = INK_AMBER_THEME.name
+const DEFAULT_COLOR_THEME_ID = 'midnight'
 
 type PersistedThemeState = {
   activeThemeName?: string
@@ -107,7 +108,7 @@ export const useThemeStore = create<ThemeStore>()(
       themes: BUILTIN_THEMES,
       activeThemeName: DEFAULT_ROLE_THEME_NAME,
       activeTheme: INK_AMBER_THEME,
-      colorTheme: 'ink-amber',
+      colorTheme: DEFAULT_COLOR_THEME_ID,
 
       setActiveTheme: (name) => {
         const theme = get().themes.find((t) => t.name === name)
@@ -136,13 +137,20 @@ export const useThemeStore = create<ThemeStore>()(
     }),
     {
       name: 'agentbro-theme',
-      version: 2,
+      version: 3,
       partialize: (state) => ({ activeThemeName: state.activeThemeName, colorTheme: state.colorTheme }),
       migrate: (persistedState, version) => {
         const state = persistedState as PersistedThemeState | undefined
         if (!state) return persistedState
         if (version < 2 && (!state.activeThemeName || state.activeThemeName === DEFAULT_THEME.name)) {
-          return { ...state, activeThemeName: DEFAULT_ROLE_THEME_NAME }
+          return {
+            ...state,
+            activeThemeName: DEFAULT_ROLE_THEME_NAME,
+            colorTheme: !state.colorTheme || state.colorTheme === 'ink-amber' ? DEFAULT_COLOR_THEME_ID : state.colorTheme,
+          }
+        }
+        if (version < 3 && (!state.colorTheme || state.colorTheme === 'ink-amber')) {
+          return { ...state, colorTheme: DEFAULT_COLOR_THEME_ID }
         }
         return persistedState
       },
@@ -151,8 +159,8 @@ export const useThemeStore = create<ThemeStore>()(
           if (state?.colorTheme && COLOR_THEMES.some((theme) => theme.id === state.colorTheme)) {
             applyColorTheme(state.colorTheme)
           } else if (state) {
-            state.colorTheme = 'ink-amber'
-            applyColorTheme('ink-amber')
+            state.colorTheme = DEFAULT_COLOR_THEME_ID
+            applyColorTheme(DEFAULT_COLOR_THEME_ID)
           }
           if (state && !state.activeThemeName) {
             state.activeThemeName = DEFAULT_ROLE_THEME_NAME

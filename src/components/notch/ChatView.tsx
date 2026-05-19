@@ -57,9 +57,10 @@ interface ChatViewProps {
   onBack: () => void
   initialSubagentId?: string
   onInitialSubagentHandled?: () => void
+  onInputDraftStateChange?: (hasDraft: boolean) => void
 }
 
-export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }: ChatViewProps) {
+export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, onInputDraftStateChange }: ChatViewProps) {
   const activeSession = useSessionStore(selectActiveSession)
   const contentFontSize = useConfigStore((s) => s.contentFontSize)
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
@@ -378,6 +379,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled }
           onDeny={handleDeny}
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
+          onDraftStateChange={onInputDraftStateChange}
         />
       )}
 

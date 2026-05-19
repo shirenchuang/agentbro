@@ -25,6 +25,7 @@ const sidebarGroups: SidebarGroup[] = [
       { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
       { id: 'monitor', labelKey: 'settings.agentMonitor', icon: '◉', iconBg: '#34C759' },
       { id: 'agents', labelKey: 'settings.agents', icon: '🧩', iconBg: '#007AFF' },
+      { id: 'switch', labelKey: 'settings.switch', icon: '⇄', iconBg: '#FF9500' },
     ],
   },
   {
@@ -161,6 +162,7 @@ export function SettingsSidebar({
       { id: 'stats', label: '项目统计', icon: '▥', iconBg: '#FF9500' },
       { id: 'sessions', label: '会话追踪', icon: '◉', iconBg: '#5856D6' },
       { id: 'access', label: '接入设置', icon: '⌘', iconBg: '#8E8E93' },
+      { id: 'usage', label: '用量统计', icon: '$', iconBg: '#FF3B30' },
     ]
 
     return (

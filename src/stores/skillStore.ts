@@ -19,7 +19,7 @@ interface SkillState {
   syncConfig: SyncConfig | null
   loading: boolean
   scanning: boolean
-  activeTab: 'skills' | 'central' | 'plugins' | 'collections' | 'packs' | 'discover' | 'obsidian' | 'market' | 'sync'
+  activeTab: 'skills' | 'central' | 'plugins' | 'collections' | 'packs' | 'discover' | 'obsidian' | 'market' | 'sync' | 'prompts'
   selectedSkillId: string | null
   detailOpen: boolean
   fileTree: FileTreeNode | null

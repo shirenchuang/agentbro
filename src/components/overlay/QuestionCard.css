@@ -5,6 +5,16 @@
   --question-panel: var(--island-bg);
   --question-surface: color-mix(in srgb, var(--island-card) 88%, var(--question-accent) 5%);
   --question-border: color-mix(in srgb, var(--island-border) 78%, var(--question-accent) 22%);
+  --approval-context-font-size: 12px;
+  --approval-context-line-height: 1.18;
+  --approval-meta-font-size: 11px;
+  --approval-meta-line-height: 1.28;
+  --approval-title-font-size: 13px;
+  --approval-title-line-height: 1.18;
+  --approval-body-font-size: 12px;
+  --approval-body-line-height: 1.4;
+  --approval-caption-font-size: 11px;
+  --approval-control-font-size: 12px;
   gap: 9px;
   width: 100%;
   min-height: 0;
@@ -33,9 +43,9 @@
 
 .overlay-card--question .overlay-ctx__row1 {
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--approval-context-font-size);
   font-weight: 800;
-  line-height: 1.18;
+  line-height: var(--approval-context-line-height);
   color: var(--island-text);
 }
 
@@ -53,9 +63,9 @@
 
 .overlay-card--question .overlay-ctx__row2 {
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--approval-meta-font-size);
   font-weight: 700;
-  line-height: 1.28;
+  line-height: var(--approval-meta-line-height);
   color: var(--island-text-muted);
 }
 
@@ -69,7 +79,7 @@
 }
 
 .overlay-card--question .overlay-card__body {
-  overflow: hidden;
+  overflow: auto;
 }
 
 .question-card {
@@ -94,9 +104,9 @@
 }
 
 .question-card__header-title {
-  font-size: 13px;
+  font-size: var(--approval-title-font-size);
   font-weight: 800;
-  line-height: 1.18;
+  line-height: var(--approval-title-line-height);
   color: var(--question-accent);
   flex: 1;
   min-width: 0;
@@ -112,7 +122,7 @@
 }
 
 .question-card__multi-badge {
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 750;
   color: var(--island-warning-text);
   background: var(--island-warning-bg);
@@ -121,9 +131,9 @@
 }
 
 .question-card__text {
-  font-size: 12px;
+  font-size: var(--approval-body-font-size);
   font-weight: 650;
-  line-height: 1.4;
+  line-height: var(--approval-body-line-height);
   color: var(--island-text);
   margin-bottom: 0;
 }
@@ -135,10 +145,11 @@
 
 .question-card__options {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 6px;
   min-height: 0;
-  overflow-y: auto;
+  overflow: visible;
   padding-right: 2px;
 }
 
@@ -180,7 +191,7 @@
   border-radius: 6px;
   background: color-mix(in srgb, var(--question-accent) 70%, transparent);
   color: var(--island-on-accent, #ffffff);
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -195,24 +206,20 @@
 }
 
 .question-card__option-label {
-  font-size: 12px;
+  font-size: var(--approval-body-font-size);
   font-weight: 680;
   line-height: 1.22;
   color: var(--island-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .question-card__option-desc {
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 540;
   line-height: 1.22;
   color: var(--island-text-secondary);
   margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .question-card__option-chevron {
@@ -235,7 +242,7 @@
   padding: 7px 10px;
   border: 1px dashed color-mix(in srgb, var(--question-accent) 18%, transparent);
   border-radius: 8px;
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 560;
   color: var(--island-text-muted);
   cursor: pointer;
@@ -256,9 +263,10 @@
   border-radius: 8px;
   color: var(--island-text);
   font-family: var(--font-sans, system-ui);
-  font-size: 11.5px;
+  font-size: var(--approval-control-font-size);
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .question-card__input::placeholder {
@@ -269,6 +277,15 @@
   border-color: color-mix(in srgb, var(--question-accent) 68%, var(--island-border));
 }
 
+.question-card__input[data-has-draft="true"],
+.question-card__inline-input[data-has-draft="true"] {
+  border-color: color-mix(in srgb, var(--question-accent) 78%, var(--island-border));
+  background:
+    linear-gradient(90deg, var(--question-accent) 0 3px, transparent 3px),
+    var(--island-input-bg);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--question-accent) 20%, transparent);
+}
+
 /* Confirm button */
 .question-card__confirm {
   width: 100%;
@@ -277,7 +294,7 @@
   border-radius: 8px;
   background: var(--question-accent);
   color: var(--island-on-accent, #ffffff);
-  font-size: 11.5px;
+  font-size: var(--approval-control-font-size);
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
@@ -295,6 +312,7 @@
 /* Multi-question mode */
 .question-card__multi {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 6px;
   min-height: 0;
@@ -304,7 +322,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 180px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -317,7 +336,7 @@
 }
 
 .question-card__multi-q {
-  font-size: 11.5px;
+  font-size: var(--approval-body-font-size);
   font-weight: 650;
   line-height: 1.36;
   color: var(--island-text);
@@ -347,7 +366,7 @@
   border-radius: 6px;
   background: color-mix(in srgb, var(--island-btn-bg) 88%, var(--question-accent) 8%);
   color: var(--island-text-secondary);
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 650;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -378,9 +397,10 @@
   border: 1px solid color-mix(in srgb, var(--question-accent) 34%, var(--island-border));
   border-radius: 6px;
   color: var(--island-text);
-  font-size: 11.5px;
+  font-size: var(--approval-control-font-size);
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .question-card__inline-input:focus {
@@ -389,7 +409,7 @@
 
 .question-card__custom-link {
   margin-top: 8px;
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   color: var(--island-text-muted);
   cursor: pointer;
   transition: color 0.15s;
@@ -411,7 +431,7 @@
   border-radius: 8px;
   background: var(--island-warning-bg);
   color: var(--island-warning-text);
-  font-size: 11.5px;
+  font-size: var(--approval-control-font-size);
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;

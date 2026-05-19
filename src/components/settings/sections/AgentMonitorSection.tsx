@@ -25,6 +25,8 @@ import type { ChatMessage, SessionState, TokenUsage } from '../../../types/agent
 import { formatDurationShort } from '../../../utils/time'
 import { formatTokens } from '../../../utils/tokens'
 import type { MonitorSettingsView } from '../../../types/capability'
+import { SwitchUsagePanel } from './switch/SwitchUsagePanel'
+import { SwitchAppTabs } from './switch/SwitchAppTabs'
 import { Toggle } from '../Toggle'
 import './AgentMonitorSection.css'
 
@@ -733,6 +735,21 @@ export function AgentMonitorSection({ activeView = 'sessions' }: AgentMonitorSec
         </div>
         <StatsPanel title="模型使用统计" items={modelStats} />
         <StatsPanel title="项目请求统计" items={projectStats} />
+      </section>
+    )
+  }
+
+  if (activeView === 'usage') {
+    return (
+      <section className="agent-monitor">
+        <header className="agent-monitor__header">
+          <div>
+            <h2>用量统计</h2>
+            <p>按 Provider 和模型查看 API 用量与费用估算。</p>
+          </div>
+        </header>
+        <SwitchAppTabs />
+        <SwitchUsagePanel />
       </section>
     )
   }

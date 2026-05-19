@@ -9,6 +9,7 @@ import { AgentsSection } from './sections/AgentsSection'
 import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
+import { SwitchSection } from './sections/SwitchSection'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
@@ -71,6 +72,8 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
               <IslandSection activeView={activeIslandView} />
             ) : activeSection === 'monitor' ? (
               <AgentMonitorSection activeView={activeMonitorView} />
+            ) : activeSection === 'switch' ? (
+              <SwitchSection />
             ) : activeSection === 'agents' ? (
               <AgentsSection
                 activeView={activeCapabilityView}

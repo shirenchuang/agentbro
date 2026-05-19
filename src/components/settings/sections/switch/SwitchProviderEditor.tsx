@@ -147,7 +147,7 @@ export function SwitchProviderEditor({ provider, onClose }: Props) {
     }
   }, [settingsConfig])
 
-  const toggleFeature = (key: string, envKey: string, enableValue: string) => {
+  const toggleFeature = (_key: string, envKey: string, enableValue: string) => {
     const env = (settingsConfig.env ?? {}) as Record<string, unknown>
     const current = env[envKey]
     if (current === enableValue) {

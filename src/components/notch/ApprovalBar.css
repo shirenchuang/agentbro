@@ -152,7 +152,7 @@
   font-family: inherit;
   font-size: 12px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .approval-bar__input::placeholder {
@@ -161,6 +161,14 @@
 
 .approval-bar__input:focus {
   border-color: var(--island-accent, #7b78ff);
+}
+
+.approval-bar__input[data-has-draft="true"] {
+  border-color: color-mix(in srgb, var(--island-accent, #7b78ff) 78%, var(--island-border));
+  background:
+    linear-gradient(90deg, var(--island-accent, #7b78ff) 0 3px, transparent 3px),
+    var(--island-input-bg, #0d0d0d);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--island-accent, #7b78ff) 22%, transparent);
 }
 
 .approval-bar__send {

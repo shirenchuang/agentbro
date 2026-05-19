@@ -187,18 +187,20 @@ pub struct AppConfig {
     /// Global keyboard shortcut to approve current permission request
     #[serde(default = "default_shortcut_approve")]
     pub shortcut_approve: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub shortcut_approve_enabled: bool,
     /// Global keyboard shortcut to deny current permission request
     #[serde(default = "default_shortcut_deny")]
     pub shortcut_deny: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub shortcut_deny_enabled: bool,
     /// Global keyboard shortcut to skip current question by selecting the first option
     #[serde(default = "default_shortcut_skip")]
     pub shortcut_skip: String,
     #[serde(default)]
     pub shortcut_skip_enabled: bool,
+    #[serde(default)]
+    pub permission_shortcut_defaults_migrated: bool,
 }
 
 fn default_display_id() -> String {
@@ -269,7 +271,7 @@ impl Default for AppConfig {
             completion_timeout: 5,
             show_token_usage: true,
             usage_query_enabled: true,
-            theme: "ink-amber".to_string(),
+            theme: "midnight".to_string(),
             display_id: "primary".to_string(),
             auto_hide_no_sessions: false,
             sound_events: std::collections::HashMap::new(),
@@ -302,12 +304,29 @@ impl Default for AppConfig {
             island_pet_window_origin: None,
             global_shortcut: "CommandOrControl+Shift+I".to_string(),
             shortcut_approve: default_shortcut_approve(),
-            shortcut_approve_enabled: true,
+            shortcut_approve_enabled: false,
             shortcut_deny: default_shortcut_deny(),
-            shortcut_deny_enabled: true,
+            shortcut_deny_enabled: false,
             shortcut_skip: default_shortcut_skip(),
             shortcut_skip_enabled: false,
+            permission_shortcut_defaults_migrated: true,
         }
+    }
+}
+
+impl AppConfig {
+    fn migrate_permission_shortcut_defaults(&mut self) {
+        if self.permission_shortcut_defaults_migrated {
+            return;
+        }
+
+        if self.shortcut_approve_enabled && self.shortcut_approve == default_shortcut_approve() {
+            self.shortcut_approve_enabled = false;
+        }
+        if self.shortcut_deny_enabled && self.shortcut_deny == default_shortcut_deny() {
+            self.shortcut_deny_enabled = false;
+        }
+        self.permission_shortcut_defaults_migrated = true;
     }
 }
 
@@ -367,7 +386,9 @@ impl ConfigStore {
     /// Load config from disk
     fn load_from_disk(path: &PathBuf) -> Option<AppConfig> {
         let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
+        let mut config: AppConfig = serde_json::from_str(&content).ok()?;
+        config.migrate_permission_shortcut_defaults();
+        Some(config)
     }
 
     /// Save config to disk
@@ -434,5 +455,42 @@ mod tests {
         assert_eq!(config.idle_timeout_minutes, 5);
         assert_eq!(config.sound_volume, 0.7);
         assert_eq!(config.volume, 70);
+        assert!(!config.shortcut_approve_enabled);
+        assert!(!config.shortcut_deny_enabled);
+        assert!(config.permission_shortcut_defaults_migrated);
+    }
+
+    #[test]
+    fn migrates_legacy_permission_shortcut_defaults_once() {
+        let mut config = AppConfig {
+            shortcut_approve_enabled: true,
+            shortcut_deny_enabled: true,
+            permission_shortcut_defaults_migrated: false,
+            ..AppConfig::default()
+        };
+
+        config.migrate_permission_shortcut_defaults();
+
+        assert!(!config.shortcut_approve_enabled);
+        assert!(!config.shortcut_deny_enabled);
+        assert!(config.permission_shortcut_defaults_migrated);
+    }
+
+    #[test]
+    fn keeps_custom_permission_shortcuts_enabled_during_migration() {
+        let mut config = AppConfig {
+            shortcut_approve: "CommandOrControl+Shift+P".to_string(),
+            shortcut_approve_enabled: true,
+            shortcut_deny: "CommandOrControl+Shift+R".to_string(),
+            shortcut_deny_enabled: true,
+            permission_shortcut_defaults_migrated: false,
+            ..AppConfig::default()
+        };
+
+        config.migrate_permission_shortcut_defaults();
+
+        assert!(config.shortcut_approve_enabled);
+        assert!(config.shortcut_deny_enabled);
+        assert!(config.permission_shortcut_defaults_migrated);
     }
 }

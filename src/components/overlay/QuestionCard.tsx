@@ -24,6 +24,7 @@ interface QuestionCardProps {
   onAnswer: (answer: string) => void
   onShowSessions?: () => void
   onDismiss: () => void
+  onDraftStateChange?: (hasDraft: boolean) => void
   sessionCount?: number
 }
 
@@ -61,7 +62,7 @@ function QuestionOptionRow({
   )
 }
 
-function MultiQuestionView({ data, onAnswer }: { data: QuestionData; onAnswer: (answer: string) => void }) {
+function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: QuestionData; onAnswer: (answer: string) => void; onDraftStateChange?: (hasDraft: boolean) => void }) {
   const { t } = useTranslation()
   const allQuestions = data.questions!
   const [selections, setSelections] = useState<Record<number, number | number[]>>({})
@@ -69,6 +70,13 @@ function MultiQuestionView({ data, onAnswer }: { data: QuestionData; onAnswer: (
   const [inputStates, setInputStates] = useState<Record<number, boolean>>({})
   const [inputTexts, setInputTexts] = useState<Record<number, string>>({})
   const [error, setError] = useState(false)
+  const hasDraft = Object.values(inputTexts).some((text) => text.trim().length > 0)
+
+  useEffect(() => {
+    onDraftStateChange?.(hasDraft)
+  }, [hasDraft, onDraftStateChange])
+
+  useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
   const getAnswer = (qi: number) =>
     customAnswers[qi] ??
@@ -136,6 +144,7 @@ function MultiQuestionView({ data, onAnswer }: { data: QuestionData; onAnswer: (
                 <input
                   autoFocus
                   className="question-card__inline-input"
+                  data-has-draft={(inputTexts[qi] ?? '').trim() ? 'true' : 'false'}
                   placeholder="Custom answer, press Enter..."
                   value={inputTexts[qi] ?? ''}
                   onChange={(e) => setInputTexts(prev => ({ ...prev, [qi]: e.target.value }))}
@@ -184,11 +193,12 @@ function MultiQuestionView({ data, onAnswer }: { data: QuestionData; onAnswer: (
   )
 }
 
-export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDismiss, sessionCount }: QuestionCardProps) {
+export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: QuestionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as QuestionData
   const options = (data.options || []).map(normalizeOption)
   const isMulti = data.multiSelect ?? false
+  const isMultiQuestionSet = Boolean(data.questions && data.questions.length > 1)
 
   const [responseState, setResponseState] = useState<{
     overlayId: string
@@ -200,12 +210,23 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
   const selected = isCurrentOverlay ? responseState.selected : new Set<number>()
   const showCustom = isCurrentOverlay && responseState.showCustom
   const customText = isCurrentOverlay ? responseState.customText : ''
+  const hasDraft = customText.trim().length > 0
+
+  useEffect(() => {
+    if (isMultiQuestionSet) return
+    onDraftStateChange?.(hasDraft)
+  }, [hasDraft, isMultiQuestionSet, onDraftStateChange])
+
+  useEffect(() => {
+    if (isMultiQuestionSet) return
+    return () => onDraftStateChange?.(false)
+  }, [isMultiQuestionSet, onDraftStateChange])
 
   useEffect(() => {
     return () => { setNotchFocusable(false) }
   }, [])
 
-  if (data.questions && data.questions.length > 1) {
+  if (isMultiQuestionSet) {
     return (
       <OverlayCard
         session={session}
@@ -215,7 +236,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
         className="overlay-card--question"
         bodyClassName="question-card"
       >
-        <MultiQuestionView data={data} onAnswer={onAnswer} />
+        <MultiQuestionView data={data} onAnswer={onAnswer} onDraftStateChange={onDraftStateChange} />
       </OverlayCard>
     )
   }
@@ -319,6 +340,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
               autoFocus
               type="text"
               className="question-card__input"
+              data-has-draft={hasDraft ? 'true' : 'false'}
               value={customText}
               onChange={(e) => setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText: e.target.value })}
               placeholder={t('notch.typePlaceholder', { defaultValue: 'Type your response...' })}

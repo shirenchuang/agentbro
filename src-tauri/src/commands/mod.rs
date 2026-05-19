@@ -23,6 +23,7 @@ use crate::network_monitor::NetworkMonitor;
 use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
+use crate::switch::db::SwitchDatabase;
 use std::fs;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
@@ -49,6 +50,7 @@ pub struct AppState {
     pub remote_manager: Arc<RemoteManager>,
     pub diagnostic_buffer: Arc<DiagnosticRingBuffer>,
     pub network_monitor: Arc<NetworkMonitor>,
+    pub switch_db: Arc<SwitchDatabase>,
     #[allow(dead_code)]
     pub tray_icon: tauri::tray::TrayIcon,
 }
@@ -101,10 +103,12 @@ pub struct UsageProviderStatus {
 #[tauri::command]
 pub async fn list_usage_providers(
     state: State<'_, AppState>,
+    live: Option<bool>,
 ) -> Result<Vec<UsageProviderStatus>, String> {
     let enabled = state.config_store.get().usage_query_enabled;
+    let allow_live = live.unwrap_or(true);
     let mut providers = vec![
-        codex_usage_provider_status(enabled).await,
+        codex_usage_provider_status(enabled, allow_live).await,
         claude_usage_provider_status(enabled),
     ];
     providers.extend(catalog_supported_agent_usage_providers(enabled));
@@ -154,7 +158,7 @@ const CODEX_USAGE_LIVE_FAILURE_TTL: Duration = Duration::from_secs(60);
 
 async fn load_usage_snapshots() -> Vec<RateLimitInfo> {
     [
-        load_codex_usage_rate_limits().await,
+        load_codex_usage_rate_limits(true).await,
         load_claude_usage_rate_limits(),
     ]
     .into_iter()
@@ -163,10 +167,10 @@ async fn load_usage_snapshots() -> Vec<RateLimitInfo> {
     .collect()
 }
 
-async fn codex_usage_provider_status(enabled: bool) -> UsageProviderStatus {
+async fn codex_usage_provider_status(enabled: bool, allow_live: bool) -> UsageProviderStatus {
     let auth_path = dirs::home_dir().map(|home| home.join(".codex").join("auth.json"));
     let has_auth = auth_path.as_ref().is_some_and(|path| path.exists());
-    let snapshot = load_codex_usage_rate_limits().await;
+    let snapshot = load_codex_usage_rate_limits(allow_live).await;
     let source = snapshot
         .as_ref()
         .and_then(|item| item.rate_limits.source.clone());
@@ -335,7 +339,7 @@ fn expand_home_path(path: &str) -> Option<PathBuf> {
 }
 
 async fn load_latest_usage_rate_limits() -> Option<RateLimitInfo> {
-    let codex = load_codex_usage_rate_limits().await;
+    let codex = load_codex_usage_rate_limits(true).await;
     let claude = load_claude_usage_rate_limits();
 
     match (codex, claude) {
@@ -388,10 +392,14 @@ fn load_claude_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
     })
 }
 
-async fn load_codex_usage_rate_limits() -> Option<UsageRateLimitSnapshot> {
-    load_codex_usage_rate_limits_live_cached()
-        .await
-        .or_else(load_codex_usage_rate_limits_from_jsonl)
+async fn load_codex_usage_rate_limits(allow_live: bool) -> Option<UsageRateLimitSnapshot> {
+    if allow_live {
+        load_codex_usage_rate_limits_live_cached()
+            .await
+            .or_else(load_codex_usage_rate_limits_from_jsonl)
+    } else {
+        load_codex_usage_rate_limits_from_jsonl()
+    }
 }
 
 async fn load_codex_usage_rate_limits_live_cached() -> Option<UsageRateLimitSnapshot> {
@@ -2442,16 +2450,12 @@ fn merge_subagent(session: &mut SessionState, recovered: TranscriptSubagentInfo)
         tools: recovered.tools,
     };
 
-    if let Some(existing) = session
-        .subagents
-        .iter_mut()
-        .find(|item| {
-            item.agent_id == incoming.agent_id
-                || launch_tool_use_id
-                    .as_deref()
-                    .is_some_and(|tool_use_id| item.agent_id == tool_use_id)
-        })
-    {
+    if let Some(existing) = session.subagents.iter_mut().find(|item| {
+        item.agent_id == incoming.agent_id
+            || launch_tool_use_id
+                .as_deref()
+                .is_some_and(|tool_use_id| item.agent_id == tool_use_id)
+    }) {
         *existing = incoming;
     } else {
         session.subagents.push(incoming);

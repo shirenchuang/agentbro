@@ -84,6 +84,17 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeOverlay).toBeNull()
   })
 
+  it('does not show response overlays for transient compacting conversation text', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'idle', responseText: 'Compacting conversation...', lastUserMessage: '/compact' }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
   it('creates a completion overlay on transition to done', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
     useSessionStore.getState().replaceAllSessions([
@@ -189,6 +200,86 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeOverlay).toBeNull()
   })
 
+  it('shows and clears compacting overlays around context compaction', async () => {
+    useSessionStore.getState().updateSession({
+      type: 'session_start',
+      sessionId: 's1',
+      project: 'project',
+      terminal: 'iTerm',
+      agentType: 'claude-code',
+    })
+
+    useSessionStore.getState().updateSession({
+      type: 'context_compact',
+      sessionId: 's1',
+      phase: 'pre',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useSessionStore.getState().sessions.s1.phase).toBe('compacting')
+    expect(useSessionStore.getState().activeOverlay?.type).toBe('compacting')
+
+    useSessionStore.getState().updateSession({
+      type: 'context_compact',
+      sessionId: 's1',
+      phase: 'post',
+    })
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.phase).toBe('processing')
+    expect(state.sessions.s1.description).toBeUndefined()
+    expect(state.sessions.s1.lastToolName).toBeUndefined()
+    expect(state.overlayQueue.some((overlay) => overlay.type === 'compacting')).toBe(false)
+  })
+
+  it('creates a compacting overlay when backend snapshots enter compacting', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'compacting' })])
+
+    expect(useSessionStore.getState().activeOverlay?.type).toBe('compacting')
+  })
+
+  it('promotes backend compacting conversation snapshots to compacting', () => {
+    useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'processing',
+        description: 'Compacting conversation...',
+        lastToolName: undefined,
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.phase).toBe('compacting')
+    expect(state.sessions.s1.description).toBe('Compacting conversation...')
+    expect(state.activeOverlay?.type).toBe('compacting')
+  })
+
+  it('clears stale compacting labels when backend snapshots leave compacting', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'compacting',
+        description: 'Compacting context',
+        lastToolName: 'Compacting',
+        lastToolTarget: 'context',
+      }),
+    ])
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'processing',
+        description: 'Compacting context',
+        lastToolName: 'Compacting',
+        lastToolTarget: 'context',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessions.s1.phase).toBe('processing')
+    expect(state.sessions.s1.description).toBeUndefined()
+    expect(state.sessions.s1.lastToolName).toBeUndefined()
+    expect(state.overlayQueue.some((overlay) => overlay.type === 'compacting')).toBe(false)
+  })
+
   it('keeps inactive Claude rows visible until the session timeout', () => {
     useSessionStore.getState().replaceAllSessions([
       session({
@@ -273,6 +364,7 @@ describe('sessionStore backend overlays', () => {
   })
 
   it('marks locally sent messages as processing activity', () => {
+    const before = Date.now()
     useSessionStore.getState().replaceAllSessions([
       session({ phase: 'idle', sessionTitle: 'Selected Claude session' }),
     ])
@@ -286,8 +378,24 @@ describe('sessionStore backend overlays', () => {
     const selected = useSessionStore.getState().sessions.s1
     expect(selected.phase).toBe('processing')
     expect(selected.lastUserMessage).toBe('continue please')
+    expect(selected.lastUserMessageAt).toBeGreaterThanOrEqual(before)
     expect(selected.idleSince).toBeUndefined()
     expect(selected.chatHistory.at(-1)).toMatchObject({ role: 'user', content: 'continue please' })
+  })
+
+  it('timestamps backend user prompt changes', () => {
+    const oldPromptAt = Date.now() - 10_000
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'processing', lastUserMessage: 'old prompt', lastUserMessageAt: oldPromptAt }),
+    ])
+
+    useSessionStore.getState().replaceAllSessions([
+      session({ phase: 'processing', lastUserMessage: 'new prompt' }),
+    ])
+
+    const selected = useSessionStore.getState().sessions.s1
+    expect(selected.lastUserMessage).toBe('new prompt')
+    expect(selected.lastUserMessageAt).toBeGreaterThan(oldPromptAt)
   })
 
   it('hides completed Codex internal prompt sessions from the visible list', () => {

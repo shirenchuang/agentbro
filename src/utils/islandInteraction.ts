@@ -31,7 +31,7 @@ export function isBlockingOverlay(overlay: OverlayItem | null): boolean {
 }
 
 export function isNonBlockingOverlay(overlay: OverlayItem | null): boolean {
-  return overlay?.type === 'completion' || overlay?.type === 'response'
+  return overlay?.type === 'completion' || overlay?.type === 'response' || overlay?.type === 'compacting'
 }
 
 export function hasUnfinishedTasks(session: SessionState): boolean {

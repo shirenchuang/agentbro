@@ -1,13 +1,18 @@
 .overlay-feedback {
   display: flex;
   min-height: 0;
+  max-height: 100%;
   flex-direction: column;
   overflow: hidden;
   color: var(--island-text);
+  cursor: pointer;
+  --overlay-feedback-reader-min-height: 136px;
+  --overlay-feedback-reader-height: 360px;
 }
 
 .overlay-feedback__session {
   display: flex;
+  flex: 0 0 auto;
   align-items: stretch;
   gap: 12px;
   padding: 12px 20px 8px;
@@ -94,8 +99,6 @@
 .overlay-feedback__preview {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 11px;
   line-height: 1.45;
 }
@@ -103,6 +106,8 @@
 .overlay-feedback__user-line {
   margin-top: 5px;
   color: var(--island-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .overlay-feedback__user-line span:first-child {
@@ -111,12 +116,20 @@
 }
 
 .overlay-feedback__preview {
+  display: -webkit-box;
   color: var(--island-text-muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .overlay-feedback__detail {
-  display: block;
-  min-height: 0;
+  display: flex;
+  min-height: min(calc(var(--overlay-feedback-reader-min-height) + 24px), var(--overlay-feedback-reader-height));
+  max-height: var(--overlay-feedback-reader-height);
+  width: calc(100% - 36px);
+  flex: 1 1 var(--overlay-feedback-reader-height);
+  flex-direction: column;
+  box-sizing: border-box;
   margin: 8px 18px 10px;
   padding: 0;
   overflow: hidden;
@@ -132,9 +145,12 @@
 }
 
 .overlay-feedback__scroll {
-  min-height: 84px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
   overflow-y: auto;
-  padding: 9px 11px 11px;
+  padding: 10px 12px 12px;
   scrollbar-width: none;
 }
 
@@ -214,14 +230,47 @@
 }
 
 .overlay-feedback__message--assistant {
-  padding: 9px 10px 10px;
+  min-height: calc(var(--overlay-feedback-reader-min-height) - 52px);
+  padding: 10px 11px 12px;
+  box-sizing: border-box;
 }
 
 .overlay-feedback__markdown {
   color: var(--island-text);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 520;
-  line-height: 1.52;
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+}
+
+.overlay-feedback__markdown h1,
+.overlay-feedback__markdown h2,
+.overlay-feedback__markdown h3,
+.overlay-feedback__markdown h4 {
+  margin: 10px 0 7px;
+  color: var(--island-text);
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.overlay-feedback__markdown h1 {
+  font-size: 15px;
+}
+
+.overlay-feedback__markdown h2 {
+  font-size: 14px;
+}
+
+.overlay-feedback__markdown h3,
+.overlay-feedback__markdown h4 {
+  font-size: 12.5px;
+}
+
+.overlay-feedback__markdown h1:first-child,
+.overlay-feedback__markdown h2:first-child,
+.overlay-feedback__markdown h3:first-child,
+.overlay-feedback__markdown h4:first-child {
+  margin-top: 0;
 }
 
 .overlay-feedback__markdown p,
@@ -245,30 +294,111 @@
   margin: 2px 0;
 }
 
+.overlay-feedback__markdown hr {
+  height: 1px;
+  margin: 10px 0;
+  border: 0;
+  background: color-mix(in srgb, var(--island-text) 20%, transparent);
+}
+
+.overlay-feedback__markdown blockquote {
+  margin: 7px 0;
+  border-left: 2px solid color-mix(in srgb, var(--island-accent) 72%, var(--island-text) 8%);
+  color: var(--island-text-secondary);
+  padding: 2px 0 2px 10px;
+}
+
 .overlay-feedback__markdown code {
   border-radius: 4px;
-  background: var(--island-subtle);
-  color: var(--island-accent, #352eff);
+  background: color-mix(in srgb, var(--island-card-hover) 72%, transparent);
+  color: color-mix(in srgb, var(--island-accent, #7c7aff) 82%, #ffffff 18%);
   font-family: var(--font-mono);
   font-size: 10.5px;
+  font-weight: 650;
   padding: 1px 4px;
 }
 
 .overlay-feedback__markdown pre {
   overflow: auto;
-  border-radius: 6px;
-  background: var(--island-subtle);
-  padding: 7px;
+  margin: 7px 0;
+  border: 1px solid color-mix(in srgb, var(--island-text) 12%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--island-bg) 82%, #ffffff 4%);
+  padding: 8px;
 }
 
 .overlay-feedback__markdown pre code {
   background: transparent;
   color: var(--island-text);
+  font-size: 10.8px;
+  font-weight: 500;
+  line-height: 1.5;
   padding: 0;
+}
+
+.overlay-feedback__markdown table {
+  width: 100%;
+  margin: 8px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--island-text) 13%, transparent);
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--island-card) 88%, transparent);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+.overlay-feedback__markdown thead {
+  background: color-mix(in srgb, var(--island-card-hover) 78%, #ffffff 3%);
+}
+
+.overlay-feedback__markdown th,
+.overlay-feedback__markdown td {
+  min-width: 0;
+  padding: 7px 9px;
+  border-right: 1px solid color-mix(in srgb, var(--island-text) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--island-text) 10%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.overlay-feedback__markdown th {
+  color: var(--island-text);
+  font-size: 10.8px;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.overlay-feedback__markdown td {
+  color: color-mix(in srgb, var(--island-text) 90%, var(--island-text-secondary) 10%);
+}
+
+.overlay-feedback__markdown th:first-child,
+.overlay-feedback__markdown td:first-child {
+  width: 76px;
+  min-width: 76px;
+  overflow-wrap: normal;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.overlay-feedback__markdown th:last-child,
+.overlay-feedback__markdown td:last-child {
+  border-right: 0;
+}
+
+.overlay-feedback__markdown tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.overlay-feedback__markdown tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--island-text) 4%, transparent);
 }
 
 .overlay-feedback__reply {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 9px;
   margin-top: 0;
@@ -288,6 +418,7 @@
   font-size: 11px;
   outline: none;
   padding: 0 12px;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .overlay-feedback__input::placeholder {
@@ -296,6 +427,14 @@
 
 .overlay-feedback__input:focus {
   border-color: var(--island-text-muted);
+}
+
+.overlay-feedback__input[data-has-draft="true"] {
+  border-color: color-mix(in srgb, var(--island-accent, #7b78ff) 78%, var(--island-border));
+  background:
+    linear-gradient(90deg, var(--island-accent, #7b78ff) 0 3px, transparent 3px),
+    var(--island-card);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--island-accent, #7b78ff) 22%, transparent);
 }
 
 .overlay-feedback__send {
@@ -317,6 +456,7 @@
 }
 
 .overlay-feedback__progress {
+  flex: 0 0 auto;
   height: 2px;
   background: var(--island-subtle);
   overflow: hidden;

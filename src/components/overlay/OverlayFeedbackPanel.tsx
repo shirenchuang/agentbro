@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -21,7 +21,14 @@ interface OverlayFeedbackPanelProps {
   onJumpToTerminal: () => void
   onShowSessions?: () => void
   onDismiss: () => void
+  onDraftStateChange?: (hasDraft: boolean) => void
   sessionCount?: number
+}
+
+function shouldIgnorePanelJump(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(
+    target.closest('button, input, textarea, select, a, [role="button"]'),
+  )
 }
 
 export function OverlayFeedbackPanel({
@@ -35,6 +42,7 @@ export function OverlayFeedbackPanel({
   onJumpToTerminal,
   onShowSessions,
   onDismiss,
+  onDraftStateChange,
   sessionCount,
 }: OverlayFeedbackPanelProps) {
   const { t } = useTranslation()
@@ -56,6 +64,7 @@ export function OverlayFeedbackPanel({
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownStartedAt = startedAt ?? fallbackStartedAtRef.current
   const countdownDeadline = countdownStartedAt + dwellMs
+  const hasInputDraft = inputValue.trim().length > 0
 
   const shownUserMessage = userMessage || session.lastUserMessage
   const appLabel = getSessionAppLabel(session)
@@ -65,6 +74,12 @@ export function OverlayFeedbackPanel({
   useEffect(() => {
     onDismissRef.current = onDismiss
   }, [onDismiss])
+
+  useEffect(() => {
+    onDraftStateChange?.(hasInputDraft)
+  }, [hasInputDraft, onDraftStateChange])
+
+  useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
   const updateProgress = useCallback(() => {
     if (dwellMs <= 0) {
@@ -111,13 +126,14 @@ export function OverlayFeedbackPanel({
   }, [countdownDeadline, dwellMs, scheduleDismiss, updateProgress])
 
   const releaseDismissHold = useCallback(() => {
+    if (inputValue.trim()) return
     if (pointerInsideRef.current || inputFocusedRef.current) return
     if (dismissPendingRef.current || remainingRef.current <= 0) {
       onDismissRef.current()
       return
     }
     setIsTimerPaused(false)
-  }, [])
+  }, [inputValue])
 
   useEffect(() => {
     if (!isTimerPaused) return undefined
@@ -171,7 +187,7 @@ export function OverlayFeedbackPanel({
         content: value,
       })
       setInputValue('')
-      setTimeout(() => onDismissRef.current(), 500)
+      inputFocusedRef.current = false
     } finally {
       setSending(false)
     }
@@ -191,13 +207,20 @@ export function OverlayFeedbackPanel({
 
   const handleJump = useCallback(() => {
     onJumpToTerminal()
-    onDismissRef.current()
   }, [onJumpToTerminal])
+
+  const handlePanelMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || shouldIgnorePanelJump(event.target)) return
+    event.preventDefault()
+    handleJump()
+  }, [handleJump])
 
   return (
     <div
       ref={overlayRef}
       className={`overlay-feedback${isTimerPaused ? ' overlay-feedback--paused' : ''}`}
+      style={maxHeight ? ({ '--overlay-feedback-reader-height': `${maxHeight}px` } as CSSProperties) : undefined}
+      onMouseDown={handlePanelMouseDown}
       onMouseEnter={() => {
         pointerInsideRef.current = true
         setIsTimerPaused(true)
@@ -242,7 +265,7 @@ export function OverlayFeedbackPanel({
       </div>
 
       <button type="button" className="overlay-feedback__detail" onMouseDown={handleJump}>
-        <div className="overlay-feedback__scroll" style={maxHeight ? { maxHeight } : undefined}>
+        <div className="overlay-feedback__scroll">
           <div className="overlay-feedback__transcript">
             <div className="overlay-feedback__transcript-head">
               <span className="overlay-feedback__status">
@@ -273,6 +296,7 @@ export function OverlayFeedbackPanel({
         <input
           ref={inputRef}
           className="overlay-feedback__input"
+          data-has-draft={hasInputDraft ? 'true' : 'false'}
           value={inputValue}
           placeholder={t('notch.typeMessage', { defaultValue: 'Send a message...' })}
           disabled={sending}
@@ -305,20 +329,32 @@ export function OverlayFeedbackPanel({
         </button>
       </div>
 
-      {onShowSessions && sessionCount != null && (
-        <div className="overlay-card__secondary" data-no-drag>
+      <div className="overlay-card__secondary" data-no-drag>
+        {onShowSessions && sessionCount != null ? (
           <button
+            type="button"
             className="overlay-card__show-sessions"
             onMouseDown={(event) => {
               event.preventDefault()
               onShowSessions()
             }}
           >
-            <img className="overlay-card__brand-logo" src="/agentbro-logo-dark.png" alt="" aria-hidden="true" />
+            <span className="overlay-card__brand-logo-stack" aria-hidden="true">
+              <img className="overlay-card__brand-logo overlay-card__brand-logo--light" src="/agentbro-logo.png" alt="" />
+              <img className="overlay-card__brand-logo overlay-card__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
+            </span>
             <span>{t('notch.slogan', { defaultValue: '让 Agent 更好用' })}</span>
           </button>
-        </div>
-      )}
+        ) : (
+          <div className="overlay-card__show-sessions overlay-card__show-sessions--static">
+            <span className="overlay-card__brand-logo-stack" aria-hidden="true">
+              <img className="overlay-card__brand-logo overlay-card__brand-logo--light" src="/agentbro-logo.png" alt="" />
+              <img className="overlay-card__brand-logo overlay-card__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
+            </span>
+            <span>{t('notch.slogan', { defaultValue: '让 Agent 更好用' })}</span>
+          </div>
+        )}
+      </div>
 
       <div className="overlay-feedback__progress" aria-hidden>
         <div className="overlay-feedback__progress-bar" style={{ transform: `scaleX(${progressRatio})` }} />

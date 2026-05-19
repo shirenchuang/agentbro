@@ -48,6 +48,11 @@
         "https://releases.agentbro.cn/{{target}}/{{arch}}/{{current_version}}"
       ],
       "pubkey": ""
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["agentbro", "ccswitch"]
+      }
     }
   },
   "bundle": {

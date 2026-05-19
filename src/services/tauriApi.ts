@@ -318,9 +318,9 @@ export async function getUsageSnapshots(): Promise<RateLimitInfo[]> {
   return invoke<RateLimitInfo[]>('get_usage_snapshots')
 }
 
-export async function listUsageProviders(): Promise<UsageProviderStatus[]> {
+export async function listUsageProviders(live = true): Promise<UsageProviderStatus[]> {
   if (!isTauri()) return []
-  return invoke<UsageProviderStatus[]>('list_usage_providers')
+  return invoke<UsageProviderStatus[]>('list_usage_providers', { live })
 }
 
 export async function authorizeUsageProvider(provider: string): Promise<void> {
@@ -463,7 +463,7 @@ export async function getConfig(): Promise<BackendConfig> {
       completionTimeout: 5,
       showTokenUsage: true,
       usageQueryEnabled: true,
-      theme: 'ink-amber',
+      theme: 'midnight',
       displayId: 'primary',
       autoHideNoSessions: false,
       soundEvents: {},
@@ -487,9 +487,9 @@ export async function getConfig(): Promise<BackendConfig> {
       idleTimeoutMinutes: 5,
       globalShortcut: 'CommandOrControl+Shift+I',
       shortcutApprove: 'CommandOrControl+Shift+A',
-      shortcutApproveEnabled: true,
+      shortcutApproveEnabled: false,
       shortcutDeny: 'CommandOrControl+Shift+D',
-      shortcutDenyEnabled: true,
+      shortcutDenyEnabled: false,
       shortcutSkip: 'CommandOrControl+Shift+S',
       shortcutSkipEnabled: false,
     }

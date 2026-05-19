@@ -205,7 +205,7 @@ describe('CollapsedBar idle tips', () => {
     expect(container.querySelector('.collapsed-bar__alert-badge')?.textContent).toBe('2')
   })
 
-  it('uses thinking text instead of internal processing prompt text', () => {
+  it('uses working text instead of internal processing prompt text', () => {
     render(
       <CollapsedBar
         sessions={[
@@ -216,7 +216,7 @@ describe('CollapsedBar idle tips', () => {
       />,
     )
 
-    expect(screen.getByText('notch.thinking')).toBeInTheDocument()
+    expect(screen.getByText('notch.working')).toBeInTheDocument()
     expect(screen.queryByText('Processing user input')).not.toBeInTheDocument()
   })
 
@@ -289,5 +289,22 @@ describe('CollapsedBar idle tips', () => {
     expect(screen.queryByText('notch.tool.editing')).not.toBeInTheDocument()
     expect(screen.queryByText('OverlayFeedbackPanel.tsx')).not.toBeInTheDocument()
     expect(screen.getByText('project')).toBeInTheDocument()
+  })
+
+  it('always surfaces compacting state in the collapsed island', () => {
+    useConfigStore.setState({ showToolStatus: false })
+
+    const { container } = render(
+      <CollapsedBar
+        sessions={[session({ phase: 'compacting', project: 'agentbro' })]}
+        panelState="collapsed"
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('agentbro')).toBeInTheDocument()
+    expect(screen.getByText('notch.tool.compactingContext')).toBeInTheDocument()
+    expect(container.querySelector('.collapsed-bar__compacting-inline')).toBeInTheDocument()
+    expect(container.querySelector('.collapsed-bar--compacting')).toBeInTheDocument()
   })
 })

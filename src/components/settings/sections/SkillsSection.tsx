@@ -11,6 +11,8 @@ import { DiscoverView } from '../../skills/DiscoverView'
 import { ObsidianView } from '../../skills/ObsidianView'
 import { MarketplaceView } from '../../skills/MarketplaceView'
 import { SyncView } from '../../skills/SyncView'
+import { SwitchPromptList } from './switch/SwitchPromptList'
+import { SwitchAppTabs } from './switch/SwitchAppTabs'
 import { SkillDetailSlider } from '../../skills/SkillDetailSlider'
 import './SkillsSection.css'
 
@@ -24,6 +26,7 @@ const tabs = [
   { id: 'obsidian', label: 'Obsidian' },
   { id: 'market', label: '市场' },
   { id: 'sync', label: '同步' },
+  { id: 'prompts', label: 'Prompts' },
 ] as const
 
 export function SkillsSection() {
@@ -61,6 +64,12 @@ export function SkillsSection() {
         {activeTab === 'obsidian' && <ObsidianView />}
         {activeTab === 'market' && <MarketplaceView />}
         {activeTab === 'sync' && <SyncView />}
+        {activeTab === 'prompts' && (
+          <>
+            <SwitchAppTabs />
+            <SwitchPromptList />
+          </>
+        )}
       </div>
 
       <SkillDetailSlider />

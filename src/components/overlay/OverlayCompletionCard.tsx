@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type { OverlayItem, SessionState } from '../../types/agent'
 import { useConfigStore } from '../../stores/configStore'
+import { getReadableNotificationHeight } from '../../utils/notificationLayout'
 import { OverlayFeedbackPanel } from './OverlayFeedbackPanel'
 import './OverlayCompletionCard.css'
 
@@ -10,27 +11,34 @@ interface OverlayCompletionCardProps {
   onJumpToTerminal: () => void
   onShowSessions?: () => void
   onDismiss: () => void
+  onDraftStateChange?: (hasDraft: boolean) => void
   sessionCount?: number
 }
 
-export function OverlayCompletionCard({ overlay, session, onJumpToTerminal, onShowSessions, onDismiss, sessionCount }: OverlayCompletionCardProps) {
+export function OverlayCompletionCard({ overlay, session, onJumpToTerminal, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: OverlayCompletionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { summary: string }
   const dwellSeconds = useConfigStore((s) => s.taskCompleteDwellSeconds) || 6
   const completionCardHeight = useConfigStore((s) => s.completionCardHeight)
+  const maxPanelHeight = useConfigStore((s) => s.maxPanelHeight)
+  const readableCardHeight = getReadableNotificationHeight(completionCardHeight, maxPanelHeight, {
+    text: data.summary,
+    userMessage: session.lastUserMessage,
+  })
   const dwellMs = dwellSeconds * 1000
 
   return (
     <OverlayFeedbackPanel
       session={session}
       text={data.summary}
-      maxHeight={completionCardHeight}
+      maxHeight={readableCardHeight}
       dwellMs={dwellMs}
       startedAt={overlay.createdAt}
       statusLabel={t('notch.completed', { defaultValue: '完成' })}
       onJumpToTerminal={onJumpToTerminal}
       onShowSessions={onShowSessions}
       onDismiss={onDismiss}
+      onDraftStateChange={onDraftStateChange}
       sessionCount={sessionCount}
     />
   )

@@ -17,7 +17,17 @@
   --perm-command-border: color-mix(in srgb, var(--island-border) 78%, var(--perm-accent) 22%);
   --perm-text: var(--island-text);
   --perm-text-secondary: var(--island-text-secondary);
-  gap: 10px;
+  --approval-context-font-size: 12px;
+  --approval-context-line-height: 1.18;
+  --approval-meta-font-size: 11px;
+  --approval-meta-line-height: 1.28;
+  --approval-title-font-size: 13px;
+  --approval-title-line-height: 1.18;
+  --approval-body-font-size: 12px;
+  --approval-body-line-height: 1.4;
+  --approval-caption-font-size: 11px;
+  --approval-control-font-size: 12px;
+  gap: 9px;
   width: 100%;
   min-height: 0;
   padding: 12px 16px 14px;
@@ -42,9 +52,9 @@
 
 .overlay-card--permission .overlay-ctx__row1 {
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--approval-context-font-size);
   font-weight: 800;
-  line-height: 1.18;
+  line-height: var(--approval-context-line-height);
   color: var(--perm-text);
 }
 
@@ -62,9 +72,9 @@
 
 .overlay-card--permission .overlay-ctx__row2 {
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--approval-meta-font-size);
   font-weight: 700;
-  line-height: 1.28;
+  line-height: var(--approval-meta-line-height);
   color: var(--island-text-muted);
 }
 
@@ -79,7 +89,7 @@
 
 .perm-card__scroll {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 9px;
   min-height: 0;
@@ -155,9 +165,9 @@
 
 .perm-card__tool-name {
   color: var(--perm-accent);
-  font-size: 13px;
+  font-size: var(--approval-title-font-size);
   font-weight: 800;
-  line-height: 1.1;
+  line-height: var(--approval-title-line-height);
 }
 
 /* Detail box */
@@ -167,6 +177,8 @@
   border-radius: 0;
   padding: 9px 10px 8px;
   flex: 0 0 auto;
+  max-height: 190px;
+  overflow-y: auto;
 }
 
 .perm-card__detail-tool-label {
@@ -178,9 +190,9 @@
 
 /* Tool previews */
 .perm-card__preview-desc {
-  font-size: 10.5px;
+  font-size: var(--approval-caption-font-size);
   font-weight: 650;
-  line-height: 1.28;
+  line-height: var(--approval-meta-line-height);
   color: var(--perm-text-secondary);
   margin-top: 5px;
   overflow: hidden;
@@ -189,7 +201,7 @@
 }
 
 .perm-card__preview-code {
-  max-height: 120px;
+  max-height: 180px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
@@ -210,20 +222,20 @@
   border-radius: 0;
   background: transparent;
   padding: 0;
-  font-size: 12px;
+  font-size: var(--approval-body-font-size);
   font-weight: 650;
-  line-height: 1.32;
+  line-height: var(--approval-body-line-height);
 }
 
 .perm-card__preview-command {
-  max-height: 120px;
+  max-height: 180px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
   font-family: var(--font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--approval-body-font-size);
   font-weight: 650;
-  line-height: 1.32;
+  line-height: var(--approval-body-line-height);
   color: var(--perm-text);
   margin: 0;
 }
@@ -241,7 +253,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--approval-caption-font-size);
   color: var(--perm-text-secondary);
 }
 
@@ -272,7 +284,7 @@
 }
 
 .perm-card__preview-diff {
-  max-height: 128px;
+  max-height: 180px;
   overflow-y: auto;
   border-radius: 6px;
   background: var(--island-code-block-bg, var(--island-code-bg));
@@ -325,8 +337,8 @@
 /* Diff view */
 .perm-card__diff {
   flex: 1 1 auto;
-  min-height: 0;
-  max-height: 124px;
+  min-height: 120px;
+  max-height: 280px;
   overflow-y: auto;
   border-radius: 6px;
 }
@@ -352,6 +364,7 @@
   font-size: 11px;
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .perm-card__feedback-input::placeholder {
@@ -360,6 +373,14 @@
 
 .perm-card__feedback-input:focus {
   border-color: rgba(245, 158, 11, 0.5);
+}
+
+.perm-card__feedback-input[data-has-draft="true"] {
+  border-color: rgba(245, 158, 11, 0.72);
+  background:
+    linear-gradient(90deg, rgba(245, 158, 11, 0.95) 0 3px, transparent 3px),
+    var(--island-card);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
 }
 
 /* Actions */
@@ -383,7 +404,7 @@
   border: none;
   border-radius: 8px;
   font-family: var(--font-sans, system-ui);
-  font-size: 12px;
+  font-size: var(--approval-control-font-size);
   font-weight: 800;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;

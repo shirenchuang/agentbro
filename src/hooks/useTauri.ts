@@ -146,6 +146,7 @@ function transformSession(bs: BackendSession): SessionState {
   const subagents = backendSubagents.length > 0
     ? backendSubagents
     : (existing?.subagents ?? [])
+  const lastUserMessage = bs.lastUserMessage ?? existing?.lastUserMessage
 
   return {
     id: bs.id,
@@ -235,7 +236,8 @@ function transformSession(bs: BackendSession): SessionState {
     })),
     isYoloMode: bs.isYoloMode || undefined,
     notice: bs.notice ?? existing?.notice,
-    lastUserMessage: bs.lastUserMessage ?? existing?.lastUserMessage,
+    lastUserMessage,
+    lastUserMessageAt: lastUserMessage === existing?.lastUserMessage ? existing?.lastUserMessageAt : undefined,
     responseText: bs.lastResponse ?? undefined,
     description: bs.lastThought ?? bs.description ?? undefined,
   }

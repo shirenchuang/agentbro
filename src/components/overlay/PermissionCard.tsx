@@ -16,6 +16,7 @@ interface PermissionCardProps {
   onShowSessions?: () => void
   onDeny: (message?: string) => void
   onDismiss: () => void
+  onDraftStateChange?: (hasDraft: boolean) => void
   queueLength?: number
   queueNext?: string
   sessionCount?: number
@@ -171,13 +172,14 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
   }
 }
 
-export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAutoApprove, onShowSessions, onDeny, onDismiss, queueLength = 1, queueNext, sessionCount = 1 }: PermissionCardProps) {
+export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAutoApprove, onShowSessions, onDeny, onDismiss, onDraftStateChange, queueLength = 1, queueNext, sessionCount = 1 }: PermissionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { toolName: string; toolInput: string; diff?: import('../../types/agent').DiffContent; options?: string[] }
   const [feedbackState, setFeedbackState] = useState({ overlayId: overlay.id, text: '', show: false })
   const feedbackRef = useRef<HTMLInputElement>(null)
   const feedbackText = feedbackState.overlayId === overlay.id ? feedbackState.text : ''
   const showFeedback = feedbackState.overlayId === overlay.id && feedbackState.show
+  const hasDraft = feedbackText.trim().length > 0
 
   let parsedInput: Record<string, unknown> = {}
   try {
@@ -190,6 +192,12 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   useEffect(() => {
     if (showFeedback) feedbackRef.current?.focus()
   }, [showFeedback])
+
+  useEffect(() => {
+    onDraftStateChange?.(hasDraft)
+  }, [hasDraft, onDraftStateChange])
+
+  useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
   const handleReject = useCallback(() => {
     const msg = feedbackText.trim()
@@ -221,15 +229,12 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         return
       }
 
-      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); handleReject() }
-      if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); onAllow() }
-      if (e.key === 'a' || e.key === 'A') { e.preventDefault(); onAllowAlways() }
       if (e.key === 't' || e.key === 'T') { e.preventDefault(); handleJump() }
     }
 
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [showFeedback, handleReject, onAllow, onAllowAlways, handleJump, overlay.id])
+  }, [showFeedback, handleReject, handleJump, overlay.id])
 
   return (
     <OverlayCard session={session} onDismiss={onDismiss} onShowSessions={onShowSessions} sessionCount={sessionCount} className="overlay-card--permission" bodyClassName="perm-card">
@@ -276,6 +281,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
             ref={feedbackRef}
             type="text"
             className="perm-card__feedback-input"
+            data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder="Tell Claude why (optional)..."
             value={feedbackText}
             onChange={(e) => setFeedbackState({ overlayId: overlay.id, text: e.target.value, show: true })}
@@ -292,8 +298,9 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
       {/* Action buttons */}
       <div className="perm-card__actions">
         <button
+          type="button"
           className="perm-card__btn perm-card__btn--deny"
-          onMouseDown={() => {
+          onClick={() => {
             if (showFeedback) {
               handleReject()
             } else {
@@ -303,17 +310,14 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
           }}
         >
           <span>{t('notch.deny')}</span>
-          <kbd className="perm-card__kbd">N</kbd>
         </button>
-        <button className="perm-card__btn perm-card__btn--allow" onMouseDown={onAllow}>
+        <button type="button" className="perm-card__btn perm-card__btn--allow" onClick={onAllow}>
           <span>{t('notch.allowOnce')}</span>
-          <kbd className="perm-card__kbd">Y</kbd>
         </button>
-        <button className="perm-card__btn perm-card__btn--always" onMouseDown={onAllowAlways}>
+        <button type="button" className="perm-card__btn perm-card__btn--always" onClick={onAllowAlways}>
           <span>{t('notch.allowAlways')}</span>
-          <kbd className="perm-card__kbd">A</kbd>
         </button>
-        <button className="perm-card__btn perm-card__btn--auto" onMouseDown={onAutoApprove}>
+        <button type="button" className="perm-card__btn perm-card__btn--auto" onClick={onAutoApprove}>
           <span>{t('notch.autoApprove')}</span>
         </button>
       </div>

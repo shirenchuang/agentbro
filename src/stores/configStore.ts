@@ -154,6 +154,7 @@ interface ConfigState {
   shortcutDenyEnabled: boolean
   shortcutSkip: string
   shortcutSkipEnabled: boolean
+  permissionShortcutDefaultsMigrated: boolean
   customHooksPath: string
   hookDoctorEnabled: boolean
   sessionLauncherEnabled: boolean
@@ -323,16 +324,33 @@ const defaultSoundRules: Record<string, SoundRule> = {
   'boot': { enabled: true, sound: 'default' },
 }
 
+const DEFAULT_GLOBAL_APPROVE_SHORTCUT = 'CommandOrControl+Shift+A'
+const DEFAULT_GLOBAL_DENY_SHORTCUT = 'CommandOrControl+Shift+D'
+const LEGACY_IN_WINDOW_APPROVE_SHORTCUT = '⌘+Enter'
+const LEGACY_IN_WINDOW_REJECT_SHORTCUT = '⌘+Backspace'
+
 const defaultShortcuts: ShortcutBinding[] = [
   { action: 'toggle-panel', label: 'Toggle Panel', keys: '⌘+Shift+I' },
   { action: 'expand-panel', label: 'Expand Panel', keys: '⌘+Shift+E' },
   { action: 'collapse-panel', label: 'Collapse Panel', keys: 'Escape' },
   { action: 'next-session', label: 'Next Session', keys: '⌘+]' },
   { action: 'prev-session', label: 'Previous Session', keys: '⌘+[' },
-  { action: 'approve-action', label: 'Approve Action', keys: '⌘+Enter' },
-  { action: 'reject-action', label: 'Reject Action', keys: '⌘+Backspace' },
+  { action: 'approve-action', label: 'Approve Action', keys: '' },
+  { action: 'reject-action', label: 'Reject Action', keys: '' },
   { action: 'open-settings', label: 'Open Settings', keys: '⌘+,' },
 ]
+
+function migrateInWindowPermissionShortcuts(shortcuts: ShortcutBinding[]): ShortcutBinding[] {
+  return shortcuts.map((shortcut) => {
+    if (shortcut.action === 'approve-action' && shortcut.keys === LEGACY_IN_WINDOW_APPROVE_SHORTCUT) {
+      return { ...shortcut, keys: '' }
+    }
+    if (shortcut.action === 'reject-action' && shortcut.keys === LEGACY_IN_WINDOW_REJECT_SHORTCUT) {
+      return { ...shortcut, keys: '' }
+    }
+    return shortcut
+  })
+}
 
 const defaultLabFeatures: LabFeature[] = [
   { id: 'streaming-diff', label: 'Streaming Diff View', description: 'Show file changes as they stream in real-time', enabled: false },
@@ -377,12 +395,14 @@ function createIslandDefaults(): Partial<ConfigState> {
     islandPetWindowOrigin: null,
     followFocus: false,
     globalShortcut: 'CommandOrControl+Shift+I',
-    shortcutApprove: 'CommandOrControl+Shift+A',
-    shortcutApproveEnabled: true,
-    shortcutDeny: 'CommandOrControl+Shift+D',
-    shortcutDenyEnabled: true,
+    shortcutApprove: DEFAULT_GLOBAL_APPROVE_SHORTCUT,
+    shortcutApproveEnabled: false,
+    shortcutDeny: DEFAULT_GLOBAL_DENY_SHORTCUT,
+    shortcutDenyEnabled: false,
     shortcutSkip: 'CommandOrControl+Shift+S',
     shortcutSkipEnabled: false,
+    permissionShortcutDefaultsMigrated: true,
+    shortcuts: defaultShortcuts.map((shortcut) => ({ ...shortcut })),
     quietHours: { enabled: false, start: '22:00', end: '08:00' },
     idleTimeoutMinutes: 5,
     allowHorizontalDrag: true,
@@ -474,12 +494,13 @@ export const useConfigStore = create<ConfigStore>()(
   // General extras
   followFocus: false,
   globalShortcut: 'CommandOrControl+Shift+I',
-  shortcutApprove: 'CommandOrControl+Shift+A',
-  shortcutApproveEnabled: true,
-  shortcutDeny: 'CommandOrControl+Shift+D',
-  shortcutDenyEnabled: true,
+  shortcutApprove: DEFAULT_GLOBAL_APPROVE_SHORTCUT,
+  shortcutApproveEnabled: false,
+  shortcutDeny: DEFAULT_GLOBAL_DENY_SHORTCUT,
+  shortcutDenyEnabled: false,
   shortcutSkip: 'CommandOrControl+Shift+S',
   shortcutSkipEnabled: false,
+  permissionShortcutDefaultsMigrated: true,
   customHooksPath: '',
   hookDoctorEnabled: false,
   sessionLauncherEnabled: false,
@@ -711,11 +732,27 @@ export const useConfigStore = create<ConfigStore>()(
       name: 'agentbro-config',
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<ConfigState> | undefined
-        return {
+        const migratedPermissionShortcuts = persisted?.permissionShortcutDefaultsMigrated === true
+        const merged = {
           ...currentState,
           ...persisted,
+        }
+
+        if (!migratedPermissionShortcuts) {
+          if (merged.shortcutApproveEnabled && merged.shortcutApprove === DEFAULT_GLOBAL_APPROVE_SHORTCUT) {
+            merged.shortcutApproveEnabled = false
+          }
+          if (merged.shortcutDenyEnabled && merged.shortcutDeny === DEFAULT_GLOBAL_DENY_SHORTCUT) {
+            merged.shortcutDenyEnabled = false
+          }
+          merged.shortcuts = migrateInWindowPermissionShortcuts(merged.shortcuts)
+        }
+
+        return {
+          ...merged,
           detailPanelMaxHeight: persisted?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
           sessionSilenceRules: Array.isArray(persisted?.sessionSilenceRules) ? persisted.sessionSilenceRules : currentState.sessionSilenceRules,
+          permissionShortcutDefaultsMigrated: true,
           notificationMode: 'turnEnd',
         }
       },

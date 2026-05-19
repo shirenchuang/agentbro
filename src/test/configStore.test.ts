@@ -44,4 +44,13 @@ describe('configStore island defaults', () => {
       ]),
     )
   })
+
+  it('keeps permission approval shortcuts opt-in by default', () => {
+    const state = useConfigStore.getState()
+
+    expect(state.shortcutApproveEnabled).toBe(false)
+    expect(state.shortcutDenyEnabled).toBe(false)
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'approve-action')?.keys).toBe('')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'reject-action')?.keys).toBe('')
+  })
 })

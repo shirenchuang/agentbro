@@ -1,5 +1,5 @@
 /* ApprovalBar — Vibe Island style: warning card + 4 colored buttons, plan approval bar */
-import { useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { setNotchFocusable } from '../../services/tauriApi'
@@ -13,12 +13,24 @@ interface ApprovalBarProps {
   onDeny: () => void
   onAutoApprove?: () => void
   onSendMessage: (msg: string) => void
+  onDraftStateChange?: (hasDraft: boolean) => void
 }
 
-export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage }: ApprovalBarProps) {
+export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange }: ApprovalBarProps) {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [draft, setDraft] = useState('')
+  const hasDraft = draft.trim().length > 0
+
+  useEffect(() => {
+    onDraftStateChange?.(hasDraft)
+  }, [hasDraft, onDraftStateChange])
+
+  useEffect(() => {
+    setDraft('')
+    return () => onDraftStateChange?.(false)
+  }, [onDraftStateChange, session.id])
 
   const handleInputFocus = useCallback(() => {
     if (blurTimerRef.current) {
@@ -34,6 +46,13 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
       setNotchFocusable(false).catch(() => {})
     }, 200)
   }, [])
+
+  const sendDraft = useCallback(() => {
+    const val = draft.trim()
+    if (!val) return
+    onSendMessage(draft)
+    setDraft('')
+  }, [draft, onSendMessage])
 
   if (session.phase === 'waiting_approval') {
     const toolName = session.pendingPermission?.toolName || ''
@@ -100,16 +119,15 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         <div className="approval-bar__input-row">
           <input
             className="approval-bar__input"
+            data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.typeReply')}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                const val = (e.target as HTMLInputElement).value.trim()
-                if (val) {
-                  onSendMessage(val);
-                  (e.target as HTMLInputElement).value = ''
-                }
+                sendDraft()
               }
             }}
           />
@@ -126,16 +144,15 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           <input
             ref={inputRef}
             className="approval-bar__input"
+            data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                const val = (e.target as HTMLInputElement).value.trim()
-                if (val) {
-                  onSendMessage(val);
-                  (e.target as HTMLInputElement).value = ''
-                }
+                sendDraft()
               }
             }}
           />
@@ -162,16 +179,15 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         <input
           ref={inputRef}
           className="approval-bar__input"
+          data-has-draft={hasDraft ? 'true' : 'false'}
           placeholder={t('notch.typeMessage')}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
           onFocus={handleInputFocus}
           onBlur={handleInputBlur}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
-              const val = (e.target as HTMLInputElement).value.trim()
-              if (val) {
-                onSendMessage(val);
-                (e.target as HTMLInputElement).value = ''
-              }
+              sendDraft()
             }
           }}
         />
@@ -183,10 +199,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               clearTimeout(blurTimerRef.current)
               blurTimerRef.current = null
             }
-            if (inputRef.current && inputRef.current.value.trim()) {
-              onSendMessage(inputRef.current.value)
-              inputRef.current.value = ''
-            }
+            sendDraft()
           }}
           aria-label={t('notch.send')}
         >

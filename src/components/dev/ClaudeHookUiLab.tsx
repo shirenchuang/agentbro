@@ -50,6 +50,13 @@ interface ClaudeHookUiLabProps {
   children: ReactNode
 }
 
+interface RealPromptItem {
+  id: string
+  title: string
+  scenario: string
+  prompt: string
+}
+
 const LAB_SESSION_ID = 'claude-hook-lab'
 const LAB_CWD = '/Users/demo/projects/agentbro'
 const RECORDED_SESSION_ID = 'e336326d-ab6f-4002-bc6a-3ba66892b469'
@@ -59,6 +66,201 @@ const VIEW_MODE_LABELS: Record<LabViewMode, string> = {
   list: 'List',
   detail: 'Detail',
   compact: 'Compact',
+}
+
+const REAL_TEST_PROMPTS: RealPromptItem[] = [
+  {
+    id: 'setup',
+    title: '基础准备',
+    scenario: '建立测试语境',
+    prompt: '我们要做 Vibe Island / AgentBro 灵动岛真实 hook UI 采样。请严格按我每一轮指令执行；除非我明确要求，不要主动继续修复或扩展。',
+  },
+  {
+    id: 'write',
+    title: 'Write / 创建文件',
+    scenario: '测试 Write 工具运行态',
+    prompt: '请在当前空目录创建一个最小 TypeScript 测试项目，只包含 package.json、src/auth/auth.ts、src/auth/middleware.ts、src/auth/middleware.test.ts。',
+  },
+  {
+    id: 'read',
+    title: 'Read / 只读总结',
+    scenario: '测试 Read 工具完成态',
+    prompt: '请只读取 package.json、src/auth/auth.ts、src/auth/middleware.ts，然后用三句话总结当前实现。不要修改任何文件。',
+  },
+  {
+    id: 'edit-permission',
+    title: 'Edit 权限卡',
+    scenario: 'PermissionRequest + diff',
+    prompt: '请修改 src/auth/middleware.ts：不再直接使用 getToken()，改成 await refreshToken()，Authorization 返回值改成 Bearer ${token}。',
+  },
+  {
+    id: 'bash-permission',
+    title: 'Bash 权限卡',
+    scenario: 'Bash PermissionRequest',
+    prompt: '请运行项目里的测试命令。如果通过，只总结测试结果，不要继续修改。',
+  },
+  {
+    id: 'bash-failure',
+    title: 'Bash 失败态',
+    scenario: 'exit code / stderr',
+    prompt: '请运行这个命令，并只报告结果，不要修复：\n\nnode -e "console.error(\'intentional hook ui failure\'); process.exit(7)"',
+  },
+  {
+    id: 'plan',
+    title: 'PlanApproval',
+    scenario: 'ExitPlanMode 审批',
+    prompt: '请为“统一 AgentBro 权限详情卡、底部审批栏和浏览器 Hook UI Lab 的视觉表现”制定一个实现计划。先不要改代码，完成计划后等待我批准。',
+  },
+  {
+    id: 'question-single',
+    title: 'AskUserQuestion 单选',
+    scenario: '单选问题卡',
+    prompt: '请调用 AskUserQuestion，让我选择下一步 UI 采样模式。问题是：接下来优先采样哪个视图？选项是 Overlay、Detail、Compact，每个选项加一句简短说明。',
+  },
+  {
+    id: 'question-multi',
+    title: 'AskUserQuestion 多选',
+    scenario: '多选问题卡',
+    prompt: '请调用 AskUserQuestion，让我多选本轮需要采样的 UI 组件。选项是：权限详情卡、底部审批栏、Hook 事件列表、手动。允许多选，并给每个选项一句说明。',
+  },
+  {
+    id: 'subagent-one',
+    title: 'Subagent 单个',
+    scenario: '子 Agent 完成态',
+    prompt: '请启动一个子 Agent 或等价的子任务来检查 src/auth 目录里的测试覆盖。子任务只需要总结缺口，不要修改文件。',
+  },
+  {
+    id: 'subagent-many',
+    title: 'Subagent 多个并发',
+    scenario: '多子 Agent 数据结构',
+    prompt: '请你启动4个subagent，分别计算 1+1 等于几。必须用subagent，每个subagent独立返回结论。我主要是测试 Claude Code subagent 数据结构。',
+  },
+  {
+    id: 'long-content',
+    title: '长内容压力',
+    scenario: '长路径 / 长 diff / 中文换行',
+    prompt: '请创建一个很深的目录路径 src/components/notch/super-long-path-for-regression/ExtremelyLongPermissionCardAndDynamicIslandLayoutRegressionFixture.tsx，然后写入一个简单组件。接着再修改这个文件，加入一段非常长的中文说明文本，用来测试灵动岛权限卡片的长路径、长 diff 和中文换行。',
+  },
+  {
+    id: 'response',
+    title: 'Response Overlay',
+    scenario: '中间回复弹层',
+    prompt: '请检查当前项目里灵动岛相关状态覆盖情况，先给我一个中间结论，然后继续保持任务未完成，等待我下一步指令。',
+  },
+  {
+    id: 'compact-before',
+    title: 'PreCompact 准备',
+    scenario: '压缩前摘要',
+    prompt: '接下来我要测试上下文压缩 hook。请在我触发压缩前，先总结当前会话里已经做过的 UI 采样场景。',
+  },
+  {
+    id: 'compact-command',
+    title: 'PreCompact 命令',
+    scenario: '在 Claude Code 输入',
+    prompt: '/compact',
+  },
+  {
+    id: 'multi-session-a',
+    title: '多会话 A',
+    scenario: 'Bash 等审批',
+    prompt: '请运行项目测试，等待我审批 Bash 权限后再继续。',
+  },
+  {
+    id: 'multi-session-b',
+    title: '多会话 B',
+    scenario: 'Edit 等审批',
+    prompt: '请修改 src/auth/middleware.ts，把 getToken 改成 refreshToken，等待我审批 Edit 权限。',
+  },
+  {
+    id: 'multi-session-c',
+    title: '多会话 C',
+    scenario: 'Question 等输入',
+    prompt: '请调用 AskUserQuestion 问我本次发布目标是 Local、Staging 还是 Docs。',
+  },
+  {
+    id: 'multi-session-d',
+    title: '多会话 D',
+    scenario: 'Subagent 运行',
+    prompt: '请启动2个subagent检查 src/auth 的测试覆盖，不要修改文件。',
+  },
+]
+
+const EMPTY_PROJECT_SETUP_COMMAND = 'mkdir -p /tmp/vibe-island-hook-lab && cd /tmp/vibe-island-hook-lab && claude'
+
+function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.top = '0'
+    textarea.style.left = '0'
+    textarea.style.width = '1px'
+    textarea.style.height = '1px'
+    textarea.style.padding = '0'
+    textarea.style.border = '0'
+    textarea.style.opacity = '0'
+    textarea.style.pointerEvents = 'none'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+
+    try {
+      if (document.execCommand('copy')) return Promise.resolve()
+    } catch {
+      // Fall back to the async clipboard API below when execCommand is blocked.
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  }
+
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+  if (clipboard?.writeText) {
+    return clipboard.writeText(text)
+  }
+
+  return Promise.reject(new Error('Clipboard API is unavailable'))
+}
+
+function selectPromptText(promptId: string) {
+  const prompt = document.querySelector(`[data-prompt-id="${CSS.escape(promptId)}"] pre`)
+  if (!prompt) return
+  const selection = window.getSelection()
+  const range = document.createRange()
+  range.selectNodeContents(prompt)
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+const PROMPTS_BY_SCENARIO: Record<LabScenarioId, string[]> = {
+  'empty-idle': ['setup'],
+  'multi-session-mixed': ['multi-session-a', 'multi-session-b', 'multi-session-c', 'multi-session-d'],
+  'response-overlay': ['response'],
+  'overlay-queue': ['multi-session-b', 'plan', 'question-single'],
+  'long-content': ['long-content'],
+  'status-badges': ['bash-failure'],
+  'terminal-routed': ['multi-session-a', 'multi-session-c'],
+  'setup-notices': ['setup'],
+  'subagent-team': ['subagent-many'],
+  'pre-tool-use': ['write'],
+  'post-tool-use': ['read'],
+  'permission-request': ['edit-permission'],
+  'ask-user-question': ['question-single'],
+  'plan-approval': ['plan'],
+  stop: ['bash-permission'],
+  'stop-failure': ['bash-failure'],
+  'real-write': ['write'],
+  'real-read': ['read'],
+  'real-edit-pending': ['edit-permission'],
+  'real-edit-allowed': ['edit-permission'],
+  'real-bash-pending': ['bash-permission'],
+  'real-bash-failure': ['bash-failure'],
+  'real-plan': ['plan'],
+  'real-question': ['question-single'],
+  'real-multi-question': ['question-multi'],
+  'real-subagent': ['subagent-one'],
+  'real-compact': ['compact-before', 'compact-command'],
 }
 
 const permissionDiff: DiffContent = {
@@ -1205,6 +1407,36 @@ const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
   },
 ]
 
+const TEST_FLOW_SCENARIO_IDS: LabScenarioId[] = [
+  'empty-idle',
+  'real-write',
+  'real-read',
+  'real-edit-pending',
+  'real-edit-allowed',
+  'real-bash-pending',
+  'real-bash-failure',
+  'real-plan',
+  'real-question',
+  'real-multi-question',
+  'real-subagent',
+  'real-compact',
+  'long-content',
+  'response-overlay',
+  'overlay-queue',
+  'multi-session-mixed',
+  'subagent-team',
+  'terminal-routed',
+  'status-badges',
+  'setup-notices',
+  'permission-request',
+  'ask-user-question',
+  'plan-approval',
+  'pre-tool-use',
+  'post-tool-use',
+  'stop',
+  'stop-failure',
+]
+
 function resetLabState() {
   useSessionStore.setState({
     sessions: {},
@@ -1251,10 +1483,88 @@ function applyClaudeHookLabScenario(scenarioId: LabScenarioId, viewMode: LabView
   store.setPanelState(defaultPanelState(sessions[0], viewMode))
 }
 
+function PromptLibrary({ scenarioId, scenarioName }: { scenarioId: LabScenarioId; scenarioName: string }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copyFailedId, setCopyFailedId] = useState<string | null>(null)
+  const selectedPrompts = useMemo(() => {
+    const promptIds = PROMPTS_BY_SCENARIO[scenarioId]
+    return promptIds
+      .map((id) => REAL_TEST_PROMPTS.find((item) => item.id === id))
+      .filter((item): item is RealPromptItem => Boolean(item))
+  }, [scenarioId])
+
+  const copyPrompt = useCallback((item: RealPromptItem) => {
+    setCopyFailedId(null)
+    try {
+      copyTextToClipboard(item.prompt)
+      .then(() => {
+        setCopiedId(item.id)
+        setCopyFailedId(null)
+        window.setTimeout(() => {
+          setCopiedId((current) => current === item.id ? null : current)
+        }, 1400)
+      })
+      .catch((error) => {
+        selectPromptText(item.id)
+        setCopyFailedId(item.id)
+        window.setTimeout(() => {
+          setCopyFailedId((current) => current === item.id ? null : current)
+        }, 1800)
+        console.warn('[ClaudeHookUiLab] copy prompt failed:', error)
+      })
+    } catch (error) {
+      selectPromptText(item.id)
+      setCopyFailedId(item.id)
+      window.setTimeout(() => {
+        setCopyFailedId((current) => current === item.id ? null : current)
+      }, 1800)
+      console.warn('[ClaudeHookUiLab] copy prompt failed:', error)
+    }
+  }, [])
+
+  return (
+    <section className="claude-hook-lab__prompts" aria-label="当前 case 的真实测试 prompt">
+      <div className="claude-hook-lab__prompts-header">
+        <div>
+          <div className="claude-hook-lab__section-label">真实测试 Prompts</div>
+          <p>
+            {scenarioName} 对应指令。先在空项目启动：
+            <code>{EMPTY_PROJECT_SETUP_COMMAND}</code>
+          </p>
+        </div>
+        <span>{selectedPrompts.length} 条</span>
+      </div>
+      <div className="claude-hook-lab__prompt-list">
+        {selectedPrompts.map((item) => (
+          <article className="claude-hook-lab__prompt" data-prompt-id={item.id} key={item.id}>
+            <div className="claude-hook-lab__prompt-meta">
+              <div>
+                <h2>{item.title}</h2>
+                <span>{item.scenario}</span>
+              </div>
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  copyPrompt(item)
+                }}
+              >
+                {copyFailedId === item.id ? '已选中' : copiedId === item.id ? '已复制' : '复制'}
+              </button>
+            </div>
+            <pre>{item.prompt}</pre>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
-  const [selectedScenarioId, setSelectedScenarioId] = useState<LabScenarioId>('real-edit-pending')
+  const [selectedScenarioId, setSelectedScenarioId] = useState<LabScenarioId>('empty-idle')
   const [viewMode, setViewMode] = useState<LabViewMode>('overlay')
   const [replayToken, setReplayToken] = useState(0)
+  const [panelCollapsed, setPanelCollapsed] = useState(true)
   const activeOverlay = useSessionStore((state) => state.activeOverlay)
   const activeSession = useSessionStore((state) => state.activeSessionId ? state.sessions[state.activeSessionId] : undefined)
   const colorTheme = useThemeStore((state) => state.colorTheme)
@@ -1278,10 +1588,27 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
     [selectedScenarioId],
   )
 
+  const orderedScenarios = useMemo(() => {
+    const scenarioById = new Map(CLAUDE_HOOK_LAB_SCENARIOS.map((scenario) => [scenario.id, scenario]))
+    const ordered = TEST_FLOW_SCENARIO_IDS
+      .map((id) => scenarioById.get(id))
+      .filter((scenario): scenario is LabScenario => Boolean(scenario))
+    const remaining = CLAUDE_HOOK_LAB_SCENARIOS.filter((scenario) => !TEST_FLOW_SCENARIO_IDS.includes(scenario.id))
+    return [...ordered, ...remaining]
+  }, [])
+
+  const activeScenarioIndex = Math.max(0, orderedScenarios.findIndex((scenario) => scenario.id === selectedScenarioId))
+
   const applyScenario = useCallback((scenarioId: LabScenarioId) => {
     setSelectedScenarioId(scenarioId)
     setReplayToken((token) => token + 1)
   }, [])
+
+  const applyScenarioStep = useCallback((offset: number) => {
+    const nextScenario = orderedScenarios[activeScenarioIndex + offset]
+    if (!nextScenario) return
+    applyScenario(nextScenario.id)
+  }, [activeScenarioIndex, applyScenario, orderedScenarios])
 
   const applyViewMode = useCallback((mode: LabViewMode) => {
     setViewMode(mode)
@@ -1299,49 +1626,71 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
         {children}
       </div>
 
-      <aside className="claude-hook-lab__panel" aria-label="Claude Hook UI Lab">
+      <aside className="claude-hook-lab__panel" data-collapsed={panelCollapsed} aria-label="Claude Hook UI Lab">
         <header className="claude-hook-lab__header">
           <div>
             <div className="claude-hook-lab__eyebrow">Claude Hook UI Lab</div>
             <h1>{activeScenario.hookName}</h1>
           </div>
-          <button className="claude-hook-lab__reset" type="button" onClick={() => setReplayToken((token) => token + 1)}>
-            Reset
-          </button>
+          <div className="claude-hook-lab__header-actions">
+            {!panelCollapsed && (
+              <>
+                <button className="claude-hook-lab__reset" type="button" onClick={() => applyScenarioStep(-1)} disabled={activeScenarioIndex <= 0}>
+                  上一步
+                </button>
+                <button className="claude-hook-lab__reset" type="button" onClick={() => applyScenarioStep(1)} disabled={activeScenarioIndex >= orderedScenarios.length - 1}>
+                  下一步
+                </button>
+                <button className="claude-hook-lab__reset" type="button" onClick={() => setReplayToken((token) => token + 1)}>
+                  Reset
+                </button>
+              </>
+            )}
+            <button className="claude-hook-lab__reset" type="button" onClick={() => setPanelCollapsed((value) => !value)}>
+              {panelCollapsed ? '展开' : '收起'}
+            </button>
+          </div>
         </header>
 
-        <div className="claude-hook-lab__scenario-grid" role="list" aria-label="Hook scenarios">
-          {CLAUDE_HOOK_LAB_SCENARIOS.map((scenario) => (
-            <button
-              key={scenario.id}
-              className="claude-hook-lab__scenario"
-              data-active={scenario.id === selectedScenarioId}
-              type="button"
-              onClick={() => applyScenario(scenario.id)}
-            >
-              <span className="claude-hook-lab__scenario-title">{scenario.title}</span>
-              <span className="claude-hook-lab__scenario-hook">{scenario.hookName}</span>
-            </button>
-          ))}
-        </div>
+        {panelCollapsed ? (
+          <div className="claude-hook-lab__mini-status">
+            <span>{activeSession?.phase ?? 'idle'}</span>
+            <span>{activeOverlay?.type ?? activeSession?.lastToolName ?? 'preview'}</span>
+          </div>
+        ) : (
+          <>
+            <div className="claude-hook-lab__scenario-grid" role="list" aria-label="Hook scenarios">
+              {orderedScenarios.map((scenario, index) => (
+                <button
+                  key={scenario.id}
+                  className="claude-hook-lab__scenario"
+                  data-active={scenario.id === selectedScenarioId}
+                  type="button"
+                  onClick={() => applyScenario(scenario.id)}
+                >
+                  <span className="claude-hook-lab__scenario-title">{String(index + 1).padStart(2, '0')} · {scenario.title}</span>
+                  <span className="claude-hook-lab__scenario-hook">{scenario.hookName}</span>
+                </button>
+              ))}
+            </div>
 
-        <div className="claude-hook-lab__modes" aria-label="View mode">
-          {(Object.keys(VIEW_MODE_LABELS) as LabViewMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              data-active={viewMode === mode}
-              onClick={() => applyViewMode(mode)}
-            >
-              {VIEW_MODE_LABELS[mode]}
-            </button>
-          ))}
-        </div>
+            <div className="claude-hook-lab__modes" aria-label="View mode">
+              {(Object.keys(VIEW_MODE_LABELS) as LabViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  data-active={viewMode === mode}
+                  onClick={() => applyViewMode(mode)}
+                >
+                  {VIEW_MODE_LABELS[mode]}
+                </button>
+              ))}
+            </div>
 
-        <section className="claude-hook-lab__island-themes" aria-label="灵动岛颜色外观">
-          <div className="claude-hook-lab__section-label">灵动岛颜色外观</div>
-          <div className="claude-hook-lab__island-theme-grid">
-            {COLOR_THEMES.map((theme) => (
+            <section className="claude-hook-lab__island-themes" aria-label="灵动岛颜色外观">
+              <div className="claude-hook-lab__section-label">灵动岛颜色外观</div>
+              <div className="claude-hook-lab__island-theme-grid">
+                {COLOR_THEMES.map((theme) => (
               <button
                 key={theme.id}
                 className="claude-hook-lab__island-theme"
@@ -1357,18 +1706,22 @@ export function ClaudeHookUiLab({ children }: ClaudeHookUiLabProps) {
                 <span className="claude-hook-lab__island-theme-name">{theme.labelZh}</span>
                 <span className="claude-hook-lab__island-theme-tag">{theme.tag}</span>
               </button>
-            ))}
-          </div>
-        </section>
+                ))}
+              </div>
+            </section>
 
-        <footer className="claude-hook-lab__status">
-          <span>{activeScenario.caption}</span>
-          <span>灵动岛外观: {COLOR_THEMES.find((theme) => theme.id === colorTheme)?.labelZh ?? colorTheme}</span>
-          <span>session: {activeSession?.id === RECORDED_SESSION_ID ? 'real e336326d' : activeSession?.id ?? 'none'}</span>
-          <span>phase: {activeSession?.phase ?? 'none'}</span>
-          <span>tool: {activeSession?.lastToolName ?? 'none'}</span>
-          <span>overlay: {activeOverlay?.type ?? 'none'}</span>
-        </footer>
+            <PromptLibrary scenarioId={selectedScenarioId} scenarioName={activeScenario.hookName} />
+
+            <footer className="claude-hook-lab__status">
+              <span>{activeScenario.caption}</span>
+              <span>灵动岛外观: {COLOR_THEMES.find((theme) => theme.id === colorTheme)?.labelZh ?? colorTheme}</span>
+              <span>session: {activeSession?.id === RECORDED_SESSION_ID ? 'real e336326d' : activeSession?.id ?? 'none'}</span>
+              <span>phase: {activeSession?.phase ?? 'none'}</span>
+              <span>tool: {activeSession?.lastToolName ?? 'none'}</span>
+              <span>overlay: {activeOverlay?.type ?? 'none'}</span>
+            </footer>
+          </>
+        )}
       </aside>
     </div>
   )

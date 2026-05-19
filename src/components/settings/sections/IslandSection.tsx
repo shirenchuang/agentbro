@@ -49,6 +49,20 @@ function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInf
 }
 
 type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled' | 'followFocus'
+const USAGE_PROVIDER_REFRESH_TIMEOUT_MS = 10_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof window.setTimeout> | undefined
+  const timeout = new Promise<T>((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+  })
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) window.clearTimeout(timer)
+    }),
+    timeout,
+  ])
+}
 
 function refreshDisplayedSessions() {
   const sessionState = useSessionStore.getState()
@@ -290,7 +304,9 @@ function ShortcutRow({ action, label, keys }: { action: string; label: string; k
         </span>
       ) : (
         <span className="shortcuts-row__keys">
-          {keys.split('+').map((k, i) => (<kbd key={i}>{k}</kbd>))}
+          {keys.trim()
+            ? keys.split('+').map((k, i) => (<kbd key={i}>{k}</kbd>))
+            : <span>{t('settings.shortcutOff', { defaultValue: 'Off' })}</span>}
         </span>
       )}
       <button className="shortcuts-row__edit" onClick={() => setRecording(!recording)}>
@@ -1243,6 +1259,7 @@ function IntegrationTab() {
   const [usageProviders, setUsageProviders] = useState<UsageProviderStatus[]>([])
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageAction, setUsageAction] = useState<string | null>(null)
+  const usageRequestSeq = useRef(0)
 
   const fetchStatus = useCallback(async () => {
     setLoading(true); setError(null); setNotice(null)
@@ -1259,20 +1276,33 @@ function IntegrationTab() {
     setLoading(false)
   }, [])
 
-  const fetchUsageProviders = useCallback(async () => {
+  const fetchUsageProviders = useCallback(async (options: { live?: boolean; showLoading?: boolean } = {}) => {
+    const { live = true, showLoading = true } = options
+    const requestSeq = ++usageRequestSeq.current
     if (!isTauri()) {
       setUsageProviders([])
       return
     }
-    setUsageLoading(true)
+    if (showLoading) setUsageLoading(true)
     try {
-      setUsageProviders(await listUsageProviders())
+      const providers = await withTimeout(
+        listUsageProviders(live),
+        USAGE_PROVIDER_REFRESH_TIMEOUT_MS,
+        t('settings.usageRefreshTimeout', { defaultValue: '用量查询超时，请稍后刷新。' }),
+      )
+      if (requestSeq === usageRequestSeq.current) {
+        setUsageProviders(providers)
+      }
     } catch (e) {
-      setError(String(e))
+      if (showLoading && requestSeq === usageRequestSeq.current) {
+        setError(String(e))
+      }
     } finally {
-      setUsageLoading(false)
+      if (showLoading && requestSeq === usageRequestSeq.current) {
+        setUsageLoading(false)
+      }
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (!config.islandExternalEnabled) return
@@ -1282,9 +1312,9 @@ function IntegrationTab() {
 
   useEffect(() => {
     if (!config.islandExternalEnabled) return
-    const timer = window.setTimeout(() => { fetchUsageProviders() }, 0)
+    const timer = window.setTimeout(() => { fetchUsageProviders({ live: false, showLoading: false }) }, 0)
     return () => window.clearTimeout(timer)
-  }, [fetchUsageProviders, config.islandExternalEnabled, config.usageQueryEnabled])
+  }, [fetchUsageProviders, config.islandExternalEnabled])
 
   const detectNow = async () => {
     if (!isTauri()) {
@@ -1292,7 +1322,7 @@ function IntegrationTab() {
       return
     }
     await fetchStatus()
-    await fetchUsageProviders()
+    await fetchUsageProviders({ live: true, showLoading: true })
     setNotice(t('settings.hookDetectDone', { defaultValue: '检测完成。' }))
   }
 
@@ -1300,7 +1330,7 @@ function IntegrationTab() {
     config.updateConfig('usageQueryEnabled', enabled)
     config.updateConfig('showUsageQuota', enabled)
     persistUsageQuerySettings({ usageQueryEnabled: enabled, showUsageQuota: enabled })
-    window.setTimeout(() => { fetchUsageProviders() }, 150)
+    window.setTimeout(() => { fetchUsageProviders({ live: false, showLoading: false }) }, 150)
   }
 
   const authorizeProvider = async (provider: string) => {
@@ -1556,7 +1586,7 @@ function IntegrationTab() {
 
       <SettingGroup
         actions={(
-          <button className="settings-mini-button" disabled={usageLoading} onClick={fetchUsageProviders} type="button">
+          <button className="settings-mini-button" disabled={usageLoading} onClick={() => fetchUsageProviders({ live: true, showLoading: true })} type="button">
             {usageLoading ? t('settings.detecting', { defaultValue: '检测中...' }) : t('settings.refresh', { defaultValue: '刷新' })}
           </button>
         )}

@@ -141,6 +141,58 @@ describe('HoverList interactions', () => {
     expect(onSubagentClick).toHaveBeenCalledWith('s1', current.subagents[0])
   })
 
+  it('hides completed subagents in the session list after a newer user message', () => {
+    const now = Date.now()
+    render(
+      <HoverList
+        sessions={[session({
+          lastUserMessage: 'Next task please',
+          lastUserMessageAt: now,
+          subagents: [{
+            agentId: 'old-agent',
+            name: 'old-work',
+            agentType: 'explorer',
+            description: 'Explore old task',
+            startedAt: now - 8_000,
+            completedAt: now - 5_000,
+            status: 'completed',
+            tools: [],
+            lastAssistantMessage: 'Old work complete.',
+          }],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText('Subagents (1)')).not.toBeInTheDocument()
+    expect(screen.queryByText('@old-work')).not.toBeInTheDocument()
+  })
+
+  it('keeps running subagents visible even after a newer user message', () => {
+    const now = Date.now()
+    render(
+      <HoverList
+        sessions={[session({
+          lastUserMessage: 'Next task please',
+          lastUserMessageAt: now,
+          subagents: [{
+            agentId: 'running-agent',
+            name: 'active-work',
+            agentType: 'explorer',
+            description: 'Explore current task',
+            startedAt: now - 8_000,
+            status: 'running',
+            tools: ['Read'],
+          }],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Running 1 agent')).toBeInTheDocument()
+    expect(screen.getByText('@active-work')).toBeInTheDocument()
+  })
+
   it('summarizes running subagents like a child-agent team', () => {
     render(
       <HoverList
@@ -372,7 +424,7 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('确实，第三个自定义高度之前没有正确同步。')).toBeInTheDocument()
   })
 
-  it('shows generic thinking text for processing sessions without a tool', () => {
+  it('shows generic working text for processing sessions without a tool', () => {
     render(
       <HoverList
         sessions={[session({
@@ -384,7 +436,7 @@ describe('HoverList interactions', () => {
       />,
     )
 
-    expect(screen.getByText('notch.thinking')).toBeInTheDocument()
+    expect(screen.getByText('notch.working')).toBeInTheDocument()
     expect(screen.queryByText('Processing user input: Please fix the island')).not.toBeInTheDocument()
   })
 
@@ -424,14 +476,14 @@ describe('HoverList interactions', () => {
         sessions={[session({
           phase: 'processing',
           lastToolName: undefined,
-          description: 'Compacting context',
+          description: 'Compacting conversation...',
         })]}
         onSessionClick={vi.fn()}
       />,
     )
 
     expect(screen.getByText('压缩上下文')).toHaveClass('hover-list__tool-label--compact')
-    expect(screen.queryByText('Compacting context')).not.toBeInTheDocument()
+    expect(screen.queryByText('Compacting conversation...')).not.toBeInTheDocument()
   })
 
   it('renders Codex edit targets with change counts', () => {
@@ -502,16 +554,36 @@ describe('HoverList interactions', () => {
     )
 
     const permissionCard = document.querySelector('.hover-list__inline-perm') as HTMLElement
-    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '允许一次' }))
-    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: /始终允许/ }))
-    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '自动批准' }))
-    fireEvent.mouseDown(within(permissionCard).getByRole('button', { name: '拒绝' }))
+    fireEvent.click(within(permissionCard).getByRole('button', { name: '允许一次' }))
+    fireEvent.click(within(permissionCard).getByRole('button', { name: /始终允许/ }))
+    fireEvent.click(within(permissionCard).getByRole('button', { name: '自动批准' }))
+    fireEvent.click(within(permissionCard).getByRole('button', { name: '拒绝' }))
 
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
     expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1')
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
     expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('gives inline plan previews more readable content and subdued permission text', () => {
+    const longPlan = `${'SwitchProviderEditor.tsx '.repeat(12)}final-visible-fragment`
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          planTitle: 'Agent Switch UI 中文化 + 交互重设计',
+          planContent: longPlan,
+          planPermissions: ['Bash: run cargo check', 'Bash: run pnpm dev'],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(document.querySelector('.hover-list__inline-plan-content')?.textContent).toContain('final-visible-fragment')
+    expect(screen.getByText('请求的权限:')).toHaveClass('hover-list__inline-plan-perms-label')
+    expect(screen.getAllByText('Bash')[0]).toHaveClass('hover-list__inline-plan-perm-tool')
+    expect(screen.getByText(/run cargo check/)).toBeInTheDocument()
   })
 
   it('renders the generic authorization card from pendingPermission with a diff preview', () => {
