@@ -10,6 +10,7 @@ pub mod platform;
 pub mod remote;
 pub mod skills;
 pub mod sound;
+pub mod switch;
 pub mod terminal;
 pub mod theme;
 pub mod webhook;
@@ -316,7 +317,11 @@ async fn install_custom_agent_hook(
     // Check for duplicate install directory
     let cfg = state.config_store.get();
     let dir_lower = install_directory.trim().to_lowercase();
-    if cfg.custom_hook_installs.iter().any(|e| e.install_directory.to_lowercase() == dir_lower && e.profile_id == profile_id) {
+    if cfg
+        .custom_hook_installs
+        .iter()
+        .any(|e| e.install_directory.to_lowercase() == dir_lower && e.profile_id == profile_id)
+    {
         return Err(format!(
             "A custom hook for {} at this directory already exists.",
             profile.id
@@ -372,8 +377,7 @@ async fn uninstall_agent_hook(
         let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
         let target = agents::profiles::custom_installation_path(&profile, &base_dir);
         if target.exists() {
-            agents::profiles::uninstall_at(&profile, &target)
-                .map_err(|e| e.to_string())?;
+            agents::profiles::uninstall_at(&profile, &target).map_err(|e| e.to_string())?;
         }
         cfg.custom_hook_installs.remove(idx);
         state.config_store.update(cfg).map_err(|e| e.to_string())?;
@@ -479,9 +483,9 @@ async fn get_all_hook_status(
     for entry in &cfg.custom_hook_installs {
         let profile = agents::profiles::profile_for_agent(&entry.profile_id);
         let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
-        let target_path = profile.as_ref().map(|p| {
-            agents::profiles::custom_installation_path(p, &base_dir)
-        });
+        let target_path = profile
+            .as_ref()
+            .map(|p| agents::profiles::custom_installation_path(p, &base_dir));
         let hook_health = match (&profile, &target_path) {
             (Some(p), Some(path)) => agents::profiles::install_health(p, path),
             _ => agents::profiles::HookInstallHealth::NotInstalled,
@@ -2957,6 +2961,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -3287,6 +3292,10 @@ pub fn run() {
             let diagnostic_buffer = Arc::new(hooks::diagnostics::DiagnosticRingBuffer::new());
             let network_monitor = Arc::new(NetworkMonitor::new());
 
+            let switch_db = Arc::new(
+                switch::db::SwitchDatabase::open().expect("failed to open switch database"),
+            );
+
             let app_state = AppState {
                 session_store,
                 hook_server,
@@ -3299,6 +3308,7 @@ pub fn run() {
                 remote_manager,
                 diagnostic_buffer,
                 network_monitor,
+                switch_db,
                 tray_icon,
             };
             let buddy_device_config = app_state.config_store.get().buddy_device;
@@ -3310,6 +3320,19 @@ pub fn run() {
 
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
                 log::warn!("Failed to register island global shortcuts: {}", err);
+            }
+
+            // Deep link handler
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Some(payload) = switch::deeplink::parse_deep_link(url.as_str()) {
+                            let _ = handle.emit("switch-deep-link", &payload);
+                        }
+                    }
+                });
             }
 
             log::info!("AgentBro started");
@@ -3516,6 +3539,31 @@ pub fn run() {
             agents::programs::add_custom_agent,
             agents::programs::update_custom_agent,
             agents::programs::remove_custom_agent,
+            switch::commands::switch_list_providers,
+            switch::commands::switch_create_provider,
+            switch::commands::switch_update_provider,
+            switch::commands::switch_delete_provider,
+            switch::commands::switch_duplicate_provider,
+            switch::commands::switch_set_current,
+            switch::commands::switch_get_current,
+            switch::commands::switch_detect_cc_switch,
+            switch::commands::switch_import_cc_switch_preview,
+            switch::commands::switch_import_cc_switch,
+            switch::commands::switch_clear_all_data,
+            switch::commands::switch_list_prompts,
+            switch::commands::switch_create_prompt,
+            switch::commands::switch_update_prompt,
+            switch::commands::switch_delete_prompt,
+            switch::commands::switch_toggle_prompt,
+            switch::commands::switch_apply_prompts,
+            switch::commands::switch_list_presets,
+            switch::commands::switch_get_usage_summary,
+            switch::commands::switch_get_usage_by_provider,
+            switch::commands::switch_get_usage_by_model,
+            switch::commands::switch_get_daily_cost,
+            switch::commands::switch_list_model_pricing,
+            switch::commands::switch_get_provider_health,
+            switch::commands::switch_speed_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");
