@@ -365,6 +365,12 @@ function noticeIcon(kind: SessionNotice['kind']): string {
 
 function SessionNoticeRow({ notice, onJump }: { notice: SessionNotice; onJump?: () => void }) {
   const actionable = Boolean(notice.actionLabel && onJump)
+  const handleAction = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onJump?.()
+  }
+
   return (
     <div className={`hover-list__notice hover-list__notice--${notice.kind}`} data-no-open>
       <span className="hover-list__notice-icon" aria-hidden="true">{noticeIcon(notice.kind)}</span>
@@ -379,8 +385,8 @@ function SessionNoticeRow({ notice, onJump }: { notice: SessionNotice; onJump?: 
           onMouseDown={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            onJump?.()
           }}
+          onClick={handleAction}
         >
           {notice.actionLabel}
         </button>

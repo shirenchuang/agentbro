@@ -519,6 +519,7 @@ describe('HoverList interactions', () => {
 
   it('renders terminal-routed approval notices with a jump action', () => {
     const onJumpToTerminal = vi.fn()
+    const onSessionClick = vi.fn()
     render(
       <HoverList
         sessions={[session({
@@ -531,16 +532,45 @@ describe('HoverList interactions', () => {
             actionLabel: 'Go to Terminal',
           },
         })]}
-        onSessionClick={vi.fn()}
+        onSessionClick={onSessionClick}
         onJumpToTerminal={onJumpToTerminal}
       />,
     )
 
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Go to Terminal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Go to Terminal' }))
 
     expect(screen.getByText('Continue in Terminal')).toBeInTheDocument()
     expect(screen.getByText('Approval is delegated to the active tab')).toBeInTheDocument()
     expect(onJumpToTerminal).toHaveBeenCalledWith('s1')
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('renders compact task rows with local expand interaction', () => {
+    const onSessionClick = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          tasks: [
+            { id: '1', name: 'Map Vibe SessionCardView', status: 'completed' },
+            { id: '2', name: 'Check TerminalApprovalHintView', status: 'in_progress' },
+            { id: '3', name: 'Preserve question overlay', status: 'pending' },
+            { id: '4', name: 'Preserve plan overlay', status: 'pending' },
+            { id: '5', name: 'Preserve subagent history', status: 'pending' },
+            { id: '6', name: 'Ship QA checklist', status: 'pending' },
+          ],
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    expect(screen.getByText('(1 已完成, 1 进行中, 4 待处理)')).toBeInTheDocument()
+    expect(screen.getByText('Map Vibe SessionCardView')).toHaveClass('hover-list__task-subject--done')
+    expect(screen.queryByText('Ship QA checklist')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '查看更多 (1 项)' }))
+
+    expect(screen.getByText('Ship QA checklist')).toBeInTheDocument()
+    expect(onSessionClick).not.toHaveBeenCalled()
   })
 
   it('renders setup and trust notices without replacing deep session rows', () => {
