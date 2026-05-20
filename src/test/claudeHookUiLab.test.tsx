@@ -120,7 +120,7 @@ describe('ClaudeHookUiLab', () => {
     })
   })
 
-  it('replays the real compact checkpoint without inventing an overlay', async () => {
+  it('replays the real compact checkpoint through the context compact trigger', async () => {
     renderLab()
 
     fireEvent.click(screen.getByText('Real Compact').closest('button')!)
@@ -130,7 +130,7 @@ describe('ClaudeHookUiLab', () => {
       const session = state.sessions[RECORDED_SESSION_ID]
       expect(session?.phase).toBe('compacting')
       expect(session?.lastToolName).toBe('Compacting')
-      expect(state.activeOverlay).toBeNull()
+      expect(state.activeOverlay?.type).toBe('compacting')
     })
   })
 

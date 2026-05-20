@@ -853,6 +853,39 @@ impl HookServer {
                 // If this is a UserPromptSubmit and session has no title yet,
                 // try to extract the user prompt as session title
                 let event_name = _raw.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                if event_name == "PreCompact" {
+                    store.update_session(session_id, |s| {
+                        s.phase = SessionPhase::Compacting;
+                        s.description = Some("Compacting context".to_string());
+                        s.last_tool_name = Some("Compacting".to_string());
+                        s.last_tool_target = Some("context".to_string());
+                        s.last_tool_status = Some("running".to_string());
+                    });
+                    Self::play_sound_for_session(sound, store, session_id, SoundEvent::ContextLimit);
+                    return;
+                }
+                if event_name == "PostCompact" {
+                    store.update_session(session_id, |s| {
+                        s.phase = SessionPhase::Processing;
+                        if s.description
+                            .as_deref()
+                            .map(Self::is_compacting_context_text)
+                            .unwrap_or(false)
+                        {
+                            s.description = None;
+                        }
+                        if s.last_tool_name
+                            .as_deref()
+                            .map(Self::is_compacting_context_text)
+                            .unwrap_or(false)
+                        {
+                            s.last_tool_name = None;
+                            s.last_tool_target = None;
+                            s.last_tool_status = None;
+                        }
+                    });
+                    return;
+                }
                 if event_name == "UserPromptSubmit" {
                     if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
                         store.set_last_user_message(session_id, Some(prompt));
@@ -1637,6 +1670,18 @@ impl HookServer {
         }
     }
 
+    fn is_compacting_context_text(text: &str) -> bool {
+        let normalized = text
+            .trim()
+            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '。' | '！'))
+            .to_lowercase();
+        normalized == "compacting"
+            || normalized == "compacting context"
+            || normalized.starts_with("compacting context")
+            || normalized == "compacting conversation"
+            || normalized.starts_with("compacting conversation")
+    }
+
     fn is_generic_completion_text(text: &str) -> bool {
         let normalized = text
             .trim()
@@ -2087,6 +2132,60 @@ mod tests {
         );
 
         assert_eq!(summary, "Task completed");
+    }
+
+    #[test]
+    fn pre_and_post_compact_events_drive_compacting_phase() {
+        let store = SessionStore::new();
+        store.get_or_create_session(
+            "compact-session",
+            "claude-code",
+            "project",
+            "/tmp/project",
+            "iTerm",
+        );
+        let sound = Arc::new(std::sync::Mutex::new(None));
+        let app = Arc::new(std::sync::Mutex::new(None));
+
+        let pre = AgentEvent::Processing {
+            session_id: "compact-session".to_string(),
+            description: "Compacting context".to_string(),
+        };
+        HookServer::process_event(
+            &store,
+            &pre,
+            &serde_json::json!({ "event": "PreCompact" }),
+            &sound,
+            &app,
+        );
+
+        let session = store
+            .get_session("compact-session")
+            .expect("session should exist");
+        assert_eq!(session.phase, SessionPhase::Compacting);
+        assert_eq!(session.description.as_deref(), Some("Compacting context"));
+        assert_eq!(session.last_tool_name.as_deref(), Some("Compacting"));
+
+        let post = AgentEvent::Processing {
+            session_id: "compact-session".to_string(),
+            description: "Compacting context".to_string(),
+        };
+        HookServer::process_event(
+            &store,
+            &post,
+            &serde_json::json!({ "event": "PostCompact" }),
+            &sound,
+            &app,
+        );
+
+        let session = store
+            .get_session("compact-session")
+            .expect("session should exist");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(session.description, None);
+        assert_eq!(session.last_tool_name, None);
+        assert_eq!(session.last_tool_target, None);
+        assert_eq!(session.last_tool_status, None);
     }
 
     #[test]

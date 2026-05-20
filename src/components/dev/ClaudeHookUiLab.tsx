@@ -765,11 +765,10 @@ function recordedSubagentSession(now: number): SessionState {
 
 function recordedCompactSession(now: number): SessionState {
   return recordedSession(now, {
-    phase: 'compacting',
-    description: 'PreCompact completed successfully after /compact.',
-    statusLineText: 'Compacted (ctrl+o to see full summary)',
-    lastToolName: 'Compacting',
-    lastToolStatus: 'success',
+    phase: 'processing',
+    description: 'Preparing the recorded /compact PreCompact checkpoint.',
+    statusLineText: 'Compacting conversation...',
+    lastUserMessage: '/compact',
     chatHistory: [
       { role: 'user', content: '接下来我要测试上下文压缩 hook。请在我触发压缩前，先总结当前会话里已经做过的 UI 采样场景。', timestamp: now - 58_000 },
       {
@@ -1329,7 +1328,13 @@ const CLAUDE_HOOK_LAB_SCENARIOS: LabScenario[] = [
     buildSession: recordedCompactSession,
     configureStore: (_now, sessions) => {
       const sessionId = sessions[0]?.id
-      if (sessionId) useSessionStore.getState().clearSessionOverlays(sessionId)
+      if (sessionId) {
+        useSessionStore.getState().updateSession({
+          type: 'context_compact',
+          sessionId,
+          phase: 'pre',
+        })
+      }
     },
   },
   {
