@@ -637,59 +637,49 @@
 /* Row 5: Subagents */
 .hover-list__subagents {
   margin-top: 4px;
-  padding: 6px;
+  padding: 7px 8px;
   border-radius: 6px;
-  background: var(--island-card-hover);
+  border: 1px solid var(--island-border);
+  background: color-mix(in srgb, var(--island-card) 82%, var(--island-warning) 4%);
 }
 
 .hover-list__subagents-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-  font-size: 10px;
-  font-weight: 500;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.1;
   color: var(--island-text-muted);
 }
 
 .hover-list__subagents-icon {
-  color: #a855f7;
-}
-
-.hover-list__subagents-stats {
-  margin-left: auto;
   color: var(--island-text-muted);
-  font-family: var(--font-mono);
-  font-size: 9px;
-}
-
-.hover-list__subagents-summary {
-  margin: -1px 0 5px 18px;
-  overflow: hidden;
-  color: color-mix(in srgb, var(--island-text) 48%, var(--island-text-muted));
-  font-size: 10px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
 }
 
 .hover-list__subagents-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .hover-list__subagent-item {
   width: 100%;
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 6px;
-  padding: 2px 4px;
+  gap: 8px;
+  padding: 1px 2px;
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: inherit;
+  color: var(--island-text-muted);
   font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.24;
   text-align: left;
 }
 
@@ -707,28 +697,31 @@
 
 .hover-list__subagent-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #22c55e;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--island-danger);
   flex-shrink: 0;
 }
 
 .hover-list__subagent-dot--running {
-  background: #60a5fa;
-  animation: subagent-pulse 2s ease-in-out infinite;
+  background: var(--island-warning);
 }
 
-@keyframes subagent-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+.hover-list__subagent-dot--completed {
+  background: var(--island-success);
+}
+
+.hover-list__subagent-dot--error {
+  background: var(--island-danger);
 }
 
 .hover-list__subagent-type {
   flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 500;
-  color: #a855f7;
+  overflow: hidden;
+  color: var(--island-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hover-list__subagent-desc {
@@ -737,14 +730,24 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
   color: var(--island-text-secondary);
 }
 
-.hover-list__subagent-done {
+.hover-list__subagent-status {
   flex-shrink: 0;
-  font-size: 9px;
   color: var(--island-text-muted);
+}
+
+.hover-list__subagent-status--completed {
+  color: var(--island-text-secondary);
+}
+
+.hover-list__subagent-status--running {
+  color: var(--island-warning-text);
+}
+
+.hover-list__subagent-status--error {
+  color: var(--island-danger-text);
 }
 
 /* Row 6: Tasks */
@@ -930,6 +933,58 @@
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.hover-list__inline-perm-preview--write {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hover-list__inline-perm-file-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.hover-list__inline-perm-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--island-text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hover-list__inline-perm-new-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.hover-list__inline-perm-code {
+  max-height: 190px;
+  margin: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(14, 14, 16, 0.72);
+  color: var(--island-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.5;
+  padding: 8px 10px;
 }
 
 .hover-list__inline-perm-actions {

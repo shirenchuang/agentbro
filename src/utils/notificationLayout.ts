@@ -120,7 +120,7 @@ function estimatePermissionPanelHeight(data: Record<string, unknown>, maxPanelHe
         ? [filePath, oldString, newString].filter(Boolean).join('\n')
         : JSON.stringify(toolInput)
 
-  const previewHeight = clampHeight(44 + estimatePlainTextHeight(previewText || toolName, 92, 18), 72, 180)
+  const previewHeight = clampHeight(44 + estimatePlainTextHeight(previewText || toolName, 92, 18), 72, 250)
   const diffLineCount = Array.isArray(diff?.lines) ? diff.lines.length : 0
   const diffHeight = diffLineCount > 0 ? clampHeight(34 + diffLineCount * 19, 120, 280) : 0
   return clampHeight(226 + previewHeight + diffHeight, 300, maxPanelHeight)

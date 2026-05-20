@@ -1069,13 +1069,17 @@ fn build_iterm_write_script(tty: &str, message: &str) -> String {
     repeat with t in tabs of w
       repeat with s in sessions of t
         if tty of s contains {tty_literal} then
-          tell s to write text {message_literal}
+          tell s to write text {message_literal} newline no
+          delay 0.08
+          tell s to write text (ASCII character 13) newline no
           return
         end if
       end repeat
     end repeat
   end repeat
-  tell current session of current tab of current window to write text {message_literal}
+  tell current session of current tab of current window to write text {message_literal} newline no
+  delay 0.08
+  tell current session of current tab of current window to write text (ASCII character 13) newline no
 end tell"#
     )
 }
@@ -1103,6 +1107,7 @@ fn build_system_events_type_script(message: &str) -> String {
     format!(
         r#"tell application "System Events"
   keystroke {message_literal}
+  delay 0.05
   key code 36
 end tell"#
     )
@@ -1188,11 +1193,21 @@ mod tests {
     fn terminal_message_scripts_target_tty_and_submit() {
         let iterm_script = build_iterm_write_script("/dev/ttys001", "ok");
         assert!(iterm_script.contains("tty of s contains \"/dev/ttys001\""));
-        assert!(iterm_script.contains("write text \"ok\""));
+        assert!(iterm_script.contains("write text \"ok\" newline no"));
+        assert!(iterm_script.contains("write text (ASCII character 13) newline no"));
+        assert!(!iterm_script.contains("activate"));
+        assert!(!iterm_script.contains("select s"));
+        assert!(!iterm_script.contains("select w"));
+        assert!(!iterm_script.contains("System Events"));
 
         let terminal_script = build_terminal_write_script("/dev/ttys001", "ok");
         assert!(terminal_script.contains("tty of t is \"/dev/ttys001\""));
         assert!(terminal_script.contains("do script \"ok\" in t"));
+
+        let fallback_script = build_system_events_type_script("ok");
+        assert!(fallback_script.contains("keystroke \"ok\""));
+        assert!(fallback_script.contains("delay 0.05"));
+        assert!(fallback_script.contains("key code 36"));
     }
 
     #[test]

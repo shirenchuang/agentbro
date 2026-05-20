@@ -154,6 +154,7 @@ describe('NotchPanel island shell', () => {
       microPillWidth: 112,
       notchStyle: 'compact',
       panelMaxWidth: 630,
+      panelHorizontalOffset: 0,
       pixelCursorEnabled: false,
       showCacheTTL: false,
       taskCompleteDwellSeconds: 3,
@@ -190,6 +191,39 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
     await waitFor(() => expect(useSessionStore.getState().panelState).toBe('hover'))
+  })
+
+  it('opens the collapsed island immediately on pointer down even when hover is delayed', async () => {
+    vi.useFakeTimers()
+    try {
+      useConfigStore.setState({ hoverExpandDelay: 1000 })
+      const currentSession = session({ phase: 'idle' })
+      useSessionStore.setState({
+        sessions: { [currentSession.id]: currentSession },
+        sessionList: [currentSession],
+        activeSessionId: currentSession.id,
+        panelState: 'collapsed',
+        activeOverlay: null,
+        overlayQueue: [],
+        rateLimits: undefined,
+        hookNotification: null,
+        wakeSilencedUntil: 0,
+        focusedTerminal: null,
+      })
+
+      render(<NotchPanel />)
+
+      fireEvent.pointerDown(screen.getByRole('region', { name: 'AgentBro' }).parentElement!, { button: 0 })
+
+      expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+      act(() => {
+        vi.advanceTimersByTime(120)
+      })
+
+      expect(useSessionStore.getState().panelState).toBe('hover')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps a stable native host canvas while opening from micro', () => {
@@ -294,12 +328,40 @@ describe('NotchPanel island shell', () => {
 
     expect(hitboxWidthVar()).toBe('140px')
     await waitFor(() => {
-      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT)
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 0)
     })
     await waitFor(() => {
       expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true)
     })
     expect(useSessionStore.getState().panelState).toBe('collapsed')
+  })
+
+  it('aligns native hover probing with the collapsed shell anchor offset', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.resizeNotch.mockResolvedValue({ anchorOffsetX: 36 })
+    useConfigStore.setState({ allowHorizontalDrag: true, panelHorizontalOffset: 480 })
+    const currentSession = session({ phase: 'idle' })
+    useSessionStore.setState({
+      sessions: { [currentSession.id]: currentSession },
+      sessionList: [currentSession],
+      activeSessionId: currentSession.id,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    await waitFor(() => {
+      expect(tauriMocks.resizeNotch).toHaveBeenCalled()
+    })
+    await waitFor(() => {
+      expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledWith(140, MATCH_NOTCH_HEIGHT, 36)
+    })
   })
 
   it('forces native cursor events back on while the hover list is interactive', async () => {
@@ -687,6 +749,25 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
   })
 
+  it('routes detail approval bar actions on mouse down', async () => {
+    mountIsland(null, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: '{"command":"pnpm test"}' },
+    })
+
+    act(() => {
+      useSessionStore.getState().setPanelState('expanded')
+    })
+    await waitFor(() => expect(document.querySelector('.chat-view')).toBeInTheDocument())
+
+    const allowButton = document.querySelector('.approval-bar__btn--allow') as HTMLElement
+    expect(allowButton).toBeInTheDocument()
+    fireEvent.mouseDown(allowButton)
+
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false)
+    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+  })
+
   it('routes permission overlay actions to permission responses and clears the pending request', () => {
     mountIsland({
       id: 'permission-s1',
@@ -893,6 +974,36 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
   })
 
+  it('shows the same plan request inline in the session list after the alert is collapsed', async () => {
+    mountIsland({
+      id: 'plan-s1',
+      sessionId: 's1',
+      type: 'plan',
+      data: {
+        planTitle: 'Implementation plan',
+        planContent: '1. Preserve session list hover',
+        requestedPermissions: ['Bash: run tests'],
+      },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      planTitle: 'Implementation plan',
+      planContent: '1. Preserve session list hover',
+      planPermissions: ['Bash: run tests'],
+    })
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    fireEvent.pointerEnter(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
+
+    await waitFor(() => expect(document.querySelector('.hover-list')).toBeInTheDocument())
+    expect(document.querySelector('.notch-panel__alert-content')).not.toBeInTheDocument()
+    expect(document.querySelector('.plan-approval__content')).not.toBeInTheDocument()
+    expect(document.querySelector('.hover-list__inline-plan')?.textContent).toContain('Implementation plan')
+    expect(document.querySelector('.hover-list__inline-plan')?.textContent).toContain('Preserve session list hover')
+    expect(screen.getByText('Bash')).toHaveClass('hover-list__inline-plan-perm-tool')
+    expect(screen.getByRole('button', { name: 'Accept Edits' })).toBeInTheDocument()
+  })
+
   it('routes question overlay answers to respondQuestion and clears the pending question', () => {
     mountIsland({
       id: 'question-s1',
@@ -909,6 +1020,43 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+  })
+
+  it('opens custom input from the question chat action', () => {
+    mountIsland({
+      id: 'question-chat-s1',
+      sessionId: 's1',
+      type: 'question',
+      data: { question: 'Pick one', options: ['Ship it', 'Revise'] },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_input',
+      pendingQuestion: { question: 'Pick one', options: ['Ship it', 'Revise'] },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Chat about this' }))
+
+    expect(screen.getByPlaceholderText('Type your response...')).toBeInTheDocument()
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(true)
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+  })
+
+  it('routes skip interview as a free-form question answer', () => {
+    mountIsland({
+      id: 'question-skip-s1',
+      sessionId: 's1',
+      type: 'question',
+      data: { question: 'Pick one', options: ['Ship it', 'Revise'] },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_input',
+      pendingQuestion: { question: 'Pick one', options: ['Ship it', 'Revise'] },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Skip interview' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Skip interview and plan immediately')
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
   })
 

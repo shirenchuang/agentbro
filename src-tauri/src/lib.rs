@@ -860,6 +860,7 @@ async fn is_cursor_over_notch(
     app: tauri::AppHandle,
     width: Option<f64>,
     height: Option<f64>,
+    anchor_offset_x: Option<f64>,
 ) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("notch") else {
         return Ok(false);
@@ -878,7 +879,9 @@ async fn is_cursor_over_notch(
         .map(|value| value * scale)
         .unwrap_or(size.height as f64);
 
-    let left = position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0);
+    let anchor_offset_x = anchor_offset_x.unwrap_or(0.0) * scale;
+    let left =
+        position.x as f64 + ((size.width as f64 - hit_width) / 2.0).max(0.0) + anchor_offset_x;
     let top = position.y as f64;
     let right = left + hit_width.min(size.width as f64);
     let bottom = top + hit_height.min(size.height as f64);

@@ -291,11 +291,11 @@ export function NotchPanel() {
   const [pendingSubagentOpen, setPendingSubagentOpen] = useState<{ sessionId: string; agentId: string } | null>(null)
   const [preparingOpen, setPreparingOpen] = useState(false)
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
-  const [inlinePermissionOverlayIds, setInlinePermissionOverlayIds] = useState<Set<string>>(() => new Set())
+  const [inlineBlockingOverlayIds, setInlineBlockingOverlayIds] = useState<Set<string>>(() => new Set())
   const [hasInputDraft, setHasInputDraft] = useState(false)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
-  const nativeHoverHitboxSizeRef = useRef({ width: 420, height: 52 })
+  const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0 })
   const hasInputDraftRef = useRef(false)
 
   useEffect(() => {
@@ -361,10 +361,11 @@ export function NotchPanel() {
   ), [islandMonitorSubagents, visibleSessions])
   const focusFilteredEmpty = followFocus && focusedSessionIds !== null && sessions.length > 0 && visibleSessions.length === 0
 
-  const markActivePermissionInlineAfterCollapse = useCallback(() => {
+  const markActiveBlockingOverlayInline = useCallback(() => {
     const overlay = useSessionStore.getState().activeOverlay
-    if (overlay?.type !== 'permission') return
-    setInlinePermissionOverlayIds((current) => {
+    if (!overlay || !isBlockingOverlay(overlay)) return
+    inlineBlockingOverlayIdsRef.current.add(overlay.id)
+    setInlineBlockingOverlayIds((current) => {
       if (current.has(overlay.id)) return current
       const next = new Set(current)
       next.add(overlay.id)
@@ -627,19 +628,6 @@ export function NotchPanel() {
   const detailBackGuardUntilRef = useRef(0)
   const pendingDetailOpenTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  const markActivePermissionOverlayInline = useCallback(() => {
-    const overlay = useSessionStore.getState().activeOverlay
-    if (overlay?.type === 'permission') {
-      inlineBlockingOverlayIdsRef.current.add(overlay.id)
-      setInlinePermissionOverlayIds((current) => {
-        if (current.has(overlay.id)) return current
-        const next = new Set(current)
-        next.add(overlay.id)
-        return next
-      })
-    }
-  }, [])
-
   const dismissNonBlockingOverlay = useCallback((overlayId: string, options?: { collapse?: boolean }) => {
     overlayDismissPendingRef.current = null
     useSessionStore.getState().dismissOverlay(overlayId)
@@ -797,6 +785,9 @@ export function NotchPanel() {
   // Mouse enter
   const handleMouseEnter = useCallback((source: 'dom' | 'native' = 'dom') => {
     if (!islandEnabled) return
+    if (source === 'dom') {
+      requestNativeIgnoreCursorEvents(false, { force: true })
+    }
     const wakeSilenced = useSessionStore.getState().isWakeSilenced()
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current)
@@ -831,7 +822,7 @@ export function NotchPanel() {
         if (hapticOnHover) performHaptic(hapticIntensity).catch(() => {})
       }
     }
-  }, [activeOverlay, focusNotchForHover, hapticIntensity, hapticOnHover, hoverExpandDelay, interaction.isHidden, interaction.isMicro, islandEnabled, microHoverExpandDelay, panelState, showHoverPanel])
+  }, [activeOverlay, focusNotchForHover, hapticIntensity, hapticOnHover, hoverExpandDelay, interaction.isHidden, interaction.isMicro, islandEnabled, microHoverExpandDelay, panelState, requestNativeIgnoreCursorEvents, showHoverPanel])
 
   // Mouse leave
   const handleMouseLeave = useCallback(() => {
@@ -871,15 +862,35 @@ export function NotchPanel() {
         if (current === 'hover' || current === 'expanded') {
           detailModeRef.current = false
           detailBackGuardUntilRef.current = 0
-          markActivePermissionOverlayInline()
+          markActiveBlockingOverlayInline()
           if (hasInputDraftRef.current) return
           setNotchFocusable(false).catch(() => {})
-          markActivePermissionInlineAfterCollapse()
           setPanelState('collapsed')
         }
       }, delay)
     }
-  }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActivePermissionInlineAfterCollapse, markActivePermissionOverlayInline, setPanelState])
+  }, [autoCollapse, collapseDelay, dismissNonBlockingOverlay, dwellDuration, isDragging, markActiveBlockingOverlayInline, setPanelState])
+
+  const handleHitboxPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!islandEnabled || event.button !== 0 || isDragIgnoredTarget(event.target)) return
+
+    requestNativeIgnoreCursorEvents(false, { force: true })
+
+    const current = useSessionStore.getState().panelState
+    if (current !== 'collapsed') return
+    if (useSessionStore.getState().isWakeSilenced()) return
+
+    nativeHoverInsideRef.current = true
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current)
+      leaveTimerRef.current = undefined
+    }
+    if (expandTimerRef.current) {
+      clearTimeout(expandTimerRef.current)
+      expandTimerRef.current = undefined
+    }
+    showHoverPanel({ allowNonBlockingOverlay: true })
+  }, [islandEnabled, requestNativeIgnoreCursorEvents, showHoverPanel])
 
   useEffect(() => {
     return () => {
@@ -902,8 +913,8 @@ export function NotchPanel() {
       if (cancelled || inFlight || isDragging) return
       inFlight = true
       try {
-        const { width, height } = nativeHoverHitboxSizeRef.current
-        const isOver = await isCursorOverNotch(width, height)
+        const { width, height, anchorOffsetX } = nativeHoverProbeRef.current
+        const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
         const currentPanelState = useSessionStore.getState().panelState
         const ignoreTransparentHost = !islandEnabled
@@ -976,11 +987,8 @@ export function NotchPanel() {
             store.dismissOverlay(overlay.id)
           } else {
             detailModeRef.current = false
-            if (overlay.type === 'permission') {
-              inlineBlockingOverlayIdsRef.current.add(overlay.id)
-            }
+            markActiveBlockingOverlayInline()
             setNotchFocusable(false).catch(() => {})
-            markActivePermissionInlineAfterCollapse()
             setPanelState('collapsed')
           }
         } else if (store.panelState === 'expanded') {
@@ -1003,9 +1011,8 @@ export function NotchPanel() {
       if (collapseBinding && matchesShortcut(e, collapseBinding)) {
         setWakeSilencedUntil(Date.now() + escSilenceDuration * 1000)
         detailModeRef.current = false
-        markActivePermissionOverlayInline()
+        markActiveBlockingOverlayInline()
         setNotchFocusable(false).catch(() => {})
-        markActivePermissionInlineAfterCollapse()
         setPanelState('collapsed')
         return
       }
@@ -1060,7 +1067,7 @@ export function NotchPanel() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [escSilenceDuration, markActivePermissionInlineAfterCollapse, markActivePermissionOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
+  }, [escSilenceDuration, markActiveBlockingOverlayInline, setPanelState, setWakeSilencedUntil, shortcuts])
 
   const handleSessionClick = (sessionId: string, options?: { forceDetail?: boolean }) => {
     if (!clickToDetail && !options?.forceDetail) {
@@ -1141,9 +1148,8 @@ export function NotchPanel() {
       clearTimeout(pendingDetailOpenTimerRef.current)
       pendingDetailOpenTimerRef.current = undefined
     }
-    markActivePermissionOverlayInline()
+    markActiveBlockingOverlayInline()
     setNotchFocusable(false).catch(() => {})
-    markActivePermissionInlineAfterCollapse()
     setPanelState('collapsed')
   }
 
@@ -1177,8 +1183,7 @@ export function NotchPanel() {
     }
     const overlay = useSessionStore.getState().activeOverlay
     if (overlay && isBlockingOverlay(overlay)) {
-      inlineBlockingOverlayIdsRef.current.add(overlay.id)
-      setInlinePermissionOverlayIds((current) => new Set(current))
+      markActiveBlockingOverlayInline()
     }
     if (overlay && isNonBlockingOverlay(overlay)) {
       useSessionStore.getState().dismissOverlay(overlay.id)
@@ -1187,7 +1192,7 @@ export function NotchPanel() {
     setPreparingOpen(false)
     setNotchFocusable(true).catch(() => {})
     setPanelState('hover')
-  }, [setPanelState])
+  }, [markActiveBlockingOverlayInline, setPanelState])
 
   const collapsedWidthScale = useConfigStore((s) => s.collapsedWidthScale)
   const notchHeightMode = useConfigStore((s) => s.notchHeightMode)
@@ -1226,12 +1231,10 @@ export function NotchPanel() {
   const showBlockingOverlayInline = Boolean(
     activeOverlay
     && panelState === 'hover'
-    && inlineBlockingOverlayIdsRef.current.has(activeOverlay.id)
-  )
-  const showPermissionInlineAfterCollapse = Boolean(
-    activeOverlay?.type === 'permission'
-    && panelState === 'hover'
-    && inlinePermissionOverlayIds.has(activeOverlay.id),
+    && (
+      inlineBlockingOverlayIdsRef.current.has(activeOverlay.id)
+      || inlineBlockingOverlayIds.has(activeOverlay.id)
+    )
   )
   const hasBlockingOverlayContent = Boolean(
     !layoutPreview
@@ -1239,7 +1242,6 @@ export function NotchPanel() {
     && isBlockingOverlay(activeOverlay)
     && effectivePanelState !== 'collapsed'
     && !showBlockingOverlayInline
-    && !showPermissionInlineAfterCollapse,
   )
   const usesWideApprovalOverlay = hasBlockingOverlayContent
     && (activeOverlay?.type === 'permission' || activeOverlay?.type === 'plan' || activeOverlay?.type === 'question')
@@ -1287,11 +1289,11 @@ export function NotchPanel() {
     return maxVisibleSessions > 0 ? sorted.slice(0, maxVisibleSessions) : sorted
   }, [displayedSessions, maxVisibleSessions])
   const hoverListHeight = 22 + Math.max(visibleHoverSessions.length, 1) * 74 + visibleHoverSessions.reduce((extra, session) => {
-    if (session.pendingPermission) return extra + 260
+    if (session.pendingPermission || (activeOverlay?.type === 'permission' && activeOverlay.sessionId === session.id)) return extra + 260
     if (session.pendingQuestion) return extra + 120
     if (session.planTitle || session.planContent) return extra + 260
     return extra
-      + (getSessionListSubagents(session).length > 0 ? 58 : 0)
+      + (getSessionListSubagents(session).length > 0 ? 34 + getSessionListSubagents(session).length * 22 : 0)
       + (session.tasks && session.tasks.length > 0 ? 92 : 0)
   }, 0)
   const blockingOverlayMaxHeight = activeOverlay?.type === 'plan'
@@ -1378,7 +1380,6 @@ export function NotchPanel() {
   const hitboxWidth = usesVisibleCollapsedHitbox ? shellWidth : sloppedHitboxWidth
   const hitboxHeight = usesVisibleCollapsedHitbox ? panelHeight : sloppedHitboxHeight
   const hitboxPadX = usesVisibleCollapsedHitbox ? 0 : hitSlopX
-  nativeHoverHitboxSizeRef.current = { width: hitboxWidth, height: hitboxHeight }
   const maxHostSlopX = Math.max(NOTCH_HIT_SLOP_X_COLLAPSED, NOTCH_HIT_SLOP_X_EXPANDED)
   const maxHostSlopY = Math.max(NOTCH_HIT_SLOP_Y_COLLAPSED, NOTCH_HIT_SLOP_Y_EXPANDED)
   const expandedHostContentWidth = isPetMode
@@ -1456,6 +1457,8 @@ export function NotchPanel() {
   const effectiveShellAnchorOffsetX = usesNotchShell && (effectivePanelState !== 'collapsed' || hostIsLargerThanTarget)
     ? shellAnchorOffsetX
     : 0
+  const nativeHoverAnchorOffsetX = effectivePanelState === 'collapsed' ? effectiveShellAnchorOffsetX : 0
+  nativeHoverProbeRef.current = { width: hitboxWidth, height: hitboxHeight, anchorOffsetX: nativeHoverAnchorOffsetX }
   const shellX = effectivePanelState === 'collapsed' || isDragging
     ? effectiveShellAnchorOffsetX
     : effectiveShellAnchorOffsetX === 0
@@ -1727,6 +1730,7 @@ export function NotchPanel() {
         className="notch-hitbox"
         data-island-hidden={islandHidden ? 'true' : 'false'}
         onPointerEnter={() => handleMouseEnter('dom')}
+        onPointerDownCapture={handleHitboxPointerDown}
         onPointerLeave={handleMouseLeave}
       >
         <motion.div

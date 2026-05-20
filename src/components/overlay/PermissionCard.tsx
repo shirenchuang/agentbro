@@ -5,6 +5,7 @@ import { OverlayCard } from './OverlayCard'
 import { DiffView } from '../notch/DiffView'
 import { setNotchFocusable, jumpToTerminal } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { getWritePermissionPreview, parseToolInput, shortenPath, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
 import './PermissionCard.css'
 
 interface PermissionCardProps {
@@ -20,12 +21,6 @@ interface PermissionCardProps {
   queueLength?: number
   queueNext?: string
   sessionCount?: number
-}
-
-function shortenPath(filePath: string, maxSegments = 3): string {
-  const segments = filePath.split('/')
-  if (segments.length <= maxSegments) return filePath
-  return `.../${segments.slice(-maxSegments).join('/')}`
 }
 
 function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Record<string, unknown> }) {
@@ -88,19 +83,18 @@ function ToolPreview({ toolName, toolInput }: { toolName: string; toolInput: Rec
     }
 
     case 'Write': {
-      const filePath = (toolInput.file_path as string) ?? (toolInput.filePath as string) ?? ''
-      const content = toolInput.content as string | undefined
+      const preview = getWritePermissionPreview(toolInput, WRITE_PERMISSION_PREVIEW_LINES)
 
       return (
         <div>
           <div className="perm-card__preview-file">
-            <span className="perm-card__preview-path">{shortenPath(filePath)}</span>
+            <span className="perm-card__preview-path">{preview.shortPath}</span>
             <span className="perm-card__preview-new-badge">new file</span>
           </div>
-          {content && (
+          {preview.content && (
             <pre className="perm-card__preview-code">
-              {content.split('\n').slice(0, 4).join('\n')}
-              {content.split('\n').length > 4 ? '\n…' : ''}
+              {preview.visibleContent}
+              {preview.hiddenLineCount > 0 ? '\n…' : ''}
             </pre>
           )}
         </div>
@@ -182,11 +176,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   const hasDraft = feedbackText.trim().length > 0
 
   let parsedInput: Record<string, unknown> = {}
-  try {
-    parsedInput = typeof data.toolInput === 'string' ? JSON.parse(data.toolInput) : (data.toolInput as Record<string, unknown>) ?? {}
-  } catch {
-    parsedInput = data.toolInput ? { raw: data.toolInput } : {}
-  }
+  parsedInput = parseToolInput(data.toolInput)
   const toolLabel = getToolActivityLabel(t, data.toolName)
 
   useEffect(() => {

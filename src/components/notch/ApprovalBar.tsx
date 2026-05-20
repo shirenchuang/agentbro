@@ -1,5 +1,5 @@
 /* ApprovalBar — Vibe Island style: warning card + 4 colored buttons, plan approval bar */
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { setNotchFocusable } from '../../services/tauriApi'
@@ -54,6 +54,12 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     setDraftState({ sessionId: session.id, value: '' })
   }, [draft, onSendMessage, session.id])
 
+  const runActionOnMouseDown = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
+    event.preventDefault()
+    event.stopPropagation()
+    action()
+  }, [])
+
   if (session.phase === 'waiting_approval') {
     const toolName = session.pendingPermission?.toolName || ''
     const toolLabel = toolName ? getToolActivityLabel(t, toolName) : ''
@@ -80,17 +86,17 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
 
         {/* 4 action buttons */}
         <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onClick={onDeny}>
+          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
             {t('notch.deny')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--allow" onClick={onAllow}>
+          <button className="approval-bar__btn approval-bar__btn--allow" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
             {t('notch.allowOnce')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--always" onClick={onAllowAlways}>
+          <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
             {t('notch.allowAlways')}
           </button>
           {onAutoApprove && (
-            <button className="approval-bar__btn approval-bar__btn--auto" onClick={onAutoApprove}>
+            <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>
           )}
@@ -108,7 +114,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               <button
                 key={i}
                 className="approval-bar__btn approval-bar__btn--option"
-                onClick={() => onSendMessage(opt)}
+                onMouseDown={(event) => runActionOnMouseDown(event, () => onSendMessage(opt))}
               >
                 {i < 3 && <kbd className="approval-bar__shortcut">{'\u2318'}{i + 1}</kbd>}
                 {opt}
@@ -158,13 +164,13 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           />
         </div>
         <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onClick={onDeny}>
+          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
             {t('notch.manualReview', { defaultValue: '\u624B\u52A8\u5BA1\u6279' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--accept-edits" onClick={onAllow}>
+          <button className="approval-bar__btn approval-bar__btn--accept-edits" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
             {t('notch.acceptEdits', { defaultValue: '\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--auto" onClick={() => onAutoApprove?.()}>
+          <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, () => onAutoApprove?.())}>
             {t('notch.autoApprovePerms', { defaultValue: '\u81EA\u52A8\u6279\u51C6\u6743\u9650' })}
           </button>
         </div>

@@ -177,7 +177,7 @@
   border-radius: 0;
   padding: 9px 10px 8px;
   flex: 0 0 auto;
-  max-height: 190px;
+  max-height: 250px;
   overflow-y: auto;
 }
 
@@ -201,7 +201,7 @@
 }
 
 .perm-card__preview-code {
-  max-height: 180px;
+  max-height: 230px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;

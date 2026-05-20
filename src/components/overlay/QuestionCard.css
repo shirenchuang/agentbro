@@ -254,6 +254,33 @@
   color: var(--island-warning-text);
 }
 
+.question-card__secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.question-card__secondary-action {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--island-border) 78%, var(--question-accent) 14%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--island-card) 92%, transparent);
+  color: var(--island-text-secondary);
+  font: inherit;
+  font-size: var(--approval-caption-font-size);
+  font-weight: 680;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.question-card__secondary-action:hover {
+  border-color: color-mix(in srgb, var(--question-accent) 38%, var(--island-border));
+  background: color-mix(in srgb, var(--island-card-hover) 88%, var(--question-accent) 7%);
+  color: var(--island-text);
+}
+
 /* Input */
 .question-card__input {
   width: 100%;

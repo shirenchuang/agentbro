@@ -775,7 +775,7 @@ fn install_at_labeled(
             if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
                 settings["hooks"] = serde_json::json!({});
             }
-            strip_json_hooks(&mut settings);
+            strip_json_hooks_for_profile(&mut settings, profile);
             let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
             for event in effective_events(profile) {
                 let value = hooks.entry(event.name.to_string()).or_insert_with(|| serde_json::json!([]));
@@ -783,7 +783,7 @@ fn install_at_labeled(
                     *value = serde_json::json!([]);
                 }
                 let entries = value.as_array_mut().expect("event hook list is array");
-                entries.retain(|entry| !json_hook_contains_agentbro(entry));
+                entries.retain(|entry| !json_hook_contains_profile(entry, profile));
                 entries.push(flat_json_hook_entry(entry, &event, &command));
             }
             hook_manager::write_json_config(path, &settings)?;
@@ -890,10 +890,10 @@ pub fn uninstall_at(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match profile.installation_kind {
         InstallationKind::JsonHooks { nested: true, .. } => {
-            remove_nested_json_hooks(path)?;
+            remove_nested_json_hooks(profile, path)?;
         }
         InstallationKind::JsonHooks { nested: false, .. } => {
-            remove_json_hooks(path)?;
+            remove_json_hooks(profile, path)?;
         }
         InstallationKind::YamlHooks => {
             hook_manager::remove_hooks_yaml(path)?;
@@ -995,9 +995,36 @@ fn agentbro_command_is_current(profile: &AgentIntegrationProfile, command: &str)
         return false;
     }
 
-    profile.id == "claude-code"
-        || command.contains(&format!("--source {}", profile.source))
-        || command.contains(&format!("--source={}", profile.source))
+    profile.id == "claude-code" || command_source_matches(command, profile.source)
+}
+
+fn command_source_matches(command: &str, source: &str) -> bool {
+    let mut previous_was_source = false;
+    for token in command.split_whitespace() {
+        let token = shell_token_value(token);
+        if previous_was_source {
+            if token == source {
+                return true;
+            }
+            previous_was_source = false;
+        }
+
+        if token == "--source" {
+            previous_was_source = true;
+            continue;
+        }
+
+        if let Some(value) = token.strip_prefix("--source=") {
+            if shell_token_value(value) == source {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn shell_token_value(token: &str) -> &str {
+    token.trim_matches(|c| c == '\'' || c == '"')
 }
 
 fn bridge_health() -> Option<HookInstallHealth> {
@@ -1020,14 +1047,14 @@ fn json_hooks_health(
         Err(status) => return status,
     };
     let Some(hooks) = settings.get("hooks").and_then(Value::as_object) else {
-        return if json_hook_contains_agentbro(&settings) {
+        return if json_hook_contains_profile(&settings, profile) {
             HookInstallHealth::SettingsCorrupted
         } else {
             HookInstallHealth::NotInstalled
         };
     };
 
-    if !json_hook_contains_agentbro(&settings) {
+    if !json_hook_contains_profile(&settings, profile) {
         return HookInstallHealth::NotInstalled;
     }
     if let Some(status) = bridge_health() {
@@ -1047,7 +1074,7 @@ fn json_hooks_health(
         && hooks.values().any(|entries| {
             entries.as_array().is_some_and(|entries| {
                 entries.iter().any(|entry| {
-                    json_hook_contains_agentbro(entry)
+                    json_hook_contains_profile(entry, profile)
                         && entry.get("hooks").and_then(Value::as_array).is_none()
                 })
             })
@@ -1386,7 +1413,7 @@ fn update_json_hooks(
     if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
         settings["hooks"] = serde_json::json!({});
     }
-    strip_json_hooks(&mut settings);
+    strip_json_hooks_for_profile(&mut settings, profile);
 
     let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
     for event in effective_events(profile) {
@@ -1397,19 +1424,22 @@ fn update_json_hooks(
             *value = serde_json::json!([]);
         }
         let entries = value.as_array_mut().expect("event hook list is array");
-        entries.retain(|entry| !json_hook_contains_agentbro(entry));
+        entries.retain(|entry| !json_hook_contains_profile(entry, profile));
         entries.push(flat_json_hook_entry(entry, &event, &command));
     }
 
     hook_manager::write_json_config(path, &settings)
 }
 
-fn remove_json_hooks(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn remove_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Ok(());
     }
     let mut settings = hook_manager::read_json_config(path);
-    strip_json_hooks(&mut settings);
+    strip_json_hooks_for_profile(&mut settings, profile);
     hook_manager::write_json_config(path, &settings)
 }
 
@@ -1435,7 +1465,7 @@ fn update_nested_json_hooks(
     if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
         settings["hooks"] = serde_json::json!({});
     }
-    strip_json_hooks(&mut settings);
+    strip_json_hooks_for_profile(&mut settings, profile);
     let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
 
     for event in effective_events(profile) {
@@ -1446,7 +1476,7 @@ fn update_nested_json_hooks(
             *value = serde_json::json!([]);
         }
         let groups = value.as_array_mut().expect("event hook groups is array");
-        groups.retain(|group| !json_hook_contains_agentbro(group));
+        groups.retain(|group| !json_hook_contains_profile(group, profile));
 
         let mut inner_hook = serde_json::json!({
             "type": "command",
@@ -1466,12 +1496,15 @@ fn update_nested_json_hooks(
     Ok(settings)
 }
 
-fn remove_nested_json_hooks(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn remove_nested_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Ok(());
     }
     let mut settings = hook_manager::read_json_config(path);
-    strip_json_hooks(&mut settings);
+    strip_json_hooks_for_profile(&mut settings, profile);
     hook_manager::write_json_config(path, &settings)
 }
 
@@ -1484,6 +1517,7 @@ pub fn install_nested_json_hooks_at(
     update_nested_json_hooks(profile, path, command)
 }
 
+#[cfg(test)]
 fn json_hook_contains_agentbro(value: &Value) -> bool {
     value
         .get("command")
@@ -1505,11 +1539,39 @@ fn json_hook_contains_agentbro(value: &Value) -> bool {
             })
 }
 
+fn json_hook_contains_profile(value: &Value, profile: &AgentIntegrationProfile) -> bool {
+    let mut commands = Vec::new();
+    collect_json_agentbro_commands(value, &mut commands);
+    commands
+        .iter()
+        .any(|command| agentbro_command_matches_profile(profile, command))
+}
+
+fn agentbro_command_matches_profile(profile: &AgentIntegrationProfile, command: &str) -> bool {
+    if !is_agentbro_command(command) {
+        return false;
+    }
+
+    profile.id == "claude-code" || command_source_matches(command, profile.source)
+}
+
+fn strip_json_hooks_for_profile(settings: &mut Value, profile: &AgentIntegrationProfile) {
+    strip_json_hooks_matching(settings, |entry| json_hook_contains_profile(entry, profile));
+}
+
+#[cfg(test)]
 fn strip_json_hooks(settings: &mut Value) {
+    strip_json_hooks_matching(settings, json_hook_contains_agentbro);
+}
+
+fn strip_json_hooks_matching<F>(settings: &mut Value, mut should_remove: F)
+where
+    F: FnMut(&Value) -> bool,
+{
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
         for value in hooks.values_mut() {
             if let Some(entries) = value.as_array_mut() {
-                entries.retain(|entry| !json_hook_contains_agentbro(entry));
+                entries.retain(|entry| !should_remove(entry));
             }
         }
         hooks.retain(|_, value| {
@@ -2365,6 +2427,76 @@ name = "also keep"
         assert!(!commands
             .iter()
             .any(|command| command.contains("agentbro-bridge")));
+    }
+
+    #[test]
+    fn source_matching_does_not_match_prefixes() {
+        let command = "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder-cli";
+
+        assert!(command_source_matches(command, "qoder-cli"));
+        assert!(!command_source_matches(command, "qoder"));
+        assert!(command_source_matches(
+            "/Users/me/.agentbro/bin/agentbro-bridge --source=qoder",
+            "qoder"
+        ));
+    }
+
+    #[test]
+    fn profile_json_cleanup_preserves_other_agentbro_sources() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "session_start": [
+                    {
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder"
+                    },
+                    {
+                        "type": "command",
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder-cli"
+                    }
+                ]
+            }
+        });
+
+        strip_json_hooks_for_profile(&mut settings, &qoder_profile());
+
+        let entries = settings["hooks"]["session_start"].as_array().unwrap();
+        let commands: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| entry["command"].as_str())
+            .collect();
+
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].contains("--source qoder-cli"));
+    }
+
+    #[test]
+    fn json_health_ignores_agentbro_hooks_for_other_sources() {
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "type": "command",
+                        "command": "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source qoder-cli"
+                    }
+                ]
+            }
+        });
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-json-health-{}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert_eq!(
+            install_health(&qoder_profile(), &path),
+            HookInstallHealth::NotInstalled
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

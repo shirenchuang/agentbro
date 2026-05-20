@@ -383,6 +383,52 @@ describe('sessionStore backend overlays', () => {
     expect(selected.chatHistory.at(-1)).toMatchObject({ role: 'user', content: 'continue please' })
   })
 
+  it('keeps locally sent messages when stale parsed history reloads', () => {
+    const baseMessages = [
+      { role: 'user' as const, content: 'initial request', timestamp: Date.now() - 2000 },
+      { role: 'assistant' as const, content: 'initial answer', timestamp: Date.now() - 1000 },
+    ]
+    useSessionStore.getState().replaceAllSessions([
+      session({ chatHistory: baseMessages }),
+    ])
+
+    useSessionStore.getState().updateSession({
+      type: 'user_message',
+      sessionId: 's1',
+      content: 'continue please',
+    })
+
+    useSessionStore.getState().setChatHistory('s1', baseMessages)
+
+    const selected = useSessionStore.getState().sessions.s1
+    expect(selected.chatHistory.map((message) => message.role === 'user' ? message.content : message.role)).toEqual([
+      'initial request',
+      'assistant',
+      'continue please',
+    ])
+  })
+
+  it('does not duplicate locally sent messages after parsed history catches up', () => {
+    const now = Date.now()
+    useSessionStore.getState().replaceAllSessions([
+      session({ chatHistory: [] }),
+    ])
+
+    useSessionStore.getState().updateSession({
+      type: 'user_message',
+      sessionId: 's1',
+      content: 'continue please',
+    })
+
+    useSessionStore.getState().setChatHistory('s1', [
+      { role: 'user', content: 'continue please', timestamp: now + 1000 },
+    ])
+
+    const selected = useSessionStore.getState().sessions.s1
+    expect(selected.chatHistory).toHaveLength(1)
+    expect(selected.chatHistory[0]).toMatchObject({ role: 'user', content: 'continue please' })
+  })
+
   it('timestamps backend user prompt changes', () => {
     const oldPromptAt = Date.now() - 10_000
     useSessionStore.getState().replaceAllSessions([

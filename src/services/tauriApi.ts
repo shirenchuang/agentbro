@@ -893,9 +893,9 @@ export async function getCursorPosition(): Promise<[number, number]> {
 }
 
 /** Native fallback for transparent-window hover hit testing. */
-export async function isCursorOverNotch(width?: number, height?: number): Promise<boolean> {
+export async function isCursorOverNotch(width?: number, height?: number, anchorOffsetX?: number): Promise<boolean> {
   if (!isTauri()) return false
-  return invoke<boolean>('is_cursor_over_notch', { width, height })
+  return invoke<boolean>('is_cursor_over_notch', { width, height, anchorOffsetX })
 }
 
 // ── Display Commands ────────────────────────────────────────────

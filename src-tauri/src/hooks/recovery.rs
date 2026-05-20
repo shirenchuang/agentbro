@@ -10,6 +10,26 @@ use crate::agents::AgentAdapter;
 
 const MAX_RESTORES_PER_MINUTE: u32 = 3;
 
+fn adapter_needs_restore(adapter: &dyn AgentAdapter) -> bool {
+    let Some(profile) = crate::agents::profiles::profile_for_agent(adapter.name()) else {
+        return adapter.hook_config_paths().iter().any(|p| {
+            std::fs::read_to_string(p)
+                .map(|content| {
+                    content.contains("agentbro-bridge")
+                        && !content.contains(crate::hook_endpoint::HOOK_PORT_ENV)
+                })
+                .unwrap_or(false)
+        });
+    };
+
+    adapter.hook_config_paths().iter().any(|p| {
+        matches!(
+            crate::agents::profiles::install_health(&profile, p),
+            crate::agents::profiles::HookInstallHealth::NeedsReinstall
+        )
+    })
+}
+
 pub struct HookRecovery {
     restore_count: AtomicU32,
     window_start: Mutex<Instant>,
@@ -156,29 +176,16 @@ pub fn start_hook_recovery(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 while rx.try_recv().is_ok() {}
 
-                // Check if any existing AgentBro hook needs a managed refresh.
+                // Check which existing AgentBro hooks need a managed refresh.
                 // Missing configs are normal for tools the user has not installed;
                 // auto-recovery should not turn those into repeated bulk installs.
-                let needs_restore = adapters_inner.iter().any(|a| {
-                    let Some(profile) = crate::agents::profiles::profile_for_agent(a.name()) else {
-                        return a.hook_config_paths().iter().any(|p| {
-                            std::fs::read_to_string(p)
-                                .map(|content| {
-                                    content.contains("agentbro-bridge")
-                                        && !content.contains(crate::hook_endpoint::HOOK_PORT_ENV)
-                                })
-                                .unwrap_or(false)
-                        });
-                    };
-                    a.hook_config_paths().iter().any(|p| {
-                        matches!(
-                            crate::agents::profiles::install_health(&profile, p),
-                            crate::agents::profiles::HookInstallHealth::NeedsReinstall
-                        )
-                    })
-                });
+                let adapters_to_restore: Vec<Arc<dyn AgentAdapter>> = adapters_inner
+                    .iter()
+                    .filter(|adapter| adapter_needs_restore(adapter.as_ref()))
+                    .cloned()
+                    .collect();
 
-                if !needs_restore {
+                if adapters_to_restore.is_empty() {
                     continue;
                 }
 
@@ -189,9 +196,17 @@ pub fn start_hook_recovery(
                     break;
                 }
 
-                log::info!("Hook recovery: settings modified, re-installing hooks...");
+                let adapter_names = adapters_to_restore
+                    .iter()
+                    .map(|adapter| adapter.display_name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                log::info!(
+                    "Hook recovery: settings modified, re-installing hooks for {}...",
+                    adapter_names
+                );
 
-                for adapter in adapters_inner.iter() {
+                for adapter in adapters_to_restore.iter() {
                     if let Err(e) = adapter.install_hooks() {
                         log::warn!("Hook recovery failed for {}: {}", adapter.display_name(), e);
                     } else {

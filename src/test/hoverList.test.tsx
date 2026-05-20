@@ -135,6 +135,7 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('Subagents (1)')).toBeInTheDocument()
     expect(screen.getByText('@calc-a')).toBeInTheDocument()
     expect(screen.getByText('Calculate 1+1 (Agent A)')).toBeInTheDocument()
+    expect(screen.getByText('完成')).toHaveClass('hover-list__subagent-status--completed')
 
     fireEvent.click(screen.getByText('@calc-a'))
 
@@ -189,8 +190,9 @@ describe('HoverList interactions', () => {
       />,
     )
 
-    expect(screen.getByText('Running 1 agent')).toBeInTheDocument()
+    expect(screen.getByText('Subagents (1)')).toBeInTheDocument()
     expect(screen.getByText('@active-work')).toBeInTheDocument()
+    expect(screen.getByText('运行中')).toHaveClass('hover-list__subagent-status--running')
   })
 
   it('summarizes running subagents like a child-agent team', () => {
@@ -224,9 +226,12 @@ describe('HoverList interactions', () => {
       />,
     )
 
-    expect(screen.getByText('Running 1 agent')).toBeInTheDocument()
-    expect(screen.getByText('1 done')).toBeInTheDocument()
-    expect(screen.getByText('Sidechain transcript is ready.')).toBeInTheDocument()
+    expect(screen.getByText('Subagents (2)')).toBeInTheDocument()
+    expect(screen.getByText('@ui-state')).toBeInTheDocument()
+    expect(screen.getByText('运行中')).toHaveClass('hover-list__subagent-status--running')
+    expect(screen.getByText('@parser')).toBeInTheDocument()
+    expect(screen.getByText('Parse transcript sidechains')).toBeInTheDocument()
+    expect(screen.getByText('完成')).toHaveClass('hover-list__subagent-status--completed')
   })
 
   it('jumps from the arrow without opening detail', () => {
@@ -566,6 +571,58 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('shows write permission content in the inline authorization card', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          pendingPermission: {
+            toolName: 'Write',
+            toolInput: JSON.stringify({
+              file_path: '/Users/demo/github/empty/package.json',
+              content: '{\n  "name": "vibe-island-auth",\n  "version": "1.0.0",\n  "private": true,\n  "type": "module"\n}',
+            }),
+          },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('.../github/empty/package.json')).toHaveClass('hover-list__inline-perm-path')
+    expect(screen.getByText('new file')).toHaveClass('hover-list__inline-perm-new-badge')
+    expect(screen.getByText(/"name": "vibe-island-auth"/)).toHaveClass('hover-list__inline-perm-code')
+    expect(screen.queryByText('/Users/demo/github/empty/package.json')).not.toBeInTheDocument()
+  })
+
+  it('shows permission overlay content inline when returning to the session list', () => {
+    useSessionStore.setState({
+      activeOverlay: {
+        id: 'permission-s1-overlay',
+        sessionId: 's1',
+        type: 'permission',
+        data: {
+          toolName: 'Write',
+          toolInput: JSON.stringify({
+            file_path: '/Users/demo/github/empty/package.json',
+            content: '{\n  "name": "overlay-auth",\n  "private": true\n}',
+          }),
+        },
+        createdAt: Date.now(),
+      },
+    })
+
+    render(
+      <HoverList
+        sessions={[session({ phase: 'processing', pendingPermission: undefined })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('.../github/empty/package.json')).toHaveClass('hover-list__inline-perm-path')
+    expect(screen.getByText(/"name": "overlay-auth"/)).toHaveClass('hover-list__inline-perm-code')
+    expect(screen.getByRole('button', { name: '允许一次' })).toBeInTheDocument()
+  })
+
   it('gives inline plan previews more readable content and subdued permission text', () => {
     const longPlan = `${'SwitchProviderEditor.tsx '.repeat(12)}final-visible-fragment`
     render(
@@ -584,6 +641,38 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('请求的权限:')).toHaveClass('hover-list__inline-plan-perms-label')
     expect(screen.getAllByText('Bash')[0]).toHaveClass('hover-list__inline-plan-perm-tool')
     expect(screen.getByText(/run cargo check/)).toBeInTheDocument()
+  })
+
+  it('keeps inline plan previews visible when the active plan overlay is folded into the list', () => {
+    useSessionStore.setState({
+      activeOverlay: {
+        id: 'plan-s1-overlay',
+        sessionId: 's1',
+        type: 'plan',
+        data: {
+          planTitle: 'Implementation plan',
+          planContent: '1. Keep the list visible',
+          requestedPermissions: ['Bash: run tests'],
+        },
+        createdAt: Date.now(),
+      },
+    })
+
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          planTitle: 'Implementation plan',
+          planContent: '1. Keep the list visible',
+          planPermissions: ['Bash: run tests'],
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(document.querySelector('.hover-list__inline-plan')?.textContent).toContain('Implementation plan')
+    expect(document.querySelector('.hover-list__inline-plan')?.textContent).toContain('Keep the list visible')
+    expect(screen.getByText('Bash')).toHaveClass('hover-list__inline-plan-perm-tool')
   })
 
   it('renders the generic authorization card from pendingPermission with a diff preview', () => {

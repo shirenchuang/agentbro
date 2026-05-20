@@ -38,6 +38,8 @@ function parseQuestionTag(question: string): { tag: string | null; text: string 
   return { tag: null, text: question }
 }
 
+const SKIP_INTERVIEW_ANSWER = 'Skip interview and plan immediately'
+
 function QuestionOptionRow({
   index, selected = false, label, description, multiSelect = false, onMouseDown,
 }: {
@@ -269,6 +271,11 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
     }
   }
 
+  const showCustomInput = async () => {
+    setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText })
+    await setNotchFocusable(true)
+  }
+
   return (
     <OverlayCard
       session={session}
@@ -327,10 +334,7 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ type: 'spring', duration: 0.3, bounce: 0.15, delay: options.length * 0.04 }}
-            onMouseDown={async () => {
-              setResponseState({ overlayId: overlay.id, selected, showCustom: true, customText })
-              await setNotchFocusable(true)
-            }}
+            onMouseDown={() => { void showCustomInput() }}
           >
             {'✏️'} {t('notch.typeHint', { defaultValue: 'Type something...' })}
           </motion.div>
@@ -353,6 +357,25 @@ export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDis
             />
           </form>
         )}
+
+        <div className="question-card__secondary-actions" aria-label={t('notch.questionMoreActions', { defaultValue: 'More question actions' })}>
+          <button
+            type="button"
+            className="question-card__secondary-action"
+            onMouseDown={() => { void showCustomInput() }}
+          >
+            {t('notch.chatAboutThis', { defaultValue: 'Chat about this' })}
+          </button>
+          {!isMulti && (
+            <button
+              type="button"
+              className="question-card__secondary-action"
+              onMouseDown={() => onAnswer(SKIP_INTERVIEW_ANSWER)}
+            >
+              {t('notch.skipInterview', { defaultValue: 'Skip interview' })}
+            </button>
+          )}
+        </div>
 
         {/* Multi-select confirm */}
         {isMulti && (

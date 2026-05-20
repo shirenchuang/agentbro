@@ -93,6 +93,27 @@ function clearBlockingOverlaysForSession(queue: OverlayItem[], sessionId: string
   ))
 }
 
+function mergeLocalUserMessages(remoteMessages: ChatMessage[], localMessages: ChatMessage[]): ChatMessage[] {
+  const merged = [...remoteMessages]
+  const remoteUserKeys = new Set(
+    remoteMessages
+      .filter((message): message is Extract<ChatMessage, { role: 'user' }> => message.role === 'user')
+      .map((message) => normalizedPromptText(message.content)),
+  )
+  const latestRemoteTimestamp = remoteMessages.reduce((latest, message) => Math.max(latest, message.timestamp || 0), 0)
+
+  for (const message of localMessages) {
+    if (message.role !== 'user') continue
+    const key = normalizedPromptText(message.content)
+    if (!key || remoteUserKeys.has(key)) continue
+    if (latestRemoteTimestamp > 0 && message.timestamp < latestRemoteTimestamp) continue
+    merged.push(message)
+    remoteUserKeys.add(key)
+  }
+
+  return merged
+}
+
 function hasSessionContent(session: SessionState): boolean {
   return Boolean(
     session.lastUserMessage
@@ -911,9 +932,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const session = state.sessions[sessionId]
       if (!session) return state
+      const chatHistory = mergeLocalUserMessages(messages, session.chatHistory)
       const sessions = {
         ...state.sessions,
-        [sessionId]: { ...session, chatHistory: messages },
+        [sessionId]: { ...session, chatHistory },
       }
       return { sessions, sessionList: toList(sessions) }
     })

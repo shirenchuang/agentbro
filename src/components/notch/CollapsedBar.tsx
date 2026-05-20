@@ -11,6 +11,7 @@ import { openSettingsWindow, setSoundEnabled } from '../../services/tauriApi'
 import { useConfigStore } from '../../stores/configStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { sessionNeedsAttention } from '../../utils/islandInteraction'
+import { getStringField, parseToolInput } from '../../utils/permissionPreview'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { RateLimitBar } from './RateLimitBar'
 import { SpriteCanvas } from './SpriteCanvas'
@@ -115,6 +116,58 @@ function CollapsedToolStatus({
       ) : target ? (
         <span className="collapsed-bar__tool-target">{compactTarget}</span>
       ) : null}
+    </span>
+  )
+}
+
+type WaitingSummary = {
+  label: string
+  project: string
+  target?: string
+  toolName?: string
+}
+
+function getWaitingSummary(session: SessionState, t: (key: string, options?: Record<string, unknown>) => string): WaitingSummary | null {
+  const project = session.project || 'Session'
+
+  if (session.pendingPermission || session.phase === 'waiting_approval') {
+    const toolName = session.pendingPermission?.toolName
+    const parsedInput = parseToolInput(session.pendingPermission?.toolInput)
+    const target = session.pendingPermission?.diff?.filePath
+      || getStringField(parsedInput, ['file_path', 'filePath', 'path', 'url', 'command', 'query', 'pattern', 'raw'])
+    const approvalLabel = t('notch.needsApproval', { defaultValue: 'Needs approval' })
+    return {
+      project,
+      label: toolName ? `${approvalLabel}: ${getToolActivityLabel(t, toolName)}` : approvalLabel,
+      target,
+      toolName,
+    }
+  }
+
+  if (session.pendingQuestion || session.phase === 'waiting_input') {
+    return {
+      project,
+      label: t('notch.waitingInput', { defaultValue: 'Waiting for input' }),
+      target: session.pendingQuestion?.question,
+    }
+  }
+
+  return null
+}
+
+function CollapsedWaitingStatus({ summary }: { summary: WaitingSummary }) {
+  const compactTarget = summary.target
+    ? summary.toolName
+      ? getCompactToolTarget(summary.toolName, summary.target)
+      : summary.target
+    : undefined
+
+  return (
+    <span className="collapsed-bar__waiting-inline" title={summary.target ? `${summary.project} · ${summary.label}: ${summary.target}` : `${summary.project} · ${summary.label}`}>
+      <span className="collapsed-bar__waiting-project">{summary.project}</span>
+      <span className="collapsed-bar__waiting-dot" />
+      <span className="collapsed-bar__waiting-label">{summary.label}</span>
+      {compactTarget && <span className="collapsed-bar__waiting-target">{compactTarget}</span>}
     </span>
   )
 }
@@ -224,6 +277,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const currentSlide = slides[safeIndex] ?? ''
   const primaryToolName = showToolStatus ? (liveToolName || effectiveToolName) : undefined
   const primaryToolTarget = liveToolName ? liveToolTarget : effectiveToolTarget
+  const waitingSummary = lead ? getWaitingSummary(lead, t) : null
 
   const count = sessions.length
   const isExpanded = panelState !== 'collapsed'
@@ -382,6 +436,8 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
                     <span className="collapsed-bar__compacting-dot" />
                     <span className="collapsed-bar__compacting-label">{t('notch.tool.compactingContext')}</span>
                   </span>
+                ) : waitingSummary ? (
+                  <CollapsedWaitingStatus summary={waitingSummary} />
                 ) : primaryToolName ? (
                   <CollapsedToolStatus
                     label={getToolActivityLabel(t, primaryToolName)}

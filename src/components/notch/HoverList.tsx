@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { DiffContent, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
+import type { DiffContent, OverlayItem, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
 import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
@@ -15,6 +15,7 @@ import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
 import { getSessionListSubagents } from '../../utils/subagents'
+import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -27,6 +28,8 @@ interface HoverListProps {
   onSilencePrompt?: (session: SessionState) => void
   focusFilteredEmpty?: boolean
 }
+
+type InlinePermissionRequest = Omit<PermissionRequest, 'toolInput'> & { toolInput?: unknown }
 
 const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'claude-code': { bg: 'rgba(59, 130, 246, 0.15)', text: '#3b82f6' },
@@ -431,28 +434,20 @@ function SessionStateRibbon({ session }: { session: SessionState }) {
 }
 
 /* ── Subagent Row ── */
+function subagentStatusLabel(status: SubagentInfo['status']) {
+  if (status === 'running') return '运行中'
+  if (status === 'completed') return '完成'
+  return '失败'
+}
+
 function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: string; subagents: SubagentInfo[]; onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void }) {
   if (subagents.length === 0) return null
-  const running = subagents.filter((agent) => agent.status === 'running').length
-  const completed = subagents.filter((agent) => agent.status === 'completed').length
-  const errored = subagents.filter((agent) => agent.status === 'error').length
-  const latest = [...subagents]
-    .sort((a, b) => (b.completedAt ?? b.startedAt) - (a.completedAt ?? a.startedAt))[0]
-  const latestLabel = latest?.lastAssistantMessage || latest?.description || latest?.agentType || latest?.agentId
   return (
     <div className="hover-list__subagents">
       <div className="hover-list__subagents-header">
         <span className="hover-list__subagents-icon">⑂</span>
-        <span>{running > 0 ? `Running ${running} agent${running > 1 ? 's' : ''}` : `Subagents (${subagents.length})`}</span>
-        <span className="hover-list__subagents-stats">
-          {completed > 0 && `${completed} done`}
-          {completed > 0 && errored > 0 && ' · '}
-          {errored > 0 && `${errored} failed`}
-        </span>
+        <span>Subagents ({subagents.length})</span>
       </div>
-      {latestLabel && (
-        <div className="hover-list__subagents-summary">{truncateText(latestLabel, 96)}</div>
-      )}
       <div className="hover-list__subagents-list">
         {subagents.map((sa) => {
           const title = sa.name ? `@${sa.name}` : (sa.agentType || `@${sa.agentId.slice(0, 8)}`)
@@ -472,12 +467,12 @@ function SubagentRow({ sessionId, subagents, onSubagentClick }: { sessionId: str
                 if (sa.agentTranscriptPath) onSubagentClick?.(sessionId, sa)
               }}
             >
-              <span className={`hover-list__subagent-dot${sa.status === 'running' ? ' hover-list__subagent-dot--running' : ''}`} />
+              <span className={`hover-list__subagent-dot hover-list__subagent-dot--${sa.status}`} />
               <span className="hover-list__subagent-type">{title}</span>
               <span className="hover-list__subagent-desc">{detail}</span>
-              {sa.status === 'completed' && (
-                <span className="hover-list__subagent-done">完成</span>
-              )}
+              <span className={`hover-list__subagent-status hover-list__subagent-status--${sa.status}`}>
+                {subagentStatusLabel(sa.status)}
+              </span>
             </button>
           )
         })}
@@ -553,27 +548,6 @@ function TaskStatusIcon({ status }: { status: TaskInfo['status'] }) {
 }
 
 /* ── Inline Permission Preview ── */
-function parsePermissionInput(toolInput?: string): Record<string, unknown> {
-  if (!toolInput) return {}
-  try {
-    const parsed = JSON.parse(toolInput)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    // Plain command/path input is still useful as a fallback preview.
-  }
-  return { raw: toolInput }
-}
-
-function getStringField(input: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = input[key]
-    if (typeof value === 'string' && value.trim()) return value
-  }
-  return ''
-}
-
 function shortenMiddle(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value
   const head = Math.max(8, Math.floor(maxLength * 0.35))
@@ -581,7 +555,7 @@ function shortenMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, head)}...${value.slice(-tail)}`
 }
 
-function getPermissionTarget(perm: PermissionRequest, input: Record<string, unknown>): string {
+function getPermissionTarget(perm: InlinePermissionRequest, input: Record<string, unknown>): string {
   if (perm.diff?.filePath) return perm.diff.filePath
   return getStringField(input, ['file_path', 'filePath', 'path', 'url'])
 }
@@ -597,15 +571,29 @@ function getPermissionPreviewText(input: Record<string, unknown>): string {
   return entries.map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
 }
 
-function InlinePermissionPreview({ session }: { session: SessionState }) {
-  const { t } = useTranslation()
-  const perm = session.pendingPermission
-  if (!perm) return null
+function getOverlayPermissionForSession(session: SessionState, activeOverlay: OverlayItem | null | undefined): InlinePermissionRequest | undefined {
+  if (activeOverlay?.type !== 'permission' || activeOverlay.sessionId !== session.id) return undefined
+  const data = activeOverlay.data as Partial<InlinePermissionRequest> | null | undefined
+  if (!data || typeof data.toolName !== 'string' || !data.toolName.trim()) return undefined
+  return {
+    toolName: data.toolName,
+    toolInput: data.toolInput,
+    diff: data.diff,
+    options: data.options,
+  }
+}
 
-  const parsedInput = parsePermissionInput(perm.toolInput)
+function InlinePermissionPreview({ session, permission }: { session: SessionState; permission: InlinePermissionRequest }) {
+  const { t } = useTranslation()
+  const perm = permission
+
+  const parsedInput = parseToolInput(perm.toolInput)
   const toolLabel = getToolActivityLabel(t, perm.toolName)
   const target = getPermissionTarget(perm, parsedInput)
   const previewText = getPermissionPreviewText(parsedInput)
+  const writePreview = perm.toolName === 'Write'
+    ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
+    : null
 
   const clearAfter = (work: Promise<void>) => {
     work
@@ -635,6 +623,21 @@ function InlinePermissionPreview({ session }: { session: SessionState }) {
       {perm.diff ? (
         <div className="hover-list__inline-perm-diff">
           <DiffView diff={perm.diff} />
+        </div>
+      ) : writePreview ? (
+        <div className="hover-list__inline-perm-preview hover-list__inline-perm-preview--write">
+          <div className="hover-list__inline-perm-file-row">
+            {writePreview.shortPath && (
+              <code className="hover-list__inline-perm-path">{writePreview.shortPath}</code>
+            )}
+            <span className="hover-list__inline-perm-new-badge">new file</span>
+          </div>
+          {writePreview.content && (
+            <pre className="hover-list__inline-perm-code">
+              {writePreview.visibleContent}
+              {writePreview.hiddenLineCount > 0 ? '\n…' : ''}
+            </pre>
+          )}
         </div>
       ) : (
         <div className="hover-list__inline-perm-preview">
@@ -955,8 +958,8 @@ function SessionCard({
   onSilencePrompt,
   animDuration,
   animDelay,
-  isAlertActive,
   selected,
+  activeOverlay,
 }: {
   session: SessionState
   onSessionClick: (id: string) => void
@@ -966,8 +969,8 @@ function SessionCard({
   onSilencePrompt?: (session: SessionState) => void
   animDuration: number
   animDelay: number
-  isAlertActive: boolean
   selected: boolean
+  activeOverlay?: OverlayItem | null
 }) {
   const { t } = useTranslation()
   const badge = getAgentBadge(session)
@@ -996,9 +999,9 @@ function SessionCard({
   const isStatic = session.phase === 'ready' || session.phase === 'idle' || session.phase === 'done'
   const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
   const canJump = canJumpToSession(session)
-  const showInlinePermission = !!session.pendingPermission
-  const showInlineQuestion = !isAlertActive && !!session.pendingQuestion
-  const showInlinePlan = !isAlertActive && !!(session.planTitle || session.planContent)
+  const inlinePermission = session.pendingPermission ?? getOverlayPermissionForSession(session, activeOverlay)
+  const showInlineQuestion = !!session.pendingQuestion
+  const showInlinePlan = !!(session.planTitle || session.planContent)
   const notice = inferSessionNotice(session)
   const listSubagents = getSessionListSubagents(session)
   const iconAgentType = appLabel === 'Codex App' ? 'codex' : session.agentType
@@ -1272,7 +1275,7 @@ function SessionCard({
         )}
 
         {/* Row 7: inline permission */}
-        {showInlinePermission && <InlinePermissionPreview session={session} />}
+        {inlinePermission && <InlinePermissionPreview session={session} permission={inlinePermission} />}
 
         {/* Row 8: inline question */}
         {showInlineQuestion && <InlineQuestionPreview session={session} />}
@@ -1307,7 +1310,6 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
 
   const hookNotification = useSessionStore((s) => s.hookNotification)
   const activeOverlay = useSessionStore((s) => s.activeOverlay)
-  const isAlertActive = activeOverlay?.type === 'permission' || activeOverlay?.type === 'question' || activeOverlay?.type === 'plan'
 
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => computePriority(b) - computePriority(a))
@@ -1402,8 +1404,8 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
             onSilencePrompt={onSilencePrompt}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}
-            isAlertActive={isAlertActive}
             selected={index === selectedIndex}
+            activeOverlay={activeOverlay}
           />
         ))}
       </AnimatePresence>
