@@ -697,6 +697,16 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
 }
 
 /* ── Inline Question Preview ── */
+type InlineQuestionOption = string | { label?: string | null; description?: string | null }
+
+function normalizeInlineQuestionOption(option: InlineQuestionOption, description?: string): { label: string; description?: string } {
+  if (typeof option === 'string') return { label: option, description }
+  return {
+    label: option.label ?? '',
+    description: option.description ?? description,
+  }
+}
+
 function InlineQuestionPreview({ session }: { session: SessionState }) {
   const q = session.pendingQuestion
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
@@ -785,11 +795,15 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
   const submitMultiSelect = () => {
     const answer = Array.from(selectedIndices)
       .sort((a, b) => a - b)
-      .map((index) => q.options[index])
+      .map((index) => normalizeInlineQuestionOption(q.options[index] ?? '', q.descriptions?.[index]).label)
       .filter(Boolean)
       .join(', ')
     if (answer) submitAnswer(answer)
   }
+
+  const inlineOptions = (q.options || [])
+    .slice(0, 4)
+    .map((opt, i) => normalizeInlineQuestionOption(opt, q.descriptions?.[i]))
 
   return (
     <div className="hover-list__inline-question" onClick={(e) => e.stopPropagation()}>
@@ -800,24 +814,29 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
       <p className="hover-list__inline-question-text">
         {q.question.length > 120 ? `${q.question.slice(0, 120)}…` : q.question}
       </p>
-      {q.options && q.options.length > 0 && (
+      {inlineOptions.length > 0 && (
         <div className="hover-list__inline-question-options">
-          {q.options.slice(0, 4).map((opt, i) => (
+          {inlineOptions.map((opt, i) => (
             <button
-              key={i}
+              key={`${i}-${opt.label}`}
               type="button"
               className={`hover-list__inline-question-opt${selectedIndices.has(i) ? ' hover-list__inline-question-opt--selected' : ''}`}
               onMouseDown={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
                 if (q.multiSelect) toggleMultiSelect(i)
-                else submitAnswer(typeof opt === 'string' ? opt : opt)
+                else submitAnswer(opt.label)
               }}
             >
-              <span className="hover-list__inline-question-num">
+              <span className="hover-list__inline-question-opt-index">
                 {q.multiSelect && selectedIndices.has(i) ? '✓' : i + 1}
               </span>
-              <span>{typeof opt === 'string' ? opt : opt}</span>
+              <span className="hover-list__inline-question-opt-body">
+                <span className="hover-list__inline-question-opt-label">{opt.label}</span>
+                {opt.description && (
+                  <span className="hover-list__inline-question-opt-desc">{opt.description}</span>
+                )}
+              </span>
             </button>
           ))}
           {q.multiSelect && (

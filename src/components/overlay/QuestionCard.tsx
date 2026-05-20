@@ -14,6 +14,7 @@ interface QuestionOption {
 interface QuestionData {
   question: string
   options: (string | QuestionOption)[]
+  descriptions?: string[]
   multiSelect?: boolean
   questions?: Array<{ question: string; header?: string | null; options: QuestionOption[]; multiSelect?: boolean }>
 }
@@ -28,8 +29,12 @@ interface QuestionCardProps {
   sessionCount?: number
 }
 
-function normalizeOption(opt: string | QuestionOption): QuestionOption {
-  return typeof opt === 'string' ? { label: opt } : opt
+function normalizeOption(opt: string | QuestionOption, description?: string): QuestionOption {
+  const normalized = typeof opt === 'string' ? { label: opt } : opt
+  return {
+    ...normalized,
+    description: normalized.description ?? description,
+  }
 }
 
 function parseQuestionTag(question: string): { tag: string | null; text: string } {
@@ -198,7 +203,7 @@ function MultiQuestionView({ data, onAnswer, onDraftStateChange }: { data: Quest
 export function QuestionCard({ overlay, session, onAnswer, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: QuestionCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as QuestionData
-  const options = (data.options || []).map(normalizeOption)
+  const options = (data.options || []).map((opt, i) => normalizeOption(opt, data.descriptions?.[i]))
   const isMulti = data.multiSelect ?? false
   const isMultiQuestionSet = Boolean(data.questions && data.questions.length > 1)
 

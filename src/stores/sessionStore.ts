@@ -552,7 +552,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             type: 'question',
             data: {
               question: event.question,
-              options: event.options,
+              options: event.options.map((label, i) => ({
+                label,
+                description: event.descriptions?.[i],
+              })),
               descriptions: event.descriptions,
               header: event.header,
               multiSelect: event.multiSelect,

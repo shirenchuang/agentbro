@@ -1059,7 +1059,7 @@ export function NotchPanel() {
         const options = active?.pendingQuestion?.options
         if (options && options[num - 1]) {
           e.preventDefault()
-          sendMessage(active.id, options[num - 1])
+          respondQuestion(active.id, options[num - 1])
           useSessionStore.getState().clearQuestion(active.id)
         }
       }

@@ -277,7 +277,7 @@ def _normalized_question_payload(tool_input):
     return {{
         "question": question_text,
         "options": [opt.get("label") for opt in options if isinstance(opt, dict) and opt.get("label")],
-        "descriptions": [opt.get("description") for opt in options if isinstance(opt, dict) and opt.get("description")],
+        "descriptions": [opt.get("description") if isinstance(opt, dict) and isinstance(opt.get("description"), str) else "" for opt in options],
         "header": header,
         "multi_select": bool(first.get("multiSelect")),
         "questions": [
@@ -397,7 +397,7 @@ def main():
                     first = questions[0] if questions and isinstance(questions[0], dict) else {{}}
                     answers = {{_stable_text(first.get("question")) or "": answer}}
                 updated_input["answers"] = answers
-                _print_json({{"hookSpecificOutput": {{"hookEventName": "PermissionRequest", "decision": {{"behavior": "allow"}}, "updatedInput": updated_input}}}})
+                _print_json({{"hookSpecificOutput": {{"hookEventName": "PermissionRequest", "permissionDecision": "allow", "decision": {{"behavior": "allow", "updatedInput": updated_input}}, "updatedInput": updated_input}}}})
             return
 
         if tool_name == "ExitPlanMode":

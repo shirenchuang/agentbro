@@ -826,6 +826,19 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
   })
 
+  it('routes numbered question shortcuts through respondQuestion', () => {
+    mountIsland(null, {
+      phase: 'waiting_input',
+      pendingQuestion: { question: 'Pick one', options: ['Overlay', 'Detail', 'Compact'] },
+    })
+
+    fireEvent.keyDown(window, { key: '2', metaKey: true })
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Detail')
+    expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'Detail')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+  })
+
   it('renders fresh blocking permission as the primary island content', () => {
     mountIsland({
       id: 'permission-s1',

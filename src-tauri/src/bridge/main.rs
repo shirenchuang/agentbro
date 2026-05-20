@@ -62,6 +62,20 @@ fn normalize_tty(raw: &str) -> Option<String> {
     })
 }
 
+fn ask_user_question_hook_output(updated_input: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "permissionDecision": "allow",
+            "decision": {
+                "behavior": "allow",
+                "updatedInput": updated_input.clone()
+            },
+            "updatedInput": updated_input
+        }
+    })
+}
+
 fn ps_tty_and_ppid(pid: u32) -> Option<(Option<String>, Option<u32>)> {
     if let Ok(output) = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "tty=,ppid="])
@@ -434,10 +448,11 @@ fn main() {
                     .and_then(|o| o.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|opt| {
+                            .map(|opt| {
                                 opt.get("description")
                                     .and_then(|d| d.as_str())
-                                    .map(|s| s.to_string())
+                                    .unwrap_or("")
+                                    .to_string()
                             })
                             .collect()
                     })
@@ -505,13 +520,7 @@ fn main() {
                         input.insert("answers".into(), serde_json::Value::Object(answers));
                     }
 
-                    let output = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": { "behavior": "allow" },
-                            "updatedInput": updated_input
-                        }
-                    });
+                    let output = ask_user_question_hook_output(updated_input);
                     println!("{}", output);
                 }
                 return;
@@ -866,4 +875,34 @@ fn main() {
 
     // Send event (non-PermissionRequest path)
     send_and_maybe_receive(&state, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ask_user_question_output_keeps_updated_input_on_decision() {
+        let updated_input = serde_json::json!({
+            "questions": [
+                {
+                    "question": "Which view?",
+                    "options": [{ "label": "Overlay" }]
+                }
+            ],
+            "answers": { "Which view?": "Overlay" }
+        });
+
+        let output = ask_user_question_hook_output(updated_input.clone());
+
+        assert_eq!(
+            output["hookSpecificOutput"]["decision"]["updatedInput"],
+            updated_input
+        );
+        assert_eq!(
+            output["hookSpecificOutput"]["updatedInput"]["answers"]["Which view?"],
+            "Overlay"
+        );
+        assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
 }

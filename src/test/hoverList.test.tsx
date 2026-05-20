@@ -858,6 +858,27 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('renders inline question options as compact question cards with descriptions', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_input',
+          pendingQuestion: {
+            question: 'Pick a view',
+            options: ['Overlay', 'Detail', 'Compact'],
+            descriptions: ['Floating prompt', 'Expanded detail', 'Dense summary'],
+          },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    const detailOption = screen.getByText('Detail').closest('button')
+    expect(detailOption).toHaveClass('hover-list__inline-question-opt')
+    expect(detailOption?.querySelector('.hover-list__inline-question-opt-index')?.textContent).toBe('2')
+    expect(screen.getByText('Expanded detail')).toHaveClass('hover-list__inline-question-opt-desc')
+  })
+
   it('routes inline multi-select question answers as joined text', () => {
     render(
       <HoverList
