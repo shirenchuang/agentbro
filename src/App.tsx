@@ -53,7 +53,7 @@ function App() {
   // Apply color theme to DOM
   const colorTheme = useThemeStore((s) => s.colorTheme)
   useEffect(() => {
-    const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'ink-amber'
+    const normalizedTheme = COLOR_THEMES.some((theme) => theme.id === colorTheme) ? colorTheme : 'midnight'
     document.documentElement.setAttribute('data-island-color-theme', normalizedTheme)
   }, [colorTheme])
 

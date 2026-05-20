@@ -474,27 +474,48 @@ html[data-island-color-theme="midnight"] {
 }
 
 html[data-island-color-theme="frosted-glass"] {
-  --island-bg: #eef0f4;
-  --island-card: #f6f7f9;
-  --island-card-hover: #e8eaef;
-  --island-border: #d4d7de;
-  --island-text: #2c2c2e;
-  --island-text-secondary: #5c5c66;
-  --island-text-muted: #8c8c96;
-  --island-code-bg: #1e1e2e;
-  --island-input-bg: #e8eaef;
-  --island-btn-bg: #dcdee5;
-  --island-btn-hover: #d0d2da;
+  --island-bg: #eef2f8;
+  --island-card: #fbfcff;
+  --island-card-hover: #e7ecf5;
+  --island-border: #cbd4e4;
+  --island-text: #202633;
+  --island-text-secondary: #5f6878;
+  --island-text-muted: #8b95a6;
+  --island-code-bg: #172033;
+  --island-input-bg: #e7ecf5;
+  --island-btn-bg: #dfe6f1;
+  --island-btn-hover: #d2dbe9;
   --island-button-bg: var(--island-btn-bg);
   --island-button-hover: var(--island-btn-hover);
-  --island-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
-  --island-pill-shadow: 0 10px 28px rgba(39, 48, 62, 0.12);
-  --island-accent: #352eff;
+  --island-shadow: 0 18px 48px rgba(51, 65, 92, 0.12);
+  --island-pill-shadow: 0 14px 34px rgba(48, 62, 92, 0.16);
+  --island-accent: #3f46ff;
+  --island-accent-rgb: 63, 70, 255;
   --island-border-style: none;
-  --island-subtle: rgba(0, 0, 0, 0.05);
-  --island-subtle-hover: rgba(0, 0, 0, 0.08);
-  --island-scrollbar: rgba(0, 0, 0, 0.16);
-  --island-scrollbar-hover: rgba(0, 0, 0, 0.24);
+  --island-subtle: rgba(63, 70, 255, 0.07);
+  --island-subtle-hover: rgba(63, 70, 255, 0.12);
+  --island-scrollbar: rgba(62, 74, 96, 0.18);
+  --island-scrollbar-hover: rgba(62, 74, 96, 0.28);
+  --island-link: #343be0;
+  --island-inline-code-bg: rgba(63, 70, 255, 0.10);
+  --island-inline-code-text: #30368f;
+  --island-code-block-bg: color-mix(in srgb, var(--island-code-bg) 92%, #000 8%);
+  --island-code-border: color-mix(in srgb, var(--island-border) 64%, var(--island-accent) 18%);
+  --island-code-text: #eef4ff;
+  --island-code-muted: #aeb9cc;
+  --island-success: #2f8f62;
+  --island-success-text: #23744f;
+  --island-success-bg: rgba(47, 143, 98, 0.13);
+  --island-warning: #b06a13;
+  --island-warning-text: #8a4f0d;
+  --island-warning-bg: rgba(176, 106, 19, 0.13);
+  --island-danger: #b64a5a;
+  --island-danger-text: #983744;
+  --island-danger-bg: rgba(182, 74, 90, 0.12);
+  --island-info: #3f46ff;
+  --island-info-text: #343be0;
+  --island-info-bg: rgba(63, 70, 255, 0.11);
+  --island-on-accent: #ffffff;
   --island-brand-slogan: color-mix(in srgb, var(--island-text-secondary) 82%, var(--island-text) 18%);
   --island-brand-footer-border: color-mix(in srgb, var(--island-text) 10%, transparent);
   --island-brand-logo-light-opacity: 1;
@@ -508,10 +529,217 @@ html[data-island-color-theme="frosted-glass"] {
   --accent: var(--island-accent);
   --border: var(--island-border);
   --shadow: var(--island-shadow);
-  --chat-user-bg: #e8eaef;
-  --chat-assistant-bg: #f6f7f9;
+  --chat-user-bg: #e2e8f6;
+  --chat-assistant-bg: #fbfcff;
   --badge-bg: var(--island-btn-bg);
   --badge-text: var(--island-text);
+  --status-idle: #7d8797;
+  --status-working: #3f46ff;
+  --status-error: #b64a5a;
+  --status-done: #2f8f62;
+  --status-thinking: #6366f1;
+  --settings-bg: #edf1f7;
+  --settings-sidebar-bg: #e5ebf4;
+  --settings-content-bg: #f7f9fd;
+  --settings-card-bg: #fbfcff;
+  --settings-card-border: #cbd4e4;
+  --settings-surface: #fbfcff;
+  --settings-bg-secondary: #eef3fa;
+  --settings-border: #c1cbda;
+  --settings-row-hover: rgba(63, 70, 255, 0.08);
+  --settings-text-primary: #202633;
+  --settings-text-secondary: #646e7e;
+  --settings-text-tertiary: #8d98a9;
+  --settings-text-muted: #8b95a6;
+  --settings-accent: #3842e6;
+  --settings-toggle-on: #3f46ff;
+  --settings-toggle-off: #d7deea;
+  --settings-separator: #d8e0ec;
+  --settings-sidebar-active: #343be0;
+  --settings-sidebar-hover: rgba(63, 70, 255, 0.09);
+  --settings-danger: #b64a5a;
+  --settings-warning: #b06a13;
+  --settings-status-active: #2f8f62;
+  --settings-status-idle: #8d98a9;
+  --settings-status-error: #b64a5a;
+  --settings-status-waiting: #b06a13;
+}
+
+html[data-island-color-theme="frosted-glass"] .color-theme-card,
+html[data-island-color-theme="frosted-glass"] .claude-hook-lab__island-theme {
+  border-color: color-mix(in srgb, var(--settings-card-border) 78%, var(--settings-accent) 10%);
+  background: color-mix(in srgb, var(--settings-card-bg) 74%, var(--settings-bg) 26%);
+  color: var(--settings-text-primary);
+}
+
+html[data-island-color-theme="frosted-glass"] .color-theme-card:hover,
+html[data-island-color-theme="frosted-glass"] .claude-hook-lab__island-theme:hover {
+  border-color: rgba(var(--island-accent-rgb), 0.36);
+}
+
+html[data-island-color-theme="frosted-glass"] .color-theme-card--active,
+html[data-island-color-theme="frosted-glass"] .claude-hook-lab__island-theme[data-active="true"] {
+  border-color: var(--settings-accent);
+  background: rgba(var(--island-accent-rgb), 0.07);
+  box-shadow: inset 0 0 0 1px rgba(var(--island-accent-rgb), 0.42);
+}
+
+html[data-island-color-theme="frosted-glass"] .color-theme-card__tag,
+html[data-island-color-theme="frosted-glass"] .claude-hook-lab__island-theme-tag {
+  color: var(--settings-text-tertiary);
+}
+
+html[data-island-color-theme="frosted-glass"] .settings-app .glass-input:focus {
+  border-color: var(--settings-accent);
+  box-shadow: 0 0 0 3px rgba(var(--island-accent-rgb), 0.14);
+}
+
+html[data-island-color-theme="frosted-glass"] .settings-app .glass-btn--primary:hover {
+  background: #3037d4;
+  border-color: #3037d4;
+}
+
+html[data-island-color-theme="frosted-glass"] .settings-app .glass-btn--secondary:hover,
+html[data-island-color-theme="frosted-glass"] .settings-mini-button:hover {
+  background: #e7ecf5;
+}
+
+html[data-island-color-theme="frosted-glass"] .setting-section--compact .settings-card {
+  background: rgba(251, 252, 255, 0.88);
+  border-color: var(--settings-card-border);
+  box-shadow: 0 2px 12px rgba(51, 65, 92, 0.08);
+}
+
+html[data-island-color-theme="frosted-glass"] .setting-section--compact .setting-group__label {
+  color: var(--settings-text-primary);
+}
+
+html[data-island-color-theme="frosted-glass"] .setting-section--compact .setting-row__description {
+  color: var(--settings-text-secondary);
+}
+
+html[data-island-color-theme="frosted-glass"] .surface-mode-segmented {
+  background: color-mix(in srgb, var(--settings-card-border) 38%, var(--settings-card-bg));
+}
+
+html[data-island-color-theme="frosted-glass"] .surface-mode-segmented__option {
+  color: var(--settings-text-secondary);
+}
+
+html[data-island-color-theme="frosted-glass"] .surface-mode-segmented__option--active {
+  border-color: var(--settings-card-border);
+  background: rgba(251, 252, 255, 0.92);
+  color: var(--settings-text-primary);
+  box-shadow: 0 1px 4px rgba(51, 65, 92, 0.10);
+}
+
+html[data-island-color-theme="frosted-glass"] .notch-panel {
+  background:
+    radial-gradient(115% 82% at 50% -34%, rgba(255, 255, 255, 0.88), transparent 56%),
+    linear-gradient(180deg, rgba(251, 252, 255, 0.96) 0%, rgba(238, 242, 248, 0.92) 100%);
+  box-shadow:
+    var(--island-shadow),
+    inset 0 -1px 0 rgba(52, 62, 82, 0.08);
+}
+
+html[data-island-color-theme="frosted-glass"] .notch-panel::after {
+  background: radial-gradient(80% 110% at 50% 100%, rgba(var(--island-accent-rgb), 0.07), transparent 62%);
+}
+
+html[data-island-color-theme="frosted-glass"] .notch-panel[data-island-state="micro"] {
+  background: linear-gradient(180deg, rgba(251, 252, 255, 0.98), rgba(238, 242, 248, 0.94));
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__icon-btn,
+html[data-island-color-theme="frosted-glass"] .hover-list__source-badge,
+html[data-island-color-theme="frosted-glass"] .hover-list__notice-icon,
+html[data-island-color-theme="frosted-glass"] .hover-list__notice-action,
+html[data-island-color-theme="frosted-glass"] .session-silence__badge {
+  background: rgba(var(--island-accent-rgb), 0.08);
+  color: var(--island-text-secondary);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__icon-btn:hover,
+html[data-island-color-theme="frosted-glass"] .hover-list__notice-action:hover {
+  background: rgba(var(--island-accent-rgb), 0.14);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__counter-pills {
+  border-color: rgba(62, 74, 96, 0.14);
+  background: rgba(var(--island-accent-rgb), 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__counter-pill--active {
+  background: rgba(var(--island-accent-rgb), 0.10);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__counter-pill--act,
+html[data-island-color-theme="frosted-glass"] .hover-list__tool-count--add,
+html[data-island-color-theme="frosted-glass"] .hover-list__task-icon--done,
+html[data-island-color-theme="frosted-glass"] .hover-list__hook-notice--restored {
+  color: var(--island-success-text);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__counter-pill--wait,
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__unattended--amber,
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__yolo-badge,
+html[data-island-color-theme="frosted-glass"] .hover-list__yolo-badge,
+html[data-island-color-theme="frosted-glass"] .hover-list__hook-notice--rate_limited,
+html[data-island-color-theme="frosted-glass"] .hover-list__error-icon,
+html[data-island-color-theme="frosted-glass"] .hover-list__error-text,
+html[data-island-color-theme="frosted-glass"] .hover-list__state-ribbon--warning {
+  color: var(--island-warning-text);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__error-badge,
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__unattended--red,
+html[data-island-color-theme="frosted-glass"] .hover-list__tool-count--del {
+  color: var(--island-danger-text);
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__tool-label,
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__tool-status,
+html[data-island-color-theme="frosted-glass"] .hover-list__tool-label {
+  color: #5862b2;
+}
+
+html[data-island-color-theme="frosted-glass"] .collapsed-bar__tool-target-name,
+html[data-island-color-theme="frosted-glass"] .hover-list__tool-target-name,
+html[data-island-color-theme="frosted-glass"] .hover-list__notice--restart .hover-list__notice-icon,
+html[data-island-color-theme="frosted-glass"] .hover-list__notice--trust .hover-list__notice-icon {
+  color: var(--island-info-text);
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__context-menu {
+  background: color-mix(in srgb, var(--island-card) 84%, var(--island-bg) 16%);
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__active-tool-diff .diff-view,
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm-diff .diff-view {
+  border-color: color-mix(in srgb, var(--island-border) 74%, var(--island-accent) 14%) !important;
+  background: color-mix(in srgb, var(--island-code-bg) 92%, #27305c 8%) !important;
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm {
+  border-color: color-mix(in srgb, var(--island-border) 74%, var(--island-warning) 16%);
+  background: color-mix(in srgb, var(--island-card) 88%, var(--island-warning) 5%);
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm-alert,
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm-tool,
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm-tool-name {
+  color: var(--island-warning-text);
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__inline-perm-tool-name {
+  background: var(--island-warning-bg);
+}
+
+html[data-island-color-theme="frosted-glass"] .hover-list__empty {
+  background:
+    radial-gradient(circle at 50% 26%, rgba(var(--island-accent-rgb), 0.10), transparent 23%),
+    linear-gradient(180deg, rgba(var(--island-accent-rgb), 0.05), transparent 52%);
 }
 
 html[data-island-color-theme="apple"] {
