@@ -311,50 +311,61 @@
 .plan-approval__perms {
   display: flex;
   flex: 0 0 auto;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 9px;
-  max-height: 54px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  max-height: 92px;
   overflow-y: auto;
-  padding: 5px 10px;
-  border: 1px solid var(--plan-border);
-  border-radius: 12px;
-  background: var(--plan-surface);
+  padding: 10px 12px 11px;
+  border: 1px solid color-mix(in srgb, var(--plan-border) 82%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--island-card) 92%, #000 12%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .plan-approval__perms-label {
-  display: inline-flex;
-  flex: 0 0 auto;
+  display: block;
   margin: 0;
   color: var(--island-text-muted);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 750;
   line-height: 1.2;
 }
 
+.plan-approval__perms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+
 .plan-approval__perm-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   margin: 0;
   color: var(--plan-text-muted);
   font-size: 10px;
   font-weight: 620;
-  line-height: 1.24;
+  line-height: 1.35;
 }
 
-.plan-approval__perm-item:last-child {
-  margin-bottom: 0;
+.plan-approval__perm-item::marker {
+  color: color-mix(in srgb, var(--plan-text-muted) 84%, transparent);
+  font-size: 10px;
 }
 
-.plan-approval__perm-item::before {
-  content: none;
+.plan-approval__perm-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .plan-approval__perm-tool {
-  flex-shrink: 0;
-  color: inherit;
-  font-weight: 720;
+  color: color-mix(in srgb, var(--plan-accent) 82%, #ff8a1c);
+  font-weight: 760;
+}
+
+.plan-approval__perm-prompt {
+  color: var(--plan-text-muted);
 }
 
 .plan-approval__input-row {

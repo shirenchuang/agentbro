@@ -1472,34 +1472,62 @@
 
 .hover-list__inline-plan-perms {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  max-height: 58px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  max-height: 86px;
   overflow-y: auto;
-  border-top: 1px solid var(--inline-plan-border);
-  padding: 6px 12px;
-  background: var(--inline-plan-surface);
+  border: 1px solid color-mix(in srgb, var(--inline-plan-border) 82%, transparent);
+  border-radius: 10px;
+  margin: 7px 12px 0;
+  padding: 9px 11px 10px;
+  background: color-mix(in srgb, var(--island-card) 92%, #000 12%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   color: var(--island-text-secondary);
   font-size: 10px;
   font-weight: 620;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 
 .hover-list__inline-plan-perms-label {
-  flex: 0 0 auto;
+  display: block;
   color: var(--island-text-muted);
   font-weight: 760;
+  line-height: 1.2;
+}
+
+.hover-list__inline-plan-perms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  list-style: disc;
 }
 
 .hover-list__inline-plan-perm {
+  margin: 0;
   min-width: 0;
   color: inherit;
 }
 
+.hover-list__inline-plan-perm::marker {
+  color: color-mix(in srgb, var(--island-text-muted) 84%, transparent);
+  font-size: 10px;
+}
+
+.hover-list__inline-plan-perm-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .hover-list__inline-plan-perm-tool {
-  color: inherit;
-  font-weight: 720;
+  color: color-mix(in srgb, var(--inline-plan-accent) 82%, #ff8a1c);
+  font-weight: 760;
+}
+
+.hover-list__inline-plan-perm-prompt {
+  color: var(--island-text-secondary);
 }
 
 .hover-list__inline-plan-feedback {

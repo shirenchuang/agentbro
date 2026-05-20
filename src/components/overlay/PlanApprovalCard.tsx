@@ -107,14 +107,19 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
       {data.requestedPermissions && data.requestedPermissions.length > 0 && (
         <div className="plan-approval__perms">
           <span className="plan-approval__perms-label">{t('notch.requestedPermissions', { defaultValue: '请求的权限:' })}</span>
-          {data.requestedPermissions.map((p, i) => {
-            const permission = typeof p === 'string' ? parsePlanPermission(p) : p
-            return (
-              <div key={i} className="plan-approval__perm-item">
-                <span><span className="plan-approval__perm-tool">{permission.tool}</span>{permission.prompt ? `: ${permission.prompt}` : ''}</span>
-              </div>
-            )
-          })}
+          <ul className="plan-approval__perms-list">
+            {data.requestedPermissions.map((p, i) => {
+              const permission = typeof p === 'string' ? parsePlanPermission(p) : p
+              return (
+                <li key={i} className="plan-approval__perm-item">
+                  <span className="plan-approval__perm-copy">
+                    <span className="plan-approval__perm-tool">{permission.tool}</span>
+                    {permission.prompt && <span className="plan-approval__perm-prompt">: {permission.prompt}</span>}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
         </div>
       )}
 

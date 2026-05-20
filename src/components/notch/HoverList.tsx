@@ -1094,15 +1094,19 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           <span className="hover-list__inline-plan-perms-label">
             {t('notch.requestedPermissions', { defaultValue: '请求的权限:' })}
           </span>
-          {permissions.map((permission, index) => {
-            const parsed = parsePlanPermission(permission)
-            return (
-              <span key={`${permission}-${index}`} className="hover-list__inline-plan-perm">
-                <span className="hover-list__inline-plan-perm-tool">{parsed.tool}</span>
-                {parsed.prompt && <span>: {parsed.prompt}</span>}
-              </span>
-            )
-          })}
+          <ul className="hover-list__inline-plan-perms-list">
+            {permissions.map((permission, index) => {
+              const parsed = parsePlanPermission(permission)
+              return (
+                <li key={`${permission}-${index}`} className="hover-list__inline-plan-perm">
+                  <span className="hover-list__inline-plan-perm-copy">
+                    <span className="hover-list__inline-plan-perm-tool">{parsed.tool}</span>
+                    {parsed.prompt && <span className="hover-list__inline-plan-perm-prompt">: {parsed.prompt}</span>}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
         </div>
       )}
       <div className="hover-list__inline-plan-feedback">
