@@ -76,6 +76,63 @@ fn ask_user_question_hook_output(updated_input: serde_json::Value) -> serde_json
     })
 }
 
+fn plan_title_from_content(plan_content: &str) -> String {
+    plan_content
+        .lines()
+        .find_map(|line| {
+            let title = line.trim().trim_start_matches('#').trim();
+            if title.is_empty() {
+                None
+            } else {
+                Some(title.to_string())
+            }
+        })
+        .unwrap_or_else(|| "Plan".to_string())
+}
+
+fn plan_hook_output(
+    tool_input: serde_json::Value,
+    mode: &str,
+    message: Option<&str>,
+) -> serde_json::Value {
+    if mode == "feedback" {
+        let msg = message
+            .filter(|msg| !msg.is_empty())
+            .unwrap_or("User requested changes");
+        return serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "deny",
+                    "message": msg
+                }
+            }
+        });
+    }
+
+    let mut decision = serde_json::json!({
+        "behavior": "allow",
+        "updatedInput": tool_input
+    });
+    if matches!(mode, "acceptEdits" | "bypassPermissions") {
+        if let Some(obj) = decision.as_object_mut() {
+            obj.insert(
+                "updatedPermissions".into(),
+                serde_json::json!([
+                    { "type": "setMode", "mode": mode, "destination": "session" }
+                ]),
+            );
+        }
+    }
+
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": decision
+        }
+    })
+}
+
 fn question_multi_select(question: &serde_json::Value) -> bool {
     question
         .get("multiSelect")
@@ -605,14 +662,7 @@ fn main() {
                     .get("planTitle")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
-                    .unwrap_or_else(|| {
-                        plan_content
-                            .lines()
-                            .find(|line| !line.trim().is_empty())
-                            .map(|line| line.trim().trim_start_matches('#').trim().to_string())
-                            .filter(|line| !line.is_empty())
-                            .unwrap_or_else(|| "Plan".to_string())
-                    });
+                    .unwrap_or_else(|| plan_title_from_content(&plan_content));
                 let requested_permissions = tool_input
                     .get("allowedPrompts")
                     .cloned()
@@ -628,49 +678,8 @@ fn main() {
 
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
                     let mode = resp["mode"].as_str().unwrap_or("manual");
-                    if mode == "feedback" {
-                        let msg = resp["message"]
-                            .as_str()
-                            .filter(|msg| !msg.is_empty())
-                            .unwrap_or("User requested changes");
-                        let output = serde_json::json!({
-                            "hookSpecificOutput": {
-                                "hookEventName": "PermissionRequest",
-                                "decision": {
-                                    "behavior": "deny",
-                                    "message": msg
-                                }
-                            }
-                        });
-                        println!("{}", output);
-                    } else {
-                        let updated_permissions = match mode {
-                            "acceptEdits" | "bypassPermissions" => serde_json::json!([
-                                { "type": "setMode", "mode": mode, "destination": "session" }
-                            ]),
-                            _ => serde_json::json!([]),
-                        };
-                        let mut decision = serde_json::json!({
-                            "behavior": "allow",
-                            "updatedInput": tool_input
-                        });
-                        if let Some(obj) = decision.as_object_mut() {
-                            if updated_permissions
-                                .as_array()
-                                .map(|arr| !arr.is_empty())
-                                .unwrap_or(false)
-                            {
-                                obj.insert("updatedPermissions".into(), updated_permissions);
-                            }
-                        }
-                        let output = serde_json::json!({
-                            "hookSpecificOutput": {
-                                "hookEventName": "PermissionRequest",
-                                "decision": decision
-                            }
-                        });
-                        println!("{}", output);
-                    }
+                    let output = plan_hook_output(tool_input, mode, resp["message"].as_str());
+                    println!("{}", output);
                 }
                 return;
             }
@@ -1018,5 +1027,72 @@ mod tests {
             "Preview, Production"
         );
         assert_eq!(updated_input["answers"]["Deploy"], "Preview, Production");
+    }
+
+    #[test]
+    fn plan_hook_output_maps_manual_accept_and_bypass_modes() {
+        let tool_input = serde_json::json!({
+            "plan": "# Ship migration\n\nContext\n\n1. Update schema",
+            "allowedPrompts": ["Edit: src/schema.ts", "Bash: pnpm test"]
+        });
+
+        let manual = plan_hook_output(tool_input.clone(), "manual", None);
+        assert_eq!(
+            manual["hookSpecificOutput"]["decision"]["behavior"],
+            "allow"
+        );
+        assert_eq!(
+            manual["hookSpecificOutput"]["decision"]["updatedInput"],
+            tool_input
+        );
+        assert!(manual["hookSpecificOutput"]["decision"]
+            .get("updatedPermissions")
+            .is_none());
+
+        let accept = plan_hook_output(tool_input.clone(), "acceptEdits", None);
+        assert_eq!(
+            accept["hookSpecificOutput"]["decision"]["updatedPermissions"][0],
+            serde_json::json!({
+                "type": "setMode",
+                "mode": "acceptEdits",
+                "destination": "session"
+            })
+        );
+
+        let bypass = plan_hook_output(tool_input, "bypassPermissions", None);
+        assert_eq!(
+            bypass["hookSpecificOutput"]["decision"]["updatedPermissions"][0],
+            serde_json::json!({
+                "type": "setMode",
+                "mode": "bypassPermissions",
+                "destination": "session"
+            })
+        );
+    }
+
+    #[test]
+    fn plan_hook_output_maps_feedback_to_denial_message() {
+        let output = plan_hook_output(
+            serde_json::json!({ "plan": "1. Update schema" }),
+            "feedback",
+            Some("Revise the rollout order"),
+        );
+
+        assert_eq!(
+            output["hookSpecificOutput"]["decision"],
+            serde_json::json!({
+                "behavior": "deny",
+                "message": "Revise the rollout order"
+            })
+        );
+    }
+
+    #[test]
+    fn plan_title_from_content_uses_first_non_empty_markdown_line() {
+        assert_eq!(
+            plan_title_from_content("\n\n## Database migration\n\n1. Update schema"),
+            "Database migration"
+        );
+        assert_eq!(plan_title_from_content("\n\n"), "Plan");
     }
 }

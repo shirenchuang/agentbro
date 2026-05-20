@@ -1281,6 +1281,31 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions')
   })
 
+  it('routes plan overlay feedback through feedback mode', () => {
+    mountIsland({
+      id: 'plan-s1-feedback',
+      sessionId: 's1',
+      type: 'plan',
+      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      createdAt: Date.now(),
+    }, {
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix jump',
+    })
+
+    fireEvent.change(screen.getByPlaceholderText('Tell Claude what to change...'), {
+      target: { value: 'Revise the migration order' },
+    })
+    fireEvent.click(screen.getByText('Send Feedback'))
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith(
+      's1',
+      'feedback',
+      'Revise the migration order',
+    )
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+  })
+
   it('routes response overlay jump and reply actions to terminal APIs', async () => {
     mountIsland({
       id: 'response-s1',
