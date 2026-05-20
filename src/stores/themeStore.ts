@@ -15,7 +15,7 @@ export interface ColorThemeInfo {
 }
 
 export const COLOR_THEMES: ColorThemeInfo[] = [
-  { id: 'ink-amber', label: 'AgentBro Classic', labelZh: 'AgentBro 经典', tag: 'Classic', isDark: false, bg: '#fff7ec', card: '#fffdf8', accent: '#f8a400' },
+  { id: 'ink-amber', label: 'AgentBro Classic', labelZh: 'AgentBro 经典', tag: 'Classic', isDark: false, bg: '#f4eddf', card: '#fffaf2', accent: '#9a5f12' },
   { id: 'midnight', label: 'Midnight', labelZh: '午夜', tag: 'Evolab', isDark: true, bg: '#000000', card: '#0a0a0a', accent: '#7b78ff' },
   { id: 'frosted-glass', label: 'Frosted Glass', labelZh: '磨砂玻璃', tag: 'Light', isDark: false, bg: '#eef0f4', card: '#f6f7f9', accent: '#352eff' },
   { id: 'apple', label: 'Apple', labelZh: '苹果', tag: 'Clean', isDark: false, bg: '#f5f5f7', card: '#ffffff', accent: '#007aff' },
