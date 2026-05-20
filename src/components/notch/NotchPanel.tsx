@@ -132,6 +132,7 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
           onManualReview={() => { respondPlan(session.id, 'manual'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
           onAcceptEdits={() => { respondPlan(session.id, 'acceptEdits'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
           onAutoApprove={() => { respondPlan(session.id, 'bypassPermissions'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
+          onJumpToTerminal={() => jumpToTerminal(session.id).catch((error) => console.warn('[notch] jumpToTerminal:', error))}
           onShowSessions={onShowSessions}
           onDismiss={onDismiss}
           onDraftStateChange={onDraftStateChange}
@@ -524,9 +525,16 @@ export function NotchPanel() {
     const hasNewAttention = blockingAttentionCount > prevAttentionRef.current
     const hasNewBlockingOverlay = Boolean(blockingOverlayId && blockingOverlayId !== prevBlockingOverlayIdRef.current)
     const suppressedBlockingOverlay = Boolean(activeOverlay?.suppressed && activeOverlay && isBlockingOverlay(activeOverlay))
-    if ((hasNewAttention || hasNewBlockingOverlay) && !suppressedBlockingOverlay && panelState === 'collapsed') {
-      setNotchOpacity(1).catch(() => {})
-      setPanelState('hover')
+    if ((hasNewAttention || hasNewBlockingOverlay) && !suppressedBlockingOverlay) {
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current)
+        leaveTimerRef.current = undefined
+      }
+      interactionLockUntilRef.current = Math.max(interactionLockUntilRef.current, Date.now() + 1200)
+      if (panelState === 'collapsed') {
+        setNotchOpacity(1).catch(() => {})
+        setPanelState('hover')
+      }
     }
 
     if (blockingAttentionCount === 0 && previousAttentionCount > 0 && panelState === 'hover') {
@@ -1023,8 +1031,13 @@ export function NotchPanel() {
       const approveBinding = findShortcut('approve-action')
       if (approveBinding && matchesShortcut(e, approveBinding) && active?.phase === 'waiting_approval') {
         e.preventDefault()
-        respondPermission(active.id, true)
-        useSessionStore.getState().clearPermission(active.id)
+        if (active.planContent || active.planTitle) {
+          respondPlan(active.id, 'acceptEdits')
+          useSessionStore.getState().clearPlan(active.id)
+        } else {
+          respondPermission(active.id, true)
+          useSessionStore.getState().clearPermission(active.id)
+        }
         return
       }
 
@@ -1032,8 +1045,13 @@ export function NotchPanel() {
       const rejectBinding = findShortcut('reject-action')
       if (rejectBinding && matchesShortcut(e, rejectBinding) && active?.phase === 'waiting_approval') {
         e.preventDefault()
-        respondPermission(active.id, false)
-        useSessionStore.getState().clearPermission(active.id)
+        if (active.planContent || active.planTitle) {
+          respondPlan(active.id, 'manual')
+          useSessionStore.getState().clearPlan(active.id)
+        } else {
+          respondPermission(active.id, false)
+          useSessionStore.getState().clearPermission(active.id)
+        }
         return
       }
 
@@ -1056,8 +1074,9 @@ export function NotchPanel() {
       // Cmd+1/2/3 — select option
       const num = parseInt(e.key, 10)
       if (e.metaKey && num >= 1 && num <= 3) {
-        const options = active?.pendingQuestion?.options
-        if (options && options[num - 1]) {
+        const activeQuestion = active?.pendingQuestion
+        const options = active && !activeQuestion?.multiSelect ? activeQuestion?.options : undefined
+        if (active && options && options[num - 1]) {
           e.preventDefault()
           respondQuestion(active.id, options[num - 1])
           useSessionStore.getState().clearQuestion(active.id)
@@ -1869,6 +1888,7 @@ export function NotchPanel() {
                       onSubagentClick={handleSubagentClick}
                       onSilenceDirectory={handleSilenceDirectory}
                       onSilencePrompt={handleSilencePrompt}
+                      onInputDraftStateChange={setHasInputDraft}
                       onJumpToTerminal={(id) => {
                         setNotchFocusable(false).catch(() => {})
                         jumpToTerminal(id).catch((error) => console.warn('[notch] jumpToTerminal:', error))

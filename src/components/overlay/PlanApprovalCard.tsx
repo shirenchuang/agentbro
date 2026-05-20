@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { OverlayItem, SessionState, SubagentInfo } from '../../types/agent'
+import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { OverlayCard } from './OverlayCard'
 import './PlanApprovalCard.css'
 
@@ -13,6 +14,7 @@ interface PlanApprovalCardProps {
   onManualReview: () => void
   onAcceptEdits: () => void
   onAutoApprove: () => void
+  onJumpToTerminal?: () => void
   onShowSessions?: () => void
   onDismiss: () => void
   onDraftStateChange?: (hasDraft: boolean) => void
@@ -55,27 +57,7 @@ function CompactSubagentSummary({ subagents }: { subagents: SubagentInfo[] }) {
   )
 }
 
-function formatPlanMarkdown(content: string): string {
-  return content
-    .split('\n')
-    .map((line) => {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) return line
-      if (/^(context|plan|test plan|root cause|assumptions|requested permissions)$/i.test(trimmed)) {
-        return `### ${trimmed}`
-      }
-      return line
-    })
-    .join('\n')
-}
-
-function parsePlanPermission(permission: string): { tool: string; prompt?: string } {
-  const match = permission.match(/^([^:：]+)[:：]\s*(.*)$/)
-  if (!match) return { tool: permission }
-  return { tool: match[1].trim(), prompt: match[2].trim() }
-}
-
-export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: PlanApprovalCardProps) {
+export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onJumpToTerminal, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: PlanApprovalCardProps) {
   const { t } = useTranslation()
   const data = overlay.data as { planTitle?: string; planContent: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
   const [feedback, setFeedback] = useState('')
@@ -102,6 +84,7 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
       onDismiss={onDismiss}
       onShowSessions={onShowSessions}
       sessionCount={sessionCount}
+      onCardClick={onJumpToTerminal}
       className="overlay-card--plan-approval"
       bodyClassName="plan-approval"
     >

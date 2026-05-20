@@ -115,6 +115,14 @@
   white-space: nowrap;
 }
 
+.question-card__header-count {
+  font-size: var(--approval-title-font-size);
+  font-weight: 700;
+  line-height: var(--approval-title-line-height);
+  color: var(--island-text-secondary);
+  flex-shrink: 0;
+}
+
 .question-card__header-badges {
   display: flex;
   align-items: center;
@@ -233,25 +241,24 @@
   color: var(--island-warning-text);
 }
 
-/* Custom trigger */
-.question-card__custom-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 1px dashed color-mix(in srgb, var(--question-accent) 18%, transparent);
-  border-radius: 8px;
-  font-size: var(--approval-caption-font-size);
-  font-weight: 560;
+/* "Other" option row */
+.question-card__option-row--other {
   color: var(--island-text-muted);
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
 }
 
-.question-card__custom-trigger:hover {
-  border-color: color-mix(in srgb, var(--question-accent) 42%, transparent);
-  color: var(--island-warning-text);
+.question-card__option-index--other {
+  opacity: 0.6;
+}
+
+.question-card__option-row--custom-active {
+  cursor: default;
+}
+
+.question-card__option-row--custom-active .question-card__input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border-radius: 6px;
 }
 
 .question-card__secondary-actions {
@@ -384,66 +391,94 @@
 .question-card__multi-opts {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
 }
 
 .question-card__chip {
-  padding: 3px 8px;
-  border: none;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--question-accent) 22%, var(--island-border));
   border-radius: 6px;
-  background: color-mix(in srgb, var(--island-btn-bg) 88%, var(--question-accent) 8%);
-  color: var(--island-text-secondary);
+  background: color-mix(in srgb, var(--island-card-hover) 80%, var(--question-accent) 6%);
+  color: var(--island-text);
   font-size: var(--approval-caption-font-size);
   font-weight: 650;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
 .question-card__chip:hover {
-  background: color-mix(in srgb, var(--island-btn-hover) 84%, var(--question-accent) 12%);
-  color: var(--island-text);
+  border-color: color-mix(in srgb, var(--question-accent) 42%, var(--island-border));
+  background: color-mix(in srgb, var(--island-card-hover) 70%, var(--question-accent) 12%);
 }
 
 .question-card__chip--selected {
   background: var(--question-accent);
+  border-color: var(--question-accent);
   color: var(--island-on-accent, #ffffff);
+}
+
+.question-card__chip--checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.question-card__chip-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--question-accent) 60%, var(--island-border));
+  border-radius: 3px;
+  flex-shrink: 0;
+  color: transparent;
+}
+
+.question-card__chip-check--checked {
+  background: var(--island-on-accent, #ffffff);
+  border-color: var(--island-on-accent, #ffffff);
+  color: var(--question-accent);
+}
+
+.question-card__chip:not(.question-card__chip--selected) .question-card__chip-check {
+  border-color: color-mix(in srgb, var(--question-accent) 45%, var(--island-border));
 }
 
 .question-card__chip--custom {
   background: color-mix(in srgb, var(--island-card-hover) 70%, var(--question-accent) 22%);
+  border-color: color-mix(in srgb, var(--question-accent) 45%, var(--island-border));
   color: var(--island-text);
   cursor: default;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--question-accent) 45%, transparent);
 }
 
-.question-card__inline-input {
-  width: 100%;
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: var(--island-card);
-  border: 1px solid color-mix(in srgb, var(--question-accent) 34%, var(--island-border));
-  border-radius: 6px;
+.question-card__chip--other {
+  color: var(--island-text-muted);
+  border-style: dashed;
+}
+
+.question-card__chip--other:hover {
   color: var(--island-text);
-  font-size: var(--approval-control-font-size);
-  outline: none;
-  box-sizing: border-box;
-  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
-.question-card__inline-input:focus {
+.question-card__chip-input {
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--question-accent) 40%, var(--island-border));
+  border-radius: 6px;
+  background: var(--island-input-bg);
+  color: var(--island-text);
+  font-size: var(--approval-caption-font-size);
+  outline: none;
+  min-width: 120px;
+  transition: border-color 0.15s;
+}
+
+.question-card__chip-input:focus {
   border-color: color-mix(in srgb, var(--question-accent) 68%, var(--island-border));
 }
 
-.question-card__custom-link {
-  margin-top: 8px;
-  font-size: var(--approval-caption-font-size);
+.question-card__chip-input::placeholder {
   color: var(--island-text-muted);
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-.question-card__custom-link:hover {
-  color: var(--island-warning-text);
 }
 
 .question-card__submit-all {

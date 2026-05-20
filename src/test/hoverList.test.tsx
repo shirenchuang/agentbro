@@ -643,6 +643,27 @@ describe('HoverList interactions', () => {
     expect(screen.getByText(/run cargo check/)).toBeInTheDocument()
   })
 
+  it('renders inline plan markdown and uses plan-specific action styles', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          planTitle: 'Implementation plan',
+          planContent: '### Steps\n1. **Render Markdown**\n\n```ts\nconst ok = true\n```',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { level: 3, name: 'Steps' })).toBeInTheDocument()
+    expect(screen.getByText('Render Markdown').tagName).toBe('STRONG')
+    expect(screen.getByText('const ok = true')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send Feedback' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Manual Review' })).toHaveClass('hover-list__inline-plan-btn--feedback')
+    expect(screen.getByRole('button', { name: 'Accept Edits' })).toHaveClass('hover-list__inline-plan-btn--accept')
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveClass('hover-list__inline-plan-btn--auto')
+  })
+
   it('keeps inline plan previews visible when the active plan overlay is folded into the list', () => {
     useSessionStore.setState({
       activeOverlay: {
@@ -929,7 +950,7 @@ describe('HoverList interactions', () => {
     fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
     fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
     fireEvent.mouseDown(screen.getByText('No').closest('button')!)
-    fireEvent.mouseDown(screen.getByRole('button', { name: '提交所有回答' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: '✓ 提交所有回答' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith(
       's1',
@@ -956,6 +977,28 @@ describe('HoverList interactions', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined)
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('sends inline plan feedback from the input row without opening the row', () => {
+    const onSessionClick = vi.fn()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_approval',
+          planTitle: 'Implementation plan',
+          planContent: '1. Fix the island',
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.mouseDown(input)
+    fireEvent.change(input, { target: { value: 'Please revise the scope' } })
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Send Feedback' }))
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'feedback', 'Please revise the scope')
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 

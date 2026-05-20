@@ -65,7 +65,7 @@ fn normalize_tty(raw: &str) -> Option<String> {
 fn ask_user_question_hook_output(updated_input: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
+            "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
             "decision": {
                 "behavior": "allow",
@@ -74,6 +74,153 @@ fn ask_user_question_hook_output(updated_input: serde_json::Value) -> serde_json
             "updatedInput": updated_input
         }
     })
+}
+
+fn question_multi_select(question: &serde_json::Value) -> bool {
+    question
+        .get("multiSelect")
+        .or_else(|| question.get("multi_select"))
+        .or_else(|| question.get("multiple"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn question_option_label(option: &serde_json::Value) -> Option<&str> {
+    option
+        .as_str()
+        .or_else(|| option.get("label").and_then(|v| v.as_str()))
+}
+
+fn question_option_description(option: &serde_json::Value) -> Option<&str> {
+    option.get("description").and_then(|v| v.as_str())
+}
+
+fn populate_ask_user_question_state(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    tool_input: &serde_json::Value,
+) {
+    let questions = tool_input
+        .get("questions")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    let first_q = questions.as_array().and_then(|arr| arr.first());
+
+    let question_text = first_q
+        .map(|q| {
+            let header = q.get("header").and_then(|h| h.as_str()).unwrap_or("");
+            let text = q.get("question").and_then(|t| t.as_str()).unwrap_or("");
+            if header.is_empty() {
+                text.to_string()
+            } else {
+                format!("[{}] {}", header, text)
+            }
+        })
+        .unwrap_or_default();
+
+    let options: Vec<String> = first_q
+        .and_then(|q| q.get("options"))
+        .and_then(|o| o.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|opt| question_option_label(opt).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let descriptions: Vec<String> = first_q
+        .and_then(|q| q.get("options"))
+        .and_then(|o| o.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|opt| question_option_description(opt).unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let header = first_q
+        .and_then(|q| q.get("header"))
+        .and_then(|h| h.as_str())
+        .map(|s| s.to_string());
+
+    let multi_select = first_q.map(question_multi_select).unwrap_or(false);
+    let normalized_questions: Vec<serde_json::Value> = questions
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|q| {
+                    serde_json::json!({
+                        "question": q.get("question").and_then(|v| v.as_str()).unwrap_or(""),
+                        "header": q.get("header").and_then(|v| v.as_str()),
+                        "options": q.get("options").cloned().unwrap_or_else(|| serde_json::json!([])),
+                        "multiSelect": question_multi_select(q),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    obj.insert("event".into(), "AskQuestion".into());
+    obj.insert("status".into(), "waiting_for_input".into());
+    obj.insert("question".into(), question_text.into());
+    obj.insert("options".into(), serde_json::json!(options));
+    obj.insert("descriptions".into(), serde_json::json!(descriptions));
+    obj.insert("questions".into(), serde_json::json!(normalized_questions));
+    if let Some(ref h) = header {
+        obj.insert("header".into(), h.clone().into());
+    }
+    obj.insert("multi_select".into(), multi_select.into());
+    obj.insert("tool_input".into(), tool_input.clone());
+}
+
+fn ask_user_question_updated_input(
+    tool_input: &serde_json::Value,
+    answer: &str,
+) -> serde_json::Value {
+    let mut updated_input = tool_input.clone();
+    let mut answers = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(answer)
+        .unwrap_or_else(|_| {
+            let mut answers = serde_json::Map::new();
+            let first_question = updated_input
+                .get("questions")
+                .and_then(|qs| qs.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|first| first.get("question"))
+                .and_then(|q| q.as_str())
+                .unwrap_or("");
+            answers.insert(
+                first_question.to_string(),
+                serde_json::Value::String(answer.to_string()),
+            );
+            answers
+        });
+
+    if let Some(questions) = updated_input.get("questions").and_then(|qs| qs.as_array()) {
+        for question in questions {
+            let Some(header) = question.get("header").and_then(|h| h.as_str()) else {
+                continue;
+            };
+            if header.is_empty() {
+                continue;
+            }
+            let Some(text) = question.get("question").and_then(|q| q.as_str()) else {
+                continue;
+            };
+            if answers.contains_key(text) && !answers.contains_key(header) {
+                if let Some(value) = answers.get(text).cloned() {
+                    answers.insert(header.to_string(), value);
+                }
+            } else if answers.contains_key(header) && !answers.contains_key(text) {
+                if let Some(value) = answers.get(header).cloned() {
+                    answers.insert(text.to_string(), value);
+                }
+            }
+        }
+    }
+
+    if let Some(input) = updated_input.as_object_mut() {
+        input.insert("answers".into(), serde_json::Value::Object(answers));
+    }
+    updated_input
 }
 
 fn ps_tty_and_ppid(pid: u32) -> Option<(Option<String>, Option<u32>)> {
@@ -360,6 +507,26 @@ fn main() {
             }
         }
         "PreToolUse" => {
+            let tool_name_str = data
+                .get("tool_name")
+                .or_else(|| data.get("tool"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
+            // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
+            if tool_name_str == "AskUserQuestion" {
+                populate_ask_user_question_state(obj, &tool_input);
+
+                if let Some(resp) = send_and_maybe_receive(&state, true) {
+                    let answer = resp["answer"].as_str().unwrap_or("");
+                    let updated_input = ask_user_question_updated_input(&tool_input, answer);
+                    let output = ask_user_question_hook_output(updated_input);
+                    println!("{}", output);
+                }
+                return;
+            }
+
             obj.insert("status".into(), "running_tool".into());
             if let Some(t) = data.get("tool_name").or_else(|| data.get("tool")) {
                 obj.insert("tool".into(), t.clone());
@@ -409,119 +576,19 @@ fn main() {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // AskUserQuestion: route as interactive question card instead of permission dialog
             if tool_name_str == "AskUserQuestion" {
-                let questions = tool_input
-                    .get("questions")
-                    .cloned()
-                    .unwrap_or(serde_json::json!([]));
-                let first_q = questions.as_array().and_then(|arr| arr.first());
-
-                let question_text = first_q
-                    .map(|q| {
-                        let header = q.get("header").and_then(|h| h.as_str()).unwrap_or("");
-                        let text = q.get("question").and_then(|t| t.as_str()).unwrap_or("");
-                        if header.is_empty() {
-                            text.to_string()
-                        } else {
-                            format!("[{}] {}", header, text)
-                        }
-                    })
-                    .unwrap_or_default();
-
-                let options: Vec<String> = first_q
-                    .and_then(|q| q.get("options"))
-                    .and_then(|o| o.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|opt| {
-                                opt.get("label")
-                                    .and_then(|l| l.as_str())
-                                    .map(|s| s.to_string())
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let descriptions: Vec<String> = first_q
-                    .and_then(|q| q.get("options"))
-                    .and_then(|o| o.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .map(|opt| {
-                                opt.get("description")
-                                    .and_then(|d| d.as_str())
-                                    .unwrap_or("")
-                                    .to_string()
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let header = first_q
-                    .and_then(|q| q.get("header"))
-                    .and_then(|h| h.as_str())
-                    .map(|s| s.to_string());
-
-                let multi_select = first_q
-                    .and_then(|q| q.get("multiSelect"))
-                    .and_then(|m| m.as_bool())
-                    .unwrap_or(false);
-                let normalized_questions: Vec<serde_json::Value> = questions
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .map(|q| {
-                                serde_json::json!({
-                                    "question": q.get("question").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "header": q.get("header").and_then(|v| v.as_str()),
-                                    "options": q.get("options").cloned().unwrap_or_else(|| serde_json::json!([])),
-                                    "multiSelect": q.get("multiSelect").and_then(|v| v.as_bool()).unwrap_or(false),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                obj.insert("event".into(), "AskQuestion".into());
-                obj.insert("status".into(), "waiting_for_input".into());
-                obj.insert("question".into(), question_text.into());
-                obj.insert("options".into(), serde_json::json!(options));
-                obj.insert("descriptions".into(), serde_json::json!(descriptions));
-                obj.insert("questions".into(), serde_json::json!(normalized_questions));
-                if let Some(ref h) = header {
-                    obj.insert("header".into(), h.clone().into());
-                }
-                obj.insert("multi_select".into(), multi_select.into());
-                obj.insert("tool_input".into(), tool_input.clone());
-
-                if let Some(resp) = send_and_maybe_receive(&state, true) {
-                    let answer = resp["answer"].as_str().unwrap_or("");
-                    // Build updatedInput with the user's answer
-                    let mut updated_input = tool_input.clone();
-                    let answers =
-                        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(answer)
-                            .unwrap_or_else(|_| {
-                                let mut answers = serde_json::Map::new();
-                                let first_question = updated_input
-                                    .get("questions")
-                                    .and_then(|qs| qs.as_array())
-                                    .and_then(|arr| arr.first())
-                                    .and_then(|first| first.get("question"))
-                                    .and_then(|q| q.as_str())
-                                    .unwrap_or("");
-                                answers.insert(
-                                    first_question.to_string(),
-                                    serde_json::Value::String(answer.to_string()),
-                                );
-                                answers
-                            });
-                    if let Some(input) = updated_input.as_object_mut() {
-                        input.insert("answers".into(), serde_json::Value::Object(answers));
+                // OpenCode asks questions through PermissionRequest and consumes
+                // decision.updatedInput.answers from the bridge response. Claude Code
+                // questions are handled earlier in PreToolUse, where updatedInput is
+                // applied by the hook runtime.
+                if source == "opencode" || data.get("_opencode_request_id").is_some() {
+                    populate_ask_user_question_state(obj, &tool_input);
+                    if let Some(resp) = send_and_maybe_receive(&state, true) {
+                        let answer = resp["answer"].as_str().unwrap_or("");
+                        let updated_input = ask_user_question_updated_input(&tool_input, answer);
+                        let output = ask_user_question_hook_output(updated_input);
+                        println!("{}", output);
                     }
-
-                    let output = ask_user_question_hook_output(updated_input);
-                    println!("{}", output);
                 }
                 return;
             }
@@ -904,5 +971,52 @@ mod tests {
             "Overlay"
         );
         assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
+
+    #[test]
+    fn ask_user_question_state_accepts_multiple_alias_and_string_options() {
+        let tool_input = serde_json::json!({
+            "questions": [
+                {
+                    "header": "Deploy",
+                    "question": "Which targets?",
+                    "options": ["Preview", "Production"],
+                    "multiple": true
+                }
+            ]
+        });
+        let mut obj = serde_json::Map::new();
+
+        populate_ask_user_question_state(&mut obj, &tool_input);
+
+        assert_eq!(obj["question"], "[Deploy] Which targets?");
+        assert_eq!(obj["options"], serde_json::json!(["Preview", "Production"]));
+        assert_eq!(obj["multi_select"], true);
+        assert_eq!(obj["questions"][0]["multiSelect"], true);
+    }
+
+    #[test]
+    fn ask_user_question_updated_input_adds_header_answer_alias() {
+        let tool_input = serde_json::json!({
+            "questions": [
+                {
+                    "header": "Deploy",
+                    "question": "Which targets?",
+                    "options": [{ "label": "Preview" }],
+                    "multiSelect": true
+                }
+            ]
+        });
+
+        let updated_input = ask_user_question_updated_input(
+            &tool_input,
+            r#"{"Which targets?":"Preview, Production"}"#,
+        );
+
+        assert_eq!(
+            updated_input["answers"]["Which targets?"],
+            "Preview, Production"
+        );
+        assert_eq!(updated_input["answers"]["Deploy"], "Preview, Production");
     }
 }

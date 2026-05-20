@@ -84,6 +84,15 @@
   opacity: 0.85;
 }
 
+.approval-bar__btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.approval-bar__btn:disabled:hover {
+  opacity: 0.45;
+}
+
 /* Deny: dark gray */
 .approval-bar__btn--deny {
   background: var(--island-btn-bg, rgba(255, 255, 255, 0.08));
@@ -123,6 +132,17 @@
   gap: 4px;
 }
 
+.approval-bar__btn--selected {
+  background: color-mix(in srgb, var(--island-accent, #7b78ff) 28%, var(--island-btn-bg, rgba(255, 255, 255, 0.08)));
+  color: var(--island-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--island-accent, #7b78ff) 62%, transparent);
+}
+
+.approval-bar__btn--confirm {
+  background: var(--island-accent, #7b78ff);
+  color: #fff;
+}
+
 .approval-bar__shortcut {
   font-size: 10px;
   opacity: 0.5;
@@ -133,6 +153,47 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.approval-bar__question-set {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approval-bar__question-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--island-text-secondary);
+}
+
+.approval-bar__question-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid var(--island-border);
+  border-radius: 6px;
+  background: var(--island-card);
+}
+
+.approval-bar__question-text {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--island-text);
+}
+
+.approval-bar__question-mode {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #f59e0b;
+  font-size: 10px;
+  font-weight: 650;
 }
 
 /* Input row */

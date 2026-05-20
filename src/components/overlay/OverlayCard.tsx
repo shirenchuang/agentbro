@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties, MouseEvent, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { SessionContextHeader } from './SessionContextHeader'
@@ -13,15 +13,26 @@ interface OverlayCardProps {
   maxHeight?: number
   className?: string
   bodyClassName?: string
+  onCardClick?: () => void
 }
 
-export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, className, bodyClassName }: OverlayCardProps) {
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(
+    target.closest('button, a, input, select, textarea, [role="button"], [data-no-jump]'),
+  )
+}
+
+export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, className, bodyClassName, onCardClick }: OverlayCardProps) {
   const { t } = useTranslation()
-  const cardClassName = ['overlay-card', className].filter(Boolean).join(' ')
+  const cardClassName = ['overlay-card', onCardClick ? 'overlay-card--clickable' : undefined, className].filter(Boolean).join(' ')
   const bodyClass = ['overlay-card__body', bodyClassName].filter(Boolean).join(' ')
+  const handleCardClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!onCardClick || isInteractiveTarget(event.target)) return
+    onCardClick()
+  }
 
   return (
-    <div className={cardClassName} style={maxHeight ? ({ maxHeight } as CSSProperties) : undefined}>
+    <div className={cardClassName} style={maxHeight ? ({ maxHeight } as CSSProperties) : undefined} onClick={handleCardClick}>
       <div className="overlay-card__header">
         <SessionContextHeader session={session} />
         {onDismiss && (

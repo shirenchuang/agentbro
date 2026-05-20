@@ -145,6 +145,37 @@ describe('CollapsedBar idle tips', () => {
     expect(screen.queryByText('5h 88% 2m')).not.toBeInTheDocument()
   })
 
+  it('falls back to another visible session provider snapshot when the lead provider has no usage data', () => {
+    render(
+      <CollapsedBar
+        sessions={[
+          session({ id: 'claude', agentType: 'claude-code', phase: 'waiting_input' }),
+          session({ id: 'codex', agentType: 'codex', phase: 'processing' }),
+        ]}
+        panelState="hover"
+        usageSnapshots={{
+          codex: {
+            provider: 'codex',
+            providerLabel: 'Codex',
+            source: 'codex-jsonl',
+            fiveHourUsage: 41,
+            fiveHourRemaining: '2h',
+            sevenDayUsage: 18,
+            sevenDayRemaining: '6d',
+            windows: [
+              { id: 'five_hour', title: '5h', usedPercent: 41, remainingLabel: '2h' },
+              { id: 'seven_day', title: '7d', usedPercent: 18, remainingLabel: '6d' },
+            ],
+          },
+        }}
+        onCollapse={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('5h 41% 2h')).toBeInTheDocument()
+    expect(screen.getByText('7d 18% 6d')).toBeInTheDocument()
+  })
+
   it('keeps ALL ACT WAIT in the expanded header when usage quota is disabled', () => {
     useConfigStore.setState({ showUsageQuota: false })
 

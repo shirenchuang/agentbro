@@ -31,6 +31,43 @@ function getLeadSession(sessions: SessionState[]): SessionState | undefined {
   return [...sessions].sort((a, b) => computePriority(b) - computePriority(a))[0]
 }
 
+function usageProviderKey(agentType: SessionState['agentType'] | undefined): string | undefined {
+  if (!agentType) return undefined
+  if (agentType === 'claude-code') return 'claude-code'
+  return agentType
+}
+
+function rateLimitsForSession(
+  session: SessionState | undefined,
+  usageSnapshots: Record<string, RateLimitInfo> | undefined,
+): RateLimitInfo | undefined {
+  const providerKey = usageProviderKey(session?.agentType)
+  return (providerKey ? usageSnapshots?.[providerKey] : undefined) ?? session?.rateLimits
+}
+
+function selectEffectiveRateLimits(
+  sessions: SessionState[],
+  lead: SessionState | undefined,
+  rateLimits: RateLimitInfo | undefined,
+  usageSnapshots: Record<string, RateLimitInfo> | undefined,
+): RateLimitInfo | undefined {
+  const leadProviderKey = usageProviderKey(lead?.agentType)
+  const providerMatchedGlobalRateLimits = !leadProviderKey || !rateLimits?.provider || rateLimits.provider === leadProviderKey
+    ? rateLimits
+    : undefined
+
+  const leadRateLimits = rateLimitsForSession(lead, usageSnapshots)
+    ?? providerMatchedGlobalRateLimits
+  if (leadRateLimits) return leadRateLimits
+
+  const fallbackSession = [...sessions]
+    .filter((session) => usageProviderKey(session.agentType) !== leadProviderKey)
+    .sort((a, b) => computePriority(b) - computePriority(a))
+    .find((session) => rateLimitsForSession(session, usageSnapshots))
+
+  return rateLimitsForSession(fallbackSession, usageSnapshots)
+}
+
 const PHASE_LABELS: Record<SessionPhase, string> = {
   ready: 'notch.ready',
   idle: 'notch.idle',
@@ -292,13 +329,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
   const isYolo = lead?.isYoloMode
   const hasError = lead?.phase === 'error'
-  const providerKey = lead?.agentType === 'claude-code' ? 'claude-code' : lead?.agentType
-  const providerMatchedGlobalRateLimits = !providerKey || !rateLimits?.provider || rateLimits.provider === providerKey
-    ? rateLimits
-    : undefined
-  const effectiveRateLimits = (providerKey ? usageSnapshots?.[providerKey] : undefined)
-    ?? lead?.rateLimits
-    ?? providerMatchedGlobalRateLimits
+  const effectiveRateLimits = selectEffectiveRateLimits(sessions, lead, rateLimits, usageSnapshots)
   const shouldShowUsageQuota = usageQueryEnabled && showUsageQuota && Boolean(effectiveRateLimits)
   const ratePct = shouldShowUsageQuota ? effectiveRateLimits?.fiveHourUsage : undefined
   const rateColor = ratePct != null

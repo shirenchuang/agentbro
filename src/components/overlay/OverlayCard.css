@@ -13,6 +13,18 @@
   overflow: hidden;
 }
 
+.overlay-card--clickable {
+  cursor: pointer;
+}
+
+.overlay-card--clickable button,
+.overlay-card--clickable input,
+.overlay-card--clickable textarea,
+.overlay-card--clickable select,
+.overlay-card--clickable a {
+  cursor: auto;
+}
+
 .overlay-card__header {
   display: flex;
   align-items: flex-start;

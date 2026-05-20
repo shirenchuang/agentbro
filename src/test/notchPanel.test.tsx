@@ -839,6 +839,50 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
   })
 
+  it('does not collapse multi-select questions through numbered shortcuts', () => {
+    mountIsland(null, {
+      phase: 'waiting_input',
+      pendingQuestion: { question: 'Pick targets', options: ['Preview', 'Docs', 'Production'], multiSelect: true },
+    })
+
+    fireEvent.keyDown(window, { key: '2', metaKey: true })
+
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeDefined()
+  })
+
+  it('routes configured approval shortcuts to plan modes when a plan is pending', () => {
+    useConfigStore.setState({
+      shortcuts: [
+        { action: 'approve-action', label: 'Approve Action', keys: '⌘+a' },
+        { action: 'reject-action', label: 'Reject Action', keys: '⌘+d' },
+      ],
+    })
+    mountIsland(null, {
+      phase: 'waiting_approval',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix shortcut routing',
+    })
+
+    fireEvent.keyDown(window, { key: 'a', metaKey: true })
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+
+    cleanup()
+    tauriMocks.respondPlan.mockClear()
+    mountIsland(null, {
+      phase: 'waiting_approval',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix shortcut routing',
+    })
+
+    fireEvent.keyDown(window, { key: 'd', metaKey: true })
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+  })
+
   it('renders fresh blocking permission as the primary island content', () => {
     mountIsland({
       id: 'permission-s1',
@@ -1194,9 +1238,13 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('Edit')).toHaveClass('plan-approval__perm-tool')
     expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
 
+    fireEvent.click(document.querySelector('.plan-approval__content')!)
+    expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
+
     fireEvent.click(screen.getByText('Accept Edits'))
 
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.jumpToTerminal).toHaveBeenCalledTimes(1)
     expect(useSessionStore.getState().activeOverlay).toBeNull()
     expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()
     expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')

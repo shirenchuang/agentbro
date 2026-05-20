@@ -274,18 +274,30 @@ def _normalized_question_payload(tool_input):
     text = _stable_text(first.get("question")) or ""
     question_text = f"[{{header}}] {{text}}" if header else text
     options = first.get("options") if isinstance(first.get("options"), list) else []
+    def _question_multi_select(item):
+        return bool(item.get("multiSelect") or item.get("multi_select") or item.get("multiple"))
+    def _option_label(opt):
+        if isinstance(opt, str):
+            return opt
+        if isinstance(opt, dict):
+            return _stable_text(opt.get("label"))
+        return None
+    def _option_description(opt):
+        if isinstance(opt, dict) and isinstance(opt.get("description"), str):
+            return opt.get("description")
+        return ""
     return {{
         "question": question_text,
-        "options": [opt.get("label") for opt in options if isinstance(opt, dict) and opt.get("label")],
-        "descriptions": [opt.get("description") if isinstance(opt, dict) and isinstance(opt.get("description"), str) else "" for opt in options],
+        "options": [_option_label(opt) for opt in options if _option_label(opt)],
+        "descriptions": [_option_description(opt) for opt in options],
         "header": header,
-        "multi_select": bool(first.get("multiSelect")),
+        "multi_select": _question_multi_select(first),
         "questions": [
             {{
                 "question": _stable_text(item.get("question")) or "",
                 "header": _stable_text(item.get("header")),
                 "options": item.get("options") if isinstance(item.get("options"), list) else [],
-                "multiSelect": bool(item.get("multiSelect")),
+                "multiSelect": _question_multi_select(item),
             }}
             for item in questions
             if isinstance(item, dict)
@@ -396,6 +408,18 @@ def main():
                     questions = updated_input.get("questions") if isinstance(updated_input.get("questions"), list) else []
                     first = questions[0] if questions and isinstance(questions[0], dict) else {{}}
                     answers = {{_stable_text(first.get("question")) or "": answer}}
+                questions = updated_input.get("questions") if isinstance(updated_input.get("questions"), list) else []
+                for question in questions:
+                    if not isinstance(question, dict):
+                        continue
+                    header = _stable_text(question.get("header"))
+                    text = _stable_text(question.get("question"))
+                    if not header or not text:
+                        continue
+                    if text in answers and header not in answers:
+                        answers[header] = answers[text]
+                    elif header in answers and text not in answers:
+                        answers[text] = answers[header]
                 updated_input["answers"] = answers
                 _print_json({{"hookSpecificOutput": {{"hookEventName": "PermissionRequest", "permissionDecision": "allow", "decision": {{"behavior": "allow", "updatedInput": updated_input}}, "updatedInput": updated_input}}}})
             return

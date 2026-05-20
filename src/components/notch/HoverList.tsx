@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { DiffContent, OverlayItem, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
 import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
@@ -9,13 +11,14 @@ import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
-import { respondAutoApprove, respondPermission, respondPlan, respondQuestion } from '../../services/tauriApi'
+import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
+import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -26,6 +29,7 @@ interface HoverListProps {
   onJumpToTerminal?: (sessionId: string) => void
   onSilenceDirectory?: (session: SessionState) => void
   onSilencePrompt?: (session: SessionState) => void
+  onInputDraftStateChange?: (hasDraft: boolean) => void
   focusFilteredEmpty?: boolean
 }
 
@@ -707,10 +711,30 @@ function normalizeInlineQuestionOption(option: InlineQuestionOption, description
   }
 }
 
-function InlineQuestionPreview({ session }: { session: SessionState }) {
+function parseInlineQuestionTag(question: string): { tag: string | null; text: string } {
+  const match = question.match(/^\[([^\]]+)\]\s*(.*)/s)
+  if (match) return { tag: match[1], text: match[2] }
+  return { tag: null, text: question }
+}
+
+function InlineQuestionPreview({ session, onDraftStateChange }: { session: SessionState; onDraftStateChange?: (hasDraft: boolean) => void }) {
+  const { t } = useTranslation()
   const q = session.pendingQuestion
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
-  const [multiAnswers, setMultiAnswers] = useState<Record<string, string>>({})
+  const [nestedSelections, setNestedSelections] = useState<Record<number, number | number[]>>({})
+  const [nestedCustomAnswers, setNestedCustomAnswers] = useState<Record<number, string>>({})
+  const [showCustomInput, setShowCustomInput] = useState(false)
+  const [customText, setCustomText] = useState('')
+  const [nestedInputStates, setNestedInputStates] = useState<Record<number, boolean>>({})
+  const [nestedInputTexts, setNestedInputTexts] = useState<Record<number, string>>({})
+  const [composing, setComposing] = useState(false)
+
+  const anyInputActive = showCustomInput || Object.values(nestedInputStates).some(Boolean)
+  useEffect(() => {
+    onDraftStateChange?.(anyInputActive)
+  }, [anyInputActive, onDraftStateChange])
+  useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
+
   if (!q) return null
 
   const submitAnswer = (answer: string) => {
@@ -720,51 +744,157 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
   }
 
   const nestedQuestions = q.questions || []
-  const allNestedAnswered = nestedQuestions.length > 0 && nestedQuestions.every((item) => multiAnswers[item.question])
+
+  const getNestedAnswer = (qi: number): string | undefined => {
+    const item = nestedQuestions[qi]
+    if (!item) return undefined
+    const custom = nestedCustomAnswers[qi] || (nestedInputTexts[qi] ?? '').trim() || null
+    if (item.multiSelect) {
+      const chipLabels = Array.isArray(nestedSelections[qi])
+        ? (nestedSelections[qi] as number[]).map((idx) => item.options[idx].label)
+        : []
+      const parts = [...chipLabels]
+      if (custom) parts.push(custom)
+      return parts.length > 0 ? parts.join(', ') : undefined
+    }
+    if (custom) return custom
+    const sel = nestedSelections[qi]
+    if (sel === undefined) return undefined
+    return item.options[sel as number]?.label
+  }
+
+  const allNestedAnswered = nestedQuestions.length > 0 && nestedQuestions.every((_, i) => getNestedAnswer(i) !== undefined)
 
   if (nestedQuestions.length > 1) {
+    const handleNestedSubmit = () => {
+      if (!allNestedAnswered) return
+      const answers: Record<string, string> = {}
+      nestedQuestions.forEach((item, i) => { answers[item.question] = getNestedAnswer(i)! })
+      submitAnswer(JSON.stringify(answers))
+    }
+
     return (
       <div className="hover-list__inline-question" onClick={(e) => e.stopPropagation()}>
         <div className="hover-list__inline-question-header">
-          <span>💬</span>
+          <svg className="hover-list__inline-question-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z" />
+          </svg>
           <span className="hover-list__inline-question-title">Claude 的提问</span>
           <span className="hover-list__inline-question-count">({nestedQuestions.length})</span>
         </div>
         <div className="hover-list__inline-question-multi">
-          {nestedQuestions.map((item, questionIndex) => (
-            <div key={`${questionIndex}-${item.question}`} className="hover-list__inline-question-group">
-              <p className="hover-list__inline-question-text">
-                <span className="hover-list__inline-question-num">{questionIndex + 1}</span>
-                {item.question.length > 100 ? `${item.question.slice(0, 100)}…` : item.question}
-              </p>
-              <div className="hover-list__inline-question-chips">
-                {item.options.map((opt) => (
-                  <button
-                    key={opt.label}
-                    type="button"
-                    className={`hover-list__inline-chip${(item.multiSelect ? multiAnswers[item.question]?.split(', ').includes(opt.label) : multiAnswers[item.question] === opt.label) ? ' hover-list__inline-chip--selected' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setMultiAnswers((prev) => {
-                        if (!item.multiSelect) return { ...prev, [item.question]: opt.label }
-                        const current = prev[item.question]?.split(', ').filter(Boolean) ?? []
-                        const next = current.includes(opt.label)
-                          ? current.filter((label) => label !== opt.label)
-                          : [...current, opt.label]
-                        const updated = { ...prev }
-                        if (next.length > 0) updated[item.question] = next.join(', ')
-                        else delete updated[item.question]
-                        return updated
-                      })
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+          {nestedQuestions.map((item, qi) => {
+            const parsed = parseInlineQuestionTag(item.question)
+            const tag = item.header ?? parsed.tag
+            const text = parsed.text
+            const displayText = text.length > 100 ? `${text.slice(0, 100)}…` : text
+            const selForQ = nestedSelections[qi]
+            const selectedSet = new Set(Array.isArray(selForQ) ? selForQ : selForQ !== undefined ? [selForQ] : [])
+            return (
+              <div key={`${qi}-${item.question}`} className="hover-list__inline-question-group">
+                <p className="hover-list__inline-question-text">
+                  <span className="hover-list__inline-question-num">{qi + 1}</span>
+                  {tag && <span className="hover-list__inline-question-tag">[{tag}]</span>}
+                  {displayText}
+                </p>
+                <div className="hover-list__inline-question-chips">
+                  {item.options.map((opt, oi) => {
+                    const isSelected = selectedSet.has(oi) && (item.multiSelect || !nestedCustomAnswers[qi])
+                    return (
+                      <button
+                        key={oi}
+                        type="button"
+                        className={`hover-list__inline-chip${isSelected ? ' hover-list__inline-chip--selected' : ''}${item.multiSelect ? ' hover-list__inline-chip--checkbox' : ''}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setNestedSelections((prev) => {
+                            if (!item.multiSelect) {
+                              if (prev[qi] === oi) {
+                                const clone = { ...prev }
+                                delete clone[qi]
+                                return clone
+                              }
+                              return { ...prev, [qi]: oi }
+                            }
+                            const current = Array.isArray(prev[qi]) ? [...prev[qi] as number[]] : []
+                            const next = current.includes(oi) ? current.filter((idx) => idx !== oi) : [...current, oi]
+                            if (next.length === 0) {
+                              const clone = { ...prev }
+                              delete clone[qi]
+                              return clone
+                            }
+                            return { ...prev, [qi]: next }
+                          })
+                          if (!item.multiSelect) {
+                            setNestedCustomAnswers((prev) => { const n = { ...prev }; delete n[qi]; return n })
+                          }
+                        }}
+                      >
+                        {item.multiSelect && (
+                          <span className={`hover-list__inline-chip-check${isSelected ? ' hover-list__inline-chip-check--checked' : ''}`}>
+                            {isSelected && <svg width="9" height="9" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </span>
+                        )}
+                        {opt.label}
+                      </button>
+                    )
+                  })}
+                  {nestedCustomAnswers[qi] && (
+                    <span className={`hover-list__inline-chip hover-list__inline-chip--selected${item.multiSelect ? ' hover-list__inline-chip--checkbox' : ''}`}>
+                      {item.multiSelect && <span className="hover-list__inline-chip-check hover-list__inline-chip-check--checked"><svg width="9" height="9" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg></span>}
+                      {nestedCustomAnswers[qi]}
+                    </span>
+                  )}
+                  {nestedInputStates[qi] ? (
+                    <input
+                      autoFocus
+                      type="text"
+                      className="hover-list__inline-chip-input"
+                      value={nestedInputTexts[qi] ?? ''}
+                      onChange={(e) => setNestedInputTexts((prev) => ({ ...prev, [qi]: e.target.value }))}
+                      placeholder={t('notch.typePlaceholder', { defaultValue: 'Type your response...' })}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      onCompositionStart={() => setComposing(true)}
+                      onCompositionEnd={() => setComposing(false)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation()
+                        if (e.nativeEvent.isComposing || composing) return
+                        if (e.key === 'Enter') {
+                          const val = (nestedInputTexts[qi] ?? '').trim()
+                          if (val) {
+                            setNestedCustomAnswers((prev) => ({ ...prev, [qi]: val }))
+                            if (!item.multiSelect) {
+                              setNestedSelections((prev) => { const n = { ...prev }; delete n[qi]; return n })
+                            }
+                            setNestedInputStates((prev) => ({ ...prev, [qi]: false }))
+                            setNestedInputTexts((prev) => ({ ...prev, [qi]: '' }))
+                          }
+                        } else if (e.key === 'Escape') {
+                          setNestedInputStates((prev) => ({ ...prev, [qi]: false }))
+                          setNestedInputTexts((prev) => ({ ...prev, [qi]: '' }))
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="hover-list__inline-chip hover-list__inline-chip--other"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setNotchFocusable(true)
+                        setNestedInputStates((prev) => ({ ...prev, [qi]: true }))
+                      }}
+                    >
+                      {t('notch.typeHint', { defaultValue: 'Other' })}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
         <button
           type="button"
@@ -773,11 +903,10 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
           onMouseDown={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            if (!allNestedAnswered) return
-            submitAnswer(JSON.stringify(multiAnswers))
+            handleNestedSubmit()
           }}
         >
-          提交所有回答
+          {'✓'} 提交所有回答
         </button>
       </div>
     )
@@ -804,15 +933,22 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
   const inlineOptions = (q.options || [])
     .slice(0, 4)
     .map((opt, i) => normalizeInlineQuestionOption(opt, q.descriptions?.[i]))
+  const parsedQuestion = parseInlineQuestionTag(q.question)
+  const questionTag = q.header ?? parsedQuestion.tag
+  const questionText = parsedQuestion.text
+  const displayQuestion = questionText.length > 120 ? `${questionText.slice(0, 120)}…` : questionText
 
   return (
     <div className="hover-list__inline-question" onClick={(e) => e.stopPropagation()}>
       <div className="hover-list__inline-question-header">
-        <span>💬</span>
+        <svg className="hover-list__inline-question-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10z" />
+        </svg>
         <span className="hover-list__inline-question-title">Claude 的提问</span>
       </div>
       <p className="hover-list__inline-question-text">
-        {q.question.length > 120 ? `${q.question.slice(0, 120)}…` : q.question}
+        {questionTag && <span className="hover-list__inline-question-tag">[{questionTag}]</span>}
+        {displayQuestion}
       </p>
       {inlineOptions.length > 0 && (
         <div className="hover-list__inline-question-options">
@@ -839,6 +975,61 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
               </span>
             </button>
           ))}
+          {showCustomInput ? (
+            <form
+              className="hover-list__inline-question-opt hover-list__inline-question-opt--custom-active"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (composing) return
+                const val = customText.trim()
+                if (val) {
+                  submitAnswer(val)
+                  setShowCustomInput(false)
+                  setCustomText('')
+                  setNotchFocusable(false)
+                }
+              }}
+            >
+              <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
+              <input
+                autoFocus
+                type="text"
+                className="hover-list__inline-question-input"
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value)}
+                placeholder={t('notch.typePlaceholder', { defaultValue: 'Type your response...' })}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onCompositionStart={() => setComposing(true)}
+                onCompositionEnd={() => setComposing(false)}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.nativeEvent.isComposing || composing) return
+                  if (e.key === 'Escape') {
+                    setShowCustomInput(false)
+                    setCustomText('')
+                    setNotchFocusable(false)
+                  }
+                }}
+              />
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="hover-list__inline-question-opt hover-list__inline-question-opt--other"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setNotchFocusable(true)
+                setShowCustomInput(true)
+              }}
+            >
+              <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
+              <span className="hover-list__inline-question-opt-body">
+                <span className="hover-list__inline-question-opt-label">{t('notch.typeHint', { defaultValue: 'Other' })}</span>
+              </span>
+            </button>
+          )}
           {q.multiSelect && (
             <button
               type="button"
@@ -859,18 +1050,12 @@ function InlineQuestionPreview({ session }: { session: SessionState }) {
   )
 }
 
-/* ── Inline Plan Preview ── */
-function parsePlanPermission(permission: string): { tool: string; prompt?: string } {
-  const match = permission.match(/^([^:：]+)[:：]\s*(.*)$/)
-  if (!match) return { tool: permission }
-  return { tool: match[1].trim(), prompt: match[2].trim() }
-}
-
 function InlinePlanPreview({ session }: { session: SessionState }) {
   const { t } = useTranslation()
   const [feedback, setFeedback] = useState('')
   if (!session.planTitle && !session.planContent) return null
   const permissions = session.planPermissions || []
+  const trimmedFeedback = feedback.trim()
 
   const submitPlan = (mode: string, message?: string) => {
     respondPlan(session.id, mode, message)
@@ -878,17 +1063,30 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
       .catch((error) => console.warn('[notch] inline respondPlan:', error))
   }
 
+  const submitFeedback = () => {
+    if (!trimmedFeedback) return
+    submitPlan('feedback', trimmedFeedback)
+    setFeedback('')
+  }
+
   return (
-    <div className="hover-list__inline-plan" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="hover-list__inline-plan"
+      data-no-open
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="hover-list__inline-plan-header">
         <div className="hover-list__inline-plan-title">
           {session.planTitle || 'Plan'}
         </div>
-        <span className="hover-list__inline-plan-badge">Plan</span>
+        <span className="hover-list__inline-plan-badge">{t('notch.plan', { defaultValue: 'Plan' })}</span>
       </div>
       {session.planContent && (
         <div className="hover-list__inline-plan-content">
-          {truncateText(stripMarkdown(session.planContent), 520)}
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {formatPlanMarkdown(session.planContent)}
+          </ReactMarkdown>
         </div>
       )}
       {permissions.length > 0 && (
@@ -910,57 +1108,70 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
       <div className="hover-list__inline-plan-feedback">
         <input
           className="hover-list__inline-plan-input"
-          placeholder="Tell Claude what to change..."
+          data-has-draft={trimmedFeedback ? 'true' : 'false'}
+          placeholder={t('notch.planFeedback', { defaultValue: 'Tell Claude what to change...' })}
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
           onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onFocus={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && feedback.trim()) {
-              submitPlan('feedback', feedback.trim())
-              setFeedback('')
+            e.stopPropagation()
+            if (e.key === 'Enter' && trimmedFeedback) {
+              submitFeedback()
             }
           }}
         />
+        <button
+          type="button"
+          className="hover-list__inline-plan-send"
+          disabled={!trimmedFeedback}
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            submitFeedback()
+          }}
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+        >
+          {t('notch.sendFeedback', { defaultValue: 'Send Feedback' })}
+        </button>
       </div>
       <div className="hover-list__inline-plan-actions">
         <button
           type="button"
-          className="hover-list__inline-btn hover-list__inline-btn--deny"
+          className="hover-list__inline-plan-btn hover-list__inline-plan-btn--feedback"
           onMouseDown={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            const trimmed = feedback.trim()
-            if (trimmed) {
-              submitPlan('feedback', trimmed)
-              setFeedback('')
-            } else {
-              submitPlan('manual')
-            }
+            submitPlan('manual')
           }}
         >
-          {feedback.trim() ? 'Send Feedback' : 'Manual Review'}
+          {t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>
         <button
           type="button"
-          className="hover-list__inline-btn hover-list__inline-btn--allow"
+          className="hover-list__inline-plan-btn hover-list__inline-plan-btn--accept"
           onMouseDown={(e) => {
             e.preventDefault()
             e.stopPropagation()
             submitPlan('acceptEdits')
           }}
         >
-          Accept Edits
+          {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
         </button>
         <button
           type="button"
-          className="hover-list__inline-btn hover-list__inline-btn--always"
+          className="hover-list__inline-plan-btn hover-list__inline-plan-btn--auto"
           onMouseDown={(e) => {
             e.preventDefault()
             e.stopPropagation()
             submitPlan('bypassPermissions')
           }}
         >
-          Auto
+          {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
         </button>
       </div>
     </div>
@@ -975,6 +1186,7 @@ function SessionCard({
   onJumpToTerminal,
   onSilenceDirectory,
   onSilencePrompt,
+  onInputDraftStateChange,
   animDuration,
   animDelay,
   selected,
@@ -986,6 +1198,7 @@ function SessionCard({
   onJumpToTerminal?: (id: string) => void
   onSilenceDirectory?: (session: SessionState) => void
   onSilencePrompt?: (session: SessionState) => void
+  onInputDraftStateChange?: (hasDraft: boolean) => void
   animDuration: number
   animDelay: number
   selected: boolean
@@ -1297,7 +1510,7 @@ function SessionCard({
         {inlinePermission && <InlinePermissionPreview session={session} permission={inlinePermission} />}
 
         {/* Row 8: inline question */}
-        {showInlineQuestion && <InlineQuestionPreview session={session} />}
+        {showInlineQuestion && <InlineQuestionPreview session={session} onDraftStateChange={onInputDraftStateChange} />}
 
         {/* Row 9: inline plan */}
         {showInlinePlan && <InlinePlanPreview session={session} />}
@@ -1306,7 +1519,7 @@ function SessionCard({
   )
 }
 
-export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onSilenceDirectory, onSilencePrompt, focusFilteredEmpty = false }: HoverListProps) {
+export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onSilenceDirectory, onSilencePrompt, onInputDraftStateChange, focusFilteredEmpty = false }: HoverListProps) {
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
@@ -1421,6 +1634,7 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
             onJumpToTerminal={onJumpToTerminal}
             onSilenceDirectory={onSilenceDirectory}
             onSilencePrompt={onSilencePrompt}
+            onInputDraftStateChange={onInputDraftStateChange}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}
             selected={index === selectedIndex}

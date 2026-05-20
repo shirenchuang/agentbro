@@ -54,6 +54,14 @@ vi.mock('react-i18next', () => ({
         'notch.expandSubagents': '展开',
         'notch.collapseSubagents': '收起',
         'notch.typeMessage': '输入消息...',
+        'notch.typeReply': 'Type reply...',
+        'notch.planFeedback': 'Tell Claude what to change...',
+        'notch.manualReview': 'Manual Review',
+        'notch.acceptEdits': 'Accept Edits',
+        'notch.autoApprovePerms': 'Auto',
+        'notch.questionsCount': 'questions',
+        'notch.multiSelect': 'Multi-select',
+        'notch.submitAll': 'Submit All',
       }
       if (translations[key]) return translations[key]
       if (typeof fallback === 'string') return fallback
@@ -188,5 +196,99 @@ describe('ChatView subagent history', () => {
       expect(screen.getAllByText('@calc-a').length).toBeGreaterThan(0)
     })
     expect(screen.getAllByText('Calculate 1+1 (Agent A)').length).toBeGreaterThan(0)
+  })
+
+  it('shows plan-specific detail actions and routes them to plan modes', () => {
+    const current = session({
+      phase: 'waiting_approval',
+      planTitle: 'Implementation plan',
+      planContent: '1. Fix detail approval',
+    })
+    useSessionStore.setState({
+      sessions: { [current.id]: current },
+      sessionList: [current],
+      activeSessionId: current.id,
+    })
+
+    render(<ChatView onBack={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'Manual Review' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept Edits' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Auto' })).toBeInTheDocument()
+    expect(screen.queryByText('notch.allowOnce')).not.toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
+
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+  })
+
+  it('confirms detail multi-select questions instead of submitting the first clicked option', () => {
+    const current = session({
+      phase: 'waiting_input',
+      pendingQuestion: {
+        question: 'Pick targets',
+        options: ['Preview', 'Docs', 'Production'],
+        multiSelect: true,
+      },
+    })
+    useSessionStore.setState({
+      sessions: { [current.id]: current },
+      sessionList: [current],
+      activeSessionId: current.id,
+    })
+
+    render(<ChatView onBack={vi.fn()} />)
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: /Preview/ }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: /Production/ }))
+    expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Confirm (2)' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Production')
+  })
+
+  it('submits detail multi-question answers as AskUserQuestion JSON', () => {
+    const current = session({
+      phase: 'waiting_input',
+      pendingQuestion: {
+        question: '[Deploy] Choose options',
+        options: ['Preview', 'Ship'],
+        questions: [
+          {
+            header: 'Deploy',
+            question: 'Which target?',
+            options: [{ label: 'Preview' }, { label: 'Ship' }],
+            multiSelect: true,
+          },
+          {
+            question: 'Notify channel?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      },
+    })
+    useSessionStore.setState({
+      sessions: { [current.id]: current },
+      sessionList: [current],
+      activeSessionId: current.id,
+    })
+
+    render(<ChatView onBack={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'Submit All' })).toBeDisabled()
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Preview' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Ship' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'No' }))
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Submit All' }))
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledWith(
+      's1',
+      JSON.stringify({
+        'Which target?': 'Preview, Ship',
+        'Notify channel?': 'No',
+      }),
+    )
   })
 })
