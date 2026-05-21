@@ -15,7 +15,13 @@ pub struct ProviderPreset {
 }
 
 fn apps_all() -> Vec<String> {
-    vec!["claude".into(), "codex".into(), "gemini".into(), "opencode".into(), "hermes".into()]
+    vec![
+        "claude".into(),
+        "codex".into(),
+        "gemini".into(),
+        "opencode".into(),
+        "hermes".into(),
+    ]
 }
 
 fn apps_claude() -> Vec<String> {
@@ -35,7 +41,12 @@ fn apps_claude_gemini() -> Vec<String> {
 }
 
 fn apps_claude_opencode_gemini_hermes() -> Vec<String> {
-    vec!["claude".into(), "opencode".into(), "gemini".into(), "hermes".into()]
+    vec![
+        "claude".into(),
+        "opencode".into(),
+        "gemini".into(),
+        "hermes".into(),
+    ]
 }
 
 pub fn list_presets() -> Vec<ProviderPreset> {

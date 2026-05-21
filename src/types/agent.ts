@@ -68,6 +68,7 @@ export interface DiffContent {
 }
 
 export interface PermissionRequest {
+  toolUseId?: string
   toolName: string
   toolInput: string
   diff?: DiffContent
@@ -80,7 +81,11 @@ export interface AskQuestion {
   descriptions?: string[]
   header?: string
   multiSelect?: boolean
+  toolUseId?: string
+  source?: string
+  responseMode?: string
   questions?: Array<{
+    id?: string | null
     question: string
     header?: string | null
     options: Array<{ label: string; description?: string | null }>

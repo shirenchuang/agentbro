@@ -753,7 +753,11 @@ fn install_at_labeled(
             update_nested_json_hooks(profile, path, &command)?;
         }
         InstallationKind::JsonHooks { nested: false, .. } => {
-            let InstallationKind::JsonHooks { entry, nested: false } = profile.installation_kind else {
+            let InstallationKind::JsonHooks {
+                entry,
+                nested: false,
+            } = profile.installation_kind
+            else {
                 unreachable!();
             };
             let mut settings = hook_manager::read_json_config(path);
@@ -763,7 +767,9 @@ fn install_at_labeled(
             strip_json_hooks_for_profile(&mut settings, profile);
             let hooks = settings["hooks"].as_object_mut().expect("hooks is object");
             for event in effective_events(profile) {
-                let value = hooks.entry(event.name.to_string()).or_insert_with(|| serde_json::json!([]));
+                let value = hooks
+                    .entry(event.name.to_string())
+                    .or_insert_with(|| serde_json::json!([]));
                 if !value.is_array() {
                     *value = serde_json::json!([]);
                 }
@@ -1250,7 +1256,10 @@ pub fn managed_bridge_command_labeled(
     args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
     let mut parts = hook_manager::bridge_command_parts(&bridge, &args);
     if let Some(label) = engine_label {
-        parts.insert(1, format!("AGENTBRO_ENGINE_LABEL={}", hook_manager::shell_quote(label)));
+        parts.insert(
+            1,
+            format!("AGENTBRO_ENGINE_LABEL={}", hook_manager::shell_quote(label)),
+        );
     }
     if let Some(root) = config_root {
         parts.insert(
@@ -1671,7 +1680,8 @@ fn write_plugin_file_labeled(
     let args_json = bridge_args_json(profile)?;
     let env_json = bridge_env_json_labeled(engine_label, config_root)?;
     let enabled_events_json = enabled_event_names_json(profile)?;
-    let source = opencode_plugin_source_from_parts(&marker, &args_json, &env_json, &enabled_events_json)?;
+    let source =
+        opencode_plugin_source_from_parts(&marker, &args_json, &env_json, &enabled_events_json)?;
     std::fs::write(path, source)?;
     Ok(())
 }

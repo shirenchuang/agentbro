@@ -765,10 +765,12 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(allowButton)
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false)
-    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+    await waitFor(() => {
+      expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+    })
   })
 
-  it('routes permission overlay actions to permission responses and clears the pending request', () => {
+  it('routes permission overlay actions to permission responses and clears the pending request', async () => {
     mountIsland({
       id: 'permission-s1',
       sessionId: 's1',
@@ -785,7 +787,9 @@ describe('NotchPanel island shell', () => {
     fireEvent.click(allowButton)
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
-    expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+    await waitFor(() => {
+      expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
+    })
   })
 
   it('ignores legacy single-letter permission shortcuts', () => {

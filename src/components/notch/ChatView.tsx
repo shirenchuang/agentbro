@@ -21,6 +21,12 @@ interface MessageGroup {
   messages: ChatMessage[]
 }
 
+function clearPermissionAfter(sessionId: string, work: Promise<void>) {
+  work
+    .then(() => useSessionStore.getState().clearPermission(sessionId))
+    .catch((error) => console.warn('[chat] permission response failed:', error))
+}
+
 function isCollapsible(msg: ChatMessage): boolean {
   return msg.role === 'thinking' || msg.role === 'tool_use'
 }
@@ -146,8 +152,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    respondPermission(activeSession.id, true, false)
-    useSessionStore.getState().clearPermission(activeSession.id)
+    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, false))
   }
 
   const handleAllowAlways = () => {
@@ -157,8 +162,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    respondPermission(activeSession.id, true, true)
-    useSessionStore.getState().clearPermission(activeSession.id)
+    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, true))
   }
 
   const handleDeny = () => {
@@ -168,8 +172,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    respondPermission(activeSession.id, false)
-    useSessionStore.getState().clearPermission(activeSession.id)
+    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, false))
   }
 
   const handleAutoApprove = () => {

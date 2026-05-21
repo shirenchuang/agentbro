@@ -16,7 +16,7 @@ use crate::hooks::diagnostics::DiagnosticRingBuffer;
 use crate::hooks::file_watcher::ConversationWatcher;
 use crate::hooks::server::HookServer;
 use crate::hooks::session_store::{
-    RateLimitInfo, SessionState, SessionStore, SubagentInfo, UsageRateWindow,
+    PendingQuestion, RateLimitInfo, SessionState, SessionStore, SubagentInfo, UsageRateWindow,
 };
 use crate::license::{LicenseManager, LicenseStatus};
 use crate::network_monitor::NetworkMonitor;
@@ -24,6 +24,7 @@ use crate::platform::display_controller::DisplayController;
 use crate::remote::RemoteManager;
 use crate::sound::SoundEngine;
 use crate::switch::db::SwitchDatabase;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
@@ -1148,11 +1149,216 @@ pub async fn respond_question(
         answer
     );
 
+    if let Some(session) = state.session_store.get_session(&session_id) {
+        if let Some(question) = session.pending_question.clone() {
+            if is_codex_rollout_question(&question) {
+                let call_id = question
+                    .tool_use_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Codex question is missing call_id".to_string())?;
+                let answers = codex_answers_for_pending_question(&question, &answer);
+                submit_codex_request_user_input_output(&session_id, call_id, answers).await?;
+                state.session_store.set_pending_question(&session_id, None);
+                state.session_store.update_phase(
+                    &session_id,
+                    crate::hooks::session_store::SessionPhase::Processing,
+                );
+                return Ok(());
+            }
+        }
+    }
+
     state
         .hook_server
         .respond_question(&session_id, answer)
         .await
         .map_err(|e| e.to_string())
+}
+
+fn is_codex_rollout_question(question: &PendingQuestion) -> bool {
+    question.source.as_deref() == Some("codex_rollout_request_user_input")
+        && question.response_mode.as_deref() == Some("external_only")
+}
+
+fn codex_answers_for_pending_question(
+    question: &PendingQuestion,
+    answer: &str,
+) -> BTreeMap<String, Vec<String>> {
+    let mut answers = BTreeMap::new();
+
+    if let Ok(serde_json::Value::Object(object)) = serde_json::from_str::<serde_json::Value>(answer)
+    {
+        for item in &question.questions {
+            let answer_id = codex_question_answer_id(item.id.as_deref(), &item.question);
+            let raw = object
+                .get(&item.question)
+                .or_else(|| object.get(answer_id.as_str()));
+            if let Some(raw) = raw {
+                let values = codex_answer_values_from_json(raw, item.multi_select);
+                if !values.is_empty() {
+                    answers.insert(answer_id, values);
+                }
+            }
+        }
+        if !answers.is_empty() {
+            return answers;
+        }
+    }
+
+    let answer_id = question
+        .questions
+        .first()
+        .map(|item| codex_question_answer_id(item.id.as_deref(), &item.question))
+        .unwrap_or_else(|| question.question.clone());
+    let multi_select = question
+        .questions
+        .first()
+        .map(|item| item.multi_select)
+        .unwrap_or(question.multi_select);
+    answers.insert(
+        answer_id,
+        codex_answer_values_from_text(answer, multi_select),
+    );
+    answers
+}
+
+fn codex_question_answer_id(id: Option<&str>, question: &str) -> String {
+    id.filter(|value| !value.trim().is_empty())
+        .unwrap_or(question)
+        .to_string()
+}
+
+fn codex_answer_values_from_json(value: &serde_json::Value, multi_select: bool) -> Vec<String> {
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        serde_json::Value::String(value) => codex_answer_values_from_text(value, multi_select),
+        other => codex_answer_values_from_text(&other.to_string(), multi_select),
+    }
+}
+
+fn codex_answer_values_from_text(value: &str, multi_select: bool) -> Vec<String> {
+    if multi_select {
+        value
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    } else {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            Vec::new()
+        } else {
+            vec![trimmed.to_string()]
+        }
+    }
+}
+
+async fn submit_codex_request_user_input_output(
+    thread_id: &str,
+    call_id: &str,
+    answers: BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let binary = resolve_codex_binary()
+        .ok_or_else(|| "Could not find codex CLI for app-server".to_string())?;
+    let output = codex_request_user_input_output(answers);
+
+    let mut child = TokioCommand::new(binary)
+        .arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start codex app-server: {}", err))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open codex app-server stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to open codex app-server stdout".to_string())?;
+    let mut lines = TokioBufReader::new(stdout).lines();
+
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "AgentBro",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }
+            }),
+        )
+        .await
+        .ok_or_else(|| "Failed to initialize codex app-server".to_string())?;
+        read_json_rpc_response(&mut lines, 1)
+            .await
+            .ok_or_else(|| "Codex app-server initialize failed".to_string())?;
+
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "method": "initialized",
+                "params": {}
+            }),
+        )
+        .await
+        .ok_or_else(|| "Failed to send codex app-server initialized".to_string())?;
+
+        write_json_rpc(
+            &mut stdin,
+            serde_json::json!({
+                "id": 2,
+                "method": "thread/inject_items",
+                "params": {
+                    "threadId": thread_id,
+                    "items": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output
+                        }
+                    ]
+                }
+            }),
+        )
+        .await
+        .ok_or_else(|| "Failed to submit Codex question answer".to_string())?;
+        read_json_rpc_response(&mut lines, 2)
+            .await
+            .ok_or_else(|| "Codex app-server rejected question answer".to_string())?;
+
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|_| "Timed out submitting Codex question answer".to_string())
+    .and_then(|inner| inner);
+
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    result
+}
+
+fn codex_request_user_input_output(answers: BTreeMap<String, Vec<String>>) -> String {
+    let formatted_answers = answers
+        .into_iter()
+        .map(|(key, values)| (key, serde_json::json!({ "answers": values })))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({ "answers": formatted_answers }).to_string()
 }
 
 // ── Plan Response Command ────────────────────────────────────────
@@ -2618,10 +2824,13 @@ pub async fn verify_engine_path(path: String) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_fallback_to_terminal_app, codex_exec_resume_args, fallback_terminal_app_name,
-        is_codex_desktop_session, parse_subagent_chat_history_for_session, resolve_session_tty,
+        can_fallback_to_terminal_app, codex_answers_for_pending_question, codex_exec_resume_args,
+        codex_request_user_input_output, fallback_terminal_app_name, is_codex_desktop_session,
+        parse_subagent_chat_history_for_session, resolve_session_tty,
     };
-    use crate::hooks::session_store::{SessionState, SubagentInfo};
+    use crate::hooks::session_store::{
+        PendingQuestion, QuestionItem, QuestionOption, SessionState, SubagentInfo,
+    };
     use std::fs;
 
     fn session(agent_type: &str, terminal: &str, tty: Option<&str>) -> SessionState {
@@ -2692,6 +2901,83 @@ mod tests {
         assert_eq!(fallback_terminal_app_name("Ghostty"), "Ghostty");
         assert_eq!(fallback_terminal_app_name("AntCC"), "Terminal");
         assert_eq!(fallback_terminal_app_name(""), "Terminal");
+    }
+
+    #[test]
+    fn codex_question_answer_payload_uses_question_ids() {
+        let pending = PendingQuestion {
+            question: "Pick one".to_string(),
+            options: vec!["Preview".to_string(), "Ship".to_string()],
+            descriptions: Vec::new(),
+            header: None,
+            multi_select: false,
+            questions: vec![QuestionItem {
+                id: Some("target".to_string()),
+                question: "Pick one".to_string(),
+                header: None,
+                options: vec![
+                    QuestionOption {
+                        label: "Preview".to_string(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        label: "Ship".to_string(),
+                        description: None,
+                    },
+                ],
+                multi_select: false,
+            }],
+            tool_use_id: Some("call_question_1".to_string()),
+            source: Some("codex_rollout_request_user_input".to_string()),
+            response_mode: Some("external_only".to_string()),
+        };
+
+        let answers = codex_answers_for_pending_question(&pending, "Ship");
+        assert_eq!(answers.get("target"), Some(&vec!["Ship".to_string()]));
+        assert_eq!(
+            codex_request_user_input_output(answers),
+            r#"{"answers":{"target":{"answers":["Ship"]}}}"#
+        );
+    }
+
+    #[test]
+    fn codex_question_answer_payload_maps_nested_json_answers() {
+        let pending = PendingQuestion {
+            question: "Questions".to_string(),
+            options: Vec::new(),
+            descriptions: Vec::new(),
+            header: None,
+            multi_select: false,
+            questions: vec![
+                QuestionItem {
+                    id: Some("target".to_string()),
+                    question: "Which target?".to_string(),
+                    header: None,
+                    options: Vec::new(),
+                    multi_select: true,
+                },
+                QuestionItem {
+                    id: Some("notify".to_string()),
+                    question: "Notify?".to_string(),
+                    header: None,
+                    options: Vec::new(),
+                    multi_select: false,
+                },
+            ],
+            tool_use_id: Some("call_question_1".to_string()),
+            source: Some("codex_rollout_request_user_input".to_string()),
+            response_mode: Some("external_only".to_string()),
+        };
+
+        let answers = codex_answers_for_pending_question(
+            &pending,
+            r#"{"Which target?":"Preview, Ship","Notify?":"No"}"#,
+        );
+        assert_eq!(
+            answers.get("target"),
+            Some(&vec!["Preview".to_string(), "Ship".to_string()])
+        );
+        assert_eq!(answers.get("notify"), Some(&vec!["No".to_string()]));
     }
 
     #[test]

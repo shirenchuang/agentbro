@@ -59,6 +59,30 @@ describe('settings island menu', () => {
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
   })
 
+  it('keeps the island page active when collapsing the capability sidebar', async () => {
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.island.title'))
+
+    await waitFor(() => expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument()
+  })
+
+  it('uses the capability brand area to return to general settings', async () => {
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.island.title'))
+
+    await waitFor(() => expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
+
+    await waitFor(() => expect(screen.getByText('settings.language')).toBeInTheDocument())
+    expect(screen.queryByText('settings.tipsEnabled')).not.toBeInTheDocument()
+  })
+
   it('shows tips toggle in island overview and preserves follow focus when persisting it', async () => {
     useConfigStore.setState({ followFocus: true, tipsEnabled: true })
 

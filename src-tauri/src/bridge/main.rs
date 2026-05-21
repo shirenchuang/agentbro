@@ -814,6 +814,9 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
+            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+                obj.insert("tool_use_id".into(), id.clone());
+            }
 
             if let Some(resp) = send_and_maybe_receive(&state, true) {
                 let decision = resp["decision"].as_str().unwrap_or("ask");

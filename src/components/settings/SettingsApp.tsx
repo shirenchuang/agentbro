@@ -54,6 +54,10 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         onAddCustomAgent={openCustomAgentDialog}
       />
       <div className="settings-content settings-scroll">
+        <div className="settings-window-brand" aria-hidden="true">
+          <img src="/agentbro-app-icon.png" alt="" />
+          <span>AgentBro</span>
+        </div>
         <button
           className="settings-close-btn"
           onClick={onClose}

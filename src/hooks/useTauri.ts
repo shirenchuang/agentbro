@@ -166,6 +166,7 @@ function transformSession(bs: BackendSession): SessionState {
     lastMainAgentAt: bs.lastMainAgentAt ?? undefined,
     cacheTtlMs: bs.cacheTtlMs ?? undefined,
     pendingPermission: bs.pendingPermission ? {
+      toolUseId: bs.pendingPermission.toolUseId ?? undefined,
       toolName: bs.pendingPermission.toolName,
       toolInput: bs.pendingPermission.toolInput,
       diff: parseDiff(bs.pendingPermission.diff),
@@ -176,6 +177,9 @@ function transformSession(bs: BackendSession): SessionState {
       descriptions: bs.pendingQuestion.descriptions ?? undefined,
       header: bs.pendingQuestion.header ?? undefined,
       multiSelect: bs.pendingQuestion.multiSelect || undefined,
+      toolUseId: bs.pendingQuestion.toolUseId ?? undefined,
+      source: bs.pendingQuestion.source ?? undefined,
+      responseMode: bs.pendingQuestion.responseMode ?? undefined,
     } : undefined,
     planTitle: bs.pendingPlan?.title ?? undefined,
     planContent: bs.pendingPlan?.content ?? undefined,

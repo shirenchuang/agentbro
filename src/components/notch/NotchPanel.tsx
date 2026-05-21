@@ -43,6 +43,12 @@ const contentTransition = {
   ease: 'easeOut' as const,
 }
 
+function clearPermissionAfter(sessionId: string, work: Promise<void>) {
+  work
+    .then(() => useSessionStore.getState().clearPermission(sessionId))
+    .catch((error) => console.warn('[notch] permission response failed:', error))
+}
+
 const NOTCH_SHELL_SIDE_EXTENSION = 14
 const NOTCH_HIT_SLOP_X_COLLAPSED = 48
 const NOTCH_HIT_SLOP_Y_COLLAPSED = 24
@@ -109,14 +115,13 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
         <PermissionCard
           overlay={overlay}
           session={session}
-          onAllow={() => { respondPermission(session.id, true); useSessionStore.getState().clearPermission(session.id) }}
-          onAllowAlways={() => { respondPermission(session.id, true, true); useSessionStore.getState().clearPermission(session.id) }}
-          onAutoApprove={() => { respondAutoApprove(session.id); useSessionStore.getState().clearPermission(session.id) }}
+          onAllow={() => { clearPermissionAfter(session.id, respondPermission(session.id, true)) }}
+          onAllowAlways={() => { clearPermissionAfter(session.id, respondPermission(session.id, true, true)) }}
+          onAutoApprove={() => { clearPermissionAfter(session.id, respondAutoApprove(session.id)) }}
           onShowSessions={onShowSessions}
           onDeny={(message?: string) => {
             if (message) sendMessage(session.id, message)
-            respondPermission(session.id, false)
-            useSessionStore.getState().clearPermission(session.id)
+            clearPermissionAfter(session.id, respondPermission(session.id, false))
           }}
           onDismiss={onDismiss}
           onDraftStateChange={onDraftStateChange}
@@ -1005,8 +1010,7 @@ export function NotchPanel() {
           respondPlan(active.id, 'acceptEdits')
           useSessionStore.getState().clearPlan(active.id)
         } else {
-          respondPermission(active.id, true)
-          useSessionStore.getState().clearPermission(active.id)
+          clearPermissionAfter(active.id, respondPermission(active.id, true))
         }
         return
       }
@@ -1019,8 +1023,7 @@ export function NotchPanel() {
           respondPlan(active.id, 'manual')
           useSessionStore.getState().clearPlan(active.id)
         } else {
-          respondPermission(active.id, false)
-          useSessionStore.getState().clearPermission(active.id)
+          clearPermissionAfter(active.id, respondPermission(active.id, false))
         }
         return
       }

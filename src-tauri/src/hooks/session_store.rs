@@ -167,6 +167,8 @@ pub struct ContextWindowInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingPermission {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
     pub tool_name: String,
     pub tool_input: String,
     pub diff: Option<String>,
@@ -184,11 +186,19 @@ pub struct PendingQuestion {
     pub multi_select: bool,
     #[serde(default)]
     pub questions: Vec<QuestionItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuestionItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub question: String,
     #[serde(default)]
     pub header: Option<String>,
@@ -961,7 +971,10 @@ mod tests {
         assert_eq!(json["subagents"][0]["tools"][0], "Read");
         assert_eq!(json["activeTools"][0]["toolUseId"], "tool-1");
         assert_eq!(json["activeTools"][0]["status"], "success");
-        assert_eq!(json["activeTools"][0]["toolInput"], "{\"file_path\":\"src/lib.rs\"}");
+        assert_eq!(
+            json["activeTools"][0]["toolInput"],
+            "{\"file_path\":\"src/lib.rs\"}"
+        );
         assert_eq!(json["tasks"][0]["id"], "task-1");
         assert_eq!(json["tasks"][0]["status"], "in_progress");
     }
@@ -1019,6 +1032,7 @@ mod tests {
         store.set_pending_permission(
             "s1",
             Some(PendingPermission {
+                tool_use_id: None,
                 tool_name: "Bash".to_string(),
                 tool_input: "{\"command\":\"pnpm test\"}".to_string(),
                 diff: None,

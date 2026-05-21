@@ -51,6 +51,7 @@ export interface BackendSession {
   lastMainAgentAt: number | null
   cacheTtlMs: number | null
   pendingPermission: {
+    toolUseId?: string | null
     toolName: string
     toolInput: string
     diff: string | null
@@ -62,7 +63,11 @@ export interface BackendSession {
     descriptions: string[]
     header: string | null
     multiSelect: boolean
+    toolUseId?: string | null
+    source?: string | null
+    responseMode?: string | null
     questions: Array<{
+      id?: string | null
       question: string
       header: string | null
       options: Array<{ label: string; description: string | null }>

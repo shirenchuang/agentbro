@@ -2,7 +2,7 @@
 // Accepts JSON-line protocol from hook scripts, routes to adapters,
 // and keeps connections alive for permission request/response flow.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,8 +20,8 @@ use crate::agents::{AgentAdapter, AgentEvent};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
     discover_codex_session_file, discover_session_file, extract_cache_ttl_info,
-    extract_latest_assistant_text, extract_session_title, extract_subagents_from_transcript,
-    TranscriptSubagentInfo,
+    extract_latest_assistant_text, extract_pending_codex_user_input, extract_session_title,
+    extract_subagents_from_transcript, CodexPendingUserInput, TranscriptSubagentInfo,
 };
 use crate::sound::{SoundEngine, SoundEvent};
 use crate::terminal::suppression;
@@ -31,6 +31,8 @@ const SESSION_END_CLEANUP_SECS: u64 = 5;
 const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 120 * 60;
 const DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 300;
 const HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 21_600;
+const RECENT_TOOL_CACHE_TTL_MS: u64 = 2 * 60 * 1000;
+const RECENT_TOOL_CACHE_LIMIT: usize = 200;
 
 /// Raw hook event snapshot retained for Agent monitor diagnostics.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -96,7 +98,23 @@ pub struct PermissionResponse {
 
 /// A pending permission waiting for UI response
 pub(crate) struct PendingPermissionEntry {
-    pub(crate) tx: oneshot::Sender<PermissionResponse>,
+    pub(crate) session_id: String,
+    pub(crate) received_at_ms: u64,
+    pub(crate) tx: oneshot::Sender<PermissionReply>,
+}
+
+pub(crate) struct PermissionReply {
+    pub(crate) response: PermissionResponse,
+    pub(crate) ack: oneshot::Sender<Result<(), String>>,
+}
+
+#[derive(Debug, Clone)]
+struct RecentToolInvocation {
+    session_id: String,
+    tool_name: String,
+    tool_use_id: String,
+    signature: String,
+    seen_at_ms: u64,
 }
 
 /// Question response sent back to hook script
@@ -124,8 +142,8 @@ pub(crate) struct PendingPlanEntry {
 
 /// The HookServer manages incoming connections from agent hook scripts
 pub struct HookServer {
-    /// Pending permission requests: session_id -> sender
-    pending_permissions: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+    /// Pending permission requests: tool/request key -> waiting hook connections
+    pending_permissions: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
     /// Pending question requests: session_id -> sender
     pending_questions: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     /// Pending plan approvals: session_id -> sender
@@ -143,11 +161,13 @@ pub struct HookServer {
     /// IPC endpoint owned by this server instance.
     endpoint: hook_endpoint::HookEndpoint,
     socket_owned: Arc<AtomicBool>,
+    /// Recent PreToolUse cache for PermissionRequest correlation when Codex omits tool_use_id.
+    recent_tools: Arc<Mutex<VecDeque<RecentToolInvocation>>>,
 }
 
 #[derive(Clone)]
 struct HookConnectionContext {
-    pending: Arc<Mutex<HashMap<String, PendingPermissionEntry>>>,
+    pending: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
     pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
     store: Arc<SessionStore>,
@@ -155,6 +175,7 @@ struct HookConnectionContext {
     sound: Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
     app: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
     raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
+    recent_tools: Arc<Mutex<VecDeque<RecentToolInvocation>>>,
 }
 
 impl HookServer {
@@ -173,6 +194,7 @@ impl HookServer {
             raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
             endpoint: hook_endpoint::current(),
             socket_owned: Arc::new(AtomicBool::new(false)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -208,6 +230,144 @@ impl HookServer {
             DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS
         };
         Duration::from_secs(seconds)
+    }
+
+    async fn record_recent_tool_invocation(
+        recent_tools: &Arc<Mutex<VecDeque<RecentToolInvocation>>>,
+        event: Option<&AgentEvent>,
+        raw: &serde_json::Value,
+    ) {
+        let Some(AgentEvent::ToolUse {
+            session_id,
+            tool_name,
+            status,
+            ..
+        }) = event
+        else {
+            return;
+        };
+        if status != "running" {
+            return;
+        }
+        let Some(tool_use_id) = Self::raw_tool_use_id(raw) else {
+            return;
+        };
+
+        let now = current_time_ms();
+        let mut tools = recent_tools.lock().await;
+        Self::prune_recent_tools(&mut tools, now);
+        tools.push_back(RecentToolInvocation {
+            session_id: session_id.clone(),
+            tool_name: tool_name.clone(),
+            tool_use_id,
+            signature: Self::tool_input_signature_from_raw(raw),
+            seen_at_ms: now,
+        });
+        while tools.len() > RECENT_TOOL_CACHE_LIMIT {
+            tools.pop_front();
+        }
+    }
+
+    async fn resolve_permission_tool_use_id(
+        recent_tools: &Arc<Mutex<VecDeque<RecentToolInvocation>>>,
+        session_id: &str,
+        tool_name: &str,
+        raw: &serde_json::Value,
+    ) -> Option<String> {
+        if let Some(tool_use_id) = Self::raw_tool_use_id(raw) {
+            return Some(tool_use_id);
+        }
+
+        let signature = Self::tool_input_signature_from_raw(raw);
+        let now = current_time_ms();
+        let mut tools = recent_tools.lock().await;
+        Self::prune_recent_tools(&mut tools, now);
+
+        if !signature.is_empty() {
+            if let Some(tool) = tools.iter().rev().find(|tool| {
+                tool.session_id == session_id
+                    && tool.tool_name == tool_name
+                    && tool.signature == signature
+            }) {
+                return Some(tool.tool_use_id.clone());
+            }
+        }
+
+        tools
+            .iter()
+            .rev()
+            .find(|tool| tool.session_id == session_id && tool.tool_name == tool_name)
+            .map(|tool| tool.tool_use_id.clone())
+    }
+
+    fn prune_recent_tools(tools: &mut VecDeque<RecentToolInvocation>, now_ms: u64) {
+        while tools
+            .front()
+            .is_some_and(|tool| now_ms.saturating_sub(tool.seen_at_ms) > RECENT_TOOL_CACHE_TTL_MS)
+        {
+            tools.pop_front();
+        }
+    }
+
+    fn raw_tool_use_id(raw: &serde_json::Value) -> Option<String> {
+        raw.get("tool_use_id")
+            .or_else(|| raw.get("toolUseId"))
+            .or_else(|| raw.get("toolUseID"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.to_string())
+    }
+
+    fn tool_input_signature_from_raw(raw: &serde_json::Value) -> String {
+        Self::tool_input_signature(raw.get("tool_input").or_else(|| raw.get("toolInput")))
+    }
+
+    fn tool_input_signature(input: Option<&serde_json::Value>) -> String {
+        let Some(input) = input else {
+            return String::new();
+        };
+
+        if let Some(obj) = input.as_object() {
+            for key in ["command", "file_path", "filePath", "path"] {
+                if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
+                    if !value.trim().is_empty() {
+                        return format!("{}:{}", key, value);
+                    }
+                }
+            }
+        }
+
+        Self::canonical_json_for_signature(input)
+    }
+
+    fn canonical_json_for_signature(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut entries = BTreeMap::new();
+                for (key, value) in map {
+                    if key == "description" {
+                        continue;
+                    }
+                    entries.insert(key.clone(), Self::canonical_json_for_signature(value));
+                }
+                let parts = entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let key = serde_json::to_string(&key).unwrap_or_else(|_| "\"\"".into());
+                        format!("{}:{}", key, value)
+                    })
+                    .collect::<Vec<_>>();
+                format!("{{{}}}", parts.join(","))
+            }
+            serde_json::Value::Array(values) => {
+                let parts = values
+                    .iter()
+                    .map(Self::canonical_json_for_signature)
+                    .collect::<Vec<_>>();
+                format!("[{}]", parts.join(","))
+            }
+            _ => serde_json::to_string(value).unwrap_or_default(),
+        }
     }
 
     /// Set the sound engine (called after construction, once the engine is ready)
@@ -304,6 +464,7 @@ impl HookServer {
             sound: self.sound_engine.clone(),
             app: self.app_handle.clone(),
             raw_events: self.raw_events.clone(),
+            recent_tools: self.recent_tools.clone(),
         };
 
         // Start Unix socket listener
@@ -395,6 +556,7 @@ impl HookServer {
         let sound = context.sound;
         let app = context.app;
         let raw_events = context.raw_events;
+        let recent_tools = context.recent_tools;
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
@@ -427,6 +589,7 @@ impl HookServer {
         if let Some(ref agent_event) = event {
             Self::ensure_session_for_event(&store, agent_event, &raw);
         }
+        Self::record_recent_tool_invocation(&recent_tools, event.as_ref(), &raw).await;
 
         match event {
             Some(AgentEvent::PermissionRequest {
@@ -443,10 +606,20 @@ impl HookServer {
                     Self::play_sound(&sound, SoundEvent::NeedsApproval);
                 }
 
+                let resolved_tool_use_id = Self::resolve_permission_tool_use_id(
+                    &recent_tools,
+                    session_id,
+                    tool_name,
+                    &raw,
+                )
+                .await
+                .unwrap_or_else(|| format!("permission:{}:{}", session_id, current_time_ms()));
+
                 // Set pending permission on session
                 store.set_pending_permission(
                     session_id,
                     Some(PendingPermission {
+                        tool_use_id: Some(resolved_tool_use_id.clone()),
                         tool_name: tool_name.clone(),
                         tool_input: raw
                             .get("tool_input")
@@ -474,7 +647,14 @@ impl HookServer {
                 let (tx, rx) = oneshot::channel();
                 {
                     let mut pending_map = pending.lock().await;
-                    pending_map.insert(session_id.clone(), PendingPermissionEntry { tx });
+                    pending_map
+                        .entry(resolved_tool_use_id.clone())
+                        .or_default()
+                        .push(PendingPermissionEntry {
+                            session_id: session_id.clone(),
+                            received_at_ms: current_time_ms(),
+                            tx,
+                        });
                 }
 
                 // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
@@ -483,24 +663,43 @@ impl HookServer {
                     tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
-                    Ok(Ok(resp)) => {
+                    Ok(Ok(reply)) => {
                         // Send response back to the hook script
-                        let json = serde_json::to_string(&resp)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
+                        let write_result = match serde_json::to_string(&reply.response) {
+                            Ok(json) => {
+                                let result = async {
+                                    writer.write_all(json.as_bytes()).await?;
+                                    writer.write_all(b"\n").await?;
+                                    writer.flush().await
+                                }
+                                .await
+                                .map_err(|err| err.to_string());
+                                result
+                            }
+                            Err(err) => Err(err.to_string()),
+                        };
+                        let _ = reply.ack.send(write_result.clone());
 
-                        // Play confirmation sound
-                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                        if write_result.is_ok() {
+                            // Play confirmation sound
+                            Self::play_sound(&sound, SoundEvent::TaskConfirmation);
 
-                        // Clear pending permission
-                        store.set_pending_permission(session_id, None);
-                        store.update_phase(session_id, SessionPhase::Processing);
+                            // Clear pending permission
+                            store.set_pending_permission(session_id, None);
+                            store.update_phase(session_id, SessionPhase::Processing);
+                        } else if let Err(err) = write_result {
+                            log::warn!(
+                                "Permission response write failed for session {} tool {}: {}",
+                                session_id,
+                                resolved_tool_use_id,
+                                err
+                            );
+                        }
                     }
                     _ => {
                         // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
-                        pending_map.remove(session_id);
+                        pending_map.remove(&resolved_tool_use_id);
                         store.set_pending_permission(session_id, None);
                         log::warn!("Permission request timed out for session {}", session_id);
                     }
@@ -534,6 +733,7 @@ impl HookServer {
                         questions: questions
                             .iter()
                             .map(|q| PendingQuestionItem {
+                                id: None,
                                 question: q.question.clone(),
                                 header: q.header.clone(),
                                 options: q
@@ -547,6 +747,9 @@ impl HookServer {
                                 multi_select: q.multi_select,
                             })
                             .collect(),
+                        tool_use_id: None,
+                        source: None,
+                        response_mode: None,
                     }),
                 );
                 Self::update_session_metadata_from_raw(&store, &raw);
@@ -879,7 +1082,12 @@ impl HookServer {
                         s.last_tool_target = Some("context".to_string());
                         s.last_tool_status = Some("running".to_string());
                     });
-                    Self::play_sound_for_session(sound, store, session_id, SoundEvent::ContextLimit);
+                    Self::play_sound_for_session(
+                        sound,
+                        store,
+                        session_id,
+                        SoundEvent::ContextLimit,
+                    );
                     return;
                 }
                 if event_name == "PostCompact" {
@@ -1037,13 +1245,11 @@ impl HookServer {
                 if Self::is_subagent_tool(tool_name) && !tool_use_id.is_empty() {
                     match status.as_str() {
                         "running" => {
-                            let metadata = Self::subagent_metadata_from_tool_input(_raw, tool_input);
-                            let transcript_path = Self::transcript_path_for_session(
-                                store,
-                                session_id,
-                                _raw,
-                            )
-                            .map(|path| path.to_string_lossy().to_string());
+                            let metadata =
+                                Self::subagent_metadata_from_tool_input(_raw, tool_input);
+                            let transcript_path =
+                                Self::transcript_path_for_session(store, session_id, _raw)
+                                    .map(|path| path.to_string_lossy().to_string());
                             store.add_subagent(
                                 session_id,
                                 &tool_use_id,
@@ -1058,7 +1264,8 @@ impl HookServer {
                             Self::refresh_subagents_from_transcript(store, session_id, _raw);
                         }
                         "error" => {
-                            let metadata = Self::subagent_metadata_from_tool_input(_raw, tool_input);
+                            let metadata =
+                                Self::subagent_metadata_from_tool_input(_raw, tool_input);
                             store.stop_subagent(
                                 session_id,
                                 &tool_use_id,
@@ -1471,6 +1678,12 @@ impl HookServer {
             });
         }
 
+        if status == "waiting_for_input"
+            && Self::try_set_codex_rollout_pending_question(store, session_id, sound, raw)
+        {
+            return;
+        }
+
         // Map status to phase
         let phase = match status {
             "processing" | "running_tool" | "starting" => SessionPhase::Processing,
@@ -1576,10 +1789,87 @@ impl HookServer {
         }
 
         if status.as_deref() == Some("waiting_for_input") {
+            if Self::try_set_codex_rollout_pending_question(store, session_id, sound, raw) {
+                return;
+            }
             store.update_session(session_id, |s| {
                 s.phase = SessionPhase::Ready;
                 s.description = Some("Waiting for input".to_string());
             });
+        }
+    }
+
+    fn try_set_codex_rollout_pending_question(
+        store: &SessionStore,
+        session_id: &str,
+        sound: &Arc<std::sync::Mutex<Option<Arc<SoundEngine>>>>,
+        raw: &serde_json::Value,
+    ) -> bool {
+        let is_codex = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .is_some_and(|agent| agent == "codex" || agent == "openai.codex")
+            || store
+                .get_session(session_id)
+                .is_some_and(|session| session.agent_type == "codex");
+        if !is_codex {
+            return false;
+        }
+
+        let Some(path) = Self::transcript_path_for_session(store, session_id, raw)
+            .or_else(|| discover_codex_session_file(session_id))
+        else {
+            return false;
+        };
+        let Some(pending) = extract_pending_codex_user_input(&path) else {
+            return false;
+        };
+
+        let already_showing = store
+            .get_session(session_id)
+            .and_then(|session| session.pending_question)
+            .and_then(|question| question.tool_use_id)
+            .is_some_and(|tool_use_id| tool_use_id == pending.call_id);
+
+        if !already_showing && !Self::check_suppression(store, session_id) {
+            Self::play_sound(sound, SoundEvent::NeedsApproval);
+        }
+
+        store.set_pending_question(
+            session_id,
+            Some(Self::pending_question_from_codex_user_input(pending)),
+        );
+        true
+    }
+
+    fn pending_question_from_codex_user_input(pending: CodexPendingUserInput) -> PendingQuestion {
+        PendingQuestion {
+            question: pending.question,
+            options: pending.options,
+            descriptions: pending.descriptions,
+            header: pending.header,
+            multi_select: pending.multi_select,
+            questions: pending
+                .questions
+                .into_iter()
+                .map(|question| PendingQuestionItem {
+                    id: question.id,
+                    question: question.question,
+                    header: question.header,
+                    options: question
+                        .options
+                        .into_iter()
+                        .map(|option| PendingQuestionOption {
+                            label: option.label,
+                            description: option.description,
+                        })
+                        .collect(),
+                    multi_select: question.multi_select,
+                })
+                .collect(),
+            tool_use_id: Some(pending.call_id),
+            source: Some("codex_rollout_request_user_input".to_string()),
+            response_mode: Some("external_only".to_string()),
         }
     }
 
@@ -1975,16 +2265,12 @@ impl HookServer {
             tools: recovered.tools,
         };
 
-        if let Some(existing) = session
-            .subagents
-            .iter_mut()
-            .find(|subagent| {
-                subagent.agent_id == incoming.agent_id
-                    || launch_tool_use_id
-                        .as_deref()
-                        .is_some_and(|tool_use_id| subagent.agent_id == tool_use_id)
-            })
-        {
+        if let Some(existing) = session.subagents.iter_mut().find(|subagent| {
+            subagent.agent_id == incoming.agent_id
+                || launch_tool_use_id
+                    .as_deref()
+                    .is_some_and(|tool_use_id| subagent.agent_id == tool_use_id)
+        }) {
             *existing = incoming;
         } else {
             session.subagents.push(incoming);
@@ -2012,27 +2298,21 @@ impl HookServer {
         allowed: bool,
         always: bool,
     ) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_permissions.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = PermissionResponse {
-                decision: if allowed {
-                    "allow".to_string()
-                } else {
-                    "deny".to_string()
-                },
-                reason: if allowed {
-                    None
-                } else {
-                    Some("Denied by user via AgentBro".to_string())
-                },
-                always: if allowed && always { Some(true) } else { None },
-            };
-            // Ignore send error — receiver may have already dropped
-            let _ = entry.tx.send(response);
-            Ok(())
-        } else {
-            anyhow::bail!("No pending permission for session {}", session_id)
-        }
+        let response = PermissionResponse {
+            decision: if allowed {
+                "allow".to_string()
+            } else {
+                "deny".to_string()
+            },
+            reason: if allowed {
+                None
+            } else {
+                Some("Denied by user via AgentBro".to_string())
+            },
+            always: if allowed && always { Some(true) } else { None },
+        };
+        self.send_pending_permission_response(session_id, response)
+            .await
     }
 
     /// Respond to a pending question from the UI
@@ -2065,18 +2345,99 @@ impl HookServer {
     }
 
     pub async fn respond_auto_approve(&self, session_id: &str) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_permissions.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = PermissionResponse {
-                decision: "auto".to_string(),
-                reason: None,
-                always: None,
+        let response = PermissionResponse {
+            decision: "auto".to_string(),
+            reason: None,
+            always: None,
+        };
+        self.send_pending_permission_response(session_id, response)
+            .await
+    }
+
+    async fn send_pending_permission_response(
+        &self,
+        session_id: &str,
+        response: PermissionResponse,
+    ) -> anyhow::Result<()> {
+        let entries = {
+            let mut pending_map = self.pending_permissions.lock().await;
+            let Some(key) = Self::latest_pending_permission_key(&pending_map, session_id) else {
+                anyhow::bail!("No pending permission for session {}", session_id);
             };
-            let _ = entry.tx.send(response);
+            pending_map.remove(&key).unwrap_or_default()
+        };
+
+        let mut ack_receivers = Vec::new();
+        let mut send_failures = 0usize;
+        for entry in entries {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            let reply = PermissionReply {
+                response: response.clone(),
+                ack: ack_tx,
+            };
+            if entry.tx.send(reply).is_ok() {
+                ack_receivers.push(ack_rx);
+            } else {
+                send_failures += 1;
+            }
+        }
+
+        if ack_receivers.is_empty() {
+            anyhow::bail!(
+                "No active permission hook receivers for session {} ({} send failures)",
+                session_id,
+                send_failures
+            );
+        }
+
+        let mut successes = 0usize;
+        let mut failures = Vec::new();
+        for ack in ack_receivers {
+            match tokio::time::timeout(Duration::from_secs(5), ack).await {
+                Ok(Ok(Ok(()))) => successes += 1,
+                Ok(Ok(Err(err))) => failures.push(err),
+                Ok(Err(_)) => {
+                    failures.push("permission hook receiver dropped before write ack".into())
+                }
+                Err(_) => failures.push("permission hook write ack timed out".into()),
+            }
+        }
+
+        if successes > 0 {
+            if !failures.is_empty() {
+                log::warn!(
+                    "Permission response for session {} had {} successful hook write(s) and {} failure(s): {}",
+                    session_id,
+                    successes,
+                    failures.len(),
+                    failures.join("; ")
+                );
+            }
             Ok(())
         } else {
-            anyhow::bail!("No pending permission for session {}", session_id)
+            anyhow::bail!(
+                "Permission response failed to reach hook for session {}: {}",
+                session_id,
+                failures.join("; ")
+            )
         }
+    }
+
+    fn latest_pending_permission_key(
+        pending_map: &HashMap<String, Vec<PendingPermissionEntry>>,
+        session_id: &str,
+    ) -> Option<String> {
+        pending_map
+            .iter()
+            .filter_map(|(key, entries)| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.session_id == session_id)
+                    .map(|entry| (key, entry.received_at_ms))
+                    .max_by_key(|(_, received_at_ms)| *received_at_ms)
+            })
+            .max_by_key(|(_, received_at_ms)| *received_at_ms)
+            .map(|(key, _)| key.clone())
     }
 }
 
@@ -2165,6 +2526,93 @@ mod tests {
         assert_eq!(
             HookServer::interaction_response_timeout(&raw),
             Duration::from_secs(HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_request_resolves_recent_pre_tool_use_id_without_explicit_id() {
+        let recent_tools = Arc::new(Mutex::new(VecDeque::new()));
+        let pre_raw = serde_json::json!({
+            "event": "PreToolUse",
+            "session_id": "codex-s1",
+            "tool_name": "Bash",
+            "tool_use_id": "call-date-1",
+            "tool_input": { "command": "date" }
+        });
+        let pre_event = AgentEvent::ToolUse {
+            session_id: "codex-s1".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: "{\"command\":\"date\"}".to_string(),
+            tool_target: None,
+            status: "running".to_string(),
+        };
+
+        HookServer::record_recent_tool_invocation(&recent_tools, Some(&pre_event), &pre_raw).await;
+
+        let permission_raw = serde_json::json!({
+            "event": "PermissionRequest",
+            "session_id": "codex-s1",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "date",
+                "description": "Show the current time."
+            }
+        });
+
+        assert_eq!(
+            HookServer::resolve_permission_tool_use_id(
+                &recent_tools,
+                "codex-s1",
+                "Bash",
+                &permission_raw
+            )
+            .await
+            .as_deref(),
+            Some("call-date-1")
+        );
+    }
+
+    #[test]
+    fn permission_signature_ignores_human_description() {
+        let pre = serde_json::json!({ "tool_input": { "command": "pwd" } });
+        let permission = serde_json::json!({
+            "tool_input": {
+                "description": "Show the current directory.",
+                "command": "pwd"
+            }
+        });
+
+        assert_eq!(
+            HookServer::tool_input_signature_from_raw(&pre),
+            HookServer::tool_input_signature_from_raw(&permission)
+        );
+    }
+
+    #[test]
+    fn latest_pending_permission_key_prefers_newest_entry_for_session() {
+        let mut pending = HashMap::new();
+        let (old_tx, _old_rx) = oneshot::channel();
+        let (new_tx, _new_rx) = oneshot::channel();
+        pending.insert(
+            "old-tool".to_string(),
+            vec![PendingPermissionEntry {
+                session_id: "s1".to_string(),
+                received_at_ms: 10,
+                tx: old_tx,
+            }],
+        );
+        pending.insert(
+            "new-tool".to_string(),
+            vec![PendingPermissionEntry {
+                session_id: "s1".to_string(),
+                received_at_ms: 20,
+                tx: new_tx,
+            }],
+        );
+
+        assert_eq!(
+            HookServer::latest_pending_permission_key(&pending, "s1").as_deref(),
+            Some("new-tool")
         );
     }
 

@@ -96,25 +96,44 @@ export function SettingsSidebar({
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
+  const sectionTitleById: Record<string, string> = {
+    island: t('settings.island.title'),
+    monitor: t('settings.agentMonitor'),
+    agents: t('settings.agents'),
+    switch: t('settings.switch'),
+  }
+  const isCapabilitySection = activeSection === 'island' || activeSection === 'monitor' || activeSection === 'agents' || activeSection === 'switch'
+  const brandTitle = isCapabilitySection ? sectionTitleById[activeSection] : t('settings.title')
+  const backToSettingsLabel = t('settings.backToSettings', { defaultValue: 'Back to Settings' })
   const toggleSidebar = (
-    <button
-      type="button"
-      className="settings-sidebar__collapse-toggle settings-sidebar__brand"
-      aria-label={toggleLabel}
-      title={toggleLabel}
-      onClick={() => onCollapsedChange(!collapsed)}
-    >
-      <span className="settings-sidebar__brand-mark" aria-hidden="true">
-        <img className="settings-sidebar__collapse-logo" src="/agentbro-logo.png" alt="" />
-      </span>
-      <span className="settings-sidebar__brand-copy">
-        <span className="settings-sidebar__brand-kicker">AgentBro</span>
-        <span className="settings-sidebar__brand-title">{t('settings.title')}</span>
-      </span>
-      <span className="settings-sidebar__brand-indicator" aria-hidden="true">
-        {collapsed ? '›' : '‹'}
-      </span>
-    </button>
+    <div className={`settings-sidebar__brand${isCapabilitySection ? ' settings-sidebar__brand--contextual' : ''}`}>
+      <button
+        type="button"
+        className="settings-sidebar__brand-home"
+        aria-label={isCapabilitySection ? backToSettingsLabel : t('settings.title')}
+        title={isCapabilitySection ? backToSettingsLabel : t('settings.title')}
+        onClick={() => onSelect('general')}
+      >
+        <span className="settings-sidebar__brand-mark" aria-hidden="true">
+          <img className="settings-sidebar__collapse-logo" src="/agentbro-logo.png" alt="" />
+        </span>
+        <span className="settings-sidebar__brand-copy">
+          <span className="settings-sidebar__brand-kicker">AgentBro</span>
+          <span className="settings-sidebar__brand-title">{brandTitle}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        className="settings-sidebar__collapse-toggle"
+        aria-label={toggleLabel}
+        title={toggleLabel}
+        onClick={() => onCollapsedChange(!collapsed)}
+      >
+        <span className="settings-sidebar__brand-indicator" aria-hidden="true">
+          {collapsed ? '›' : '‹'}
+        </span>
+      </button>
+    </div>
   )
 
   if (activeSection === 'island') {
@@ -131,16 +150,6 @@ export function SettingsSidebar({
     return (
       <nav className={capabilitySidebarClassName}>
         {toggleSidebar}
-        <div className="settings-sidebar__subnav-head">
-          <button
-            type="button"
-            className="settings-sidebar__back"
-            onClick={() => onSelect('general')}
-          >
-            ‹ {t('settings.title')}
-          </button>
-          <div className="settings-sidebar__group-label settings-sidebar__group-label--subnav">{t('settings.island.title')}</div>
-        </div>
         <div className="settings-capability-nav">
           {navItems.map((item) => (
             <button
@@ -178,16 +187,6 @@ export function SettingsSidebar({
     return (
       <nav className={capabilitySidebarClassName}>
         {toggleSidebar}
-        <div className="settings-sidebar__subnav-head">
-          <button
-            type="button"
-            className="settings-sidebar__back"
-            onClick={() => onSelect('general')}
-          >
-            ‹ {t('settings.title')}
-          </button>
-          <div className="settings-sidebar__group-label settings-sidebar__group-label--subnav">Agent 监控</div>
-        </div>
         <div className="settings-capability-nav">
           {navItems.map((item) => (
             <button
@@ -239,13 +238,6 @@ export function SettingsSidebar({
     return (
       <nav className={capabilitySidebarClassName}>
         {toggleSidebar}
-        <button
-          type="button"
-          className="settings-sidebar__back"
-          onClick={() => onSelect('general')}
-        >
-          ‹ 设置
-        </button>
 
         <div className="settings-capability-nav">
           {navItems.map((item) => (
