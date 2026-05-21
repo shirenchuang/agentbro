@@ -16,7 +16,11 @@ jobs:
     runs-on: macos-15
     strategy:
       matrix:
-        arch: [arm64, x86_64]
+        include:
+          - arch: arm64
+            rust-target: aarch64-apple-darwin
+          - arch: x86_64
+            rust-target: x86_64-apple-darwin
 
     steps:
       - name: Checkout
@@ -32,10 +36,13 @@ jobs:
         with:
           version: 9
 
+      - name: Release readiness check
+        run: pnpm release:check
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.arch }}-apple-darwin
+          targets: ${{ matrix.rust-target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -50,12 +57,12 @@ jobs:
 
       - name: Build Tauri app
         run: |
-          cargo build --release --target ${{ matrix.arch }}-apple-darwin
+          cargo build --release --target ${{ matrix.rust-target }}
         working-directory: src-tauri
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agent-island-${{ matrix.arch }}
-          path: src-tauri/target/${{ matrix.arch }}-apple-darwin/release/agent-island
+          name: agentbro-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.rust-target }}/release/agentbro
           if-no-files-found: error

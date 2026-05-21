@@ -1,7 +1,7 @@
 {
   "name": "agentbro",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "build:bridge:release": "cargo build --manifest-path src-tauri/Cargo.toml --bin agentbro-bridge --release",
     "tauri:dev": "pnpm build:bridge && cargo tauri dev",
     "tauri:build": "pnpm build:bridge:release && cargo tauri build",
+    "release:check": "node scripts/check-release-readiness.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

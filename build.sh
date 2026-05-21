@@ -1,11 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_NAME="Agent Island"
-BUNDLE_ID="com.agent-island.app"
+APP_NAME="${APP_NAME:-AgentBro}"
+BUNDLE_ID="${BUNDLE_ID:-com.agentbro.desktop}"
 BUILD_DIR="src-tauri/target"
 DIST_DIR="dist"
-DMG_NAME="AgentIsland.dmg"
+DMG_NAME="${DMG_NAME:-AgentBro.dmg}"
+APP_VERSION="${APP_VERSION:-$(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version)" 2>/dev/null || echo "0.0.0")}"
+UPDATE_ARCHIVE_NAME="${UPDATE_ARCHIVE_NAME:-$APP_NAME.app.tar.gz}"
+UPDATE_MANIFEST_NAME="${UPDATE_MANIFEST_NAME:-latest.json}"
 
 NOTARIZE=false
 SKIP_SIGN="${SKIP_SIGN:-0}"
@@ -25,6 +28,7 @@ Environment variables:
   APPLE_ID            Apple ID for notarization
   APPLE_PASSWORD      App-specific password for notarization
   APPLE_TEAM_ID       Apple Team ID
+  UPDATE_BASE_URL     Base URL for updater archive links in latest.json
 EOF
 }
 
@@ -47,14 +51,14 @@ done
 
 check_deps() {
     local missing=()
-    for cmd in cargo pnpm create-dmg; do
+    for cmd in cargo pnpm node tar shasum create-dmg; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing+=("$cmd")
         fi
     done
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Missing dependencies: ${missing[*]}" >&2
-        echo "Install with: brew install create-dmg && cargo --version && pnpm --version" >&2
+        echo "Install with: brew install create-dmg && cargo --version && pnpm --version && node --version" >&2
         exit 1
     fi
 }
@@ -81,14 +85,14 @@ create_universal() {
     mkdir -p "$out_dir"
 
     lipo -create \
-        "$arm_dir/agent-island" \
-        "$x86_dir/agent-island" \
-        -output "$out_dir/agent-island"
+        "$arm_dir/agentbro" \
+        "$x86_dir/agentbro" \
+        -output "$out_dir/agentbro"
 
     lipo -create \
-        "$arm_dir/agent-island-bridge" \
-        "$x86_dir/agent-island-bridge" \
-        -output "$out_dir/agent-island-bridge" 2>/dev/null || true
+        "$arm_dir/agentbro-bridge" \
+        "$x86_dir/agentbro-bridge" \
+        -output "$out_dir/agentbro-bridge" 2>/dev/null || true
 }
 
 build_app_bundle() {
@@ -99,12 +103,50 @@ build_app_bundle() {
     mkdir -p "$bundle_dir/Resources"
     mkdir -p "$bundle_dir/Frameworks"
 
-    cp "$BUILD_DIR/universal/release/agent-island" "$bundle_dir/MacOS/$APP_NAME"
+    cp "$BUILD_DIR/universal/release/agentbro" "$bundle_dir/MacOS/$APP_NAME"
     chmod +x "$bundle_dir/MacOS/$APP_NAME"
+
+    if [ -f "$BUILD_DIR/universal/release/agentbro-bridge" ]; then
+        cp "$BUILD_DIR/universal/release/agentbro-bridge" "$bundle_dir/Resources/agentbro-bridge"
+        chmod +x "$bundle_dir/Resources/agentbro-bridge"
+    fi
 
     # Copy Info.plist from tauri bundle if available
     if [ -f "src-tauri/Info.plist" ]; then
         cp "src-tauri/Info.plist" "$bundle_dir/Info.plist"
+    else
+        cat > "$bundle_dir/Info.plist" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleExecutable</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$APP_VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>$APP_VERSION</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST_EOF
     fi
 
     # Copy icons
@@ -138,6 +180,31 @@ sign_app() {
     echo "==> Verifying signature..."
     codesign --verify --deep --strict "$app_path"
     spctl --assess --type exec "$app_path" 2>/dev/null || echo "Note: spctl assessment skipped (no Gatekeeper on CI)"
+}
+
+create_updater_archive() {
+    echo "==> Creating updater archive..."
+    local archive_path="$DIST_DIR/$UPDATE_ARCHIVE_NAME"
+    rm -f "$archive_path" "$archive_path.sig"
+
+    tar -czf "$archive_path" -C "$DIST_DIR" "$APP_NAME.app"
+
+    if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || [ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]; then
+        echo "==> Signing updater archive..."
+        cargo tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$archive_path" >/dev/null
+    else
+        echo "==> Skipping updater archive signing (TAURI_SIGNING_PRIVATE_KEY not set)"
+    fi
+
+    if [ -n "${UPDATE_BASE_URL:-}" ] && [ -f "$archive_path.sig" ]; then
+        echo "==> Writing updater manifest..."
+        VERSION="$APP_VERSION" \
+        UPDATE_ARCHIVE_PATH="$archive_path" \
+        UPDATE_ARCHIVE_URL="${UPDATE_BASE_URL%/}/$UPDATE_ARCHIVE_NAME" \
+        UPDATE_SIGNATURE_PATH="$archive_path.sig" \
+        UPDATE_MANIFEST_PATH="$DIST_DIR/$UPDATE_MANIFEST_NAME" \
+            node scripts/create-updater-manifest.mjs
+    fi
 }
 
 create_dmg() {
@@ -200,6 +267,15 @@ notarize_app() {
     xcrun stapler staple "$DIST_DIR/$DMG_NAME"
 }
 
+create_checksums() {
+    echo "==> Creating checksums..."
+    find "$DIST_DIR" -maxdepth 1 -type f \
+        \( -name "*.dmg" -o -name "*.tar.gz" -o -name "*.sig" -o -name "*.json" \) \
+        -print0 |
+        sort -z |
+        xargs -0 shasum -a 256 > "$DIST_DIR/checksums.txt"
+}
+
 main() {
     check_deps
     build_frontend
@@ -207,9 +283,11 @@ main() {
     create_universal
     build_app_bundle
     sign_app
+    create_updater_archive
     create_dmg
     sign_dmg
     notarize_app
+    create_checksums
     echo "==> Build complete: $DIST_DIR/$DMG_NAME"
 }
 
