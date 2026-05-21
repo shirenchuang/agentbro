@@ -118,7 +118,6 @@ export function SettingsSidebar({
           <img className="settings-sidebar__collapse-logo" src="/agentbro-logo.png" alt="" />
         </span>
         <span className="settings-sidebar__brand-copy">
-          <span className="settings-sidebar__brand-kicker">AgentBro</span>
           <span className="settings-sidebar__brand-title">{brandTitle}</span>
         </span>
       </button>

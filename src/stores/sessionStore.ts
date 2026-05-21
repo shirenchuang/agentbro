@@ -6,6 +6,7 @@ import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
 import { sessionMatchesLegacyCwdExclusion, sessionMatchesSilenceRule } from '../utils/sessionSilence'
+import { isCodexTitleMetadata } from '../utils/codexMetadata'
 import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
@@ -115,15 +116,17 @@ function mergeLocalUserMessages(remoteMessages: ChatMessage[], localMessages: Ch
 }
 
 function hasSessionContent(session: SessionState): boolean {
+  const meaningfulText = (text: string | undefined | null) => Boolean((text || '').trim() && !isCodexTitleMetadata(text))
+
   return Boolean(
-    session.lastUserMessage
-    || session.sessionTitle
+    meaningfulText(session.lastUserMessage)
+    || meaningfulText(session.sessionTitle)
     || session.pendingPermission
     || session.pendingQuestion
     || session.planTitle
     || session.planContent
-    || session.responseText
-    || session.description
+    || meaningfulText(session.responseText)
+    || meaningfulText(session.description)
     || session.lastToolName
     || session.statusLineText
     || session.contextWindow
@@ -184,6 +187,9 @@ function isDisplayableSession(session: SessionState, now = Date.now()): boolean 
   if (isInternalCodexPromptSession(session)) {
     return false
   }
+  if (isCodexTitleMetadataOnlySession(session)) {
+    return false
+  }
   const config = useConfigStore.getState()
   if (
     config.sessionSilenceRules.some((rule) => sessionMatchesSilenceRule(session, rule))
@@ -224,6 +230,26 @@ function isInternalCodexPromptSession(session: SessionState): boolean {
   return true
 }
 
+function isCodexTitleMetadataOnlySession(session: SessionState): boolean {
+  if (session.agentType !== 'codex') return false
+  if (session.pendingPermission || session.pendingQuestion || session.planTitle || session.planContent) return false
+  if (session.subagents.length > 0 || session.activeTools.length > 0 || (session.tasks && session.tasks.length > 0)) return false
+
+  const texts = [
+    session.sessionTitle,
+    session.lastUserMessage,
+    session.responseText,
+    session.description,
+  ].map((text) => (text || '').trim()).filter(Boolean)
+
+  if (!texts.some(isCodexTitleMetadata)) return false
+  return texts.every((text) => (
+    isCodexTitleMetadata(text)
+    || isInternalCodexPromptText(text)
+    || isGenericCompletionText(text)
+  ))
+}
+
 function isGenericCompletionText(text: string | undefined | null): boolean {
   const normalized = (text || '')
     .trim()
@@ -258,7 +284,7 @@ function isCompactingContextText(text: string | undefined | null): boolean {
 
 function usefulCompletionText(text: string | undefined | null): string | null {
   const trimmed = (text || '').trim()
-  return trimmed && !isGenericCompletionText(trimmed) ? trimmed : null
+  return trimmed && !isGenericCompletionText(trimmed) && !isCodexTitleMetadata(trimmed) ? trimmed : null
 }
 
 function sessionEndedText(text: string | undefined | null): string | null {
@@ -294,6 +320,9 @@ function shouldSuppressCompletionOverlay(session: SessionState, incoming?: strin
     sessionEndedText(incoming)
     || sessionEndedText(session.responseText)
     || sessionEndedText(session.description)
+    || isCodexTitleMetadata(incoming)
+    || isCodexTitleMetadata(session.responseText)
+    || isCodexTitleMetadata(session.description)
   )
 }
 
@@ -860,7 +889,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
         }
 
-        const hideNonBlockingOverlays = isInternalCodexPromptSession(s) || isProbeSession(s)
+        const hideNonBlockingOverlays = isInternalCodexPromptSession(s) || isCodexTitleMetadataOnlySession(s) || isProbeSession(s)
 
         // Detect context compaction starting from backend session snapshots.
         if (!hideNonBlockingOverlays && s.phase === 'compacting' && prev?.phase !== 'compacting') {

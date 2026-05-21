@@ -993,7 +993,7 @@ pub fn send_message_to_terminal(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    run_osascript(&build_system_events_type_script(message))
+    run_osascript(&build_system_events_paste_script(message))
 }
 
 fn send_tmux_text_with_enter(
@@ -1102,14 +1102,24 @@ end tell"#
     )
 }
 
-fn build_system_events_type_script(message: &str) -> String {
+fn build_system_events_paste_script(message: &str) -> String {
     let message_literal = apple_script_string_literal(message);
     format!(
-        r#"tell application "System Events"
-  keystroke {message_literal}
+        r#"set previousClipboard to missing value
+try
+  set previousClipboard to the clipboard
+end try
+set the clipboard to {message_literal}
+delay 0.05
+tell application "System Events"
+  keystroke "v" using command down
   delay 0.05
   key code 36
-end tell"#
+end tell
+if previousClipboard is not missing value then
+  delay 0.1
+  set the clipboard to previousClipboard
+end if"#
     )
 }
 
@@ -1204,8 +1214,9 @@ mod tests {
         assert!(terminal_script.contains("tty of t is \"/dev/ttys001\""));
         assert!(terminal_script.contains("do script \"ok\" in t"));
 
-        let fallback_script = build_system_events_type_script("ok");
-        assert!(fallback_script.contains("keystroke \"ok\""));
+        let fallback_script = build_system_events_paste_script("默认 LOGO");
+        assert!(fallback_script.contains("set the clipboard to \"默认 LOGO\""));
+        assert!(fallback_script.contains("keystroke \"v\" using command down"));
         assert!(fallback_script.contains("delay 0.05"));
         assert!(fallback_script.contains("key code 36"));
     }

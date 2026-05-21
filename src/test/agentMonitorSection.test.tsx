@@ -369,7 +369,7 @@ describe('AgentMonitorSection', () => {
     fireEvent.click(screen.getByText('会话追踪'))
     await waitFor(() => expect(screen.getByText('暂无匹配的 Agent 会话。')).toBeInTheDocument())
 
-    fireEvent.click(screen.getByText('‹ settings.title'))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }))
     fireEvent.click(screen.getByText('settings.agents'))
     expect(screen.queryByRole('button', { name: /Agent监控|settings\.agentMonitor/ })).not.toBeInTheDocument()
   })

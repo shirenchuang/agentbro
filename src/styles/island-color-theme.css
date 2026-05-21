@@ -183,10 +183,6 @@ html[data-island-color-theme="ink-amber"] .claude-hook-lab__island-theme-tag {
   color: var(--island-text-muted);
 }
 
-html[data-island-color-theme="ink-amber"] .session-silence__badge {
-  background: rgba(var(--island-accent-rgb), 0.11);
-}
-
 html[data-island-color-theme="ink-amber"] .notch-panel {
   background:
     radial-gradient(120% 90% at 50% -42%, rgba(255, 250, 242, 0.74), transparent 54%),
@@ -524,8 +520,7 @@ html[data-island-color-theme="frosted-glass"] .notch-panel[data-island-state="mi
 html[data-island-color-theme="frosted-glass"] .collapsed-bar__icon-btn,
 html[data-island-color-theme="frosted-glass"] .hover-list__source-badge,
 html[data-island-color-theme="frosted-glass"] .hover-list__notice-icon,
-html[data-island-color-theme="frosted-glass"] .hover-list__notice-action,
-html[data-island-color-theme="frosted-glass"] .session-silence__badge {
+html[data-island-color-theme="frosted-glass"] .hover-list__notice-action {
   background: rgba(var(--island-accent-rgb), 0.08);
   color: var(--island-text-secondary);
 }
@@ -1240,15 +1235,7 @@ html:is(
   [data-island-color-theme="warm-paper"],
   [data-island-color-theme="soft-lavender"],
   [data-island-color-theme="system"]
-) .hover-list__notice-action,
-html:is(
-  [data-island-color-theme="apple"],
-  [data-island-color-theme="smoke"],
-  [data-island-color-theme="ocean-mist"],
-  [data-island-color-theme="warm-paper"],
-  [data-island-color-theme="soft-lavender"],
-  [data-island-color-theme="system"]
-) .session-silence__badge {
+) .hover-list__notice-action {
   background: rgba(var(--island-accent-rgb), 0.08);
   color: var(--island-text-secondary);
 }

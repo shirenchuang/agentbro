@@ -218,7 +218,6 @@ interface ConfigState {
   customNotchHeight: number
 
   // Behavior
-  pluginSessionMode: 'separate' | 'merge' | 'hide'
   excludedHookCwdSubstrings: string
   sessionSilenceRules: SessionSilenceRule[]
   autoApproveTools: string[]
@@ -228,7 +227,6 @@ interface ConfigState {
   processingTimeoutSecs: number
   maxVisibleSessions: number
   showToolStatus: boolean
-  defaultMascotSource: string
   sessionTimeoutMinutes: number
 
   // Display
@@ -414,7 +412,6 @@ function createIslandDefaults(): Partial<ConfigState> {
     panelMaxWidth: 630,
     notchHeightMode: 'matchNotch',
     customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
-    pluginSessionMode: 'separate',
     excludedHookCwdSubstrings: '',
     sessionSilenceRules: [],
     autoApproveTools: [
@@ -427,7 +424,6 @@ function createIslandDefaults(): Partial<ConfigState> {
     processingTimeoutSecs: 60,
     maxVisibleSessions: 5,
     showToolStatus: true,
-    defaultMascotSource: 'claude-code',
     sessionTimeoutMinutes: 30,
     aiMessageLines: 1,
     clickToDetail: true,
@@ -568,7 +564,6 @@ export const useConfigStore = create<ConfigStore>()(
   customNotchHeight: CUSTOM_NOTCH_HEIGHT_DEFAULT,
 
   // Behavior
-  pluginSessionMode: 'separate',
   excludedHookCwdSubstrings: '',
   sessionSilenceRules: [],
   autoApproveTools: [
@@ -581,7 +576,6 @@ export const useConfigStore = create<ConfigStore>()(
   processingTimeoutSecs: 60,
   maxVisibleSessions: 5,
   showToolStatus: true,
-  defaultMascotSource: 'claude-code',
   sessionTimeoutMinutes: 30,
 
   // Display

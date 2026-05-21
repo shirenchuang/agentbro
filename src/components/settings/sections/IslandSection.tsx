@@ -1,13 +1,11 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../../../stores/configStore'
-import type { SessionSilenceRule, SessionSilenceRuleKind, SoundChoice, SoundRule } from '../../../stores/configStore'
-import { useSessionStore } from '../../../stores/sessionStore'
+import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
 import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
-import { sessionMatchesSilenceRule } from '../../../utils/sessionSilence'
 import {
   listDisplays, isTauri,
   setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
@@ -64,11 +62,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   ])
 }
 
-function refreshDisplayedSessions() {
-  const sessionState = useSessionStore.getState()
-  sessionState.replaceAllSessions(Object.values(sessionState.sessions), { suppressed: true })
-}
-
 function persistIslandFeatureFlags(next: Partial<Record<IslandFeatureFlag, boolean>>) {
   const state = useConfigStore.getState()
   setIslandFeatureFlags({
@@ -98,92 +91,6 @@ function persistAdvancedToolFlags(next: Partial<{
     sessionLauncherEnabled: next.sessionLauncherEnabled ?? state.sessionLauncherEnabled,
     customHookTemplatesEnabled: next.customHookTemplatesEnabled ?? state.customHookTemplatesEnabled,
   }).catch((err) => console.error('Failed to persist advanced tool flags:', err))
-}
-
-function SessionSilenceRulesControl() {
-  const { t } = useTranslation()
-  const config = useConfigStore()
-  const sessionsById = useSessionStore((s) => s.sessions)
-  const sessions = useMemo(() => Object.values(sessionsById), [sessionsById])
-  const [draftKind, setDraftKind] = useState<SessionSilenceRuleKind>('cwd')
-  const [draftPattern, setDraftPattern] = useState('')
-
-  const ruleKindOptions = [
-    { value: 'cwd', label: t('settings.sessionSilence.directory', { defaultValue: 'Directory' }) },
-    { value: 'prompt', label: t('settings.sessionSilence.prompt', { defaultValue: 'Prompt' }) },
-  ]
-
-  const addRule = () => {
-    const pattern = draftPattern.trim()
-    if (!pattern) return
-    config.addSessionSilenceRule({ kind: draftKind, pattern })
-    setDraftPattern('')
-    refreshDisplayedSessions()
-  }
-
-  const toggleRule = (rule: SessionSilenceRule) => {
-    config.toggleSessionSilenceRule(rule.id)
-    refreshDisplayedSessions()
-  }
-
-  const removeRule = (rule: SessionSilenceRule) => {
-    config.removeSessionSilenceRule(rule.id)
-    refreshDisplayedSessions()
-  }
-
-  return (
-    <div className="session-silence">
-      <div className="session-silence__intro">
-        {t('settings.sessionSilence.description', { defaultValue: 'Hide noisy non-blocking sessions by working directory or by the beginning of the first user prompt. Approvals, questions, plans, and errors still surface.' })}
-      </div>
-      <div className="session-silence__add">
-        <Dropdown value={draftKind} options={ruleKindOptions} onChange={(v) => setDraftKind(v as SessionSilenceRuleKind)} minWidth={120} />
-        <GlassInput
-          value={draftPattern}
-          placeholder={draftKind === 'cwd'
-            ? t('settings.sessionSilence.directoryPlaceholder', { defaultValue: '/path/to/project' })
-            : t('settings.sessionSilence.promptPlaceholder', { defaultValue: 'Prompt starts with...' })}
-          onChange={(event) => setDraftPattern((event.target as HTMLInputElement).value)}
-          onSubmit={addRule}
-        />
-        <GlassButton variant="secondary" onClick={addRule} disabled={!draftPattern.trim()}>
-          {t('settings.add', { defaultValue: 'Add' })}
-        </GlassButton>
-      </div>
-      {config.sessionSilenceRules.length === 0 ? (
-        <div className="session-silence__empty">
-          {t('settings.sessionSilence.empty', { defaultValue: 'No custom silence rules yet. Right-click a session in the island to add one quickly.' })}
-        </div>
-      ) : (
-        <div className="session-silence__list">
-          {config.sessionSilenceRules.map((rule) => {
-            const matchCount = sessions.filter((session) => sessionMatchesSilenceRule(session, rule)).length
-            return (
-              <div className="session-silence__rule" key={rule.id}>
-                <div className="session-silence__rule-main">
-                  <span className="session-silence__badge">
-                    {rule.kind === 'cwd'
-                      ? t('settings.sessionSilence.directory', { defaultValue: 'Directory' })
-                      : t('settings.sessionSilence.prompt', { defaultValue: 'Prompt' })}
-                  </span>
-                  <span className="session-silence__pattern" title={rule.pattern}>{rule.pattern}</span>
-                  <span className="session-silence__matches">
-                    {t('settings.sessionSilence.matchCount', { count: matchCount, defaultValue: `${matchCount} match` })}
-                  </span>
-                </div>
-                <div className="session-silence__actions">
-                  <Toggle checked={rule.enabled} onChange={() => toggleRule(rule)} />
-                  <button className="settings-mini-button" type="button" onClick={() => removeRule(rule)}>
-                    {t('settings.remove', { defaultValue: 'Remove' })}
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
 }
 
 function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
@@ -538,7 +445,7 @@ function OverviewTab() {
 
       <div className="overview-section-heading">
         <h3>{t('settings.island.overview.coreSwitches', { defaultValue: 'Core Switches' })}</h3>
-        <p>{t('settings.island.overview.coreSwitchesDesc', { defaultValue: 'Primary controls for visibility, suppression, mascots, and plugin sessions.' })}</p>
+        <p>{t('settings.island.overview.coreSwitchesDesc', { defaultValue: 'Primary controls for visibility, focus behavior, and suppression.' })}</p>
       </div>
 
       <SettingGroup>
@@ -596,35 +503,6 @@ function BehaviorTab() {
     { value: '30', label: t('settings.idleTimeoutMinutes', { minutes: 30 }) },
   ]
 
-  const defaultMascotOptions = [
-    { value: 'claude-code', label: 'Claude Code' },
-    { value: 'codex', label: 'Codex' },
-    { value: 'gemini-cli', label: 'Gemini CLI' },
-    { value: 'cursor', label: 'Cursor' },
-    { value: 'cursor-cli', label: 'Cursor CLI' },
-    { value: 'copilot', label: 'GitHub Copilot' },
-    { value: 'trae', label: 'Trae' },
-    { value: 'qoder', label: 'Qoder' },
-    { value: 'codebuddy', label: 'CodeBuddy' },
-    { value: 'qwen', label: 'Qwen' },
-    { value: 'kimi', label: 'Kimi' },
-    { value: 'opencode', label: 'OpenCode' },
-    { value: 'droid', label: 'Factory Droid' },
-    { value: 'stepfun', label: 'StepFun' },
-    { value: 'antigravity', label: 'Antigravity' },
-    { value: 'workbuddy', label: 'WorkBuddy' },
-    { value: 'hermes', label: 'Hermes' },
-    { value: 'pi', label: 'Pi' },
-    { value: 'kiro', label: 'Kiro' },
-    { value: 'cline', label: 'Cline' },
-  ]
-
-  const pluginSessionOptions = [
-    { value: 'separate', label: t('settings.pluginSessionSeparate') },
-    { value: 'merge', label: t('settings.pluginSessionMerge') },
-    { value: 'hide', label: t('settings.pluginSessionHide') },
-  ]
-
   return (
     <>
       <SettingGroup label={t('settings.island.section.expand', { defaultValue: 'Expand' })}>
@@ -675,18 +553,6 @@ function BehaviorTab() {
         <SettingRow label={t('settings.clickToDetail')} description={t('settings.clickToDetailDesc')}>
           <Toggle checked={config.clickToDetail} onChange={(v) => config.updateConfig('clickToDetail', v)} />
         </SettingRow>
-        <SettingRow label={t('settings.defaultMascot')} description={t('settings.defaultMascotDesc')}>
-          <Dropdown value={config.defaultMascotSource} options={defaultMascotOptions}
-            onChange={(v) => config.updateConfig('defaultMascotSource', v)} minWidth={150} />
-        </SettingRow>
-        <SettingRow label={t('settings.pluginSessionMode')} description={t('settings.pluginSessionModeDesc')}>
-          <Dropdown
-            value={config.pluginSessionMode}
-            options={pluginSessionOptions}
-            onChange={(v) => config.updateConfig('pluginSessionMode', v as 'separate' | 'merge' | 'hide')}
-            minWidth={140}
-          />
-        </SettingRow>
         <SettingRow label={t('settings.carouselInterval')} description={t('settings.carouselIntervalDesc')}>
           <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
             onChange={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
@@ -699,7 +565,6 @@ function BehaviorTab() {
           <Slider value={config.sessionTimeoutMinutes} min={1} max={120} step={1}
             onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
         </SettingRow>
-        <SessionSilenceRulesControl />
       </SettingGroup>
     </>
   )

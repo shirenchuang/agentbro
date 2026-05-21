@@ -248,7 +248,6 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const showToolStatus = useConfigStore((s) => s.showToolStatus)
   const showUsageQuota = useConfigStore((s) => s.showUsageQuota)
   const usageQueryEnabled = useConfigStore((s) => s.usageQueryEnabled)
-  const defaultMascotSource = useConfigStore((s) => s.defaultMascotSource)
   const tipsEnabled = useConfigStore((s) => s.tipsEnabled)
   const activeTheme = useThemeStore((s) => s.activeTheme)
   const colorTheme = useThemeStore((s) => s.colorTheme)
@@ -339,7 +338,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)
   const elapsedText = unattendedLevel !== 'none' ? formatElapsed(lead?.unattendedSince) : ''
   const renderMascot = (session: SessionState | undefined, size: number) => {
-    if (!session) {
+    if (!session || !session.agentType) {
       return (
         <span className="collapsed-bar__idle-logo-wrap" style={{ width: size, height: size }} aria-hidden="true">
           <img className="collapsed-bar__idle-logo" src="/agentbro-app-icon.png" alt="" />
@@ -359,7 +358,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
       )
     }
 
-    return <MascotRouter toolType={session?.agentType || defaultMascotSource} phase={session?.phase || 'idle'} size={size} />
+    return <MascotRouter toolType={session.agentType} phase={session.phase || 'idle'} size={size} />
   }
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
@@ -377,7 +376,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
       <div className="collapsed-bar collapsed-bar--micro">
         <div className="collapsed-bar__micro-main">
           {workingCount > 0 && lead
-            ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={22} />
+            ? renderMascot(lead, 22)
             : renderMascot(undefined, 22)}
           <span className="collapsed-bar__micro-count">{count}</span>
         </div>
@@ -392,7 +391,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
         <div className="collapsed-bar__status-row">
           <div className="collapsed-bar__left" style={{ gap: 8 }}>
             {workingCount > 0 && lead
-              ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={20} />
+              ? renderMascot(lead, 20)
               : renderMascot(undefined, 20)}
             {shouldShowUsageQuota && effectiveRateLimits ? (
               <RateLimitBar rateLimits={effectiveRateLimits} />
@@ -458,7 +457,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
           {lead ? (
             <>
               {workingCount > 0 && lead
-                ? <MascotRouter toolType={lead.agentType || defaultMascotSource} phase={lead.phase || 'idle'} size={22} />
+                ? renderMascot(lead, 22)
                 : renderMascot(undefined, 22)}
               <div className="collapsed-bar__carousel">
                 {isCompacting ? (

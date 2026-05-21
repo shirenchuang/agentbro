@@ -946,10 +946,15 @@ pub async fn send_message(
 }
 
 fn is_codex_desktop_session(session: &SessionState) -> bool {
+    let terminal = session.terminal.trim();
+
     session.agent_type == "codex"
-        && session.tty.is_none()
-        && !session.terminal.starts_with("/dev/")
-        && (session.terminal.is_empty() || session.terminal.to_ascii_lowercase().contains("codex"))
+        && session
+            .tty
+            .as_deref()
+            .map_or(true, |tty| tty.trim().is_empty())
+        && !terminal.starts_with("/dev/")
+        && (terminal.is_empty() || terminal.to_ascii_lowercase().contains("codex"))
 }
 
 fn resolve_session_tty(session: &SessionState) -> Option<String> {
@@ -2861,11 +2866,25 @@ mod tests {
 
     #[test]
     fn codex_desktop_detection_uses_missing_tty_or_codex_terminal() {
-        // Desktop: no tty, terminal is empty or contains "codex"
+        // Desktop background send is only safe when there is no foreground TTY.
         assert!(is_codex_desktop_session(&session("codex", "", None)));
         assert!(is_codex_desktop_session(&session("codex", "Codex", None)));
         assert!(!is_codex_desktop_session(&session(
+            "codex",
+            "Codex",
+            Some("/dev/ttys001")
+        )));
+        let mut bundle_session = session("codex", "iTerm2", Some("/dev/ttys001"));
+        bundle_session.term_bundle_id = Some("com.openai.codex".to_string());
+        assert!(!is_codex_desktop_session(&bundle_session));
+        assert!(!is_codex_desktop_session(&session(
             "codex", "AgentBro", None
+        )));
+        // CLI: a tty without Codex app metadata should stay on the terminal path.
+        assert!(!is_codex_desktop_session(&session(
+            "codex",
+            "",
+            Some("/dev/ttys001")
         )));
         // CLI: terminal is a tty path — not desktop even if tty field is None
         assert!(!is_codex_desktop_session(&session(

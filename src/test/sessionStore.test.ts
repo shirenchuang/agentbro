@@ -634,6 +634,55 @@ describe('sessionStore backend overlays', () => {
     expect(useSessionStore.getState().sessionList).toHaveLength(1)
   })
 
+  it('hides Codex App title metadata placeholders and suppresses overlays', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agentbro',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'idle',
+        responseText: '{"title":"修复灵动岛乱码"}',
+        description: '{"title":"修复灵动岛乱码"}',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessionList).toEqual([])
+    expect(state.overlayQueue).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('does not show response overlays for Codex title metadata on real sessions', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agentbro',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'processing',
+        sessionTitle: '修复灵动岛乱码',
+        lastUserMessage: '帮我修一下灵动岛乱码',
+      }),
+    ])
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        agentType: 'codex',
+        project: 'agentbro',
+        terminal: 'Codex',
+        termBundleId: 'com.openai.codex',
+        phase: 'idle',
+        sessionTitle: '修复灵动岛乱码',
+        lastUserMessage: '帮我修一下灵动岛乱码',
+        responseText: '{"title":"修复灵动岛乱码"}',
+      }),
+    ])
+
+    expect(useSessionStore.getState().sessionList).toHaveLength(1)
+    expect(useSessionStore.getState().overlayQueue).toEqual([])
+  })
+
   it('hides internal probe sessions from the visible session list', () => {
     useSessionStore.getState().replaceAllSessions([
       session({

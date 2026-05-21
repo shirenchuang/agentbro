@@ -133,7 +133,7 @@
         "persistentMonitor": "Persistent Monitor",
         "persistentMonitorDesc": "Keeps the mini island visible so you can confirm the active session and runtime state.",
         "coreSwitches": "Core Switches",
-        "coreSwitchesDesc": "Primary controls for visibility, focus behavior, suppression, mascots, and plugin sessions."
+        "coreSwitchesDesc": "Primary controls for visibility, focus behavior, and suppression."
       }
     },
     "generalDesc": "Basic application behavior and startup preferences.",
@@ -401,19 +401,12 @@
     "clickToDetailDesc": "When enabled, clicking a session card opens chat detail; when disabled, it jumps to the terminal.",
     "tipsEnabled": "Show Tips",
     "tipsEnabledDesc": "Show rotating tips in the center area when there are no sessions or all sessions are idle.",
-    "pluginSessionMode": "Plugin Session Mode",
-    "pluginSessionModeDesc": "How plugin sub-sessions are displayed",
-    "pluginSessionSeparate": "Separate",
-    "pluginSessionMerge": "Merge",
-    "pluginSessionHide": "Hide",
     "carouselInterval": "Carousel Interval",
     "carouselIntervalDesc": "Info carousel rotation interval in collapsed bar",
     "processingTimeout": "Processing Guard",
     "processingTimeoutDesc": "How long a session may stay stuck in processing without new tool activity before AgentBro exits processing state.",
     "sessionTimeout": "Hide Expired Sessions",
     "sessionTimeoutDesc": "How long expired or completed sessions remain in the list before being hidden.",
-    "defaultMascot": "Default Mascot",
-    "defaultMascotDesc": "Mascot shown when no sessions exist",
     "excludedCwd": "Excluded Directories",
     "excludedCwdDesc": "Ignore events from working directories containing these substrings (comma-separated)",
     "autoApproveTools": "Auto-approve Tools",

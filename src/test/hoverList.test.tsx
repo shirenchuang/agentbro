@@ -81,29 +81,14 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
-  it('opens a right-click silence menu without opening the session', () => {
+  it('ignores right-click without opening the session', () => {
     const onSessionClick = vi.fn()
-    const onSilenceDirectory = vi.fn()
-    const onSilencePrompt = vi.fn()
-    const current = session({ cwd: '/tmp/agent-island' })
-    render(
-      <HoverList
-        sessions={[current]}
-        onSessionClick={onSessionClick}
-        onSilenceDirectory={onSilenceDirectory}
-        onSilencePrompt={onSilencePrompt}
-      />,
-    )
+    render(<HoverList sessions={[session({ cwd: '/tmp/agent-island' })]} onSessionClick={onSessionClick} />)
 
     fireEvent.contextMenu(screen.getByText('agent-island · Fix island interactions'))
 
     expect(onSessionClick).not.toHaveBeenCalled()
-    expect(screen.getByRole('menu')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByText('Hide this directory'))
-
-    expect(onSilenceDirectory).toHaveBeenCalledWith(current)
-    expect(onSilencePrompt).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
   it('shows named subagents and opens their history rows', () => {
@@ -427,6 +412,24 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('agent-island · 第三个自定义高度怎么都不生效')).toBeInTheDocument()
     expect(screen.getByText('第三个自定义高度怎么都不生效')).toBeInTheDocument()
     expect(screen.getByText('确实，第三个自定义高度之前没有正确同步。')).toBeInTheDocument()
+  })
+
+  it('unwraps Codex title metadata instead of rendering raw JSON', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'idle',
+          sessionTitle: '{"title":"修复灵动岛乱码"}',
+          lastUserMessage: undefined,
+          responseText: '{"title":"修复灵动岛乱码"}',
+          description: undefined,
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(screen.getAllByText('修复灵动岛乱码').length).toBeGreaterThan(0)
+    expect(screen.queryByText('{"title":"修复灵动岛乱码"}')).not.toBeInTheDocument()
   })
 
   it('shows generic working text for processing sessions without a tool', () => {

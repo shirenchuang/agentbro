@@ -55,8 +55,13 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
       />
       <div className="settings-content settings-scroll">
         <div className="settings-window-brand" aria-hidden="true">
-          <img src="/agentbro-app-icon.png" alt="" />
-          <span>AgentBro</span>
+          <span className="settings-window-brand__mark">
+            <img src="/agentbro-app-icon.png" alt="" />
+          </span>
+          <span className="settings-window-brand__copy">
+            <span className="settings-window-brand__name">AgentBro</span>
+            <span className="settings-window-brand__slogan">{t('notch.slogan')}</span>
+          </span>
         </div>
         <button
           className="settings-close-btn"

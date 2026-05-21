@@ -133,7 +133,7 @@
         "persistentMonitor": "常驻监控",
         "persistentMonitorDesc": "保持微型岛可见，随时确认当前会话和运行状态。",
         "coreSwitches": "核心开关",
-        "coreSwitchesDesc": "管理可见性、焦点跟随、智能抑制、吉祥物和插件会话。"
+        "coreSwitchesDesc": "管理可见性、焦点跟随和智能抑制。"
       },
       "integration": {
         "disabled": "外部跟踪已关闭"
@@ -483,19 +483,12 @@
     "clickToDetailDesc": "开启后点击会话卡片进入聊天详情；关闭后点击直接跳转到终端。",
     "tipsEnabled": "显示 Tips",
     "tipsEnabledDesc": "无会话或全部空闲时，在中间区域显示轮播 Tips。",
-    "pluginSessionMode": "插件会话模式",
-    "pluginSessionModeDesc": "插件子会话的显示方式",
-    "pluginSessionSeparate": "分开",
-    "pluginSessionMerge": "合并",
-    "pluginSessionHide": "隐藏",
     "carouselInterval": "轮播间隔",
     "carouselIntervalDesc": "收起栏信息轮播的旋转间隔",
     "processingTimeout": "处理中保护时间",
     "processingTimeoutDesc": "会话一直显示“处理中”但没有新工具活动时，多久后自动退出处理中状态，避免卡住。",
     "sessionTimeout": "过期会话隐藏时间",
     "sessionTimeoutDesc": "会话已标记为“已过期”或“已完成”后，还在列表里保留多久再隐藏。",
-    "defaultMascot": "默认吉祥物",
-    "defaultMascotDesc": "无会话时显示的吉祥物",
     "excludedCwd": "排除目录",
     "excludedCwdDesc": "忽略包含这些子字符串的工作目录的事件（逗号分隔）",
     "autoApproveTools": "自动批准工具",

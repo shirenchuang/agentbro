@@ -96,7 +96,7 @@
 .settings-sidebar__collapse-toggle {
   display: flex;
   align-items: center;
-  min-height: 70px;
+  min-height: 58px;
   border: 1px solid rgba(255, 255, 255, 0.74);
   border-radius: 22px;
   background:
@@ -113,7 +113,7 @@
 .settings-sidebar__brand-home {
   justify-content: flex-start;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .settings-sidebar__collapse-toggle {
@@ -147,9 +147,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   overflow: hidden;
   border-radius: 15px;
   background:
@@ -177,29 +177,18 @@
 }
 
 .settings-sidebar__brand-copy {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: center;
   min-width: 0;
   margin-left: 12px;
   text-align: left;
-}
-
-.settings-sidebar__brand-kicker {
-  overflow: hidden;
-  color: var(--settings-text-tertiary);
-  font-size: 10px;
-  font-weight: 850;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .settings-sidebar__brand-title {
   overflow: hidden;
   color: var(--settings-text-primary);
   font-size: 17px;
-  font-weight: 820;
+  font-weight: 860;
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -363,7 +352,7 @@
 
 .settings-sidebar--capability .settings-sidebar__brand-home,
 .settings-sidebar--capability .settings-sidebar__collapse-toggle {
-  min-height: 66px;
+  min-height: 58px;
 }
 
 .settings-capability-nav {
@@ -548,8 +537,8 @@
   left: 56px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;
+  gap: 10px;
+  min-height: 34px;
   color: #525a67;
   font-size: 13px;
   font-weight: 820;
@@ -557,11 +546,41 @@
   pointer-events: none;
 }
 
-.settings-window-brand img {
+.settings-window-brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 5px 12px rgba(31, 41, 71, 0.12);
+}
+
+.settings-window-brand__mark img {
   width: 22px;
   height: 22px;
   border-radius: 7px;
-  box-shadow: 0 5px 12px rgba(31, 41, 71, 0.12);
+}
+
+.settings-window-brand__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-window-brand__name {
+  color: #525a67;
+  font-size: 13px;
+  font-weight: 860;
+  letter-spacing: 0;
+}
+
+.settings-window-brand__slogan {
+  color: var(--settings-text-secondary);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0;
 }
 
 /* ── Close Button (settings-specific) ── */
@@ -922,98 +941,6 @@
   gap: 8px;
   flex-shrink: 0;
   margin-left: 16px;
-}
-
-.session-silence {
-  border-top: 1px solid var(--settings-separator);
-  padding: 12px 0;
-}
-
-.session-silence__intro,
-.session-silence__empty {
-  color: var(--settings-text-secondary);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.session-silence__add {
-  display: grid;
-  grid-template-columns: 120px minmax(180px, 1fr) auto;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.session-silence__list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.session-silence__rule {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 10px;
-  border: 1px solid var(--settings-card-border);
-  border-radius: 8px;
-  background: var(--settings-bg);
-}
-
-.session-silence__rule-main {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.session-silence__badge {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: rgba(0, 122, 255, 0.1);
-  color: var(--settings-accent);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.session-silence__pattern {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--settings-text-primary);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-silence__matches {
-  flex-shrink: 0;
-  color: var(--settings-text-tertiary);
-  font-size: 11px;
-}
-
-.session-silence__actions {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-@media (max-width: 720px) {
-  .session-silence__add {
-    grid-template-columns: 1fr;
-  }
-
-  .session-silence__rule {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .session-silence__actions {
-    justify-content: flex-end;
-    width: 100%;
-  }
 }
 
 /* ── Toggle (iOS/macOS style) ── */

@@ -10,7 +10,6 @@ import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
-import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
@@ -1110,29 +1109,6 @@ export function NotchPanel() {
     handleSessionClick(sessionId, { forceDetail: true })
   }
 
-  const handleSilenceDirectory = (session: typeof displayedSessions[number]) => {
-    const pattern = getSessionDirectorySilenceTarget(session)
-    if (!pattern) return
-    useConfigStore.getState().addSessionSilenceRule({
-      kind: 'cwd',
-      pattern,
-      label: session.project || pattern,
-    })
-    useSessionStore.getState().replaceAllSessions(Object.values(useSessionStore.getState().sessions), { suppressed: true })
-  }
-
-  const handleSilencePrompt = (session: typeof displayedSessions[number]) => {
-    const prompt = getSessionPromptSilenceTarget(session).replace(/\s+/g, ' ').trim()
-    if (!prompt) return
-    const pattern = prompt.length > 96 ? prompt.slice(0, 96) : prompt
-    useConfigStore.getState().addSessionSilenceRule({
-      kind: 'prompt',
-      pattern,
-      label: session.project || session.sessionTitle || session.id,
-    })
-    useSessionStore.getState().replaceAllSessions(Object.values(useSessionStore.getState().sessions), { suppressed: true })
-  }
-
   const handleCollapse = () => {
     detailModeRef.current = false
     detailBackGuardUntilRef.current = 0
@@ -1859,8 +1835,6 @@ export function NotchPanel() {
                       sessions={displayedSessions}
                       onSessionClick={handleSessionClick}
                       onSubagentClick={handleSubagentClick}
-                      onSilenceDirectory={handleSilenceDirectory}
-                      onSilencePrompt={handleSilencePrompt}
                       onInputDraftStateChange={setHasInputDraft}
                       onJumpToTerminal={(id) => {
                         setNotchFocusable(false).catch(() => {})

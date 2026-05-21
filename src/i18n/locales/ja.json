@@ -361,19 +361,12 @@
     "clickToDetailDesc": "オンの場合はセッションカードのクリックでチャット詳細を開き、オフの場合はターミナルへ移動します。",
     "tipsEnabled": "ヒントを表示",
     "tipsEnabledDesc": "セッションがない時、またはすべてアイドル時に中央エリアへヒントを表示します。",
-    "pluginSessionMode": "プラグインセッションモード",
-    "pluginSessionModeDesc": "プラグインサブセッションの表示方法",
-    "pluginSessionSeparate": "分離",
-    "pluginSessionMerge": "マージ",
-    "pluginSessionHide": "非表示",
     "carouselInterval": "カルーセル間隔",
     "carouselIntervalDesc": "折りたたみバーの情報カルーセルの回転間隔",
     "processingTimeout": "処理タイムアウト",
     "processingTimeoutDesc": "処理ステータスをリセットするまでの最大時間",
     "sessionTimeout": "セッションタイムアウト",
     "sessionTimeoutDesc": "アイドルセッションを削除するまでの時間",
-    "defaultMascot": "デフォルトマスコット",
-    "defaultMascotDesc": "セッションがない時に表示されるマスコット",
     "excludedCwd": "除外ディレクトリ",
     "excludedCwdDesc": "これらの部分文字列を含むワーキングディレクトリからのイベントを無視（カンマ区切り）",
     "autoApproveTools": "自動承認ツール",
@@ -438,7 +431,7 @@
         "persistentMonitor": "Persistent Monitor",
         "persistentMonitorDesc": "Keeps the mini island visible so you can confirm the active session and runtime state.",
         "coreSwitches": "Core Switches",
-        "coreSwitchesDesc": "Primary controls for visibility, focus behavior, suppression, mascots, and plugin sessions."
+        "coreSwitchesDesc": "Primary controls for visibility, focus behavior, and suppression."
       }
     },
     "resetIslandPosition": "Reset Island Position",

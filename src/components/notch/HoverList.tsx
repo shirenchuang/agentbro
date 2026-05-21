@@ -15,10 +15,10 @@ import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, se
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
-import { getSessionDirectorySilenceTarget, getSessionPromptSilenceTarget } from '../../utils/sessionSilence'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
+import { parseCodexTitleMetadata } from '../../utils/codexMetadata'
 import { DiffView } from './DiffView'
 import './HoverList.css'
 
@@ -27,8 +27,6 @@ interface HoverListProps {
   onSessionClick: (sessionId: string) => void
   onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (sessionId: string) => void
-  onSilenceDirectory?: (session: SessionState) => void
-  onSilencePrompt?: (session: SessionState) => void
   onInputDraftStateChange?: (hasDraft: boolean) => void
   focusFilteredEmpty?: boolean
 }
@@ -139,6 +137,10 @@ function truncateText(text: string, maxLength: number): string {
   return text.slice(0, maxLength - 3) + '...'
 }
 
+function normalizeCodexPreviewText(text: string): string {
+  return parseCodexTitleMetadata(text) || text
+}
+
 function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
@@ -171,32 +173,32 @@ function latestChatText(session: SessionState, role: 'user' | 'assistant'): stri
     const text = role === 'assistant'
       ? (message.role === 'assistant' ? (message.trailingContent || message.content) : '')
       : (message.role === 'user' ? message.content : '')
-    const cleaned = stripMarkdown(text || '')
+    const cleaned = normalizeCodexPreviewText(stripMarkdown(text || ''))
     if (cleaned && !isInternalCodexPrompt(cleaned)) return cleaned
   }
   return undefined
 }
 
 function latestUserMessage(session: SessionState): string | undefined {
-  const direct = stripMarkdown(session.lastUserMessage || '')
+  const direct = normalizeCodexPreviewText(stripMarkdown(session.lastUserMessage || ''))
   if (direct && !isInternalCodexPrompt(direct)) return direct
   return latestChatText(session, 'user')
 }
 
 function latestAssistantPreview(session: SessionState): string | undefined {
-  const direct = stripMarkdown(session.responseText || '')
+  const direct = normalizeCodexPreviewText(stripMarkdown(session.responseText || ''))
   if (direct) return direct
   const chat = latestChatText(session, 'assistant')
   if (chat) return chat
   if (session.description && session.phase !== 'processing') {
-    return stripMarkdown(session.description)
+    return normalizeCodexPreviewText(stripMarkdown(session.description))
   }
   return undefined
 }
 
 function getHoverSessionTitle(session: SessionState, recentUserMessage?: string): string {
   const project = (session.project || '').trim()
-  const explicitTitle = stripMarkdown(session.sessionTitle || '')
+  const explicitTitle = normalizeCodexPreviewText(stripMarkdown(session.sessionTitle || ''))
   const title = explicitTitle && !isInternalCodexPrompt(explicitTitle)
     ? explicitTitle
     : (recentUserMessage || '')
@@ -1193,8 +1195,6 @@ function SessionCard({
   onSessionClick,
   onSubagentClick,
   onJumpToTerminal,
-  onSilenceDirectory,
-  onSilencePrompt,
   onInputDraftStateChange,
   animDuration,
   animDelay,
@@ -1205,8 +1205,6 @@ function SessionCard({
   onSessionClick: (id: string) => void
   onSubagentClick?: (sessionId: string, subagent: SubagentInfo) => void
   onJumpToTerminal?: (id: string) => void
-  onSilenceDirectory?: (session: SessionState) => void
-  onSilencePrompt?: (session: SessionState) => void
   onInputDraftStateChange?: (hasDraft: boolean) => void
   animDuration: number
   animDelay: number
@@ -1230,12 +1228,9 @@ function SessionCard({
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
   const openedOnMouseDownRef = useRef(false)
-  const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const isMuted = Boolean(mutedSessions[session.id])
   const isCompactingContext = session.phase === 'compacting'
     || (session.phase === 'processing' && !session.lastToolName && isCompactingContextDescription(session.description))
-  const directoryTarget = getSessionDirectorySilenceTarget(session)
-  const promptTarget = getSessionPromptSilenceTarget(session)
 
   const isStatic = session.phase === 'ready' || session.phase === 'idle' || session.phase === 'done'
   const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
@@ -1280,33 +1275,6 @@ function SessionCard({
     event.stopPropagation()
     onJumpToTerminal?.(session.id)
   }
-  const handleContextMenu = (event: MouseEvent<HTMLDivElement>) => {
-    if (!onSilenceDirectory && !onSilencePrompt) return
-    event.preventDefault()
-    event.stopPropagation()
-    setContextMenuOpen(true)
-  }
-  const runContextAction = (action: (() => void) | undefined) => (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    event.stopPropagation()
-    setContextMenuOpen(false)
-    action?.()
-  }
-
-  useEffect(() => {
-    if (!contextMenuOpen) return
-    const close = () => setContextMenuOpen(false)
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') close()
-    }
-    window.addEventListener('pointerdown', close)
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      window.removeEventListener('pointerdown', close)
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [contextMenuOpen])
-
   return (
     <motion.div
       key={session.id}
@@ -1323,33 +1291,8 @@ function SessionCard({
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
         onMouseDownCapture={handleMouseDownCapture}
         onClickCapture={handleClickCapture}
-        onContextMenu={handleContextMenu}
         onKeyDown={handleKeyDown}
       >
-        {contextMenuOpen && (
-          <div className="hover-list__context-menu" data-no-open role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              className="hover-list__context-item"
-              disabled={!directoryTarget || !onSilenceDirectory}
-              onClick={runContextAction(onSilenceDirectory ? () => onSilenceDirectory(session) : undefined)}
-            >
-              <span className="hover-list__context-title">{t('notch.silenceDirectory', { defaultValue: 'Hide this directory' })}</span>
-              <span className="hover-list__context-detail">{directoryTarget || t('notch.silenceUnavailable', { defaultValue: 'Unavailable' })}</span>
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="hover-list__context-item"
-              disabled={!promptTarget || !onSilencePrompt}
-              onClick={runContextAction(onSilencePrompt ? () => onSilencePrompt(session) : undefined)}
-            >
-              <span className="hover-list__context-title">{t('notch.silencePrompt', { defaultValue: 'Hide prompts like this' })}</span>
-              <span className="hover-list__context-detail">{promptTarget ? truncateText(promptTarget, 54) : t('notch.silenceUnavailable', { defaultValue: 'Unavailable' })}</span>
-            </button>
-          </div>
-        )}
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
           <div className="hover-list__status-col">
@@ -1528,7 +1471,7 @@ function SessionCard({
   )
 }
 
-export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onSilenceDirectory, onSilencePrompt, onInputDraftStateChange, focusFilteredEmpty = false }: HoverListProps) {
+export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToTerminal, onInputDraftStateChange, focusFilteredEmpty = false }: HoverListProps) {
   const { t } = useTranslation()
 
   const hoverSpeed = useConfigStore((s) => s.hoverSpeed)
@@ -1641,8 +1584,6 @@ export function HoverList({ sessions, onSessionClick, onSubagentClick, onJumpToT
             onSessionClick={onSessionClick}
             onSubagentClick={onSubagentClick}
             onJumpToTerminal={onJumpToTerminal}
-            onSilenceDirectory={onSilenceDirectory}
-            onSilencePrompt={onSilencePrompt}
             onInputDraftStateChange={onInputDraftStateChange}
             animDuration={animDuration}
             animDelay={index * 0.03 * islandAnimationScale}
