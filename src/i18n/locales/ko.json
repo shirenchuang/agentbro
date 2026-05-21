@@ -260,6 +260,13 @@
     "designSystem": "리퀴드 글라스 디자인 시스템",
     "copyright": "© 2026 AgentBro 기여자",
     "quitApp": "AgentBro 종료",
+    "connect": "연결",
+    "disconnect": "연결 해제",
+    "disconnected": "연결 안됨",
+    "connecting": "연결 중",
+    "failed": "실패",
+    "installHooks": "훅 설치",
+    "uninstallHooks": "훅 제거",
     "language": "언어",
     "languageDesc": "인터페이스 언어",
     "english": "English",
@@ -569,5 +576,14 @@
     "fileLarge": "Large file ({{size}}) — source view only",
     "frontmatter": "Frontmatter",
     "frontmatterAdditional": "{{count}} additional fields"
+  },
+  "update": {
+    "availableTitle": "업데이트 가능",
+    "readyTitle": "업데이트 준비 완료",
+    "later": "나중에",
+    "install": "설치 후 재시작",
+    "downloading": "다운로드 중...",
+    "restart": "지금 재시작",
+    "restartHint": "업데이트가 다운로드되었습니다. 앱을 재시작하여 적용하세요."
   }
 }

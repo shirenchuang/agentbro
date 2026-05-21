@@ -74,8 +74,9 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install create-dmg
+      - name: Install Tauri CLI and create-dmg
         run: |
+          cargo install tauri-cli --locked
           if ! command -v create-dmg >/dev/null 2>&1; then
             brew install create-dmg
           fi

@@ -633,5 +633,14 @@
     "fileLarge": "大文件 ({{size}}) — 仅显示源码",
     "frontmatter": "元数据",
     "frontmatterAdditional": "{{count}} 个附加字段"
+  },
+  "update": {
+    "availableTitle": "发现新版本",
+    "readyTitle": "更新就绪",
+    "later": "稍后",
+    "install": "安装并重启",
+    "downloading": "下载中...",
+    "restart": "立即重启",
+    "restartHint": "更新已下载完成，重启应用即可生效。"
   }
 }

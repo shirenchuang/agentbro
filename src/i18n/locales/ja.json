@@ -260,6 +260,13 @@
     "designSystem": "リキッドグラスデザインシステム",
     "copyright": "© 2026 AgentBro Contributors",
     "quitApp": "AgentBroを終了",
+    "connect": "接続",
+    "disconnect": "切断",
+    "disconnected": "未接続",
+    "connecting": "接続中",
+    "failed": "失敗",
+    "installHooks": "フックをインストール",
+    "uninstallHooks": "フックをアンインストール",
     "language": "言語",
     "languageDesc": "インターフェース言語",
     "english": "English",
@@ -569,5 +576,14 @@
     "fileLarge": "Large file ({{size}}) — source view only",
     "frontmatter": "Frontmatter",
     "frontmatterAdditional": "{{count}} additional fields"
+  },
+  "update": {
+    "availableTitle": "アップデートがあります",
+    "readyTitle": "アップデート準備完了",
+    "later": "後で",
+    "install": "インストールして再起動",
+    "downloading": "ダウンロード中...",
+    "restart": "今すぐ再起動",
+    "restartHint": "アップデートのダウンロードが完了しました。アプリを再起動して適用してください。"
   }
 }

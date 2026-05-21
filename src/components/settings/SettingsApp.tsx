@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SettingsSidebar } from './SettingsSidebar'
+import { UpdateDialog } from './UpdateDialog'
 import { GeneralSection } from './sections/GeneralSection'
 import { IslandSection } from './sections/IslandSection'
 import { AgentsSection } from './sections/AgentsSection'
@@ -10,13 +11,13 @@ import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { LicenseSection } from './sections/LicenseSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
+import { useUpdater } from '../../hooks/useUpdater'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
   'license': LicenseSection,
-  'about': AboutSection,
 }
 
 interface SettingsAppProps {
@@ -25,6 +26,7 @@ interface SettingsAppProps {
 
 export function SettingsApp({ onClose }: SettingsAppProps) {
   const { t } = useTranslation()
+  const updater = useUpdater()
   const [activeSection, setActiveSection] = useState('general')
   const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
@@ -90,12 +92,30 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
                 customAgentDialogOpen={customAgentDialogOpen}
                 onCustomAgentDialogOpenChange={setCustomAgentDialogOpen}
               />
+            ) : activeSection === 'about' ? (
+              <AboutSection
+                updateStatus={updater.status}
+                updateVersion={updater.version}
+                updateError={updater.error}
+                onCheckForUpdate={updater.checkForUpdate}
+              />
             ) : (
               <SectionComponent />
             )}
           </motion.div>
         </AnimatePresence>
       </div>
+
+      {(updater.status === 'available' || updater.status === 'downloading' || updater.status === 'ready') && updater.version && (
+        <UpdateDialog
+          version={updater.version}
+          notes={updater.notes}
+          date={updater.date}
+          status={updater.status}
+          onInstall={updater.installUpdate}
+          onDismiss={updater.dismissUpdate}
+        />
+      )}
     </div>
   )
 }

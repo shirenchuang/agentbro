@@ -396,5 +396,14 @@
     "expired": "Deneme süresi doldu — Tüm özelliklerin kilidini açmak için yükseltin",
     "daysRemaining": "Deneme: {{days}} gün kaldı",
     "dismiss": "Kapat"
+  },
+  "update": {
+    "availableTitle": "Güncelleme Mevcut",
+    "readyTitle": "Güncelleme Hazır",
+    "later": "Sonra",
+    "install": "Kur ve Yeniden Başlat",
+    "downloading": "İndiriliyor...",
+    "restart": "Şimdi Yeniden Başlat",
+    "restartHint": "Güncelleme indirildi. Uygulamak için uygulamayı yeniden başlatın."
   }
 }

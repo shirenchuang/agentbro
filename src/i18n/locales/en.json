@@ -575,5 +575,14 @@
     "fileLarge": "Large file ({{size}}) — source view only",
     "frontmatter": "Frontmatter",
     "frontmatterAdditional": "{{count}} additional fields"
+  },
+  "update": {
+    "availableTitle": "Update Available",
+    "readyTitle": "Update Ready",
+    "later": "Later",
+    "install": "Install & Restart",
+    "downloading": "Downloading...",
+    "restart": "Restart Now",
+    "restartHint": "The update has been downloaded. Restart the app to apply."
   }
 }

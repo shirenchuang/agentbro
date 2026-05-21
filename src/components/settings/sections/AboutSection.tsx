@@ -1,15 +1,21 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { quitApp, exportDiagnostics } from '../../../services/tauriApi'
-import { useUpdater } from '../../../hooks/useUpdater'
+import type { UpdateStatus } from '../../../hooks/useUpdater'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
 import { SettingRow } from '../SettingRow'
 import { GlassButton } from '../../shared'
 
-export function AboutSection() {
+interface AboutSectionProps {
+  updateStatus?: UpdateStatus
+  updateVersion?: string | null
+  updateError?: string | null
+  onCheckForUpdate?: () => void
+}
+
+export function AboutSection({ updateStatus, updateVersion, updateError, onCheckForUpdate }: AboutSectionProps) {
   const { t } = useTranslation()
-  const updater = useUpdater()
   const [diagStatus, setDiagStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
 
   const handleExportDiagnostics = async () => {
@@ -26,12 +32,12 @@ export function AboutSection() {
   }
 
   const updateDescription = (() => {
-    switch (updater.status) {
+    switch (updateStatus) {
       case 'checking': return 'Checking for updates...'
-      case 'available': return `Update ${updater.version} available`
-      case 'downloading': return `Downloading ${updater.version}...`
-      case 'ready': return `Update ${updater.version} ready — restart to apply`
-      case 'error': return updater.error ?? 'Update check failed'
+      case 'available': return `Update ${updateVersion} available`
+      case 'downloading': return `Downloading ${updateVersion}...`
+      case 'ready': return `Update ${updateVersion} ready — restart to apply`
+      case 'error': return updateError ?? 'Update check failed'
       case 'up-to-date': return t('settings.latestVersion')
       default: return t('settings.latestVersion')
     }
@@ -50,10 +56,10 @@ export function AboutSection() {
         <SettingRow label={t('settings.checkForUpdates')} description={updateDescription}>
           <GlassButton
             variant="secondary"
-            onClick={() => updater.checkForUpdate()}
-            disabled={updater.status === 'checking' || updater.status === 'downloading'}
+            onClick={() => onCheckForUpdate?.()}
+            disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
           >
-            {updater.status === 'checking' || updater.status === 'downloading' ? '...' : t('settings.checkNow')}
+            {updateStatus === 'checking' || updateStatus === 'downloading' ? '...' : t('settings.checkNow')}
           </GlassButton>
         </SettingRow>
         <SettingRow label={t('settings.exportDiagnostics')} description={t('settings.exportDiagnosticsDesc')}>

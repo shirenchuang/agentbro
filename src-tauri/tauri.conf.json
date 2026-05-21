@@ -45,7 +45,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://releases.agentbro.cn/{{target}}/{{arch}}/{{current_version}}"
+        "https://github.com/shirenchuang/agentbro/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2QjhGMjZCNDJFNzZGMQpSV1R4ZGk2MEpvOXJDUWVCSkhuMXZGV0VNNzlmL1dSa1JyUHlhZzF1djVFdzFPY0JLb21xVTlPTAo="
     },
