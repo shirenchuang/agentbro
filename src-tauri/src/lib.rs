@@ -397,6 +397,29 @@ async fn configure_agent_hook_events(
     tool_name: String,
     enabled_events: Vec<String>,
 ) -> Result<(), String> {
+    if let Some(custom_id) = tool_name.strip_prefix("custom:") {
+        let cfg = state.config_store.get();
+        let entry = cfg
+            .custom_hook_installs
+            .iter()
+            .find(|e| e.id == custom_id)
+            .ok_or_else(|| format!("Unknown custom hook: {}", custom_id))?
+            .clone();
+        let profile = agents::profiles::profile_for_agent(&entry.profile_id)
+            .ok_or_else(|| format!("Unknown hook profile: {}", entry.profile_id))?;
+        agents::profiles::save_event_selection(&profile, &enabled_events)
+            .map_err(|e| e.to_string())?;
+        let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
+        let dir_str = base_dir.display().to_string();
+        agents::profiles::install_custom_at_labeled(
+            &profile,
+            &base_dir,
+            Some(&entry.display_name),
+            Some(&dir_str),
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let adapter = state
         .adapters
         .iter()
@@ -634,6 +657,25 @@ async fn install_remote_hooks(
         .ok_or_else(|| format!("Host {} not found", id))?
         .clone();
     let result = remote::installer::RemoteInstaller::install_hooks(&host).await;
+    if result.ok {
+        Ok(result.message)
+    } else {
+        Err(result.message)
+    }
+}
+
+#[tauri::command]
+async fn uninstall_remote_hooks(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+) -> Result<String, String> {
+    let hosts = state.remote_manager.hosts();
+    let host = hosts
+        .iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| format!("Host {} not found", id))?
+        .clone();
+    let result = remote::installer::RemoteInstaller::uninstall_hooks(&host).await;
     if result.ok {
         Ok(result.message)
     } else {
@@ -1123,7 +1165,11 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     });
 }
 
-fn register_one_global_shortcut<F>(app: &tauri::AppHandle, accelerator: &str, action: F)
+fn register_one_global_shortcut<F>(
+    app: &tauri::AppHandle,
+    accelerator: &str,
+    action: F,
+) -> Result<(), String>
 where
     F: Fn(tauri::AppHandle) + Send + Sync + 'static,
 {
@@ -1131,57 +1177,61 @@ where
 
     let accelerator = accelerator.trim();
     if accelerator.is_empty() {
-        return;
+        return Ok(());
     }
     let app_handle = app.clone();
-    let result = app
-        .global_shortcut()
+    app.global_shortcut()
         .on_shortcut(accelerator, move |_app, _shortcut, _event| {
             action(app_handle.clone());
-        });
-    if let Err(err) = result {
-        log::warn!(
-            "Failed to register global shortcut {}: {}",
-            accelerator,
-            err
-        );
-    }
+        })
+        .map_err(|err| format!("Failed to register global shortcut {accelerator}: {err}"))
 }
 
-fn register_island_global_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
+fn register_island_global_shortcuts_for_config(
+    app: &tauri::AppHandle,
+    config: &crate::config::AppConfig,
+) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| format!("{e}"))?;
 
-    let config = app.state::<AppState>().config_store.get();
     register_one_global_shortcut(app, &config.global_shortcut, |app| {
         toggle_notch_window(&app)
-    });
+    })?;
     if config.shortcut_approve_enabled {
         register_one_global_shortcut(app, &config.shortcut_approve, |app| {
             handle_permission_shortcut(app, true)
-        });
+        })?;
     }
     if config.shortcut_deny_enabled {
         register_one_global_shortcut(app, &config.shortcut_deny, |app| {
             handle_permission_shortcut(app, false)
-        });
+        })?;
     }
     if config.shortcut_skip_enabled {
-        register_one_global_shortcut(app, &config.shortcut_skip, handle_question_skip_shortcut);
+        register_one_global_shortcut(app, &config.shortcut_skip, handle_question_skip_shortcut)?;
     }
     Ok(())
+}
+
+fn register_island_global_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
+    let config = app.state::<AppState>().config_store.get();
+    register_island_global_shortcuts_for_config(app, &config)
 }
 
 #[tauri::command]
 async fn register_global_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mut config = state.config_store.get();
-    config.global_shortcut = shortcut;
-    state.config_store.update(config)?;
-    register_island_global_shortcuts(&app)
+    let previous = state.config_store.get();
+    let mut next = previous.clone();
+    next.global_shortcut = shortcut;
+    if let Err(err) = register_island_global_shortcuts_for_config(&app, &next) {
+        let _ = register_island_global_shortcuts_for_config(&app, &previous);
+        return Err(err);
+    }
+    state.config_store.update(next)
 }
 
 #[tauri::command]
@@ -1210,15 +1260,19 @@ async fn set_global_action_shortcuts(
     state: tauri::State<'_, AppState>,
     shortcuts: GlobalActionShortcuts,
 ) -> Result<(), String> {
-    let mut config = state.config_store.get();
-    config.shortcut_approve = shortcuts.approve;
-    config.shortcut_approve_enabled = shortcuts.approve_enabled;
-    config.shortcut_deny = shortcuts.deny;
-    config.shortcut_deny_enabled = shortcuts.deny_enabled;
-    config.shortcut_skip = shortcuts.skip;
-    config.shortcut_skip_enabled = shortcuts.skip_enabled;
-    state.config_store.update(config)?;
-    register_island_global_shortcuts(&app)
+    let previous = state.config_store.get();
+    let mut next = previous.clone();
+    next.shortcut_approve = shortcuts.approve;
+    next.shortcut_approve_enabled = shortcuts.approve_enabled;
+    next.shortcut_deny = shortcuts.deny;
+    next.shortcut_deny_enabled = shortcuts.deny_enabled;
+    next.shortcut_skip = shortcuts.skip;
+    next.shortcut_skip_enabled = shortcuts.skip_enabled;
+    if let Err(err) = register_island_global_shortcuts_for_config(&app, &next) {
+        let _ = register_island_global_shortcuts_for_config(&app, &previous);
+        return Err(err);
+    }
+    state.config_store.update(next)
 }
 
 // ── Quit Command ────────────────────────────────────────────────
@@ -1372,6 +1426,20 @@ async fn play_sound(state: tauri::State<'_, AppState>, event: String) -> Result<
         SoundEvent::from_id(&event).ok_or_else(|| format!("Unknown sound event: {event}"))?;
     if let Some(ref engine) = state.sound_engine {
         engine.play(event);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn preview_sound(
+    state: tauri::State<'_, AppState>,
+    event: String,
+    sound: String,
+) -> Result<(), String> {
+    let event =
+        SoundEvent::from_id(&event).ok_or_else(|| format!("Unknown sound event: {event}"))?;
+    if let Some(ref engine) = state.sound_engine {
+        engine.preview(event, sound);
     }
     Ok(())
 }
@@ -3448,19 +3516,12 @@ pub fn run() {
             commands::set_launch_at_login,
             commands::set_island_feature_flags,
             commands::set_island_surface_options,
-            commands::set_advanced_tool_flags,
             commands::install_hooks,
             commands::remove_hooks,
             commands::get_adapter_status,
             commands::verify_hooks,
             commands::is_terminal_focused,
-            commands::list_custom_hook_templates,
-            commands::upsert_custom_hook_template,
-            commands::remove_custom_hook_template,
-            commands::install_custom_hook_template,
-            commands::remove_custom_hook_template_hooks,
             commands::run_hook_doctor,
-            commands::launch_agent_session,
             commands::get_license_status,
             commands::activate_license,
             commands::deactivate_license,
@@ -3483,6 +3544,7 @@ pub fn run() {
             commands::verify_engine_path,
             resize_notch,
             play_sound,
+            preview_sound,
             set_sound_volume,
             set_sound_enabled,
             set_sound_pack,
@@ -3529,6 +3591,7 @@ pub fn run() {
             connect_remote,
             disconnect_remote,
             install_remote_hooks,
+            uninstall_remote_hooks,
             get_remote_status,
             list_ssh_config_hosts,
             list_webhooks,

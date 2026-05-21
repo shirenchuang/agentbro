@@ -603,7 +603,7 @@ impl HookServer {
 
                 // Only play sound if not suppressed
                 if !is_suppressed {
-                    Self::play_sound(&sound, SoundEvent::NeedsApproval);
+                    Self::play_sound(&sound, SoundEvent::TaskConfirmation);
                 }
 
                 let resolved_tool_use_id = Self::resolve_permission_tool_use_id(
@@ -820,6 +820,11 @@ impl HookServer {
 
                 if is_suppressed {
                     store.emit_update_suppressed(true);
+                    if let Ok(guard) = app.lock() {
+                        if let Some(ref handle) = *guard {
+                            crate::platform::notifications::send_plan_notification(handle, title);
+                        }
+                    }
                 }
 
                 let (tx, rx) = oneshot::channel();
@@ -1832,7 +1837,7 @@ impl HookServer {
             .is_some_and(|tool_use_id| tool_use_id == pending.call_id);
 
         if !already_showing && !Self::check_suppression(store, session_id) {
-            Self::play_sound(sound, SoundEvent::NeedsApproval);
+            Self::play_sound(sound, SoundEvent::TaskConfirmation);
         }
 
         store.set_pending_question(

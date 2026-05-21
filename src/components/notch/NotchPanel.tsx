@@ -11,6 +11,7 @@ import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverl
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
+import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { CollapsedBar } from './CollapsedBar'
 import { HoverList } from './HoverList'
 import { ChatView } from './ChatView'
@@ -944,18 +945,21 @@ export function NotchPanel() {
 
   // Keyboard shortcuts
   useEffect(() => {
-    function matchesShortcut(e: KeyboardEvent, shortcut: { keys: string }): boolean {
-      const parts = shortcut.keys.split('+').map(p => p.trim())
-      const needsMeta = parts.includes('\u2318')
-      const needsShift = parts.includes('Shift')
-      const key = parts.filter(p => p !== '\u2318' && p !== 'Shift')[0] || ''
-      return e.key.toLowerCase() === key.toLowerCase()
-        && !!e.metaKey === needsMeta
-        && !!e.shiftKey === needsShift
-    }
-
     function findShortcut(action: string) {
       return shortcuts.find(s => s.action === action)
+    }
+
+    function moveActiveSession(direction: 1 | -1) {
+      const latest = useSessionStore.getState()
+      const sessions = latest.sessionList
+      if (sessions.length === 0) return
+      const currentIndex = Math.max(0, sessions.findIndex((session) => session.id === latest.activeSessionId))
+      const nextIndex = (currentIndex + direction + sessions.length) % sessions.length
+      latest.setActiveSession(sessions[nextIndex].id)
+      if (latest.panelState === 'collapsed') {
+        setNotchFocusable(true).catch(() => {})
+        setPanelState('hover')
+      }
     }
 
     const handler = (e: KeyboardEvent) => {
@@ -988,9 +992,32 @@ export function NotchPanel() {
         return
       }
 
+      const toggleBinding = findShortcut('toggle-panel')
+      if (toggleBinding && shortcutMatchesEvent(toggleBinding.keys, e)) {
+        e.preventDefault()
+        if (store.panelState === 'collapsed') {
+          setNotchFocusable(true).catch(() => {})
+          setPanelState('hover')
+        } else {
+          detailModeRef.current = false
+          markActiveBlockingOverlayInline()
+          setNotchFocusable(false).catch(() => {})
+          setPanelState('collapsed')
+        }
+        return
+      }
+
+      const expandBinding = findShortcut('expand-panel')
+      if (expandBinding && shortcutMatchesEvent(expandBinding.keys, e)) {
+        e.preventDefault()
+        setNotchFocusable(true).catch(() => {})
+        setPanelState('hover')
+        return
+      }
+
       // Collapse panel shortcut
       const collapseBinding = findShortcut('collapse-panel')
-      if (collapseBinding && matchesShortcut(e, collapseBinding)) {
+      if (collapseBinding && shortcutMatchesEvent(collapseBinding.keys, e)) {
         setWakeSilencedUntil(Date.now() + escSilenceDuration * 1000)
         detailModeRef.current = false
         markActiveBlockingOverlayInline()
@@ -1003,7 +1030,7 @@ export function NotchPanel() {
 
       // Approve action
       const approveBinding = findShortcut('approve-action')
-      if (approveBinding && matchesShortcut(e, approveBinding) && active?.phase === 'waiting_approval') {
+      if (approveBinding && shortcutMatchesEvent(approveBinding.keys, e) && active?.phase === 'waiting_approval') {
         e.preventDefault()
         if (active.planContent || active.planTitle) {
           respondPlan(active.id, 'acceptEdits')
@@ -1016,7 +1043,7 @@ export function NotchPanel() {
 
       // Reject action
       const rejectBinding = findShortcut('reject-action')
-      if (rejectBinding && matchesShortcut(e, rejectBinding) && active?.phase === 'waiting_approval') {
+      if (rejectBinding && shortcutMatchesEvent(rejectBinding.keys, e) && active?.phase === 'waiting_approval') {
         e.preventDefault()
         if (active.planContent || active.planTitle) {
           respondPlan(active.id, 'manual')
@@ -1027,9 +1054,23 @@ export function NotchPanel() {
         return
       }
 
+      const nextBinding = findShortcut('next-session')
+      if (nextBinding && shortcutMatchesEvent(nextBinding.keys, e)) {
+        e.preventDefault()
+        moveActiveSession(1)
+        return
+      }
+
+      const prevBinding = findShortcut('prev-session')
+      if (prevBinding && shortcutMatchesEvent(prevBinding.keys, e)) {
+        e.preventDefault()
+        moveActiveSession(-1)
+        return
+      }
+
       // Open settings
       const settingsBinding = findShortcut('open-settings')
-      if (settingsBinding && matchesShortcut(e, settingsBinding)) {
+      if (settingsBinding && shortcutMatchesEvent(settingsBinding.keys, e)) {
         e.preventDefault()
         openSettingsWindow().catch((error) => console.warn('[notch] openSettingsWindow:', error))
         return

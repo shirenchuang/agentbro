@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import type { HookEventStatus, HookStatus } from '../../services/tauriApi'
-import { simulateHookEvent } from '../../services/tauriApi'
 import { PlatformIcon } from '../platform/PlatformIcon'
 
 type HookCategory = HookEventStatus['category']
@@ -17,14 +16,12 @@ function hookCategoryState(events: HookEventStatus[], enabled: Set<string>): Hoo
 
 function defaultHookEventSelection(hook: HookStatus) {
   const events = hook.events ?? []
+  const supportedEventNames = new Set(events.map((event) => event.name))
   const enabledFromEvents = events.filter((event) => event.enabled).map((event) => event.name)
   if (enabledFromEvents.length > 0) return enabledFromEvents
-  if (hook.enabledEventNames && hook.enabledEventNames.length > 0) return hook.enabledEventNames
+  const enabledEventNames = (hook.enabledEventNames ?? []).filter((eventName) => supportedEventNames.has(eventName))
+  if (enabledEventNames.length > 0) return enabledEventNames
   return events.map((event) => event.name)
-}
-
-function hookSimulationToolId(hook: HookStatus) {
-  return hook.adapterId || hook.profileId || hook.toolId || hook.name
 }
 
 export function HookEventConfigDialog({
@@ -48,7 +45,6 @@ export function HookEventConfigDialog({
       .map(({ event }) => event)
   }, [hook.events])
   const [enabled, setEnabled] = useState<Set<string>>(() => new Set(defaultHookEventSelection(hook)))
-  const simulationToolId = hookSimulationToolId(hook)
 
   const groups = useMemo(() => {
     return hookCategoryOrder
@@ -86,34 +82,6 @@ export function HookEventConfigDialog({
       else next.add(eventName)
       return next
     })
-  }
-
-  const [firing, setFiring] = useState<string | null>(null)
-  const [testNotice, setTestNotice] = useState<string | null>(null)
-
-  const fireEvent = async (eventName: string) => {
-    setFiring(eventName)
-    setTestNotice(`正在测试 ${eventName} 事件，请查看顶部岛屿中的模拟会话。`)
-    let settled = false
-    const releaseTimer = window.setTimeout(() => {
-      if (settled) return
-      setFiring(null)
-      setTestNotice(`${eventName} 事件已发送；审批或提问类事件会等待你在岛屿中响应。`)
-    }, 1200)
-
-    simulateHookEvent(eventName, simulationToolId)
-      .then(() => {
-        settled = true
-        setTestNotice(`${eventName} 事件已触发，岛屿会显示当前测试内容。`)
-      })
-      .catch((error) => {
-        settled = true
-        setTestNotice(`${eventName} 事件测试失败：${String(error)}`)
-      })
-      .finally(() => {
-        window.clearTimeout(releaseTimer)
-        setFiring(null)
-      })
   }
 
   return (
@@ -168,34 +136,21 @@ export function HookEventConfigDialog({
                   {group.events.map((event) => {
                     const checked = enabled.has(event.name)
                     return (
-                      <div key={event.name} className="hook-options-event-row">
-                        <button
-                          type="button"
-                          className="hook-options-event-row-toggle"
-                          onClick={() => toggleEvent(event.name)}
-                        >
+                      <button
+                        key={event.name}
+                        type="button"
+                        className="hook-options-event-row"
+                        onClick={() => toggleEvent(event.name)}
+                      >
+                        <span className="hook-options-event-row-toggle">
                           <span className="hook-options-event-copy">
                             <strong>{event.name}</strong>
                           </span>
                           <span className={`hook-options-indicator hook-options-indicator--${checked ? 'on' : 'off'}`} aria-hidden="true">
                             {checked ? '✓' : ''}
                           </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="hook-options-fire-btn"
-                          disabled={firing !== null}
-                          onMouseDown={(clickEvent) => clickEvent.stopPropagation()}
-                          onClick={(clickEvent) => {
-                            clickEvent.stopPropagation()
-                            fireEvent(event.name)
-                          }}
-                          title={`测试 ${event.name} 事件`}
-                          aria-label={`测试 ${event.name} 事件`}
-                        >
-                          {firing === event.name ? '…' : '▶'}
-                        </button>
-                      </div>
+                        </span>
+                      </button>
                     )
                   })}
                 </div>
@@ -206,9 +161,7 @@ export function HookEventConfigDialog({
 
         <div className="hook-options-footer">
           <span className={selectedEvents.length === 0 ? 'hook-options-warning' : ''}>
-            {testNotice
-              ? testNotice
-              : selectedEvents.length === 0
+            {selectedEvents.length === 0
               ? '至少需要启用一个事件。'
               : `已启用 ${selectedEvents.length}/${events.length} 个事件；关闭后对应通知或审批将不再触发。`}
           </span>

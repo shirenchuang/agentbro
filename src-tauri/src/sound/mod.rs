@@ -275,23 +275,41 @@ impl SoundEngine {
         if !self.is_enabled() || !self.is_event_enabled(event) || self.is_quiet_hours_active() {
             return;
         }
-        if self.is_spamming() {
+        self.play_resolved(event, None, true);
+    }
+
+    /// Preview a selected sound from settings. This is user-initiated, so it
+    /// bypasses event toggles, quiet hours, and spam suppression.
+    pub fn preview(&self, event: SoundEvent, choice: String) {
+        if !self.is_enabled() {
             return;
         }
+        self.play_resolved(event, Some(choice), false);
+    }
 
+    fn play_resolved(
+        &self,
+        event: SoundEvent,
+        choice_override: Option<String>,
+        suppress_spam: bool,
+    ) {
         let volume = self.volume.lock().map(|v| *v).unwrap_or(0.7);
         let default_pack = self
             .sound_pack
             .lock()
             .map(|p| *p)
             .unwrap_or(SoundPack::EightBit);
-        let choice = self
-            .event_sound
-            .lock()
-            .ok()
-            .and_then(|map| map.get(&event).cloned())
-            .unwrap_or_else(|| "default".to_string());
+        let choice = choice_override.unwrap_or_else(|| {
+            self.event_sound
+                .lock()
+                .ok()
+                .and_then(|map| map.get(&event).cloned())
+                .unwrap_or_else(|| "default".to_string())
+        });
         if choice == "off" || choice == "none" {
+            return;
+        }
+        if suppress_spam && self.is_spamming() {
             return;
         }
         let pack = sound_choice_pack(&choice).unwrap_or(default_pack);

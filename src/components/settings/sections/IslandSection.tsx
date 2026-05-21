@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -7,19 +7,22 @@ import type { SoundChoice, SoundRule } from '../../../stores/configStore'
 import { useThemeStore, COLOR_THEMES } from '../../../stores/themeStore'
 import { CUSTOM_NOTCH_HEIGHT_MAX, CUSTOM_NOTCH_HEIGHT_MIN } from '../../../utils/islandLayout'
 import {
+  formatShortcutKeyEvent,
+  isRecordableShortcutEvent,
+  shortcutDisplayParts,
+} from '../../../utils/keyboardShortcuts'
+import {
   listDisplays, isTauri,
   setSoundVolume, setSoundEnabled, setSoundPack, setProbeSessionFilter, setDisplayId, repositionNotch,
   previewIslandLayout, clearIslandLayoutPreview,
-  setSoundQuietHours, setSoundEventRule, importCustomSound as importCustomSoundFile, setCustomSounds,
-  setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
-  setAdvancedToolFlags,
+  setSoundQuietHours, setSoundEventRule, previewSound, importCustomSound as importCustomSoundFile, setCustomSounds,
+  registerGlobalShortcut, setGlobalActionShortcuts, setIslandFeatureFlags, setIslandSurfaceOptions,
   setActiveBackendTheme, listRemoteHosts, addRemoteHost, removeRemoteHost, connectRemote,
-  disconnectRemote, installRemoteHooks, getRemoteStatus, listSshConfigHosts,
-  runHookDoctor, launchAgentSession, listCustomHookTemplates, upsertCustomHookTemplate,
-  removeCustomHookTemplate, installCustomHookTemplate, removeCustomHookTemplateHooks,
+  disconnectRemote, installRemoteHooks, uninstallRemoteHooks, getRemoteStatus, listSshConfigHosts,
+  runHookDoctor,
   getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
 } from '../../../services/tauriApi'
-import type { BackendDisplayInfo, ConnectionStatus, CustomHookTemplate, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
+import type { BackendDisplayInfo, ConnectionStatus, HookDoctorCheck, HookDoctorReport, HookEventStatus, RemoteHost, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -48,6 +51,39 @@ function normalizeDisplayMonitorValue(value: string, displays: BackendDisplayInf
 
 type IslandFeatureFlag = 'tipsEnabled' | 'pixelCursorEnabled' | 'confettiEnabled' | 'followFocus'
 const USAGE_PROVIDER_REFRESH_TIMEOUT_MS = 10_000
+const ACCOUNT_USAGE_PROVIDER_ORDER = [
+  'codex',
+  'claude-code',
+  'z-ai',
+  'kimi',
+  'gemini-cli',
+  'copilot',
+  'cursor',
+  'cursor-cli',
+  'deepseek',
+  'opencode',
+  'droid',
+  'stepfun',
+  'antigravity',
+  'kiro',
+]
+const ACCOUNT_USAGE_PROVIDER_RANK = new Map(
+  ACCOUNT_USAGE_PROVIDER_ORDER.map((provider, index) => [provider, index]),
+)
+const QUIET_ASSISTANT_PRESET = {
+  interactionMode: 'minimal' as const,
+  smartSuppression: true,
+  autoHideNoSessions: true,
+  idleCompactDwellSeconds: 8,
+  noSessionsHideDelay: 10,
+}
+const PERSISTENT_MONITOR_PRESET = {
+  interactionMode: 'persistent' as const,
+  smartSuppression: true,
+  autoHideNoSessions: false,
+  idleCompactDwellSeconds: 8,
+  noSessionsHideDelay: 10,
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: ReturnType<typeof window.setTimeout> | undefined
@@ -78,19 +114,6 @@ function persistIslandSurfaceOptions(next: Partial<{ islandSurfaceMode: 'island'
     islandSurfaceMode: next.islandSurfaceMode ?? state.islandSurfaceMode,
     islandPetScale: next.islandPetScale ?? state.islandPetScale,
   }).catch((err) => console.error('Failed to persist island surface options:', err))
-}
-
-function persistAdvancedToolFlags(next: Partial<{
-  hookDoctorEnabled: boolean
-  sessionLauncherEnabled: boolean
-  customHookTemplatesEnabled: boolean
-}>) {
-  const state = useConfigStore.getState()
-  setAdvancedToolFlags({
-    hookDoctorEnabled: next.hookDoctorEnabled ?? state.hookDoctorEnabled,
-    sessionLauncherEnabled: next.sessionLauncherEnabled ?? state.sessionLauncherEnabled,
-    customHookTemplatesEnabled: next.customHookTemplatesEnabled ?? state.customHookTemplatesEnabled,
-  }).catch((err) => console.error('Failed to persist advanced tool flags:', err))
 }
 
 function persistUsageQuerySettings(next: Partial<{ usageQueryEnabled: boolean; showUsageQuota: boolean }>) {
@@ -135,28 +158,7 @@ function SurfaceModeSegmentedControl({
   )
 }
 
-// ── Shortcuts helpers ──
-function formatKeyEvent(e: KeyboardEvent): string {
-  const parts: string[] = []
-  if (e.metaKey) parts.push('⌘')
-  if (e.ctrlKey) parts.push('⌃')
-  if (e.altKey) parts.push('⌥')
-  if (e.shiftKey) parts.push('⇧')
-  const key = e.key
-  if (!['Meta', 'Control', 'Alt', 'Shift'].includes(key)) {
-    if (key === 'Enter') parts.push('Enter')
-    else if (key === 'Backspace') parts.push('Backspace')
-    else if (key === 'Escape') parts.push('Escape')
-    else if (key === 'Tab') parts.push('Tab')
-    else if (key === ' ') parts.push('Space')
-    else if (key === 'ArrowUp') parts.push('↑')
-    else if (key === 'ArrowDown') parts.push('↓')
-    else if (key === 'ArrowLeft') parts.push('←')
-    else if (key === 'ArrowRight') parts.push('→')
-    else parts.push(key.length === 1 ? key.toUpperCase() : key)
-  }
-  return parts.join('+')
-}
+const PRIMARY_SHORTCUT_ACTIONS = new Set(['toggle-panel', 'collapse-panel', 'open-settings'])
 
 function ShortcutRow({ action, label, keys }: { action: string; label: string; keys: string }) {
   const { t } = useTranslation()
@@ -175,12 +177,8 @@ function ShortcutRow({ action, label, keys }: { action: string; label: string; k
         setConflict(null)
         return
       }
-      const hasModifier = e.metaKey || e.ctrlKey || e.altKey
-      const isSpecial = ['Escape', 'Enter', 'Backspace', 'Tab'].includes(e.key)
-      if (!hasModifier && !isSpecial && !['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].includes(e.key)) {
-        return
-      }
-      const formatted = formatKeyEvent(e)
+      if (!isRecordableShortcutEvent(e)) return
+      const formatted = formatShortcutKeyEvent(e)
       if (formatted) {
         const duplicate = allShortcuts.find((s) => s.keys === formatted && s.action !== action)
         if (duplicate) {
@@ -205,20 +203,29 @@ function ShortcutRow({ action, label, keys }: { action: string; label: string; k
   return (
     <div className="shortcuts-row">
       <span className="shortcuts-row__action">{label}</span>
-      {recording ? (
-        <span className="shortcuts-row__recording">
-          {conflict ? <span style={{ color: '#FF3B30' }}>{conflict}</span> : t('settings.pressKeys')}
+      <span className="shortcuts-row__meta">
+        {recording ? (
+          <span className="shortcuts-row__recording">
+            {conflict ? <span className="shortcuts-row__conflict">{conflict}</span> : t('settings.pressKeys')}
+          </span>
+        ) : (
+          <span className="shortcuts-row__keys">
+            {keys.trim()
+              ? shortcutDisplayParts(keys).map((k, i) => (<kbd key={i}>{k}</kbd>))
+              : <span className="shortcuts-row__off">{t('settings.shortcutOff', { defaultValue: 'Off' })}</span>}
+          </span>
+        )}
+        <span className="shortcuts-row__actions">
+          {!recording && keys.trim() && (
+            <button className="shortcuts-row__edit shortcuts-row__clear" onClick={() => updateShortcut(action, '')}>
+              {t('settings.shortcutClear', { defaultValue: 'Clear' })}
+            </button>
+          )}
+          <button className="shortcuts-row__edit" onClick={() => setRecording(!recording)}>
+            {recording ? t('settings.cancel') : t('settings.edit')}
+          </button>
         </span>
-      ) : (
-        <span className="shortcuts-row__keys">
-          {keys.trim()
-            ? keys.split('+').map((k, i) => (<kbd key={i}>{k}</kbd>))
-            : <span>{t('settings.shortcutOff', { defaultValue: 'Off' })}</span>}
-        </span>
-      )}
-      <button className="shortcuts-row__edit" onClick={() => setRecording(!recording)}>
-        {recording ? t('settings.cancel') : t('settings.edit')}
-      </button>
+      </span>
     </div>
   )
 }
@@ -266,6 +273,26 @@ function hookInstallStatusLabel(t: (key: string, options?: Record<string, unknow
   if (status === 'settings_corrupted') return t('settings.hookSettingsCorrupted', { defaultValue: '配置异常' })
   if (status === 'error') return t('settings.hookError', { defaultValue: '异常' })
   return t('settings.hookNotInstalled')
+}
+
+function hookDoctorSuggestion(t: (key: string, options?: Record<string, unknown>) => string, check: HookDoctorCheck): string | null {
+  if (check.status === 'ok') return null
+  if (check.id === 'bridge-binary') {
+    return t('settings.hookDoctorSuggestionBridge', { defaultValue: 'Restart AgentBro. If it still fails, reinstall the app.' })
+  }
+  if (check.id === 'hook-server') {
+    return t('settings.hookDoctorSuggestionServer', { defaultValue: 'Keep AgentBro running and check again. New CLI sessions connect to the current Hook service.' })
+  }
+  if (check.id === 'installed-hooks') {
+    return t('settings.hookDoctorSuggestionInstall', { defaultValue: 'Click Install All Hooks, then restart the corresponding CLI sessions.' })
+  }
+  if (check.id === 'automation-permission') {
+    return t('settings.hookDoctorSuggestionAutomation', { defaultValue: 'Allow AgentBro to control Terminal and System Events in macOS System Settings.' })
+  }
+  if (check.id.startsWith('binary-')) {
+    return t('settings.hookDoctorSuggestionBinary', { defaultValue: 'Install this only if you use the corresponding terminal multiplexer or terminal; otherwise it can be ignored.' })
+  }
+  return t('settings.hookDoctorSuggestionGeneric', { defaultValue: 'Fix the issue from the detail above, then run diagnostics again.' })
 }
 
 // ── Webhook helpers ──
@@ -416,6 +443,7 @@ export function IslandSection({ activeView }: IslandSectionProps) {
       {activeView === 'display' && <DisplayTab />}
       {activeView === 'behavior' && <BehaviorTab />}
       {activeView === 'integration' && <IntegrationTab />}
+      {activeView === 'remote' && <RemoteTab />}
       {activeView === 'notify' && <SoundTab />}
       {activeView === 'keys' && <ShortcutsTab />}
       {activeView === 'advanced' && <AdvancedTab />}
@@ -427,6 +455,27 @@ export function IslandSection({ activeView }: IslandSectionProps) {
 function OverviewTab() {
   const { t } = useTranslation()
   const config = useConfigStore()
+  const activeInteractionPreset = (
+    config.interactionMode === QUIET_ASSISTANT_PRESET.interactionMode
+    && config.smartSuppression === QUIET_ASSISTANT_PRESET.smartSuppression
+    && config.autoHideNoSessions === QUIET_ASSISTANT_PRESET.autoHideNoSessions
+    && config.idleCompactDwellSeconds === QUIET_ASSISTANT_PRESET.idleCompactDwellSeconds
+    && config.noSessionsHideDelay === QUIET_ASSISTANT_PRESET.noSessionsHideDelay
+  ) ? 'quiet' : (
+    config.interactionMode === PERSISTENT_MONITOR_PRESET.interactionMode
+    && config.smartSuppression === PERSISTENT_MONITOR_PRESET.smartSuppression
+    && config.autoHideNoSessions === PERSISTENT_MONITOR_PRESET.autoHideNoSessions
+    && config.idleCompactDwellSeconds === PERSISTENT_MONITOR_PRESET.idleCompactDwellSeconds
+    && config.noSessionsHideDelay === PERSISTENT_MONITOR_PRESET.noSessionsHideDelay
+  ) ? 'persistent' : 'custom'
+
+  const applyInteractionPreset = (preset: typeof QUIET_ASSISTANT_PRESET | typeof PERSISTENT_MONITOR_PRESET) => {
+    config.updateConfig('interactionMode', preset.interactionMode)
+    config.updateConfig('smartSuppression', preset.smartSuppression)
+    config.updateConfig('autoHideNoSessions', preset.autoHideNoSessions)
+    config.updateConfig('idleCompactDwellSeconds', preset.idleCompactDwellSeconds)
+    config.updateConfig('noSessionsHideDelay', preset.noSessionsHideDelay)
+  }
 
   const resetIslandDefaults = () => {
     config.resetIslandDefaults()
@@ -461,31 +510,31 @@ function OverviewTab() {
 
         <div className="overview-mode-grid">
           <button
-            className={`overview-mode-card ${config.interactionMode === 'minimal' ? 'overview-mode-card--active' : ''}`}
+            aria-pressed={activeInteractionPreset === 'quiet'}
+            className={`overview-mode-card ${activeInteractionPreset === 'quiet' ? 'overview-mode-card--active' : ''}`}
             type="button"
-            onClick={() => {
-              config.updateConfig('interactionMode', 'minimal')
-              config.updateConfig('smartSuppression', true)
-              config.updateConfig('autoHideNoSessions', true)
-            }}
+            onClick={() => applyInteractionPreset(QUIET_ASSISTANT_PRESET)}
           >
             <span className="overview-mode-card__island" />
             <strong>{t('settings.island.overview.quietAssistant', { defaultValue: 'Quiet Assistant' })}</strong>
-            <span>{t('settings.island.overview.quietAssistantDesc', { defaultValue: 'Stays out of the way and only appears for approvals, questions, failures, and completions.' })}</span>
+            <span className="overview-mode-card__description">{t('settings.island.overview.quietAssistantDesc', { defaultValue: 'Hidden while agents run; appears for approvals, questions, failures, and completion notifications.' })}</span>
           </button>
           <button
-            className={`overview-mode-card ${config.interactionMode === 'persistent' ? 'overview-mode-card--active' : ''}`}
+            aria-pressed={activeInteractionPreset === 'persistent'}
+            className={`overview-mode-card ${activeInteractionPreset === 'persistent' ? 'overview-mode-card--active' : ''}`}
             type="button"
-            onClick={() => {
-              config.updateConfig('interactionMode', 'persistent')
-              config.updateConfig('smartSuppression', true)
-              config.updateConfig('autoHideNoSessions', false)
-            }}
+            onClick={() => applyInteractionPreset(PERSISTENT_MONITOR_PRESET)}
           >
             <span className="overview-mode-card__island" />
             <strong>{t('settings.island.overview.persistentMonitor', { defaultValue: 'Persistent Monitor' })}</strong>
-            <span>{t('settings.island.overview.persistentMonitorDesc', { defaultValue: 'Keeps the mini island visible so you can confirm the active session and runtime state.' })}</span>
+            <span className="overview-mode-card__description">{t('settings.island.overview.persistentMonitorDesc', { defaultValue: 'Keeps the island visible while agents run, then returns to a mini island when idle.' })}</span>
           </button>
+          {activeInteractionPreset === 'custom' && (
+            <div className="overview-mode-custom" role="status">
+              <strong>{t('settings.island.overview.customPreset', { defaultValue: 'Custom visibility' })}</strong>
+              <span>{t('settings.island.overview.customPresetDesc', { defaultValue: 'One or more visibility timing settings differ from the presets below.' })}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -507,8 +556,7 @@ function OverviewTab() {
           <Toggle checked={config.islandEnabled} onChange={(v) => {
             config.updateConfig('islandEnabled', v)
             if (v) {
-              config.updateConfig('interactionMode', 'persistent')
-              config.updateConfig('autoHideNoSessions', false)
+              applyInteractionPreset(PERSISTENT_MONITOR_PRESET)
             }
           }} />
         </SettingRow>
@@ -929,9 +977,7 @@ function SoundTab() {
   }
   const previewSoundEvent = (eventId: string) => {
     const current = resolveRule(eventId)
-    setSoundEventRule(eventId, true, current.sound)
-      .then(() => invoke('play_sound', { event: eventId }))
-      .finally(() => setSoundEventRule(eventId, current.enabled, current.sound).catch(() => {}))
+    previewSound(eventId, current.sound)
       .catch((e) => console.error('Failed to preview sound:', e))
   }
   const importCustomSound = async () => {
@@ -975,12 +1021,20 @@ function SoundTab() {
 
   const renderSoundEvent = (event: typeof config.soundEvents[number]) => {
     const rule = resolveRule(event.id)
+    const eventLabel = t(`settings.soundEvents.${event.id}`, { defaultValue: event.label })
+    const previewLabel = t('settings.previewSoundFor', { defaultValue: `${t('settings.previewSound')} ${eventLabel}` })
     return (
       <div key={event.id} className="sound-event-row">
-        <span className="sound-event-row__label">{event.label}</span>
+        <span className="sound-event-row__label">{eventLabel}</span>
         <Dropdown value={rule.sound} options={soundChoiceOptions}
           onChange={(v) => updateSoundChoice(event.id, v as SoundChoice)} minWidth={130} />
-        <button className="sound-event-row__play" onClick={() => previewSoundEvent(event.id)} title={t('settings.previewSound')}>
+        <button
+          aria-label={previewLabel}
+          className="sound-event-row__play"
+          onClick={() => previewSoundEvent(event.id)}
+          title={previewLabel}
+          type="button"
+        >
           ▶
         </button>
         <Toggle checked={rule.enabled} onChange={() => toggleSoundEvent(event.id, !rule.enabled)} disabled={!config.soundEnabled} />
@@ -1021,7 +1075,7 @@ function SoundTab() {
 
       <SettingGroup label={t('settings.customSounds', { defaultValue: 'Custom Sounds' })}>
         {config.customSounds.map((sound) => (
-          <div key={sound.id} className="sound-event-row">
+          <div key={sound.id} className="sound-event-row sound-event-row--custom">
             <span className="sound-event-row__label" title={sound.path}>{sound.name}</span>
             <button className="settings-mini-button" type="button" onClick={() => deleteCustomSound(sound.id)}>
               {t('settings.delete', { defaultValue: 'Delete' })}
@@ -1087,6 +1141,58 @@ function ShortcutsTab() {
   const { t } = useTranslation()
   const shortcuts = useConfigStore((s) => s.shortcuts)
   const config = useConfigStore()
+  const syncRequestRef = useRef(0)
+  const [shortcutError, setShortcutError] = useState<string | null>(null)
+  const [showAdvancedShortcuts, setShowAdvancedShortcuts] = useState(false)
+  const primaryShortcuts = shortcuts.filter((shortcut) => PRIMARY_SHORTCUT_ACTIONS.has(shortcut.action))
+  const advancedShortcuts = shortcuts.filter((shortcut) => !PRIMARY_SHORTCUT_ACTIONS.has(shortcut.action))
+  const enabledAdvancedShortcutCount = advancedShortcuts.filter((shortcut) => shortcut.keys.trim()).length
+  const latestShortcutDrafts = {
+    globalShortcut: config.globalShortcut,
+    shortcutApprove: config.shortcutApprove,
+    shortcutDeny: config.shortcutDeny,
+    shortcutSkip: config.shortcutSkip,
+  }
+  const shortcutDraftKey = [
+    latestShortcutDrafts.globalShortcut,
+    latestShortcutDrafts.shortcutApprove,
+    latestShortcutDrafts.shortcutDeny,
+    latestShortcutDrafts.shortcutSkip,
+  ].join('\u0000')
+  const [shortcutDraftState, setShortcutDraftState] = useState(() => ({
+    key: shortcutDraftKey,
+    drafts: latestShortcutDrafts,
+  }))
+  const shortcutDrafts = shortcutDraftState.key === shortcutDraftKey ? shortcutDraftState.drafts : latestShortcutDrafts
+  const setShortcutDrafts = (
+    update: typeof latestShortcutDrafts | ((drafts: typeof latestShortcutDrafts) => typeof latestShortcutDrafts),
+  ) => {
+    setShortcutDraftState((state) => {
+      const base = state.key === shortcutDraftKey ? state.drafts : latestShortcutDrafts
+      const drafts = typeof update === 'function' ? update(base) : update
+      return { key: shortcutDraftKey, drafts }
+    })
+  }
+
+  const formatShortcutError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    return t('settings.shortcutApplyFailed', {
+      defaultValue: 'Shortcut could not be applied: {{message}}',
+      message,
+    })
+  }
+
+  const syncIslandGlobalShortcut = (value: string, previous: string) => {
+    const requestId = ++syncRequestRef.current
+    setShortcutError(null)
+    registerGlobalShortcut(value).catch((error) => {
+      if (requestId !== syncRequestRef.current) return
+      config.updateConfig('globalShortcut', previous)
+      setShortcutDrafts((drafts) => ({ ...drafts, globalShortcut: previous }))
+      setShortcutError(formatShortcutError(error))
+    })
+  }
+
   const syncGlobalActions = (patch: Partial<{
     shortcutApprove: string
     shortcutApproveEnabled: boolean
@@ -1094,7 +1200,7 @@ function ShortcutsTab() {
     shortcutDenyEnabled: boolean
     shortcutSkip: string
     shortcutSkipEnabled: boolean
-  }>) => {
+  }>, rollback?: () => void) => {
     const next = {
       approve: patch.shortcutApprove ?? config.shortcutApprove,
       approveEnabled: patch.shortcutApproveEnabled ?? config.shortcutApproveEnabled,
@@ -1103,47 +1209,134 @@ function ShortcutsTab() {
       skip: patch.shortcutSkip ?? config.shortcutSkip,
       skipEnabled: patch.shortcutSkipEnabled ?? config.shortcutSkipEnabled,
     }
-    setGlobalActionShortcuts(next).catch((e) => console.error('Failed to set global action shortcuts:', e))
+    const requestId = ++syncRequestRef.current
+    setShortcutError(null)
+    setGlobalActionShortcuts(next).catch((error) => {
+      if (requestId !== syncRequestRef.current) return
+      rollback?.()
+      setShortcutError(formatShortcutError(error))
+    })
+  }
+  const setIslandShortcut = (value: string) => {
+    setShortcutDrafts((drafts) => ({ ...drafts, globalShortcut: value }))
+  }
+  const commitIslandShortcut = () => {
+    const value = shortcutDrafts.globalShortcut.trim()
+    if (value === config.globalShortcut) return
+    const previous = config.globalShortcut
+    config.updateConfig('globalShortcut', value)
+    syncIslandGlobalShortcut(value, previous)
   }
   const setShortcut = <K extends 'shortcutApprove' | 'shortcutDeny' | 'shortcutSkip'>(key: K, value: string) => {
+    setShortcutDrafts((drafts) => ({ ...drafts, [key]: value }))
+  }
+  const commitShortcut = <K extends 'shortcutApprove' | 'shortcutDeny' | 'shortcutSkip'>(key: K) => {
+    const value = shortcutDrafts[key].trim()
+    if (value === config[key]) return
+    const previous = config[key]
     config.updateConfig(key, value)
-    syncGlobalActions({ [key]: value })
+    syncGlobalActions({ [key]: value }, () => {
+      config.updateConfig(key, previous)
+      setShortcutDrafts((drafts) => ({ ...drafts, [key]: previous }))
+    })
   }
   const setShortcutEnabled = <K extends 'shortcutApproveEnabled' | 'shortcutDenyEnabled' | 'shortcutSkipEnabled'>(key: K, value: boolean) => {
+    const previous = config[key]
     config.updateConfig(key, value)
-    syncGlobalActions({ [key]: value })
+    syncGlobalActions({ [key]: value }, () => config.updateConfig(key, previous))
+  }
+  const commitOnEnter = (event: ReactKeyboardEvent<HTMLInputElement>, commit: () => void) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    commit()
   }
 
   return (
     <>
       <SettingGroup label={t('settings.globalShortcuts', { defaultValue: 'Global Shortcuts' })}>
         <SettingRow
+          label={t('settings.globalShortcut', { defaultValue: 'Toggle island visibility' })}
+          description={t('settings.globalShortcutDesc', { defaultValue: 'Keyboard shortcut to toggle island visibility' })}
+        >
+          <div className="shortcut-global-control">
+            <GlassInput
+              className="shortcut-global-control__input"
+              value={shortcutDrafts.globalShortcut}
+              onChange={(e) => setIslandShortcut(e.target.value)}
+              onBlur={commitIslandShortcut}
+              onKeyDown={(e) => commitOnEnter(e, commitIslandShortcut)}
+              placeholder="CommandOrControl+Shift+I"
+            />
+          </div>
+        </SettingRow>
+        <SettingRow
           label={t('settings.shortcutApprove', { defaultValue: 'Approve current permission' })}
           description={t('settings.shortcutApproveDesc', { defaultValue: 'Works even when the island is not focused' })}
         >
-          <Toggle checked={config.shortcutApproveEnabled} onChange={(v) => setShortcutEnabled('shortcutApproveEnabled', v)} />
-          <GlassInput value={config.shortcutApprove} onChange={(e) => setShortcut('shortcutApprove', e.target.value)} placeholder="CommandOrControl+Shift+A" />
+          <div className="shortcut-global-control">
+            <Toggle checked={config.shortcutApproveEnabled} onChange={(v) => setShortcutEnabled('shortcutApproveEnabled', v)} />
+            <GlassInput className="shortcut-global-control__input" value={shortcutDrafts.shortcutApprove} onChange={(e) => setShortcut('shortcutApprove', e.target.value)} onBlur={() => commitShortcut('shortcutApprove')} onKeyDown={(e) => commitOnEnter(e, () => commitShortcut('shortcutApprove'))} placeholder="CommandOrControl+Shift+A" />
+          </div>
         </SettingRow>
         <SettingRow
           label={t('settings.shortcutDeny', { defaultValue: 'Deny current permission' })}
           description={t('settings.shortcutDenyDesc', { defaultValue: 'Sends a deny response to the oldest pending permission' })}
         >
-          <Toggle checked={config.shortcutDenyEnabled} onChange={(v) => setShortcutEnabled('shortcutDenyEnabled', v)} />
-          <GlassInput value={config.shortcutDeny} onChange={(e) => setShortcut('shortcutDeny', e.target.value)} placeholder="CommandOrControl+Shift+D" />
+          <div className="shortcut-global-control">
+            <Toggle checked={config.shortcutDenyEnabled} onChange={(v) => setShortcutEnabled('shortcutDenyEnabled', v)} />
+            <GlassInput className="shortcut-global-control__input" value={shortcutDrafts.shortcutDeny} onChange={(e) => setShortcut('shortcutDeny', e.target.value)} onBlur={() => commitShortcut('shortcutDeny')} onKeyDown={(e) => commitOnEnter(e, () => commitShortcut('shortcutDeny'))} placeholder="CommandOrControl+Shift+D" />
+          </div>
         </SettingRow>
         <SettingRow
           label={t('settings.shortcutSkip', { defaultValue: 'Skip current question' })}
           description={t('settings.shortcutSkipDesc', { defaultValue: 'Selects the first answer for the oldest pending question' })}
         >
-          <Toggle checked={config.shortcutSkipEnabled} onChange={(v) => setShortcutEnabled('shortcutSkipEnabled', v)} />
-          <GlassInput value={config.shortcutSkip} onChange={(e) => setShortcut('shortcutSkip', e.target.value)} placeholder="CommandOrControl+Shift+S" />
+          <div className="shortcut-global-control">
+            <Toggle checked={config.shortcutSkipEnabled} onChange={(v) => setShortcutEnabled('shortcutSkipEnabled', v)} />
+            <GlassInput className="shortcut-global-control__input" value={shortcutDrafts.shortcutSkip} onChange={(e) => setShortcut('shortcutSkip', e.target.value)} onBlur={() => commitShortcut('shortcutSkip')} onKeyDown={(e) => commitOnEnter(e, () => commitShortcut('shortcutSkip'))} placeholder="CommandOrControl+Shift+S" />
+          </div>
         </SettingRow>
+        {shortcutError && <div className="shortcut-status shortcut-status--error" role="alert">{shortcutError}</div>}
       </SettingGroup>
       <SettingGroup label={t('settings.inWindowShortcuts', { defaultValue: 'In-Window Shortcuts' })}>
         <div className="shortcuts-table">
-          {shortcuts.map((s) => (
-            <ShortcutRow key={s.action} action={s.action} label={s.label} keys={s.keys} />
+          {primaryShortcuts.map((s) => (
+            <ShortcutRow
+              key={s.action}
+              action={s.action}
+              label={t(`settings.shortcutActions.${s.action}`, { defaultValue: s.label })}
+              keys={s.keys}
+            />
           ))}
+        </div>
+        <div className="shortcuts-advanced">
+          <button
+            className="shortcuts-advanced__toggle"
+            onClick={() => setShowAdvancedShortcuts((value) => !value)}
+            type="button"
+          >
+            <span>{showAdvancedShortcuts
+              ? t('settings.hideAdvancedShortcuts', { defaultValue: 'Hide advanced shortcuts' })
+              : t('settings.showAdvancedShortcuts', { defaultValue: 'Show advanced shortcuts' })}</span>
+            <span className="shortcuts-advanced__count">
+              {t('settings.enabledAdvancedShortcuts', {
+                defaultValue: '{{count}} enabled',
+                count: enabledAdvancedShortcutCount,
+              })}
+            </span>
+          </button>
+          {showAdvancedShortcuts && (
+            <div className="shortcuts-table shortcuts-table--advanced">
+              {advancedShortcuts.map((s) => (
+                <ShortcutRow
+                  key={s.action}
+                  action={s.action}
+                  label={t(`settings.shortcutActions.${s.action}`, { defaultValue: s.label })}
+                  keys={s.keys}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </SettingGroup>
     </>
@@ -1165,6 +1358,8 @@ function IntegrationTab() {
   const [bulkInstalling, setBulkInstalling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [hookDoctorReport, setHookDoctorReport] = useState<HookDoctorReport | null>(null)
+  const [hookDoctorBusy, setHookDoctorBusy] = useState(false)
   const [usageProviders, setUsageProviders] = useState<UsageProviderStatus[]>([])
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageAction, setUsageAction] = useState<string | null>(null)
@@ -1233,6 +1428,21 @@ function IntegrationTab() {
     await fetchStatus()
     await fetchUsageProviders({ live: true, showLoading: true })
     setNotice(t('settings.hookDetectDone', { defaultValue: '检测完成。' }))
+  }
+
+  const runDoctor = async () => {
+    setError(null); setNotice(null)
+    setHookDoctorBusy(true)
+    try {
+      setHookDoctorReport(await runHookDoctor())
+    } catch (err) {
+      setHookDoctorReport({
+        generatedAt: Math.floor(Date.now() / 1000),
+        checks: [{ id: 'doctor-error', label: 'Hook Doctor', status: 'error', detail: String(err) }],
+      })
+    } finally {
+      setHookDoctorBusy(false)
+    }
   }
 
   const setUsageQueryEnabled = (enabled: boolean) => {
@@ -1399,9 +1609,16 @@ function IntegrationTab() {
   }
 
   const visibleTools = config.islandExternalEnabled ? tools : []
-  const accountUsageProviders = usageProviders.filter((provider) =>
-    ['claude-code', 'codex', 'gemini-cli', 'copilot'].includes(provider.provider),
-  )
+  const accountUsageProviders = usageProviders
+    .filter((provider) =>
+      ACCOUNT_USAGE_PROVIDER_RANK.has(provider.provider)
+      && (provider.catalogSupported || provider.implementationStatus === 'active'),
+    )
+    .sort((a, b) =>
+      (ACCOUNT_USAGE_PROVIDER_RANK.get(a.provider) ?? Number.MAX_SAFE_INTEGER)
+      - (ACCOUNT_USAGE_PROVIDER_RANK.get(b.provider) ?? Number.MAX_SAFE_INTEGER)
+      || a.label.localeCompare(b.label),
+    )
   const customProfileOptions = tools
     .filter((tool) => tool.adapterId || tool.name)
     .map((tool) => ({
@@ -1415,7 +1632,7 @@ function IntegrationTab() {
     if (provider.authStatus === 'authorized') return t('settings.waitingData', { defaultValue: 'Waiting for data' })
     if (provider.authStatus === 'missing') return t('settings.needsAuth', { defaultValue: 'Needs authorization' })
     if (provider.implementationStatus === 'available') return t('settings.usageReaderAvailable', { defaultValue: '可接入' })
-    if (provider.implementationStatus === 'unsupported') return t('settings.notSupported', { defaultValue: '未支持' })
+    if (provider.implementationStatus === 'unsupported') return t('settings.usageReaderPending', { defaultValue: '待接入' })
     return t('settings.needsAuth', { defaultValue: 'Needs authorization' })
   }
 
@@ -1427,8 +1644,42 @@ function IntegrationTab() {
 
   return (
     <>
-{error && <div className="hook-error-card">{error}</div>}
+      {error && <div className="hook-error-card">{error}</div>}
       {notice && <div className="hook-notice-card">{notice}</div>}
+
+      <SettingGroup
+        actions={(
+          <button className="settings-mini-button" disabled={hookDoctorBusy} onClick={runDoctor} type="button">
+            {hookDoctorBusy ? t('settings.running', { defaultValue: 'Running...' }) : t('settings.runDiagnostics', { defaultValue: 'Run diagnostics' })}
+          </button>
+        )}
+        label={t('settings.hookDoctor', { defaultValue: 'Hook Doctor' })}
+      >
+        <div className="hook-doctor-intro">
+          {t('settings.hookDoctorInlineDesc', { defaultValue: 'Checks the AgentBro bridge, Hook service, installed Hooks, macOS automation permission, and terminal helpers.' })}
+        </div>
+        {hookDoctorReport && (
+          <div className="hook-doctor-report">
+            {hookDoctorReport.checks.map((check) => {
+              const suggestion = hookDoctorSuggestion(t, check)
+              return (
+                <div className={`hook-doctor-check hook-doctor-check--${check.status}`} key={check.id}>
+                  <strong>{check.status.toUpperCase()}</strong>
+                  <div className="hook-doctor-check__body">
+                    <div className="hook-doctor-check__label">{check.label}</div>
+                    <div className="hook-doctor-check__detail">{check.detail}</div>
+                    {suggestion && (
+                      <div className="hook-doctor-check__suggestion">
+                        {t('settings.hookDoctorNextStep', { defaultValue: 'Next step: ' })}{suggestion}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </SettingGroup>
 
       <SettingGroup
         actions={config.islandExternalEnabled ? (
@@ -1612,35 +1863,19 @@ function IntegrationTab() {
   )
 }
 
-// ── Advanced Tab ──
-function AdvancedTab() {
+type RemoteActionKind = 'connect' | 'disconnect' | 'installHooks' | 'uninstallHooks' | 'remove' | 'import'
+
+// ── Remote Tab ──
+function RemoteTab() {
   const { t } = useTranslation()
   const config = useConfigStore()
   const [newHostName, setNewHostName] = useState('')
   const [newHostAddr, setNewHostAddr] = useState('')
   const [remoteHosts, setRemoteHosts] = useState<RemoteHost[]>([])
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, ConnectionStatus>>({})
-  const [remoteBusyId, setRemoteBusyId] = useState<string | null>(null)
+  const [remoteBusyAction, setRemoteBusyAction] = useState<{ id: string; action: RemoteActionKind } | null>(null)
   const [sshConfigHosts, setSshConfigHosts] = useState<SshConfigHost[]>([])
-  const [autoApproveToolsDraft, setAutoApproveToolsDraft] = useState(config.autoApproveTools.join(', '))
-  const [hookDoctorReport, setHookDoctorReport] = useState<HookDoctorReport | null>(null)
-  const [hookDoctorBusy, setHookDoctorBusy] = useState(false)
-  const [launcherCwd, setLauncherCwd] = useState('')
-  const [launcherAgent, setLauncherAgent] = useState('claude-code')
-  const [launcherTerminal, setLauncherTerminal] = useState('Terminal')
-  const [launcherArgs, setLauncherArgs] = useState('')
-  const [launcherMessage, setLauncherMessage] = useState('')
-  const [customTemplates, setCustomTemplates] = useState<CustomHookTemplate[]>([])
-  const [templateDraft, setTemplateDraft] = useState<CustomHookTemplate>({
-    id: `custom-${Date.now()}`,
-    label: '',
-    agent: '',
-    configPath: '',
-    format: 'json',
-    events: ['PreToolUse', 'PostToolUse', 'Stop'],
-    command: '',
-    enabled: true,
-  })
+  const [sshConfigRefreshing, setSshConfigRefreshing] = useState(false)
 
   const refreshRemoteHosts = useCallback(async () => {
     if (!isTauri()) return
@@ -1669,70 +1904,33 @@ function AdvancedTab() {
     refreshSshConfigHosts().catch((err) => console.error('Failed to load SSH config hosts:', err))
   }, [refreshSshConfigHosts])
 
-  useEffect(() => {
-    setAutoApproveToolsDraft(config.autoApproveTools.join(', '))
-  }, [config.autoApproveTools])
-
-  const loadCustomTemplates = useCallback(async () => {
-    if (!isTauri() || !config.customHookTemplatesEnabled) return
-    setCustomTemplates(await listCustomHookTemplates())
-  }, [config.customHookTemplatesEnabled])
+  const refreshRemoteData = useCallback(async () => {
+    await Promise.all([
+      refreshRemoteHosts(),
+      refreshSshConfigHosts(),
+    ])
+  }, [refreshRemoteHosts, refreshSshConfigHosts])
 
   useEffect(() => {
-    loadCustomTemplates().catch((err) => console.error('Failed to load custom hook templates:', err))
-  }, [loadCustomTemplates])
+    if (!isTauri()) return
+    const hasConnectingHost = Object.values(remoteStatuses).some((status) => status.state === 'connecting')
+    if (!hasConnectingHost) return
 
-  async function runDoctor() {
-    setHookDoctorBusy(true)
+    const timer = window.setInterval(() => {
+      refreshRemoteHosts().catch((err) => console.error('Failed to poll remote host status:', err))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [refreshRemoteHosts, remoteStatuses])
+
+  async function refreshSshConfigImportList() {
+    setSshConfigRefreshing(true)
     try {
-      setHookDoctorReport(await runHookDoctor())
+      await refreshRemoteData()
     } catch (err) {
-      setHookDoctorReport({
-        generatedAt: Math.floor(Date.now() / 1000),
-        checks: [{ id: 'doctor-error', label: 'Hook Doctor', status: 'error', detail: String(err) }],
-      })
+      console.error('Failed to refresh SSH config hosts:', err)
     } finally {
-      setHookDoctorBusy(false)
+      setSshConfigRefreshing(false)
     }
-  }
-
-  async function launchSession() {
-    setLauncherMessage('')
-    try {
-      await launchAgentSession({
-        agentId: launcherAgent,
-        cwd: launcherCwd,
-        terminal: launcherTerminal,
-        extraArgs: launcherArgs,
-      })
-      setLauncherMessage(t('settings.launcherStarted', { defaultValue: 'Session launched.' }))
-    } catch (err) {
-      setLauncherMessage(String(err))
-    }
-  }
-
-  async function saveTemplate() {
-    if (!templateDraft.label.trim() || !templateDraft.agent.trim() || !templateDraft.configPath.trim()) return
-    const saved = await upsertCustomHookTemplate({
-      ...templateDraft,
-      id: templateDraft.id || `custom-${Date.now()}`,
-      events: templateDraft.events.filter(Boolean),
-    })
-    setCustomTemplates(saved)
-    setTemplateDraft({
-      id: `custom-${Date.now()}`,
-      label: '',
-      agent: '',
-      configPath: '',
-      format: 'json',
-      events: ['PreToolUse', 'PostToolUse', 'Stop'],
-      command: '',
-      enabled: true,
-    })
-  }
-
-  async function deleteTemplate(id: string) {
-    setCustomTemplates(await removeCustomHookTemplate(id))
   }
 
   function parseRemoteTarget(raw: string): { sshTarget: string; port: number | null } {
@@ -1746,7 +1944,8 @@ function AdvancedTab() {
     if (!newHostName.trim() || !newHostAddr.trim()) return
     if (!isTauri()) {
       config.addSSHHost({ id: `ssh-${Date.now()}`, name: newHostName.trim(), host: newHostAddr.trim(), enabled: true })
-      setNewHostName(''); setNewHostAddr('')
+      setNewHostName('')
+      setNewHostAddr('')
       return
     }
 
@@ -1761,8 +1960,9 @@ function AdvancedTab() {
       remoteSocketPath: '/tmp/agentbro-remote.sock',
       autoConnect: false,
     })
-    setNewHostName(''); setNewHostAddr('')
-    await refreshRemoteHosts()
+    setNewHostName('')
+    setNewHostAddr('')
+    await refreshRemoteData()
   }
 
   async function importSshConfigHost(host: SshConfigHost) {
@@ -1778,19 +1978,19 @@ function AdvancedTab() {
       remoteSocketPath: '/tmp/agentbro-remote.sock',
       autoConnect: false,
     })
-    await refreshRemoteHosts()
+    await refreshRemoteData()
   }
 
-  async function runRemoteAction(id: string, action: () => Promise<unknown>) {
-    setRemoteBusyId(id)
+  async function runRemoteAction(id: string, actionName: RemoteActionKind, action: () => Promise<unknown>) {
+    setRemoteBusyAction({ id, action: actionName })
     try {
       await action()
-      await refreshRemoteHosts()
+      await refreshRemoteData()
     } catch (err) {
       console.error('Remote host action failed:', err)
-      await refreshRemoteHosts().catch(() => {})
+      await refreshRemoteData().catch(() => {})
     } finally {
-      setRemoteBusyId(null)
+      setRemoteBusyAction(null)
     }
   }
 
@@ -1811,138 +2011,203 @@ function AdvancedTab() {
     return t(`settings.${status.state}`, { defaultValue: status.state })
   }
 
-  const updateAutoApproveTools = (value: string) => {
-    config.updateConfig('autoApproveTools', value.split(',').map((item) => item.trim()).filter(Boolean))
+  function statusTone(status: ConnectionStatus | undefined): string {
+    if (!status) return 'disconnected'
+    return status.state
   }
+
+  const existingRemoteNames = new Set(remoteHosts.map((remote) => remote.name))
+  const seenSshConfigNames = new Set<string>()
+  const importableSshConfigHosts = sshConfigHosts.filter((host) => {
+    if (existingRemoteNames.has(host.name) || seenSshConfigNames.has(host.name)) return false
+    seenSshConfigNames.add(host.name)
+    return true
+  })
 
   return (
     <>
-      <SettingGroup label={t('settings.advancedTools', { defaultValue: 'Advanced Tools' })}>
-        <SettingRow label={t('settings.hookDoctorEnabled', { defaultValue: 'Hook Doctor' })} description={t('settings.hookDoctorEnabledDesc', { defaultValue: 'Run local diagnostics for bridge, hooks, permissions, and terminal targeting.' })}>
-          <Toggle checked={config.hookDoctorEnabled} onChange={(v) => {
-            config.updateConfig('hookDoctorEnabled', v)
-            persistAdvancedToolFlags({ hookDoctorEnabled: v })
-          }} />
-        </SettingRow>
-        <SettingRow label={t('settings.sessionLauncherEnabled', { defaultValue: 'Session Launcher' })} description={t('settings.sessionLauncherEnabledDesc', { defaultValue: 'Start supported CLI sessions from AgentBro using an explicit working directory.' })}>
-          <Toggle checked={config.sessionLauncherEnabled} onChange={(v) => {
-            config.updateConfig('sessionLauncherEnabled', v)
-            persistAdvancedToolFlags({ sessionLauncherEnabled: v })
-          }} />
-        </SettingRow>
-        <SettingRow label={t('settings.customHookTemplatesEnabled', { defaultValue: 'Custom CLI Hook Templates' })} description={t('settings.customHookTemplatesEnabledDesc', { defaultValue: 'Manage JSON, YAML, and TOML hook templates for unsupported CLIs.' })}>
-          <Toggle checked={config.customHookTemplatesEnabled} onChange={(v) => {
-            config.updateConfig('customHookTemplatesEnabled', v)
-            persistAdvancedToolFlags({ customHookTemplatesEnabled: v })
-          }} />
+      <div className="description-card">{t('settings.sshDescription')}</div>
+      <div className="warning-card">
+        <div className="warning-card__title">{t('settings.sshPrerequisites')}</div>
+        <div className="warning-card__text">{t('settings.sshPrerequisitesText')}</div>
+      </div>
+
+      <SettingGroup label={t('settings.tcpPort')}>
+        <SettingRow label={t('settings.listeningPort')} description={t('settings.listeningPortDesc')}>
+          <GlassInput
+            type="number"
+            value={config.tcpPort}
+            onChange={(e) => config.updateConfig('tcpPort', Number((e.target as HTMLInputElement).value))}
+            style={{ width: 100, textAlign: 'center' }}
+          />
         </SettingRow>
       </SettingGroup>
 
-      {config.hookDoctorEnabled && (
-        <SettingGroup label={t('settings.hookDoctor', { defaultValue: 'Hook Doctor' })}>
-          <SettingRow label={t('settings.runDiagnostics', { defaultValue: 'Run diagnostics' })} description={t('settings.runDiagnosticsDesc', { defaultValue: 'Checks bridge binary, hook server, installed hooks, macOS automation, and terminal helper binaries.' })}>
-            <GlassButton variant="secondary" onClick={runDoctor} disabled={hookDoctorBusy}>
-              {hookDoctorBusy ? t('settings.running', { defaultValue: 'Running...' }) : t('settings.run', { defaultValue: 'Run' })}
-            </GlassButton>
-          </SettingRow>
-          {hookDoctorReport && (
-            <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
-              {hookDoctorReport.checks.map((check) => (
-                <div key={check.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, alignItems: 'start', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
-                  <strong style={{ color: check.status === 'ok' ? 'var(--settings-status-active)' : check.status === 'warn' ? '#f59e0b' : 'var(--settings-danger)', textTransform: 'uppercase', fontSize: 11 }}>{check.status}</strong>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{check.label}</div>
-                    <div style={{ fontSize: 11, color: 'var(--settings-text-secondary)', wordBreak: 'break-all' }}>{check.detail}</div>
-                  </div>
-                </div>
-              ))}
+      <SettingGroup label={t('settings.remoteHosts')}>
+        {displayedRemoteHosts.length === 0 && (
+          <div className="ssh-empty-state">
+            <div className="ssh-empty-state__title">{t('settings.noRemoteHosts')}</div>
+            <div className="ssh-empty-state__text">
+              {t('settings.remoteHostsEmptyHint', { defaultValue: '手动添加主机，或从本机 SSH 配置中导入。' })}
             </div>
-          )}
-        </SettingGroup>
-      )}
-
-      {config.sessionLauncherEnabled && (
-        <SettingGroup label={t('settings.sessionLauncher', { defaultValue: 'Session Launcher' })}>
-          <SettingRow label={t('settings.launchAgent', { defaultValue: 'Agent' })} description={t('settings.launchAgentDesc', { defaultValue: 'Choose a supported CLI and terminal target.' })}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Dropdown value={launcherAgent} options={[
-                { value: 'claude-code', label: 'Claude Code' },
-                { value: 'codex', label: 'Codex' },
-                { value: 'gemini-cli', label: 'Gemini CLI' },
-                { value: 'cursor-cli', label: 'Cursor CLI' },
-                { value: 'traecli', label: 'TraeCli' },
-                { value: 'qwen', label: 'Qwen' },
-                { value: 'opencode', label: 'OpenCode' },
-              ]} onChange={setLauncherAgent} minWidth={140} />
-              <Dropdown value={launcherTerminal} options={[
-                { value: 'Terminal', label: 'Terminal' },
-                { value: 'iTerm2', label: 'iTerm2' },
-              ]} onChange={setLauncherTerminal} minWidth={120} />
-            </div>
-          </SettingRow>
-          <SettingRow label={t('settings.launchCwd', { defaultValue: 'Working directory' })}>
-            <GlassInput value={launcherCwd} placeholder="/path/to/project" onChange={(e) => setLauncherCwd((e.target as HTMLInputElement).value)} style={{ minWidth: 320 }} />
-          </SettingRow>
-          <SettingRow label={t('settings.launchArgs', { defaultValue: 'Extra args' })} description={t('settings.launchArgsDesc', { defaultValue: 'Optional arguments appended to the launch command.' })}>
-            <GlassInput value={launcherArgs} placeholder="--continue" onChange={(e) => setLauncherArgs((e.target as HTMLInputElement).value)} style={{ minWidth: 220 }} />
-          </SettingRow>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            {launcherMessage && <span style={{ alignSelf: 'center', color: 'var(--settings-text-secondary)', fontSize: 12 }}>{launcherMessage}</span>}
-            <GlassButton variant="primary" onClick={launchSession} disabled={!launcherCwd.trim()}>
-              {t('settings.launch', { defaultValue: 'Launch' })}
-            </GlassButton>
           </div>
-        </SettingGroup>
-      )}
-
-      {config.customHookTemplatesEnabled && (
-        <SettingGroup label={t('settings.customHookTemplates', { defaultValue: 'Custom CLI Hook Templates' })}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <GlassInput value={templateDraft.label} placeholder={t('settings.templateLabel', { defaultValue: 'Label' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, label: (e.target as HTMLInputElement).value }))} />
-            <GlassInput value={templateDraft.agent} placeholder={t('settings.templateAgent', { defaultValue: 'source id, e.g. mycli' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, agent: (e.target as HTMLInputElement).value }))} />
-            <GlassInput value={templateDraft.configPath} placeholder="~/.mycli/settings.json" onChange={(e) => setTemplateDraft((v) => ({ ...v, configPath: (e.target as HTMLInputElement).value }))} />
-            <Dropdown value={templateDraft.format} options={[
-              { value: 'json', label: 'JSON' },
-              { value: 'yaml', label: 'YAML' },
-              { value: 'toml', label: 'TOML' },
-            ]} onChange={(format) => setTemplateDraft((v) => ({ ...v, format: format as CustomHookTemplate['format'] }))} minWidth={120} />
-            <GlassInput value={templateDraft.events.join(', ')} placeholder="PreToolUse, PostToolUse, Stop" onChange={(e) => setTemplateDraft((v) => ({ ...v, events: (e.target as HTMLInputElement).value.split(',').map((item) => item.trim()).filter(Boolean) }))} />
-            <GlassInput value={templateDraft.command} placeholder={t('settings.templateCommand', { defaultValue: 'Optional custom command' })} onChange={(e) => setTemplateDraft((v) => ({ ...v, command: (e.target as HTMLInputElement).value }))} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 8 }}>
-            <GlassButton variant="secondary" onClick={saveTemplate} disabled={!templateDraft.label.trim() || !templateDraft.agent.trim() || !templateDraft.configPath.trim()}>
-              {t('settings.saveTemplate', { defaultValue: 'Save Template' })}
-            </GlassButton>
-          </div>
-          <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
-            {customTemplates.map((template) => (
-              <div key={template.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'center', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{template.label} · {template.agent}</div>
-                  <div style={{ fontSize: 11, color: 'var(--settings-text-secondary)', wordBreak: 'break-all' }}>{template.format.toUpperCase()} · {template.configPath}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="settings-mini-button" onClick={() => installCustomHookTemplate(template)}>{t('settings.install', { defaultValue: 'Install' })}</button>
-                  <button className="settings-mini-button" onClick={() => removeCustomHookTemplateHooks(template)}>{t('settings.uninstall', { defaultValue: 'Uninstall' })}</button>
-                  <button className="settings-mini-button" onClick={() => deleteTemplate(template.id)}>{t('settings.delete', { defaultValue: 'Delete' })}</button>
+        )}
+        {displayedRemoteHosts.map((host) => {
+          const status = remoteStatuses[host.id]
+          const tone = statusTone(status)
+          const isConnecting = status?.state === 'connecting'
+          const actionForHost = remoteBusyAction?.id === host.id ? remoteBusyAction.action : null
+          const busy = actionForHost !== null || isConnecting
+          const isConnected = status?.state === 'connected'
+          return (
+            <div key={host.id} className="ssh-host-card">
+              <div className="ssh-host-card__info">
+                <div className="ssh-host-card__name">{host.name}</div>
+                <div className="ssh-host-card__host">
+                  <span className="ssh-host-card__target">{host.sshTarget}{host.port ? `:${host.port}` : ''}</span>
+                  {isTauri() && (
+                    <span className={`ssh-status ssh-status--${tone}`}>
+                      <span className="ssh-status__dot" aria-hidden="true" />
+                      <span>{statusText(status)}</span>
+                    </span>
+                  )}
+                  {status?.state === 'failed' && <span className="ssh-host-card__error" title={status.message}>{status.message}</span>}
                 </div>
               </div>
-            ))}
+              <div className="ssh-host-card__actions">
+                {isTauri() && (
+                  <>
+                    <button
+                      type="button"
+                      className="settings-mini-button"
+                      disabled={busy}
+                      onClick={() => runRemoteAction(host.id, isConnected ? 'disconnect' : 'connect', () => isConnected ? disconnectRemote(host.id) : connectRemote(host.id))}
+                    >
+                      {isConnecting
+                        ? t('settings.connecting', { defaultValue: 'Connecting...' })
+                        : isConnected
+                          ? t('settings.disconnect', { defaultValue: 'Disconnect' })
+                          : t('settings.connect', { defaultValue: 'Connect' })}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-mini-button"
+                      disabled={busy}
+                      onClick={() => runRemoteAction(host.id, 'installHooks', () => installRemoteHooks(host.id))}
+                    >
+                      {actionForHost === 'installHooks' ? t('settings.installing', { defaultValue: 'Installing...' }) : t('settings.installHooks', { defaultValue: 'Install hooks' })}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-mini-button settings-mini-button--danger"
+                      disabled={busy}
+                      onClick={() => runRemoteAction(host.id, 'uninstallHooks', () => uninstallRemoteHooks(host.id))}
+                    >
+                      {actionForHost === 'uninstallHooks' ? t('settings.uninstalling', { defaultValue: 'Uninstalling...' }) : t('settings.uninstallHooks', { defaultValue: 'Uninstall hooks' })}
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="ssh-host-card__remove"
+                  aria-label={t('settings.removeHost')}
+                  disabled={busy}
+                  onClick={() => {
+                    if (isTauri()) {
+                      runRemoteAction(host.id, 'remove', () => removeRemoteHost(host.id))
+                    } else {
+                      config.removeSSHHost(host.id)
+                    }
+                  }}
+                  title={t('settings.removeHost')}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </SettingGroup>
+
+      <SettingGroup label={t('settings.addRemoteHost', { defaultValue: '添加远程主机' })}>
+        <div className="ssh-add-form">
+          <GlassInput
+            placeholder={t('settings.name')}
+            value={newHostName}
+            onChange={(e) => setNewHostName((e.target as HTMLInputElement).value)}
+            style={{ flex: 1 }}
+          />
+          <GlassInput
+            placeholder="user@host"
+            value={newHostAddr}
+            onChange={(e) => setNewHostAddr((e.target as HTMLInputElement).value)}
+            style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 'var(--font-size-sm)' }}
+          />
+          <GlassButton variant="primary" onClick={addHost} disabled={!newHostName.trim() || !newHostAddr.trim()}>
+            {t('settings.add')}
+          </GlassButton>
+        </div>
+      </SettingGroup>
+
+      {isTauri() && (
+        <SettingGroup
+          label={t('settings.importFromSshConfig', { defaultValue: 'Import from ~/.ssh/config' })}
+          actions={(
+            <button
+              type="button"
+              className="settings-mini-button"
+              disabled={sshConfigRefreshing}
+              onClick={refreshSshConfigImportList}
+            >
+              {t('settings.refresh', { defaultValue: '刷新' })}
+            </button>
+          )}
+        >
+          <div className="ssh-import-list">
+            {importableSshConfigHosts.length === 0 ? (
+              <div className="ssh-empty-state">
+                <div className="ssh-empty-state__title">
+                  {t('settings.noImportableSshHosts', { defaultValue: '暂无可导入的 SSH 主机。' })}
+                </div>
+                <div className="ssh-empty-state__text">
+                  {t('settings.refreshSshConfigHint', { defaultValue: '修改 ~/.ssh/config 后点刷新重新读取。' })}
+                </div>
+              </div>
+            ) : (
+              importableSshConfigHosts.map((host) => (
+                <div key={host.name} className="ssh-host-card ssh-host-card--import">
+                  <div className="ssh-host-card__info">
+                    <div className="ssh-host-card__name">{host.name}</div>
+                    <div className="ssh-host-card__host">
+                      {host.user ? `${host.user}@` : ''}{host.hostname || host.name}{host.port ? `:${host.port}` : ''}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-mini-button"
+                    disabled={remoteBusyAction?.id === host.name}
+                    onClick={() => runRemoteAction(host.name, 'import', () => importSshConfigHost(host))}
+                  >
+                    {t('settings.import', { defaultValue: 'Import' })}
+                  </button>
+                </div>
+              ))
+            )}
           </div>
         </SettingGroup>
       )}
+    </>
+  )
+}
 
-      <SettingGroup label={t('settings.island.section.professional', { defaultValue: 'Professional Information' })}>
-        <SettingRow label={t('settings.showCacheTTL')} description={t('settings.showCacheTTLDesc')}>
-          <Toggle checked={config.showCacheTTL} onChange={(v) => config.updateConfig('showCacheTTL', v)} />
-        </SettingRow>
-      </SettingGroup>
+// ── Advanced Tab ──
+function AdvancedTab() {
+  const { t } = useTranslation()
+  const config = useConfigStore()
 
+  return (
+    <>
       <SettingGroup label={t('settings.island.section.visualSignals', { defaultValue: 'Visual Signals' })}>
-        <SettingRow label={t('settings.aiMessageLines')} description={t('settings.aiMessageLinesDesc')}>
-          <Slider value={config.aiMessageLines} min={1} max={5} step={1}
-            onChange={(v) => config.updateConfig('aiMessageLines', v)} />
-        </SettingRow>
         <SettingRow label={t('settings.agentActivity')} description={t('settings.agentActivityDesc')}>
           <Toggle checked={config.showAgentActivityDetails} onChange={(v) => config.updateConfig('showAgentActivityDetails', v)} />
         </SettingRow>
@@ -1952,146 +2217,6 @@ function AdvancedTab() {
             persistIslandFeatureFlags({ pixelCursorEnabled: v })
           }} />
         </SettingRow>
-        <SettingRow label={t('settings.confettiOnComplete')} description={t('settings.confettiOnCompleteDesc')}>
-          <Toggle checked={config.confettiEnabled} onChange={(v) => {
-            config.updateConfig('confettiEnabled', v)
-            persistIslandFeatureFlags({ confettiEnabled: v })
-          }} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.island.section.debug', { defaultValue: 'Debug and Paths' })}>
-        <SettingRow label={t('settings.autoApproveTools', { defaultValue: 'Auto-approve tools' })} description={t('settings.autoApproveToolsDesc', { defaultValue: 'Comma-separated tool names that can be approved without prompting.' })}>
-          <GlassInput
-            value={autoApproveToolsDraft}
-            onChange={(e) => setAutoApproveToolsDraft((e.target as HTMLInputElement).value)}
-            onBlur={() => updateAutoApproveTools(autoApproveToolsDraft)}
-            style={{ minWidth: 260, fontSize: 12 }}
-          />
-        </SettingRow>
-        <SettingRow label={t('settings.hapticFeedback')} description={t('settings.hapticFeedbackDesc')}>
-          <Toggle checked={config.hapticOnHover} onChange={(v) => config.updateConfig('hapticOnHover', v)} />
-        </SettingRow>
-        {config.hapticOnHover && (
-          <SettingRow label={t('settings.hapticIntensity')} description={t('settings.hapticIntensityDesc')}>
-            <Slider
-              value={config.hapticIntensity}
-              min={1}
-              max={3}
-              step={1}
-              onChange={(v) => config.updateConfig('hapticIntensity', v)}
-            />
-          </SettingRow>
-        )}
-        {config.labFeatures.map((feature) => (
-          <SettingRow key={feature.id} label={feature.label} description={feature.description}>
-            <Toggle checked={feature.enabled} onChange={() => config.toggleLabFeature(feature.id)} />
-          </SettingRow>
-        ))}
-      </SettingGroup>
-
-      {/* SSH Remote */}
-      <div className="description-card">{t('settings.sshDescription')}</div>
-      <div className="warning-card">
-        <div className="warning-card__title">{t('settings.sshPrerequisites')}</div>
-        <div className="warning-card__text">{t('settings.sshPrerequisitesText')}</div>
-      </div>
-
-      <SettingGroup label={t('settings.tcpPort')}>
-        <SettingRow label={t('settings.listeningPort')} description={t('settings.listeningPortDesc')}>
-          <GlassInput type="number" value={config.tcpPort}
-            onChange={(e) => config.updateConfig('tcpPort', Number((e.target as HTMLInputElement).value))}
-            style={{ width: 100, textAlign: 'center' }} />
-        </SettingRow>
-      </SettingGroup>
-
-      <SettingGroup label={t('settings.remoteHosts')}>
-        {displayedRemoteHosts.length === 0 && (
-          <div style={{ padding: 'var(--space-md) 0', color: '#aeaeb2', fontSize: 'var(--font-size-sm)' }}>
-            {t('settings.noRemoteHosts')}
-          </div>
-        )}
-        {displayedRemoteHosts.map((host) => {
-          const status = remoteStatuses[host.id]
-          const busy = remoteBusyId === host.id
-          const isConnected = status?.state === 'connected'
-          return (
-          <div key={host.id} className="ssh-host-card">
-            <div className="ssh-host-card__info">
-              <div className="ssh-host-card__name">{host.name}</div>
-              <div className="ssh-host-card__host">
-                {host.sshTarget}{host.port ? `:${host.port}` : ''}
-                {isTauri() && <span> · {statusText(status)}</span>}
-                {status?.state === 'failed' && <span title={status.message}> · {status.message}</span>}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              {isTauri() && (
-                <>
-                  <button
-                    className="settings-mini-button"
-                    disabled={busy}
-                    onClick={() => runRemoteAction(host.id, () => isConnected ? disconnectRemote(host.id) : connectRemote(host.id))}
-                  >
-                    {isConnected ? t('settings.disconnect', { defaultValue: 'Disconnect' }) : t('settings.connect', { defaultValue: 'Connect' })}
-                  </button>
-                  <button
-                    className="settings-mini-button"
-                    disabled={busy}
-                    onClick={() => runRemoteAction(host.id, () => installRemoteHooks(host.id))}
-                  >
-                    {t('settings.installHooks', { defaultValue: 'Install hooks' })}
-                  </button>
-                </>
-              )}
-              <button
-                className="ssh-host-card__remove"
-                onClick={() => {
-                  if (isTauri()) {
-                    runRemoteAction(host.id, () => removeRemoteHost(host.id))
-                  } else {
-                    config.removeSSHHost(host.id)
-                  }
-                }}
-                title={t('settings.removeHost')}
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          )
-        })}
-        <div style={{ display: 'flex', gap: 'var(--space-sm)', paddingTop: 'var(--space-md)' }}>
-          <GlassInput placeholder={t('settings.name')} value={newHostName}
-            onChange={(e) => setNewHostName((e.target as HTMLInputElement).value)} style={{ flex: 1 }} />
-          <GlassInput placeholder="user@host" value={newHostAddr}
-            onChange={(e) => setNewHostAddr((e.target as HTMLInputElement).value)}
-            style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 'var(--font-size-sm)' }} />
-          <GlassButton variant="primary" onClick={addHost}>{t('settings.add')}</GlassButton>
-        </div>
-        {isTauri() && sshConfigHosts.length > 0 && (
-          <div style={{ display: 'grid', gap: 6, paddingTop: 'var(--space-md)' }}>
-            <div style={{ color: '#aeaeb2', fontSize: 'var(--font-size-xs)' }}>
-              {t('settings.importFromSshConfig', { defaultValue: 'Import from ~/.ssh/config' })}
-            </div>
-            {sshConfigHosts
-              .filter((host) => !remoteHosts.some((remote) => remote.name === host.name))
-              .slice(0, 6)
-              .map((host) => (
-                <div key={host.name} className="ssh-host-card">
-                  <div className="ssh-host-card__info">
-                    <div className="ssh-host-card__name">{host.name}</div>
-                    <div className="ssh-host-card__host">
-                      {host.user ? `${host.user}@` : ''}{host.hostname || host.name}{host.port ? `:${host.port}` : ''}
-                    </div>
-                  </div>
-                  <button className="settings-mini-button" onClick={() => runRemoteAction(host.name, () => importSshConfigHost(host))}>
-                    {t('settings.import', { defaultValue: 'Import' })}
-                  </button>
-                </div>
-              ))}
-          </div>
-        )}
       </SettingGroup>
 
       {/* Webhooks */}

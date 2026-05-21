@@ -32,6 +32,19 @@ impl RemoteInstaller {
         }
     }
 
+    /// Remove AgentBro-managed agent hooks from the remote host via SSH
+    pub async fn uninstall_hooks(host: &RemoteHost) -> InstallResult {
+        let remove = Self::remove_configured_hooks(host).await;
+        if !remove.ok {
+            return remove;
+        }
+
+        InstallResult {
+            ok: true,
+            message: "Remote hooks uninstalled successfully".to_string(),
+        }
+    }
+
     /// Remove the reverse-forwarded Unix socket on the remote side (cleanup before reconnect)
     pub async fn cleanup_remote_socket(host: &RemoteHost) {
         let cmd = format!("rm -f '{}'", host.remote_socket_path.replace('\'', "\\'"));
@@ -177,6 +190,88 @@ except Exception as e:
                 ok: false,
                 message: format!(
                     "Configure failed: {}",
+                    result.stderr.chars().take(200).collect::<String>()
+                ),
+            }
+        }
+    }
+
+    async fn remove_configured_hooks(host: &RemoteHost) -> InstallResult {
+        let profile = profiles::claude_code_profile();
+        let source = profile.source;
+        let config_path_parts_json = profile_config_path_parts_json(&profile);
+        let source_json = json_string(source);
+
+        let script = format!(
+            r#"
+import json, pathlib
+
+home = pathlib.Path.home()
+config_path = home
+for part in json.loads(r'''{config_path_parts_json}'''):
+    config_path = config_path / part
+source = json.loads(r'''{source_json}''')
+hook_script = home / ".agentbro" / "remote-hook.py"
+
+def is_agentbro_entry(value):
+    try:
+        text = json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    return (
+        "remote-hook.py" in text
+        or "agentbro-bridge" in text
+        or "AgentBro managed integration" in text
+    )
+
+try:
+    removed = 0
+    if config_path.exists():
+        data = json.loads(config_path.read_text() or "{{}}")
+        hooks = data.get("hooks")
+        if isinstance(hooks, dict):
+            for event_name, value in list(hooks.items()):
+                if not isinstance(value, list):
+                    continue
+                filtered = [entry for entry in value if not is_agentbro_entry(entry)]
+                removed += len(value) - len(filtered)
+                if filtered:
+                    hooks[event_name] = filtered
+                else:
+                    hooks.pop(event_name, None)
+            if hooks:
+                data["hooks"] = hooks
+            else:
+                data.pop("hooks", None)
+            config_path.write_text(json.dumps(data, indent=2))
+    if hook_script.exists():
+        hook_script.unlink()
+    print(f"{{source}} hooks removed: {{removed}}")
+except Exception as e:
+    print(f"{{source}} uninstall error: {{e}}")
+    raise
+"#,
+            config_path_parts_json = config_path_parts_json,
+            source_json = source_json,
+        );
+
+        let encoded = base64_encode(script.as_bytes());
+        let cmd = format!(
+            "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
+            encoded
+        );
+        let result = run_ssh(host, &cmd, 30).await;
+
+        if result.exit_code == 0 {
+            InstallResult {
+                ok: true,
+                message: result.stdout.trim().to_string(),
+            }
+        } else {
+            InstallResult {
+                ok: false,
+                message: format!(
+                    "Uninstall failed: {}",
                     result.stderr.chars().take(200).collect::<String>()
                 ),
             }

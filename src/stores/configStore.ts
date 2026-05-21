@@ -155,10 +155,8 @@ interface ConfigState {
   shortcutSkip: string
   shortcutSkipEnabled: boolean
   permissionShortcutDefaultsMigrated: boolean
+  shortcutSurfaceDefaultsMigrated: boolean
   customHooksPath: string
-  hookDoctorEnabled: boolean
-  sessionLauncherEnabled: boolean
-  customHookTemplatesEnabled: boolean
 
   // Shortcuts
   shortcuts: ShortcutBinding[]
@@ -178,9 +176,6 @@ interface ConfigState {
   // General — UI
   showUsageQuota: boolean
   usageQueryEnabled: boolean
-
-  // About
-  telemetryEnabled: boolean
 
   // Language
   language: 'en' | 'zh' | 'ja' | 'ko' | 'tr'
@@ -326,13 +321,16 @@ const DEFAULT_GLOBAL_APPROVE_SHORTCUT = 'CommandOrControl+Shift+A'
 const DEFAULT_GLOBAL_DENY_SHORTCUT = 'CommandOrControl+Shift+D'
 const LEGACY_IN_WINDOW_APPROVE_SHORTCUT = '⌘+Enter'
 const LEGACY_IN_WINDOW_REJECT_SHORTCUT = '⌘+Backspace'
+const LEGACY_EXPAND_PANEL_SHORTCUT = '⌘+Shift+E'
+const LEGACY_NEXT_SESSION_SHORTCUT = '⌘+]'
+const LEGACY_PREV_SESSION_SHORTCUT = '⌘+['
 
 const defaultShortcuts: ShortcutBinding[] = [
   { action: 'toggle-panel', label: 'Toggle Panel', keys: '⌘+Shift+I' },
-  { action: 'expand-panel', label: 'Expand Panel', keys: '⌘+Shift+E' },
+  { action: 'expand-panel', label: 'Expand Panel', keys: '' },
   { action: 'collapse-panel', label: 'Collapse Panel', keys: 'Escape' },
-  { action: 'next-session', label: 'Next Session', keys: '⌘+]' },
-  { action: 'prev-session', label: 'Previous Session', keys: '⌘+[' },
+  { action: 'next-session', label: 'Next Session', keys: '' },
+  { action: 'prev-session', label: 'Previous Session', keys: '' },
   { action: 'approve-action', label: 'Approve Action', keys: '' },
   { action: 'reject-action', label: 'Reject Action', keys: '' },
   { action: 'open-settings', label: 'Open Settings', keys: '⌘+,' },
@@ -344,6 +342,21 @@ function migrateInWindowPermissionShortcuts(shortcuts: ShortcutBinding[]): Short
       return { ...shortcut, keys: '' }
     }
     if (shortcut.action === 'reject-action' && shortcut.keys === LEGACY_IN_WINDOW_REJECT_SHORTCUT) {
+      return { ...shortcut, keys: '' }
+    }
+    return shortcut
+  })
+}
+
+function migrateInWindowShortcutSurfaceDefaults(shortcuts: ShortcutBinding[]): ShortcutBinding[] {
+  return shortcuts.map((shortcut) => {
+    if (shortcut.action === 'expand-panel' && shortcut.keys === LEGACY_EXPAND_PANEL_SHORTCUT) {
+      return { ...shortcut, keys: '' }
+    }
+    if (shortcut.action === 'next-session' && shortcut.keys === LEGACY_NEXT_SESSION_SHORTCUT) {
+      return { ...shortcut, keys: '' }
+    }
+    if (shortcut.action === 'prev-session' && shortcut.keys === LEGACY_PREV_SESSION_SHORTCUT) {
       return { ...shortcut, keys: '' }
     }
     return shortcut
@@ -401,6 +414,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     shortcutSkip: 'CommandOrControl+Shift+S',
     shortcutSkipEnabled: false,
     permissionShortcutDefaultsMigrated: true,
+    shortcutSurfaceDefaultsMigrated: true,
     shortcuts: defaultShortcuts.map((shortcut) => ({ ...shortcut })),
     quietHours: { enabled: false, start: '22:00', end: '08:00' },
     idleTimeoutMinutes: 5,
@@ -498,10 +512,8 @@ export const useConfigStore = create<ConfigStore>()(
   shortcutSkip: 'CommandOrControl+Shift+S',
   shortcutSkipEnabled: false,
   permissionShortcutDefaultsMigrated: true,
+  shortcutSurfaceDefaultsMigrated: true,
   customHooksPath: '',
-  hookDoctorEnabled: false,
-  sessionLauncherEnabled: false,
-  customHookTemplatesEnabled: false,
 
   // Shortcuts
   shortcuts: defaultShortcuts,
@@ -521,9 +533,6 @@ export const useConfigStore = create<ConfigStore>()(
   // General — UI
   showUsageQuota: true,
   usageQueryEnabled: true,
-
-  // About
-  telemetryEnabled: true,
 
   // Language
   language: (() => {
@@ -743,6 +752,10 @@ export const useConfigStore = create<ConfigStore>()(
           merged.shortcuts = migrateInWindowPermissionShortcuts(merged.shortcuts)
         }
 
+        if (persisted?.shortcutSurfaceDefaultsMigrated !== true) {
+          merged.shortcuts = migrateInWindowShortcutSurfaceDefaults(merged.shortcuts)
+        }
+
         if (persisted?.bootSoundDefaultMigrated !== true) {
           const bootRule = merged.soundRules?.boot
           const canUseHeyBroDefault = !bootRule || bootRule.sound === 'default'
@@ -762,6 +775,7 @@ export const useConfigStore = create<ConfigStore>()(
           detailPanelMaxHeight: persisted?.detailPanelMaxHeight ?? currentState.detailPanelMaxHeight,
           sessionSilenceRules: Array.isArray(persisted?.sessionSilenceRules) ? persisted.sessionSilenceRules : currentState.sessionSilenceRules,
           permissionShortcutDefaultsMigrated: true,
+          shortcutSurfaceDefaultsMigrated: true,
           bootSoundDefaultMigrated: true,
           notificationMode: 'turnEnd',
         }

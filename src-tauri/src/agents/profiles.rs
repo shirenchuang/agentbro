@@ -2513,4 +2513,35 @@ name = "also keep"
         assert!(rendered.contains("--source deepseek"));
         assert!(rendered.contains(MARKER_PREFIX));
     }
+
+    #[test]
+    fn registered_adapters_expose_only_their_profile_events() {
+        let adapters = crate::agents::all_adapters();
+        let missing_profiles: Vec<String> = adapters
+            .iter()
+            .filter(|adapter| profile_for_agent(adapter.name()).is_none())
+            .map(|adapter| adapter.name().to_string())
+            .collect();
+        assert!(
+            missing_profiles.is_empty(),
+            "missing hook profiles for adapters: {}",
+            missing_profiles.join(", ")
+        );
+
+        for adapter in adapters {
+            let profile = profile_for_agent(adapter.name()).unwrap();
+            let supported_events: Vec<&str> =
+                profile.events.iter().map(|event| event.name).collect();
+            let statuses = event_statuses(&profile);
+            let displayed_events: Vec<&str> =
+                statuses.iter().map(|event| event.name.as_str()).collect();
+
+            assert_eq!(
+                displayed_events,
+                supported_events,
+                "hook events for {} must come from its own profile",
+                adapter.name()
+            );
+        }
+    }
 }

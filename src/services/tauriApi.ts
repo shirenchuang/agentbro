@@ -266,9 +266,6 @@ export interface BackendConfig {
   soundPack: string
   bootSoundDefaultMigrated?: boolean
   probeSessionFilter: boolean
-  hookDoctorEnabled: boolean
-  sessionLauncherEnabled: boolean
-  customHookTemplatesEnabled: boolean
   tipsEnabled: boolean
   pixelCursorEnabled: boolean
   confettiEnabled: boolean
@@ -475,9 +472,6 @@ export async function getConfig(): Promise<BackendConfig> {
       customSounds: [],
       soundPack: 'synth',
       probeSessionFilter: false,
-      hookDoctorEnabled: false,
-      sessionLauncherEnabled: false,
-      customHookTemplatesEnabled: false,
       tipsEnabled: true,
       pixelCursorEnabled: true,
       confettiEnabled: true,
@@ -517,42 +511,6 @@ export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
   return invoke('set_launch_at_login', { enabled })
 }
 
-export interface CustomHookTemplate {
-  id: string
-  label: string
-  agent: string
-  configPath: string
-  format: 'json' | 'yaml' | 'yml' | 'toml'
-  events: string[]
-  command: string
-  enabled: boolean
-}
-
-export async function listCustomHookTemplates(): Promise<CustomHookTemplate[]> {
-  if (!isTauri()) return []
-  return invoke<CustomHookTemplate[]>('list_custom_hook_templates')
-}
-
-export async function upsertCustomHookTemplate(template: CustomHookTemplate): Promise<CustomHookTemplate[]> {
-  if (!isTauri()) return [template]
-  return invoke<CustomHookTemplate[]>('upsert_custom_hook_template', { template })
-}
-
-export async function removeCustomHookTemplate(id: string): Promise<CustomHookTemplate[]> {
-  if (!isTauri()) return []
-  return invoke<CustomHookTemplate[]>('remove_custom_hook_template', { id })
-}
-
-export async function installCustomHookTemplate(template: CustomHookTemplate): Promise<void> {
-  if (!isTauri()) return
-  return invoke('install_custom_hook_template', { template })
-}
-
-export async function removeCustomHookTemplateHooks(template: CustomHookTemplate): Promise<void> {
-  if (!isTauri()) return
-  return invoke('remove_custom_hook_template_hooks', { template })
-}
-
 export interface HookDoctorCheck {
   id: string
   label: string
@@ -565,13 +523,6 @@ export interface HookDoctorReport {
   checks: HookDoctorCheck[]
 }
 
-export interface LaunchAgentSessionRequest {
-  agentId: string
-  cwd: string
-  terminal: string
-  extraArgs: string
-}
-
 export async function runHookDoctor(): Promise<HookDoctorReport> {
   if (!isTauri()) {
     return {
@@ -582,14 +533,6 @@ export async function runHookDoctor(): Promise<HookDoctorReport> {
     }
   }
   return invoke<HookDoctorReport>('run_hook_doctor')
-}
-
-export async function launchAgentSession(request: LaunchAgentSessionRequest): Promise<void> {
-  if (!isTauri()) {
-    console.log('[mock] launchAgentSession:', request)
-    return
-  }
-  return invoke('launch_agent_session', { request })
 }
 
 export interface BuddyDeviceConfig {
@@ -706,6 +649,11 @@ export async function setSoundPack(pack: string): Promise<void> {
   return invoke('set_sound_pack', { pack })
 }
 
+export async function previewSound(event: string, sound: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('preview_sound', { event, sound })
+}
+
 export async function setProbeSessionFilter(enabled: boolean): Promise<void> {
   if (!isTauri()) return
   return invoke('set_probe_session_filter', { enabled })
@@ -730,15 +678,6 @@ export async function setIslandSurfaceOptions(options: {
     islandSurfaceMode: options.islandSurfaceMode,
     islandPetScale: options.islandPetScale,
   })
-}
-
-export async function setAdvancedToolFlags(options: {
-  hookDoctorEnabled: boolean
-  sessionLauncherEnabled: boolean
-  customHookTemplatesEnabled: boolean
-}): Promise<void> {
-  if (!isTauri()) return
-  return invoke('set_advanced_tool_flags', options)
 }
 
 export async function setSoundQuietHours(enabled: boolean, start: string, end: string): Promise<void> {
@@ -783,6 +722,16 @@ export async function setGlobalActionShortcuts(options: {
 }): Promise<void> {
   if (!isTauri()) return
   return invoke('set_global_action_shortcuts', { shortcuts: options })
+}
+
+export async function registerGlobalShortcut(shortcut: string): Promise<void> {
+  if (!isTauri()) return
+  return invoke('register_global_shortcut', { shortcut })
+}
+
+export async function unregisterGlobalShortcut(): Promise<void> {
+  if (!isTauri()) return
+  return invoke('unregister_global_shortcut')
 }
 
 // ── Chat History Commands ────────────────────────────────────────
@@ -1209,6 +1158,11 @@ export async function disconnectRemote(id: string): Promise<void> {
 export async function installRemoteHooks(id: string): Promise<string> {
   if (!isTauri()) return 'ok'
   return invoke<string>('install_remote_hooks', { id })
+}
+
+export async function uninstallRemoteHooks(id: string): Promise<string> {
+  if (!isTauri()) return 'ok'
+  return invoke<string>('uninstall_remote_hooks', { id })
 }
 
 export async function getRemoteStatus(id: string): Promise<ConnectionStatus> {

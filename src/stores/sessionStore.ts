@@ -863,6 +863,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
                 toolName: s.pendingPermission.toolName,
                 toolInput: s.pendingPermission.toolInput,
                 diff: s.pendingPermission.diff,
+                options: s.pendingPermission.options,
               },
               createdAt: Date.now(),
               suppressed,

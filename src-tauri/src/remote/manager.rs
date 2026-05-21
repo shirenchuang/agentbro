@@ -57,7 +57,7 @@ fn backoff_delay(attempt: u32) -> Duration {
 }
 
 struct HostState {
-    tunnel: SshTunnel,
+    tunnel: Arc<SshTunnel>,
     reconnect_attempts: u32,
     status: ConnectionStatus,
 }
@@ -67,7 +67,7 @@ type StatusChangeCallback = Box<dyn Fn(&str, ConnectionStatus) + Send + Sync>;
 /// Manages all SSH remote host connections
 pub struct RemoteManager {
     hosts: Mutex<Vec<RemoteHost>>,
-    states: Mutex<HashMap<String, HostState>>,
+    states: Arc<Mutex<HashMap<String, HostState>>>,
     /// Path to the local Unix socket to reverse-forward
     local_socket_path: String,
     /// Status change callback (host_id, new_status)
@@ -78,7 +78,7 @@ impl RemoteManager {
     pub fn new(local_socket_path: String) -> Self {
         Self {
             hosts: Mutex::new(Vec::new()),
-            states: Mutex::new(HashMap::new()),
+            states: Arc::new(Mutex::new(HashMap::new())),
             local_socket_path,
             on_status_change: Arc::new(Mutex::new(None)),
         }
@@ -185,36 +185,34 @@ impl RemoteManager {
         self.set_status(id, ConnectionStatus::Connecting);
         self.emit_status(id, ConnectionStatus::Connecting);
 
-        // Ensure state entry exists
-        {
+        let tunnel = {
             let mut states = self.states.lock().unwrap();
-            states.entry(id.to_string()).or_insert_with(|| HostState {
-                tunnel: SshTunnel::new(),
+            let state = states.entry(id.to_string()).or_insert_with(|| HostState {
+                tunnel: Arc::new(SshTunnel::new()),
                 reconnect_attempts: 0,
                 status: ConnectionStatus::Connecting,
             });
-        }
+            Arc::clone(&state.tunnel)
+        };
 
         // Clean up remote socket, then start tunnel
         let local_path = self.local_socket_path.clone();
         let id_owned = id.to_string();
+        let states = Arc::clone(&self.states);
         let status_cb = Arc::clone(&self.on_status_change);
 
         tokio::spawn(async move {
             RemoteInstaller::cleanup_remote_socket(&host).await;
 
-            // Start the tunnel synchronously (it's just a process spawn)
-            let tunnel = SshTunnel::new();
+            // Start the tunnel synchronously (it's just a process spawn).
+            // The tunnel is owned by HostState so it survives this task.
             let connect_result = tunnel.connect(&host, &local_path);
 
             match connect_result {
                 Err(e) => {
                     let status = ConnectionStatus::Failed { message: e };
-                    if let Ok(cb) = status_cb.lock() {
-                        if let Some(ref f) = *cb {
-                            f(&id_owned, status);
-                        }
-                    }
+                    Self::set_status_in(&states, &id_owned, status.clone());
+                    Self::emit_status_callback(&status_cb, &id_owned, status);
                 }
                 Ok(()) => {
                     // Poll for 350ms to see if ssh stays running (mirrors Swift impl)
@@ -227,23 +225,11 @@ impl RemoteManager {
                         }
                     };
 
-                    if let Ok(cb) = status_cb.lock() {
-                        if let Some(ref f) = *cb {
-                            f(&id_owned, status.clone());
-                        }
-                    }
+                    Self::set_status_in(&states, &id_owned, status.clone());
+                    Self::emit_status_callback(&status_cb, &id_owned, status.clone());
 
-                    // If connected, install hooks in the background
-                    if status == ConnectionStatus::Connected {
-                        let install = RemoteInstaller::install_hooks(&host).await;
-                        if !install.ok {
-                            log::warn!(
-                                "Remote hook install failed for {}: {}",
-                                id_owned,
-                                install.message
-                            );
-                        }
-                    }
+                    // Hook install is a separate user action. Connecting only keeps the SSH
+                    // reverse tunnel alive.
                 }
             }
         });
@@ -254,7 +240,7 @@ impl RemoteManager {
         let attempt = {
             let mut states = self.states.lock().unwrap();
             let state = states.entry(id.to_string()).or_insert_with(|| HostState {
-                tunnel: SshTunnel::new(),
+                tunnel: Arc::new(SshTunnel::new()),
                 reconnect_attempts: 0,
                 status: ConnectionStatus::Disconnected,
             });
@@ -284,14 +270,30 @@ impl RemoteManager {
     }
 
     fn set_status(&self, id: &str, status: ConnectionStatus) {
-        let mut states = self.states.lock().unwrap();
+        Self::set_status_in(&self.states, id, status);
+    }
+
+    fn set_status_in(
+        states: &Arc<Mutex<HashMap<String, HostState>>>,
+        id: &str,
+        status: ConnectionStatus,
+    ) {
+        let mut states = states.lock().unwrap();
         if let Some(state) = states.get_mut(id) {
             state.status = status;
         }
     }
 
     fn emit_status(&self, id: &str, status: ConnectionStatus) {
-        if let Ok(cb) = self.on_status_change.lock() {
+        Self::emit_status_callback(&self.on_status_change, id, status);
+    }
+
+    fn emit_status_callback(
+        status_cb: &Arc<Mutex<Option<StatusChangeCallback>>>,
+        id: &str,
+        status: ConnectionStatus,
+    ) {
+        if let Ok(cb) = status_cb.lock() {
             if let Some(ref f) = *cb {
                 f(id, status);
             }
@@ -301,7 +303,9 @@ impl RemoteManager {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteHost;
+    use super::{ConnectionStatus, HostState, RemoteHost, RemoteManager};
+    use crate::remote::ssh_tunnel::SshTunnel;
+    use std::sync::Arc;
 
     fn host() -> RemoteHost {
         RemoteHost {
@@ -346,5 +350,33 @@ mod tests {
         assert_eq!(parsed.identity_file.as_deref(), Some("~/.ssh/id_ed25519"));
         assert_eq!(parsed.remote_socket_path, "/tmp/agentbro-remote.sock");
         assert!(parsed.auto_connect);
+    }
+
+    #[test]
+    fn async_status_update_changes_stored_status() {
+        let manager = RemoteManager::new("/tmp/agentbro-test.sock".to_string());
+        manager.states.lock().unwrap().insert(
+            "remote-1".to_string(),
+            HostState {
+                tunnel: Arc::new(SshTunnel::new()),
+                reconnect_attempts: 0,
+                status: ConnectionStatus::Connecting,
+            },
+        );
+
+        RemoteManager::set_status_in(
+            &manager.states,
+            "remote-1",
+            ConnectionStatus::Failed {
+                message: "ssh exited immediately".to_string(),
+            },
+        );
+
+        assert_eq!(
+            manager.status("remote-1"),
+            ConnectionStatus::Failed {
+                message: "ssh exited immediately".to_string()
+            }
+        );
     }
 }

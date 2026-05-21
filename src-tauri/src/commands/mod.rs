@@ -5,7 +5,6 @@ pub mod monitor;
 pub mod persistence;
 
 use crate::agents::{AdapterInfo, AgentAdapter};
-use crate::config::CustomHookTemplate;
 use crate::config::{AppConfig, ConfigStore};
 use crate::hook_endpoint;
 use crate::hooks::conversation_parser::{
@@ -235,11 +234,12 @@ fn claude_usage_provider_status(enabled: bool) -> UsageProviderStatus {
 
 fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
     [
+        ("z-ai", "Z.ai", "Z.ai", "api/key", None, false),
+        ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
         ("gemini-cli", "Gemini CLI", "Gemini", "api/oauth", Some("~/.gemini"), find_binary("gemini").is_some()),
+        ("copilot", "GitHub Copilot", "Copilot", "api/device-flow", None, find_binary("gh").is_some()),
         ("cursor", "Cursor", "Cursor", "web/cookies", Some("~/.cursor"), false),
         ("cursor-cli", "Cursor CLI", "Cursor", "web/cookies", Some("~/.cursor"), false),
-        ("copilot", "GitHub Copilot", "Copilot", "api/device-flow", None, find_binary("gh").is_some()),
-        ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
         ("deepseek", "DeepSeek", "DeepSeek", "api/key", Some("~/.deepseek"), false),
         ("opencode", "OpenCode", "OpenCode", "web/cookies", Some("~/.opencode"), false),
         ("droid", "Factory / Droid", "Droid/Factory", "web/local-storage", Some("~/.factory"), false),
@@ -1973,23 +1973,6 @@ fn find_binary(name: &str) -> Option<String> {
     })
 }
 
-fn agent_launch_command(agent_id: &str) -> Option<&'static str> {
-    match agent_id {
-        "claude-code" | "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        "gemini" | "gemini-cli" => Some("gemini"),
-        "cursor-cli" => Some("cursor-agent"),
-        "copilot" => Some("gh copilot suggest"),
-        "traecli" => Some("traecli"),
-        "qoder-cli" => Some("qoder"),
-        "qwen" => Some("qwen"),
-        "kimi" => Some("kimi"),
-        "deepseek" => Some("deepseek"),
-        "opencode" => Some("opencode"),
-        _ => None,
-    }
-}
-
 fn launch_in_terminal(terminal: &str, cwd: &str, command: &str) -> Result<(), String> {
     let shell_command = format!("cd {} && {}", shell_quote(cwd), command);
     let lower = terminal.to_ascii_lowercase();
@@ -2059,113 +2042,6 @@ pub async fn is_terminal_focused(
     )
 }
 
-#[tauri::command]
-pub async fn list_custom_hook_templates(
-    state: State<'_, AppState>,
-) -> Result<Vec<CustomHookTemplate>, String> {
-    if !state.config_store.get().custom_hook_templates_enabled {
-        return Err("Custom hook templates are disabled in settings".to_string());
-    }
-    Ok(state.config_store.get().custom_hook_templates)
-}
-
-#[tauri::command]
-pub async fn upsert_custom_hook_template(
-    state: State<'_, AppState>,
-    template: CustomHookTemplate,
-) -> Result<Vec<CustomHookTemplate>, String> {
-    if !state.config_store.get().custom_hook_templates_enabled {
-        return Err("Custom hook templates are disabled in settings".to_string());
-    }
-    let mut config = state.config_store.get();
-    if let Some(existing) = config
-        .custom_hook_templates
-        .iter_mut()
-        .find(|item| item.id == template.id)
-    {
-        *existing = template;
-    } else {
-        config.custom_hook_templates.push(template);
-    }
-    let templates = config.custom_hook_templates.clone();
-    state.config_store.update(config)?;
-    Ok(templates)
-}
-
-#[tauri::command]
-pub async fn remove_custom_hook_template(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<Vec<CustomHookTemplate>, String> {
-    if !state.config_store.get().custom_hook_templates_enabled {
-        return Err("Custom hook templates are disabled in settings".to_string());
-    }
-    let mut config = state.config_store.get();
-    config.custom_hook_templates.retain(|item| item.id != id);
-    let templates = config.custom_hook_templates.clone();
-    state.config_store.update(config)?;
-    Ok(templates)
-}
-
-#[tauri::command]
-pub async fn install_custom_hook_template(
-    state: State<'_, AppState>,
-    template: CustomHookTemplate,
-) -> Result<(), String> {
-    if !state.config_store.get().custom_hook_templates_enabled {
-        return Err("Custom hook templates are disabled in settings".to_string());
-    }
-    let events: Vec<&str> = template.events.iter().map(String::as_str).collect();
-    let path = crate::agents::claude_code::expand_tilde(&template.config_path);
-    let command = if template.command.trim().is_empty() {
-        format!(
-            "{} --source {}",
-            crate::agents::hook_manager::bridge_binary_path().display(),
-            template.agent
-        )
-    } else {
-        template.command
-    };
-
-    match template.format.as_str() {
-        "json" => {
-            let mut settings = crate::agents::hook_manager::read_json_config(&path);
-            crate::agents::hook_manager::inject_hooks_json(&mut settings, &events, &command);
-            crate::agents::hook_manager::write_json_config(&path, &settings)
-                .map_err(|e| e.to_string())
-        }
-        "yaml" | "yml" => crate::agents::hook_manager::inject_hooks_yaml(&path, &command, &events)
-            .map_err(|e| e.to_string()),
-        "toml" => crate::agents::hook_manager::inject_hooks_toml(&path, &command, &events)
-            .map_err(|e| e.to_string()),
-        other => Err(format!("Unsupported hook template format: {other}")),
-    }
-}
-
-#[tauri::command]
-pub async fn remove_custom_hook_template_hooks(
-    state: State<'_, AppState>,
-    template: CustomHookTemplate,
-) -> Result<(), String> {
-    if !state.config_store.get().custom_hook_templates_enabled {
-        return Err("Custom hook templates are disabled in settings".to_string());
-    }
-    let path = crate::agents::claude_code::expand_tilde(&template.config_path);
-    match template.format.as_str() {
-        "json" => {
-            let mut settings = crate::agents::hook_manager::read_json_config(&path);
-            crate::agents::hook_manager::remove_hooks_json(&mut settings);
-            crate::agents::hook_manager::write_json_config(&path, &settings)
-                .map_err(|e| e.to_string())
-        }
-        "yaml" | "yml" => {
-            crate::agents::hook_manager::remove_hooks_yaml(&path).map_err(|e| e.to_string())
-        }
-        "toml" => crate::agents::hook_manager::remove_hooks_toml(&path).map_err(|e| e.to_string()),
-        other => Err(format!("Unsupported hook template format: {other}")),
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookDoctorCheck {
@@ -2182,23 +2058,8 @@ pub struct HookDoctorReport {
     pub checks: Vec<HookDoctorCheck>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LaunchAgentSessionRequest {
-    pub agent_id: String,
-    pub cwd: String,
-    #[serde(default)]
-    pub terminal: String,
-    #[serde(default)]
-    pub extra_args: String,
-}
-
 #[tauri::command]
 pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorReport, String> {
-    if !state.config_store.get().hook_doctor_enabled {
-        return Err("Hook Doctor is disabled in settings".to_string());
-    }
-
     let mut checks = Vec::new();
     let bridge = crate::agents::hook_manager::bridge_binary_path();
     checks.push(HookDoctorCheck {
@@ -2260,60 +2121,10 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         });
     }
 
-    checks.push(HookDoctorCheck {
-        id: "custom-templates".to_string(),
-        label: "Custom hook templates".to_string(),
-        status: "ok".to_string(),
-        detail: format!(
-            "{} templates configured",
-            state.config_store.get().custom_hook_templates.len()
-        ),
-    });
-
     Ok(HookDoctorReport {
         generated_at: chrono::Utc::now().timestamp(),
         checks,
     })
-}
-
-#[tauri::command]
-pub async fn launch_agent_session(
-    state: State<'_, AppState>,
-    request: LaunchAgentSessionRequest,
-) -> Result<(), String> {
-    if !state.config_store.get().session_launcher_enabled {
-        return Err("Session Launcher is disabled in settings".to_string());
-    }
-
-    let cwd = request.cwd.trim();
-    if cwd.is_empty() {
-        return Err("Working directory is required".to_string());
-    }
-    if !std::path::Path::new(cwd).is_dir() {
-        return Err(format!("Working directory does not exist: {cwd}"));
-    }
-
-    let base = agent_launch_command(&request.agent_id)
-        .ok_or_else(|| format!("Unsupported launch agent: {}", request.agent_id))?;
-    let mut command = if request.extra_args.trim().is_empty() {
-        base.to_string()
-    } else {
-        format!("{} {}", base, request.extra_args.trim())
-    };
-    if matches!(request.agent_id.as_str(), "claude-code" | "claude") {
-        if let Some(proxy_url) = state.network_monitor.proxy_url() {
-            command = format!("ANTHROPIC_BASE_URL={} {}", shell_quote(&proxy_url), command);
-        }
-    }
-    launch_in_terminal(
-        if request.terminal.trim().is_empty() {
-            "Terminal"
-        } else {
-            request.terminal.trim()
-        },
-        cwd,
-        &command,
-    )
 }
 
 // ── Config Commands ───────────────────────────────────────────────
@@ -2459,20 +2270,6 @@ pub async fn set_island_surface_options(
     }
     config.island_surface_mode = island_surface_mode;
     config.island_pet_scale = island_pet_scale.clamp(50, 120);
-    state.config_store.update(config)
-}
-
-#[tauri::command]
-pub async fn set_advanced_tool_flags(
-    state: State<'_, AppState>,
-    hook_doctor_enabled: bool,
-    session_launcher_enabled: bool,
-    custom_hook_templates_enabled: bool,
-) -> Result<(), String> {
-    let mut config = state.config_store.get();
-    config.hook_doctor_enabled = hook_doctor_enabled;
-    config.session_launcher_enabled = session_launcher_enabled;
-    config.custom_hook_templates_enabled = custom_hook_templates_enabled;
     state.config_store.update(config)
 }
 

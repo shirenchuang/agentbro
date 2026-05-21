@@ -14,6 +14,7 @@ interface OverlayFeedbackPanelProps {
   session: SessionState
   userMessage?: string
   text: string
+  kind?: 'completion' | 'response'
   maxHeight?: number
   dwellMs: number
   startedAt?: number
@@ -35,6 +36,7 @@ export function OverlayFeedbackPanel({
   session,
   userMessage,
   text,
+  kind = 'response',
   maxHeight,
   dwellMs,
   startedAt,
@@ -218,7 +220,7 @@ export function OverlayFeedbackPanel({
   return (
     <div
       ref={overlayRef}
-      className={`overlay-feedback${isTimerPaused ? ' overlay-feedback--paused' : ''}`}
+      className={`overlay-feedback overlay-feedback--${kind}${isTimerPaused ? ' overlay-feedback--paused' : ''}`}
       style={maxHeight ? ({ '--overlay-feedback-reader-height': `${maxHeight}px` } as CSSProperties) : undefined}
       onMouseDown={handlePanelMouseDown}
       onMouseEnter={() => {
@@ -238,21 +240,39 @@ export function OverlayFeedbackPanel({
           <div className="overlay-feedback__session-row">
             <span className="overlay-feedback__title">{getSessionTitle(session)}</span>
             {appLabel && <span className="overlay-feedback__badge overlay-feedback__badge--source">{appLabel}</span>}
+            <span className="overlay-feedback__badge overlay-feedback__badge--status">
+              <span className="overlay-feedback__status-dot" />
+              {statusLabel}
+            </span>
             <span className="overlay-feedback__badge">{agentName}</span>
             {terminalLabel && <span className="overlay-feedback__badge">{terminalLabel}</span>}
             <span className="overlay-feedback__duration">{formatDurationShort(session.duration)}</span>
-            <button
-              type="button"
-              className="overlay-feedback__jump-icon"
-              aria-label={t('notch.jumpToTerminal')}
-              onMouseDown={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                handleJump()
-              }}
-            >
-              ↗
-            </button>
+            <div className="overlay-feedback__actions">
+              <button
+                type="button"
+                className="overlay-feedback__icon-btn overlay-feedback__jump-icon"
+                aria-label={t('notch.jumpToTerminal')}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  handleJump()
+                }}
+              >
+                ↗
+              </button>
+              <button
+                type="button"
+                className="overlay-feedback__icon-btn overlay-feedback__close"
+                aria-label={t('notch.dismiss', { defaultValue: 'Dismiss' })}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onDismissRef.current()
+                }}
+              >
+                ×
+              </button>
+            </div>
           </div>
           {shownUserMessage && (
             <div className="overlay-feedback__user-line">
@@ -267,12 +287,6 @@ export function OverlayFeedbackPanel({
       <button type="button" className="overlay-feedback__detail" onMouseDown={handleJump}>
         <div className="overlay-feedback__scroll">
           <div className="overlay-feedback__transcript">
-            <div className="overlay-feedback__transcript-head">
-              <span className="overlay-feedback__status">
-                <span className="overlay-feedback__status-dot" />
-                {statusLabel}
-              </span>
-            </div>
             <div className="overlay-feedback__conversation">
               {shownUserMessage && (
                 <div className="overlay-feedback__message overlay-feedback__message--user">

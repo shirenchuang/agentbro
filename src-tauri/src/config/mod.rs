@@ -42,20 +42,6 @@ pub struct WindowOrigin {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CustomHookTemplate {
-    pub id: String,
-    pub label: String,
-    pub agent: String,
-    pub config_path: String,
-    pub format: String,
-    pub events: Vec<String>,
-    pub command: String,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CustomHookInstall {
     pub id: String,
     pub profile_id: String,
@@ -146,18 +132,6 @@ pub struct AppConfig {
     /// Custom hooks path override
     #[serde(default)]
     pub custom_hooks_path: String,
-    /// User-defined hook templates for unsupported CLIs.
-    #[serde(default)]
-    pub custom_hook_templates: Vec<CustomHookTemplate>,
-    /// Enable Hook Doctor diagnostics UI and command.
-    #[serde(default)]
-    pub hook_doctor_enabled: bool,
-    /// Enable launching agent sessions from AgentBro.
-    #[serde(default)]
-    pub session_launcher_enabled: bool,
-    /// Enable custom CLI hook template management UI.
-    #[serde(default)]
-    pub custom_hook_templates_enabled: bool,
     /// External Buddy device bridge for Apple Watch / ESP32 companion devices.
     #[serde(default)]
     pub buddy_device: BuddyDeviceConfig,
@@ -291,10 +265,6 @@ impl Default for AppConfig {
             remote_hosts: Vec::new(),
             volume: default_volume(),
             custom_hooks_path: String::new(),
-            custom_hook_templates: Vec::new(),
-            hook_doctor_enabled: false,
-            session_launcher_enabled: false,
-            custom_hook_templates_enabled: false,
             buddy_device: BuddyDeviceConfig::default(),
             tips_enabled: true,
             pixel_cursor_enabled: true,

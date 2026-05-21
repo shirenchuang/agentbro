@@ -52,12 +52,6 @@ export function GeneralSection() {
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroup label={t('settings.interface')}>
-        <SettingRow label={t('settings.telemetry')} description={t('settings.telemetryDesc')}>
-          <Toggle checked={config.telemetryEnabled} onChange={(v) => config.updateConfig('telemetryEnabled', v)} />
-        </SettingRow>
-      </SettingGroup>
-
       <SettingGroup label={t('settings.experimentalFeatures')}>
         <SettingRow label={t('settings.betaUpdates')} description={t('settings.betaUpdatesDesc')}>
           <Toggle checked={config.betaUpdates} onChange={(v) => config.updateConfig('betaUpdates', v)} />

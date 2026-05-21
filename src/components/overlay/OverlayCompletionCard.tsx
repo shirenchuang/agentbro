@@ -31,6 +31,7 @@ export function OverlayCompletionCard({ overlay, session, onJumpToTerminal, onSh
     <OverlayFeedbackPanel
       session={session}
       text={data.summary}
+      kind="completion"
       maxHeight={readableCardHeight}
       dwellMs={dwellMs}
       startedAt={overlay.createdAt}
