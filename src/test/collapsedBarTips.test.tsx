@@ -21,6 +21,22 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
   }
 }
 
+function expectUsageSegment(
+  container: HTMLElement,
+  index: number,
+  windowTitle: string,
+  usagePercent: number,
+  remainingLabel: string,
+  level: 'green' | 'amber' | 'red',
+) {
+  const segments = container.querySelectorAll('.rate-limit__segment')
+  const segment = segments[index] as HTMLElement | undefined
+  expect(segment).toBeInTheDocument()
+  expect(segment).toHaveTextContent(`${windowTitle}${usagePercent}%${remainingLabel}`)
+  expect(segment).toHaveClass(`rate-limit__segment--${level}`)
+  expect(segment?.querySelector('.rate-limit__usage')).toHaveTextContent(`${usagePercent}%`)
+}
+
 describe('CollapsedBar idle tips', () => {
   beforeEach(() => {
     useConfigStore.setState({ tipsEnabled: true, showToolStatus: true, showUsageQuota: true, usageQueryEnabled: true })
@@ -76,13 +92,13 @@ describe('CollapsedBar idle tips', () => {
       />,
     )
 
-    expect(screen.getByText('5h 36% 1h1m')).toBeInTheDocument()
-    expect(screen.getByText('7d 50% 5d8h')).toBeInTheDocument()
+    expectUsageSegment(container, 0, '5h', 36, '1h1m', 'green')
+    expectUsageSegment(container, 1, '7d', 50, '5d8h', 'amber')
     expect(container.querySelector('.collapsed-bar__counter-pills')).not.toBeInTheDocument()
   })
 
   it('uses the lead agent provider snapshot before the global fallback', () => {
-    render(
+    const { container } = render(
       <CollapsedBar
         sessions={[session({ agentType: 'codex' })]}
         panelState="hover"
@@ -119,8 +135,8 @@ describe('CollapsedBar idle tips', () => {
       />,
     )
 
-    expect(screen.getByText('5h 66% 31m')).toBeInTheDocument()
-    expect(screen.getByText('7d 22% 4d')).toBeInTheDocument()
+    expectUsageSegment(container, 0, '5h', 66, '31m', 'amber')
+    expectUsageSegment(container, 1, '7d', 22, '4d', 'green')
     expect(screen.queryByText('5h 5% 4h')).not.toBeInTheDocument()
   })
 
@@ -146,7 +162,7 @@ describe('CollapsedBar idle tips', () => {
   })
 
   it('falls back to another visible session provider snapshot when the lead provider has no usage data', () => {
-    render(
+    const { container } = render(
       <CollapsedBar
         sessions={[
           session({ id: 'claude', agentType: 'claude-code', phase: 'waiting_input' }),
@@ -172,8 +188,8 @@ describe('CollapsedBar idle tips', () => {
       />,
     )
 
-    expect(screen.getByText('5h 41% 2h')).toBeInTheDocument()
-    expect(screen.getByText('7d 18% 6d')).toBeInTheDocument()
+    expectUsageSegment(container, 0, '5h', 41, '2h', 'green')
+    expectUsageSegment(container, 1, '7d', 18, '6d', 'green')
   })
 
   it('keeps ALL ACT WAIT in the expanded header when usage quota is disabled', () => {

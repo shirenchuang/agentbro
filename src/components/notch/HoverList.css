@@ -1002,13 +1002,16 @@
   min-width: 0;
   height: 28px;
   padding: 0 8px;
-  border: none;
+  border: 1px solid var(--island-action-neutral-border);
   border-radius: 6px;
+  background: var(--island-action-neutral-bg);
+  color: var(--island-action-neutral-text);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 780;
   line-height: 1;
   cursor: pointer;
-  transition: transform 0.15s, background 0.15s, opacity 0.15s;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--island-card) 70%, transparent);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s, opacity 0.15s;
 }
 
 .hover-list__inline-btn kbd {
@@ -1024,28 +1027,48 @@
 }
 
 .hover-list__inline-btn:hover {
-  opacity: 0.85;
+  opacity: 0.96;
   transform: translateY(-1px);
 }
 
 .hover-list__inline-btn--deny {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f2f2f3;
+  border-color: var(--island-action-deny-border);
+  background: var(--island-action-deny-bg);
+  color: var(--island-action-deny-text);
 }
 
 .hover-list__inline-btn--allow {
-  background: #f1f1f1;
-  color: #111113;
+  border-color: var(--island-action-allow-border);
+  background: var(--island-action-allow-bg);
+  color: var(--island-action-allow-text);
 }
 
 .hover-list__inline-btn--always {
-  background: #f59b45;
-  color: #0e0905;
+  border-color: var(--island-action-always-border);
+  background: var(--island-action-always-bg);
+  color: var(--island-action-always-text);
 }
 
 .hover-list__inline-btn--auto {
-  background: #bd2f32;
-  color: #fff;
+  border-color: var(--island-action-auto-border);
+  background: var(--island-action-auto-bg);
+  color: var(--island-action-auto-text);
+}
+
+.hover-list__inline-btn--deny:hover {
+  background: var(--island-action-deny-bg-hover);
+}
+
+.hover-list__inline-btn--allow:hover {
+  background: var(--island-action-allow-bg-hover);
+}
+
+.hover-list__inline-btn--always:hover {
+  background: var(--island-action-always-bg-hover);
+}
+
+.hover-list__inline-btn--auto:hover {
+  background: var(--island-action-auto-bg-hover);
 }
 
 /* Row 8: Inline Question */

@@ -29,6 +29,8 @@ use crate::terminal::suppression;
 const RAW_EVENT_BUFFER_PER_SESSION: usize = 200;
 const SESSION_END_CLEANUP_SECS: u64 = 5;
 const DONE_SESSION_HISTORY_CLEANUP_SECS: u64 = 120 * 60;
+const DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 300;
+const HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS: u64 = 21_600;
 
 /// Raw hook event snapshot retained for Agent monitor diagnostics.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -193,6 +195,19 @@ impl HookServer {
         if let Ok(mut h) = self.app_handle.lock() {
             *h = Some(handle);
         }
+    }
+
+    fn interaction_response_timeout(raw: &serde_json::Value) -> Duration {
+        let agent = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let seconds = if matches!(agent, "codex" | "openai.codex" | "claude-code" | "claude") {
+            HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS
+        } else {
+            DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS
+        };
+        Duration::from_secs(seconds)
     }
 
     /// Set the sound engine (called after construction, once the engine is ready)
@@ -462,8 +477,10 @@ impl HookServer {
                     pending_map.insert(session_id.clone(), PendingPermissionEntry { tx });
                 }
 
-                // Wait for the UI to respond (with 5 minute timeout)
-                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+                // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
+                // approvals; other agents keep the existing five-minute fallback window.
+                let response =
+                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
                     Ok(Ok(resp)) => {
@@ -553,8 +570,8 @@ impl HookServer {
                     pending_map.insert(session_id.clone(), PendingQuestionEntry { tx });
                 }
 
-                // Wait for the UI to respond (with 5 minute timeout)
-                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+                let response =
+                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
                     Ok(Ok(resp)) => {
@@ -608,7 +625,8 @@ impl HookServer {
                     pending_map.insert(session_id.clone(), PendingPlanEntry { tx });
                 }
 
-                let response = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+                let response =
+                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
                     Ok(Ok(resp)) => {
@@ -2118,6 +2136,36 @@ mod tests {
         assert_eq!(session.project, "my-project");
         assert_eq!(session.cwd, "/tmp/my-project");
         assert_eq!(session.terminal, "/dev/ttys001");
+    }
+
+    #[test]
+    fn codex_interaction_timeout_matches_hook_bridge_window() {
+        let raw = serde_json::json!({ "agent": "codex" });
+
+        assert_eq!(
+            HookServer::interaction_response_timeout(&raw),
+            Duration::from_secs(HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn non_codex_interaction_timeout_keeps_existing_window() {
+        let raw = serde_json::json!({ "agent": "opencode" });
+
+        assert_eq!(
+            HookServer::interaction_response_timeout(&raw),
+            Duration::from_secs(DEFAULT_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn claude_code_interaction_timeout_matches_hook_bridge_window() {
+        let raw = serde_json::json!({ "agent": "claude-code" });
+
+        assert_eq!(
+            HookServer::interaction_response_timeout(&raw),
+            Duration::from_secs(HUMAN_INTERACTION_RESPONSE_TIMEOUT_SECS)
+        );
     }
 
     #[test]

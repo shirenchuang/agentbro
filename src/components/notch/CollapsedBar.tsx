@@ -333,7 +333,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const shouldShowUsageQuota = usageQueryEnabled && showUsageQuota && Boolean(effectiveRateLimits)
   const ratePct = shouldShowUsageQuota ? effectiveRateLimits?.fiveHourUsage : undefined
   const rateColor = ratePct != null
-    ? ratePct > 80 ? '#ef4444' : ratePct > 50 ? '#f59e0b' : '#4ade80'
+    ? ratePct > 80 ? 'var(--island-danger-text)' : ratePct > 50 ? 'var(--island-warning-text)' : 'var(--island-success-text)'
     : undefined
 
   const unattendedLevel = getUnattendedLevel(lead?.unattendedSince)

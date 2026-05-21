@@ -419,13 +419,16 @@
   height: 30px;
   min-width: 0;
   padding: 0 8px;
-  border: none;
+  border: 1px solid var(--island-action-neutral-border);
   border-radius: 8px;
+  background: var(--island-action-neutral-bg);
+  color: var(--island-action-neutral-text);
   font-family: var(--font-sans, system-ui);
   font-size: var(--approval-control-font-size);
   font-weight: 780;
   cursor: pointer;
-  transition: opacity 0.15s, filter 0.15s, transform 0.15s;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--island-card) 70%, transparent);
+  transition: opacity 0.15s, filter 0.15s, transform 0.15s, border-color 0.15s, background 0.15s;
   white-space: nowrap;
 }
 
@@ -439,19 +442,38 @@
   cursor: default;
 }
 
+.plan-approval__btn:disabled:hover {
+  transform: none;
+}
+
 .plan-approval__btn--feedback {
-  color: var(--plan-text);
-  background: var(--island-btn-bg);
+  border-color: var(--island-action-neutral-border);
+  background: var(--island-action-neutral-bg);
+  color: var(--island-action-neutral-text);
 }
 
 .plan-approval__btn--accept {
-  color: var(--island-on-accent, #ffffff);
-  background: var(--plan-accent);
+  border-color: var(--island-action-allow-border);
+  background: var(--island-action-allow-bg);
+  color: var(--island-action-allow-text);
 }
 
 .plan-approval__btn--auto {
-  color: var(--island-on-accent, #ffffff);
-  background: var(--island-danger);
+  border-color: var(--island-action-auto-border);
+  background: var(--island-action-auto-bg);
+  color: var(--island-action-auto-text);
+}
+
+.plan-approval__btn--feedback:hover {
+  background: var(--island-action-neutral-bg-hover);
+}
+
+.plan-approval__btn--accept:hover {
+  background: var(--island-action-allow-bg-hover);
+}
+
+.plan-approval__btn--auto:hover {
+  background: var(--island-action-auto-bg-hover);
 }
 
 @media (max-width: 760px) {

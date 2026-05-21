@@ -598,6 +598,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
   const writePreview = perm.toolName === 'Write'
     ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
     : null
+  const supportsPersistentActions = session.agentType !== 'codex'
 
   const clearAfter = (work: Promise<void>) => {
     work
@@ -675,26 +676,30 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
         >
           {t('notch.allowOnce', { defaultValue: '允许一次' })}
         </button>
-        <button
-          type="button"
-          className="hover-list__inline-btn hover-list__inline-btn--always"
-          onClick={(e) => {
-            e.stopPropagation()
-            clearAfter(respondPermission(session.id, true, true))
-          }}
-        >
-          <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
-        </button>
-        <button
-          type="button"
-          className="hover-list__inline-btn hover-list__inline-btn--auto"
-          onClick={(e) => {
-            e.stopPropagation()
-            clearAfter(respondAutoApprove(session.id))
-          }}
-        >
-          {t('notch.autoApprove', { defaultValue: '自动批准' })}
-        </button>
+        {supportsPersistentActions && (
+          <>
+            <button
+              type="button"
+              className="hover-list__inline-btn hover-list__inline-btn--always"
+              onClick={(e) => {
+                e.stopPropagation()
+                clearAfter(respondPermission(session.id, true, true))
+              }}
+            >
+              <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
+            </button>
+            <button
+              type="button"
+              className="hover-list__inline-btn hover-list__inline-btn--auto"
+              onClick={(e) => {
+                e.stopPropagation()
+                clearAfter(respondAutoApprove(session.id))
+              }}
+            >
+              {t('notch.autoApprove', { defaultValue: '自动批准' })}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

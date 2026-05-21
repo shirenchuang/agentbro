@@ -295,11 +295,11 @@
 }
 
 .collapsed-bar__tool-count--add {
-  color: #22c55e;
+  color: var(--island-success-text);
 }
 
 .collapsed-bar__tool-count--del {
-  color: #ef4444;
+  color: var(--island-danger-text);
 }
 
 .collapsed-bar__waiting-inline {
@@ -325,18 +325,20 @@
 }
 
 .collapsed-bar__waiting-dot {
+  --collapsed-waiting-pulse: color-mix(in srgb, var(--island-warning) 38%, transparent);
   width: 6px;
   height: 6px;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: #f59e0b;
-  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.44);
+  background: var(--island-warning);
+  box-shadow: 0 0 0 0 var(--collapsed-waiting-pulse);
   animation: waiting-dot-pulse 1.25s ease-out infinite;
 }
 
 .collapsed-bar__waiting-label {
   flex: 0 0 auto;
-  color: #fcd34d;
+  color: var(--island-warning-text);
+  font-weight: 800;
 }
 
 .collapsed-bar__waiting-target {
@@ -363,16 +365,17 @@
 
 .collapsed-bar__compacting-label {
   flex: 0 0 auto;
-  color: #c084fc;
+  color: var(--island-info-text);
 }
 
 .collapsed-bar__compacting-dot {
+  --collapsed-compacting-pulse: color-mix(in srgb, var(--island-info) 36%, transparent);
   width: 6px;
   height: 6px;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: #c084fc;
-  box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.42);
+  background: var(--island-info);
+  box-shadow: 0 0 0 0 var(--collapsed-compacting-pulse);
   animation: compacting-dot-pulse 1.2s ease-out infinite;
 }
 
@@ -397,19 +400,19 @@
 
 @keyframes compacting-dot-pulse {
   70% {
-    box-shadow: 0 0 0 6px rgba(192, 132, 252, 0);
+    box-shadow: 0 0 0 6px transparent;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
 @keyframes waiting-dot-pulse {
   70% {
-    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
+    box-shadow: 0 0 0 6px transparent;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
@@ -419,11 +422,12 @@
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--island-warning) 30%, var(--island-border) 70%);
   border-radius: 4px;
-  background: var(--island-card-hover);
-  color: var(--island-text-secondary);
+  background: var(--island-warning-bg);
+  color: var(--island-warning-text);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 780;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -434,7 +438,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: var(--island-warning);
 }
 
 /* Session count — mono, semibold */
@@ -457,14 +461,14 @@
 }
 
 .collapsed-bar__unattended--amber {
-  color: #FF9F0A;
-  background: rgba(255, 159, 10, 0.12);
+  color: var(--island-warning-text);
+  background: var(--island-warning-bg);
   animation: unattended-pulse-amber 2s ease-in-out infinite;
 }
 
 .collapsed-bar__unattended--red {
-  color: #FF3B30;
-  background: rgba(255, 59, 48, 0.12);
+  color: var(--island-danger-text);
+  background: var(--island-danger-bg);
   animation: unattended-pulse-red 1s ease-in-out infinite;
 }
 
@@ -549,11 +553,11 @@
 }
 
 .collapsed-bar__counter-pill--act {
-  color: #86efac;
+  color: var(--island-success-text);
 }
 
 .collapsed-bar__counter-pill--wait {
-  color: #fcd34d;
+  color: var(--island-warning-text);
 }
 
 .collapsed-bar__counter-pill-val {
@@ -596,8 +600,8 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
+  background: var(--island-danger-bg);
+  color: var(--island-danger-text);
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
@@ -613,8 +617,8 @@
 .collapsed-bar__yolo-badge {
   font-size: 9px;
   font-weight: 700;
-  color: #FF9F0A;
-  background: rgba(255, 159, 10, 0.15);
+  color: var(--island-warning-text);
+  background: var(--island-warning-bg);
   padding: 1px 4px;
   border-radius: 4px;
   letter-spacing: 0.5px;

@@ -253,11 +253,6 @@ pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
         timeout: Some(5),
     },
     HookEventDescriptor {
-        name: "SessionEnd",
-        template: HookEntryTemplate::Plain,
-        timeout: Some(5),
-    },
-    HookEventDescriptor {
         name: "UserPromptSubmit",
         template: HookEntryTemplate::Plain,
         timeout: Some(5),
@@ -273,22 +268,12 @@ pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
         timeout: Some(5),
     },
     HookEventDescriptor {
-        name: "PostToolUseFailure",
-        template: HookEntryTemplate::Plain,
-        timeout: Some(5),
-    },
-    HookEventDescriptor {
         name: "PermissionRequest",
         template: HookEntryTemplate::Plain,
-        timeout: Some(86_400),
+        timeout: Some(21_600),
     },
     HookEventDescriptor {
         name: "Stop",
-        template: HookEntryTemplate::Plain,
-        timeout: Some(5),
-    },
-    HookEventDescriptor {
-        name: "StopFailure",
         template: HookEntryTemplate::Plain,
         timeout: Some(5),
     },

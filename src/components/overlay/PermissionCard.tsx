@@ -178,6 +178,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   let parsedInput: Record<string, unknown> = {}
   parsedInput = parseToolInput(data.toolInput)
   const toolLabel = getToolActivityLabel(t, data.toolName)
+  const supportsPersistentActions = session.agentType !== 'codex'
 
   useEffect(() => {
     if (showFeedback) feedbackRef.current?.focus()
@@ -304,12 +305,16 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         <button type="button" className="perm-card__btn perm-card__btn--allow" onClick={onAllow}>
           <span>{t('notch.allowOnce')}</span>
         </button>
-        <button type="button" className="perm-card__btn perm-card__btn--always" onClick={onAllowAlways}>
-          <span>{t('notch.allowAlways')}</span>
-        </button>
-        <button type="button" className="perm-card__btn perm-card__btn--auto" onClick={onAutoApprove}>
-          <span>{t('notch.autoApprove')}</span>
-        </button>
+        {supportsPersistentActions && (
+          <>
+            <button type="button" className="perm-card__btn perm-card__btn--always" onClick={onAllowAlways}>
+              <span>{t('notch.allowAlways')}</span>
+            </button>
+            <button type="button" className="perm-card__btn perm-card__btn--auto" onClick={onAutoApprove}>
+              <span>{t('notch.autoApprove')}</span>
+            </button>
+          </>
+        )}
       </div>
     </OverlayCard>
   )

@@ -133,6 +133,71 @@ fn plan_hook_output(
     })
 }
 
+fn is_codex_source(source: &str) -> bool {
+    source == "codex" || source == "openai.codex"
+}
+
+fn permission_hook_output(
+    source: &str,
+    decision: &str,
+    reason: &str,
+    always: bool,
+    permission_suggestions: serde_json::Value,
+) -> Option<serde_json::Value> {
+    match decision {
+        "allow" => {
+            let mut decision = serde_json::json!({ "behavior": "allow" });
+            if !is_codex_source(source)
+                && always
+                && permission_suggestions
+                    .as_array()
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false)
+            {
+                if let Some(obj) = decision.as_object_mut() {
+                    obj.insert("updatedPermissions".into(), permission_suggestions);
+                }
+            }
+            Some(permission_request_output(decision))
+        }
+        "auto" => {
+            if is_codex_source(source) {
+                Some(permission_request_output(
+                    serde_json::json!({ "behavior": "allow" }),
+                ))
+            } else {
+                Some(permission_request_output(serde_json::json!({
+                    "behavior": "allow",
+                    "updatedPermissions": [
+                        { "type": "setMode", "mode": "bypassPermissions", "destination": "session" }
+                    ]
+                })))
+            }
+        }
+        "deny" => {
+            let msg = if reason.is_empty() {
+                "Denied by user via AgentBro"
+            } else {
+                reason
+            };
+            Some(permission_request_output(serde_json::json!({
+                "behavior": "deny",
+                "message": msg
+            })))
+        }
+        _ => None,
+    }
+}
+
+fn permission_request_output(decision: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": decision
+        }
+    })
+}
+
 fn question_multi_select(question: &serde_json::Value) -> bool {
     question
         .get("multiSelect")
@@ -368,6 +433,45 @@ fn copy_optional_field(
     }
 }
 
+fn tool_response_error(response: &serde_json::Value) -> Option<String> {
+    let failed = response
+        .get("exit_code")
+        .or_else(|| response.get("exitCode"))
+        .and_then(|value| value.as_i64())
+        .is_some_and(|code| code != 0)
+        || response
+            .get("isError")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        || response
+            .get("status")
+            .and_then(|value| value.as_str())
+            .is_some_and(|status| matches!(status, "error" | "failed" | "failure"))
+        || response.get("error").is_some();
+
+    if !failed {
+        return None;
+    }
+
+    response
+        .get("stderr")
+        .or_else(|| response.get("error"))
+        .or_else(|| response.get("message"))
+        .or_else(|| response.get("stdout"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(500).collect::<String>())
+        .or_else(|| {
+            response
+                .get("exit_code")
+                .or_else(|| response.get("exitCode"))
+                .and_then(|value| value.as_i64())
+                .map(|code| format!("Tool exited with status {code}"))
+        })
+        .or_else(|| Some("Tool result reported an error".to_string()))
+}
+
 fn arg_value(flag: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -489,6 +593,15 @@ fn main() {
     {
         obj.insert("transcript_path".into(), transcript_path.clone());
     }
+    copy_optional_field(obj, &data, "model", &["model"]);
+    copy_optional_field(obj, &data, "turn_id", &["turn_id", "turnId"]);
+    copy_optional_field(
+        obj,
+        &data,
+        "permission_mode",
+        &["permission_mode", "permissionMode"],
+    );
+    copy_optional_field(obj, &data, "start_source", &["source"]);
 
     if data.get("rate_limits").is_some() || data.get("context_window").is_some() {
         obj.insert("event".into(), "StatusLineUpdate".into());
@@ -572,7 +685,7 @@ fn main() {
 
             // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
             // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
-            if tool_name_str == "AskUserQuestion" {
+            if tool_name_str == "AskUserQuestion" && !is_codex_source(&source) {
                 populate_ask_user_question_state(obj, &tool_input);
 
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
@@ -601,6 +714,15 @@ fn main() {
             obj.insert("tool_input".into(), tool_input);
             if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
                 obj.insert("tool_use_id".into(), id.clone());
+            }
+            if let Some(response) = data
+                .get("tool_response")
+                .or_else(|| data.get("toolResponse"))
+            {
+                obj.insert("tool_response".into(), response.clone());
+                if let Some(error) = tool_response_error(response) {
+                    obj.insert("tool_error".into(), error.into());
+                }
             }
         }
         "PostToolUseFailure" => {
@@ -638,7 +760,9 @@ fn main() {
                 // decision.updatedInput.answers from the bridge response. Claude Code
                 // questions are handled earlier in PreToolUse, where updatedInput is
                 // applied by the hook runtime.
-                if source == "opencode" || data.get("_opencode_request_id").is_some() {
+                if (source == "opencode" || data.get("_opencode_request_id").is_some())
+                    && !is_codex_source(&source)
+                {
                     populate_ask_user_question_state(obj, &tool_input);
                     if let Some(resp) = send_and_maybe_receive(&state, true) {
                         let answer = resp["answer"].as_str().unwrap_or("");
@@ -651,7 +775,7 @@ fn main() {
             }
 
             // ExitPlanMode: route as a plan approval card with Manual / Accept Edits / Auto.
-            if tool_name_str == "ExitPlanMode" {
+            if tool_name_str == "ExitPlanMode" && !is_codex_source(&source) {
                 let plan_content = tool_input
                     .get("plan")
                     .or_else(|| tool_input.get("planContent"))
@@ -696,57 +820,17 @@ fn main() {
                 let reason = resp["reason"].as_str().unwrap_or("");
                 let always = resp["always"].as_bool().unwrap_or(false);
 
-                if decision == "allow" {
-                    let permission_suggestions = data
-                        .get("permission_suggestions")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!([]));
-                    let mut decision = serde_json::json!({ "behavior": "allow" });
-                    if always
-                        && permission_suggestions
-                            .as_array()
-                            .map(|arr| !arr.is_empty())
-                            .unwrap_or(false)
-                    {
-                        if let Some(obj) = decision.as_object_mut() {
-                            obj.insert("updatedPermissions".into(), permission_suggestions);
-                        }
-                    }
-                    let output = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": decision
-                        }
-                    });
-                    println!("{}", output);
-                } else if decision == "auto" {
-                    let output = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": {
-                                "behavior": "allow",
-                                "updatedPermissions": [
-                                    { "type": "setMode", "mode": "bypassPermissions", "destination": "session" }
-                                ]
-                            }
-                        }
-                    });
-                    println!("{}", output);
-                } else if decision == "deny" {
-                    let msg = if reason.is_empty() {
-                        "Denied by user via AgentBro"
-                    } else {
-                        reason
-                    };
-                    let output = serde_json::json!({
-                        "hookSpecificOutput": {
-                            "hookEventName": "PermissionRequest",
-                            "decision": {
-                                "behavior": "deny",
-                                "message": msg
-                            }
-                        }
-                    });
+                let permission_suggestions = data
+                    .get("permission_suggestions")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                if let Some(output) = permission_hook_output(
+                    &source,
+                    decision,
+                    reason,
+                    always,
+                    permission_suggestions,
+                ) {
                     println!("{}", output);
                 }
             }
@@ -1085,6 +1169,51 @@ mod tests {
                 "message": "Revise the rollout order"
             })
         );
+    }
+
+    #[test]
+    fn codex_permission_output_never_returns_reserved_permission_fields() {
+        let output = permission_hook_output(
+            "codex",
+            "auto",
+            "",
+            true,
+            serde_json::json!([{ "type": "setMode", "mode": "bypassPermissions" }]),
+        )
+        .expect("permission output");
+
+        let decision = &output["hookSpecificOutput"]["decision"];
+        assert_eq!(decision["behavior"], "allow");
+        assert!(decision.get("updatedInput").is_none());
+        assert!(decision.get("updatedPermissions").is_none());
+        assert!(decision.get("interrupt").is_none());
+    }
+
+    #[test]
+    fn non_codex_permission_output_can_keep_persistent_allow() {
+        let output = permission_hook_output(
+            "claude-code",
+            "allow",
+            "",
+            true,
+            serde_json::json!([{ "type": "setMode", "mode": "acceptEdits" }]),
+        )
+        .expect("permission output");
+
+        assert_eq!(
+            output["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["mode"],
+            "acceptEdits"
+        );
+    }
+
+    #[test]
+    fn tool_response_error_extracts_nonzero_stderr() {
+        let error = tool_response_error(&serde_json::json!({
+            "exit_code": 2,
+            "stderr": "command failed"
+        }));
+
+        assert_eq!(error.as_deref(), Some("command failed"));
     }
 
     #[test]

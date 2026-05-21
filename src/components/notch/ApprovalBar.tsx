@@ -33,6 +33,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     : ''
   const selected = questionState.key === questionKey ? questionState.selected : []
   const answers = questionState.key === questionKey ? questionState.answers : {}
+  const supportsPersistentPermissionActions = session.agentType !== 'codex'
 
   useEffect(() => {
     onDraftStateChange?.(hasDraft)
@@ -140,10 +141,12 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           <button className="approval-bar__btn approval-bar__btn--allow" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
             {t('notch.allowOnce')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
-            {t('notch.allowAlways')}
-          </button>
-          {onAutoApprove && (
+          {supportsPersistentPermissionActions && (
+            <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
+              {t('notch.allowAlways')}
+            </button>
+          )}
+          {supportsPersistentPermissionActions && onAutoApprove && (
             <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>

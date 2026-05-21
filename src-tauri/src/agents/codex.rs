@@ -7,17 +7,19 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 const AGENTBRO_MARKER: &str = "agentbro";
+const CODEX_PERMISSION_TIMEOUT_SECONDS: u64 = 21_600;
 
 const HOOK_EVENTS: &[(&str, &str, u64)] = &[
     ("SessionStart", "session_start", 5),
-    ("SessionEnd", "session_end", 5),
     ("UserPromptSubmit", "user_prompt_submit", 5),
     ("PreToolUse", "pre_tool_use", 5),
     ("PostToolUse", "post_tool_use", 5),
-    ("PostToolUseFailure", "post_tool_use_failure", 5),
-    ("PermissionRequest", "permission_request", 86400),
+    (
+        "PermissionRequest",
+        "permission_request",
+        CODEX_PERMISSION_TIMEOUT_SECONDS,
+    ),
     ("Stop", "stop", 5),
-    ("StopFailure", "stop_failure", 5),
 ];
 
 pub struct CodexAdapter {
@@ -277,7 +279,7 @@ impl AgentAdapter for CodexAdapter {
                 tool_name,
                 tool_input,
                 tool_target,
-                status: "success".to_string(),
+                status: codex_post_tool_status(raw),
             }),
             "PostToolUseFailure" | "PermissionDenied" => Ok(AgentEvent::ToolUse {
                 session_id,
@@ -416,7 +418,7 @@ fn extract_codex_tool_target(
     let input = parse_embedded_json(tool_input);
 
     if matches!(normalized_tool_name, "Edit" | "Write") {
-        if let Some(patch) = string_field(&input, &["patch", "input", "diff"]) {
+        if let Some(patch) = string_field(&input, &["patch", "command", "input", "diff"]) {
             if let Some(target) = patch_target_with_stats(&patch) {
                 return Some(target);
             }
@@ -559,6 +561,37 @@ fn truncate_display_text(text: &str, max_chars: usize) -> String {
 
     let take_chars = max_chars.saturating_sub(3);
     format!("{}...", text.chars().take(take_chars).collect::<String>())
+}
+
+fn codex_post_tool_status(raw: &serde_json::Value) -> String {
+    if raw.get("tool_error").is_some()
+        || raw.get("denial_reason").is_some()
+        || raw
+            .get("tool_response")
+            .or_else(|| raw.get("toolResponse"))
+            .is_some_and(tool_response_looks_failed)
+    {
+        "error".to_string()
+    } else {
+        "success".to_string()
+    }
+}
+
+fn tool_response_looks_failed(response: &serde_json::Value) -> bool {
+    response
+        .get("exit_code")
+        .or_else(|| response.get("exitCode"))
+        .and_then(|value| value.as_i64())
+        .is_some_and(|code| code != 0)
+        || response
+            .get("isError")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        || response
+            .get("status")
+            .and_then(|value| value.as_str())
+            .is_some_and(|status| matches!(status, "error" | "failed" | "failure"))
+        || response.get("error").is_some()
 }
 
 fn parse_question_event(
@@ -860,9 +893,12 @@ mod tests {
         );
         assert_eq!(
             settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            86400
+            CODEX_PERMISSION_TIMEOUT_SECONDS
         );
         assert!(settings["hooks"]["UserPromptSubmit"].is_array());
+        assert!(settings["hooks"].get("SessionEnd").is_none());
+        assert!(settings["hooks"].get("PostToolUseFailure").is_none());
+        assert!(settings["hooks"].get("StopFailure").is_none());
     }
 
     #[test]
@@ -937,6 +973,27 @@ trust_level = "trusted"
     }
 
     #[test]
+    fn marks_codex_failed_post_tool_use_from_tool_response() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "PostToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": { "command": "pnpm test" },
+                "tool_response": { "exit_code": 1, "stderr": "failed" }
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::ToolUse { status, .. } => {
+                assert_eq!(status, "error");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
     fn normalizes_codex_file_tools_with_targets() {
         let event = adapter()
             .parse_event(&serde_json::json!({
@@ -972,7 +1029,7 @@ trust_level = "trusted"
                 "session_id": "s1",
                 "tool_name": "apply_patch",
                 "tool_input": {
-                    "patch": "*** Begin Patch\n*** Update File: src/components/overlay/OverlayFeedbackPanel.tsx\n@@\n-old\n+new\n+again\n*** End Patch\n"
+                    "command": "*** Begin Patch\n*** Update File: src/components/overlay/OverlayFeedbackPanel.tsx\n@@\n-old\n+new\n+again\n*** End Patch\n"
                 }
             }))
             .unwrap();

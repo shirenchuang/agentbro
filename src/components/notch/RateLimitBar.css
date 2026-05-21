@@ -1,31 +1,54 @@
 .rate-limit {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: 10px;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
+  color: var(--island-text-secondary);
 }
 
 .rate-limit__segment {
+  --rate-limit-tone: var(--island-success-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   letter-spacing: 0;
+  color: var(--island-text-secondary);
 }
 
 .rate-limit__segment--green {
-  color: var(--rate-limit-green, #22c55e);
+  --rate-limit-tone: var(--island-success-text, #22c55e);
 }
 
 .rate-limit__segment--amber {
-  color: var(--rate-limit-amber, #f59e0b);
+  --rate-limit-tone: var(--island-warning-text, #f59e0b);
 }
 
 .rate-limit__segment--red {
-  color: var(--rate-limit-red, #ef4444);
+  --rate-limit-tone: var(--island-danger-text, #ef4444);
+}
+
+.rate-limit__window,
+.rate-limit__remaining {
+  color: var(--island-text-secondary);
+}
+
+.rate-limit__usage {
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--rate-limit-tone) 30%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--rate-limit-tone) 12%, transparent);
+  color: var(--rate-limit-tone);
+  font-weight: 850;
+  line-height: 1.1;
 }
 
 .rate-limit__divider {
+  margin: 0 2px;
   color: var(--island-text-muted);
   opacity: 0.5;
 }

@@ -551,6 +551,7 @@ describe('HoverList interactions', () => {
     render(
       <HoverList
         sessions={[session({
+          agentType: 'claude-code',
           phase: 'waiting_approval',
           pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
         })]}
@@ -569,6 +570,25 @@ describe('HoverList interactions', () => {
     expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1')
     expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
     expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('hides unsupported persistent permission actions for Codex hooks', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          agentType: 'codex',
+          phase: 'waiting_approval',
+          pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    const permissionCard = document.querySelector('.hover-list__inline-perm') as HTMLElement
+    expect(within(permissionCard).getByRole('button', { name: '允许一次' })).toBeInTheDocument()
+    expect(within(permissionCard).getByRole('button', { name: '拒绝' })).toBeInTheDocument()
+    expect(within(permissionCard).queryByRole('button', { name: /始终允许/ })).not.toBeInTheDocument()
+    expect(within(permissionCard).queryByRole('button', { name: '自动批准' })).not.toBeInTheDocument()
   })
 
   it('shows write permission content in the inline authorization card', () => {

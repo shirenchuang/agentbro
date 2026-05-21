@@ -401,13 +401,16 @@
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  border: none;
+  border: 1px solid var(--island-action-neutral-border);
   border-radius: 8px;
+  background: var(--island-action-neutral-bg);
+  color: var(--island-action-neutral-text);
   font-family: var(--font-sans, system-ui);
   font-size: var(--approval-control-font-size);
   font-weight: 800;
   cursor: pointer;
-  transition: transform 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--island-card) 70%, transparent);
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
   white-space: nowrap;
 }
 
@@ -417,23 +420,43 @@
 }
 
 .perm-card__btn--deny {
-  background: var(--island-btn-bg);
-  color: var(--island-text);
+  border-color: var(--island-action-deny-border);
+  background: var(--island-action-deny-bg);
+  color: var(--island-action-deny-text);
 }
 
 .perm-card__btn--allow {
-  background: color-mix(in srgb, var(--island-card) 72%, #ffffff 28%);
-  color: var(--island-text);
+  border-color: var(--island-action-allow-border);
+  background: var(--island-action-allow-bg);
+  color: var(--island-action-allow-text);
 }
 
 .perm-card__btn--always {
-  background: var(--island-info);
-  color: var(--island-on-accent, #ffffff);
+  border-color: var(--island-action-always-border);
+  background: var(--island-action-always-bg);
+  color: var(--island-action-always-text);
 }
 
 .perm-card__btn--auto {
-  background: var(--island-danger);
-  color: var(--island-on-accent, #ffffff);
+  border-color: var(--island-action-auto-border);
+  background: var(--island-action-auto-bg);
+  color: var(--island-action-auto-text);
+}
+
+.perm-card__btn--deny:hover {
+  background: var(--island-action-deny-bg-hover);
+}
+
+.perm-card__btn--allow:hover {
+  background: var(--island-action-allow-bg-hover);
+}
+
+.perm-card__btn--always:hover {
+  background: var(--island-action-always-bg-hover);
+}
+
+.perm-card__btn--auto:hover {
+  background: var(--island-action-auto-bg-hover);
 }
 
 .perm-card__kbd {

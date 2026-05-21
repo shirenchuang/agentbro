@@ -6,12 +6,6 @@ interface RateLimitBarProps {
   rateLimits?: RateLimitInfo
 }
 
-function usageColor(pct: number): string {
-  if (pct >= 80) return 'var(--rate-limit-red, #ef4444)'
-  if (pct >= 50) return 'var(--rate-limit-amber, #f59e0b)'
-  return 'var(--rate-limit-green, #22c55e)'
-}
-
 function usageClass(pct: number): string {
   if (pct >= 80) return 'rate-limit__segment--red'
   if (pct >= 50) return 'rate-limit__segment--amber'
@@ -47,9 +41,11 @@ export function RateLimitBar({ rateLimits }: RateLimitBarProps) {
   return (
     <div className="rate-limit" title={title}>
       {windows.map((window, index) => (
-        <span key={window.id} className={`rate-limit__segment ${usageClass(window.usedPercent)}`} style={{ color: usageColor(window.usedPercent) }}>
+        <span key={window.id} className={`rate-limit__segment ${usageClass(window.usedPercent)}`}>
           {index > 0 && <span className="rate-limit__divider">|</span>}
-          {window.title} {Math.round(window.usedPercent)}% {window.remainingLabel || ''}
+          <span className="rate-limit__window">{window.title}</span>
+          <span className="rate-limit__usage">{Math.round(window.usedPercent)}%</span>
+          {window.remainingLabel && <span className="rate-limit__remaining">{window.remainingLabel}</span>}
         </span>
       ))}
     </div>
