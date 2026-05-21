@@ -20,6 +20,7 @@ import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMIS
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { parseCodexTitleMetadata } from '../../utils/codexMetadata'
 import { DiffView } from './DiffView'
+import { ExternalLink } from './ExternalLink'
 import './HoverList.css'
 
 interface HoverListProps {
@@ -1091,7 +1092,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
       </div>
       {session.planContent && (
         <div className="hover-list__inline-plan-content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>
             {formatPlanMarkdown(session.planContent)}
           </ReactMarkdown>
         </div>

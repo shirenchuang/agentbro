@@ -10,6 +10,7 @@ import { PlatformIcon } from '../platform/PlatformIcon'
 import { parseMcpTool } from '../../utils/mcp'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { openImage } from '../../services/tauriApi'
+import { ExternalLink } from './ExternalLink'
 import './MessageBubble.css'
 
 interface MessageBubbleProps {
@@ -114,12 +115,12 @@ function AssistantMessage({
                 {message.thinking && (
                   <div className="msg__process-section msg__process-section--thinking markdown-body">
                     <div className="msg__process-label">{t('notch.chat.thinking', '思考过程')}</div>
-                    <Markdown remarkPlugins={[remarkGfm]}>{message.thinking}</Markdown>
+                    <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{message.thinking}</Markdown>
                   </div>
                 )}
                 {hasIntermediateText && (
                   <div className="msg__process-section markdown-body">
-                    <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+                    <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{message.content}</Markdown>
                   </div>
                 )}
                 {toolCalls.length > 0 && (
@@ -136,7 +137,7 @@ function AssistantMessage({
 
         {finalContent && (
           <div className="msg__content selectable markdown-body">
-            <Markdown remarkPlugins={[remarkGfm]}>{finalContent}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>{finalContent}</Markdown>
           </div>
         )}
         {message.images && message.images.length > 0 && (
