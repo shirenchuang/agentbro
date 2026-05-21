@@ -656,6 +656,55 @@ async fn list_ssh_config_hosts() -> Result<Vec<remote::SshConfigHost>, String> {
 
 // ── Webhook Commands ────────────────────────────────────────────
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WebhookFormConfig {
+    enabled: bool,
+    url: String,
+    secret: Option<String>,
+}
+
+fn webhook_provider_id(provider: &webhook::WebhookPlatform) -> &'static str {
+    match provider {
+        webhook::WebhookPlatform::DingTalk => "dingtalk",
+        webhook::WebhookPlatform::Feishu => "feishu",
+    }
+}
+
+fn webhook_provider_name(provider: &webhook::WebhookPlatform) -> &'static str {
+    match provider {
+        webhook::WebhookPlatform::DingTalk => "DingTalk",
+        webhook::WebhookPlatform::Feishu => "Feishu",
+    }
+}
+
+fn normalize_webhook_secret(secret: Option<String>) -> Option<String> {
+    secret
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn webhook_config_from_form(
+    provider: webhook::WebhookPlatform,
+    form: WebhookFormConfig,
+    force_enabled: bool,
+) -> webhook::WebhookConfig {
+    let WebhookFormConfig {
+        enabled,
+        url,
+        secret,
+    } = form;
+
+    webhook::WebhookConfig {
+        id: webhook_provider_id(&provider).to_string(),
+        name: webhook_provider_name(&provider).to_string(),
+        platform: provider,
+        url: url.trim().to_string(),
+        secret: normalize_webhook_secret(secret),
+        sources: Vec::new(),
+        enabled: force_enabled || enabled,
+    }
+}
+
 #[tauri::command]
 async fn list_webhooks(
     state: tauri::State<'_, commands::AppState>,
@@ -700,17 +749,55 @@ async fn update_webhook(
 }
 
 #[tauri::command]
+async fn save_webhook_config(
+    state: tauri::State<'_, commands::AppState>,
+    provider: webhook::WebhookPlatform,
+    config: WebhookFormConfig,
+) -> Result<(), String> {
+    let wh = webhook_config_from_form(provider, config, false);
+    let mut cfg = state.config_store.get();
+
+    match cfg.webhook_configs.iter_mut().find(|w| w.id == wh.id) {
+        Some(existing) => *existing = wh,
+        None => cfg.webhook_configs.push(wh),
+    }
+
+    state.config_store.update(cfg)
+}
+
+#[tauri::command]
 async fn test_webhook(
     state: tauri::State<'_, commands::AppState>,
-    id: String,
+    id: Option<String>,
+    provider: Option<webhook::WebhookPlatform>,
+    url: Option<String>,
+    secret: Option<String>,
 ) -> Result<String, String> {
-    let cfg = state.config_store.get();
-    let wh = cfg
-        .webhook_configs
-        .iter()
-        .find(|w| w.id == id)
-        .ok_or_else(|| format!("Webhook {} not found", id))?
-        .clone();
+    let wh = if let Some(id) = id {
+        let cfg = state.config_store.get();
+        cfg.webhook_configs
+            .iter()
+            .find(|w| w.id == id)
+            .ok_or_else(|| format!("Webhook {} not found", id))?
+            .clone()
+    } else {
+        let provider = provider.ok_or_else(|| "Webhook provider is required".to_string())?;
+        let url = url
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Webhook URL is required".to_string())?;
+
+        webhook::WebhookConfig {
+            id: format!("{}-test", webhook_provider_id(&provider)),
+            name: format!("{} Test", webhook_provider_name(&provider)),
+            platform: provider,
+            url,
+            secret: normalize_webhook_secret(secret),
+            sources: Vec::new(),
+            enabled: true,
+        }
+    };
+
     let event = webhook::templates::NotificationEvent::Custom {
         title: "AgentBro Test".to_string(),
         body: "This is a test notification from AgentBro.".to_string(),
@@ -3448,6 +3535,7 @@ pub fn run() {
             add_webhook,
             remove_webhook,
             update_webhook,
+            save_webhook_config,
             test_webhook,
             get_webhook_logs,
             get_diagnostic_events,

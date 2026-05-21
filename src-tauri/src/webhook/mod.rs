@@ -9,4 +9,4 @@
 pub mod forwarder;
 pub mod templates;
 
-pub use forwarder::{WebhookConfig, WebhookForwarder, WebhookResult};
+pub use forwarder::{WebhookConfig, WebhookForwarder, WebhookPlatform, WebhookResult};

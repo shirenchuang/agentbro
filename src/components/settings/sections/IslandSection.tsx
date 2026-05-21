@@ -276,6 +276,14 @@ interface WebhookConfig {
   events: string[]
 }
 
+interface SavedWebhookConfig {
+  id: string
+  platform: WebhookProvider
+  url: string
+  secret: string | null
+  enabled: boolean
+}
+
 type WebhookProvider = 'dingtalk' | 'feishu'
 
 const WEBHOOK_EVENT_OPTIONS = [
@@ -293,11 +301,47 @@ function WebhookProviderSection({
   })
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
+  const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadSavedConfig = async () => {
+      try {
+        const webhooks = await invoke<SavedWebhookConfig[]>('list_webhooks')
+        if (cancelled) return
+        const saved = webhooks.find((webhook) => webhook.platform === provider || webhook.id === provider)
+        if (!saved) return
+        setConfig((prev) => ({
+          ...prev,
+          enabled: saved.enabled,
+          url: saved.url,
+          secret: saved.secret ?? '',
+        }))
+      } catch (e) {
+        console.error('Failed to load webhook config:', e)
+      }
+    }
+
+    loadSavedConfig()
+    return () => {
+      cancelled = true
+    }
+  }, [provider])
 
   const save = async () => {
+    setSaveResult(null)
     setSaving(true)
-    try { await invoke('save_webhook_config', { provider, config }) } catch (e) { console.error('Failed to save webhook config:', e) }
-    setSaving(false)
+    try {
+      await invoke('save_webhook_config', { provider, config })
+      setSaveResult('success')
+    } catch (e) {
+      console.error('Failed to save webhook config:', e)
+      setSaveResult('error')
+    } finally {
+      setSaving(false)
+      setTimeout(() => setSaveResult(null), 3000)
+    }
   }
 
   const test = async () => {
@@ -344,8 +388,10 @@ function WebhookProviderSection({
           <div style={{ display: 'flex', gap: 8, paddingTop: 8, justifyContent: 'flex-end' }}>
             {testResult === 'success' && <span style={{ fontSize: 12, color: 'var(--settings-status-active)', alignSelf: 'center' }}>{t('settings.webhookTestSuccess')}</span>}
             {testResult === 'error' && <span style={{ fontSize: 12, color: 'var(--settings-danger)', alignSelf: 'center' }}>{t('settings.webhookTestError')}</span>}
-            <GlassButton variant="ghost" onClick={test} disabled={!config.url}>{t('settings.webhookTest')}</GlassButton>
-            <GlassButton variant="primary" onClick={save} disabled={saving || !config.url}>{saving ? '...' : t('settings.save')}</GlassButton>
+            {saveResult === 'success' && <span style={{ fontSize: 12, color: 'var(--settings-status-active)', alignSelf: 'center' }}>{t('settings.saved', { defaultValue: '已保存' })}</span>}
+            {saveResult === 'error' && <span style={{ fontSize: 12, color: 'var(--settings-danger)', alignSelf: 'center' }}>{t('settings.saveFailed', { defaultValue: '保存失败' })}</span>}
+            <GlassButton type="button" variant="ghost" onClick={test} disabled={!config.url}>{t('settings.webhookTest')}</GlassButton>
+            <GlassButton type="button" variant="primary" onClick={save} disabled={saving || !config.url}>{saving ? '...' : t('settings.save')}</GlassButton>
           </div>
         </>
       )}
