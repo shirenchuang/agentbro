@@ -53,4 +53,15 @@ describe('configStore island defaults', () => {
     expect(state.shortcuts.find((shortcut) => shortcut.action === 'approve-action')?.keys).toBe('')
     expect(state.shortcuts.find((shortcut) => shortcut.action === 'reject-action')?.keys).toBe('')
   })
+
+  it('keeps low-frequency in-window shortcuts off by default', () => {
+    const state = useConfigStore.getState()
+
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'toggle-panel')?.keys).toBe('⌘+Shift+I')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'collapse-panel')?.keys).toBe('Escape')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'open-settings')?.keys).toBe('⌘+,')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'expand-panel')?.keys).toBe('')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'next-session')?.keys).toBe('')
+    expect(state.shortcuts.find((shortcut) => shortcut.action === 'prev-session')?.keys).toBe('')
+  })
 })

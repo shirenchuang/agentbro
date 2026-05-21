@@ -599,8 +599,28 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'feedback')
     expect(screen.getAllByText('Can you continue the migration?').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Ready for the next integration step').length).toBeGreaterThan(0)
+    expect(screen.getByText('New reply')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'notch.jumpToTerminal' })).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Send a message...')).toBeInTheDocument()
+  })
+
+  it('dismisses feedback from the close button without jumping to terminal', () => {
+    mountIsland({
+      id: 'response-s1-close',
+      sessionId: 's1',
+      type: 'response',
+      data: {
+        responseText: 'Close this feedback panel',
+        userMessage: 'Did it finish?',
+      },
+      createdAt: Date.now(),
+    })
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Dismiss' }))
+
+    expect(tauriMocks.jumpToTerminal).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
   it('renders assistant-response feedback as a popup while collapsed', () => {
@@ -885,6 +905,68 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+  })
+
+  it('routes recorded symbol shortcuts to permission actions', () => {
+    useConfigStore.setState({
+      shortcuts: [
+        { action: 'approve-action', label: 'Approve Action', keys: '⌘+⇧+A' },
+        { action: 'reject-action', label: 'Reject Action', keys: '' },
+      ],
+    })
+    mountIsland({
+      id: 'permission-s1',
+      sessionId: 's1',
+      type: 'permission',
+      data: { toolName: 'Bash', toolInput: 'pnpm test' },
+      createdAt: Date.now(),
+    }, {
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' },
+    })
+
+    fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true })
+
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+  })
+
+  it('routes configured panel and session navigation shortcuts', () => {
+    useConfigStore.setState({
+      shortcuts: [
+        { action: 'toggle-panel', label: 'Toggle Panel', keys: '⌘+⇧+I' },
+        { action: 'expand-panel', label: 'Expand Panel', keys: '⌘+⇧+E' },
+        { action: 'next-session', label: 'Next Session', keys: '⌘+]' },
+        { action: 'prev-session', label: 'Previous Session', keys: '⌘+[' },
+      ],
+    })
+    const first = session({ id: 's1', sessionTitle: 'First session' })
+    const second = session({ id: 's2', sessionTitle: 'Second session', startedAt: first.startedAt + 1 })
+    useSessionStore.setState({
+      sessions: { s1: first, s2: second },
+      sessionList: [first, second],
+      activeSessionId: 's1',
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    fireEvent.keyDown(window, { key: 'e', metaKey: true, shiftKey: true })
+    expect(useSessionStore.getState().panelState).toBe('hover')
+
+    fireEvent.keyDown(window, { key: ']', metaKey: true })
+    expect(useSessionStore.getState().activeSessionId).toBe('s2')
+
+    fireEvent.keyDown(window, { key: '[', metaKey: true })
+    expect(useSessionStore.getState().activeSessionId).toBe('s1')
+
+    fireEvent.keyDown(window, { key: 'i', metaKey: true, shiftKey: true })
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
   })
 
   it('renders fresh blocking permission as the primary island content', () => {

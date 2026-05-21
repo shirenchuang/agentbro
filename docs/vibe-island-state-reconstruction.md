@@ -166,3 +166,7 @@ The gap is less about missing states and more about presentation:
 - The installed app is a native compiled binary. Without the original project or debug/source maps, full implementation details are not recoverable as source.
 - Static symbol/string analysis can recover state names, view names, event names, and text surfaces, but not exact layout code.
 - Exact visual metrics still require cropped runtime screenshots or direct window image capture.
+
+## Related Notes
+
+- [Vibe Island Usage Capability Reconstruction](./vibe-island-usage-reconstruction.md) covers the usage/rate-limit HUD, provider routing, Codex JSONL ingestion, Claude statusline bridge, caching, and AgentBro implementation notes.

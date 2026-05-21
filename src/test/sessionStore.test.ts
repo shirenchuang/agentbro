@@ -106,6 +106,23 @@ describe('sessionStore backend overlays', () => {
     expect(overlay?.data).toMatchObject({ summary: 'All checks passed' })
   })
 
+  it('preserves backend permission options when creating permission overlays', () => {
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        phase: 'waiting_approval',
+        pendingPermission: {
+          toolName: 'Bash',
+          toolInput: '{"command":"pnpm test"}',
+          options: ['allow', 'deny'],
+        },
+      }),
+    ])
+
+    const overlay = useSessionStore.getState().activeOverlay
+    expect(overlay?.type).toBe('permission')
+    expect(overlay?.data).toMatchObject({ options: ['allow', 'deny'] })
+  })
+
   it('uses backend response text instead of generic completion text', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])
     useSessionStore.getState().replaceAllSessions([
