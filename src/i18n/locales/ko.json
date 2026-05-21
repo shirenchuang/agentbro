@@ -106,8 +106,6 @@
     "mainDisplay": "주 디스플레이",
     "secondaryDisplay": "보조 디스플레이",
     "autoFollowFocus": "자동 (포커스 따라가기)",
-    "hideInFullscreen": "전체 화면에서 숨기기",
-    "hideInFullscreenDesc": "전체 화면 앱이 활성화될 때 자동으로 숨기기",
     "autoHide": "자동 숨기기",
     "autoHideDesc": "일정 시간 비활성 후 아일랜드 숨기기",
     "smartSuppression": "스마트 억제",

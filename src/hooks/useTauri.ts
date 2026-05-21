@@ -298,7 +298,6 @@ function applyBackendConfig(config: BackendConfig) {
   store.updateConfig('launchAtLogin', config.launchAtLogin ?? false)
   store.updateConfig('autoHide', config.autoHide)
   store.updateConfig('smartSuppression', config.smartSuppression)
-  store.updateConfig('hideInFullscreen', config.hideInFullscreen ?? false)
   store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
   store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
   store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)

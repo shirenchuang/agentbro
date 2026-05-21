@@ -577,9 +577,6 @@ function OverviewTab() {
         <SettingRow label={t('settings.autoHideNoSessions')} description={t('settings.autoHideNoSessionsDesc')}>
           <Toggle checked={config.autoHideNoSessions} onChange={(v) => config.updateConfig('autoHideNoSessions', v)} />
         </SettingRow>
-        <SettingRow label={t('settings.hideInFullscreen')} description={t('settings.hideInFullscreenDesc')}>
-          <Toggle checked={config.hideInFullscreen} onChange={(v) => config.updateConfig('hideInFullscreen', v)} />
-        </SettingRow>
       </SettingGroup>
     </>
   )

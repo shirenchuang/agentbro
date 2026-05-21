@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
-import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isFrontmostAppFullscreen, isTauri } from '../../services/tauriApi'
+import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistory, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
@@ -258,7 +258,6 @@ export function NotchPanel() {
   const islandEnabled = useConfigStore((s) => s.islandEnabled)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const autoHideNoSessions = useConfigStore((s) => s.autoHideNoSessions)
-  const hideInFullscreen = useConfigStore((s) => s.hideInFullscreen)
   const idleCompactDwellSeconds = useConfigStore((s) => s.idleCompactDwellSeconds)
   const noSessionsHideDelay = useConfigStore((s) => s.noSessionsHideDelay)
   const idleTimeoutMinutes = useConfigStore((s) => s.idleTimeoutMinutes)
@@ -587,35 +586,6 @@ export function NotchPanel() {
     // to alpha 0 makes later pointer entry unreliable on macOS.
     setNotchOpacity(islandEnabled ? 1 : 0).catch(() => {})
   }, [islandEnabled])
-
-  useEffect(() => {
-    if (!hideInFullscreen || !islandEnabled || !isTauri()) {
-      setNotchOpacity(islandEnabled ? 1 : 0).catch(() => {})
-      return
-    }
-
-    let cancelled = false
-    let inFlight = false
-    const refresh = async () => {
-      if (cancelled || inFlight) return
-      inFlight = true
-      try {
-        const fullscreen = await isFrontmostAppFullscreen()
-        if (!cancelled) setNotchOpacity(fullscreen ? 0 : 1).catch(() => {})
-      } catch {
-        if (!cancelled) setNotchOpacity(1).catch(() => {})
-      } finally {
-        inFlight = false
-      }
-    }
-
-    refresh()
-    const timer = window.setInterval(refresh, 1000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [hideInFullscreen, islandEnabled])
 
   const hapticOnHover = useConfigStore((s) => s.hapticOnHover)
   const hapticIntensity = useConfigStore((s) => s.hapticIntensity)

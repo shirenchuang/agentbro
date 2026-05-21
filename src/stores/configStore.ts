@@ -104,7 +104,6 @@ interface ConfigState {
   autoHide: boolean
   autoHideNoSessions: boolean
   smartSuppression: boolean
-  hideInFullscreen: boolean
   autoCollapse: boolean
   completionPopupDuration: string
   dwellDuration: number // ms delay before expanding on hover (100-1000)
@@ -452,7 +451,6 @@ export const useConfigStore = create<ConfigStore>()(
   autoHide: false,
   autoHideNoSessions: false,
   smartSuppression: true,
-  hideInFullscreen: false,
   autoCollapse: true,
   completionPopupDuration: '5s',
   dwellDuration: 300,

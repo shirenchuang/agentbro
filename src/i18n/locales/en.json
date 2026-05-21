@@ -146,8 +146,6 @@
     "mainDisplay": "Main Display",
     "secondaryDisplay": "Secondary Display",
     "autoFollowFocus": "Follow Cursor Display",
-    "hideInFullscreen": "Hide in Fullscreen",
-    "hideInFullscreenDesc": "Automatically hide when a fullscreen app is active",
     "autoHide": "Auto-Hide",
     "autoHideDesc": "Hide the island after a period of inactivity",
     "smartSuppression": "Smart Suppression",

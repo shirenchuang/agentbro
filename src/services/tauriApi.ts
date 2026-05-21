@@ -249,7 +249,6 @@ export interface BackendConfig {
   launchAtLogin: boolean
   autoHide: boolean
   smartSuppression: boolean
-  hideInFullscreen: boolean
   completionTimeout: number
   showTokenUsage: boolean
   usageQueryEnabled: boolean
@@ -460,7 +459,6 @@ export async function getConfig(): Promise<BackendConfig> {
       launchAtLogin: false,
       autoHide: true,
       smartSuppression: true,
-      hideInFullscreen: false,
       completionTimeout: 5,
       showTokenUsage: true,
       usageQueryEnabled: true,
@@ -523,11 +521,6 @@ export interface CustomHookTemplate {
   events: string[]
   command: string
   enabled: boolean
-}
-
-export async function isFrontmostAppFullscreen(): Promise<boolean> {
-  if (!isTauri()) return false
-  return invoke<boolean>('is_frontmost_app_fullscreen')
 }
 
 export async function listCustomHookTemplates(): Promise<CustomHookTemplate[]> {

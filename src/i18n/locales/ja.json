@@ -106,8 +106,6 @@
     "mainDisplay": "メインディスプレイ",
     "secondaryDisplay": "サブディスプレイ",
     "autoFollowFocus": "自動 (フォーカスに追従)",
-    "hideInFullscreen": "全画面表示時に非表示",
-    "hideInFullscreenDesc": "全画面アプリがアクティブな時に自動的に非表示にする",
     "autoHide": "自動非表示",
     "autoHideDesc": "一定時間操作がない場合にアイランドを非表示にする",
     "smartSuppression": "スマート抑制",

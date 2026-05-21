@@ -86,8 +86,6 @@ pub struct AppConfig {
     pub launch_at_login: bool,
     pub auto_hide: bool,
     pub smart_suppression: bool,
-    #[serde(default)]
-    pub hide_in_fullscreen: bool,
     pub completion_timeout: u32,
     pub show_token_usage: bool,
     #[serde(default = "default_true")]
@@ -270,7 +268,6 @@ impl Default for AppConfig {
             launch_at_login: false,
             auto_hide: true,
             smart_suppression: true,
-            hide_in_fullscreen: false,
             completion_timeout: 5,
             show_token_usage: true,
             usage_query_enabled: true,

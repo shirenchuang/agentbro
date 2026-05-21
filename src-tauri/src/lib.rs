@@ -3367,7 +3367,6 @@ pub fn run() {
             commands::get_adapter_status,
             commands::verify_hooks,
             commands::is_terminal_focused,
-            commands::is_frontmost_app_fullscreen,
             commands::list_custom_hook_templates,
             commands::upsert_custom_hook_template,
             commands::remove_custom_hook_template,

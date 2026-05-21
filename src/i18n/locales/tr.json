@@ -102,8 +102,6 @@
     "mainDisplay": "Ana Ekran",
     "secondaryDisplay": "İkincil Ekran",
     "autoFollowFocus": "Otomatik (Odağı Takip Et)",
-    "hideInFullscreen": "Tam Ekranda Gizle",
-    "hideInFullscreenDesc": "Tam ekran uygulama etkinken otomatik olarak gizle",
     "autoHide": "Otomatik Gizle",
     "autoHideDesc": "Belirli bir süre etkinlik olmadığında adayı gizle",
     "smartSuppression": "Akıllı Baskılama",

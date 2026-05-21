@@ -1849,34 +1849,6 @@ pub async fn is_terminal_focused(
 }
 
 #[tauri::command]
-pub async fn is_frontmost_app_fullscreen() -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let script = r#"
-tell application "System Events"
-    set frontApp to first application process whose frontmost is true
-    try
-        set frontWindow to first window of frontApp
-        set fullScreenValue to value of attribute "AXFullScreen" of frontWindow
-        if fullScreenValue is true then return "true"
-    end try
-end tell
-return "false"
-"#;
-        let output = std::process::Command::new("osascript")
-            .args(["-e", script])
-            .output()
-            .map_err(|e| e.to_string())?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(false)
-    }
-}
-
-#[tauri::command]
 pub async fn list_custom_hook_templates(
     state: State<'_, AppState>,
 ) -> Result<Vec<CustomHookTemplate>, String> {
@@ -2058,7 +2030,7 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
             "warn"
         }
         .to_string(),
-        detail: "Required for terminal focus and fullscreen detection".to_string(),
+        detail: "Required for terminal focus".to_string(),
     });
 
     for binary in [
