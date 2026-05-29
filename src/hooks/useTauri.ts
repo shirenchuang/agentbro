@@ -462,6 +462,7 @@ export function useSessionEvents() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    let aborted = false
     const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, 60_000)
 
     // Load initial sessions
@@ -493,11 +494,12 @@ export function useSessionEvents() {
             store.setPanelState('collapsed')
           }
         }
-      }).then(fn => { unlisten = fn })
+      }).then(fn => { if (aborted) fn(); else unlisten = fn })
         .catch(e => console.error('[tauri] listen session-update:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
     return () => {
+      aborted = true
       window.clearInterval(usageRateLimitTimer)
       unlisten?.()
     }
@@ -510,6 +512,7 @@ export function useConfigSync() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    let aborted = false
 
     getConfig().then((config) => {
       const localLanguage = useConfigStore.getState().language
@@ -537,7 +540,7 @@ export function useConfigSync() {
       listen<BackendConfig>('config-changed', (event) => {
         applyBackendConfig(event.payload)
         applyBackendThemeChange(event.payload.theme)
-      }).then(fn => { unlisten = fn })
+      }).then(fn => { if (aborted) fn(); else unlisten = fn })
         .catch(e => console.error('[tauri] listen config-changed:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
@@ -553,6 +556,7 @@ export function useConfigSync() {
     window.addEventListener('agentbro-theme-sync', handleThemeSync)
 
     return () => {
+      aborted = true
       unlisten?.()
       window.removeEventListener('agentbro-theme-sync', handleThemeSync)
     }
@@ -782,6 +786,7 @@ export function useConversationUpdates() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    let aborted = false
 
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<{ sessionId: string; result: { allMessages: ParsedMessage[]; newMessages: ParsedMessage[]; clearDetected: boolean } }>(
@@ -796,11 +801,11 @@ export function useConversationUpdates() {
           const chatMessages = mapParsedMessages(result.allMessages)
           store.setChatHistory(sessionId, chatMessages)
         },
-      ).then(fn => { unlisten = fn })
+      ).then(fn => { if (aborted) fn(); else unlisten = fn })
         .catch(e => console.error('[tauri] listen conversation-update:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
-    return () => { unlisten?.() }
+    return () => { aborted = true; unlisten?.() }
   }, [])
 }
 
@@ -812,6 +817,7 @@ export function useHookRecoveryEvents() {
     let unlistenRestored: (() => void) | undefined
     let unlistenFailed: (() => void) | undefined
     let clearTimer: ReturnType<typeof setTimeout> | undefined
+    let aborted = false
 
     const show = (notification: 'restored' | 'rate_limited') => {
       const store = useSessionStore.getState()
@@ -824,14 +830,15 @@ export function useHookRecoveryEvents() {
 
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<string>('hook-recovery', () => show('restored'))
-        .then(fn => { unlistenRestored = fn })
+        .then(fn => { if (aborted) fn(); else unlistenRestored = fn })
         .catch(e => console.error('[tauri] listen hook-recovery:', e))
       listen<void>('hook-recovery-failed', () => show('rate_limited'))
-        .then(fn => { unlistenFailed = fn })
+        .then(fn => { if (aborted) fn(); else unlistenFailed = fn })
         .catch(e => console.error('[tauri] listen hook-recovery-failed:', e))
     }).catch(e => console.error('[tauri] import event:', e))
 
     return () => {
+      aborted = true
       unlistenRestored?.()
       unlistenFailed?.()
       if (clearTimer) clearTimeout(clearTimer)

@@ -14,6 +14,24 @@ impl HookEndpoint {
     pub fn tcp_addr(&self) -> String {
         format!("127.0.0.1:{}", self.tcp_port)
     }
+
+    /// Path to the shared-secret file gating the TCP transport. Lives next to
+    /// the socket so it inherits the same per-user directory context.
+    pub fn token_path(&self) -> String {
+        format!("{}.token", self.socket_path)
+    }
+}
+
+/// Read the shared-secret token written by the running HookServer, if present.
+/// Used by the bridge and the in-app sender to authenticate over TCP.
+pub fn read_token() -> Option<String> {
+    let token = std::fs::read_to_string(current().token_path()).ok()?;
+    let token = token.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 pub fn current() -> HookEndpoint {
@@ -36,4 +54,18 @@ pub fn default_socket_path() -> &'static str {
 
 pub fn default_tcp_port() -> u16 {
     RELEASE_TCP_PORT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_path_sits_next_to_socket() {
+        let endpoint = HookEndpoint {
+            socket_path: "/tmp/agentbro-hook.sock".to_string(),
+            tcp_port: 17894,
+        };
+        assert_eq!(endpoint.token_path(), "/tmp/agentbro-hook.sock.token");
+    }
 }

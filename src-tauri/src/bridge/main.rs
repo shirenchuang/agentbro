@@ -557,6 +557,11 @@ fn main() {
     });
 
     let obj = state.as_object_mut().unwrap();
+    // Authenticates the TCP fallback transport; the server ignores it on the
+    // Unix socket. Absent if the server isn't running (connect fails anyway).
+    if let Some(token) = agentbro_lib::hook_endpoint::read_token() {
+        obj.insert("_auth_token".into(), token.into());
+    }
     if let Some(label) = engine_label {
         obj.insert("engine_label".into(), label.into());
     }

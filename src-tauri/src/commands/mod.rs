@@ -2004,17 +2004,30 @@ pub async fn simulate_hook_event(
     }
 
     async fn send_payload(payload: serde_json::Value) -> Result<(), String> {
-        let line = format!("{payload}\n");
-        let bytes = line.as_bytes();
         let endpoint = hook_endpoint::current();
 
         if let Ok(mut stream) = tokio::net::UnixStream::connect(&endpoint.socket_path).await {
-            stream.write_all(bytes).await.map_err(|e| e.to_string())
+            let line = format!("{payload}\n");
+            stream
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| e.to_string())
         } else {
+            // TCP requires the shared-secret token (the Unix socket does not).
+            let mut payload = payload;
+            if let (Some(obj), Some(token)) =
+                (payload.as_object_mut(), hook_endpoint::read_token())
+            {
+                obj.insert("_auth_token".into(), token.into());
+            }
+            let line = format!("{payload}\n");
             let mut stream = tokio::net::TcpStream::connect(endpoint.tcp_addr())
                 .await
                 .map_err(|e| e.to_string())?;
-            stream.write_all(bytes).await.map_err(|e| e.to_string())
+            stream
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| e.to_string())
         }
     }
 

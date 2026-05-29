@@ -169,6 +169,9 @@ pub struct HookServer {
     socket_owned: Arc<AtomicBool>,
     /// Recent PreToolUse cache for PermissionRequest correlation when Codex omits tool_use_id.
     recent_tools: Arc<Mutex<VecDeque<RecentToolInvocation>>>,
+    /// Shared secret required on the TCP transport (the Unix socket relies on
+    /// 0o600 perms / SSH instead). Generated fresh per server instance.
+    auth_token: Arc<String>,
 }
 
 #[derive(Clone)]
@@ -183,6 +186,7 @@ struct HookConnectionContext {
     raw_events: Arc<std::sync::Mutex<RawHookEventStore>>,
     config_store: Arc<std::sync::Mutex<Option<ConfigStore>>>,
     recent_tools: Arc<Mutex<VecDeque<RecentToolInvocation>>>,
+    auth_token: Arc<String>,
 }
 
 #[derive(Clone)]
@@ -218,6 +222,11 @@ impl HookServer {
             endpoint: hook_endpoint::current(),
             socket_owned: Arc::new(AtomicBool::new(false)),
             recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+            auth_token: Arc::new(format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )),
         }
     }
 
@@ -716,6 +725,7 @@ impl HookServer {
         let tcp_addr = endpoint.tcp_addr();
         let tcp_listener = TcpListener::bind(&tcp_addr).await?;
         let unix_listener = Self::bind_unix(&endpoint.socket_path).await?;
+        Self::write_token_file(&endpoint.token_path(), &self.auth_token)?;
         self.socket_owned.store(true, Ordering::SeqCst);
 
         let context = HookConnectionContext {
@@ -729,13 +739,15 @@ impl HookServer {
             raw_events: self.raw_events.clone(),
             config_store: self.config_store.clone(),
             recent_tools: self.recent_tools.clone(),
+            auth_token: self.auth_token.clone(),
         };
 
-        // Start Unix socket listener
+        // Unix socket: trusted via 0o600 / SSH forwarding, no token required.
         let unix_context = context.clone();
         tokio::spawn(async move { Self::accept_unix(unix_listener, unix_context).await });
 
         log::info!("Listening on TCP: {}", tcp_addr);
+        // TCP: any local process can connect, so require the shared-secret token.
         let tcp_context = context.clone();
         tokio::spawn(async move { Self::accept_tcp(tcp_listener, tcp_context).await });
 
@@ -744,6 +756,24 @@ impl HookServer {
             endpoint.socket_path,
             tcp_addr
         );
+        Ok(())
+    }
+
+    /// Whether a connection may proceed. The Unix socket (`require_token` false)
+    /// is always allowed; TCP must present a token matching the shared secret.
+    fn connection_authorized(require_token: bool, presented: Option<&str>, expected: &str) -> bool {
+        !require_token || presented == Some(expected)
+    }
+
+    /// Write the TCP shared-secret to disk with owner-only (0o600) permissions,
+    /// so only the same user can read it — giving TCP parity with the socket.
+    fn write_token_file(token_path: &str, token: &str) -> anyhow::Result<()> {
+        std::fs::write(token_path, token)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(token_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
@@ -775,7 +805,7 @@ impl HookServer {
                 Ok((stream, _addr)) => {
                     let context = context.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, context).await {
+                        if let Err(e) = Self::handle_connection(stream, context, false).await {
                             log::debug!("Unix connection handler error: {}", e);
                         }
                     });
@@ -795,7 +825,7 @@ impl HookServer {
                     log::debug!("TCP connection from: {}", addr);
                     let context = context.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, context).await {
+                        if let Err(e) = Self::handle_connection(stream, context, true).await {
                             log::debug!("TCP connection handler error: {}", e);
                         }
                     });
@@ -807,8 +837,13 @@ impl HookServer {
         }
     }
 
-    /// Handle a single connection (works with both Unix and TCP streams via AsyncRead+AsyncWrite)
-    async fn handle_connection<S>(stream: S, context: HookConnectionContext) -> anyhow::Result<()>
+    /// Handle a single connection (works with both Unix and TCP streams via AsyncRead+AsyncWrite).
+    /// `require_token` is true for TCP, where the client must present the shared secret.
+    async fn handle_connection<S>(
+        stream: S,
+        context: HookConnectionContext,
+        require_token: bool,
+    ) -> anyhow::Result<()>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -822,6 +857,7 @@ impl HookServer {
         let raw_events = context.raw_events;
         let config_store = context.config_store;
         let recent_tools = context.recent_tools;
+        let auth_token = context.auth_token;
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
@@ -839,7 +875,21 @@ impl HookServer {
         }
 
         // Parse the raw JSON
-        let raw: serde_json::Value = serde_json::from_str(line)?;
+        let mut raw: serde_json::Value = serde_json::from_str(line)?;
+
+        // TCP is reachable by any local process, so it must present the shared
+        // secret. The Unix socket is trusted via its 0o600 perms / SSH instead.
+        let presented_token = raw
+            .as_object_mut()
+            .and_then(|obj| obj.remove("_auth_token"));
+        if !Self::connection_authorized(
+            require_token,
+            presented_token.as_ref().and_then(|v| v.as_str()),
+            &auth_token,
+        ) {
+            log::warn!("Rejected TCP hook connection: missing or invalid auth token");
+            return Ok(());
+        }
 
         log::debug!(
             "Received hook event: {}",
@@ -2848,6 +2898,7 @@ impl Drop for HookServer {
     fn drop(&mut self) {
         if self.socket_owned.swap(false, Ordering::SeqCst) {
             let _ = std::fs::remove_file(&self.endpoint.socket_path);
+            let _ = std::fs::remove_file(self.endpoint.token_path());
         }
     }
 }
@@ -2855,6 +2906,18 @@ impl Drop for HookServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_connection_requires_matching_token() {
+        // Unix socket: always allowed regardless of token.
+        assert!(HookServer::connection_authorized(false, None, "secret"));
+        assert!(HookServer::connection_authorized(false, Some("wrong"), "secret"));
+        // TCP: only a matching token is accepted.
+        assert!(HookServer::connection_authorized(true, Some("secret"), "secret"));
+        assert!(!HookServer::connection_authorized(true, None, "secret"));
+        assert!(!HookServer::connection_authorized(true, Some("wrong"), "secret"));
+        assert!(!HookServer::connection_authorized(true, Some(""), "secret"));
+    }
 
     #[test]
     fn ensure_session_creates_codex_session_without_session_start() {

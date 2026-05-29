@@ -154,16 +154,53 @@ async fn set_notch_ignore_cursor_events(
 
 #[tauri::command]
 async fn open_image(src: String) -> Result<(), String> {
-    let target = if src.starts_with("data:") {
-        persist_data_url_image(&src)?
-    } else {
-        src
-    };
-    open_system_target(&target)
+    if src.starts_with("data:") {
+        let target = persist_data_url_image(&src)?;
+        return open_system_target(&target);
+    }
+    if src.starts_with("http://") || src.starts_with("https://") {
+        return open_system_target(&src);
+    }
+    // Otherwise treat as a local file: it must exist and be a recognized image.
+    let expanded = expand_tilde_target(&src);
+    let path = std::path::Path::new(&expanded);
+    if !path.is_file() {
+        return Err("Image path does not exist".to_string());
+    }
+    let ext_ok = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "bmp"
+                    | "svg"
+                    | "heic"
+                    | "tif"
+                    | "tiff"
+                    | "ico"
+                    | "avif"
+            )
+        })
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err("Unsupported image file".to_string());
+    }
+    open_system_target(&expanded)
 }
 
 #[tauri::command]
 async fn open_system_path(path: String) -> Result<(), String> {
+    // Only open real local paths. This rejects injected URLs / app-launch
+    // schemes (e.g. `https://…`, `x-app://…`), which never resolve to a path.
+    let expanded = expand_tilde_target(&path);
+    if !std::path::Path::new(&expanded).exists() {
+        return Err("Path does not exist".to_string());
+    }
     open_system_target(&path)
 }
 
@@ -2588,11 +2625,17 @@ async fn toggle_skill_cmd(skill_id: String, agent: String, enabled: bool) -> Res
 
 #[tauri::command]
 async fn read_skill_files(skill_path: String) -> Result<skills::FileTreeNode, String> {
+    if !skills::agent_paths::is_within_skill_roots(std::path::Path::new(&skill_path)) {
+        return Err("Path is outside the skills directories".to_string());
+    }
     Ok(skills::scanner::read_file_tree(&skill_path))
 }
 
 #[tauri::command]
 async fn read_skill_file_content(file_path: String) -> Result<String, String> {
+    if !skills::agent_paths::is_within_skill_roots(std::path::Path::new(&file_path)) {
+        return Err("Path is outside the skills directories".to_string());
+    }
     std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
 }
 

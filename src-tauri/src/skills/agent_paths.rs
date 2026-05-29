@@ -158,6 +158,32 @@ pub fn known_agent_ids() -> &'static [&'static str] {
     ]
 }
 
+/// Every directory a skill file may legitimately live under: each known agent's
+/// skill dirs, the central dirs, and any custom-agent dirs from metadata.
+pub fn all_skill_roots() -> Vec<PathBuf> {
+    let mut roots = central_skill_dirs();
+    for agent in known_agent_ids() {
+        roots.extend(paths_for_agent(agent).skill_dirs);
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// True if `path` resolves to a location inside one of the known skill roots.
+/// Both sides are canonicalized, so `..` traversal and symlink escapes that
+/// point outside the roots are rejected.
+pub fn is_within_skill_roots(path: &Path) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    all_skill_roots().iter().any(|root| {
+        root.canonicalize()
+            .map(|root| canonical.starts_with(&root))
+            .unwrap_or(false)
+    })
+}
+
 pub fn agentbro_skills_dir() -> PathBuf {
     central_skills_dir()
 }
