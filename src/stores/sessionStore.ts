@@ -524,8 +524,46 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
             if (session) {
               sessions[event.sessionId] = { ...session, phase: 'processing', lastActivityAt: Date.now() }
             }
-            // Fire auto-approve response asynchronously
-            respondPermission(event.sessionId, true).catch(() => {})
+            // Fire auto-approve response asynchronously. If it fails the agent is
+            // still blocked, so revert the optimistic "processing" state and fall
+            // back to the manual approval prompt instead of stranding the user.
+            respondPermission(event.sessionId, true).catch((err) => {
+              console.error('[session] auto-approve failed, falling back to manual approval:', err)
+              useSessionStore.setState((state) => {
+                const current = state.sessions[event.sessionId]
+                if (!current) return {}
+                const msg: ChatMessage = { role: 'permission', toolName: event.toolName, toolInput: event.toolInput, diff: event.diff, options: event.options, timestamp: Date.now() }
+                return {
+                  sessions: {
+                    ...state.sessions,
+                    [event.sessionId]: {
+                      ...current,
+                      phase: 'waiting_approval',
+                      pendingPermission: {
+                        toolName: event.toolName,
+                        toolInput: event.toolInput || '',
+                        diff: event.diff,
+                        options: event.options,
+                      },
+                      chatHistory: [...current.chatHistory, msg],
+                      unattendedSince: current.unattendedSince ?? Date.now(),
+                    },
+                  },
+                }
+              })
+              useSessionStore.getState().pushOverlay({
+                id: `perm-${event.sessionId}-${Date.now()}`,
+                sessionId: event.sessionId,
+                type: 'permission',
+                data: {
+                  toolName: event.toolName,
+                  toolInput: event.toolInput || '',
+                  diff: event.diff,
+                  options: event.options,
+                },
+                createdAt: Date.now(),
+              })
+            })
             break
           }
 

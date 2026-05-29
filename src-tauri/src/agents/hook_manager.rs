@@ -39,10 +39,19 @@ pub fn write_json_config(
 /// Keys are event names; each value is an array of hook entries.
 /// Existing non-agentbro entries are preserved.
 pub fn inject_hooks_json(settings: &mut serde_json::Value, events: &[&str], hook_command: &str) {
-    if settings.get("hooks").is_none() {
+    // Bail if the root isn't an object — a non-object config can't hold hooks,
+    // and indexing it would panic.
+    if settings.as_object_mut().is_none() {
+        return;
+    }
+    // Replace `hooks` if it's missing OR a non-object (e.g. a user hand-edited
+    // it to a string/null); only then is as_object_mut guaranteed to succeed.
+    if !settings.get("hooks").is_some_and(|hooks| hooks.is_object()) {
         settings["hooks"] = serde_json::json!({});
     }
-    let hooks = settings["hooks"].as_object_mut().unwrap();
+    let Some(hooks) = settings["hooks"].as_object_mut() else {
+        return;
+    };
     for event in events {
         let entry = hooks
             .entry(event.to_string())
@@ -367,4 +376,40 @@ pub fn shell_quote(value: &str) -> String {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inject_hooks_json_replaces_non_object_hooks_without_panicking() {
+        // A user hand-edited "hooks" to a string — must not panic.
+        let mut settings = serde_json::json!({ "hooks": "oops" });
+        inject_hooks_json(&mut settings, &["PreToolUse"], "agentbro-bridge");
+        assert!(settings["hooks"].is_object());
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["command"],
+            "agentbro-bridge"
+        );
+    }
+
+    #[test]
+    fn inject_hooks_json_handles_null_hooks_and_missing_key() {
+        for mut settings in [
+            serde_json::json!({ "hooks": serde_json::Value::Null }),
+            serde_json::json!({}),
+        ] {
+            inject_hooks_json(&mut settings, &["Stop"], "agentbro-bridge");
+            assert_eq!(settings["hooks"]["Stop"][0]["command"], "agentbro-bridge");
+        }
+    }
+
+    #[test]
+    fn inject_hooks_json_ignores_non_object_root() {
+        // Whole config isn't an object — bail out instead of panicking.
+        let mut settings = serde_json::json!([1, 2, 3]);
+        inject_hooks_json(&mut settings, &["Stop"], "agentbro-bridge");
+        assert_eq!(settings, serde_json::json!([1, 2, 3]));
+    }
 }
