@@ -314,65 +314,69 @@ function sessionUsageSnapshots(sessions: SessionState[]): RateLimitInfo[] {
 
 function applyBackendConfig(config: BackendConfig) {
   const store = useConfigStore.getState()
-  store.updateConfig('soundEnabled', config.soundEnabled)
-  store.updateConfig('volume', Math.round(config.soundVolume * 100))
-  store.updateConfig('launchAtLogin', config.launchAtLogin ?? false)
-  store.updateConfig('autoHide', config.autoHide)
-  store.updateConfig('smartSuppression', config.smartSuppression)
-  store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
-  store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
+  // Build one patch and commit it in a single set(), so subscribers re-render
+  // and persistence writes once per config-changed event rather than ~35 times.
+  const patch: Partial<typeof store> = {
+    soundEnabled: config.soundEnabled,
+    volume: Math.round(config.soundVolume * 100),
+    launchAtLogin: config.launchAtLogin ?? false,
+    autoHide: config.autoHide,
+    smartSuppression: config.smartSuppression,
+    showUsageQuota: config.showTokenUsage ?? true,
+    usageQueryEnabled: config.usageQueryEnabled ?? true,
+    autoHideNoSessions: config.autoHideNoSessions,
+    displayMonitor: config.displayId,
+    globalShortcut: config.globalShortcut,
+    shortcutApprove: config.shortcutApprove,
+    shortcutApproveEnabled: config.shortcutApproveEnabled,
+    shortcutDeny: config.shortcutDeny,
+    shortcutDenyEnabled: config.shortcutDenyEnabled,
+    shortcutSkip: config.shortcutSkip,
+    shortcutSkipEnabled: config.shortcutSkipEnabled,
+    soundPack: config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom',
+    probeSessionFilter: config.probeSessionFilter,
+    tipsEnabled: config.tipsEnabled,
+    pixelCursorEnabled: config.pixelCursorEnabled,
+    confettiEnabled: config.confettiEnabled,
+    analyticsEnabled: config.analyticsEnabled ?? true,
+    analyticsConsentPromptCompleted: config.analyticsConsentPromptCompleted ?? true,
+    islandSurfaceMode: config.islandSurfaceMode ?? 'island',
+    petVitalsDebugOpen: import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false,
+    islandPetScale: config.islandPetScale ?? 72,
+    islandPetWindowOrigin: config.islandPetWindowOrigin ?? null,
+    islandActivePetId: config.islandActivePetId ?? null,
+    followFocus: config.followFocus,
+    quietHours: {
+      enabled: config.quietHoursEnabled,
+      start: config.quietHoursStart,
+      end: config.quietHoursEnd,
+    },
+    idleTimeoutMinutes: config.idleTimeoutMinutes ?? 5,
+  }
   if (config.language) {
-    store.updateConfig('language', config.language)
+    patch.language = config.language
     if (i18n.language !== config.language) {
       void i18n.changeLanguage(config.language)
     }
   }
-  store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)
-  store.updateConfig('displayMonitor', config.displayId)
-  store.updateConfig('globalShortcut', config.globalShortcut)
-  store.updateConfig('shortcutApprove', config.shortcutApprove)
-  store.updateConfig('shortcutApproveEnabled', config.shortcutApproveEnabled)
-  store.updateConfig('shortcutDeny', config.shortcutDeny)
-  store.updateConfig('shortcutDenyEnabled', config.shortcutDenyEnabled)
-  store.updateConfig('shortcutSkip', config.shortcutSkip)
-  store.updateConfig('shortcutSkipEnabled', config.shortcutSkipEnabled)
   if (config.soundEvents && Object.keys(config.soundEvents).length > 0) {
-    const updatedEvents = store.soundEvents.map((event) => ({
+    patch.soundEvents = store.soundEvents.map((event) => ({
       ...event,
       enabled: config.soundRules?.[event.id]?.enabled ?? config.soundEvents[event.id] ?? event.enabled,
     }))
-    store.updateConfig('soundEvents', updatedEvents)
   }
   if (config.soundRules && Object.keys(config.soundRules).length > 0) {
-    store.updateConfig('soundRules', Object.fromEntries(
+    patch.soundRules = Object.fromEntries(
       Object.entries(config.soundRules).map(([id, rule]) => [
         id,
         { enabled: rule.enabled, sound: rule.sound as SoundChoice },
       ]),
-    ))
+    )
   }
   if (Array.isArray(config.customSounds)) {
-    store.updateConfig('customSounds', config.customSounds)
+    patch.customSounds = config.customSounds
   }
-  store.updateConfig('soundPack', config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom')
-  store.updateConfig('probeSessionFilter', config.probeSessionFilter)
-  store.updateConfig('tipsEnabled', config.tipsEnabled)
-  store.updateConfig('pixelCursorEnabled', config.pixelCursorEnabled)
-  store.updateConfig('confettiEnabled', config.confettiEnabled)
-  store.updateConfig('analyticsEnabled', config.analyticsEnabled ?? true)
-  store.updateConfig('analyticsConsentPromptCompleted', config.analyticsConsentPromptCompleted ?? true)
-  store.updateConfig('islandSurfaceMode', config.islandSurfaceMode ?? 'island')
-  store.updateConfig('petVitalsDebugOpen', import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false)
-  store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
-  store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
-  store.updateConfig('islandActivePetId', config.islandActivePetId ?? null)
-  store.updateConfig('followFocus', config.followFocus)
-  store.updateConfig('quietHours', {
-    enabled: config.quietHoursEnabled,
-    start: config.quietHoursStart,
-    end: config.quietHoursEnd,
-  })
-  store.updateConfig('idleTimeoutMinutes', config.idleTimeoutMinutes ?? 5)
+  useConfigStore.setState(patch)
 }
 
 function syncSoundEventSettingsToBackend() {

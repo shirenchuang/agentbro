@@ -744,7 +744,19 @@ impl HookServer {
 
         // Unix socket: trusted via 0o600 / SSH forwarding, no token required.
         let unix_context = context.clone();
-        tokio::spawn(async move { Self::accept_unix(unix_listener, unix_context).await });
+        let unix_socket_path = endpoint.socket_path.clone();
+        let unix_token_path = endpoint.token_path();
+        let unix_socket_owned = self.socket_owned.clone();
+        tokio::spawn(async move {
+            Self::accept_unix(
+                unix_listener,
+                unix_socket_path,
+                unix_token_path,
+                unix_socket_owned,
+                unix_context,
+            )
+            .await
+        });
 
         log::info!("Listening on TCP: {}", tcp_addr);
         // TCP: any local process can connect, so require the shared-secret token.
@@ -799,19 +811,51 @@ impl HookServer {
         Ok(listener)
     }
 
-    async fn accept_unix(listener: UnixListener, context: HookConnectionContext) {
+    async fn accept_unix(
+        mut listener: UnixListener,
+        socket_path: String,
+        token_path: String,
+        socket_owned: Arc<AtomicBool>,
+        context: HookConnectionContext,
+    ) {
+        // tmpwatch / OS cleanup can unlink the socket file out from under us; the
+        // listener fd stays valid but no new connections arrive on the path. Poll
+        // for the file and rebind when it vanishes so hooks keep flowing.
+        let mut health_check = tokio::time::interval(Duration::from_secs(5));
+        health_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    let context = context.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, context, false).await {
-                            log::debug!("Unix connection handler error: {}", e);
+            tokio::select! {
+                accepted = listener.accept() => match accepted {
+                    Ok((stream, _addr)) => {
+                        let context = context.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_connection(stream, context, false).await {
+                                log::debug!("Unix connection handler error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        Self::backoff_after_accept_error("Unix", &e).await;
+                    }
+                },
+                _ = health_check.tick() => {
+                    // Skip while shutting down (Drop clears the flag then removes the
+                    // file), so we don't recreate a socket the process is discarding.
+                    if socket_owned.load(Ordering::SeqCst) && !Path::new(&socket_path).exists() {
+                        log::warn!("Unix socket file disappeared, rebinding: {}", socket_path);
+                        match Self::bind_unix(&socket_path).await {
+                            Ok(new_listener) => {
+                                listener = new_listener;
+                                if let Err(e) = Self::write_token_file(&token_path, &context.auth_token) {
+                                    log::error!("Failed to rewrite token file after rebind: {}", e);
+                                }
+                                log::info!("Rebound Unix socket: {}", socket_path);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to rebind Unix socket {}: {}", socket_path, e);
+                            }
                         }
-                    });
-                }
-                Err(e) => {
-                    Self::backoff_after_accept_error("Unix", &e).await;
+                    }
                 }
             }
         }
