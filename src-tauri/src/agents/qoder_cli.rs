@@ -99,7 +99,18 @@ impl AgentAdapter for QoderCliAdapter {
                     .to_string(),
                 agent_type: "qoder-cli".to_string(),
             }),
-            "session_end" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
+            "Stop" => Ok(AgentEvent::AssistantResponseComplete {
+                session_id,
+                text: raw
+                    .get("summary")
+                    .or_else(|| raw.get("last_assistant_message"))
+                    .or_else(|| raw.get("message"))
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Task completed")
+                    .to_string(),
+            }),
             _ => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Event: {}", event),

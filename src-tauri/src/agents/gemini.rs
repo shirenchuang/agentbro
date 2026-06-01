@@ -92,7 +92,17 @@ impl AgentAdapter for GeminiAdapter {
                 terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "gemini".to_string(),
             }),
-            "SessionEnd" | "session_end" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "SessionEnd" | "session_end" => Ok(AgentEvent::SessionEnd { session_id }),
+            "Stop" => {
+                let summary = string_field(raw, &["summary", "message", "last_assistant_message"])
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Task completed")
+                    .to_string();
+                Ok(AgentEvent::AssistantResponseComplete {
+                    session_id,
+                    text: summary,
+                })
+            }
             "BeforeTool" | "PreToolUse" | "pre_tool_use" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name,

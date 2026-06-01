@@ -111,7 +111,18 @@ impl AgentAdapter for TraeCliAdapter {
                     .to_string(),
                 agent_type: "traecli".to_string(),
             }),
-            "session_end" | "SessionEnd" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "session_end" | "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
+            "Stop" => Ok(AgentEvent::AssistantResponseComplete {
+                session_id,
+                text: raw
+                    .get("summary")
+                    .or_else(|| raw.get("last_assistant_message"))
+                    .or_else(|| raw.get("message"))
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Task completed")
+                    .to_string(),
+            }),
             "PreToolUse" | "pre_tool_use" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name: raw

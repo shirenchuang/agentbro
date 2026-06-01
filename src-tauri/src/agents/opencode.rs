@@ -93,7 +93,20 @@ impl AgentAdapter for OpenCodeAdapter {
                     .to_string(),
                 agent_type: "opencode".to_string(),
             }),
-            "SessionEnd" | "Stop" => Ok(AgentEvent::SessionEnd { session_id }),
+            "SessionEnd" => Ok(AgentEvent::SessionEnd { session_id }),
+            "Stop" => {
+                let summary = raw
+                    .get("summary")
+                    .or_else(|| raw.get("message"))
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or("Task completed")
+                    .to_string();
+                Ok(AgentEvent::AssistantResponseComplete {
+                    session_id,
+                    text: summary,
+                })
+            }
             "PreToolUse" => Ok(AgentEvent::ToolUse {
                 session_id,
                 tool_name: raw
