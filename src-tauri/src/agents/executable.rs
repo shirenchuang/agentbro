@@ -28,11 +28,78 @@ fn which(binary: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn user_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+fn is_fish(shell: &str) -> bool {
+    shell.ends_with("/fish")
+}
+
+fn shell_var_fallback_cmd(var: &str) -> String {
+    let shell = user_shell();
+    if is_fish(&shell) {
+        format!("printf '%s' \"${}\"", var)
+    } else {
+        format!("printf '%s' \"${{{}:-}}\"", var)
+    }
+}
+
+pub fn login_shell_var(var: &str) -> Option<String> {
+    let shell = user_shell();
+    let cmd = shell_var_fallback_cmd(var);
+    let output = std::process::Command::new(&shell)
+        .args(["-lc", &cmd])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if val.is_empty() {
+        None
+    } else {
+        Some(val)
+    }
+}
+
+fn login_shell_path() -> Option<Vec<PathBuf>> {
+    let shell = user_shell();
+    let cmd = if is_fish(&shell) {
+        "printf '%s' (string join ':' $PATH)"
+    } else {
+        "printf '%s' \"$PATH\""
+    };
+    let output = std::process::Command::new(shell)
+        .args(["-lc", cmd])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        return None;
+    }
+    Some(std::env::split_paths(&path_str).collect())
+}
+
 fn candidate_dirs() -> Vec<PathBuf> {
     let mut dirs = BTreeSet::new();
 
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
+    }
+
+    if let Some(shell_paths) = login_shell_path() {
+        dirs.extend(shell_paths);
     }
 
     dirs.extend([
@@ -52,6 +119,8 @@ fn candidate_dirs() -> Vec<PathBuf> {
             home.join(".cargo").join("bin"),
         ]);
         dirs.extend(nvm_node_bins(&home));
+        dirs.extend(volta_bin(&home));
+        dirs.extend(mise_shims(&home));
     }
 
     dirs.into_iter().collect()
@@ -68,4 +137,14 @@ fn nvm_node_bins(home: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path().join("bin"))
         .filter(|path| path.is_dir())
         .collect()
+}
+
+fn volta_bin(home: &Path) -> Option<PathBuf> {
+    let path = home.join(".volta").join("bin");
+    path.is_dir().then_some(path)
+}
+
+fn mise_shims(home: &Path) -> Option<PathBuf> {
+    let path = home.join(".local").join("share").join("mise").join("shims");
+    path.is_dir().then_some(path)
 }
