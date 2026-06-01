@@ -386,7 +386,9 @@ fn expand_tilde_target(target: &str) -> String {
 fn ensure_installable(adapter: &dyn AgentAdapter) -> Result<(), String> {
     match adapter.detect_status_now() {
         AdapterStatus::Unavailable => Err(format!(
-            "{} CLI not found on PATH. Install it first, then try again.",
+            "{} CLI not found. Searched process PATH, login shell PATH, \
+             and common directories (homebrew, nvm, volta, mise, cargo). \
+             Confirm it is installed and try restarting AgentBro.",
             adapter.display_name()
         )),
         _ => Ok(()),
@@ -435,6 +437,16 @@ async fn install_agent_hook(
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
     ensure_installable(adapter.as_ref())?;
     adapter.install_hooks().map_err(|e| e.to_string())?;
+
+    if adapter.name() == "claude-code" {
+        if let Some(warning) = commands::check_bare_mode() {
+            log::warn!("Claude Code bare mode detected: {}", warning);
+        }
+    }
+    if adapter.name() == "gemini" {
+        commands::ensure_gemini_folder_trust();
+    }
+
     if let Err(e) = state.config_store.mark_agent_enabled(adapter.name()) {
         log::warn!(
             "Failed to persist enabled-agent intent for {}: {}",
@@ -1944,8 +1956,52 @@ fn normalize_settings_window_frame(window: &tauri::WebviewWindow) {
             SETTINGS_DEFAULT_WIDTH,
             SETTINGS_DEFAULT_HEIGHT,
         )));
+    }
+
+    // `window.center()` can silently fail on invisible windows or when the
+    // display layout has changed. Compute the position explicitly from the
+    // current monitor's work area.
+    center_on_current_monitor(window, SETTINGS_DEFAULT_WIDTH, SETTINGS_DEFAULT_HEIGHT);
+}
+
+fn center_on_current_monitor(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    let monitor = find_cursor_monitor(window)
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let work_area = monitor.work_area();
+        let screen_w = work_area.size.width as f64 / scale;
+        let screen_h = work_area.size.height as f64 / scale;
+        let screen_x = work_area.position.x as f64 / scale;
+        let screen_y = work_area.position.y as f64 / scale;
+
+        let x = screen_x + (screen_w - width) / 2.0;
+        let y = screen_y + (screen_h - height) / 2.0;
+
+        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+            x.max(screen_x),
+            y.max(screen_y),
+        )));
+    } else {
         let _ = window.center();
     }
+}
+
+fn find_cursor_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let (cx, cy) = get_cursor_position_sync().ok()?;
+    let monitors = window.available_monitors().ok()?;
+    monitors.into_iter().find(|m| {
+        let s = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let x = pos.x as f64 / s;
+        let y = pos.y as f64 / s;
+        let w = size.width as f64 / s;
+        let h = size.height as f64 / s;
+        cx >= x && cx < x + w && cy >= y && cy < y + h
+    })
 }
 
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
