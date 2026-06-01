@@ -64,29 +64,12 @@ fn proxy_from_env() -> Option<String> {
 }
 
 async fn proxy_from_login_shell() -> Option<String> {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string());
-    let output = Command::new(shell)
-        .args([
-            "-lc",
-            "printf '%s' \"${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}\"",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    for var in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Some(val) = crate::agents::executable::login_shell_var(var) {
+            return Some(val);
+        }
     }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    None
 }
 
 async fn market_http_client() -> reqwest::Client {

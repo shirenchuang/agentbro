@@ -4466,6 +4466,72 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         });
     }
 
+    if let Some(warning) = check_bare_mode() {
+        checks.push(HookDoctorCheck {
+            id: "claude-bare-mode".to_string(),
+            label: "Claude Code bare mode".to_string(),
+            status: "error".to_string(),
+            detail: warning,
+        });
+    } else {
+        checks.push(HookDoctorCheck {
+            id: "claude-bare-mode".to_string(),
+            label: "Claude Code bare mode".to_string(),
+            status: "ok".to_string(),
+            detail: "CLAUDE_CODE_SIMPLE is not set".to_string(),
+        });
+    }
+
+    {
+        let home = dirs::home_dir();
+        let trust_path = home.as_ref().map(|h| h.join(".gemini").join("trustedFolders.json"));
+        let cwd = std::env::current_dir().ok();
+        let mut trust_ok = true;
+        let mut trust_detail = "Gemini folder trust: no working directory".to_string();
+
+        if let (Some(trust_path), Some(cwd)) = (&trust_path, &cwd) {
+            if let Ok(content) = std::fs::read_to_string(trust_path) {
+                if let Ok(trust) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(obj) = trust.as_object() {
+                        for (_path, level) in obj {
+                            if level.as_str() == Some("TRUST_PARENT") {
+                                let parent = std::path::PathBuf::from(_path);
+                                if cwd.starts_with(&parent) {
+                                    trust_detail = format!("{} is trusted via {}", cwd.display(), _path);
+                                    trust_ok = true;
+                                    break;
+                                }
+                                trust_ok = false;
+                                trust_detail = format!(
+                                    "{} is NOT in any trusted folder. Add it via: gemini trust",
+                                    cwd.display()
+                                );
+                            } else if level.as_str() == Some("TRUST_FOLDER") {
+                                if _path == &cwd.display().to_string() {
+                                    trust_detail = format!("{} is trusted", cwd.display());
+                                    trust_ok = true;
+                                    break;
+                                }
+                                trust_ok = false;
+                                trust_detail = format!(
+                                    "{} is NOT in any trusted folder. Add it via: gemini trust",
+                                    cwd.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        checks.push(HookDoctorCheck {
+            id: "gemini-folder-trust".to_string(),
+            label: "Gemini folder trust".to_string(),
+            status: if trust_ok { "ok" } else { "warn" }.to_string(),
+            detail: trust_detail,
+        });
+    }
+
     Ok(HookDoctorReport {
         generated_at: chrono::Utc::now().timestamp(),
         checks,
@@ -4692,6 +4758,67 @@ pub async fn set_agent_default_pet(
 
 // ── Hook Management Commands ──────────────────────────────────────
 
+pub fn check_bare_mode() -> Option<String> {
+    if std::env::var("CLAUDE_CODE_SIMPLE").ok().as_deref() == Some("1") {
+        return Some("CLAUDE_CODE_SIMPLE=1 is set in the process environment.".to_string());
+    }
+    if let Some(val) = crate::agents::executable::login_shell_var("CLAUDE_CODE_SIMPLE") {
+        if val == "1" {
+            let shell = std::env::var("SHELL")
+                .ok()
+                .unwrap_or_else(|| "/bin/zsh".to_string());
+            return Some(format!(
+                "CLAUDE_CODE_SIMPLE=1 is set in {} config (bare mode skips all hooks).",
+                shell.rsplit('/').next().unwrap_or("shell")
+            ));
+        }
+    }
+    None
+}
+
+pub fn ensure_gemini_folder_trust() {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
+    let trust_path = home.join(".gemini").join("trustedFolders.json");
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let cwd_str = cwd.display().to_string();
+
+    let mut trust: serde_json::Value = match std::fs::read_to_string(&trust_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    };
+
+    if let Some(obj) = trust.as_object() {
+        for (_path, level) in obj {
+            if level.as_str() == Some("TRUST_PARENT") {
+                let parent = std::path::PathBuf::from(_path);
+                if cwd.starts_with(&parent) {
+                    return;
+                }
+            }
+            if level.as_str() == Some("TRUST_FOLDER") && _path == &cwd_str {
+                return;
+            }
+        }
+    }
+
+    if let Some(obj) = trust.as_object_mut() {
+        obj.insert(cwd_str.clone(), serde_json::json!("TRUST_PARENT"));
+    }
+    if let Some(parent) = trust_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(formatted) = serde_json::to_string_pretty(&trust) {
+        let _ = std::fs::write(&trust_path, formatted);
+        log::info!("Added {} to Gemini trusted folders", cwd_str);
+    }
+}
+
 #[tauri::command]
 pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<(), String> {
     log::info!("Installing hooks for agent: {}", agent);
@@ -4705,11 +4832,23 @@ pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<
         crate::agents::AdapterStatus::Unavailable
     ) {
         return Err(format!(
-            "{} CLI not found on PATH. Install it first, then try again.",
+            "{} CLI not found. Searched process PATH, login shell PATH, \
+             and common directories (homebrew, nvm, volta, mise, cargo). \
+             Confirm it is installed and try restarting AgentBro.",
             adapter.display_name()
         ));
     }
     adapter.install_hooks().map_err(|e| e.to_string())?;
+
+    if agent == "claude-code" {
+        if let Some(warning) = check_bare_mode() {
+            log::warn!("Claude Code bare mode detected: {}", warning);
+        }
+    }
+    if agent == "gemini" {
+        ensure_gemini_folder_trust();
+    }
+
     if let Err(e) = state.config_store.mark_agent_enabled(&agent) {
         log::warn!(
             "Failed to persist enabled-agent intent for {}: {}",
