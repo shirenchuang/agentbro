@@ -587,7 +587,18 @@ pub fn droid_profile() -> AgentIntegrationProfile {
 }
 
 pub fn gemini_profile() -> AgentIntegrationProfile {
-    command_only_json_profile("gemini", ".gemini/settings.json", GEMINI_EVENTS)
+    AgentIntegrationProfile {
+        id: "gemini",
+        installation_kind: InstallationKind::JsonHooks {
+            entry: JsonHookEntry::TypedCommand,
+            nested: true,
+        },
+        configuration_path: ".gemini/settings.json",
+        activation_path: None,
+        source: "gemini",
+        extra_args: &[],
+        events: GEMINI_EVENTS,
+    }
 }
 
 pub fn kiro_profile() -> AgentIntegrationProfile {
