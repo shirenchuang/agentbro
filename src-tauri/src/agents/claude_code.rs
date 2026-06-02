@@ -1053,10 +1053,10 @@ pub fn send_message_to_terminal(
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    if terminal_app.eq_ignore_ascii_case("wave") {
-        if send_message_via_wave_rpc(&terminal_env, message).is_ok() {
-            return Ok(());
-        }
+    if terminal_app.eq_ignore_ascii_case("wave")
+        && send_message_via_wave_rpc(&terminal_env, message).is_ok()
+    {
+        return Ok(());
     }
 
     run_osascript(&build_system_events_paste_script(message))

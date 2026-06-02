@@ -2483,7 +2483,7 @@ async fn get_central_skill_bundles() -> Result<Vec<skills::CentralSkillBundle>, 
     for bundle in &mut bundles {
         bundle.skill_ids.sort();
     }
-    bundles.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    bundles.sort_by_key(|a| a.name.to_lowercase());
     Ok(bundles)
 }
 

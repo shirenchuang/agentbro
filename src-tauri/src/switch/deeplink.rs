@@ -13,10 +13,8 @@ pub fn parse_deep_link(url: &str) -> Option<DeepLinkPayload> {
     let url = url.trim();
     let stripped = if let Some(rest) = url.strip_prefix("agentbro://") {
         rest
-    } else if let Some(rest) = url.strip_prefix("ccswitch://") {
-        rest
     } else {
-        return None;
+        url.strip_prefix("ccswitch://")?
     };
 
     let path_and_query: Vec<&str> = stripped.splitn(2, '?').collect();

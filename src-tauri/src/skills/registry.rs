@@ -160,7 +160,7 @@ pub fn delete_pack(id: &str) -> Result<(), String> {
 
 pub fn list_collections() -> Vec<SkillCollection> {
     let mut collections = load().collections;
-    collections.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    collections.sort_by_key(|a| a.name.to_lowercase());
     collections
 }
 

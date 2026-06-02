@@ -90,7 +90,7 @@ pub fn get_obsidian_vaults() -> Vec<ObsidianVault> {
             break;
         }
     }
-    vaults.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    vaults.sort_by_key(|a| a.name.to_lowercase());
     vaults
 }
 
