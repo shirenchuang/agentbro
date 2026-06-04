@@ -367,7 +367,7 @@ function noticeIcon(kind: SessionNotice['kind']): string {
   switch (kind) {
     case 'terminal_approval':
     case 'terminal_question':
-      return '⌘'
+      return '>'
     case 'restart':
       return '↻'
     case 'trust':

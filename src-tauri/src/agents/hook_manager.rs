@@ -262,10 +262,23 @@ pub fn bridge_binary_is_current() -> bool {
 
 fn raw_bridge_binary_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    home.join(".agentbro").join("bin").join("agentbro-bridge")
+    home.join(".agentbro")
+        .join("bin")
+        .join(bridge_binary_name())
+}
+
+fn bridge_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "agentbro-bridge.exe"
+    } else {
+        "agentbro-bridge"
+    }
 }
 
 pub fn endpoint_env_assignments() -> Vec<String> {
+    if cfg!(target_os = "windows") {
+        return Vec::new();
+    }
     let endpoint = crate::hook_endpoint::current();
     vec![
         format!(
@@ -282,10 +295,15 @@ pub fn endpoint_env_assignments() -> Vec<String> {
 }
 
 pub fn bridge_command_parts(bridge: &Path, args: &[String]) -> Vec<String> {
-    let mut parts = vec!["/usr/bin/env".to_string()];
-    parts.extend(endpoint_env_assignments());
-    parts.push(shell_quote(&bridge.display().to_string()));
-    parts.extend(args.iter().map(|arg| shell_quote(arg)));
+    let mut parts = if cfg!(target_os = "windows") {
+        vec![command_quote(&bridge.display().to_string())]
+    } else {
+        let mut parts = vec!["/usr/bin/env".to_string()];
+        parts.extend(endpoint_env_assignments());
+        parts.push(command_quote(&bridge.display().to_string()));
+        parts
+    };
+    parts.extend(args.iter().map(|arg| command_quote(arg)));
     parts
 }
 
@@ -332,10 +350,18 @@ fn bridge_source_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join(bridge_binary_name()));
             candidates.push(exe_dir.join("agentbro-bridge"));
             if let Some(contents_dir) = exe_dir.parent() {
+                candidates.push(contents_dir.join("Resources").join(bridge_binary_name()));
                 candidates.push(contents_dir.join("Resources").join("agentbro-bridge"));
                 if let Some(app_dir) = contents_dir.parent() {
+                    candidates.push(
+                        app_dir
+                            .join("Contents")
+                            .join("Resources")
+                            .join(bridge_binary_name()),
+                    );
                     candidates.push(
                         app_dir
                             .join("Contents")
@@ -346,7 +372,15 @@ fn bridge_source_candidates() -> Vec<PathBuf> {
             }
         }
     }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("target/debug/{}", bridge_binary_name())),
+    );
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/agentbro-bridge"));
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("target/release/{}", bridge_binary_name())),
+    );
     candidates
         .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/release/agentbro-bridge"));
     candidates.push(
@@ -354,6 +388,27 @@ fn bridge_source_candidates() -> Vec<PathBuf> {
             .join("target/agentbro-bridge-resource/agentbro-bridge"),
     );
     candidates
+}
+
+fn command_quote(value: &str) -> String {
+    if cfg!(target_os = "windows") {
+        windows_quote(value)
+    } else {
+        shell_quote(value)
+    }
+}
+
+fn windows_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "\"\"".to_string();
+    }
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 pub fn shell_quote(value: &str) -> String {

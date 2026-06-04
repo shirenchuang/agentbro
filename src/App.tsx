@@ -11,6 +11,7 @@ import { BackgroundUpdater } from './components/BackgroundUpdater'
 import { useTauriInit } from './hooks/useTauri'
 import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
+import { primaryModifierPressed } from './utils/platform'
 import './styles/globals.css'
 
 // Fields whose source of truth lives in the Rust backend and is broadcast via
@@ -197,11 +198,11 @@ function App() {
     }
   }, [windowLabel, soundEnabled, soundEvents])
 
-  // Browser dev mode: Cmd+, toggles settings view in same page
+  // Browser dev mode: primary modifier + , toggles settings view in same page
   useEffect(() => {
     if (isTauri()) return
     const handler = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === ',') {
+      if (primaryModifierPressed(e) && e.key === ',') {
         e.preventDefault()
         setWindowLabel((v) => (v === 'settings' ? 'notch' : 'settings'))
       }

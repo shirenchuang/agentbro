@@ -170,6 +170,7 @@ function transformSession(bs: BackendSession): SessionState {
     agentType: bs.agentType as AgentType,
     engineLabel: bs.engineLabel ?? undefined,
     engineConfigRoot: bs.engineConfigRoot ?? undefined,
+    codexAppServerThreadId: bs.codexAppServerThreadId ?? undefined,
     project: bs.project,
     cwd: bs.cwd,
     terminal: bs.terminal,

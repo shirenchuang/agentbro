@@ -5,6 +5,7 @@ use crate::hooks::session_store::{SessionPhase, SessionState};
 use crate::network_monitor::{NetworkMonitorStatus, NetworkRequestDetail, NetworkRequestSummary};
 use serde::Serialize;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use tauri::State;
@@ -163,12 +164,15 @@ pub async fn install_claude_wrapper() -> Result<ClaudeWrapperStatus, String> {
     }
     fs::write(&path, claude_wrapper_script())
         .map_err(|e| format!("Failed to write Claude wrapper: {e}"))?;
-    let mut perms = fs::metadata(&path)
-        .map_err(|e| format!("Failed to stat Claude wrapper: {e}"))?
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&path, perms)
-        .map_err(|e| format!("Failed to chmod Claude wrapper: {e}"))?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)
+            .map_err(|e| format!("Failed to stat Claude wrapper: {e}"))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)
+            .map_err(|e| format!("Failed to chmod Claude wrapper: {e}"))?;
+    }
     ensure_shell_path_hook()?;
     Ok(claude_wrapper_status())
 }

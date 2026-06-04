@@ -1482,19 +1482,29 @@ pub fn managed_bridge_command_labeled(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let bridge = hook_manager::ensure_bridge_binary()?;
     let mut args = vec!["--source".to_string(), profile.source.to_string()];
+    if cfg!(target_os = "windows") {
+        if let Some(label) = engine_label {
+            args.extend(["--engine-label".to_string(), label.to_string()]);
+        }
+        if let Some(root) = config_root {
+            args.extend(["--config-root".to_string(), root.to_string()]);
+        }
+    }
     args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
     let mut parts = hook_manager::bridge_command_parts(&bridge, &args);
-    if let Some(label) = engine_label {
-        parts.insert(
-            1,
-            format!("AGENTBRO_ENGINE_LABEL={}", hook_manager::shell_quote(label)),
-        );
-    }
-    if let Some(root) = config_root {
-        parts.insert(
-            if engine_label.is_some() { 2 } else { 1 },
-            format!("AGENTBRO_CONFIG_ROOT={}", hook_manager::shell_quote(root)),
-        );
+    if !cfg!(target_os = "windows") {
+        if let Some(label) = engine_label {
+            parts.insert(
+                1,
+                format!("AGENTBRO_ENGINE_LABEL={}", hook_manager::shell_quote(label)),
+            );
+        }
+        if let Some(root) = config_root {
+            parts.insert(
+                if engine_label.is_some() { 2 } else { 1 },
+                format!("AGENTBRO_CONFIG_ROOT={}", hook_manager::shell_quote(root)),
+            );
+        }
     }
     Ok(parts.join(" "))
 }
@@ -2626,14 +2636,61 @@ async function runBridge(payload, captureResponse = false) {{
   Object.assign(env, BRIDGE_ENV);
   if (isObject(payload?._env)) Object.assign(env, payload._env);
   if (typeof payload?._tty === "string" && payload._tty.length > 0) env.TTY = payload._tty;
+  const input = JSON.stringify(payload);
   try {{
-    const subprocess = Bun.spawn(BRIDGE_ARGS, {{ stdin: new Response(JSON.stringify(payload)), stdout: captureResponse ? "pipe" : "ignore", stderr: "ignore", env }});
-    const exitCode = await subprocess.exited;
-    if (!captureResponse || exitCode !== 0 || !subprocess.stdout) return null;
-    const stdout = (await new Response(subprocess.stdout).text()).trim();
+    if (globalThis.Bun?.spawn) {{
+      const subprocess = Bun.spawn(BRIDGE_ARGS, {{ stdin: new Response(input), stdout: captureResponse ? "pipe" : "ignore", stderr: "pipe", env }});
+      const exitCode = await subprocess.exited;
+      const stderr = subprocess.stderr ? (await new Response(subprocess.stderr).text()).trim() : "";
+      if (exitCode !== 0) {{
+        if (stderr) console.warn(`[AgentBro] bridge exited ${{exitCode}}: ${{stderr}}`);
+        return null;
+      }}
+      if (!captureResponse || !subprocess.stdout) return null;
+      const stdout = (await new Response(subprocess.stdout).text()).trim();
+      if (!stdout) return null;
+      try {{ return JSON.parse(stdout); }} catch {{ return null; }}
+    }}
+  }} catch (error) {{
+    console.warn(`[AgentBro] Bun bridge spawn failed: ${{error?.message ?? error}}`);
+  }}
+  try {{
+    const childProcess = await import("node:child_process");
+    const {{ Buffer }} = await import("node:buffer");
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const subprocess = childProcess.spawn(BRIDGE_ARGS[0], BRIDGE_ARGS.slice(1), {{
+      env,
+      windowsHide: true,
+      stdio: ["pipe", captureResponse ? "pipe" : "ignore", "pipe"]
+    }});
+    if (captureResponse && subprocess.stdout) {{
+      subprocess.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
+    }}
+    if (subprocess.stderr) {{
+      subprocess.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    }}
+    subprocess.stdin.end(input);
+    const exitCode = await new Promise((resolve) => {{
+      subprocess.on("error", (error) => {{
+        console.warn(`[AgentBro] node bridge spawn failed: ${{error?.message ?? error}}`);
+        resolve(-1);
+      }});
+      subprocess.on("close", resolve);
+    }});
+    if (exitCode !== 0) {{
+      const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+      if (stderr) console.warn(`[AgentBro] node bridge exited ${{exitCode}}: ${{stderr}}`);
+      return null;
+    }}
+    if (!captureResponse) return null;
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
     if (!stdout) return null;
     try {{ return JSON.parse(stdout); }} catch {{ return null; }}
-  }} catch {{ return null; }}
+  }} catch (error) {{
+    console.warn(`[AgentBro] bridge fallback failed: ${{error?.message ?? error}}`);
+    return null;
+  }}
 }}
 
 export const server = async ({{ client, serverUrl }}) => {{

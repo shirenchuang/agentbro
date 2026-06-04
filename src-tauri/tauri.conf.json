@@ -41,7 +41,12 @@
           "$HOME/.config/agentbro/themes/**",
           "$APPCACHE/pet-asar-cache/**",
           "/Applications/Codex.app/Contents/Resources/webview/assets/**",
-          "$HOME/Applications/Codex.app/Contents/Resources/webview/assets/**"
+          "$HOME/Applications/Codex.app/Contents/Resources/webview/assets/**",
+          "$LOCALDATA/OpenAI/Codex/app/resources/webview/assets/**",
+          "$LOCALDATA/Programs/Codex/resources/webview/assets/**",
+          "$LOCALDATA/Programs/Codex/app/resources/webview/assets/**",
+          "C:/Program Files/WindowsApps/OpenAI.Codex_*/app/resources/webview/assets/**",
+          "C:/Program Files/WindowsApps/OpenAI.Codex_*/resources/webview/assets/**"
         ]
       }
     }

@@ -140,7 +140,7 @@ export function SettingsSidebar({
       { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '⚙', iconBg: '#34C759' },
       { id: 'remote', label: t('settings.island.tabs.remote', { defaultValue: 'SSH Remote' }), icon: '⇄', iconBg: '#00A8A8' },
       { id: 'notify', label: t('settings.island.tabs.notify', { defaultValue: 'Notifications' }), icon: '🔔', iconBg: '#FF3B30' },
-      { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌘', iconBg: '#8E8E93' },
+      { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌨', iconBg: '#8E8E93' },
       { id: 'advanced', label: t('settings.island.tabs.advanced', { defaultValue: 'Advanced' }), icon: '⚒', iconBg: '#636366' },
     ]
 
@@ -177,7 +177,7 @@ export function SettingsSidebar({
       { id: 'capture', label: '请求抓包', icon: '⇄', iconBg: '#007AFF' },
       { id: 'stats', label: '项目统计', icon: '▥', iconBg: '#FF9500' },
       { id: 'sessions', label: '会话追踪', icon: '◉', iconBg: '#5856D6' },
-      { id: 'access', label: '接入设置', icon: '⌘', iconBg: '#8E8E93' },
+      { id: 'access', label: '接入设置', icon: '<>', iconBg: '#8E8E93' },
       { id: 'usage', label: '用量统计', icon: '$', iconBg: '#FF3B30' },
     ]
 

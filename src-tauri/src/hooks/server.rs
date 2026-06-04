@@ -3,12 +3,15 @@
 // and keeps connections alive for permission request/response flow.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{oneshot, Mutex};
 
 use super::session_store::{
@@ -764,8 +767,6 @@ impl HookServer {
         let endpoint = self.endpoint.clone();
         let tcp_addr = endpoint.tcp_addr();
         let tcp_listener = TcpListener::bind(&tcp_addr).await?;
-        let unix_listener = Self::bind_unix(&endpoint.socket_path).await?;
-        self.socket_owned.store(true, Ordering::SeqCst);
 
         let context = HookConnectionContext {
             pending: self.pending_permissions.clone(),
@@ -780,22 +781,30 @@ impl HookServer {
             recent_tools: self.recent_tools.clone(),
         };
 
-        // Start Unix socket listener
-        let unix_context = context.clone();
-        tokio::spawn(async move { Self::accept_unix(unix_listener, unix_context).await });
+        #[cfg(unix)]
+        {
+            let unix_listener = Self::bind_unix(&endpoint.socket_path).await?;
+            self.socket_owned.store(true, Ordering::SeqCst);
+            let unix_context = context.clone();
+            tokio::spawn(async move { Self::accept_unix(unix_listener, unix_context).await });
+        }
 
         log::info!("Listening on TCP: {}", tcp_addr);
         let tcp_context = context.clone();
         tokio::spawn(async move { Self::accept_tcp(tcp_listener, tcp_context).await });
 
+        #[cfg(unix)]
         log::info!(
             "HookServer started on {} and {}",
             endpoint.socket_path,
             tcp_addr
         );
+        #[cfg(not(unix))]
+        log::info!("HookServer started on {}", tcp_addr);
         Ok(())
     }
 
+    #[cfg(unix)]
     async fn bind_unix(socket_path: &str) -> anyhow::Result<UnixListener> {
         let socket_path = Path::new(socket_path);
         if socket_path.exists() {
@@ -818,6 +827,7 @@ impl HookServer {
         Ok(listener)
     }
 
+    #[cfg(unix)]
     async fn accept_unix(listener: UnixListener, context: HookConnectionContext) {
         loop {
             match listener.accept().await {

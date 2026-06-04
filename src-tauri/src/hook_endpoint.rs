@@ -30,20 +30,24 @@ pub fn current() -> HookEndpoint {
 }
 
 pub fn default_socket_path() -> String {
-    format!("/tmp/agentbro-{}.sock", current_uid())
+    #[cfg(unix)]
+    {
+        format!("/tmp/agentbro-{}.sock", current_uid())
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir()
+            .join("agentbro.sock")
+            .display()
+            .to_string()
+    }
 }
 
 pub fn default_tcp_port() -> u16 {
     RELEASE_TCP_PORT
 }
 
+#[cfg(unix)]
 fn current_uid() -> u32 {
-    #[cfg(unix)]
-    {
-        unsafe { libc::getuid() as u32 }
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
+    unsafe { libc::getuid() as u32 }
 }

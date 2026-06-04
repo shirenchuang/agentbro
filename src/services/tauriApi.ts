@@ -54,6 +54,7 @@ export interface BackendSession {
   agentType: string
   engineLabel: string | null
   engineConfigRoot: string | null
+  codexAppServerThreadId?: string | null
   project: string
   cwd: string
   terminal: string
@@ -664,6 +665,7 @@ export interface CodexAppServerProbe {
   port: number
   cliPath?: string | null
   cliVersion?: string | null
+  desktopPath?: string | null
   cliAvailable: boolean
   appServerCommandAvailable: boolean
   serverListening: boolean
@@ -679,6 +681,7 @@ export async function probeCodexAppServer(): Promise<CodexAppServerProbe> {
       port: 41241,
       cliPath: null,
       cliVersion: null,
+      desktopPath: null,
       cliAvailable: false,
       appServerCommandAvailable: false,
       serverListening: false,

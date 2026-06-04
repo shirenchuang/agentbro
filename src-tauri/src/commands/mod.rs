@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -485,6 +485,7 @@ pub async fn authorize_usage_provider(provider: String) -> Result<(), String> {
         "claude-code" | "claude" => ("claude", &["login"]),
         "gemini" | "gemini-cli" => ("gemini", &["auth"]),
         "copilot" => ("gh", &["auth", "login"]),
+        "opencode" => ("opencode", &["providers"]),
         "kiro" => ("kiro-cli", &["login"]),
         _ => return Err(format!("Unsupported usage provider: {provider}")),
     };
@@ -595,7 +596,7 @@ fn claude_usage_provider_status(enabled: bool) -> UsageProviderStatus {
 }
 
 fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
-    [
+    let mut providers = [
         ("z-ai", "Z.ai", "Z.ai", "api/key", None, false),
         ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
         ("gemini-cli", "Gemini CLI", "Gemini", "api/oauth", Some("~/.gemini"), find_binary("gemini").is_some()),
@@ -603,7 +604,6 @@ fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderSt
         ("cursor", "Cursor", "Cursor", "web/cookies", Some("~/.cursor"), false),
         ("cursor-cli", "Cursor CLI", "Cursor", "web/cookies", Some("~/.cursor"), false),
         ("deepseek", "DeepSeek", "DeepSeek", "api/key", Some("~/.deepseek"), false),
-        ("opencode", "OpenCode", "OpenCode", "web/cookies", Some("~/.opencode"), false),
         ("droid", "Factory / Droid", "Droid/Factory", "web/local-storage", Some("~/.factory"), false),
         ("stepfun", "StepFun", "StepFun", "web/token", None, false),
         ("antigravity", "Antigravity", "Antigravity", "local-probe", None, false),
@@ -624,7 +624,45 @@ fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderSt
             can_authorize,
         )
     })
-    .collect()
+    .collect::<Vec<_>>();
+    providers.push(opencode_usage_provider_status(enabled));
+    providers
+}
+
+fn opencode_usage_provider_status(enabled: bool) -> UsageProviderStatus {
+    let home = dirs::home_dir();
+    let config_dir = home
+        .as_ref()
+        .map(|home| home.join(".config").join("opencode"));
+    let auth_path = home.as_ref().map(|home| {
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json")
+    });
+    let has_config = config_dir.as_ref().is_some_and(|path| path.exists());
+    let has_auth = auth_path.as_ref().is_some_and(|path| path.exists());
+    let display_path = if has_auth { auth_path } else { config_dir };
+    UsageProviderStatus {
+        provider: "opencode".to_string(),
+        label: "OpenCode".to_string(),
+        enabled,
+        available: false,
+        catalog_supported: true,
+        implementation_status: "available".to_string(),
+        source: Some("cli/config".to_string()),
+        detail: if has_auth {
+            "OpenCode auth found; AgentBro usage reader is not wired yet.".to_string()
+        } else if has_config {
+            "OpenCode config found; run OpenCode provider authorization if usage data is needed."
+                .to_string()
+        } else {
+            "OpenCode config directory was not found.".to_string()
+        },
+        auth_status: if has_auth { "unknown" } else { "missing" }.to_string(),
+        auth_path: display_path.map(|path| path.display().to_string()),
+        can_authorize: !has_auth && find_binary("opencode").is_some(),
+    }
 }
 
 fn catalog_unsupported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
@@ -1504,6 +1542,7 @@ fn upsert_codex_app_server_pending_permission(
     store.update_session(thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some("Codex App".to_string());
+        session.codex_app_server_thread_id = Some(thread_id.to_string());
         session.project = if session.project.trim().is_empty() {
             "Codex".to_string()
         } else {
@@ -1536,6 +1575,7 @@ fn upsert_codex_app_server_pending_question(
     store.update_session(thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some("Codex App".to_string());
+        session.codex_app_server_thread_id = Some(thread_id.to_string());
         session.terminal = "Codex".to_string();
         session.term_bundle_id = Some("com.openai.codex".to_string());
         session.phase = SessionPhase::WaitingInput;
@@ -1733,6 +1773,7 @@ fn sync_codex_app_server_thread_to_store(
     store.update_session(&thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some("Codex App".to_string());
+        session.codex_app_server_thread_id = Some(thread_id.clone());
         session.project = project.clone();
         session.cwd = cwd.clone();
         session.terminal = "Codex".to_string();
@@ -1815,6 +1856,7 @@ fn sync_remote_codex_thread_to_store(
     store.update_session(thread_id, |session| {
         session.agent_type = "codex".to_string();
         session.engine_label = Some(format!("Codex App · {}", host.name));
+        session.codex_app_server_thread_id = None;
         session.project = project.clone();
         session.cwd = cwd.to_string();
         session.terminal = host.name.clone();
@@ -2348,42 +2390,52 @@ pub async fn respond_permission(
     match hook_result {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Hook socket failed — fall back to tmux send-keys
-            log::warn!(
-                "Hook socket response failed for {}: {}. Falling back to tmux.",
-                session_id,
-                e
-            );
+            #[cfg(target_os = "windows")]
+            {
+                return Err(format!(
+                    "Hook response failed on Windows: {e}. Make sure the AgentBro hook TCP bridge is running, then retry from the island."
+                ));
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                // Hook socket failed — fall back to tmux send-keys
+                log::warn!(
+                    "Hook socket response failed for {}: {}. Falling back to tmux.",
+                    session_id,
+                    e
+                );
 
-            let session = state
-                .session_store
-                .get_session(&session_id)
-                .ok_or_else(|| format!("Session {} not found", session_id))?;
+                let session = state
+                    .session_store
+                    .get_session(&session_id)
+                    .ok_or_else(|| format!("Session {} not found", session_id))?;
 
-            let pid = session
-                .pid
-                .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
+                let pid = session
+                    .pid
+                    .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
 
-            let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
-                .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
+                let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
+                    .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
 
-            if allowed {
-                if always {
-                    crate::terminal::approval::approve_always(&tmux_target)
-                        .map_err(|e| e.to_string())?;
+                if allowed {
+                    if always {
+                        crate::terminal::approval::approve_always(&tmux_target)
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        crate::terminal::approval::approve_once(&tmux_target)
+                            .map_err(|e| e.to_string())?;
+                    }
                 } else {
-                    crate::terminal::approval::approve_once(&tmux_target)
+                    crate::terminal::approval::reject(&tmux_target, None)
                         .map_err(|e| e.to_string())?;
                 }
-            } else {
-                crate::terminal::approval::reject(&tmux_target, None).map_err(|e| e.to_string())?;
-            }
 
-            // Clear pending permission since we handled it via tmux
-            state
-                .session_store
-                .set_pending_permission(&session_id, None);
-            Ok(())
+                // Clear pending permission since we handled it via tmux
+                state
+                    .session_store
+                    .set_pending_permission(&session_id, None);
+                Ok(())
+            }
         }
     }
 }
@@ -2405,35 +2457,66 @@ pub async fn send_message(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     if is_codex_desktop_session(&session) {
-        // When the persistent app-server bridge is live we can route the
-        // user turn straight through JSON-RPC, no clipboard/AppleScript
-        // round-trip, no app activation. Falls back to AppleScript when
-        // the bridge isn't attached or rejects the turn.
-        match state
-            .codex_app_server
-            .send_user_turn(&session_id, &message)
-            .await
+        #[cfg(target_os = "windows")]
         {
-            Ok(true) => return Ok(()),
-            Ok(false) => {
-                log::debug!(
-                    "Codex app-server bridge not attached for {}; falling back to AppleScript",
-                    session_id
-                );
-            }
-            Err(err) => {
-                log::warn!(
-                    "Codex app-server turn/steer failed for {}: {}; falling back to AppleScript",
-                    session_id,
-                    err
-                );
-            }
-        }
-        if activate_before_send.unwrap_or(true) {
-            return send_message_to_codex_desktop(&session, &message);
+            let _ = activate_before_send;
+            let _ = message;
+            return Err(codex_desktop_windows_message_error(None));
         }
 
-        return send_message_to_codex_desktop_without_activation(&session, &message);
+        #[cfg(not(target_os = "windows"))]
+        {
+            // When the persistent app-server bridge is live we can route the
+            // user turn straight through JSON-RPC, no clipboard/AppleScript
+            // round-trip, no app activation. macOS can still fall back to
+            // AppleScript when the bridge is unavailable.
+            let codex_thread_id = session
+                .codex_app_server_thread_id
+                .as_deref()
+                .unwrap_or(session_id.as_str());
+            let mut app_server_error = None;
+            match state
+                .codex_app_server
+                .send_user_turn(codex_thread_id, &message)
+                .await
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    log::debug!(
+                        "Codex app-server bridge not attached for session {} thread {}",
+                        session_id,
+                        codex_thread_id
+                    );
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Codex app-server turn/steer failed for session {} thread {}: {}",
+                        session_id,
+                        codex_thread_id,
+                        err
+                    );
+                    app_server_error = Some(err);
+                }
+            }
+
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+            {
+                let _ = activate_before_send;
+                let _ = message;
+                return Err(
+                "Codex Desktop message sending is only supported via app-server on this platform."
+                    .to_string(),
+            );
+            }
+
+            #[cfg(target_os = "macos")]
+            if activate_before_send.unwrap_or(true) {
+                return send_message_to_codex_desktop(&session, &message);
+            }
+
+            #[cfg(target_os = "macos")]
+            return send_message_to_codex_desktop_without_activation(&session, &message);
+        }
     }
 
     if is_qoder_app_session(&session) {
@@ -2460,6 +2543,20 @@ pub async fn send_message(
         session.term_bundle_id.as_deref(),
     )
     .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn codex_desktop_windows_message_error(app_server_error: Option<&str>) -> String {
+    let trimmed_error = app_server_error
+        .map(str::trim)
+        .filter(|error| !error.is_empty());
+    let detail = trimmed_error
+        .map(str::trim)
+        .map(|error| format!(" Last app-server error: {error}"))
+        .unwrap_or_default();
+    format!(
+        "Codex Desktop free-form replies are not supported on Windows yet. Codex Desktop keeps its app-server bridge private to the desktop app, so AgentBro cannot safely inject a new user turn. Open Codex Desktop and reply there for now.{detail}"
+    )
 }
 
 fn is_codex_desktop_session(session: &SessionState) -> bool {
@@ -2735,10 +2832,25 @@ fn normalize_tty_path(tty: &str) -> String {
 }
 
 fn open_codex_desktop_session(session: &SessionState) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Codex Desktop session jumping is only supported on macOS".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        return open_codex_desktop_session_macos(session);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        return open_codex_desktop_session_windows(session);
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let _ = session;
+        Err("Codex Desktop session jumping is only supported on macOS and Windows".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_codex_desktop_session_macos(session: &SessionState) -> Result<(), String> {
     let opened_thread = is_uuid_like(&session.id)
         && std::process::Command::new("/usr/bin/open")
             .arg(format!("codex://threads/{}", session.id))
@@ -2758,6 +2870,81 @@ fn open_codex_desktop_session(session: &SessionState) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn open_codex_desktop_session_windows(_session: &SessionState) -> Result<(), String> {
+    let mut errors = Vec::new();
+
+    for app_id in crate::agents::executable::codex_desktop_app_user_model_ids() {
+        let target = format!("shell:AppsFolder\\{app_id}");
+        match open_windows_explorer_target(&target) {
+            Ok(()) => return Ok(()),
+            Err(err) => errors.push(format!("{target}: {err}")),
+        }
+    }
+
+    for path in crate::agents::executable::codex_desktop_app_candidates()
+        .into_iter()
+        .filter(|path| path.exists())
+    {
+        let target = path.to_string_lossy().to_string();
+        match open_windows_shell_target(&target) {
+            Ok(()) => return Ok(()),
+            Err(err) => errors.push(format!("{target}: {err}")),
+        }
+    }
+
+    Err(if errors.is_empty() {
+        "Codex Desktop was not found. Install or launch Codex Desktop, then try again.".to_string()
+    } else {
+        format!("Failed to open Codex Desktop: {}", errors.join("; "))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_explorer_target(target: &str) -> Result<(), String> {
+    let output = std::process::Command::new("explorer.exe")
+        .arg(target)
+        .output()
+        .map_err(|err| format!("Failed to open {target}: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("explorer exited with status {}", output.status)
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_shell_target(target: &str) -> Result<(), String> {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "start", "", target])
+        .output()
+        .map_err(|err| format!("Failed to open {target}: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("cmd start exited with status {}", output.status)
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn activate_codex_desktop_app(pid: Option<u32>) -> bool {
     if std::process::Command::new("/usr/bin/open")
         .args(["-a", "Codex"])
@@ -2797,11 +2984,8 @@ end tell"#,
     ) || osascript_ok(r#"tell application "Codex" to activate"#)
 }
 
+#[cfg(target_os = "macos")]
 fn send_message_to_codex_desktop(session: &SessionState, message: &str) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Codex Desktop message sending is only supported on macOS".to_string());
-    }
-
     open_codex_desktop_session(session)?;
     std::thread::sleep(Duration::from_millis(300));
 
@@ -2823,6 +3007,7 @@ fn send_message_to_codex_desktop(session: &SessionState, message: &str) -> Resul
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn codex_desktop_send_message_script(message: &str) -> String {
     let message_literal = applescript_string_literal(message);
     format!(
@@ -3022,14 +3207,11 @@ end if"#
     )
 }
 
+#[cfg(target_os = "macos")]
 fn send_message_to_codex_desktop_without_activation(
     session: &SessionState,
     message: &str,
 ) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Codex Desktop message sending is only supported on macOS".to_string());
-    }
-
     open_codex_desktop_session_in_background(session)?;
     std::thread::sleep(Duration::from_millis(500));
 
@@ -3051,10 +3233,8 @@ fn send_message_to_codex_desktop_without_activation(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn open_codex_desktop_session_in_background(session: &SessionState) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("Codex Desktop session jumping is only supported on macOS".to_string());
-    }
     if !is_uuid_like(&session.id) {
         return Err("Codex App background sending requires a thread UUID. Turn on Jump Before Send to continue.".to_string());
     }
@@ -3076,6 +3256,7 @@ fn open_codex_desktop_session_in_background(session: &SessionState) -> Result<()
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn codex_desktop_send_message_without_activation_script(message: &str, pid: Option<u32>) -> String {
     let message_literal = applescript_string_literal(message);
     let pid_lookup = pid
@@ -3129,6 +3310,7 @@ end tell"#
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_uuid_like(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 36 {
@@ -3175,15 +3357,7 @@ fn resolve_codex_binary() -> Option<PathBuf> {
         }
     }
 
-    if let Some(path) = std::process::Command::new("which")
-        .arg("codex")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|path| PathBuf::from(path.trim()))
-        .filter(|path| path.is_file())
-    {
+    if let Some(path) = crate::agents::executable::find_codex_cli_binary() {
         return Some(path);
     }
 
@@ -3511,30 +3685,41 @@ pub async fn respond_auto_approve(
     match hook_result {
         Ok(()) => Ok(()),
         Err(e) => {
-            log::warn!(
-                "Hook socket auto-approve failed for {}: {}. Falling back to tmux.",
-                session_id,
-                e
-            );
+            #[cfg(target_os = "windows")]
+            {
+                return Err(format!(
+                    "Auto-approve failed on Windows: {e}. Make sure the AgentBro hook TCP bridge is running, then retry."
+                ));
+            }
 
-            let session = state
-                .session_store
-                .get_session(&session_id)
-                .ok_or_else(|| format!("Session {} not found", session_id))?;
+            #[cfg(not(target_os = "windows"))]
+            {
+                log::warn!(
+                    "Hook socket auto-approve failed for {}: {}. Falling back to tmux.",
+                    session_id,
+                    e
+                );
 
-            let pid = session
-                .pid
-                .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
+                let session = state
+                    .session_store
+                    .get_session(&session_id)
+                    .ok_or_else(|| format!("Session {} not found", session_id))?;
 
-            let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
-                .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
+                let pid = session
+                    .pid
+                    .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
 
-            crate::terminal::approval::approve_always(&tmux_target).map_err(|e| e.to_string())?;
+                let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
+                    .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
 
-            state
-                .session_store
-                .set_pending_permission(&session_id, None);
-            Ok(())
+                crate::terminal::approval::approve_always(&tmux_target)
+                    .map_err(|e| e.to_string())?;
+
+                state
+                    .session_store
+                    .set_pending_permission(&session_id, None);
+                Ok(())
+            }
         }
     }
 }
@@ -3616,14 +3801,17 @@ pub async fn simulate_hook_event(
         let bytes = line.as_bytes();
         let endpoint = hook_endpoint::current();
 
-        if let Ok(mut stream) = tokio::net::UnixStream::connect(&endpoint.socket_path).await {
-            stream.write_all(bytes).await.map_err(|e| e.to_string())
-        } else {
-            let mut stream = tokio::net::TcpStream::connect(endpoint.tcp_addr())
-                .await
-                .map_err(|e| e.to_string())?;
-            stream.write_all(bytes).await.map_err(|e| e.to_string())
+        #[cfg(unix)]
+        {
+            if let Ok(mut stream) = tokio::net::UnixStream::connect(&endpoint.socket_path).await {
+                return stream.write_all(bytes).await.map_err(|e| e.to_string());
+            }
         }
+
+        let mut stream = tokio::net::TcpStream::connect(endpoint.tcp_addr())
+            .await
+            .map_err(|e| e.to_string())?;
+        stream.write_all(bytes).await.map_err(|e| e.to_string())
     }
 
     let sid = format!("simulate-{}", uuid::Uuid::new_v4());
@@ -4131,6 +4319,9 @@ fn can_fallback_to_terminal_app(terminal: &str) -> bool {
 }
 
 fn open_terminal_at_cwd(terminal: &str, cwd: &str) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = terminal;
+
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return Err("Session has no working directory".to_string());
@@ -4186,6 +4377,10 @@ fn osascript_ok(script: &str) -> bool {
 }
 
 fn find_binary(name: &str) -> Option<String> {
+    if let Some(path) = crate::agents::executable::find_binary(name) {
+        return Some(path.display().to_string());
+    }
+
     let home = dirs::home_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
@@ -4202,51 +4397,98 @@ fn find_binary(name: &str) -> Option<String> {
     .into_iter()
     .find(|path| std::path::Path::new(path).exists())
     .or_else(|| {
-        std::process::Command::new("which")
-            .arg(name)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty())
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("which")
+                .arg(name)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|path| path.trim().to_string())
+                .filter(|path| !path.is_empty())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            None
+        }
     })
 }
 
 fn launch_in_terminal(terminal: &str, cwd: &str, command: &str) -> Result<(), String> {
-    let shell_command = format!("cd {} && {}", shell_quote(cwd), command);
-    let lower = terminal.to_ascii_lowercase();
+    #[cfg(target_os = "windows")]
+    {
+        let _ = terminal;
+        return launch_in_windows_terminal(cwd, command);
+    }
 
-    let script = if lower.contains("iterm") {
-        format!(
-            r#"tell application "iTerm2"
+    #[cfg(target_os = "macos")]
+    {
+        let shell_command = format!("cd {} && {}", shell_quote(cwd), command);
+        let lower = terminal.to_ascii_lowercase();
+
+        let script = if lower.contains("iterm") {
+            format!(
+                r#"tell application "iTerm2"
     activate
     create window with default profile command "{}"
 end tell"#,
-            applescript_escape(&shell_command)
-        )
-    } else {
-        format!(
-            r#"tell application "Terminal"
+                applescript_escape(&shell_command)
+            )
+        } else {
+            format!(
+                r#"tell application "Terminal"
     activate
     do script "{}"
 end tell"#,
-            applescript_escape(&shell_command)
-        )
-    };
+                applescript_escape(&shell_command)
+            )
+        };
 
-    let output = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| format!("Failed to run osascript: {e}"))?;
+        let output = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| format!("Failed to run osascript: {e}"))?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let _ = terminal;
+        let _ = cwd;
+        let _ = command;
+        Err("Opening an authorization terminal is not supported on this platform yet.".to_string())
     }
 }
 
+#[cfg(target_os = "windows")]
+fn launch_in_windows_terminal(cwd: &str, command: &str) -> Result<(), String> {
+    if std::process::Command::new("wt.exe")
+        .args(["-d", cwd, "cmd", "/K", command])
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", "/D", cwd, "cmd", "/K", command])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open Windows terminal: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn shell_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -4334,18 +4576,21 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
     });
 
     let endpoint = hook_endpoint::current();
-    let socket_status = tokio::time::timeout(
-        Duration::from_millis(300),
-        tokio::net::UnixStream::connect(&endpoint.socket_path),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok());
-    checks.push(HookDoctorCheck {
-        id: "hook-server".to_string(),
-        label: "Hook server socket".to_string(),
-        status: if socket_status { "ok" } else { "warn" }.to_string(),
-        detail: endpoint.socket_path.clone(),
-    });
+    #[cfg(unix)]
+    {
+        let socket_status = tokio::time::timeout(
+            Duration::from_millis(300),
+            tokio::net::UnixStream::connect(&endpoint.socket_path),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok());
+        checks.push(HookDoctorCheck {
+            id: "hook-server".to_string(),
+            label: "Hook server socket".to_string(),
+            status: if socket_status { "ok" } else { "warn" }.to_string(),
+            detail: endpoint.socket_path.clone(),
+        });
+    }
 
     let tcp_status = tokio::time::timeout(
         Duration::from_millis(300),
@@ -4360,16 +4605,30 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         detail: endpoint.tcp_addr(),
     });
 
-    let adapters = state
+    let installed_hook_names = state
         .adapters
         .iter()
         .filter(|adapter| adapter.hooks_installed())
-        .count();
+        .map(|adapter| adapter.display_name().to_string())
+        .collect::<Vec<_>>();
     checks.push(HookDoctorCheck {
         id: "installed-hooks".to_string(),
         label: "Installed hooks".to_string(),
-        status: if adapters > 0 { "ok" } else { "warn" }.to_string(),
-        detail: format!("{adapters} adapter configs contain AgentBro hooks"),
+        status: if installed_hook_names.is_empty() {
+            "warn"
+        } else {
+            "ok"
+        }
+        .to_string(),
+        detail: if installed_hook_names.is_empty() {
+            "No adapter configs contain AgentBro hooks".to_string()
+        } else {
+            format!(
+                "{} adapter configs contain AgentBro hooks: {}",
+                installed_hook_names.len(),
+                installed_hook_names.join(", ")
+            )
+        },
     });
 
     let mut present_profiles = 0usize;
@@ -4383,14 +4642,18 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
             continue;
         }
         present_profiles += 1;
+        checks.push(HookDoctorCheck {
+            id: format!("hook-profile-{}", profile.id),
+            label: format!("{} hook profile", adapter.display_name()),
+            status: doctor_status_for_hook_health(health).to_string(),
+            detail: format!(
+                "{} ({})",
+                health.as_status_str(),
+                profile.configuration_path
+            ),
+        });
         if health != crate::agents::profiles::HookInstallHealth::Installed {
             unhealthy_profiles.push(format!("{}={}", profile.id, health.as_status_str()));
-            checks.push(HookDoctorCheck {
-                id: format!("hook-profile-{}", profile.id),
-                label: format!("{} hook profile", adapter.display_name()),
-                status: doctor_status_for_hook_health(health).to_string(),
-                detail: health.as_status_str().to_string(),
-            });
         }
     }
     checks.push(HookDoctorCheck {
@@ -4413,6 +4676,9 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         },
     });
 
+    append_codex_doctor_checks(&mut checks);
+
+    #[cfg(target_os = "macos")]
     checks.push(HookDoctorCheck {
         id: "automation-permission".to_string(),
         label: "macOS automation".to_string(),
@@ -4425,8 +4691,28 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         detail: "Required for terminal focus".to_string(),
     });
 
-    // Check required binaries
-    for binary in ["tmux", "sqlite3"] {
+    #[cfg(target_os = "windows")]
+    checks.push(HookDoctorCheck {
+        id: "platform-integration".to_string(),
+        label: "Windows hook transport".to_string(),
+        status: "info".to_string(),
+        detail: "Windows uses TCP hook delivery and CLI config files; macOS automation permission is not required.".to_string(),
+    });
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    checks.push(HookDoctorCheck {
+        id: "platform-integration".to_string(),
+        label: "Platform hook transport".to_string(),
+        status: "info".to_string(),
+        detail: "This platform uses TCP hook delivery and CLI config files; macOS automation permission is not required.".to_string(),
+    });
+
+    #[cfg(target_os = "macos")]
+    let required_binaries: &[&str] = &["tmux", "sqlite3"];
+    #[cfg(not(target_os = "macos"))]
+    let required_binaries: &[&str] = &[];
+
+    for binary in required_binaries {
         checks.push(HookDoctorCheck {
             id: format!("binary-{binary}"),
             label: format!("{binary} binary"),
@@ -4470,6 +4756,21 @@ pub async fn run_hook_doctor(state: State<'_, AppState>) -> Result<HookDoctorRep
         generated_at: chrono::Utc::now().timestamp(),
         checks,
     })
+}
+
+fn append_codex_doctor_checks(checks: &mut Vec<HookDoctorCheck>) {
+    let probe = crate::agents::codex::probe_app_server_readiness();
+    for check in probe.checks {
+        if matches!(check.id.as_str(), "server-port" | "live-sync") {
+            continue;
+        }
+        checks.push(HookDoctorCheck {
+            id: format!("codex-{}", check.id),
+            label: format!("Codex {}", check.label),
+            status: check.status,
+            detail: check.detail,
+        });
+    }
 }
 
 fn doctor_status_for_hook_health(
@@ -4576,7 +4877,7 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
         std::fs::write(plist_path, plist).map_err(|e| e.to_string())?;
     } else if plist_path.exists() {
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let _ = Command::new("launchctl")
+        let _ = std::process::Command::new("launchctl")
             .arg("bootout")
             .arg(domain)
             .arg(&plist_path)
@@ -4586,9 +4887,65 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_RUN_VALUE: &str = "AgentBro";
+
+#[cfg(target_os = "windows")]
+fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
+    if enabled {
+        let exe = std::env::current_exe()
+            .map_err(|err| format!("Unable to resolve current executable: {err}"))?;
+        let command = format!("\"{}\"", exe.display());
+        let output = std::process::Command::new("reg")
+            .args([
+                "add",
+                WINDOWS_RUN_KEY,
+                "/v",
+                WINDOWS_RUN_VALUE,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &command,
+                "/f",
+            ])
+            .output()
+            .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
+        return reg_output_result(output, "Failed to enable Windows launch at login");
+    }
+
+    let output = std::process::Command::new("reg")
+        .args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"])
+        .output()
+        .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
+    if output.status.success() || !get_launch_at_login_state() {
+        Ok(())
+    } else {
+        reg_output_result(output, "Failed to disable Windows launch at login")
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn reg_output_result(output: std::process::Output, fallback: &str) -> Result<(), String> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        fallback.to_string()
+    })
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn set_launch_at_login_state(_enabled: bool) -> Result<(), String> {
-    Err("Launch at login is only supported on macOS for now".to_string())
+    Err("Launch at login is not supported on this platform yet".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -4598,7 +4955,16 @@ fn get_launch_at_login_state() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn get_launch_at_login_state() -> bool {
+    std::process::Command::new("reg")
+        .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn get_launch_at_login_state() -> bool {
     false
 }
@@ -5237,18 +5603,23 @@ fn timestamp_to_rfc3339(timestamp: i64) -> Option<String> {
 
 // ── Diagnostics Commands ────────────────────────────────────────
 
-/// Redact user home directory paths: /Users/<username>/... → /Users/<user>/...
+/// Redact user home directory paths across macOS, Linux, and Windows.
 fn redact_paths(text: &str) -> String {
     if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if let Some(user_name) = home_str.rsplit('/').next() {
-            let full = home_str.as_ref();
-            let redacted = "/Users/<user>".to_string();
-            let mut result = text.replace(full, &redacted);
-            // Also redact just the username in remaining paths
-            result = result.replace(&format!("/Users/{}", user_name), "/Users/<user>");
-            return result;
+        let full = home.to_string_lossy().to_string();
+        let redacted = "<HOME>";
+        let mut result = text.replace(&full, redacted);
+        #[cfg(target_os = "windows")]
+        {
+            result = result.replace(&full.replace('\\', "/"), redacted);
         }
+        if let Some(user_name) = home.file_name().and_then(|value| value.to_str()) {
+            result = result
+                .replace(&format!("/Users/{user_name}"), redacted)
+                .replace(&format!("C:\\Users\\{user_name}"), redacted)
+                .replace(&format!("C:/Users/{user_name}"), redacted);
+        }
+        return result;
     }
     text.to_string()
 }
@@ -5637,7 +6008,7 @@ pub async fn export_diagnostics(
     md.push_str("\n---\n\n");
 
     // Privacy notice
-    md.push_str("> **Privacy:** Home paths are masked as `/Users/<user>/`. Webhook URLs, secrets, SSH targets, and credentials are replaced with `[REDACTED]`. Session content and environment variable values are never included.\n\n---\n\n");
+    md.push_str("> **Privacy:** Home paths are masked as `<HOME>`. Webhook URLs, secrets, SSH targets, and credentials are replaced with `[REDACTED]`. Session content and environment variable values are never included.\n\n---\n\n");
 
     // Adapter status table
     md.push_str("## Supported Agents\n\n");

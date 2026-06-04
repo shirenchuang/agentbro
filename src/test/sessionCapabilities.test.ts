@@ -56,14 +56,48 @@ describe('getComposerCapability', () => {
     expect(getComposerCapability(s)).toEqual({ kind: 'sendable' })
   })
 
-  it('keeps Codex.app follow-up composer locked when the app-server bridge is live', () => {
+  it('allows Codex.app follow-up composer when the app-server bridge is live', () => {
+    const s = session({
+      agentType: 'codex',
+      termBundleId: 'com.openai.codex',
+      codexAppServerThreadId: 'thread-1',
+      terminal: 'Codex',
+      tty: undefined,
+    })
+    expect(getComposerCapability(s, {
+      codexAppServerLive: true,
+      codexDesktopRepliesSupported: true,
+    })).toEqual({ kind: 'sendable' })
+  })
+
+  it('keeps Codex.app locked when the bridge is live but the session is not app-server backed', () => {
     const s = session({
       agentType: 'codex',
       termBundleId: 'com.openai.codex',
       terminal: 'Codex',
       tty: undefined,
     })
-    expect(getComposerCapability(s)).toEqual({ kind: 'locked', reason: 'codex-app' })
+    expect(getComposerCapability(s, { codexAppServerLive: true })).toEqual({
+      kind: 'locked',
+      reason: 'codex-app',
+    })
+  })
+
+  it('keeps Codex.app locked when the platform cannot inject Desktop replies', () => {
+    const s = session({
+      agentType: 'codex',
+      termBundleId: 'com.openai.codex',
+      codexAppServerThreadId: 'thread-1',
+      terminal: 'Codex',
+      tty: undefined,
+    })
+    expect(getComposerCapability(s, {
+      codexAppServerLive: true,
+      codexDesktopRepliesSupported: false,
+    })).toEqual({
+      kind: 'locked',
+      reason: 'codex-app',
+    })
   })
 
   it('locks Qoder.app sessions', () => {
@@ -89,6 +123,24 @@ describe('getComposerCapability', () => {
 
   it('locks remote sessions', () => {
     expect(getComposerCapability(session({ remoteHostId: 'host-1' }))).toEqual({
+      kind: 'locked',
+      reason: 'remote',
+    })
+  })
+
+  it('keeps remote Codex app-server sessions locked', () => {
+    const s = session({
+      agentType: 'codex',
+      codexAppServerThreadId: 'thread-1',
+      remoteHostId: 'host-1',
+      termBundleId: 'com.openai.codex',
+      tty: undefined,
+      pid: undefined,
+    })
+    expect(getComposerCapability(s, {
+      codexAppServerLive: true,
+      codexDesktopRepliesSupported: true,
+    })).toEqual({
       kind: 'locked',
       reason: 'remote',
     })

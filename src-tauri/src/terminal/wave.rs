@@ -1,6 +1,9 @@
+#[cfg(any(unix, test))]
 use base64::Engine as _;
+#[cfg(unix)]
 use std::io::{BufRead as _, Write as _};
 
+#[cfg(unix)]
 pub fn focus_block(block_id: &str, tab_id: &str, jwt: &str) -> Result<(), String> {
     let mut client = WaveRpcClient::connect(jwt)?;
     client.authenticate(jwt)?;
@@ -12,6 +15,12 @@ pub fn focus_block(block_id: &str, tab_id: &str, jwt: &str) -> Result<(), String
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub fn focus_block(_block_id: &str, _tab_id: &str, _jwt: &str) -> Result<(), String> {
+    Err("Wave terminal integration is only supported on Unix".to_string())
+}
+
+#[cfg(unix)]
 pub fn send_input(block_id: &str, jwt: &str, input: &str) -> Result<(), String> {
     let mut client = WaveRpcClient::connect(jwt)?;
     client.authenticate(jwt)?;
@@ -26,11 +35,18 @@ pub fn send_input(block_id: &str, jwt: &str, input: &str) -> Result<(), String> 
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub fn send_input(_block_id: &str, _jwt: &str, _input: &str) -> Result<(), String> {
+    Err("Wave terminal integration is only supported on Unix".to_string())
+}
+
+#[cfg(unix)]
 struct WaveRpcClient {
     writer: std::os::unix::net::UnixStream,
     reader: std::io::BufReader<std::os::unix::net::UnixStream>,
 }
 
+#[cfg(unix)]
 impl WaveRpcClient {
     fn connect(jwt: &str) -> Result<Self, String> {
         let sock = socket_from_jwt(jwt)?;
@@ -109,6 +125,7 @@ impl WaveRpcClient {
     }
 }
 
+#[cfg(any(unix, test))]
 fn socket_from_jwt(jwt: &str) -> Result<String, String> {
     let payload = jwt
         .split('.')
