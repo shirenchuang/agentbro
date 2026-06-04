@@ -250,12 +250,13 @@ pub fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     if let Ok(cursor) = app.cursor_position() {
         if let Ok(monitors) = app.available_monitors() {
             if let Some(monitor) = monitors.iter().find(|m| {
+                let scale = m.scale_factor().max(1.0);
                 let pos = m.position();
                 let size = m.size();
-                let x = pos.x as f64;
-                let y = pos.y as f64;
-                let width = size.width as f64;
-                let height = size.height as f64;
+                let x = pos.x as f64 / scale;
+                let y = pos.y as f64 / scale;
+                let width = size.width as f64 / scale;
+                let height = size.height as f64 / scale;
                 cursor.x >= x && cursor.x <= x + width && cursor.y >= y && cursor.y <= y + height
             }) {
                 return Some(monitor.clone());

@@ -145,18 +145,14 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
 #[tauri::command]
 async fn set_notch_ignore_cursor_events(
     app: tauri::AppHandle,
-    _ignore: bool,
+    ignore: bool,
     window_label: Option<String>,
 ) -> Result<(), String> {
-    // Always force the window to receive cursor events. Toggling ignore=true
-    // on a transparent Tauri window is unreliable on macOS external displays
-    // (clicks pass through the visible notch). CSS `pointer-events` on the
-    // .notch-container/.notch-hitbox pair handles visual click-through.
     let label = window_label.unwrap_or_else(|| "notch".to_string());
     let handle = app.clone();
     app.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window(&label) {
-            let _ = window.set_ignore_cursor_events(false);
+            let _ = window.set_ignore_cursor_events(ignore);
         }
     })
     .map_err(|e| e.to_string())
@@ -1526,11 +1522,6 @@ async fn is_cursor_over_notch(
         let size = window.outer_size().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
 
-        // Normalize both cursor and window to absolute logical coordinates.
-        // On macOS with external monitors, window.outer_position() and
-        // app.cursor_position() can report values in different coordinate
-        // spaces depending on which monitor the window is on. Convert both
-        // to monitor-relative logical coordinates for a consistent hit test.
         let monitor = window.current_monitor().ok().flatten();
         let monitor_origin_logical = monitor
             .map(|m| {
