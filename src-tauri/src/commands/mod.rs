@@ -2875,10 +2875,9 @@ fn open_codex_desktop_session_windows(_session: &SessionState) -> Result<(), Str
     let mut errors = Vec::new();
 
     for app_id in crate::agents::executable::codex_desktop_app_user_model_ids() {
-        let target = format!("shell:AppsFolder\\{app_id}");
-        match open_windows_explorer_target(&target) {
+        match open_windows_app_user_model_id(&app_id) {
             Ok(()) => return Ok(()),
-            Err(err) => errors.push(format!("{target}: {err}")),
+            Err(err) => errors.push(format!("{app_id}: {err}")),
         }
     }
 
@@ -2898,6 +2897,86 @@ fn open_codex_desktop_session_windows(_session: &SessionState) -> Result<(), Str
     } else {
         format!("Failed to open Codex Desktop: {}", errors.join("; "))
     })
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_app_user_model_id(app_id: &str) -> Result<(), String> {
+    let app_id = clean_windows_app_user_model_id(app_id)
+        .ok_or_else(|| format!("Invalid Windows app id: {app_id}"))?;
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$shell = New-Object -ComObject Shell.Application
+$folder = $shell.Namespace('shell:AppsFolder')
+if ($null -eq $folder) {{ throw 'AppsFolder is unavailable' }}
+$item = $folder.ParseName({})
+if ($null -eq $item) {{ throw 'App is not installed' }}
+$item.InvokeVerb('open')
+"#,
+        powershell_string_literal(&app_id)
+    );
+
+    match run_windows_powershell(&script) {
+        Ok(()) => Ok(()),
+        Err(primary) => {
+            let target = format!("shell:AppsFolder\\{app_id}");
+            open_windows_explorer_target(&target)
+                .map_err(|fallback| format!("{primary}; explorer fallback failed: {fallback}"))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clean_windows_app_user_model_id(value: &str) -> Option<String> {
+    let trimmed = value
+        .split(['?', '&', '#'])
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
+    if trimmed.is_empty()
+        || trimmed.contains('\\')
+        || trimmed.contains('/')
+        || !trimmed.contains('!')
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_powershell(script: &str) -> Result<(), String> {
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to run PowerShell app activation: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("powershell exited with status {}", output.status)
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(target_os = "windows")]
@@ -6285,6 +6364,8 @@ mod tests {
         sync_codex_app_server_thread_to_store, sync_remote_codex_thread_to_store,
         terminal_hint_for_fallback, CodexAppServerPendingKind, CodexAppServerPendingRequest,
     };
+    #[cfg(target_os = "windows")]
+    use super::{clean_windows_app_user_model_id, powershell_string_literal};
     use crate::energy::EnergyMode;
     use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
     use crate::hooks::server::RawHookEvent;
@@ -6710,6 +6791,30 @@ mod tests {
             "Codex",
             None
         )));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_app_user_model_id_strips_notification_query() {
+        assert_eq!(
+            clean_windows_app_user_model_id("OpenAI.Codex_2p2nqsd0c76g0!App?type=click&tag=123")
+                .as_deref(),
+            Some("OpenAI.Codex_2p2nqsd0c76g0!App")
+        );
+        assert_eq!(
+            clean_windows_app_user_model_id(r"C:\Program Files\WindowsApps\OpenAI.Codex\App"),
+            None
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_string_literal_escapes_single_quotes() {
+        assert_eq!(
+            powershell_string_literal("OpenAI.Codex_abc!App"),
+            "'OpenAI.Codex_abc!App'"
+        );
+        assert_eq!(powershell_string_literal("A'B"), "'A''B'");
     }
 
     #[test]
