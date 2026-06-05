@@ -448,9 +448,7 @@ async fn run_agent_command(
         None,
     );
 
-    let mut child = Command::new("sh")
-        .arg("-lc")
-        .arg(command)
+    let mut child = command_shell(command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -529,6 +527,22 @@ fn emit_output(
             success,
         },
     );
+}
+
+fn command_shell(command: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut shell = Command::new(command_name("cmd"));
+        shell.args(["/C", command]);
+        shell
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut shell = Command::new("sh");
+        shell.args(["-lc", command]);
+        shell
+    }
 }
 
 fn open_target(target: &str) -> Result<(), String> {

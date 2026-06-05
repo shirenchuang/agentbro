@@ -40,6 +40,12 @@ fn config_dir_from_env(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> 
     }
 }
 
+#[cfg(target_os = "windows")]
+fn config_dir_from_login_shell() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
 fn config_dir_from_login_shell() -> Option<PathBuf> {
     let value = super::executable::login_shell_var("CLAUDE_CONFIG_DIR")?;
     config_dir_from_env(|_| Some(value.clone()))
@@ -1291,8 +1297,16 @@ mod tests {
             "My Engine".into(),
         );
         let command = adapter.hook_command().expect("hook command builds");
-        assert!(command.contains("AGENTBRO_ENGINE_LABEL"));
-        assert!(command.contains("AGENTBRO_CONFIG_ROOT"));
+        #[cfg(target_os = "windows")]
+        {
+            assert!(command.contains("--engine-label"));
+            assert!(command.contains("--config-root"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(command.contains("AGENTBRO_ENGINE_LABEL"));
+            assert!(command.contains("AGENTBRO_CONFIG_ROOT"));
+        }
     }
 
     #[test]

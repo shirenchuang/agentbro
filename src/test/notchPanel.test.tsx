@@ -6,6 +6,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
 import type { OverlayItem, SessionState } from '../types/agent'
 import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
+import { isApplePlatform } from '../utils/platform'
 
 const tauriMocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(() => Promise.resolve([])),
@@ -27,6 +28,10 @@ const tauriMocks = vi.hoisted(() => ({
   startNotchDrag: vi.fn(() => Promise.resolve(true)),
   endNotchDrag: vi.fn(() => Promise.resolve(null)),
 }))
+
+function primaryModifierKeyEvent() {
+  return isApplePlatform() ? { metaKey: true } : { ctrlKey: true }
+}
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
@@ -950,7 +955,7 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick one', options: ['Overlay', 'Detail', 'Compact'] },
     })
 
-    fireEvent.keyDown(window, { key: '2', metaKey: true })
+    fireEvent.keyDown(window, { key: '2', ...primaryModifierKeyEvent() })
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Detail')
     expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'Detail')
@@ -963,7 +968,7 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick targets', options: ['Preview', 'Docs', 'Production'], multiSelect: true },
     })
 
-    fireEvent.keyDown(window, { key: '2', metaKey: true })
+    fireEvent.keyDown(window, { key: '2', ...primaryModifierKeyEvent() })
 
     expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeDefined()

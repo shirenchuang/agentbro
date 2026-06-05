@@ -162,6 +162,7 @@ export interface SessionState {
   agentType: AgentType
   engineLabel?: string
   engineConfigRoot?: string
+  codexAppServerThreadId?: string
   project: string
   cwd?: string
   terminal: string

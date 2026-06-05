@@ -11,6 +11,7 @@ import { InlineConfirmAction } from './InlineConfirmAction'
 import { FrontmatterCard } from './FrontmatterCard'
 import { agentMatchesId, detectedAgentOptions, displayAgentName } from '../../utils/agentPrograms'
 import { displayVersionValue } from '../../utils/versions'
+import { primaryModifierName, primaryModifierPressed } from '../../utils/platform'
 
 type DetailTab = 'overview' | 'files' | 'locations'
 
@@ -476,6 +477,7 @@ function LocationPathRow({
   onUninstall?: () => void
   onOpen: (path: string) => void
 }) {
+  const modifierName = primaryModifierName()
   const open = () => onOpen(path)
   return (
     <div
@@ -483,12 +485,12 @@ function LocationPathRow({
       role="button"
       tabIndex={0}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || (event.key.toLowerCase() === 'o' && event.metaKey)) {
+        if (event.key === 'Enter' || (event.key.toLowerCase() === 'o' && primaryModifierPressed(event))) {
           event.preventDefault()
           open()
         }
       }}
-      title="Enter 或 Cmd+O 打开文件夹"
+      title={`Enter 或 ${modifierName}+O 打开文件夹`}
     >
       <span className="skill-location-row__check">{enabled === false ? '·' : '✓'}</span>
       <div className="skill-location-row__main">

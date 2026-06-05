@@ -33,6 +33,7 @@ fn is_generic_monitor_name(name: &str) -> bool {
     name.trim().is_empty() || parse_monitor_product_id(name).is_some()
 }
 
+#[cfg(target_os = "macos")]
 fn parse_resolution(raw: &str) -> Option<(u32, u32)> {
     let numbers: Vec<u32> = raw
         .split(|c: char| !c.is_ascii_digit())
