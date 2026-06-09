@@ -67,9 +67,11 @@ Preview releases:
 
 - Are marked as GitHub prereleases.
 - Build unsigned and unnotarized macOS DMGs.
+- Build unsigned Windows NSIS/MSI installers after the macOS release job succeeds.
 - Still include Tauri updater signatures.
 - Do not update the Homebrew tap.
-- May require users to right-click the app and choose Open on first launch.
+- May require users to right-click the macOS app and choose Open on first launch.
+- May show Windows SmartScreen warnings until Windows code signing is configured.
 
 ## Stable Release
 
@@ -89,6 +91,16 @@ The `Release` workflow builds a universal macOS release and uploads:
 - `AgentBro.app.tar.gz.sig`
 - `latest.json`
 - `checksums.txt`
+
+After the macOS release is created, the `Build Windows Installers` job builds and appends Windows artifacts to the same GitHub Release:
+
+- `AgentBro_*_x64-setup.exe` or the NSIS installer name emitted by Tauri
+- `AgentBro_*_x64*.msi` or the MSI installer name emitted by Tauri
+- `AgentBro_latest_x64-setup.exe` for stable tags
+- `AgentBro_latest_x64.msi` for stable tags
+- `checksums-windows.txt`
+
+Windows packages are unsigned MVP artifacts for now. Do not advertise them as SmartScreen-clean or auto-updating until Windows code signing and Windows updater manifests are added.
 
 When `HOMEBREW_TAP_TOKEN` is configured, the workflow also updates the Homebrew cask in the tap repository.
 
@@ -132,6 +144,7 @@ agentbro/                                               # OSS bucket "agentbro",
 How it works:
 
 - The `Mirror release to Aliyun OSS` step in `build-universal` runs after the GitHub release, only for stable tags and only when `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET` are set.
+- Windows installer artifacts are currently attached to GitHub Releases only. Mirror them separately if the website needs mainland China Windows download links.
 - `latest.json` is GitHub-flavored by `build.sh`; the step derives an OSS variant with `sed`, rewriting the archive URL prefix from GitHub to OSS. The updater signature is over the archive bytes only, so URL rewriting keeps it valid — `build.sh` and `scripts/create-updater-manifest.mjs` are untouched.
 - `src-tauri/tauri.conf.json` lists two updater endpoints, OSS first then GitHub, so China hits OSS and falls back to GitHub.
 - The Homebrew cask `url` points at the OSS versioned path when OSS secrets are present, otherwise at GitHub.
@@ -164,10 +177,12 @@ curl -I https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.
 
 Use `https://www.agentbro.net` as the public homepage and download entry.
 
-For the first release, the app updater can keep reading `latest.json` from GitHub Releases. The website only needs to point users to the latest DMG, for example:
+For the first release, the app updater can keep reading `latest.json` from GitHub Releases. The website only needs to point users to the latest installers, for example:
 
 - Stable download: `https://github.com/shirenchuang/agentbro/releases/latest`
 - Latest DMG download: `https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg`
+- Latest Windows NSIS download: `https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64-setup.exe`
+- Latest Windows MSI download: `https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64.msi`
 - Versioned DMG download after a tagged release: `https://github.com/shirenchuang/agentbro/releases/download/v<VERSION>/AgentBro_<VERSION>_universal.dmg`
 
 Only move the Tauri updater endpoint in `src-tauri/tauri.conf.json` to `www.agentbro.net` after the website or CDN reliably serves:
@@ -189,3 +204,6 @@ Before announcing a release:
 - Confirm Homebrew installs the same version.
 - Confirm anonymous usage stats are enabled by default and can be disabled in Settings.
 - Confirm an older app version updates through the Tauri updater.
+- Install both Windows artifacts on a clean Windows 11 machine.
+- Confirm Windows SmartScreen warning text is expected for unsigned builds.
+- Confirm the floating window, tray, hook transport, Codex/Codex Desktop detection, and launch-at-login behavior work on Windows.

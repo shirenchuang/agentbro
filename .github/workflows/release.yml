@@ -191,6 +191,94 @@ jobs:
           oss_cp "dist/AgentBro.app.tar.gz.sig"          "${base}/AgentBro.app.tar.gz.sig"
           oss_cp "dist/latest.oss.json"                  "${base}/latest.json"
 
+  build-windows:
+    name: Build Windows Installers
+    runs-on: windows-latest
+    needs: build-universal
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Release readiness check
+        run: pnpm release:check
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows installers
+        shell: pwsh
+        run: |
+          pnpm tauri:build:windows
+
+          $windowsDist = "dist/windows"
+          New-Item -ItemType Directory -Force -Path $windowsDist | Out-Null
+
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $msiDir = "src-tauri/target/release/bundle/msi"
+          $nsisFiles = if (Test-Path $nsisDir) { @(Get-ChildItem -Path $nsisDir -Filter "*.exe" -File) } else { @() }
+          $msiFiles = if (Test-Path $msiDir) { @(Get-ChildItem -Path $msiDir -Filter "*.msi" -File) } else { @() }
+          $installerFiles = @($nsisFiles + $msiFiles)
+
+          if ($installerFiles.Count -eq 0) {
+            throw "No Windows installer artifacts were produced."
+          }
+
+          foreach ($file in $installerFiles) {
+            Copy-Item -LiteralPath $file.FullName -Destination $windowsDist
+          }
+
+          if ("${{ github.ref_name }}" -notlike "*-*") {
+            $latestExe = $nsisFiles | Sort-Object Name | Select-Object -First 1
+            if ($latestExe) {
+              Copy-Item -LiteralPath $latestExe.FullName -Destination "$windowsDist/AgentBro_latest_x64-setup.exe"
+            }
+
+            $latestMsi = $msiFiles | Sort-Object Name | Select-Object -First 1
+            if ($latestMsi) {
+              Copy-Item -LiteralPath $latestMsi.FullName -Destination "$windowsDist/AgentBro_latest_x64.msi"
+            }
+          }
+
+          Get-ChildItem -Path $windowsDist -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content -Path "$windowsDist/checksums-windows.txt" -Encoding ascii
+
+          Get-ChildItem -Path $windowsDist -File | Sort-Object Name
+
+      - name: Upload Windows installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/windows/*.exe
+            dist/windows/*.msi
+            dist/windows/checksums-windows.txt
+          overwrite_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
   update-homebrew:
     name: Update Homebrew Cask
     runs-on: ubuntu-latest
