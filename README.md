@@ -147,9 +147,9 @@ AgentBro 会坚持本地优先：第一个公开版本先把灵动岛、Hook 集
 
 ## 平台支持
 
-AgentBro 当前优先开发、测试和发布 **macOS** 版本。
+AgentBro 当前优先开发和测试 **macOS** 版本，并提供早期 **Windows MVP** 安装包。
 
-Windows 支持在计划中。Tauri + React + Rust 的基础架构具备跨平台能力，但一个体验良好的 Windows 版本还需要单独适配悬浮窗口、托盘、快捷键、终端/编辑器焦点检测、Hook 路径、安装包、签名和发布流程。
+Windows 版本已经具备基础悬浮窗口、Hook 传输、路径探测和安装包构建能力，但仍属于早期支持；签名、SmartScreen 体验、自动更新和部分 Agent 深度集成还会继续完善。
 
 Linux 后续也可以支持，但不属于第一个公开版本的目标。
 
@@ -172,7 +172,8 @@ brew install --cask agentbro
 
 ### 下载发行版
 
-- 🇨🇳 国内直链（推荐，速度快）：[下载最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
+- 🇨🇳 macOS 国内直链（推荐，速度快）：[下载最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
+- Windows 安装包：在 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) 下载 `AgentBro_latest_x64-setup.exe` 或 `AgentBro_latest_x64.msi`
 - 🌍 海外 / 全部版本：[GitHub Releases](https://github.com/shirenchuang/agentbro/releases)
 
 ## 本地开发
@@ -218,6 +219,7 @@ pnpm lint          # ESLint
 pnpm build         # 类型检查并构建前端
 cargo check        # 检查 Rust 后端
 pnpm tauri:build   # 构建 Tauri 应用
+pnpm tauri:build:windows # 构建 Windows NSIS/MSI 安装包
 ./build.sh         # 构建通用 macOS DMG
 ```
 

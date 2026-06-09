@@ -24,13 +24,14 @@ This hotfix restores reliable notch placement and click-through behavior on exte
 
 - Recommended download: `AgentBro_latest_universal.dmg`
 - Versioned archive: `AgentBro_{{VERSION}}_universal.dmg`
+- Stable Windows installers: `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`; prereleases use versioned installer names.
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
 - Mainland China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### Notes
 
-- This version primarily supports macOS.
-- Windows support will come in a later phase.
+- macOS remains the primary, signed release channel.
+- Windows installers are early MVP artifacts and may show SmartScreen warnings until Windows code signing is configured.
 
 ## 中文
 
@@ -56,10 +57,11 @@ This hotfix restores reliable notch placement and click-through behavior on exte
 
 - 推荐下载: `AgentBro_latest_universal.dmg`
 - 版本归档: `AgentBro_{{VERSION}}_universal.dmg`
+- 稳定版 Windows 安装包: `AgentBro_latest_x64-setup.exe` 与 `AgentBro_latest_x64.msi`; 预览版使用带版本号的安装包文件名。
 - 自动更新文件: `AgentBro.app.tar.gz` 与 `latest.json`
 - 国内直链: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
 ### 说明
 
-- 当前版本主要支持 macOS。
-- Windows 支持会放在后续阶段推进。
+- macOS 仍是主要的签名发布渠道。
+- Windows 安装包属于早期 MVP 产物，在配置 Windows 代码签名前可能出现 SmartScreen 提示。
