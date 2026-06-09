@@ -408,6 +408,7 @@ fn mise_shims(home: &Path) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
+#[cfg(target_os = "windows")]
 fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     paths
@@ -416,6 +417,7 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     values

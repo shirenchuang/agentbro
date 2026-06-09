@@ -2471,7 +2471,6 @@ pub async fn send_message(
                 .codex_app_server_thread_id
                 .as_deref()
                 .unwrap_or(session_id.as_str());
-            let mut app_server_error = None;
             match state
                 .codex_app_server
                 .send_user_turn(codex_thread_id, &message)
@@ -2492,7 +2491,6 @@ pub async fn send_message(
                         codex_thread_id,
                         err
                     );
-                    app_server_error = Some(err);
                 }
             }
 
@@ -2824,12 +2822,12 @@ fn normalize_tty_path(tty: &str) -> String {
 fn open_codex_desktop_session(session: &SessionState) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        return open_codex_desktop_session_macos(session);
+        open_codex_desktop_session_macos(session)
     }
 
     #[cfg(target_os = "windows")]
     {
-        return open_codex_desktop_session_windows(session);
+        open_codex_desktop_session_windows(session)
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
