@@ -1,13 +1,11 @@
+import { shortcutDisplayParts } from '../../utils/keyboardShortcuts'
+import { isApplePlatform } from '../../utils/platform'
+
 export type TipSurface = 'island' | 'pet'
 
 export function formatShortcut(shortcut: string): string {
-  return shortcut
-    .replace(/CommandOrControl/g, '⌘')
-    .replace(/Command/g, '⌘')
-    .replace(/Control/g, '⌃')
-    .replace(/Alt|Option/g, '⌥')
-    .replace(/Shift/g, '⇧')
-    .replace(/\+/g, '')
+  const parts = shortcutDisplayParts(shortcut)
+  return isApplePlatform() ? parts.join('') : parts.join('+')
 }
 
 export function buildTips(config: {

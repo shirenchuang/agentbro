@@ -20,6 +20,7 @@ fn user_idle_nanoseconds() -> Option<u64> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_hid_idle_time_ns(text: &str) -> Option<u64> {
     text.lines()
         .find_map(|line| line.split_once("HIDIdleTime"))
@@ -27,6 +28,7 @@ fn parse_hid_idle_time_ns(text: &str) -> Option<u64> {
         .and_then(|(_, value)| parse_u64_value(value.trim()))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_u64_value(value: &str) -> Option<u64> {
     let trimmed = value.trim_matches(|c: char| c == '"' || c == ';' || c.is_whitespace());
     if let Some(hex) = trimmed

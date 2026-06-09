@@ -1,3 +1,5 @@
+import { isApplePlatform } from './platform'
+
 export interface ShortcutKeyEvent {
   key: string
   metaKey: boolean
@@ -6,11 +8,16 @@ export interface ShortcutKeyEvent {
   shiftKey: boolean
 }
 
+const MAC_COMMAND = '⌘'
+const MAC_CONTROL = '⌃'
+const MAC_OPTION = '⌥'
+const MAC_SHIFT = '⇧'
+
 const modifierAliases = {
-  meta: new Set(['⌘', 'cmd', 'command', 'meta', 'super']),
-  control: new Set(['⌃', 'ctrl', 'control']),
-  alt: new Set(['⌥', 'alt', 'option']),
-  shift: new Set(['⇧', 'shift']),
+  meta: new Set([MAC_COMMAND, 'cmd', 'command', 'meta', 'super', 'win', 'windows']),
+  control: new Set([MAC_CONTROL, 'ctrl', 'control']),
+  alt: new Set([MAC_OPTION, 'alt', 'option']),
+  shift: new Set([MAC_SHIFT, 'shift']),
   commandOrControl: new Set(['commandorcontrol', 'cmdorctrl', 'ctrlorcmd']),
 }
 
@@ -58,12 +65,32 @@ function normalizedPrimaryKey(key: string): string {
   return normalized
 }
 
+function displayMetaModifier(): string {
+  return isApplePlatform() ? MAC_COMMAND : 'Win'
+}
+
+function displayControlModifier(): string {
+  return isApplePlatform() ? MAC_CONTROL : 'Ctrl'
+}
+
+function displayAltModifier(): string {
+  return isApplePlatform() ? MAC_OPTION : 'Alt'
+}
+
+function displayShiftModifier(): string {
+  return isApplePlatform() ? MAC_SHIFT : 'Shift'
+}
+
+function displayCommandOrControlModifier(): string {
+  return isApplePlatform() ? MAC_COMMAND : 'Ctrl'
+}
+
 export function formatShortcutKeyEvent(event: ShortcutKeyEvent): string {
   const parts: string[] = []
-  if (event.metaKey) parts.push('⌘')
-  if (event.ctrlKey) parts.push('⌃')
-  if (event.altKey) parts.push('⌥')
-  if (event.shiftKey) parts.push('⇧')
+  if (event.metaKey) parts.push(displayMetaModifier())
+  if (event.ctrlKey) parts.push(displayControlModifier())
+  if (event.altKey) parts.push(displayAltModifier())
+  if (event.shiftKey) parts.push(displayShiftModifier())
   if (!['Meta', 'Control', 'Alt', 'Shift'].includes(event.key)) {
     parts.push(displayKeyForEvent(event.key))
   }
@@ -85,11 +112,11 @@ export function isRecordableShortcutEvent(event: ShortcutKeyEvent): boolean {
 export function shortcutDisplayParts(shortcut: string): string[] {
   return shortcutParts(shortcut).map((part) => {
     const normalized = normalizedToken(part)
-    if (modifierAliases.meta.has(normalized)) return '⌘'
-    if (modifierAliases.control.has(normalized)) return '⌃'
-    if (modifierAliases.alt.has(normalized)) return '⌥'
-    if (modifierAliases.shift.has(normalized)) return '⇧'
-    if (modifierAliases.commandOrControl.has(normalized)) return '⌘/Ctrl'
+    if (modifierAliases.meta.has(normalized)) return displayMetaModifier()
+    if (modifierAliases.control.has(normalized)) return displayControlModifier()
+    if (modifierAliases.alt.has(normalized)) return displayAltModifier()
+    if (modifierAliases.shift.has(normalized)) return displayShiftModifier()
+    if (modifierAliases.commandOrControl.has(normalized)) return displayCommandOrControlModifier()
     return part
   })
 }
@@ -109,11 +136,13 @@ export function shortcutMatchesEvent(shortcut: string, event: ShortcutKeyEvent):
   if (!primaryKey) return false
   if (normalizedPrimaryKey(event.key) !== normalizedPrimaryKey(primaryKey)) return false
 
-  if (needsCommandOrControl && !event.metaKey && !event.ctrlKey) return false
-  if (needsMeta && !event.metaKey) return false
-  if (needsControl && !event.ctrlKey) return false
-  if (event.metaKey && !needsMeta && !needsCommandOrControl) return false
-  if (event.ctrlKey && !needsControl && !needsCommandOrControl) return false
+  const commandOrControlUsesMeta = needsCommandOrControl && isApplePlatform()
+  const commandOrControlUsesControl = needsCommandOrControl && !isApplePlatform()
+  const expectsMeta = needsMeta || commandOrControlUsesMeta
+  const expectsControl = needsControl || commandOrControlUsesControl
+
+  if (event.metaKey !== expectsMeta) return false
+  if (event.ctrlKey !== expectsControl) return false
 
   return event.altKey === needsAlt && event.shiftKey === needsShift
 }

@@ -28,7 +28,27 @@ fn status_cache() -> &'static Mutex<Option<(AbpetsStatus, Instant)>> {
 }
 
 fn resolve_program(program: &str) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        for candidate in windows_program_candidates(program) {
+            if let Some(path) = executable::find_binary(&candidate) {
+                return path;
+            }
+        }
+    }
+
     executable::find_binary(program).unwrap_or_else(|| PathBuf::from(program))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_program_candidates(program: &str) -> Vec<String> {
+    let lower = program.to_ascii_lowercase();
+    match lower.as_str() {
+        "node" => vec!["node.exe".to_string(), "node.cmd".to_string()],
+        "npm" | "npx" => vec![format!("{program}.cmd"), format!("{program}.exe")],
+        _ if program.contains('.') => Vec::new(),
+        _ => vec![format!("{program}.exe"), format!("{program}.cmd")],
+    }
 }
 
 fn market_path() -> OsString {
@@ -65,6 +85,12 @@ fn proxy_from_env() -> Option<String> {
     None
 }
 
+#[cfg(target_os = "windows")]
+async fn proxy_from_login_shell() -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
 async fn proxy_from_login_shell() -> Option<String> {
     for var in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
         if let Some(val) = crate::agents::executable::login_shell_var(var) {
@@ -587,6 +613,14 @@ mod tests {
         assert!(validate_slug_segment("user-123").is_ok());
         assert!(validate_slug_segment("My_Pet42").is_ok());
         assert!(validate_slug_segment("a").is_ok());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_npm_shims_prefer_cmd_files() {
+        assert_eq!(windows_program_candidates("npx")[0], "npx.cmd");
+        assert_eq!(windows_program_candidates("npm")[0], "npm.cmd");
+        assert_eq!(windows_program_candidates("node")[0], "node.exe");
     }
 
     #[test]

@@ -10,6 +10,11 @@ export type ComposerCapability =
   | { kind: 'sendable' }
   | { kind: 'locked'; reason: ComposerLockReason }
 
+export interface ComposerCapabilityOptions {
+  codexAppServerLive?: boolean
+  codexDesktopRepliesSupported?: boolean
+}
+
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {
   if (!termBundleId) return false
   return termBundleId.toLowerCase().includes('openai.codex')
@@ -47,6 +52,10 @@ function isRemoteSession(session: SessionState): boolean {
   return Boolean(session.remoteHostId || session.remoteHostName)
 }
 
+function isCodexAppServerBackedSession(session: SessionState): boolean {
+  return Boolean(session.codexAppServerThreadId)
+}
+
 function hasNoTerminalAffinity(session: SessionState): boolean {
   // Sessions with neither a tty nor a pid have nowhere local to type into.
   // Codex.app / Qoder.app are caught earlier; this is the residual case for
@@ -56,17 +65,22 @@ function hasNoTerminalAffinity(session: SessionState): boolean {
 
 export function getComposerCapability(
   session: SessionState,
+  options: ComposerCapabilityOptions = {},
 ): ComposerCapability {
+  if (isRemoteSession(session)) {
+    return { kind: 'locked', reason: 'remote' }
+  }
+
   if (isCodexDesktopSession(session)) {
-    return { kind: 'locked', reason: 'codex-app' }
+    return options.codexDesktopRepliesSupported
+      && options.codexAppServerLive
+      && isCodexAppServerBackedSession(session)
+      ? { kind: 'sendable' }
+      : { kind: 'locked', reason: 'codex-app' }
   }
 
   if (isQoderAppSession(session)) {
     return { kind: 'locked', reason: 'qoder-app' }
-  }
-
-  if (isRemoteSession(session)) {
-    return { kind: 'locked', reason: 'remote' }
   }
 
   if (hasNoTerminalAffinity(session)) {

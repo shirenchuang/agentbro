@@ -319,7 +319,7 @@ function hookDoctorSuggestion(t: (key: string, options?: Record<string, unknown>
   if (check.id === 'bridge-binary') {
     return t('settings.hookDoctorSuggestionBridge', { defaultValue: 'Restart AgentBro. If it still fails, reinstall the app.' })
   }
-  if (check.id === 'hook-server') {
+  if (check.id === 'hook-server' || check.id === 'hook-server-tcp') {
     return t('settings.hookDoctorSuggestionServer', { defaultValue: 'Keep AgentBro running and check again. New CLI sessions connect to the current Hook service.' })
   }
   if (check.id === 'installed-hooks') {
@@ -327,6 +327,12 @@ function hookDoctorSuggestion(t: (key: string, options?: Record<string, unknown>
   }
   if (check.id === 'automation-permission') {
     return t('settings.hookDoctorSuggestionAutomation', { defaultValue: 'Allow AgentBro to control Terminal and System Events in macOS System Settings.' })
+  }
+  if (check.id === 'codex-cli') {
+    return t('settings.hookDoctorSuggestionCodexCli', { defaultValue: 'Install Codex CLI or expose the real codex executable. Codex Desktop / WindowsApps launchers cannot be used for hooks.' })
+  }
+  if (check.id === 'codex-app-server-command') {
+    return t('settings.hookDoctorSuggestionCodexAppServer', { defaultValue: 'Update Codex CLI to a build that supports `codex app-server`, then run diagnostics again.' })
   }
   if (check.id.startsWith('binary-')) {
     return t('settings.hookDoctorSuggestionBinary', { defaultValue: 'Install this only if you use the corresponding terminal multiplexer or terminal; otherwise it can be ignored.' })
@@ -2240,7 +2246,7 @@ function IntegrationTab() {
         label={t('settings.hookDoctor', { defaultValue: 'Hook Doctor' })}
       >
         <div className="hook-doctor-intro">
-          {t('settings.hookDoctorInlineDesc', { defaultValue: 'Checks the AgentBro bridge, Hook service, installed Hooks, macOS automation permission, and terminal helpers.' })}
+          {t('settings.hookDoctorInlineDesc', { defaultValue: 'Checks the AgentBro bridge, Hook service, installed Hooks, and platform-specific terminal integration.' })}
         </div>
         {hookDoctorReport && (
           <div className="hook-doctor-report">
@@ -2334,7 +2340,7 @@ function IntegrationTab() {
                     {t('settings.configureHook', { defaultValue: '配置 Hook' })}
                   </GlassButton>
                 )}
-                <GlassButton variant="ghost" onClick={() => openPath(tool.configDir || tool.configPath)} disabled={busy || !tool.configPath}>
+                <GlassButton variant="ghost" onClick={() => openPath(tool.configDir || tool.configPath)} disabled={busy || !(tool.configDir || tool.configPath)}>
                   {t('settings.openConfigDir', { defaultValue: '打开配置目录' })}
                 </GlassButton>
                 {isInstalled ? (

@@ -2103,6 +2103,7 @@ fn attach_settings_close_handler(app: &tauri::AppHandle, window: &tauri::Webview
     let app_handle = app.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
+            #[cfg(target_os = "macos")]
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
             if let Some(notch) = app_handle.get_webview_window("notch") {
                 let _ = notch.show();
