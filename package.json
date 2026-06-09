@@ -10,7 +10,7 @@
     "build:bridge:release": "node scripts/build-bridge.mjs --release",
     "tauri:dev": "pnpm build:bridge && cargo tauri dev",
     "tauri:build": "pnpm build:bridge:release && cargo tauri build --bundles app,dmg --no-sign --ci --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
-    "tauri:build:windows": "pnpm build:bridge:release && cargo tauri build --bundles nsis,msi --ci --config \"{\\\"bundle\\\":{\\\"createUpdaterArtifacts\\\":false}}\"",
+    "tauri:build:windows": "node scripts/build-windows.mjs",
     "release:check": "node scripts/check-release-readiness.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
