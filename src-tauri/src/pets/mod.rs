@@ -3,8 +3,8 @@
 // Sources, in order of precedence:
 //   1. ~/.agentbro/pets/<id>/pet.json + <spritesheetPath>   (AgentBro user-defined)
 //   2. AgentBro bundled resources: <resources>/pets/<id>/pet.json + spritesheet
-//   3. /Applications/Codex.app/Contents/Resources/webview/assets/<id>-spritesheet-*.webp
-//   4. /Applications/Codex.app/Contents/Resources/app.asar  (handwritten asar parser)
+//   3. Codex Desktop resources/webview/assets/<id>-spritesheet-*.webp
+//   4. Codex Desktop resources/app.asar  (handwritten asar parser)
 //   5. ~/.codex/pets/<id>/pet.json + <spritesheetPath>      (Codex user-defined)
 //   6. ~/Applications/Codex.app/...                         (per-user install fallback)
 //
@@ -220,16 +220,73 @@ fn find_agentbro_resource_dirs(runtime_resource_dir: Option<&Path>) -> Vec<PathB
 }
 
 fn find_codex_resources_dir() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = {
-        let mut v = vec![PathBuf::from("/Applications/Codex.app/Contents/Resources")];
-        if let Some(home) = dirs::home_dir() {
-            v.push(home.join("Applications/Codex.app/Contents/Resources"));
-        }
-        v
-    };
-    candidates
+    codex_resource_candidates()
         .into_iter()
         .find(|c| c.join("app.asar").exists() || c.join("webview").join("assets").is_dir())
+}
+
+fn codex_resource_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            candidates.push(
+                local_app_data
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("app")
+                    .join("resources"),
+            );
+            candidates.push(
+                local_app_data
+                    .join("Programs")
+                    .join("Codex")
+                    .join("resources"),
+            );
+            candidates.push(
+                local_app_data
+                    .join("Programs")
+                    .join("Codex")
+                    .join("app")
+                    .join("resources"),
+            );
+        }
+
+        for program_files in ["ProgramFiles", "ProgramW6432"] {
+            let Some(root) = std::env::var_os(program_files).map(PathBuf::from) else {
+                continue;
+            };
+            let windows_apps = root.join("WindowsApps");
+            let Ok(entries) = fs::read_dir(windows_apps) else {
+                continue;
+            };
+            for path in entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.to_ascii_lowercase().starts_with("openai.codex_"))
+                        .unwrap_or(false)
+                })
+            {
+                candidates.push(path.join("app").join("resources"));
+                candidates.push(path.join("resources"));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("/Applications/Codex.app/Contents/Resources"));
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join("Applications/Codex.app/Contents/Resources"));
+        }
+    }
+
+    dedupe_paths(candidates)
 }
 
 fn find_agentbro_user_pets_dir() -> Option<PathBuf> {
@@ -255,6 +312,17 @@ fn dedupe_pets_by_raw_id(pets: Vec<PetMetadata>) -> Vec<PetMetadata> {
     for pet in pets {
         if seen.insert(raw_pet_id(&pet.id).to_string()) {
             result.push(pet);
+        }
+    }
+    result
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::with_capacity(paths.len());
+    for path in paths {
+        if seen.insert(path.to_string_lossy().to_ascii_lowercase()) {
+            result.push(path);
         }
     }
     result

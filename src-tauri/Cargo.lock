@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "agentbro"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-stream",

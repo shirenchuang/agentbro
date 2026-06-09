@@ -183,6 +183,7 @@ interface ConfigState {
   shortcutSkipEnabled: boolean
   permissionShortcutDefaultsMigrated: boolean
   shortcutSurfaceDefaultsMigrated: boolean
+  shortcutPlatformDefaultsMigrated: boolean
   customHooksPath: string
 
   // Shortcuts
@@ -348,21 +349,25 @@ const defaultSoundRules: Record<string, SoundRule> = {
 
 const DEFAULT_GLOBAL_APPROVE_SHORTCUT = 'CommandOrControl+Shift+A'
 const DEFAULT_GLOBAL_DENY_SHORTCUT = 'CommandOrControl+Shift+D'
+const DEFAULT_TOGGLE_PANEL_SHORTCUT = 'CommandOrControl+Shift+I'
+const DEFAULT_OPEN_SETTINGS_SHORTCUT = 'CommandOrControl+,'
 const LEGACY_IN_WINDOW_APPROVE_SHORTCUT = '⌘+Enter'
 const LEGACY_IN_WINDOW_REJECT_SHORTCUT = '⌘+Backspace'
+const LEGACY_TOGGLE_PANEL_SHORTCUT = '⌘+Shift+I'
+const LEGACY_OPEN_SETTINGS_SHORTCUT = '⌘+,'
 const LEGACY_EXPAND_PANEL_SHORTCUT = '⌘+Shift+E'
 const LEGACY_NEXT_SESSION_SHORTCUT = '⌘+]'
 const LEGACY_PREV_SESSION_SHORTCUT = '⌘+['
 
 const defaultShortcuts: ShortcutBinding[] = [
-  { action: 'toggle-panel', label: 'Toggle Panel', keys: '⌘+Shift+I' },
+  { action: 'toggle-panel', label: 'Toggle Panel', keys: DEFAULT_TOGGLE_PANEL_SHORTCUT },
   { action: 'expand-panel', label: 'Expand Panel', keys: '' },
   { action: 'collapse-panel', label: 'Collapse Panel', keys: 'Escape' },
   { action: 'next-session', label: 'Next Session', keys: '' },
   { action: 'prev-session', label: 'Previous Session', keys: '' },
   { action: 'approve-action', label: 'Approve Action', keys: '' },
   { action: 'reject-action', label: 'Reject Action', keys: '' },
-  { action: 'open-settings', label: 'Open Settings', keys: '⌘+,' },
+  { action: 'open-settings', label: 'Open Settings', keys: DEFAULT_OPEN_SETTINGS_SHORTCUT },
 ]
 
 function migrateInWindowPermissionShortcuts(shortcuts: ShortcutBinding[]): ShortcutBinding[] {
@@ -387,6 +392,18 @@ function migrateInWindowShortcutSurfaceDefaults(shortcuts: ShortcutBinding[]): S
     }
     if (shortcut.action === 'prev-session' && shortcut.keys === LEGACY_PREV_SESSION_SHORTCUT) {
       return { ...shortcut, keys: '' }
+    }
+    return shortcut
+  })
+}
+
+function migrateInWindowShortcutPlatformDefaults(shortcuts: ShortcutBinding[]): ShortcutBinding[] {
+  return shortcuts.map((shortcut) => {
+    if (shortcut.action === 'toggle-panel' && shortcut.keys === LEGACY_TOGGLE_PANEL_SHORTCUT) {
+      return { ...shortcut, keys: DEFAULT_TOGGLE_PANEL_SHORTCUT }
+    }
+    if (shortcut.action === 'open-settings' && shortcut.keys === LEGACY_OPEN_SETTINGS_SHORTCUT) {
+      return { ...shortcut, keys: DEFAULT_OPEN_SETTINGS_SHORTCUT }
     }
     return shortcut
   })
@@ -449,6 +466,7 @@ function createIslandDefaults(): Partial<ConfigState> {
     shortcutSkipEnabled: false,
     permissionShortcutDefaultsMigrated: true,
     shortcutSurfaceDefaultsMigrated: true,
+    shortcutPlatformDefaultsMigrated: true,
     shortcuts: defaultShortcuts.map((shortcut) => ({ ...shortcut })),
     quietHours: { enabled: false, start: '22:00', end: '08:00' },
     idleTimeoutMinutes: 5,
@@ -557,6 +575,7 @@ export const useConfigStore = create<ConfigStore>()(
   shortcutSkipEnabled: false,
   permissionShortcutDefaultsMigrated: true,
   shortcutSurfaceDefaultsMigrated: true,
+  shortcutPlatformDefaultsMigrated: true,
   customHooksPath: '',
 
   // Shortcuts
@@ -804,6 +823,10 @@ export const useConfigStore = create<ConfigStore>()(
           merged.shortcuts = migrateInWindowShortcutSurfaceDefaults(merged.shortcuts)
         }
 
+        if (persisted?.shortcutPlatformDefaultsMigrated !== true) {
+          merged.shortcuts = migrateInWindowShortcutPlatformDefaults(merged.shortcuts)
+        }
+
         if (persisted?.bootSoundDefaultMigrated !== true) {
           const bootRule = merged.soundRules?.boot
           const canUseHeyBroDefault = !bootRule || bootRule.sound === 'default'
@@ -825,6 +848,7 @@ export const useConfigStore = create<ConfigStore>()(
           sessionSilenceRules: Array.isArray(persisted?.sessionSilenceRules) ? persisted.sessionSilenceRules : currentState.sessionSilenceRules,
           permissionShortcutDefaultsMigrated: true,
           shortcutSurfaceDefaultsMigrated: true,
+          shortcutPlatformDefaultsMigrated: true,
           bootSoundDefaultMigrated: true,
           notificationMode: 'turnEnd',
         }

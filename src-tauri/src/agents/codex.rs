@@ -37,6 +37,7 @@ pub struct CodexAppServerProbe {
     pub port: u16,
     pub cli_path: Option<String>,
     pub cli_version: Option<String>,
+    pub desktop_path: Option<String>,
     pub cli_available: bool,
     pub app_server_command_available: bool,
     pub server_listening: bool,
@@ -63,7 +64,7 @@ pub struct CodexAdapter {
 }
 
 pub fn probe_app_server_readiness() -> CodexAppServerProbe {
-    let cli_path = super::executable::find_binary("codex");
+    let cli_path = super::executable::find_codex_cli_binary();
     let cli_path_text = cli_path
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
@@ -89,7 +90,17 @@ pub fn probe_app_server_readiness() -> CodexAppServerProbe {
             }
         });
     let server_listening = is_local_port_listening(CODEX_APP_SERVER_PORT);
-    let codex_app_installed = codex_app_paths().into_iter().any(|path| path.exists());
+    let desktop_path = codex_desktop_app_path();
+    let desktop_app_ids = super::executable::codex_desktop_app_user_model_ids();
+    let desktop_path_text = desktop_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .or_else(|| {
+            desktop_app_ids
+                .first()
+                .map(|app_id| format!("Windows App: {app_id}"))
+        });
+    let codex_app_installed = desktop_path.is_some() || !desktop_app_ids.is_empty();
     let codex_root = dirs::home_dir().map(|home| home.join(".codex"));
     let auth_path = codex_root.as_ref().map(|root| root.join("auth.json"));
     let sessions_path = codex_root.as_ref().map(|root| root.join("sessions"));
@@ -114,12 +125,16 @@ pub fn probe_app_server_readiness() -> CodexAppServerProbe {
                 _ => path.to_string(),
             })
             .unwrap_or_else(|| {
-                "codex was not found in PATH or common install directories".to_string()
+                if codex_app_installed {
+                    "Codex Desktop was found, but no spawnable Codex CLI was found. The WindowsApps/Desktop launcher is not used for hooks or app-server.".to_string()
+                } else {
+                    "codex was not found in PATH or common install directories".to_string()
+                }
             }),
         suggestion: if cli_path.is_some() {
             None
         } else {
-            Some("Install or expose the codex CLI before using app-server sync.".to_string())
+            Some("Install or expose the Codex CLI before using hooks or app-server sync.".to_string())
         },
     });
     checks.push(CodexAppServerProbeCheck {
@@ -155,12 +170,15 @@ pub fn probe_app_server_readiness() -> CodexAppServerProbe {
     });
     checks.push(CodexAppServerProbeCheck {
         id: "codex-app".to_string(),
-        label: "Codex.app".to_string(),
+        label: "Codex Desktop".to_string(),
         status: if codex_app_installed { "ok" } else { "warn" }.to_string(),
         detail: if codex_app_installed {
-            "Codex.app was found in /Applications or ~/Applications".to_string()
+            desktop_path_text
+                .as_deref()
+                .unwrap_or("Codex Desktop is installed")
+                .to_string()
         } else {
-            "Codex.app was not found in the standard app locations".to_string()
+            "Codex Desktop was not found in the standard app locations".to_string()
         },
         suggestion: None,
     });
@@ -198,6 +216,7 @@ pub fn probe_app_server_readiness() -> CodexAppServerProbe {
         port: CODEX_APP_SERVER_PORT,
         cli_path: cli_path_text,
         cli_version,
+        desktop_path: desktop_path_text,
         cli_available: cli_path.is_some(),
         app_server_command_available,
         server_listening,
@@ -256,12 +275,24 @@ fn is_local_port_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
+fn codex_desktop_app_path() -> Option<PathBuf> {
+    codex_app_paths().into_iter().find(|path| path.exists())
+}
+
 fn codex_app_paths() -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join("Applications").join("Codex.app"));
+    #[cfg(target_os = "windows")]
+    {
+        super::executable::codex_desktop_app_candidates()
     }
-    paths
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join("Applications").join("Codex.app"));
+        }
+        paths
+    }
 }
 
 impl CodexAdapter {
@@ -1105,7 +1136,10 @@ fn ensure_codex_hooks_feature(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     fn adapter() -> CodexAdapter {
         CodexAdapter {
@@ -1114,10 +1148,14 @@ mod tests {
         }
     }
 
+    fn success_status() -> std::process::ExitStatus {
+        std::process::ExitStatus::from_raw(0)
+    }
+
     #[test]
     fn codex_app_server_output_line_prefers_first_non_empty_line() {
         let output = std::process::Output {
-            status: std::process::ExitStatus::from_raw(0),
+            status: success_status(),
             stdout: b"\n  codex-cli 1.2.3\nignored".to_vec(),
             stderr: b"stderr".to_vec(),
         };

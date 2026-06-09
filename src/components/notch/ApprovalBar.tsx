@@ -2,9 +2,11 @@
 import { useEffect, useRef, useCallback, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
+import { useSessionStore } from '../../stores/sessionStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
+import { isWindowsPlatform } from '../../utils/platform'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -20,6 +22,7 @@ interface ApprovalBarProps {
 
 export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
   const { t } = useTranslation()
+  const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
   const inputRef = useRef<HTMLInputElement>(null)
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [draftState, setDraftState] = useState({ sessionId: session.id, value: '' })
@@ -294,7 +297,10 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }
 
   // Default: text input
-  const capability = getComposerCapability(session)
+  const capability = getComposerCapability(session, {
+    codexAppServerLive,
+    codexDesktopRepliesSupported: !isWindowsPlatform(),
+  })
   if (capability.kind === 'locked') {
     return (
       <div className="approval-bar">

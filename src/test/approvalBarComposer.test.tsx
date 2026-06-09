@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApprovalBar } from '../components/notch/ApprovalBar'
+import { useSessionStore } from '../stores/sessionStore'
 import type { SessionState } from '../types/agent'
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -8,6 +9,14 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   return {
     ...actual,
     setNotchFocusable: vi.fn(() => Promise.resolve()),
+  }
+})
+
+vi.mock('../utils/platform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/platform')>()
+  return {
+    ...actual,
+    isWindowsPlatform: () => false,
   }
 })
 
@@ -63,6 +72,10 @@ function renderBar(s: SessionState, extra: Partial<React.ComponentProps<typeof A
 }
 
 describe('ApprovalBar composer gating', () => {
+  beforeEach(() => {
+    useSessionStore.getState().setCodexAppServerLive(false)
+  })
+
   it('renders the default text input for a tmux Claude session', () => {
     renderBar(session())
     expect(screen.getByPlaceholderText('Type message')).toBeInTheDocument()
@@ -88,6 +101,29 @@ describe('ApprovalBar composer gating', () => {
 
     fireEvent.mouseDown(cta)
     expect(onJumpToHostApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the default text input for a Codex.app session when app-server is live', () => {
+    useSessionStore.getState().setCodexAppServerLive(true)
+    const onSendMessage = vi.fn()
+    renderBar(
+      session({
+        agentType: 'codex',
+        termBundleId: 'com.openai.codex',
+        codexAppServerThreadId: 'thread-1',
+        terminal: 'Codex',
+        tty: undefined,
+        pid: undefined,
+      }),
+      { onSendMessage },
+    )
+
+    const input = screen.getByPlaceholderText('Type message')
+    fireEvent.change(input, { target: { value: '继续' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSendMessage).toHaveBeenCalledWith('继续')
+    expect(screen.queryByText('Codex.app cannot receive messages yet.')).not.toBeInTheDocument()
   })
 
   it('shows a hint without CTA for a remote session', () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsApp } from '../components/settings'
 import type { BackendDisplayInfo } from '../services/tauriApi'
 import { useConfigStore } from '../stores/configStore'
+import { isApplePlatform } from '../utils/platform'
 
 const tauriMocks = vi.hoisted(() => ({
   listDisplays: vi.fn(() => Promise.resolve([] as BackendDisplayInfo[])),
@@ -391,12 +392,12 @@ describe('settings island menu', () => {
     const row = screen.getByText('Expand Panel').closest('.shortcuts-row')!
     const editButtons = row.querySelectorAll('.shortcuts-row__edit')
     fireEvent.click(editButtons[editButtons.length - 1]!)
-    fireEvent.keyDown(window, { key: 'k', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { key: 'k', metaKey: isApplePlatform(), ctrlKey: !isApplePlatform(), shiftKey: true })
 
-    expect(useConfigStore.getState().shortcuts.find((shortcut) => shortcut.action === 'expand-panel')?.keys).toBe('⌘+⇧+K')
-    expect(row).toHaveTextContent('⌘')
-    expect(row).toHaveTextContent('⇧')
-    expect(row).toHaveTextContent('K')
+    const expectedShortcut = isApplePlatform() ? '⌘+⇧+K' : 'Ctrl+Shift+K'
+    const expectedParts = isApplePlatform() ? ['⌘', '⇧', 'K'] : ['Ctrl', 'Shift', 'K']
+    expect(useConfigStore.getState().shortcuts.find((shortcut) => shortcut.action === 'expand-panel')?.keys).toBe(expectedShortcut)
+    for (const part of expectedParts) expect(row).toHaveTextContent(part)
 
     fireEvent.click(row.querySelector('.shortcuts-row__clear')!)
 

@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "productName": "AgentBro",
   "identifier": "com.agentbro.desktop",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1423",
@@ -41,7 +41,12 @@
           "$HOME/.config/agentbro/themes/**",
           "$APPCACHE/pet-asar-cache/**",
           "/Applications/Codex.app/Contents/Resources/webview/assets/**",
-          "$HOME/Applications/Codex.app/Contents/Resources/webview/assets/**"
+          "$HOME/Applications/Codex.app/Contents/Resources/webview/assets/**",
+          "$LOCALDATA/OpenAI/Codex/app/resources/webview/assets/**",
+          "$LOCALDATA/Programs/Codex/resources/webview/assets/**",
+          "$LOCALDATA/Programs/Codex/app/resources/webview/assets/**",
+          "C:/Program Files/WindowsApps/OpenAI.Codex_*/app/resources/webview/assets/**",
+          "C:/Program Files/WindowsApps/OpenAI.Codex_*/resources/webview/assets/**"
         ]
       }
     }

@@ -18,6 +18,14 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
   }
 })
 
+vi.mock('../utils/platform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/platform')>()
+  return {
+    ...actual,
+    isWindowsPlatform: () => false,
+  }
+})
+
 vi.mock('../components/notch/mascots/MascotRouter', () => ({
   MascotRouter: () => <div data-testid="mascot" />,
 }))
@@ -90,6 +98,7 @@ describe('OverlayFeedbackPanel composer gating', () => {
       session({
         agentType: 'codex',
         termBundleId: 'com.openai.codex',
+        codexAppServerThreadId: 'thread-1',
         terminal: 'Codex',
         tty: undefined,
         pid: undefined,
@@ -124,19 +133,20 @@ describe('OverlayFeedbackPanel composer gating', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps Codex.app replies locked when the app-server bridge is live', () => {
+  it('allows Codex.app replies when the app-server bridge is live', () => {
     useSessionStore.getState().setCodexAppServerLive(true)
     renderPanel(
       session({
         agentType: 'codex',
         termBundleId: 'com.openai.codex',
+        codexAppServerThreadId: 'thread-1',
         terminal: 'Codex',
         tty: undefined,
         pid: undefined,
       }),
     )
 
-    expect(screen.queryByPlaceholderText('Type message')).not.toBeInTheDocument()
-    expect(screen.getByText('Codex.app cannot receive messages yet.')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Type message')).toBeInTheDocument()
+    expect(screen.queryByText('Codex.app cannot receive messages yet.')).not.toBeInTheDocument()
   })
 })

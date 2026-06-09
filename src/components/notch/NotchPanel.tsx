@@ -13,6 +13,7 @@ import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
+import { primaryModifierPressed } from '../../utils/platform'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
 import { UpdateBanner } from './UpdateBanner'
@@ -1180,16 +1181,16 @@ export function NotchPanel() {
       }
 
       // Jump to terminal
-      if (e.metaKey && e.key === 'j') {
+      if (primaryModifierPressed(e) && e.key.toLowerCase() === 'j') {
         e.preventDefault()
         const sid = store.activeSessionId
         if (sid) jumpToTerminal(sid)
         return
       }
 
-      // Cmd+1/2/3 — select option
+      // Primary modifier + 1/2/3 selects an option.
       const num = parseInt(e.key, 10)
-      if (e.metaKey && num >= 1 && num <= 3) {
+      if (primaryModifierPressed(e) && num >= 1 && num <= 3) {
         const activeQuestion = active?.pendingQuestion
         const options = active && !activeQuestion?.multiSelect ? activeQuestion?.options : undefined
         if (active && options && options[num - 1]) {
