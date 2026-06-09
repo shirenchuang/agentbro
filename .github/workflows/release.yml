@@ -238,9 +238,15 @@ jobs:
 
           $nsisDir = "src-tauri/target/release/bundle/nsis"
           $msiDir = "src-tauri/target/release/bundle/msi"
-          $nsisFiles = if (Test-Path $nsisDir) { @(Get-ChildItem -Path $nsisDir -Filter "*.exe" -File) } else { @() }
-          $msiFiles = if (Test-Path $msiDir) { @(Get-ChildItem -Path $msiDir -Filter "*.msi" -File) } else { @() }
-          $installerFiles = @($nsisFiles + $msiFiles)
+          $nsisFiles = @()
+          if (Test-Path $nsisDir) {
+            $nsisFiles = @(Get-ChildItem -Path $nsisDir -Filter "*.exe" -File)
+          }
+          $msiFiles = @()
+          if (Test-Path $msiDir) {
+            $msiFiles = @(Get-ChildItem -Path $msiDir -Filter "*.msi" -File)
+          }
+          $installerFiles = @($nsisFiles) + @($msiFiles)
 
           if ($installerFiles.Count -eq 0) {
             throw "No Windows installer artifacts were produced."
