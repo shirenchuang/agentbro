@@ -1482,6 +1482,24 @@ async fn is_cursor_in_window_zones(
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
 
         let monitor = window.current_monitor().ok().flatten();
+        if label == "pet" {
+            if let Some(monitor) = monitor.as_ref() {
+                let monitor_pos = monitor.position();
+                if monitor_pos.x != 0 || monitor_pos.y != 0 {
+                    let inner = window.inner_position().map_err(|e| e.to_string())?;
+                    let cursor_x = cursor.x - inner.x as f64;
+                    let cursor_y = (cursor.y - inner.y as f64) / scale;
+                    return Ok(zones.iter().any(|r| {
+                        let margin = 160.0;
+                        cursor_x >= r.left - margin
+                            && cursor_x <= r.left + r.width + margin
+                            && cursor_y >= r.top - margin
+                            && cursor_y <= r.top + r.height + margin
+                    }));
+                }
+            }
+        }
+
         let monitor_origin_logical = monitor
             .map(|m| {
                 let s = m.scale_factor().max(1.0);
