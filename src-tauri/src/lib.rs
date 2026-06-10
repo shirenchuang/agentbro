@@ -1468,14 +1468,45 @@ async fn is_cursor_in_window_zones(
         let cursor = app.cursor_position().map_err(|e| e.to_string())?;
         let position = window.outer_position().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
-        let cx_logical = (cursor.x - position.x as f64) / scale;
-        let cy_logical = (cursor.y - position.y as f64) / scale;
+
+        let monitor = window.current_monitor().ok().flatten();
+        if label == "pet" {
+            if let Some(monitor) = monitor.as_ref() {
+                let monitor_pos = monitor.position();
+                if monitor_pos.x != 0 || monitor_pos.y != 0 {
+                    let inner = window.inner_position().map_err(|e| e.to_string())?;
+                    let cursor_x = cursor.x - inner.x as f64;
+                    let cursor_y = (cursor.y - inner.y as f64) / scale;
+                    return Ok(zones.iter().any(|r| {
+                        let margin = 160.0;
+                        cursor_x >= r.left - margin
+                            && cursor_x <= r.left + r.width + margin
+                            && cursor_y >= r.top - margin
+                            && cursor_y <= r.top + r.height + margin
+                    }));
+                }
+            }
+        }
+
+        let monitor_origin_logical = monitor
+            .map(|m| {
+                let s = m.scale_factor().max(1.0);
+                (m.position().x as f64 / s, m.position().y as f64 / s)
+            })
+            .unwrap_or((0.0, 0.0));
+
+        let cx_logical = cursor.x / scale - monitor_origin_logical.0;
+        let cy_logical = cursor.y / scale - monitor_origin_logical.1;
+        let win_left_logical = position.x as f64 / scale - monitor_origin_logical.0;
+        let win_top_logical = position.y as f64 / scale - monitor_origin_logical.1;
 
         Ok(zones.iter().any(|r| {
-            cx_logical >= r.left
-                && cx_logical <= r.left + r.width
-                && cy_logical >= r.top
-                && cy_logical <= r.top + r.height
+            let zone_left = win_left_logical + r.left;
+            let zone_top = win_top_logical + r.top;
+            cx_logical >= zone_left
+                && cx_logical <= zone_left + r.width
+                && cy_logical >= zone_top
+                && cy_logical <= zone_top + r.height
         }))
     })
 }

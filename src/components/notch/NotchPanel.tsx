@@ -1515,7 +1515,7 @@ export function NotchPanel() {
   const stableHostHitboxWidth = expandedHostContentWidth + shellSideExtension * 2 + maxHostSlopX * 2
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
-  const hostUsesStableCanvas = !isPetMode && islandEnabled
+  const hostUsesStableCanvas = !isPetMode && islandEnabled && effectivePanelState === 'collapsed'
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
   const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
@@ -1701,6 +1701,12 @@ export function NotchPanel() {
       return () => { cancelled = true }
     }
 
+    const shrinkingFromStableCanvas = !hostUsesStableCanvas && current.width > next.width
+    if (shrinkingFromStableCanvas) {
+      if (commitHostSize()) resizeNativeHost()
+      return () => { cancelled = true }
+    }
+
     const timer = window.setTimeout(() => {
       if (commitHostSize()) resizeNativeHost()
     }, CLOSE_NATIVE_RESIZE_DELAY_MS * islandAnimationScale)
@@ -1709,7 +1715,7 @@ export function NotchPanel() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, effectiveHorizontalOffset, displayMonitor, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, requestNativeHostResize, updateHostAnchorOffset])
+  }, [hostTargetHitboxWidth, hostTargetHitboxHeight, hostUsesStableCanvas, effectiveHorizontalOffset, displayMonitor, finishPreparedOpen, islandAnimationScale, isDragging, preparingOpen, requestNativeHostResize, updateHostAnchorOffset])
 
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
