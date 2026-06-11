@@ -62,6 +62,7 @@ struct PetDragState {
     start_window_y: f64,
     current_x: f64,
     current_y: f64,
+    native_drag: bool,
     start_anchor: PetStageAnchor,
 }
 
@@ -1457,6 +1458,11 @@ struct LogicalRect {
     height: f64,
 }
 
+fn monitor_uses_primary_origin(monitor: &tauri::Monitor) -> bool {
+    let pos = monitor.position();
+    pos.x == 0 && pos.y == 0
+}
+
 /// Hit-tests the cursor against a list of logical (CSS px) rects expressed in
 /// the target webview's viewport coordinates. Returns true if the cursor is
 /// inside any rect; used to drive per-zone click-through.
@@ -1482,6 +1488,14 @@ async fn is_cursor_in_window_zones(
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
 
         let monitor = window.current_monitor().ok().flatten();
+        if label == "pet" {
+            if let Some(monitor) = monitor.as_ref() {
+                if !monitor_uses_primary_origin(monitor) {
+                    return Ok(true);
+                }
+            }
+        }
+
         let monitor_origin_logical = monitor
             .map(|m| {
                 let s = m.scale_factor().max(1.0);
@@ -4249,8 +4263,18 @@ async fn start_pet_drag(
             start_window_y: position.y as f64,
             current_x: position.x as f64,
             current_y: position.y as f64,
+            native_drag: false,
             start_anchor,
         });
+    }
+
+    if window.start_dragging().is_ok() {
+        if let Ok(mut drag) = pet_drag_state().lock() {
+            if let Some(state) = drag.as_mut() {
+                state.native_drag = true;
+            }
+        }
+        return Ok(true);
     }
 
     let app_handle = app.clone();
@@ -4342,6 +4366,12 @@ async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, St
     let mut result_anchor = snap.start_anchor;
 
     if let Some(window) = app.get_webview_window("pet") {
+        if snap.native_drag {
+            if let Ok(position) = window.outer_position() {
+                origin.x = position.x as f64;
+                origin.y = position.y as f64;
+            }
+        }
         if let Ok(size) = window.outer_size() {
             let window_scale = window.scale_factor().unwrap_or(1.0).max(1.0);
             let pet_scale = current_pet_scale_percent(&app);

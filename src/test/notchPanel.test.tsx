@@ -242,7 +242,7 @@ describe('NotchPanel island shell', () => {
     }
   })
 
-  it('keeps a stable native host canvas while opening from micro', () => {
+  it('keeps a stable native host canvas while collapsed, then sizes to hitbox on hover', () => {
     vi.useFakeTimers()
     try {
       tauriMocks.resizeNotch.mockImplementation(() => new Promise(() => {}))
@@ -276,8 +276,8 @@ describe('NotchPanel island shell', () => {
       })
 
       expect(useSessionStore.getState().panelState).toBe('hover')
-      expect(hostWidthVar()).toBe('754px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+      expect(hostWidthVar()).toBe('686px')
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
@@ -304,7 +304,7 @@ describe('NotchPanel island shell', () => {
 
       render(<NotchPanel />)
 
-      expect(hostWidthVar()).toBe('754px')
+      expect(hostWidthVar()).toBe('686px')
       expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
 
       fireEvent.pointerLeave(screen.getByRole('region', { name: 'AgentBro' }).parentElement!)
@@ -321,7 +321,7 @@ describe('NotchPanel island shell', () => {
 
       expect(hostWidthVar()).toBe('754px')
       expect(hitboxWidthVar()).toBe('140px')
-      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
@@ -511,7 +511,7 @@ describe('NotchPanel island shell', () => {
     fireEvent.pointerMove(dragHandle, { pointerId: 7, clientX: 118, clientY: 2 })
 
     await waitFor(() => {
-      expect(tauriMocks.startNotchDrag).toHaveBeenCalledWith(0, 754, 624, 'auto')
+      expect(tauriMocks.startNotchDrag).toHaveBeenCalledWith(0, 686, 192, 'auto')
     })
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-dragging', 'true')
     expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
@@ -1081,7 +1081,7 @@ describe('NotchPanel island shell', () => {
     })
 
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'alert_permission')
-    expect(hostWidthVar()).toBe('724px')
+    expect(hostWidthVar()).toBe('656px')
     expect(hitboxWidthVar()).toBe('656px')
     expect(document.querySelector('.notch-panel__alert-content')).toBeInTheDocument()
     expect(document.querySelector('.notch-panel__overlay')).not.toBeInTheDocument()
