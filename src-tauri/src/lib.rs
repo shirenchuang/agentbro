@@ -3821,9 +3821,42 @@ fn pet_window_rect_has_visible_area(monitor: Rect, window: Rect) -> bool {
     visible_width >= required_width && visible_height >= required_height
 }
 
+fn clamp_point_into_rect(rect: Rect, x: f64, y: f64, margin: f64) -> (f64, f64) {
+    let min_x = rect.x + margin;
+    let max_x = rect.x + rect.width - margin;
+    let min_y = rect.y + margin;
+    let max_y = rect.y + rect.height - margin;
+    (
+        x.clamp(min_x, max_x.max(min_x)),
+        y.clamp(min_y, max_y.max(min_y)),
+    )
+}
+
+fn distance_point_to_rect(rect: Rect, x: f64, y: f64) -> f64 {
+    let right = rect.x + rect.width;
+    let bottom = rect.y + rect.height;
+    let dx = if x < rect.x {
+        rect.x - x
+    } else if x > right {
+        x - right
+    } else {
+        0.0
+    };
+    let dy = if y < rect.y {
+        rect.y - y
+    } else if y > bottom {
+        y - bottom
+    } else {
+        0.0
+    };
+    dx.hypot(dy)
+}
+
 #[cfg(test)]
 mod pet_window_tests {
-    use super::{pet_window_rect_has_visible_area, Rect};
+    use super::{
+        clamp_point_into_rect, distance_point_to_rect, pet_window_rect_has_visible_area, Rect,
+    };
 
     #[test]
     fn saved_pet_window_origin_must_leave_visible_area_on_screen() {
@@ -3859,6 +3892,53 @@ mod pet_window_tests {
                 height: 360.0,
             },
         ));
+    }
+
+    #[test]
+    fn clamp_pulls_offscreen_point_back_inside_rect() {
+        let monitor = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let (cx, cy) = clamp_point_into_rect(monitor, -500.0, 9999.0, 24.0);
+        assert_eq!(cx, 24.0);
+        assert_eq!(cy, 1117.0 - 24.0);
+    }
+
+    #[test]
+    fn clamp_leaves_onscreen_point_unchanged() {
+        let monitor = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let (cx, cy) = clamp_point_into_rect(monitor, 500.0, 500.0, 24.0);
+        assert_eq!(cx, 500.0);
+        assert_eq!(cy, 500.0);
+    }
+
+    #[test]
+    fn nearest_rect_is_the_one_closer_to_an_offscreen_point() {
+        let primary = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let above = Rect {
+            x: 0.0,
+            y: -1117.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        // A point far above the primary screen sits closer to the upper monitor.
+        assert!(
+            distance_point_to_rect(above, 864.0, -1500.0)
+                < distance_point_to_rect(primary, 864.0, -1500.0)
+        );
     }
 }
 
@@ -3945,6 +4025,30 @@ fn monitor_containing_point(app: &tauri::AppHandle, x: f64, y: f64) -> Option<ta
         let right = left + size.width as f64;
         let bottom = top + size.height as f64;
         x >= left && x < right && y >= top && y < bottom
+    })
+}
+
+fn monitor_rect(monitor: &tauri::Monitor) -> Rect {
+    let pos = monitor.position();
+    let size = monitor.size();
+    Rect {
+        x: pos.x as f64,
+        y: pos.y as f64,
+        width: size.width as f64,
+        height: size.height as f64,
+    }
+}
+
+fn clamp_point_into_monitor(monitor: &tauri::Monitor, x: f64, y: f64) -> (f64, f64) {
+    let scale = monitor.scale_factor().max(1.0);
+    clamp_point_into_rect(monitor_rect(monitor), x, y, 24.0 * scale)
+}
+
+fn nearest_monitor_for_point(app: &tauri::AppHandle, x: f64, y: f64) -> Option<tauri::Monitor> {
+    app.available_monitors().ok()?.into_iter().min_by(|a, b| {
+        let da = distance_point_to_rect(monitor_rect(a), x, y);
+        let db = distance_point_to_rect(monitor_rect(b), x, y);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
     })
 }
 
@@ -4392,6 +4496,19 @@ async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, St
                     origin.y = (pet_center_y - new_top - new_size / 2.0).round();
                 }
                 result_anchor = new_anchor;
+            } else if let Some(monitor) =
+                nearest_monitor_for_point(&app, pet_center_x, pet_center_y)
+            {
+                // The OS-native drag has no screen bounds, so a pet can land
+                // entirely off-screen. Pull its center back inside the closest
+                // monitor before committing the position so it stays reachable.
+                let (cx, cy) = clamp_point_into_monitor(&monitor, pet_center_x, pet_center_y);
+                let new_anchor = pet_stage_anchor_for_center(&monitor, cx, cy);
+                let (new_left, new_top, new_size) =
+                    pet_rect_in_window(w, h, window_scale, pet_scale, new_anchor);
+                origin.x = (cx - new_left - new_size / 2.0).round();
+                origin.y = (cy - new_top - new_size / 2.0).round();
+                result_anchor = new_anchor;
             }
         }
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
@@ -4411,6 +4528,20 @@ async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, St
         anchor_left: result_anchor.left,
         anchor_top: result_anchor.top,
     }))
+}
+
+#[tauri::command]
+async fn reset_pet_position(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut config = state.config_store.get();
+    config.island_pet_window_origin = None;
+    config.island_pet_window_anchor = None;
+    state.config_store.update(config.clone())?;
+    // With no saved origin, sync_pet_window_visibility -> position_pet_window
+    // drops the pet back at its default bottom-right spot. A no-op when the
+    // app is not in pet mode (the window is destroyed instead).
+    sync_pet_window_visibility(&app, &config);
+    Ok(())
 }
 
 /// Resize the notch window dynamically from the frontend and re-center
@@ -4994,6 +5125,7 @@ pub fn run() {
             end_notch_drag,
             start_pet_drag,
             end_pet_drag,
+            reset_pet_position,
             pets::discover_pets,
             market::check_abpets_available,
             market::install_abpets_globally,
