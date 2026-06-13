@@ -197,16 +197,28 @@ impl Service {
 
     // ── Center library scanning ───────────────────────────────────
 
-    /// Scan `~/.agentbro/skills` and upsert skill rows. Returns ids found.
+    /// Scan all center roots (~/.agents/skills, ~/.agentbro/skills) and upsert
+    /// skill rows. Returns ids found.
     pub fn scan_center_into_db(&self) -> Result<Vec<String>, String> {
-        let center = self.center_path()?;
+        let roots = fsutil::all_center_dirs();
         let mut found = Vec::new();
-        if !center.is_dir() {
-            return Ok(found);
-        }
-        let entries = std::fs::read_dir(&center).map_err(|e| format!("read center: {}", e))?;
         let now = db::now_iso();
-        let mut tx_seen: Vec<String> = Vec::new();
+        for center in roots {
+            if !center.is_dir() {
+                continue;
+            }
+            self.scan_one_center_root(&center, &now, &mut found)?;
+        }
+        Ok(found)
+    }
+
+    fn scan_one_center_root(
+        &self,
+        center: &std::path::Path,
+        now: &str,
+        found: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let entries = std::fs::read_dir(center).map_err(|e| format!("read center: {}", e))?;
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
@@ -234,7 +246,7 @@ impl Service {
                     &path.display().to_string(),
                     &hash,
                     &serde_json::to_value(&fm.map).map_err(|e| e.to_string())?,
-                    &now,
+                    now,
                 )?;
                 // If no source recorded yet, mark as manual_center.
                 let has_source: bool = tx
@@ -261,9 +273,8 @@ impl Service {
                 Ok(())
             })?;
             found.push(skill_id.clone());
-            tx_seen.push(skill_id);
         }
-        Ok(found)
+        Ok(())
     }
 
     /// Scan all managed agents; record unmanaged items + update target statuses.

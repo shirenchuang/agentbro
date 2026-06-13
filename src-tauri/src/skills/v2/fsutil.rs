@@ -32,8 +32,22 @@ pub fn agentbro_home() -> PathBuf {
     home().join(".agentbro")
 }
 
+/// Primary center library. AgentBro's existing/shipping skills module uses
+/// `~/.agents/skills` as the canonical central dir; v2 must use the same path
+/// so a user's existing skills show up immediately. `~/.agentbro/skills` is
+/// kept as a secondary scan root (see `all_center_dirs`).
 pub fn default_center_path() -> PathBuf {
-    agentbro_home().join("skills")
+    home().join(".agents").join("skills")
+}
+
+/// All center roots to scan, in priority order. Mirrors
+/// `agent_paths::central_skill_dirs()` so v2 stays consistent with the legacy
+/// skills module.
+pub fn all_center_dirs() -> Vec<PathBuf> {
+    vec![
+        home().join(".agents").join("skills"),
+        home().join(".agentbro").join("skills"),
+    ]
 }
 
 pub fn default_sqlite_path() -> PathBuf {

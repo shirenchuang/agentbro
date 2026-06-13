@@ -34,7 +34,8 @@ describe('AgentIconBadge', () => {
 
   it('renders an agent label and copy modifier', () => {
     const { container } = render(<AgentIconBadge iconKey="codex" mode="copy" />)
-    expect(container.textContent).toContain('X')
+    // codex has a real icon asset → renders an <img>
+    expect(container.querySelector('img')).not.toBeNull()
     expect(container.querySelector('.sm2__agent-badge--copy')).not.toBeNull()
   })
 
