@@ -46,6 +46,7 @@ interface SkillV2State {
   busyAction: string | null
   lastPreview: DistributionPreview | null
   initialized: boolean
+  agentDetailLoading: boolean
 }
 
 interface SkillV2Actions {
@@ -88,6 +89,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   busyAction: null,
   lastPreview: null,
   initialized: false,
+  agentDetailLoading: false,
 
   init: async () => {
     // Backend init (DB + full scan) only runs once per session; subsequent
@@ -155,16 +157,19 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   selectAgent: async (id) => {
-    set({ selectedAgentId: id })
+    set({ selectedAgentId: id, selectedAgentDetail: null, agentDetailLoading: !!id })
     if (id) await get().loadAgentDetail(id)
     else set({ selectedAgentDetail: null })
   },
   loadAgentDetail: async (agentId) => {
+    set({ agentDetailLoading: true })
     try {
       const detail = await skillApiV2.getAgentDetail(agentId)
       set({ selectedAgentDetail: detail })
     } catch (e) {
       set({ error: String(e) })
+    } finally {
+      set({ agentDetailLoading: false })
     }
   },
   runDiagnosis: async () => {

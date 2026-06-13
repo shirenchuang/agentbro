@@ -89,7 +89,9 @@ export function AgentManagementPage() {
         {/* Right detail */}
         <div className="sm2__detailpane settings-scroll">
           {!detail ? (
-            <div className="sm2__empty" style={{ padding: 40 }}>← 选择左侧一个 Agent 查看详情</div>
+            <div className="sm2__empty" style={{ padding: 40 }}>
+              {state.agentDetailLoading ? '加载 Agent 详情…' : '← 选择左侧一个 Agent 查看详情'}
+            </div>
           ) : (
             <AgentDetail
               detail={detail}
