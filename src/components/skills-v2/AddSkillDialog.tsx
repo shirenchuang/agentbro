@@ -14,6 +14,12 @@ export function AddSkillDialog({
   onDone: () => void
 }) {
   const [tab, setTab] = useState<Tab>('local')
+  const [gitUrl, setGitUrl] = useState('')
+
+  const installFromSource = (source?: string) => {
+    if (source) setGitUrl(source)
+    setTab('git')
+  }
 
   return (
     <div className="sm2__overlay" onClick={onClose}>
@@ -31,16 +37,16 @@ export function AddSkillDialog({
           </button>
         </div>
 
-        {tab === 'market' && <MarketTab onClose={onClose} />}
+        {tab === 'market' && <MarketTab onClose={onClose} onInstall={installFromSource} />}
         {tab === 'local' && <LocalTab onClose={onClose} onDone={onDone} />}
-        {tab === 'git' && <GitTab onClose={onClose} onDone={onDone} />}
+        {tab === 'git' && <GitTab initialUrl={gitUrl} onClose={onClose} onDone={onDone} />}
       </div>
     </div>
   )
 }
 
-function MarketTab({ onClose }: { onClose: () => void }) {
-  const [items, setItems] = useState<Array<{ id: string; name: string; description: string; author?: string; category?: string }>>([])
+function MarketTab({ onClose, onInstall }: { onClose: () => void; onInstall: (source?: string) => void }) {
+  const [items, setItems] = useState<Array<{ id: string; name: string; description: string; author?: string; category?: string; source?: string }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,9 +58,14 @@ function MarketTab({ onClose }: { onClose: () => void }) {
       .finally(() => setLoading(false))
   }, [])
 
-  const install = async (item: { source: string; sourceType: string }) => {
-    // marketplace items typically reference a github/url source — hand off to git flow
-    alert(`市场一键安装正在接入（P1）。可复制来源后用 Git 安装：${item.source || ''}`)
+  const install = (item: { source?: string; name: string }) => {
+    // Hand off to the Git tab pre-filled with the item's source — the git flow
+    // clones and imports into the center library.
+    if (!item.source) {
+      alert('该市场条目没有可解析的来源地址,请手动用 Git 安装。')
+      return
+    }
+    onInstall(item.source)
   }
 
   return (
@@ -77,7 +88,7 @@ function MarketTab({ onClose }: { onClose: () => void }) {
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{it.description}</div>
                 {it.author && <span className="sm2__tag">{it.author}</span>}
               </div>
-              <button className="sm2__btn sm2__btn--primary" onClick={() => install(it as never)}>安装</button>
+              <button className="sm2__btn sm2__btn--primary" onClick={() => install(it)}>安装</button>
             </div>
           ))}
         </div>
@@ -202,8 +213,8 @@ function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void
   )
 }
 
-function GitTab({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const [url, setUrl] = useState('')
+function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose: () => void; onDone: () => void }) {
+  const [url, setUrl] = useState(initialUrl || '')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(false)
