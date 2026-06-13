@@ -920,6 +920,23 @@ impl Service {
         let mut candidates = Vec::new();
         let mut blockers = Vec::new();
 
+        // If the source is an archive, extract it to a temp dir first so the
+        // rest of the flow can treat it as a folder. The temp dir persists
+        // through execute_add_center_skill (which reads cand.source_dir); it
+        // lives in /tmp and is cleaned by the OS.
+        let src = if src.is_file()
+            && matches!(
+                src.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+                Some("zip")
+            ) {
+            cleanup_old_temp_imports();
+            let dest = std::env::temp_dir().join(format!("agentbro-skill-import-{}", uuid_short()));
+            extract_zip(&src, &dest)?;
+            dest
+        } else {
+            src
+        };
+
         // Determine if source is a single skill or a folder of skills.
         let dirs: Vec<PathBuf> = if input.multi.unwrap_or(false) && src.is_dir() {
             std::fs::read_dir(&src)
@@ -940,7 +957,7 @@ impl Service {
                 .collect()
         } else {
             return Err(format!(
-                "Not a valid skill directory (must contain SKILL.md): {}",
+                "Not a valid skill source (directory or .zip containing SKILL.md): {}",
                 src.display()
             ));
         };
@@ -2651,3 +2668,55 @@ fn upsert_source(
 }
 
 // silence unused import warning when not needed
+
+// ── ZIP extraction for local archive import ──────────────────────
+
+fn cleanup_old_temp_imports() {
+    if let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("agentbro-skill-import-") {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
+fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(archive).map_err(|e| format!("open zip: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {}", e))?;
+    std::fs::create_dir_all(dest).map_err(|e| format!("mkdir: {}", e))?;
+    // Canonicalize dest so the zip-slip guard is consistent even when temp_dir()
+    // is behind a symlink (macOS /var → /private/var).
+    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry {}: {}", i, e))?;
+        let entry_name = entry.name().to_string();
+        // guard against path traversal (zip-slip): every component must stay under dest
+        let outpath = dest.join(&entry_name);
+        let mut cur = outpath.clone();
+        let mut ok = false;
+        for _ in 0..32 {
+            match cur.parent() {
+                Some(p) if p == dest => { ok = true; break; }
+                Some(p) => cur = p.to_path_buf(),
+                None => break,
+            }
+        }
+        if !ok {
+            continue;
+        }
+        if entry.is_dir() {
+            std::fs::create_dir_all(&outpath).map_err(|e| format!("mkdir entry: {}", e))?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
+            }
+            let mut outfile = std::fs::File::create(&outpath).map_err(|e| format!("create file: {}", e))?;
+            std::io::copy(&mut entry, &mut outfile).map_err(|e| format!("copy: {}", e))?;
+        }
+    }
+    Ok(())
+}

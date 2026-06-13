@@ -6,6 +6,7 @@ use crate::skills::v2::fsutil;
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::{ClaimOrigin, Service, UpsertPackInput};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -681,4 +682,43 @@ fn real_smoke_against_actual_home() {
             match svc.get_agent_detail(&a.id) { Ok(d) => eprintln!("agent detail {} OK: {} skills", a.id, d.skills.len()), Err(e) => eprintln!("agent detail {} FAILED: {e}", a.id) }
         }
     }
+}
+
+#[test]
+fn add_center_skill_from_zip() {
+    let (_home, svc, _lock) = fresh_service("zip");
+    // build a skill dir, then zip it
+    let skill_dir = write_skill(&svc.home.join("src"), "zipped", "zip-skill", Some("payload"));
+    let zip_path = svc.home.join("zip-skill.zip");
+    let file = std::fs::File::create(&zip_path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let opts =
+        zip::write::SimpleFileOptions::default();
+    zip.start_file("zip-skill/SKILL.md", opts).unwrap();
+    zip.write_all(b"---\nname: zip-skill\ndescription: zipped\n---\n# zip").unwrap();
+    zip.start_file("zip-skill/reference.md", opts).unwrap();
+    zip.write_all(b"payload").unwrap();
+    zip.finish().unwrap();
+    let _ = &skill_dir;
+
+    let preview = svc.preview_add_center_skill(AddCenterSkillInput {
+        source_path: zip_path.display().to_string(),
+        source_type: "archive".to_string(),
+        source_uri: None,
+        imported_from_agent: None,
+        imported_from_path: None,
+        multi: None,
+    }).unwrap();
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].skill_id, "zip-skill");
+    let r = svc.execute_add_center_skill(AddCenterSkillInput {
+        source_path: zip_path.display().to_string(),
+        source_type: "archive".to_string(),
+        source_uri: None,
+        imported_from_agent: None,
+        imported_from_path: None,
+        multi: None,
+    }, vec![]).unwrap();
+    assert_eq!(r.skill_ids, vec!["zip-skill".to_string()]);
+    assert!(svc.center_path().unwrap().join("zip-skill").is_dir());
 }
