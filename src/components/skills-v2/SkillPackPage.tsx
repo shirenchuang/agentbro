@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { SkillPackDetail, AgentSummary, DistributionPreview } from '../../services/skillApiV2'
+import type { SkillPackDetail, DistributionPreview } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
 
@@ -16,8 +16,10 @@ export function SkillPackPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const detail = state.selectedPackDetail
+
   return (
-    <div className="sm2">
+    <div className="sm2 sm2--masterdetail">
       <div className="sm2__header">
         <h2 className="sm2__title">技能包</h2>
         <div className="sm2__tabs">
@@ -26,49 +28,54 @@ export function SkillPackPage() {
         </div>
       </div>
 
-      <div className="sm2__body">
-        <div className="sm2__main">
+      <div className="sm2__body sm2__body--masterdetail">
+        <div className="sm2__rail settings-scroll">
           {state.packs.length === 0 ? (
-            <div className="sm2__empty">还没有技能包。技能包只保存 Skill ID，不绑定 Agent，也不绑定 link/copy。</div>
+            <div className="sm2__empty" style={{ padding: 12 }}>还没有技能包</div>
           ) : (
-            <div className="sm2__list">
-              {state.packs.map((p) => (
-                <div
-                  key={p.id}
-                  className={`sm2__row${state.selectedPackId === p.id ? ' sm2__row--selected' : ''}`}
-                  onClick={() => state.selectPack(p.id)}
-                >
-                  <div className="sm2__row-main">
-                    <div className="sm2__row-title">{p.name}</div>
-                    <div className="sm2__row-sub">
-                      {p.memberCount} 个成员 · 应用到 {p.appliedAgentCount} 个 Agent ·{' '}
-                      {p.healthy ? '健康' : '有缺失成员'}
-                    </div>
+            state.packs.map((p) => (
+              <div
+                key={p.id}
+                className={`sm2__rail-item${state.selectedPackId === p.id ? ' sm2__rail-item--active' : ''}`}
+                onClick={() => state.selectPack(p.id)}
+              >
+                <div className="sm2__rail-item-main">
+                  <div className="sm2__rail-item-title">{p.name}</div>
+                  <div className="sm2__rail-item-sub">
+                    {p.memberCount} 成员 · {p.appliedAgentCount} Agent
                   </div>
                 </div>
-              ))}
-            </div>
+                {p.healthy ? <span className="sm2__dot sm2__dot--ok" /> : <span className="sm2__dot sm2__dot--conflict" />}
+              </div>
+            ))
           )}
         </div>
-        <PackDetailPanel
-          detail={state.selectedPackDetail}
-          onApply={(d) => setApplyFor(d)}
-          onEdit={() => setEditing(true)}
-          onDelete={async (id) => {
-            if (!confirm('删除该技能包？')) return
-            setBusy(true)
-            try {
-              await skillApiV2.deletePack(id)
-              await state.selectPack(null)
-              await state.loadOverview()
-            } catch (e) {
-              alert(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
-          busy={busy}
-        />
+
+        <div className="sm2__detailpane settings-scroll">
+          {!detail ? (
+            <div className="sm2__empty" style={{ padding: 40 }}>← 选择左侧一个技能包查看详情</div>
+          ) : (
+            <PackDetail
+              detail={detail}
+              onApply={() => setApplyFor(detail)}
+              onEdit={() => setEditing(true)}
+              onDelete={async () => {
+                if (!confirm('删除该技能包？')) return
+                setBusy(true)
+                try {
+                  await skillApiV2.deletePack(detail.id)
+                  await state.selectPack(null)
+                  await state.loadOverview()
+                } catch (e) {
+                  alert(String(e))
+                } finally {
+                  setBusy(false)
+                }
+              }}
+              busy={busy}
+            />
+          )}
+        </div>
       </div>
 
       {editing && (
@@ -82,61 +89,79 @@ export function SkillPackPage() {
         />
       )}
       {applyFor && (
-        <ApplyPackDialog pack={applyFor} agents={state.agents} defaultMode={state.settings?.defaultDistributeMode || 'link'} onClose={() => setApplyFor(null)} onDone={async () => { setApplyFor(null); await state.loadOverview() }} />
+        <ApplyPackDialog
+          pack={applyFor}
+          agents={state.agents}
+          defaultMode={state.settings?.defaultDistributeMode || 'link'}
+          onClose={() => setApplyFor(null)}
+          onDone={async () => {
+            setApplyFor(null)
+            await state.loadOverview()
+          }}
+        />
       )}
     </div>
   )
 }
 
-function PackDetailPanel({
+function PackDetail({
   detail,
   onApply,
   onEdit,
   onDelete,
   busy,
 }: {
-  detail: SkillPackDetail | null
-  onApply: (d: SkillPackDetail) => void
+  detail: SkillPackDetail
+  onApply: () => void
   onEdit: () => void
-  onDelete: (id: string) => void
+  onDelete: () => void
   busy: boolean
 }) {
-  if (!detail) {
-    return (
-      <div className="sm2__detail">
-        <div className="sm2__empty" style={{ padding: 20 }}>选择一个技能包查看详情</div>
-      </div>
-    )
-  }
   return (
-    <div className="sm2__detail">
-      <h3>{detail.name}</h3>
-      <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{detail.description}</p>
-      <div className="sm2__btn-row">
-        <button className="sm2__btn sm2__btn--primary" onClick={() => onApply(detail)}>应用到 Agent</button>
-        <button className="sm2__btn" onClick={onEdit}>编辑</button>
-        <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onDelete(detail.id)}>删除</button>
+    <div className="sm2__agentdetail">
+      <div className="sm2__packdetail-header">
+        <div className="sm2__agentdetail-titles">
+          <h3>{detail.name}</h3>
+          <div className="sm2__detail-meta">{detail.description || '（无描述）'}</div>
+        </div>
+        <div className="sm2__btn-row" style={{ margin: 0 }}>
+          <button className="sm2__btn sm2__btn--primary" onClick={onApply}>应用到 Agent</button>
+          <button className="sm2__btn" onClick={onEdit}>编辑</button>
+          <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={onDelete}>删除</button>
+        </div>
       </div>
-      <div className="sm2__detail-section">
-        <h4>成员 Skills</h4>
-        {detail.members.map((m) => (
-          <div key={m.skillId} className="sm2__pack-member">
-            <span>{m.skillName}</span>
-            {m.missing && <span className="sm2__tag sm2__tag--conflict">缺失</span>}
-          </div>
-        ))}
-      </div>
-      <div className="sm2__detail-section">
-        <h4>已应用 Agent</h4>
-        {detail.appliedAgents.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>尚未应用</div>
-        ) : (
-          <div className="sm2__agents">
-            {detail.appliedAgents.map((a, i) => (
-              <AgentIconBadge key={i} iconKey={a.packName} title={a.packName} />
-            ))}
-          </div>
-        )}
+
+      <div className="sm2__packdetail-grid">
+        <div className="sm2__detail-section">
+          <h4>成员 Skills（{detail.members.length}）</h4>
+          {detail.members.length === 0 ? (
+            <div className="sm2__empty" style={{ padding: 8 }}>无成员</div>
+          ) : (
+            detail.members.map((m) => (
+              <div key={m.skillId} className="sm2__pack-member">
+                <span>{m.skillName}</span>
+                {m.missing ? (
+                  <span className="sm2__tag sm2__tag--conflict">缺失</span>
+                ) : (
+                  <span className="sm2__tag sm2__tag--ok">就绪</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="sm2__detail-section">
+          <h4>已应用 Agent（{detail.appliedAgents.length}）</h4>
+          {detail.appliedAgents.length === 0 ? (
+            <div className="sm2__empty" style={{ padding: 8 }}>尚未应用</div>
+          ) : (
+            <div className="sm2__agents">
+              {detail.appliedAgents.map((a, i) => (
+                <AgentIconBadge key={i} iconKey={a.packName} title={a.packName} size={28} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -160,14 +185,13 @@ function PackBuilderDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const toggle = (id: string) => {
+  const toggle = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
 
   const save = async () => {
     if (!name.trim()) {
@@ -236,7 +260,7 @@ function ApplyPackDialog({
   onDone,
 }: {
   pack: SkillPackDetail
-  agents: AgentSummary[]
+  agents: { id: string; displayName: string; iconKey: string; installed: boolean }[]
   defaultMode: 'link' | 'copy'
   onClose: () => void
   onDone: () => void

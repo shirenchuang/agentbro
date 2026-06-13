@@ -129,11 +129,12 @@ describe('selecting a skill updates detail', () => {
     })
   })
 
-  it('selecting a skill calls store selectSkill', async () => {
-    const selectSpy = vi.spyOn(useSkillStoreV2.getState(), 'selectSkill')
+  it('clicking a skill opens the detail slide-over', async () => {
     const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
     render(<SkillLibraryPage />)
     fireEvent.click(screen.getByText('Release Checklist'))
-    expect(selectSpy).toHaveBeenCalledWith('release-checklist')
+    // SlideOver renders into document.body via portal; its title shows the id
+    const title = document.body.querySelector('.sm2__slideover-title')
+    expect(title?.textContent).toContain('release-checklist')
   })
 })

@@ -4,6 +4,7 @@ import { useAgentStore } from '../../stores/agentStore'
 import { useSkillStore } from '../../stores/skillStore'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import type { SkillManagerTab } from '../../stores/skillStoreV2'
+import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { isAgentProgramInstalled } from '../../utils/agentPrograms'
 import { displayVersionValue } from '../../utils/versions'
@@ -94,6 +95,9 @@ export function SettingsSidebar({
   const { skills, packs } = useSkillStore()
   const skillActiveTab = useSkillStoreV2((s) => s.activeTab)
   const setSkillTab = useSkillStoreV2((s) => s.setTab)
+  const skillAgents = useSkillStoreV2((s) => s.agents)
+  const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
+  const selectAgent = useSkillStoreV2((s) => s.selectAgent)
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -336,6 +340,27 @@ export function SettingsSidebar({
               <span className="settings-sidebar__label-text">{item.label}</span>
             </button>
           ))}
+          {skillActiveTab === 'agents' && (
+            <div className="sm2-sidebar__subgroup">
+              <div className="sm2-sidebar__subgroup-label">已识别 Agent</div>
+              {skillAgents.length === 0 ? (
+                <div className="sm2-sidebar__subgroup-empty">暂无</div>
+              ) : (
+                skillAgents.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
+                    onClick={() => selectAgent(a.id)}
+                  >
+                    <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
+                    <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
+                    {a.installed && <span className="sm2-sidebar__subitem-dot" />}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
       </nav>
     )

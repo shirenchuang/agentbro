@@ -5,6 +5,7 @@ import type { SkillSummary, DeleteCenterSkillPreview } from '../../services/skil
 import { AgentIconBadge } from './AgentIconBadge'
 import { AddSkillDialog } from './AddSkillDialog'
 import { DistributeDialog } from './DistributeDialog'
+import { SkillDetailSlider } from './SkillDetailSlider'
 import { PreviewDialog } from './PreviewDialog'
 
 const STATUS_LABEL: Record<string, string> = {
@@ -21,6 +22,7 @@ export function SkillLibraryPage() {
   const overview = state.overview
   const [addOpen, setAddOpen] = useState(false)
   const [distributeFor, setDistributeFor] = useState<SkillSummary | null>(null)
+  const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -30,8 +32,7 @@ export function SkillLibraryPage() {
   }, [])
 
   const refresh = () => state.refresh()
-  const reloadDetail = async () => {
-    if (state.selectedSkillId) await state.selectSkill(state.selectedSkillId)
+  const reload = async () => {
     await state.loadOverview()
   }
 
@@ -53,7 +54,7 @@ export function SkillLibraryPage() {
     try {
       await skillApiV2.executeDeleteCenterSkill(deletePreview.skillId, removeLinked)
       setDeletePreview(null)
-      await state.selectSkill(null)
+      setSliderSkillId(null)
       await state.loadOverview()
     } catch (e) {
       state.setError(String(e))
@@ -67,7 +68,7 @@ export function SkillLibraryPage() {
       <div className="sm2__header">
         <h2 className="sm2__title">Skill 库</h2>
         <div className="sm2__tabs">
-          <button className="sm2__btn" onClick={() => setAddOpen(true)}>+ 添加到中心库</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={() => setAddOpen(true)}>+ 添加到中心库</button>
           <button className="sm2__btn" onClick={refresh} disabled={state.loading}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -95,7 +96,6 @@ export function SkillLibraryPage() {
           <option value="ok">正常</option>
           <option value="conflict">冲突</option>
           <option value="copyDiverged">副本分叉</option>
-          <option value="unmanaged">未管理</option>
         </select>
         <select className="sm2__select" value={state.filters.source} onChange={(e) => state.setFilter('source', e.target.value)}>
           <option value="">全部来源</option>
@@ -112,60 +112,49 @@ export function SkillLibraryPage() {
 
       {state.error && <div className="sm2__error">{state.error}</div>}
 
-      <div className="sm2__body">
-        <div className="sm2__main">
-          {skills.length === 0 ? (
-            <div className="sm2__empty">
-              中心库为空。点击「添加到中心库」导入第一个 Skill，或把 Skill 文件夹放入
-              <code style={{ margin: '0 4px' }}>{state.settings?.centerPath}</code> 后刷新。
-            </div>
-          ) : state.viewMode === 'cards' ? (
-            <div className="sm2__grid">
-              {skills.map((s) => (
-                <SkillCard
-                  key={s.id}
-                  skill={s}
-                  selected={state.selectedSkillId === s.id}
-                  onClick={() => state.selectSkill(s.id)}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="sm2__list">
-              {skills.map((s) => (
-                <div
-                  key={s.id}
-                  className={`sm2__row${state.selectedSkillId === s.id ? ' sm2__row--selected' : ''}`}
-                  onClick={() => state.selectSkill(s.id)}
-                >
-                  <div className="sm2__row-main">
-                    <div className="sm2__row-title">{s.name}</div>
-                    <div className="sm2__row-sub">{s.sourceType} · {STATUS_LABEL[s.status] || s.status}</div>
-                  </div>
-                  <AgentBadges skill={s} />
+      <div className="sm2__main sm2__main--full">
+        {skills.length === 0 ? (
+          <div className="sm2__empty">
+            中心库为空。点击「添加到中心库」导入第一个 Skill，或把 Skill 文件夹放入
+            <code style={{ margin: '0 4px' }}>{state.settings?.centerPath}</code> 后刷新。
+          </div>
+        ) : state.viewMode === 'cards' ? (
+          <div className="sm2__grid">
+            {skills.map((s) => (
+              <SkillCard key={s.id} skill={s} onClick={() => setSliderSkillId(s.id)} />
+            ))}
+          </div>
+        ) : (
+          <div className="sm2__list">
+            {skills.map((s) => (
+              <div key={s.id} className="sm2__row" onClick={() => setSliderSkillId(s.id)}>
+                <div className="sm2__row-main">
+                  <div className="sm2__row-title">{s.name}</div>
+                  <div className="sm2__row-sub">{s.sourceType} · {STATUS_LABEL[s.status] || s.status}</div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <SkillDetailPanel
-          onDistribute={(s) => setDistributeFor(s)}
-          onDelete={openDelete}
-          onAdoptRefresh={reloadDetail}
-          busy={busy}
-        />
+                <AgentBadges skill={s} />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {addOpen && (
-        <AddSkillDialog onClose={() => setAddOpen(false)} onDone={reloadDetail} />
-      )}
+      <SkillDetailSlider
+        skillId={sliderSkillId}
+        open={!!sliderSkillId}
+        onClose={() => setSliderSkillId(null)}
+        onDistribute={(s) => setDistributeFor(s)}
+        onDelete={openDelete}
+      />
+
+      {addOpen && <AddSkillDialog onClose={() => setAddOpen(false)} onDone={reload} />}
       {distributeFor && state.settings && (
         <DistributeDialog
           skill={distributeFor}
           agents={state.agents}
           defaultMode={state.settings.defaultDistributeMode}
           onClose={() => setDistributeFor(null)}
-          onDone={reloadDetail}
+          onDone={reload}
         />
       )}
       {deletePreview && (
@@ -183,19 +172,9 @@ export function SkillLibraryPage() {
           <p style={{ fontSize: 12, marginTop: 8 }}>
             受影响 Agent 安装：{deletePreview.affectedTargets.length}
           </p>
-          {deletePreview.affectedTargets.map((t) => (
-            <div key={t.targetId} className="sm2__target-row">
-              <span>{t.displayName} · {t.mode}</span>
-              <span>{t.claimCount} claim(s)</span>
-            </div>
-          ))}
           {deletePreview.affectedTargets.length > 0 && (
             <div className="sm2__btn-row">
-              <button
-                className="sm2__btn sm2__btn--danger"
-                disabled={busy}
-                onClick={() => confirmDelete(true)}
-              >
+              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => confirmDelete(true)}>
                 同时移除所有 Agent 安装
               </button>
             </div>
@@ -225,17 +204,9 @@ function AgentBadges({ skill }: { skill: SkillSummary }) {
   )
 }
 
-function SkillCard({
-  skill,
-  selected,
-  onClick,
-}: {
-  skill: SkillSummary
-  selected: boolean
-  onClick: () => void
-}) {
+function SkillCard({ skill, onClick }: { skill: SkillSummary; onClick: () => void }) {
   return (
-    <div className={`sm2__card${selected ? ' sm2__card--selected' : ''}`} onClick={onClick}>
+    <div className="sm2__card" onClick={onClick}>
       <h3 className="sm2__card-title">{skill.name}</h3>
       <p className="sm2__card-desc">{skill.description || '（无描述）'}</p>
       <div className="sm2__card-tags">
@@ -249,109 +220,6 @@ function SkillCard({
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-function SkillDetailPanel({
-  onDistribute,
-  onDelete,
-  onAdoptRefresh,
-  busy,
-}: {
-  onDistribute: (s: SkillSummary) => void
-  onDelete: (id: string) => void
-  onAdoptRefresh: () => void
-  busy: boolean
-}) {
-  const { selectedSkillDetail: detail } = useSkillStoreV2()
-  const [syncing, setSyncing] = useState<string | null>(null)
-
-  if (!detail) {
-    return (
-      <div className="sm2__detail">
-        <div className="sm2__empty" style={{ padding: 20 }}>选择一个 Skill 查看详情</div>
-      </div>
-    )
-  }
-
-  const summary = detail
-  const doSync = async (targetId: string, action: string) => {
-    setSyncing(targetId)
-    try {
-      await skillApiV2.executeSyncCopy(targetId, action)
-      await onAdoptRefresh()
-    } catch (e) {
-      // eslint-disable-next-line no-alert
-      alert(String(e))
-    } finally {
-      setSyncing(null)
-    }
-  }
-
-  return (
-    <div className="sm2__detail">
-      <h3>{summary.name}</h3>
-      <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '0 0 8px' }}>{summary.description}</p>
-      <div className="sm2__detail-meta">
-        <div>来源：{summary.sourceType}{summary.sourceUri ? ` · ${summary.sourceUri}` : ''}</div>
-        <div>路径：{summary.centerPath}</div>
-        <div>Hash：{summary.currentHash.slice(0, 12)}…</div>
-      </div>
-
-      <div className="sm2__btn-row">
-        <button className="sm2__btn sm2__btn--primary" onClick={() => onDistribute(summary)}>分发到 Agent</button>
-        <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(summary.centerPath)}>打开目录</button>
-        <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onDelete(summary.id)}>删除</button>
-      </div>
-
-      <div className="sm2__detail-section">
-        <h4>已安装 Agent</h4>
-        {detail.targets.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>尚未分发到任何 Agent</div>
-        ) : (
-          detail.targets.map((t) => (
-            <div key={t.id} className="sm2__target-row">
-              <div>
-                <strong>{t.agentId}</strong>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {t.actualMode} · {t.status} · {t.claims.length} claim(s):{' '}
-                  {t.claims.map((c) => c.claimType === 'pack' ? `pack:${c.packName}` : 'direct').join(', ')}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{t.targetPath}</div>
-              </div>
-              {t.actualMode === 'copy' && t.status !== 'ok' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {t.status === 'copy_outdated' && (
-                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'center_over_agent')}>更新副本</button>
-                  )}
-                  {t.status === 'copy_modified' && (
-                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'agent_over_center')}>推送到中心库</button>
-                  )}
-                  {t.status === 'copy_diverged' && (
-                    <>
-                      <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'center_over_agent')}>用中心库覆盖</button>
-                      <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'agent_over_center')}>用副本覆盖</button>
-                      <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'keep_diverged')}>保留分叉</button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-
-      {detail.source && (
-        <div className="sm2__detail-section">
-          <h4>来源</h4>
-          <div className="sm2__detail-meta">
-            <div>类型：{detail.source.sourceType}</div>
-            {detail.source.importedFromAgent && <div>来自 Agent：{detail.source.importedFromAgent}</div>}
-            {detail.source.importedFromPath && <div>原路径：{detail.source.importedFromPath}</div>}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

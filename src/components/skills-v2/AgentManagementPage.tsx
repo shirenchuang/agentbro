@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AgentSummary, AdoptPreview } from '../../services/skillApiV2'
+import type { AgentDetail, AdoptPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { PreviewDialog } from './PreviewDialog'
 
+type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins'
+
 export function AgentManagementPage() {
   const state = useSkillStoreV2()
+  const agents = state.agents
+  const detail = state.selectedAgentDetail
+  const [tab, setTab] = useState<DetailTab>('overview')
   const [adopt, setAdopt] = useState<AdoptPreview | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -15,10 +20,38 @@ export function AgentManagementPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const agents = state.agents
+  useEffect(() => {
+    setTab('overview')
+  }, [state.selectedAgentId])
+
+  const openAdopt = async (agentId: string, unmanagedId: string) => {
+    setBusy(true)
+    try {
+      const p = await skillApiV2.previewAdopt(agentId, unmanagedId)
+      setAdopt(p)
+    } catch (e) {
+      alert(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (packId: string, agentId: string) => {
+    if (!confirm(`从该 Agent 撤销技能包「${packId}」？`)) return
+    setBusy(true)
+    try {
+      await skillApiV2.removePackFromAgent(packId, agentId)
+      await state.loadAgentDetail(agentId)
+      await state.loadOverview()
+    } catch (e) {
+      alert(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <div className="sm2">
+    <div className="sm2 sm2--masterdetail">
       <div className="sm2__header">
         <h2 className="sm2__title">Agent 管理</h2>
         <div className="sm2__tabs">
@@ -26,37 +59,47 @@ export function AgentManagementPage() {
         </div>
       </div>
 
-      <div className="sm2__body">
-        <div className="sm2__main" style={{ maxWidth: 320 }}>
-          <div className="sm2__list">
-            {agents.map((a) => (
-              <AgentRow
+      <div className="sm2__body sm2__body--masterdetail">
+        {/* Left agent rail */}
+        <div className="sm2__rail settings-scroll">
+          {agents.length === 0 ? (
+            <div className="sm2__empty" style={{ padding: 12 }}>未检测到 Agent</div>
+          ) : (
+            agents.map((a) => (
+              <div
                 key={a.id}
-                agent={a}
-                selected={state.selectedAgentId === a.id}
+                className={`sm2__rail-item${state.selectedAgentId === a.id ? ' sm2__rail-item--active' : ''}`}
                 onClick={() => state.selectAgent(a.id)}
-              />
-            ))}
-          </div>
+              >
+                <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={28} />
+                <div className="sm2__rail-item-main">
+                  <div className="sm2__rail-item-title">{a.displayName}</div>
+                  <div className="sm2__rail-item-sub">
+                    {a.installed ? `管理 ${a.managedSkillCount}` : '未检测到'}
+                    {a.unmanagedSkillCount > 0 && ` · 未管理 ${a.unmanagedSkillCount}`}
+                  </div>
+                </div>
+                {a.installed && <span className="sm2__dot sm2__dot--ok" />}
+              </div>
+            ))
+          )}
         </div>
-        <AgentDetailPanel
-          agent={state.selectedAgentDetail}
-          onAdopt={(agentId, unmanagedId) => openAdopt(agentId, unmanagedId, setAdopt, setBusy)}
-          onRevoke={async (packId, agentId) => {
-            if (!confirm(`从该 Agent 撤销技能包「${packId}」？`)) return
-            setBusy(true)
-            try {
-              await skillApiV2.removePackFromAgent(packId, agentId)
-              await state.loadAgentDetail(agentId)
-              await state.loadOverview()
-            } catch (e) {
-              alert(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
-          busy={busy}
-        />
+
+        {/* Right detail */}
+        <div className="sm2__detailpane settings-scroll">
+          {!detail ? (
+            <div className="sm2__empty" style={{ padding: 40 }}>← 选择左侧一个 Agent 查看详情</div>
+          ) : (
+            <AgentDetail
+              detail={detail}
+              tab={tab}
+              onTab={setTab}
+              busy={busy}
+              onAdopt={openAdopt}
+              onRevoke={revoke}
+            />
+          )}
+        </div>
       </div>
 
       {adopt && (
@@ -74,161 +117,192 @@ export function AgentManagementPage() {
   )
 }
 
-async function openAdopt(
-  agentId: string,
-  unmanagedId: string,
-  setAdopt: (p: AdoptPreview | null) => void,
-  setBusy: (b: boolean) => void,
-) {
-  setBusy(true)
-  try {
-    const p = await skillApiV2.previewAdopt(agentId, unmanagedId)
-    setAdopt(p)
-  } catch (e) {
-    alert(String(e))
-  } finally {
-    setBusy(false)
-  }
-}
-
-function AgentRow({
-  agent,
-  selected,
-  onClick,
-}: {
-  agent: AgentSummary
-  selected: boolean
-  onClick: () => void
-}) {
-  return (
-    <div className={`sm2__row${selected ? ' sm2__row--selected' : ''}`} onClick={onClick}>
-      <AgentIconBadge iconKey={agent.iconKey} title={agent.displayName} size={26} />
-      <div className="sm2__row-main">
-        <div className="sm2__row-title">{agent.displayName}</div>
-        <div className="sm2__row-sub">
-          {agent.installed ? '已安装' : '未检测到'} · 管理 {agent.managedSkillCount} · 未管理 {agent.unmanagedSkillCount}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AgentDetailPanel({
-  agent,
+function AgentDetail({
+  detail,
+  tab,
+  onTab,
+  busy,
   onAdopt,
   onRevoke,
-  busy,
 }: {
-  agent: ReturnType<typeof useSkillStoreV2.getState>['selectedAgentDetail']
+  detail: AgentDetail
+  tab: DetailTab
+  onTab: (t: DetailTab) => void
+  busy: boolean
   onAdopt: (agentId: string, unmanagedId: string) => void
   onRevoke: (packId: string, agentId: string) => void
-  busy: boolean
 }) {
-  if (!agent) {
-    return (
-      <div className="sm2__detail">
-        <div className="sm2__empty" style={{ padding: 20 }}>选择一个 Agent 查看详情</div>
-      </div>
-    )
-  }
+  const tabs: Array<{ id: DetailTab; label: string }> = [
+    { id: 'overview', label: '概览' },
+    { id: 'skills', label: `Skills (${detail.skills.length})` },
+    { id: 'mcp', label: `MCP (${detail.mcpServers.length})` },
+    { id: 'plugins', label: `Plugins (${detail.plugins.length})` },
+  ]
   return (
-    <div className="sm2__detail" style={{ flex: 1 }}>
-      <h3>{agent.displayName}</h3>
-      <div className="sm2__detail-meta">
-        <div>版本：{agent.version || '未知'}</div>
-        <div>Skills 目录：{agent.skillsDir || '—'}</div>
-        {agent.mcpConfigPath && <div>MCP 配置：{agent.mcpConfigPath}</div>}
+    <div className="sm2__agentdetail">
+      {/* Summary header */}
+      <div className="sm2__agentdetail-header">
+        <AgentIconBadge iconKey={detail.iconKey} size={44} />
+        <div className="sm2__agentdetail-titles">
+          <h3>{detail.displayName}</h3>
+          <div className="sm2__detail-meta">
+            版本 {detail.version || '未知'}
+            {detail.latestVersion && detail.latestVersion !== detail.version && (
+              <span className="sm2__tag sm2__tag--copyDiverged"> → {detail.latestVersion}</span>
+            )}
+          </div>
+        </div>
       </div>
 
-      {agent.health.length > 0 && (
+      <div className="sm2__detail-meta" style={{ marginBottom: 12 }}>
+        {detail.skillsDir && <div>Skills 目录：<code>{detail.skillsDir}</code></div>}
+        {detail.mcpConfigPath && <div>MCP 配置：<code>{detail.mcpConfigPath}</code></div>}
+      </div>
+
+      {detail.health.length > 0 && (
         <div className="sm2__detail-section">
-          <h4>路径健康</h4>
-          {agent.health.map((h, i) => (
+          {detail.health.map((h, i) => (
             <div key={i} className="sm2__change sm2__change--blocked">{h.message}</div>
           ))}
         </div>
       )}
 
-      <div className="sm2__detail-section">
-        <h4>已安装 Skills（{agent.skills.length}）</h4>
-        {agent.skills.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>无</div>
-        ) : (
-          agent.skills.map((s) => (
-            <div key={s.id} className="sm2__target-row">
-              <div>
-                <strong>{s.targetPath.split('/').pop()}</strong>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {s.actualMode} · {s.status}
-                </div>
-              </div>
-            </div>
-          ))
-        )}
+      {/* Tabs */}
+      <div className="sm2__subtabs">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            className={`sm2__subtab${tab === t.id ? ' sm2__subtab--active' : ''}`}
+            onClick={() => onTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
+      <div className="sm2__subtab-body">
+        {tab === 'overview' && <OverviewTab detail={detail} onRevoke={onRevoke} busy={busy} />}
+        {tab === 'skills' && <SkillsTab detail={detail} onAdopt={onAdopt} />}
+        {tab === 'mcp' && <McpTab detail={detail} />}
+        {tab === 'plugins' && <PluginsTab detail={detail} />}
+      </div>
+    </div>
+  )
+}
+
+function OverviewTab({
+  detail,
+  onRevoke,
+  busy,
+}: {
+  detail: AgentDetail
+  onRevoke: (packId: string, agentId: string) => void
+  busy: boolean
+}) {
+  return (
+    <>
       <div className="sm2__detail-section">
-        <h4>已应用技能包</h4>
-        {agent.appliedPacks.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>无</div>
+        <h4>已应用技能包（{detail.appliedPacks.length}）</h4>
+        {detail.appliedPacks.length === 0 ? (
+          <div className="sm2__empty" style={{ padding: 8 }}>无</div>
         ) : (
-          agent.appliedPacks.map((p) => (
+          detail.appliedPacks.map((p) => (
             <div key={p.packId} className="sm2__target-row">
-              <span>{p.packName}</span>
-              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onRevoke(p.packId, agent.id)}>
+              <span>{p.packName} · {p.memberCount} 成员</span>
+              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onRevoke(p.packId, detail.id)}>
                 撤销
               </button>
             </div>
           ))
         )}
       </div>
+    </>
+  )
+}
 
+function SkillsTab({
+  detail,
+  onAdopt,
+}: {
+  detail: AgentDetail
+  onAdopt: (agentId: string, unmanagedId: string) => void
+}) {
+  const all = useSkillStoreV2((s) => s.unmanaged)
+  const unmanaged = all.filter((u) => u.agentId === detail.id)
+  return (
+    <>
       <div className="sm2__detail-section">
-        <h4>MCP 服务器</h4>
-        {agent.mcpServers.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>未配置</div>
+        <h4>已管理 Skills（{detail.skills.length}）</h4>
+        {detail.skills.length === 0 ? (
+          <div className="sm2__empty" style={{ padding: 8 }}>无</div>
         ) : (
-          agent.mcpServers.map((m) => (
-            <div key={m.name} className="sm2__target-row">
-              <span>{m.name} <code style={{ fontSize: 11 }}>{m.command}</code></span>
-              <span className={`sm2__tag sm2__tag--${m.valid ? 'ok' : 'conflict'}`}>{m.valid ? '有效' : '异常'}</span>
+          detail.skills.map((s) => (
+            <div key={s.id} className="sm2__target-row">
+              <div>
+                <strong>{s.targetPath.split('/').pop()}</strong>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  {s.actualMode} · {s.status} · {s.claims.length} claim(s)
+                </div>
+              </div>
             </div>
           ))
         )}
       </div>
-
       <div className="sm2__detail-section">
-        <h4>未管理 Skills</h4>
-        <UnmanagedList agentId={agent.id} onAdopt={onAdopt} />
+        <h4>未管理 Skills（{unmanaged.length}）</h4>
+        {unmanaged.length === 0 ? (
+          <div className="sm2__empty" style={{ padding: 8 }}>无未管理 Skill</div>
+        ) : (
+          unmanaged.map((u) => (
+            <div key={u.id} className="sm2__target-row">
+              <div>
+                <strong>{u.inferredSkillId}</strong>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{u.path}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{u.reason}</div>
+              </div>
+              <button className="sm2__btn sm2__btn--primary" onClick={() => onAdopt(detail.id, u.id)}>接管</button>
+            </div>
+          ))
+        )}
       </div>
-    </div>
+    </>
   )
 }
 
-function UnmanagedList({
-  agentId,
-  onAdopt,
-}: {
-  agentId: string
-  onAdopt: (agentId: string, unmanagedId: string) => void
-}) {
-  const all = useSkillStoreV2((s) => s.unmanaged)
-  const items = all.filter((u) => u.agentId === agentId)
-  if (items.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>无未管理 Skill</div>
-  }
+function McpTab({ detail }: { detail: AgentDetail }) {
+  if (detail.mcpServers.length === 0)
+    return <div className="sm2__empty" style={{ padding: 12 }}>未配置 MCP 服务器</div>
   return (
     <>
-      {items.map((u) => (
-        <div key={u.id} className="sm2__target-row">
+      {detail.mcpServers.map((m) => (
+        <div key={m.name} className="sm2__target-row">
           <div>
-            <strong>{u.inferredSkillId}</strong>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{u.path}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{u.reason}</div>
+            <strong>{m.name}</strong>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              <code>{m.command} {m.args.join(' ')}</code>
+            </div>
           </div>
-          <button className="sm2__btn sm2__btn--primary" onClick={() => onAdopt(agentId, u.id)}>
-            接管
-          </button>
+          <span className={`sm2__tag sm2__tag--${m.valid ? 'ok' : 'conflict'}`}>{m.valid ? '有效' : '异常'}</span>
+        </div>
+      ))}
+    </>
+  )
+}
+
+function PluginsTab({ detail }: { detail: AgentDetail }) {
+  if (detail.plugins.length === 0)
+    return <div className="sm2__empty" style={{ padding: 12 }}>未检测到插件</div>
+  return (
+    <>
+      {detail.plugins.map((p) => (
+        <div key={p.id} className="sm2__target-row">
+          <div>
+            <strong>{p.name}</strong>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              {p.source} {p.version ? `· v${p.version}` : ''}
+            </div>
+          </div>
+          <span className={`sm2__tag sm2__tag--${p.enabled ? 'ok' : 'unmanaged'}`}>{p.enabled ? '启用' : '禁用'}</span>
         </div>
       ))}
     </>
@@ -253,12 +327,7 @@ function AdoptDialog({
     setBusy(true)
     setError(null)
     try {
-      await skillApiV2.executeAdopt(
-        preview.agentId,
-        preview.unmanagedId,
-        option,
-        option === 'rename' ? renamedId : null,
-      )
+      await skillApiV2.executeAdopt(preview.agentId, preview.unmanagedId, option, option === 'rename' ? renamedId : null)
       onDone()
     } catch (e) {
       setError(String(e))
@@ -279,7 +348,6 @@ function AdoptDialog({
       <div className="sm2__detail-meta">
         <div>Skill：{preview.inferredSkillId}</div>
         <div>路径：{preview.skillPath}</div>
-        <div>Hash：{preview.hash.slice(0, 12)}…</div>
         <div>中心库已有同名：{preview.centerHasSameId ? '是' : '否'}</div>
       </div>
       <div className="sm2__field" style={{ marginTop: 12 }}>
