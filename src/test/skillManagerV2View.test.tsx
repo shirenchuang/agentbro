@@ -138,3 +138,50 @@ describe('selecting a skill updates detail', () => {
     expect(title?.textContent).toContain('release-checklist')
   })
 })
+
+describe('Skill detail slider + agent page render without crashing', () => {
+  beforeEach(() => {
+    cleanup()
+    useSkillStoreV2.setState({
+      viewMode: 'cards',
+      filters: { query: '', source: '', status: '', type: '' },
+      skills: [makeSkill()],
+      agents: [
+        { id: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', enabled: true, skillsDir: '/c', version: null, latestVersion: null, installed: true, managedSkillCount: 1, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+      packs: [],
+      overview: null,
+      settings: {
+        centerPath: '~/.agents/skills', sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link', linkFailPolicy: 'ask', startupScan: true, showUnmanaged: true,
+      },
+      loading: false, error: null,
+      selectedSkillId: null, selectedSkillDetail: null,
+      selectedAgentId: null, selectedAgentDetail: null, agentDetailLoading: false,
+      selectedPackId: null, selectedPackDetail: null,
+      unmanaged: [], issues: [],
+    })
+  })
+
+  it('SkillDetailSlider renders when open', async () => {
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    const { container } = render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} onDistribute={() => {}} onDelete={() => {}} />)
+    // portal renders the slide-over
+    expect(document.body.querySelector('.sm2__slideover')).not.toBeNull()
+    expect(container).toBeTruthy()
+  })
+
+  it('AgentManagementPage renders rail + detail pane', async () => {
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+    expect(container.querySelector('.sm2__rail')).not.toBeNull()
+    expect(container.querySelector('.sm2__detailpane')).not.toBeNull()
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+  })
+
+  it('SkillPackPage renders full-width master-detail', async () => {
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    const { container } = render(<SkillPackPage />)
+    expect(container.querySelector('.sm2__rail')).not.toBeNull()
+  })
+})

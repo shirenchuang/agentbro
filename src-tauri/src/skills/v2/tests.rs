@@ -660,3 +660,25 @@ fn settings_round_trip() {
     assert_eq!(updated.link_fail_policy, "copy");
     assert!(!updated.startup_scan);
 }
+
+#[test]
+#[ignore]
+fn real_smoke_against_actual_home() {
+    // Uses the REAL home (no TempHome) — mirrors exactly what the app does.
+    let home = fsutil::home();
+    let sqlite = fsutil::default_sqlite_path();
+    eprintln!("HOME={:?} sqlite={:?}", home, sqlite);
+    let svc = Service::new(&sqlite, home.clone());
+    let svc = match svc { Ok(s) => s, Err(e) => { eprintln!("Service::new FAILED: {e}"); panic!("{e}") } };
+    if let Err(e) = svc.init() { eprintln!("init FAILED: {e}"); panic!("{e}") }
+    match svc.overview() {
+        Ok(o) => eprintln!("overview OK: {} skills, {} agents, {} packs", o.skills.len(), o.agents.len(), o.packs.len()),
+        Err(e) => { eprintln!("overview FAILED: {e}"); panic!("{e}") }
+    }
+    // also try get_agent_detail for the first agent
+    if let Ok(o) = svc.overview() {
+        if let Some(a) = o.agents.first() {
+            match svc.get_agent_detail(&a.id) { Ok(d) => eprintln!("agent detail {} OK: {} skills", a.id, d.skills.len()), Err(e) => eprintln!("agent detail {} FAILED: {e}", a.id) }
+        }
+    }
+}
