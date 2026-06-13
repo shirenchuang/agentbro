@@ -12,6 +12,7 @@ import { AgentsSection } from './sections/AgentsSection'
 import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
+import { SkillManagerSection } from '../skills-v2/SkillManagerSection'
 import { useUpdater } from '../../hooks/useUpdater'
 import { useConfigStore } from '../../stores/configStore'
 import { isTauri } from '../../services/tauriApi'
@@ -20,6 +21,7 @@ import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
+  'skill-manager-v2': SkillManagerSection,
 }
 
 interface SettingsAppProps {

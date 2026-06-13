@@ -5,6 +5,7 @@ pub mod marketplace;
 pub mod registry;
 pub mod scanner;
 pub mod sync;
+pub mod v2;
 
 use serde::{Deserialize, Serialize};
 
@@ -271,15 +272,35 @@ pub struct ConflictResolution {
     pub action: String,
 }
 
+/// Shared lock for tests that mutate the process-global `HOME` env var.
+/// Mutating `HOME` from parallel test threads races; this serializes every
+/// HOME-dependent skill test (both the legacy `mod tests` and v2 tests) so
+/// `cargo test` is deterministic.
+#[cfg(test)]
+pub(crate) static SHARED_HOME_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn lock_shared_test_home() -> std::sync::MutexGuard<'static, ()> {
+    // Recover from poison: if a prior test panicked while holding the lock,
+    // the panicking thread is gone and its Drop already restored HOME, so it is
+    // safe for the next test to proceed. Without this, one failure cascades.
+    SHARED_HOME_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static HOME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn lock_home() -> std::sync::MutexGuard<'static, ()> {
+        super::lock_shared_test_home()
+    }
 
     struct TempHome {
         path: PathBuf,
@@ -312,13 +333,6 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.path);
         }
-    }
-
-    fn lock_home() -> std::sync::MutexGuard<'static, ()> {
-        HOME_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("lock temp home")
     }
 
     fn write_skill(root: &Path, dir_name: &str, skill_name: &str) -> PathBuf {
