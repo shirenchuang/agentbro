@@ -6,7 +6,7 @@ import type { AgentDetail, AdoptPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { PreviewDialog } from './PreviewDialog'
 
-type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks'
+type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 
 export function AgentManagementPage() {
   const state = useSkillStoreV2()
@@ -141,6 +141,7 @@ function AgentDetail({
     { id: 'mcp', label: `MCP (${detail.mcpServers.length})` },
     { id: 'plugins', label: `Plugins (${detail.plugins.length})` },
     { id: 'hooks', label: 'Hooks' },
+    { id: 'config', label: '设置' },
   ]
   return (
     <div className="sm2__agentdetail">
@@ -190,6 +191,7 @@ function AgentDetail({
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginsTab detail={detail} />}
         {tab === 'hooks' && <HooksTab agentId={detail.id} />}
+        {tab === 'config' && <ConfigTab detail={detail} />}
       </div>
     </div>
   )
@@ -408,6 +410,37 @@ function HooksTab({ agentId }: { agentId: string }) {
         完整 Hook 事件配置请在「设置 → Agent 与技能」中调整。
       </p>
     </>
+  )
+}
+
+function ConfigTab({ detail }: { detail: AgentDetail }) {
+  const rows: Array<{ label: string; value: string | null; openable?: boolean }> = [
+    { label: 'Agent ID', value: detail.id },
+    { label: '当前版本', value: detail.version },
+    { label: '最新版本', value: detail.latestVersion },
+    { label: 'Skills 目录', value: detail.skillsDir, openable: true },
+    { label: 'MCP 配置', value: detail.mcpConfigPath, openable: true },
+    { label: 'Plugin 目录', value: detail.pluginDir, openable: true },
+    { label: '配置文件', value: detail.configPath, openable: true },
+  ]
+  return (
+    <div className="sm2__detail-section">
+      {rows.map((r) => (
+        <div key={r.label} className="sm2__target-row" style={{ alignItems: 'center' }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.label}</div>
+            <div className="sm2__detail-meta" style={{ wordBreak: 'break-all' }}>
+              {r.value ? <code>{r.value}</code> : '—'}
+            </div>
+          </div>
+          {r.openable && r.value && (
+            <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(r.value!)}>
+              打开
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
   )
 }
 
