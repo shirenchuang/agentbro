@@ -153,6 +153,7 @@
     "sound": "사운드",
     "shortcuts": "단축키",
     "agentMonitor": "Agent 모니터",
+    "skillManager": "Agent 관리",
     "agents": "에이전트",
     "switch": "Agent 전환",
     "sshRemote": "SSH 원격",

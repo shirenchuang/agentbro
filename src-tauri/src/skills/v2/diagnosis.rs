@@ -13,7 +13,10 @@ use std::path::Path;
 
 pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     let mut issues = Vec::new();
-    svc.refresh()?;
+    // NOTE: do not call svc.refresh() here — init() already populated the DB and
+    // every mutating op updates it. Refreshing on every overview/diagnosis call
+    // re-scans every agent directory and makes the page feel laggy. The
+    // DiagnosisPage exposes an explicit "run diagnosis" button that rescans.
     issues.extend(unmanaged_center_dirs(svc)?);
     issues.extend(unmanaged_agent_skills(svc)?);
     issues.extend(broken_or_missing_targets(svc)?);

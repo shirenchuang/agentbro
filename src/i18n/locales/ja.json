@@ -153,6 +153,7 @@
     "sound": "サウンド",
     "shortcuts": "ショートカット",
     "agentMonitor": "Agent監視",
+    "skillManager": "Agent管理",
     "agents": "エージェント",
     "switch": "Agent切替",
     "sshRemote": "SSHリモート",

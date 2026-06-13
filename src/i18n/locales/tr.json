@@ -150,6 +150,7 @@
     "sound": "Ses",
     "shortcuts": "Kısayollar",
     "agentMonitor": "Agent İzleme",
+    "skillManager": "Agent Yönetimi",
     "agents": "Ajanlar",
     "sshRemote": "SSH Uzak",
     "labs": "Laboratuvar",

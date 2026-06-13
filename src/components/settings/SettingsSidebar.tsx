@@ -2,6 +2,8 @@ import { useTranslation } from 'react-i18next'
 import type { AgentProgramInfo } from '../../services/agentApi'
 import { useAgentStore } from '../../stores/agentStore'
 import { useSkillStore } from '../../stores/skillStore'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { isAgentProgramInstalled } from '../../utils/agentPrograms'
 import { displayVersionValue } from '../../utils/versions'
@@ -90,6 +92,8 @@ export function SettingsSidebar({
     focusAgent,
   } = useAgentStore()
   const { skills, packs } = useSkillStore()
+  const skillActiveTab = useSkillStoreV2((s) => s.activeTab)
+  const setSkillTab = useSkillStoreV2((s) => s.setTab)
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -98,8 +102,9 @@ export function SettingsSidebar({
     monitor: t('settings.agentMonitor'),
     agents: t('settings.agents'),
     switch: t('settings.switch'),
+    'skill-manager-v2': t('settings.skillManager', { defaultValue: 'Agent管理' }),
   }
-  const isCapabilitySection = activeSection === 'island' || activeSection === 'monitor' || activeSection === 'agents' || activeSection === 'switch'
+  const isCapabilitySection = activeSection === 'island' || activeSection === 'monitor' || activeSection === 'agents' || activeSection === 'switch' || activeSection === 'skill-manager-v2'
   const brandTitle = isCapabilitySection ? sectionTitleById[activeSection] : t('settings.title')
   const backToSettingsLabel = t('settings.backToSettings', { defaultValue: 'Back to Settings' })
   const toggleSidebar = (
@@ -295,6 +300,42 @@ export function SettingsSidebar({
           >
             + 添加自定义
           </button>
+        </div>
+      </nav>
+    )
+  }
+
+  if (activeSection === 'skill-manager-v2') {
+    const skillTabs: Array<{ id: SkillManagerTab; label: string; icon: string; iconBg: string }> = [
+      { id: 'library', label: 'Skill 库', icon: '🧩', iconBg: '#34C759' },
+      { id: 'packs', label: '技能包', icon: '📦', iconBg: '#5856D6' },
+      { id: 'agents', label: 'Agent 管理', icon: '🤖', iconBg: '#007AFF' },
+      { id: 'diagnostics', label: '诊断与修复', icon: '🩺', iconBg: '#FF9500' },
+      { id: 'settings', label: '设置', icon: '⚙', iconBg: '#8E8E93' },
+    ]
+
+    return (
+      <nav className={capabilitySidebarClassName}>
+        {toggleSidebar}
+        <div className="settings-capability-nav">
+          {skillTabs.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={skillActiveTab === item.id ? 'active' : ''}
+              aria-label={item.label}
+              title={item.label}
+              onClick={() => setSkillTab(item.id)}
+            >
+              <span
+                className="settings-sidebar__icon settings-capability-nav__icon--colored"
+                style={{ background: skillActiveTab === item.id ? 'rgba(255,255,255,0.25)' : item.iconBg, color: '#fff' }}
+              >
+                {item.icon}
+              </span>
+              <span className="settings-sidebar__label-text">{item.label}</span>
+            </button>
+          ))}
         </div>
       </nav>
     )

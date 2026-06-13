@@ -45,6 +45,7 @@ interface SkillV2State {
   error: string | null
   busyAction: string | null
   lastPreview: DistributionPreview | null
+  initialized: boolean
 }
 
 interface SkillV2Actions {
@@ -86,12 +87,20 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   error: null,
   busyAction: null,
   lastPreview: null,
+  initialized: false,
 
   init: async () => {
+    // Backend init (DB + full scan) only runs once per session; subsequent
+    // entries just refresh the overview from the already-populated SQLite.
+    if (get().initialized) {
+      await get().loadOverview()
+      return
+    }
     set({ loading: true, error: null })
     try {
       await skillApiV2.init()
       await get().loadOverview()
+      set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
     } finally {
