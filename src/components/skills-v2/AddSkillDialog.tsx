@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { skillApi } from '../../services/skillApi'
@@ -31,7 +31,7 @@ export function AddSkillDialog({
           </button>
         </div>
 
-        {tab === 'market' && <MarketTab onClose={onClose} onDone={onDone} />}
+        {tab === 'market' && <MarketTab onClose={onClose} />}
         {tab === 'local' && <LocalTab onClose={onClose} onDone={onDone} />}
         {tab === 'git' && <GitTab onClose={onClose} onDone={onDone} />}
       </div>
@@ -39,16 +39,49 @@ export function AddSkillDialog({
   )
 }
 
-function MarketTab({ onClose }: { onClose: () => void; onDone: () => void }) {
+function MarketTab({ onClose }: { onClose: () => void }) {
+  const [items, setItems] = useState<Array<{ id: string; name: string; description: string; author?: string; category?: string }>>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    skillApi
+      .listMarketplaceItems()
+      .then((list) => setItems(list as never[]))
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const install = async (item: { source: string; sourceType: string }) => {
+    // marketplace items typically reference a github/url source — hand off to git flow
+    alert(`市场一键安装正在接入（P1）。可复制来源后用 Git 安装：${item.source || ''}`)
+  }
+
   return (
     <div>
       <p className="sm2__addtab-sub">从市场查找并安装技能</p>
-      <div className="sm2__search" style={{ display: 'flex', alignItems: 'center', padding: '8px 12px', border: '1px solid var(--border, rgba(0,0,0,0.12))', borderRadius: 8, marginBottom: 12 }}>
-        🔍 搜索技能名称、描述或标签
-      </div>
-      <div className="sm2__empty" style={{ padding: 24 }}>
-        市场浏览即将上线（P1）。当前可使用「本地安装」或「Git 安装」导入 Skill。
-      </div>
+      {loading ? (
+        <div className="sm2__empty" style={{ padding: 16 }}>加载市场…</div>
+      ) : error ? (
+        <div className="sm2__error" style={{ margin: 0 }}>{error}</div>
+      ) : items.length === 0 ? (
+        <div className="sm2__empty" style={{ padding: 24 }}>
+          市场源为空。可在「设置」中添加市场源，或使用「本地安装 / Git 安装」。
+        </div>
+      ) : (
+        <div className="sm2__scroll" style={{ maxHeight: 320 }}>
+          {items.map((it) => (
+            <div key={it.id} className="sm2__target-row" style={{ alignItems: 'center' }}>
+              <div>
+                <strong>{it.name}</strong>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{it.description}</div>
+                {it.author && <span className="sm2__tag">{it.author}</span>}
+              </div>
+              <button className="sm2__btn sm2__btn--primary" onClick={() => install(it as never)}>安装</button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
         <button className="sm2__btn" onClick={onClose}>关闭</button>
       </div>

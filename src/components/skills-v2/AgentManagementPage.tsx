@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
+import { getAllHookStatus, installAgentHook, uninstallAgentHook, type HookStatus } from '../../services/tauriApi'
 import type { AgentDetail, AdoptPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { PreviewDialog } from './PreviewDialog'
 
-type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins'
+type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks'
 
 export function AgentManagementPage() {
   const state = useSkillStoreV2()
@@ -137,6 +138,7 @@ function AgentDetail({
     { id: 'skills', label: `Skills (${detail.skills.length})` },
     { id: 'mcp', label: `MCP (${detail.mcpServers.length})` },
     { id: 'plugins', label: `Plugins (${detail.plugins.length})` },
+    { id: 'hooks', label: 'Hooks' },
   ]
   return (
     <div className="sm2__agentdetail">
@@ -185,6 +187,7 @@ function AgentDetail({
         {tab === 'skills' && <SkillsTab detail={detail} onAdopt={onAdopt} />}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginsTab detail={detail} />}
+        {tab === 'hooks' && <HooksTab agentId={detail.id} />}
       </div>
     </div>
   )
@@ -305,6 +308,103 @@ function PluginsTab({ detail }: { detail: AgentDetail }) {
           <span className={`sm2__tag sm2__tag--${p.enabled ? 'ok' : 'unmanaged'}`}>{p.enabled ? '启用' : '禁用'}</span>
         </div>
       ))}
+    </>
+  )
+}
+
+function HooksTab({ agentId }: { agentId: string }) {
+  const [hook, setHook] = useState<HookStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const all = await getAllHookStatus()
+      const found = all.find((h) => h.adapterId === agentId || h.toolId === agentId)
+      setHook(found || null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId])
+
+  const install = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await installAgentHook(agentId)
+      await load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const uninstall = async () => {
+    if (!confirm(`移除 ${agentId} 的 Hook？`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      await uninstallAgentHook(agentId)
+      await load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (loading) return <div className="sm2__empty" style={{ padding: 12 }}>加载 Hook 状态…</div>
+  if (!hook) return <div className="sm2__empty" style={{ padding: 12 }}>该 Agent 暂不支持 Hook 接入</div>
+
+  const statusLabel = hook.installStatus === 'installed'
+    ? '已安装'
+    : hook.installStatus === 'needs_reinstall'
+      ? '需重新安装'
+      : hook.installStatus === 'settings_corrupted'
+        ? '配置异常'
+        : '未安装'
+
+  return (
+    <>
+      <div className="sm2__target-card">
+        <div className="sm2__target-card-head">
+          <div className="sm2__target-card-info">
+            <strong>Hook 接入</strong>
+            <span className={`sm2__tag sm2__tag--${hook.installed ? 'ok' : 'unmanaged'}`}>{statusLabel}</span>
+          </div>
+          <div className="sm2__btn-row" style={{ margin: 0 }}>
+            {hook.installed ? (
+              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={uninstall}>卸载 Hook</button>
+            ) : (
+              <button className="sm2__btn sm2__btn--primary" disabled={busy} onClick={install}>安装 Hook</button>
+            )}
+          </div>
+        </div>
+        {hook.configPath && (
+          <div className="sm2__detail-meta" style={{ marginTop: 8 }}>
+            配置：<code>{hook.configPath}</code>
+          </div>
+        )}
+        {hook.supportsEventSelection && hook.enabledEventNames && hook.enabledEventNames.length > 0 && (
+          <div className="sm2__detail-meta" style={{ marginTop: 6 }}>
+            已启用事件：{hook.enabledEventNames.join('、')}
+          </div>
+        )}
+      </div>
+      {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8 }}>
+        完整 Hook 事件配置请在「设置 → Agent 与技能」中调整。
+      </p>
     </>
   )
 }
