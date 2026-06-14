@@ -32,21 +32,18 @@ pub fn agentbro_home() -> PathBuf {
     home().join(".agentbro")
 }
 
-/// Primary center library. AgentBro's existing/shipping skills module uses
-/// `~/.agents/skills` as the canonical central dir; v2 must use the same path
-/// so a user's existing skills show up immediately. `~/.agentbro/skills` is
-/// kept as a secondary scan root (see `all_center_dirs`).
+/// Primary center library for Skill Manager v2.
 pub fn default_center_path() -> PathBuf {
-    home().join(".agents").join("skills")
+    home().join(".agentbro").join("skills")
 }
 
-/// All center roots to scan, in priority order. Mirrors
-/// `agent_paths::central_skill_dirs()` so v2 stays consistent with the legacy
-/// skills module.
+/// Legacy roots that may contain skills from older AgentBro builds. v2 keeps
+/// them discoverable for migration/diagnosis, but new writes go to
+/// `default_center_path()` or the user-configured center path.
 pub fn all_center_dirs() -> Vec<PathBuf> {
     vec![
-        home().join(".agents").join("skills"),
         home().join(".agentbro").join("skills"),
+        home().join(".agents").join("skills"),
     ]
 }
 
@@ -91,9 +88,7 @@ pub fn open_path(target: &str) -> Result<(), String> {
         c.arg(&target);
         c
     };
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("open: {}", e))
+    cmd.spawn().map(|_| ()).map_err(|e| format!("open: {}", e))
 }
 
 /// Stable hash over a directory's files: relative paths + contents, sorted,
@@ -104,7 +99,12 @@ pub fn hash_dir(dir: &Path) -> String {
     entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut hasher = Sha256::new();
-    hasher.update(dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default().as_bytes());
+    hasher.update(
+        dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     for (abs, rel) in &entries {
         hasher.update(rel.to_string_lossy().as_bytes());
         hasher.update(b"\0");
@@ -160,7 +160,9 @@ pub fn sanitize_id(raw: &str) -> String {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
             out.push(ch);
             prev_dash = ch == '-';
-        } else if (ch == ' ' || ch == '.' || ch == '/' || ch == '\\') && !prev_dash && !out.is_empty()
+        } else if (ch == ' ' || ch == '.' || ch == '/' || ch == '\\')
+            && !prev_dash
+            && !out.is_empty()
         {
             out.push('-');
             prev_dash = true;
@@ -184,7 +186,10 @@ impl Frontmatter {
         self.map.get("name").map(String::as_str)
     }
     pub fn description(&self) -> &str {
-        self.map.get("description").map(String::as_str).unwrap_or("")
+        self.map
+            .get("description")
+            .map(String::as_str)
+            .unwrap_or("")
     }
 }
 
@@ -350,7 +355,10 @@ pub enum PathKind {
 }
 
 /// Build a limited file tree for the detail panel (depth-bounded).
-pub fn build_file_tree(root: &Path, max_depth: u32) -> Option<crate::skills::v2::models::FileTreeNode> {
+pub fn build_file_tree(
+    root: &Path,
+    max_depth: u32,
+) -> Option<crate::skills::v2::models::FileTreeNode> {
     fn build(
         path: &Path,
         _root: &Path,

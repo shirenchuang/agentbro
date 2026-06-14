@@ -25,10 +25,14 @@ export function PreviewDialog({
 }: PreviewDialogProps) {
   return (
     <div className="sm2__overlay" onClick={onCancel}>
-      <div className="sm2__modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3>
-        {children}
-        <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
+      <div className={`sm2__modal${destructive ? ' sm2__modal--destructive' : ''}`} onClick={(e) => e.stopPropagation()}>
+        <div className="sm2__modal-head">
+          <h3>{title}</h3>
+        </div>
+        <div className="sm2__modal-body">
+          {children}
+        </div>
+        <div className="sm2__modal-actions">
           <button className="sm2__btn" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </button>

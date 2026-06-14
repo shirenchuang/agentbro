@@ -13,7 +13,7 @@ use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -49,15 +49,16 @@ impl Service {
     }
 
     pub fn update_settings(&self, update: SettingsUpdate) -> Result<SkillManagerSettings, String> {
-        self.db.with_conn(|c| {
+        let next = self.db.with_conn(|c| {
             // Read directly from this connection — calling self.settings() here
             // would re-lock the Mutex and self-deadlock.
             let raw = db::load_settings_json(c);
-            let mut current: SkillManagerSettings = if raw.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                SkillManagerSettings::default()
-            } else {
-                serde_json::from_value(raw).map_err(|e| e.to_string())?
-            };
+            let mut current: SkillManagerSettings =
+                if raw.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    SkillManagerSettings::default()
+                } else {
+                    serde_json::from_value(raw).map_err(|e| e.to_string())?
+                };
             if let Some(v) = update.center_path {
                 current.center_path = v;
             }
@@ -79,22 +80,43 @@ impl Service {
             let val = serde_json::to_value(&current).map_err(|e| e.to_string())?;
             db::save_settings_json(c, &val)?;
             // mirror to file for human inspection
-            let _ = std::fs::write(fsutil::settings_path(), serde_json::to_string_pretty(&val).unwrap_or_default());
+            let _ = std::fs::write(
+                fsutil::settings_path(),
+                serde_json::to_string_pretty(&val).unwrap_or_default(),
+            );
             Ok(current)
-        })
+        })?;
+        let center = fsutil::expand_tilde(&next.center_path);
+        std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
+        self.refresh_snapshot_best_effort();
+        Ok(next)
     }
 
-    /// Ensure center dir exists; migrate legacy metadata if DB is fresh.
-    pub fn init(&self) -> Result<(), String> {
+    /// Ensure the DB-backed manager can be read without doing a filesystem scan.
+    /// Full center/agent scanning is intentionally kept behind refresh/init so
+    /// opening the Skill library can render from cached SQLite state immediately.
+    pub fn bootstrap(&self) -> Result<(), String> {
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let applied = self.db.applied_version()?;
         if applied == SCHEMA_VERSION && self.is_empty_state()? {
             self.migrate_legacy_metadata()?;
         }
+        Ok(())
+    }
+
+    /// Ensure center dir exists; migrate legacy metadata if DB is fresh.
+    pub fn init(&self) -> Result<(), String> {
+        self.bootstrap()?;
         self.scan_center_into_db()?;
         self.scan_all_agents_into_db()?;
         Ok(())
+    }
+
+    fn refresh_snapshot_best_effort(&self) {
+        if let Err(e) = crate::skills::v2::snapshot::export_to_file(self) {
+            log::warn!("Skill Manager v2 snapshot refresh failed: {}", e);
+        }
     }
 
     fn is_empty_state(&self) -> Result<bool, String> {
@@ -197,16 +219,12 @@ impl Service {
 
     // ── Center library scanning ───────────────────────────────────
 
-    /// Scan all center roots (~/.agents/skills, ~/.agentbro/skills) and upsert
-    /// skill rows. Returns ids found.
+    /// Scan the configured center root and upsert skill rows. Returns ids found.
     pub fn scan_center_into_db(&self) -> Result<Vec<String>, String> {
-        let roots = fsutil::all_center_dirs();
         let mut found = Vec::new();
         let now = db::now_iso();
-        for center in roots {
-            if !center.is_dir() {
-                continue;
-            }
+        let center = self.center_path()?;
+        if center.is_dir() {
             self.scan_one_center_root(&center, &now, &mut found)?;
         }
         Ok(found)
@@ -234,7 +252,10 @@ impl Service {
             let skill_id = fsutil::infer_skill_id(&path);
             let fm = fsutil::read_frontmatter(&path);
             let hash = fsutil::hash_dir(&path);
-            let name = fm.name().map(String::from).unwrap_or_else(|| skill_id.clone());
+            let name = fm
+                .name()
+                .map(String::from)
+                .unwrap_or_else(|| skill_id.clone());
             let desc = fm.description().to_string();
             self.db.transaction(|tx| {
                 upsert_skill_full(
@@ -290,7 +311,10 @@ impl Service {
         let skills_dir = match agent_meta::agent_skills_dir(&self.home, agent_id) {
             Some(d) => d,
             None => {
-                return Ok(AgentScanResult { managed: 0, unmanaged: 0 });
+                return Ok(AgentScanResult {
+                    managed: 0,
+                    unmanaged: 0,
+                });
             }
         };
         let now = db::now_iso();
@@ -365,8 +389,8 @@ impl Service {
     fn ensure_agent_row(&self, agent_id: &str) -> Result<(), String> {
         let display = agent_meta::display_name(agent_id);
         let installed = agent_meta::agent_installed(&self.home, agent_id);
-        let skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id)
-            .map(|p| p.display().to_string());
+        let skills_dir =
+            agent_meta::agent_skills_dir(&self.home, agent_id).map(|p| p.display().to_string());
         self.db.with_conn(|c| {
             c.execute(
                 "INSERT INTO agents(id, display_name, skills_dir, enabled) VALUES (?1, ?2, ?3, 1)
@@ -422,7 +446,10 @@ impl Service {
         reason: &str,
     ) -> Result<(), String> {
         let now = db::now_iso();
-        let id = format!("unm-{agent_id}-{}", sanitize_for_id(&path.display().to_string()));
+        let id = format!(
+            "unm-{agent_id}-{}",
+            sanitize_for_id(&path.display().to_string())
+        );
         self.db.with_conn(|c| {
             c.execute(
                 "INSERT INTO unmanaged_items(id, item_type, agent_id, path, inferred_skill_id, hash, reason, first_seen_at, last_seen_at)
@@ -443,7 +470,6 @@ impl Service {
         path: &Path,
     ) -> Result<(), String> {
         let (actual_mode, source_hash) = self.target_actual_mode_and_source(target_id)?;
-        let status = self.compute_target_status(actual_mode.as_str(), &source_hash, path)?;
         let current_hash = if actual_mode == "copy" {
             if path.is_dir() {
                 Some(fsutil::hash_dir(path))
@@ -453,6 +479,13 @@ impl Service {
         } else {
             None
         };
+        let status = self.compute_target_status(
+            skill_id,
+            actual_mode.as_str(),
+            &source_hash,
+            current_hash.as_deref(),
+            path,
+        )?;
         let now = db::now_iso();
         self.db.with_conn(|c| {
             c.execute(
@@ -461,7 +494,6 @@ impl Service {
             )
             .map_err(|e| e.to_string())
         })?;
-        let _ = skill_id;
         Ok(())
     }
 
@@ -479,8 +511,10 @@ impl Service {
     /// Compute status string for a target based on filesystem reality.
     pub fn compute_target_status(
         &self,
+        skill_id: &str,
         actual_mode: &str,
         source_hash: &str,
+        current_hash: Option<&str>,
         path: &Path,
     ) -> Result<String, String> {
         match inspect_path(path) {
@@ -489,19 +523,40 @@ impl Service {
             PathKind::Symlink(_) => Ok("ok".to_string()),
             PathKind::File => Ok("ok".to_string()),
             PathKind::Dir => {
-                // copy target — compare current hash to source hash
-                let current = fsutil::hash_dir(path);
                 if actual_mode == "copy" {
-                    if current == source_hash {
-                        Ok("ok".to_string())
-                    } else {
-                        // need center hash to tell outdated vs modified vs diverged
+                    let current = current_hash
+                        .map(String::from)
+                        .unwrap_or_else(|| fsutil::hash_dir(path));
+                    let center_hash = self
+                        .live_center_hash(skill_id)?
+                        .unwrap_or_else(|| source_hash.to_string());
+                    let center_changed = center_hash != source_hash;
+                    let copy_changed = current != source_hash;
+                    if center_changed && copy_changed {
+                        Ok("copy_diverged".to_string())
+                    } else if center_changed {
+                        Ok("copy_outdated".to_string())
+                    } else if copy_changed {
                         Ok("copy_modified".to_string())
+                    } else {
+                        Ok("ok".to_string())
                     }
                 } else {
                     Ok("ok".to_string())
                 }
             }
+        }
+    }
+
+    fn live_center_hash(&self, skill_id: &str) -> Result<Option<String>, String> {
+        let Some(row) = self.skill_row(skill_id)? else {
+            return Ok(None);
+        };
+        let path = Path::new(&row.center_path);
+        if path.is_dir() {
+            Ok(Some(fsutil::hash_dir(path)))
+        } else {
+            Ok(Some(row.current_hash))
         }
     }
 
@@ -512,7 +567,7 @@ impl Service {
         let skills = self.list_center_skills()?;
         let agents = self.list_managed_agents()?;
         let packs = self.list_skill_packs()?;
-        let issues = crate::skills::v2::diagnosis::run(self)?;
+        let issues = self.list_current_diagnosis_issues()?;
         let target_count = self.count_targets()?;
         let unmanaged_count = self.count_unmanaged()?;
         Ok(SkillManagerOverview {
@@ -527,6 +582,48 @@ impl Service {
             packs,
             issues,
             settings: self.settings()?,
+        })
+    }
+
+    pub fn list_current_diagnosis_issues(&self) -> Result<Vec<DiagnosisIssue>, String> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, issue_type, severity, entity_type, entity_id, title, detail, fix_kind
+                     FROM diagnosis_issues WHERE resolved_at IS NULL ORDER BY created_at DESC, id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let issue_type: String = r.get(1)?;
+                    let fix_kind: String = r.get(7)?;
+                    let actions = if fix_kind == "info" {
+                        Vec::new()
+                    } else {
+                        vec![DiagnosisAction {
+                            id: format!("fix:{issue_type}"),
+                            label: "修复".to_string(),
+                            destructive: fix_kind == "confirm",
+                        }]
+                    };
+                    Ok(DiagnosisIssue {
+                        id: r.get(0)?,
+                        issue_type,
+                        severity: r.get(2)?,
+                        entity_type: r.get(3)?,
+                        entity_id: r.get(4)?,
+                        title: r.get(5)?,
+                        detail: r.get(6)?,
+                        fix_kind,
+                        actions,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let mut issues = Vec::new();
+            for row in rows {
+                issues.push(row.map_err(|e| e.to_string())?);
+            }
+            Ok(issues)
         })
     }
 
@@ -547,16 +644,20 @@ impl Service {
 
     fn count_targets(&self) -> Result<usize, String> {
         self.db.with_conn(|c| {
-            c.query_row("SELECT COUNT(*) FROM skill_targets", [], |r| r.get::<_, i64>(0))
-                .map(|n| n as usize)
-                .map_err(|e| e.to_string())
+            c.query_row("SELECT COUNT(*) FROM skill_targets", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n as usize)
+            .map_err(|e| e.to_string())
         })
     }
     fn count_unmanaged(&self) -> Result<usize, String> {
         self.db.with_conn(|c| {
-            c.query_row("SELECT COUNT(*) FROM unmanaged_items", [], |r| r.get::<_, i64>(0))
-                .map(|n| n as usize)
-                .map_err(|e| e.to_string())
+            c.query_row("SELECT COUNT(*) FROM unmanaged_items", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n as usize)
+            .map_err(|e| e.to_string())
         })
     }
 
@@ -591,9 +692,10 @@ impl Service {
             Ok(v)
         })?;
 
+        let mut targets_by_skill = self.targets_by_skill()?;
         let mut summaries = Vec::new();
         for row in rows {
-            let targets = self.targets_for_skill(&row.id)?;
+            let targets = targets_by_skill.remove(&row.id).unwrap_or_default();
             let installed_agents = self.installed_agent_refs(&targets);
             let status = self.aggregate_skill_status(&row, &targets);
             summaries.push(SkillSummary {
@@ -601,7 +703,9 @@ impl Service {
                 name: row.name,
                 description: row.description,
                 skill_type: row.skill_type,
-                source_type: row.source_type.unwrap_or_else(|| "manual_center".to_string()),
+                source_type: row
+                    .source_type
+                    .unwrap_or_else(|| "manual_center".to_string()),
                 source_uri: row.source_uri,
                 center_path: row.center_path,
                 current_hash: row.current_hash,
@@ -612,17 +716,54 @@ impl Service {
         Ok(summaries)
     }
 
+    fn targets_by_skill(&self) -> Result<HashMap<String, Vec<TargetRow>>, String> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at
+                     FROM skill_targets ORDER BY skill_id, agent_id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(TargetRow {
+                        id: r.get(0)?,
+                        skill_id: r.get(1)?,
+                        agent_id: r.get(2)?,
+                        target_path: r.get(3)?,
+                        install_mode: r.get(4)?,
+                        actual_mode: r.get(5)?,
+                        source_hash: r.get(6)?,
+                        current_hash: r.get(7)?,
+                        status: r.get(8)?,
+                        created_at: r.get(9)?,
+                        updated_at: r.get(10)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let mut by_skill: HashMap<String, Vec<TargetRow>> = HashMap::new();
+            for row in rows {
+                let target = row.map_err(|e| e.to_string())?;
+                by_skill
+                    .entry(target.skill_id.clone())
+                    .or_default()
+                    .push(target);
+            }
+            Ok(by_skill)
+        })
+    }
+
     fn aggregate_skill_status(&self, row: &SkillRow, targets: &[TargetRow]) -> String {
-        let center_hash = &row.current_hash;
+        let _ = row;
         for t in targets {
             if matches!(t.status.as_str(), "broken_link" | "missing") {
                 return "conflict".to_string();
             }
-            if t.actual_mode == "copy"
-                && t.current_hash.as_deref() != Some(center_hash.as_str())
-            {
-                // copy diverged/modified/outdated — refine using center presence
+            if matches!(t.status.as_str(), "copy_modified" | "copy_diverged") {
                 return "copyDiverged".to_string();
+            }
+            if t.status == "copy_outdated" {
+                return "updateAvailable".to_string();
             }
         }
         "ok".to_string()
@@ -642,28 +783,31 @@ impl Service {
     }
 
     pub fn get_skill_detail(&self, skill_id: &str) -> Result<SkillDetail, String> {
-        let row = self.db.with_conn(|c| {
-            c.query_row(
-                "SELECT id, name, description, skill_type, current_hash, center_path
+        self.refresh_targets_for_skill(skill_id)?;
+        let row = self
+            .db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT id, name, description, skill_type, current_hash, center_path
                  FROM skills WHERE id = ?1",
-                params![skill_id],
-                |r| {
-                    Ok(SkillRow {
-                        id: r.get(0)?,
-                        name: r.get(1)?,
-                        description: r.get(2)?,
-                        skill_type: r.get(3)?,
-                        current_hash: r.get(4)?,
-                        center_path: r.get(5)?,
-                        source_type: None,
-                        source_uri: None,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| e.to_string())
-        })?
-        .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+                    params![skill_id],
+                    |r| {
+                        Ok(SkillRow {
+                            id: r.get(0)?,
+                            name: r.get(1)?,
+                            description: r.get(2)?,
+                            skill_type: r.get(3)?,
+                            current_hash: r.get(4)?,
+                            center_path: r.get(5)?,
+                            source_type: None,
+                            source_uri: None,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })?
+            .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
 
         let source = self.source_for_skill(skill_id)?;
         let targets = self.targets_for_skill(skill_id)?;
@@ -694,6 +838,7 @@ impl Service {
                 let claims = self.claims_for_target(&t.id).unwrap_or_default();
                 SkillTargetDetail {
                     id: t.id,
+                    skill_id: t.skill_id,
                     agent_id: t.agent_id,
                     target_path: t.target_path,
                     install_mode: t.install_mode,
@@ -789,6 +934,14 @@ impl Service {
             }
             Ok(v)
         })
+    }
+
+    fn refresh_targets_for_skill(&self, skill_id: &str) -> Result<(), String> {
+        let targets = self.targets_for_skill(skill_id)?;
+        for t in targets {
+            self.refresh_target_status(&t.id, skill_id, Path::new(&t.target_path))?;
+        }
+        Ok(())
     }
 
     fn claims_for_target(&self, target_id: &str) -> Result<Vec<TargetClaim>, String> {
@@ -909,6 +1062,152 @@ impl Service {
         })
     }
 
+    pub fn list_agent_skill_inventory(&self) -> Result<Vec<AgentSkillInventoryAgent>, String> {
+        let agents = self.list_managed_agents()?;
+        let center_hashes = self.center_skill_hashes()?;
+        let mut items_by_agent: HashMap<String, Vec<AgentSkillInventoryItem>> = HashMap::new();
+
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT t.id, t.agent_id, t.skill_id, COALESCE(s.name, t.skill_id), t.target_path, t.actual_mode, t.status, t.current_hash
+                     FROM skill_targets t LEFT JOIN skills s ON s.id = t.skill_id
+                     ORDER BY t.agent_id, t.target_path",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let target_id: String = r.get(0)?;
+                    let agent_id: String = r.get(1)?;
+                    let skill_id: String = r.get(2)?;
+                    let name: String = r.get(3)?;
+                    let path: String = r.get(4)?;
+                    let actual_mode: String = r.get(5)?;
+                    let status: String = r.get(6)?;
+                    let hash: Option<String> = r.get(7)?;
+                    Ok(AgentSkillInventoryItem {
+                        id: target_id.clone(),
+                        agent_id,
+                        skill_id,
+                        name,
+                        path,
+                        managed: true,
+                        can_import: false,
+                        status,
+                        status_label: "已管理".to_string(),
+                        reason: None,
+                        target_id: Some(target_id),
+                        actual_mode: Some(actual_mode),
+                        hash,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let item = row.map_err(|e| e.to_string())?;
+                items_by_agent
+                    .entry(item.agent_id.clone())
+                    .or_default()
+                    .push(item);
+            }
+            Ok::<_, String>(())
+        })?;
+
+        for item in self.list_unmanaged()? {
+            let Some(agent_id) = item.agent_id.clone() else {
+                continue;
+            };
+            if item.item_type != "skill" && item.item_type != "agent_skill" {
+                continue;
+            }
+            let skill_id = item
+                .inferred_skill_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or_else(|| infer_name_from_path(&item.path));
+            let center_hash = center_hashes.get(&skill_id);
+            let hash_matches = center_hash
+                .zip(item.hash.as_ref())
+                .map(|(center, local)| center == local)
+                .unwrap_or(false);
+            let (status, status_label, can_import) = if center_hash.is_none() {
+                ("unmanaged".to_string(), "未管理".to_string(), true)
+            } else if hash_matches {
+                (
+                    "unmanaged_reusable".to_string(),
+                    "未管理 · 中心库同内容".to_string(),
+                    true,
+                )
+            } else {
+                (
+                    "conflict".to_string(),
+                    "未管理 · 同名冲突".to_string(),
+                    false,
+                )
+            };
+            items_by_agent
+                .entry(agent_id.clone())
+                .or_default()
+                .push(AgentSkillInventoryItem {
+                    id: item.id,
+                    agent_id,
+                    skill_id: skill_id.clone(),
+                    name: skill_id,
+                    path: item.path,
+                    managed: false,
+                    can_import,
+                    status,
+                    status_label,
+                    reason: Some(item.reason),
+                    target_id: None,
+                    actual_mode: None,
+                    hash: item.hash,
+                });
+        }
+
+        Ok(agents
+            .into_iter()
+            .map(|agent| {
+                let mut items = items_by_agent.remove(&agent.id).unwrap_or_default();
+                items.sort_by(|a, b| {
+                    a.managed
+                        .cmp(&b.managed)
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+                let managed_count = items.iter().filter(|item| item.managed).count();
+                let unmanaged_count = items.iter().filter(|item| !item.managed).count();
+                let importable_count = items.iter().filter(|item| item.can_import).count();
+                AgentSkillInventoryAgent {
+                    agent_id: agent.id,
+                    display_name: agent.display_name,
+                    icon_key: agent.icon_key,
+                    skills_dir: agent.skills_dir,
+                    installed: agent.installed,
+                    managed_count,
+                    unmanaged_count,
+                    importable_count,
+                    items,
+                }
+            })
+            .collect())
+    }
+
+    fn center_skill_hashes(&self) -> Result<HashMap<String, String>, String> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT id, current_hash FROM skills")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            let mut out = HashMap::new();
+            for row in rows {
+                let (id, hash) = row.map_err(|e| e.to_string())?;
+                out.insert(id, hash);
+            }
+            Ok(out)
+        })
+    }
+
     // ── Add to center library ─────────────────────────────────────
 
     pub fn preview_add_center_skill(
@@ -916,7 +1215,12 @@ impl Service {
         input: AddCenterSkillInput,
     ) -> Result<AddCenterSkillPreview, String> {
         let center = self.center_path()?;
-        let src = fsutil::expand_tilde(&input.source_path);
+        let expanded_src = fsutil::expand_tilde(&input.source_path);
+        let (src, _temp_root) = if is_remote_skill_source(&input) {
+            crate::skills::installer::resolve_external_skill_source(&input.source_path)?
+        } else {
+            (expanded_src, None)
+        };
         let mut candidates = Vec::new();
         let mut blockers = Vec::new();
 
@@ -926,7 +1230,10 @@ impl Service {
         // lives in /tmp and is cleaned by the OS.
         let src = if src.is_file()
             && matches!(
-                src.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+                src.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .as_deref(),
                 Some("zip")
             ) {
             cleanup_old_temp_imports();
@@ -963,7 +1270,9 @@ impl Service {
         };
 
         if dirs.is_empty() {
-            return Err("No valid skill directories found (each must contain SKILL.md)".to_string());
+            return Err(
+                "No valid skill directories found (each must contain SKILL.md)".to_string(),
+            );
         }
 
         for dir in dirs {
@@ -1099,6 +1408,7 @@ impl Service {
             }
         }
         self.scan_center_into_db()?;
+        self.refresh_snapshot_best_effort();
         Ok(AddCenterSkillResult {
             skill_ids: created,
             updated,
@@ -1268,6 +1578,7 @@ impl Service {
             c.execute("DELETE FROM skills WHERE id = ?1", params![skill_id])
                 .map_err(|e| e.to_string())
         })?;
+        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -1280,6 +1591,31 @@ impl Service {
             )
             .map(|n| n as usize)
             .map_err(|e| e.to_string())
+        })
+    }
+
+    fn ensure_direct_claim_for_target(&self, target_id: &str) -> Result<(), String> {
+        let now = db::now_iso();
+        self.db.with_conn(|c| {
+            let exists = c
+                .query_row(
+                    "SELECT 1 FROM skill_target_claims WHERE target_id = ?1 AND claim_type = 'direct'",
+                    params![target_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .is_some();
+            if exists {
+                return Ok(());
+            }
+            c.execute(
+                "INSERT INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
+                 VALUES (?1, ?2, 'direct', NULL, ?3)",
+                params![format!("clm-{}", uuid_short()), target_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
         })
     }
 
@@ -1354,25 +1690,26 @@ impl Service {
                             agent_id: agent.clone(),
                             action: "reuse".to_string(),
                             actual_mode: Some(self.target_actual_mode_for_skill(skill_id, agent)?),
-                            reason: Some("Already managed — will append a direct claim.".to_string()),
+                            reason: Some(
+                                "Already managed — will append a direct claim.".to_string(),
+                            ),
                             target_path: target_path.display().to_string(),
                         });
                     }
-                    None => {
-                        match inspect_path(&target_path) {
-                            PathKind::Missing => {
-                                let actual = self.resolve_actual_mode(&requested_mode, agent)?;
-                                changes.push(DistributionChange {
-                                    skill_id: skill_id.clone(),
-                                    agent_id: agent.clone(),
-                                    action: "create".to_string(),
-                                    actual_mode: Some(actual),
-                                    reason: None,
-                                    target_path: target_path.display().to_string(),
-                                });
-                            }
-                            _ => {
-                                blockers.push(ConflictBlocker {
+                    None => match inspect_path(&target_path) {
+                        PathKind::Missing => {
+                            let actual = self.resolve_actual_mode(&requested_mode, agent)?;
+                            changes.push(DistributionChange {
+                                skill_id: skill_id.clone(),
+                                agent_id: agent.clone(),
+                                action: "create".to_string(),
+                                actual_mode: Some(actual),
+                                reason: None,
+                                target_path: target_path.display().to_string(),
+                            });
+                        }
+                        _ => {
+                            blockers.push(ConflictBlocker {
                                     skill_id: skill_id.clone(),
                                     agent_id: agent.clone(),
                                     reason: format!(
@@ -1381,9 +1718,8 @@ impl Service {
                                     ),
                                     existing_path: Some(target_path.display().to_string()),
                                 });
-                            }
                         }
-                    }
+                    },
                 }
                 let _ = &row;
             }
@@ -1415,12 +1751,10 @@ impl Service {
             let policy = self.settings()?.link_fail_policy;
             match policy.as_str() {
                 "copy" => return Ok("copy".to_string()),
-                _ => {
-                    return Err(
-                        "Symlink is not available here; set link-fail policy to copy or choose copy."
-                            .to_string(),
-                    )
-                }
+                _ => return Err(
+                    "Symlink is not available here; set link-fail policy to copy or choose copy."
+                        .to_string(),
+                ),
             }
         }
         Ok(requested.to_string())
@@ -1440,7 +1774,10 @@ impl Service {
         for change in &preview.changes {
             match change.action.as_str() {
                 "create" => {
-                    let actual = change.actual_mode.clone().unwrap_or_else(|| preview.requested_mode.clone());
+                    let actual = change
+                        .actual_mode
+                        .clone()
+                        .unwrap_or_else(|| preview.requested_mode.clone());
                     self.create_target(
                         &change.skill_id,
                         &change.agent_id,
@@ -1457,6 +1794,7 @@ impl Service {
             }
         }
         self.scan_all_agents_into_db()?;
+        self.refresh_snapshot_best_effort();
         Ok(preview)
     }
 
@@ -1549,16 +1887,18 @@ impl Service {
         agent_id: &str,
         origin: ClaimOrigin,
     ) -> Result<(), String> {
-        let (target_id, skill_id) = self.db.with_conn(|c| {
-            c.query_row(
+        let (target_id, skill_id) = self
+            .db
+            .with_conn(|c| {
+                c.query_row(
                 "SELECT id, skill_id FROM skill_targets WHERE target_path = ?1 AND agent_id = ?2",
                 params![target_path, agent_id],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())
-        })?
-        .ok_or_else(|| format!("Target not found: {target_path}"))?;
+            })?
+            .ok_or_else(|| format!("Target not found: {target_path}"))?;
         let now = db::now_iso();
         let (claim_type, pack_id) = match &origin {
             ClaimOrigin::Direct => ("direct".to_string(), None),
@@ -1619,15 +1959,39 @@ impl Service {
             can_quick_adopt: can_quick,
             options: if can_quick {
                 vec![
-                    AdoptOption { value: "import_keep".into(), label: "Import to center, keep agent file as-is".into(), destructive: false },
-                    AdoptOption { value: "import_link".into(), label: "Import to center and replace agent file with link".into(), destructive: true },
-                    AdoptOption { value: "import_copy".into(), label: "Import to center and replace agent file with copy".into(), destructive: true },
+                    AdoptOption {
+                        value: "import_keep".into(),
+                        label: "Import to center, keep agent file as-is".into(),
+                        destructive: false,
+                    },
+                    AdoptOption {
+                        value: "import_link".into(),
+                        label: "Import to center and replace agent file with link".into(),
+                        destructive: true,
+                    },
+                    AdoptOption {
+                        value: "import_copy".into(),
+                        label: "Import to center and replace agent file with copy".into(),
+                        destructive: true,
+                    },
                 ]
             } else {
                 vec![
-                    AdoptOption { value: "overwrite_center".into(), label: "Overwrite center skill with this one".into(), destructive: true },
-                    AdoptOption { value: "rename".into(), label: "Import under a new id".into(), destructive: false },
-                    AdoptOption { value: "skip".into(), label: "Keep as unmanaged".into(), destructive: false },
+                    AdoptOption {
+                        value: "overwrite_center".into(),
+                        label: "Overwrite center skill with this one".into(),
+                        destructive: true,
+                    },
+                    AdoptOption {
+                        value: "rename".into(),
+                        label: "Import under a new id".into(),
+                        destructive: false,
+                    },
+                    AdoptOption {
+                        value: "skip".into(),
+                        label: "Keep as unmanaged".into(),
+                        destructive: false,
+                    },
                 ]
             },
         })
@@ -1641,56 +2005,95 @@ impl Service {
         renamed_id: Option<String>,
     ) -> Result<String, String> {
         let preview = self.preview_adopt_agent_skill(agent_id, unmanaged_id)?;
+        if !preview.options.iter().any(|o| o.value == option) {
+            return Err(format!(
+                "Adopt option '{}' is not allowed for '{}'. Re-run preview and choose one of the suggested actions.",
+                option,
+                preview.inferred_skill_id
+            ));
+        }
+        if option == "skip" {
+            return Ok(preview.inferred_skill_id.clone());
+        }
         let src = Path::new(&preview.skill_path);
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let target_skill_id = match option {
-            "rename" => renamed_id.unwrap_or_else(|| format!("{}-import", preview.inferred_skill_id)),
+            "rename" => renamed_id
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| format!("{}-import", preview.inferred_skill_id)),
             _ => preview.inferred_skill_id.clone(),
         };
+        let target_skill_id = fsutil::sanitize_id(&target_skill_id);
+        if target_skill_id.is_empty() {
+            return Err("Renamed skill id cannot be empty.".to_string());
+        }
 
         // 1. import into center (copy), recording agent_import source
         let dest = center.join(&target_skill_id);
+        let mut wrote_center = false;
         if dest.exists() {
-            if option == "overwrite_center" || option == "import_keep" || option == "import_link" || option == "import_copy" {
+            if option == "overwrite_center" {
                 fsutil::remove_path(&dest)?;
+            } else if option == "rename" {
+                return Err(format!(
+                    "A center skill already exists at '{}'.",
+                    dest.display()
+                ));
+            } else if !(preview.center_has_same_id && preview.can_quick_adopt) {
+                return Err(format!(
+                    "A different center skill already exists at '{}'. Re-run preview and choose overwrite or rename.",
+                    dest.display()
+                ));
             } else {
-                // rename: dest must not exist
+                // Same id + same hash: reuse the existing center copy instead of
+                // deleting and re-importing it.
             }
         }
-        fsutil::copy_dir_recursive(src, &dest)?;
-        let now = db::now_iso();
-        let fm = fsutil::read_frontmatter(&dest);
-        let hash = fsutil::hash_dir(&dest);
-        let src_path_str = src.display().to_string();
-        let dest_path_str = dest.display().to_string();
-        self.db.transaction(|tx| {
-            upsert_skill_full(
-                tx,
-                &target_skill_id,
-                fm.name().unwrap_or(&target_skill_id),
-                fm.description(),
-                "skill",
-                &dest_path_str,
-                &hash,
-                &serde_json::to_value(&fm.map).map_err(|e| e.to_string())?,
-                &now,
-            )?;
-            upsert_source(
-                tx,
-                &target_skill_id,
-                "agent_import",
-                None,
-                None,
-                Some(agent_id),
-                Some(src_path_str.as_str()),
-                "agentbro",
-            )?;
-            Ok(())
-        })?;
+        if !dest.exists() {
+            fsutil::copy_dir_recursive(src, &dest)?;
+            wrote_center = true;
+        } else if option == "overwrite_center" {
+            fsutil::copy_dir_recursive(src, &dest)?;
+            wrote_center = true;
+        }
+        if wrote_center {
+            let now = db::now_iso();
+            let fm = fsutil::read_frontmatter(&dest);
+            let hash = fsutil::hash_dir(&dest);
+            let src_path_str = src.display().to_string();
+            let dest_path_str = dest.display().to_string();
+            self.db.transaction(|tx| {
+                upsert_skill_full(
+                    tx,
+                    &target_skill_id,
+                    fm.name().unwrap_or(&target_skill_id),
+                    fm.description(),
+                    "skill",
+                    &dest_path_str,
+                    &hash,
+                    &serde_json::to_value(&fm.map).map_err(|e| e.to_string())?,
+                    &now,
+                )?;
+                upsert_source(
+                    tx,
+                    &target_skill_id,
+                    "agent_import",
+                    None,
+                    None,
+                    Some(agent_id),
+                    Some(src_path_str.as_str()),
+                    "agentbro",
+                )?;
+                Ok(())
+            })?;
+        }
 
         // 2. optionally replace agent file
         match option {
+            "import_keep" | "overwrite_center" | "rename" => {
+                self.upsert_target_managed(agent_id, &target_skill_id, src, "copy", "copy")?;
+            }
             "import_link" => {
                 fsutil::remove_path(src)?;
                 fsutil::try_symlink(&dest, src)?;
@@ -1700,9 +2103,6 @@ impl Service {
                 fsutil::remove_path(src)?;
                 fsutil::copy_dir_recursive(&dest, src)?;
                 self.upsert_target_managed(agent_id, &target_skill_id, src, "copy", "copy")?;
-            }
-            "overwrite_center" => {
-                // agent file unchanged but now tracked
             }
             _ => {}
         }
@@ -1716,6 +2116,7 @@ impl Service {
             .map_err(|e| e.to_string())
         })?;
         self.scan_one_agent_into_db(agent_id)?;
+        self.refresh_snapshot_best_effort();
         Ok(target_skill_id)
     }
 
@@ -1758,7 +2159,11 @@ impl Service {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
                  SELECT 'clm-' || ?1, id, 'direct', NULL, ?2 FROM skill_targets
-                 WHERE skill_id = ?3 AND agent_id = ?4 AND target_path = ?5",
+                 WHERE skill_id = ?3 AND agent_id = ?4 AND target_path = ?5
+                   AND NOT EXISTS (
+                     SELECT 1 FROM skill_target_claims c
+                     WHERE c.target_id = skill_targets.id AND c.claim_type = 'direct'
+                   )",
                 params![uuid_short(), now, skill_id, agent_id, target_path.display().to_string()],
             )
             .map_err(|e| e.to_string())?;
@@ -1792,7 +2197,8 @@ impl Service {
     // ── Copy sync (outdated / modified / diverged) ────────────────
 
     pub fn preview_sync_copy_target(&self, target_id: &str) -> Result<CopySyncPreview, String> {
-        let (skill_id, target_path, source_hash, current_hash) = self.target_sync_inputs(target_id)?;
+        let (skill_id, target_path, source_hash, current_hash) =
+            self.target_sync_inputs(target_id)?;
         let center = self.skill_row(&skill_id)?.ok_or("skill missing")?;
         // Compare against the LIVE center content on disk, not the possibly-stale
         // DB row — the center skill may have been edited since distribution.
@@ -1805,7 +2211,11 @@ impl Service {
         // may be stale if the copy was edited since the last distribution.
         let copy_hash = {
             let p = Path::new(&target_path);
-            if p.is_dir() { fsutil::hash_dir(p) } else { current_hash.clone().unwrap_or_default() }
+            if p.is_dir() {
+                fsutil::hash_dir(p)
+            } else {
+                current_hash.clone().unwrap_or_default()
+            }
         };
 
         let center_changed = center_hash != source_hash;
@@ -1865,12 +2275,18 @@ impl Service {
                 fsutil::copy_dir_recursive(center_path, target)?;
                 let now = db::now_iso();
                 let new_source = fsutil::hash_dir(center_path);
-                self.db.with_conn(|c| {
-                    c.execute(
+                self.db.transaction(|tx| {
+                    tx.execute(
+                        "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                        params![new_source, now, preview.skill_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    tx.execute(
                         "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2, status = 'ok', updated_at = ?3 WHERE id = ?4",
                         params![new_source, fsutil::hash_dir(target), now, target_id],
                     )
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                    Ok(())
                 })?;
             }
             "agent_over_center" => {
@@ -1881,6 +2297,7 @@ impl Service {
                     .unwrap_or_default();
                 let center_path = Path::new(&center_path_str);
                 let target = Path::new(&preview.target_path);
+                fsutil::remove_path(center_path)?;
                 fsutil::copy_dir_recursive(target, center_path)?;
                 let now = db::now_iso();
                 let new_hash = fsutil::hash_dir(center_path);
@@ -1916,7 +2333,9 @@ impl Service {
             }
             other => return Err(format!("Unknown sync action: {other}")),
         }
-        self.preview_sync_copy_target(target_id)
+        let next = self.preview_sync_copy_target(target_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(next)
     }
 
     // ── Skill packs ───────────────────────────────────────────────
@@ -2085,12 +2504,18 @@ impl Service {
             Ok(v)
         })?;
         let member_count = self.pack_member_count(pack_id).unwrap_or(0);
+        let pack_name = self
+            .pack_name(pack_id)
+            .unwrap_or_else(|_| pack_id.to_string());
         Ok(agents
             .into_iter()
             .map(|agent_id| AppliedPackSummary {
                 pack_id: pack_id.to_string(),
-                pack_name: agent_meta::display_name(&agent_id),
+                pack_name: pack_name.clone(),
                 member_count,
+                agent_id: Some(agent_id.clone()),
+                display_name: Some(agent_meta::display_name(&agent_id)),
+                icon_key: Some(agent_meta::icon_key(&agent_id)),
             })
             .collect())
     }
@@ -2106,10 +2531,188 @@ impl Service {
         })
     }
 
-    pub fn upsert_skill_pack(
+    fn skill_name(&self, skill_id: &str) -> Result<String, String> {
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT name FROM skills WHERE id = ?1",
+                params![skill_id],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn affected_targets_for_pack(
         &self,
-        pack: UpsertPackInput,
-    ) -> Result<SkillPackDetail, String> {
+        pack_id: &str,
+        agent_id: Option<&str>,
+        skill_id: Option<&str>,
+    ) -> Result<Vec<AffectedTarget>, String> {
+        let mut sql = String::from(
+            "SELECT DISTINCT t.id, t.agent_id, t.target_path, t.actual_mode
+             FROM skill_target_claims c
+             JOIN skill_targets t ON t.id = c.target_id
+             WHERE c.pack_id = ?1",
+        );
+        if agent_id.is_some() {
+            sql.push_str(" AND t.agent_id = ?2");
+        }
+        if skill_id.is_some() {
+            sql.push_str(if agent_id.is_some() {
+                " AND t.skill_id = ?3"
+            } else {
+                " AND t.skill_id = ?2"
+            });
+        }
+        sql.push_str(" ORDER BY t.agent_id, t.target_path");
+
+        let rows: Vec<(String, String, String, String)> = self.db.with_conn(|c| {
+            let mut stmt = c.prepare(&sql).map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            match (agent_id, skill_id) {
+                (Some(agent), Some(skill)) => {
+                    let rows = stmt
+                        .query_map(params![pack_id, agent, skill], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    for r in rows {
+                        out.push(r.map_err(|e| e.to_string())?);
+                    }
+                }
+                (Some(agent), None) => {
+                    let rows = stmt
+                        .query_map(params![pack_id, agent], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    for r in rows {
+                        out.push(r.map_err(|e| e.to_string())?);
+                    }
+                }
+                (None, Some(skill)) => {
+                    let rows = stmt
+                        .query_map(params![pack_id, skill], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    for r in rows {
+                        out.push(r.map_err(|e| e.to_string())?);
+                    }
+                }
+                (None, None) => {
+                    let rows = stmt
+                        .query_map(params![pack_id], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    for r in rows {
+                        out.push(r.map_err(|e| e.to_string())?);
+                    }
+                }
+            }
+            Ok(out)
+        })?;
+
+        rows.into_iter()
+            .map(|(target_id, agent_id, target_path, mode)| {
+                let claim_count = self.count_claims(&target_id)?;
+                Ok(AffectedTarget {
+                    target_id,
+                    display_name: agent_meta::display_name(&agent_id),
+                    agent_id,
+                    target_path,
+                    mode,
+                    claim_count,
+                })
+            })
+            .collect()
+    }
+
+    pub fn preview_delete_skill_pack(
+        &self,
+        pack_id: &str,
+    ) -> Result<DeleteSkillPackPreview, String> {
+        let pack_name = self.pack_name(pack_id)?;
+        let affected_targets = self.affected_targets_for_pack(pack_id, None, None)?;
+        let mut applied_agents = affected_targets
+            .iter()
+            .map(|t| t.display_name.clone())
+            .collect::<Vec<_>>();
+        applied_agents.sort();
+        applied_agents.dedup();
+        let removable = affected_targets.is_empty();
+        let warnings = if removable {
+            vec![]
+        } else {
+            vec![format!(
+                "Skill pack '{}' is still applied to {} agent(s). Revoke it before deleting.",
+                pack_name,
+                applied_agents.len()
+            )]
+        };
+        Ok(DeleteSkillPackPreview {
+            pack_id: pack_id.to_string(),
+            pack_name,
+            applied_agents,
+            affected_targets,
+            removable,
+            warnings,
+        })
+    }
+
+    pub fn preview_remove_pack_from_agent(
+        &self,
+        pack_id: &str,
+        agent_id: &str,
+    ) -> Result<RemovePackFromAgentPreview, String> {
+        let pack_name = self.pack_name(pack_id)?;
+        let affected_targets = self.affected_targets_for_pack(pack_id, Some(agent_id), None)?;
+        let will_remove_targets = affected_targets
+            .iter()
+            .filter(|t| t.claim_count <= 1)
+            .count();
+        let will_preserve_targets = affected_targets.len().saturating_sub(will_remove_targets);
+        Ok(RemovePackFromAgentPreview {
+            pack_id: pack_id.to_string(),
+            pack_name,
+            agent_id: agent_id.to_string(),
+            display_name: agent_meta::display_name(agent_id),
+            affected_targets,
+            will_remove_targets,
+            will_preserve_targets,
+        })
+    }
+
+    pub fn preview_remove_skill_from_pack(
+        &self,
+        pack_id: &str,
+        skill_id: &str,
+    ) -> Result<RemoveSkillFromPackPreview, String> {
+        let pack_name = self.pack_name(pack_id)?;
+        let skill_name = self
+            .skill_name(skill_id)
+            .unwrap_or_else(|_| skill_id.to_string());
+        let affected_targets = self.affected_targets_for_pack(pack_id, None, Some(skill_id))?;
+        let mut agents = affected_targets
+            .iter()
+            .map(|t| t.agent_id.clone())
+            .collect::<Vec<_>>();
+        agents.sort();
+        agents.dedup();
+        Ok(RemoveSkillFromPackPreview {
+            pack_id: pack_id.to_string(),
+            pack_name,
+            skill_id: skill_id.to_string(),
+            skill_name,
+            affected_targets,
+            applied_agent_count: agents.len(),
+            can_keep_standalone: true,
+            can_remove_targets: true,
+        })
+    }
+
+    pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {
         if pack.name.trim().is_empty() {
             return Err("Pack name is required.".to_string());
         }
@@ -2149,7 +2752,9 @@ impl Service {
             }
             Ok(())
         })?;
-        self.get_skill_pack_detail(&id)
+        let detail = self.get_skill_pack_detail(&id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(detail)
     }
 
     pub fn delete_skill_pack(&self, pack_id: &str) -> Result<(), String> {
@@ -2157,15 +2762,16 @@ impl Service {
         if applied > 0 {
             return Err(format!(
                 "Pack '{}' is applied to {} agent(s). Revoke it from all agents first.",
-                pack_id,
-                applied
+                pack_id, applied
             ));
         }
         self.db.with_conn(|c| {
             c.execute("DELETE FROM skill_packs WHERE id = ?1", params![pack_id])
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })
+        })?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
     }
 
     pub fn apply_skill_pack(
@@ -2176,7 +2782,8 @@ impl Service {
     ) -> Result<DistributionPreview, String> {
         let detail = self.get_skill_pack_detail(pack_id)?;
         let skill_ids: Vec<String> = detail.members.iter().map(|m| m.skill_id.clone()).collect();
-        let mut preview = self.preview_distribute_skill(skill_ids, target_agents, requested_mode)?;
+        let mut preview =
+            self.preview_distribute_skill(skill_ids, target_agents, requested_mode)?;
         if !preview.blockers.is_empty() {
             return Ok(preview);
         }
@@ -2184,7 +2791,10 @@ impl Service {
         for change in preview.changes.clone() {
             match change.action.as_str() {
                 "create" => {
-                    let actual = change.actual_mode.clone().unwrap_or_else(|| preview.requested_mode.clone());
+                    let actual = change
+                        .actual_mode
+                        .clone()
+                        .unwrap_or_else(|| preview.requested_mode.clone());
                     self.create_target(
                         &change.skill_id,
                         &change.agent_id,
@@ -2213,6 +2823,7 @@ impl Service {
                 c.reason = Some("pack claim appended".to_string());
             }
         }
+        self.refresh_snapshot_best_effort();
         Ok(preview)
     }
 
@@ -2264,6 +2875,7 @@ impl Service {
             }
         }
         self.scan_one_agent_into_db(agent_id)?;
+        self.refresh_snapshot_best_effort();
         Ok(RevokeResult {
             pack_id: pack_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -2282,12 +2894,6 @@ impl Service {
         // Are there pack claims for this skill under this pack?
         let applied = self.pack_applied_agent_count(pack_id)?;
         if applied > 0 {
-            if !also_remove_targets {
-                return Err(format!(
-                    "Pack is applied. Confirm to also revoke '{}' targets, or keep them as standalone installs.",
-                    skill_id
-                ));
-            }
             // revoke this skill's pack claims across all agents
             let targets = self.db.with_conn(|c| {
                 let mut stmt = c
@@ -2309,6 +2915,9 @@ impl Service {
                 Ok(v)
             })?;
             for (target_id, agent_id) in targets {
+                if !also_remove_targets {
+                    self.ensure_direct_claim_for_target(&target_id)?;
+                }
                 self.db.with_conn(|c| {
                     c.execute(
                         "DELETE FROM skill_target_claims WHERE target_id = ?1 AND pack_id = ?2",
@@ -2316,7 +2925,7 @@ impl Service {
                     )
                     .map_err(|e| e.to_string())
                 })?;
-                if self.count_claims(&target_id)? == 0 {
+                if also_remove_targets && self.count_claims(&target_id)? == 0 {
                     self.remove_target_completely(&target_id)?;
                 }
                 self.scan_one_agent_into_db(&agent_id)?;
@@ -2329,6 +2938,7 @@ impl Service {
             )
             .map_err(|e| e.to_string())
         })?;
+        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -2336,7 +2946,6 @@ impl Service {
 
     pub fn get_agent_detail(&self, agent_id: &str) -> Result<AgentDetail, String> {
         self.ensure_agent_row(agent_id)?;
-        self.scan_one_agent_into_db(agent_id)?;
         let summary = self
             .list_managed_agents()?
             .into_iter()
@@ -2379,6 +2988,7 @@ impl Service {
             let claims = self.claims_for_target(&t.id).unwrap_or_default();
             skills.push(SkillTargetDetail {
                 id: t.id,
+                skill_id: t.skill_id,
                 agent_id: t.agent_id,
                 target_path: t.target_path,
                 install_mode: t.install_mode,
@@ -2445,6 +3055,9 @@ impl Service {
                 pack_id: pid,
                 pack_name: name,
                 member_count,
+                agent_id: None,
+                display_name: None,
+                icon_key: None,
             });
         }
         Ok(out)
@@ -2581,13 +3194,24 @@ fn sanitize_for_id(s: &str) -> String {
         .to_string()
 }
 
-fn sources_match(
-    a_type: &str,
-    a_uri: Option<&str>,
-    b_type: &str,
-    b_uri: Option<&str>,
-) -> bool {
+fn infer_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(fsutil::sanitize_id)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "skill".to_string())
+}
+
+fn sources_match(a_type: &str, a_uri: Option<&str>, b_type: &str, b_uri: Option<&str>) -> bool {
     a_type == b_type && a_uri == b_uri
+}
+
+fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {
+    matches!(input.source_type.as_str(), "github" | "git" | "skillssh")
+        || input.source_path.starts_with("github:")
+        || input.source_path.starts_with("https://github.com/")
+        || input.source_path.starts_with("http://github.com/")
 }
 
 // transactional helpers
@@ -2700,7 +3324,10 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
         let mut ok = false;
         for _ in 0..32 {
             match cur.parent() {
-                Some(p) if p == dest => { ok = true; break; }
+                Some(p) if p == dest => {
+                    ok = true;
+                    break;
+                }
                 Some(p) => cur = p.to_path_buf(),
                 None => break,
             }
@@ -2714,7 +3341,8 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
             if let Some(parent) = outpath.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent: {}", e))?;
             }
-            let mut outfile = std::fs::File::create(&outpath).map_err(|e| format!("create file: {}", e))?;
+            let mut outfile =
+                std::fs::File::create(&outpath).map_err(|e| format!("create file: {}", e))?;
             std::io::copy(&mut entry, &mut outfile).map_err(|e| format!("copy: {}", e))?;
         }
     }

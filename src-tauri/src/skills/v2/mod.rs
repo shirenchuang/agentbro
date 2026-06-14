@@ -42,7 +42,7 @@ fn build_service() -> Result<Arc<service::Service>, String> {
     // Temporarily open a transient connection to read the configured sqlite path.
     let sqlite_path = resolve_sqlite_path(&home)?;
     let svc = service::Service::new(&sqlite_path, home.clone())?;
-    svc.init()?;
+    svc.bootstrap()?;
     Ok(Arc::new(svc))
 }
 

@@ -60,6 +60,7 @@ export interface SkillSourceDetail {
 
 export interface SkillTargetDetail {
   id: string
+  skillId: string
   agentId: string
   targetPath: string
   installMode: 'link' | 'copy'
@@ -127,6 +128,9 @@ export interface AppliedPackSummary {
   packId: string
   packName: string
   memberCount: number
+  agentId?: string | null
+  displayName?: string | null
+  iconKey?: string | null
 }
 
 export interface SkillPackDetail {
@@ -268,6 +272,36 @@ export interface DeleteCenterSkillPreview {
   warnings: string[]
 }
 
+export interface DeleteSkillPackPreview {
+  packId: string
+  packName: string
+  appliedAgents: string[]
+  affectedTargets: AffectedTarget[]
+  removable: boolean
+  warnings: string[]
+}
+
+export interface RemovePackFromAgentPreview {
+  packId: string
+  packName: string
+  agentId: string
+  displayName: string
+  affectedTargets: AffectedTarget[]
+  willRemoveTargets: number
+  willPreserveTargets: number
+}
+
+export interface RemoveSkillFromPackPreview {
+  packId: string
+  packName: string
+  skillId: string
+  skillName: string
+  affectedTargets: AffectedTarget[]
+  appliedAgentCount: number
+  canKeepStandalone: boolean
+  canRemoveTargets: boolean
+}
+
 export interface UnmanagedItemDto {
   id: string
   itemType: string
@@ -276,6 +310,34 @@ export interface UnmanagedItemDto {
   inferredSkillId: string | null
   hash: string | null
   reason: string
+}
+
+export interface AgentSkillInventoryItem {
+  id: string
+  agentId: string
+  skillId: string
+  name: string
+  path: string
+  managed: boolean
+  canImport: boolean
+  status: string
+  statusLabel: string
+  reason: string | null
+  targetId: string | null
+  actualMode: string | null
+  hash: string | null
+}
+
+export interface AgentSkillInventoryAgent {
+  agentId: string
+  displayName: string
+  iconKey: string
+  skillsDir: string | null
+  installed: boolean
+  managedCount: number
+  unmanagedCount: number
+  importableCount: number
+  items: AgentSkillInventoryItem[]
 }
 
 export interface DiagnosisAction {
@@ -343,6 +405,7 @@ export interface UpsertPackInput {
 const isTauri = '__TAURI_INTERNALS__' in window
 
 export const skillApiV2 = {
+  bootstrap: () => (isTauri ? invoke<void>('skill_manager_bootstrap') : Promise.resolve()),
   init: () => (isTauri ? invoke<void>('skill_manager_init') : Promise.resolve()),
   overview: () =>
     isTauri
@@ -422,14 +485,20 @@ export const skillApiV2 = {
     isTauri ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }) : Promise.resolve(null as unknown as SkillPackDetail),
   upsertPack: (pack: UpsertPackInput) =>
     isTauri ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack }) : Promise.resolve(null as unknown as SkillPackDetail),
+  previewDeletePack: (packId: string) =>
+    isTauri ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
   deletePack: (packId: string) =>
     isTauri ? invoke<void>('execute_delete_skill_pack', { packId }) : Promise.resolve(),
   previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
     isTauri ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [] }),
   executeApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
     isTauri ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [] }),
+  previewRemovePackFromAgent: (packId: string, agentId: string) =>
+    isTauri ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
   removePackFromAgent: (packId: string, agentId: string) =>
     isTauri ? invoke<RevokeResult>('execute_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, agentId, removedClaims: 0, removedTargets: 0, preservedTargets: 0 }),
+  previewRemoveSkillFromPack: (packId: string, skillId: string) =>
+    isTauri ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
   removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean) =>
     isTauri ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }) : Promise.resolve(),
 
@@ -437,6 +506,8 @@ export const skillApiV2 = {
   getAgentDetail: (agentId: string) =>
     isTauri ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
   listUnmanaged: () => (isTauri ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
+  listAgentSkillInventory: () =>
+    isTauri ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),
 
   runDiagnosis: () => (isTauri ? invoke<DiagnosisIssue[]>('run_skill_manager_diagnosis') : Promise.resolve([])),
   listDiagnosisIssues: () => (isTauri ? invoke<DiagnosisIssue[]>('list_diagnosis_issues') : Promise.resolve([])),
@@ -448,6 +519,95 @@ export const skillApiV2 = {
 
   exportSnapshot: () => (isTauri ? invoke<string>('skill_manager_export_snapshot') : Promise.resolve('')),
   openPath: (path: string) => (isTauri ? invoke<void>('open_skill_path', { path }) : Promise.resolve()),
+}
+
+function demoAgentInventory(): AgentSkillInventoryAgent[] {
+  return [
+    {
+      agentId: 'claude-code',
+      displayName: 'Claude Code',
+      iconKey: 'claude-code',
+      skillsDir: '~/.claude/skills',
+      installed: true,
+      managedCount: 1,
+      unmanagedCount: 2,
+      importableCount: 1,
+      items: [
+        {
+          id: 'demo-managed-release',
+          agentId: 'claude-code',
+          skillId: 'release-checklist',
+          name: 'release-checklist',
+          path: '~/.claude/skills/release-checklist',
+          managed: true,
+          canImport: false,
+          status: 'ok',
+          statusLabel: '已管理',
+          reason: null,
+          targetId: 'demo-target-1',
+          actualMode: 'link',
+          hash: null,
+        },
+        {
+          id: 'demo-unmanaged-article',
+          agentId: 'claude-code',
+          skillId: 'article-writer',
+          name: 'article-writer',
+          path: '~/.claude/skills/article-writer',
+          managed: false,
+          canImport: true,
+          status: 'unmanaged',
+          statusLabel: '未管理',
+          reason: 'not_in_center_library',
+          targetId: null,
+          actualMode: null,
+          hash: 'demo-hash',
+        },
+        {
+          id: 'demo-conflict',
+          agentId: 'claude-code',
+          skillId: 'frontend-design',
+          name: 'frontend-design',
+          path: '~/.claude/skills/frontend-design',
+          managed: false,
+          canImport: false,
+          status: 'conflict',
+          statusLabel: '未管理 · 同名冲突',
+          reason: 'center_library_conflict',
+          targetId: null,
+          actualMode: null,
+          hash: 'demo-conflict-hash',
+        },
+      ],
+    },
+    {
+      agentId: 'codex',
+      displayName: 'Codex',
+      iconKey: 'codex',
+      skillsDir: '~/.codex/skills',
+      installed: true,
+      managedCount: 0,
+      unmanagedCount: 1,
+      importableCount: 1,
+      items: [
+        {
+          id: 'demo-codex-browser',
+          agentId: 'codex',
+          skillId: 'browser-control',
+          name: 'browser-control',
+          path: '~/.codex/skills/browser-control',
+          managed: false,
+          canImport: true,
+          status: 'unmanaged',
+          statusLabel: '未管理',
+          reason: 'not_in_center_library',
+          targetId: null,
+          actualMode: null,
+          hash: 'demo-browser-hash',
+        },
+      ],
+    },
+  ]
 }
 
 function demoOverview(): SkillManagerOverview {

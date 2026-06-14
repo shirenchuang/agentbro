@@ -15,6 +15,12 @@ fn svc() -> Result<Arc<Service>, String> {
 }
 
 #[tauri::command]
+pub fn skill_manager_bootstrap() -> Result<(), String> {
+    let svc = svc()?;
+    svc.bootstrap()
+}
+
+#[tauri::command]
 pub fn skill_manager_init() -> Result<(), String> {
     let svc = svc()?;
     svc.init()
@@ -36,7 +42,9 @@ pub fn skill_manager_settings() -> Result<SkillManagerSettings, String> {
 }
 
 #[tauri::command]
-pub fn skill_manager_update_settings(update: SettingsUpdate) -> Result<SkillManagerSettings, String> {
+pub fn skill_manager_update_settings(
+    update: SettingsUpdate,
+) -> Result<SkillManagerSettings, String> {
     svc()?.update_settings(update)
 }
 
@@ -51,7 +59,9 @@ pub fn get_skill_detail_v2(skill_id: String) -> Result<SkillDetail, String> {
 }
 
 #[tauri::command]
-pub fn preview_add_center_skill(input: AddCenterSkillInput) -> Result<AddCenterSkillPreview, String> {
+pub fn preview_add_center_skill(
+    input: AddCenterSkillInput,
+) -> Result<AddCenterSkillPreview, String> {
     Ok(svc()?.preview_add_center_skill(input)?)
 }
 
@@ -69,10 +79,7 @@ pub fn preview_delete_center_skill(skill_id: String) -> Result<DeleteCenterSkill
 }
 
 #[tauri::command]
-pub fn execute_delete_center_skill(
-    skill_id: String,
-    remove_linked: bool,
-) -> Result<(), String> {
+pub fn execute_delete_center_skill(skill_id: String, remove_linked: bool) -> Result<(), String> {
     svc()?.execute_delete_center_skill(&skill_id, remove_linked)
 }
 
@@ -86,7 +93,9 @@ pub fn preview_distribute_skill(
 }
 
 #[tauri::command]
-pub fn execute_distribute_skill(preview: DistributionPreview) -> Result<DistributionPreview, String> {
+pub fn execute_distribute_skill(
+    preview: DistributionPreview,
+) -> Result<DistributionPreview, String> {
     svc()?.execute_distribute_skill(preview, ClaimOrigin::Direct)
 }
 
@@ -150,6 +159,11 @@ pub fn execute_upsert_skill_pack(pack: UpsertPackInput) -> Result<SkillPackDetai
 }
 
 #[tauri::command]
+pub fn preview_delete_skill_pack(pack_id: String) -> Result<DeleteSkillPackPreview, String> {
+    svc()?.preview_delete_skill_pack(&pack_id)
+}
+
+#[tauri::command]
 pub fn execute_delete_skill_pack(pack_id: String) -> Result<(), String> {
     svc()?.delete_skill_pack(&pack_id)
 }
@@ -161,11 +175,8 @@ pub fn preview_apply_skill_pack(
     requested_mode: String,
 ) -> Result<DistributionPreview, String> {
     let svc = svc()?;
-    let preview = svc.preview_distribute_skill(
-        pack_members(&svc, &pack_id)?,
-        target_agents,
-        requested_mode,
-    )?;
+    let preview =
+        svc.preview_distribute_skill(pack_members(&svc, &pack_id)?, target_agents, requested_mode)?;
     Ok(preview)
 }
 
@@ -179,11 +190,27 @@ pub fn execute_apply_skill_pack(
 }
 
 #[tauri::command]
+pub fn preview_remove_skill_pack_from_agent(
+    pack_id: String,
+    agent_id: String,
+) -> Result<RemovePackFromAgentPreview, String> {
+    svc()?.preview_remove_pack_from_agent(&pack_id, &agent_id)
+}
+
+#[tauri::command]
 pub fn execute_remove_skill_pack_from_agent(
     pack_id: String,
     agent_id: String,
 ) -> Result<crate::skills::v2::service::RevokeResult, String> {
     svc()?.remove_skill_pack_from_agent(&pack_id, &agent_id)
+}
+
+#[tauri::command]
+pub fn preview_remove_skill_from_pack(
+    pack_id: String,
+    skill_id: String,
+) -> Result<RemoveSkillFromPackPreview, String> {
+    svc()?.preview_remove_skill_from_pack(&pack_id, &skill_id)
 }
 
 #[tauri::command]
@@ -211,15 +238,20 @@ pub fn list_unmanaged_v2() -> Result<Vec<UnmanagedItemDto>, String> {
 }
 
 #[tauri::command]
+pub fn list_agent_skill_inventory_v2() -> Result<Vec<AgentSkillInventoryAgent>, String> {
+    Ok(svc()?.list_agent_skill_inventory()?)
+}
+
+#[tauri::command]
 pub fn run_skill_manager_diagnosis() -> Result<Vec<DiagnosisIssue>, String> {
     let svc = svc()?;
+    svc.refresh()?;
     diagnosis::run(&svc)
 }
 
 #[tauri::command]
 pub fn list_diagnosis_issues() -> Result<Vec<DiagnosisIssue>, String> {
-    let svc = svc()?;
-    diagnosis::run(&svc)
+    svc()?.list_current_diagnosis_issues()
 }
 
 #[tauri::command]
@@ -239,10 +271,7 @@ pub fn preview_fix_diagnosis_issue(
 }
 
 #[tauri::command]
-pub fn execute_fix_diagnosis_issue(
-    issue_type: String,
-    entity_id: String,
-) -> Result<(), String> {
+pub fn execute_fix_diagnosis_issue(issue_type: String, entity_id: String) -> Result<(), String> {
     let svc = svc()?;
     diagnosis::execute_fix(&svc, &issue_type, &entity_id)
 }

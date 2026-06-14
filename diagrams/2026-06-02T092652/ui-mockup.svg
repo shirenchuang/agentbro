@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" font-family="Noto Sans SC, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FAF7F2"/>
+      <stop offset="100%" stop-color="#F1ECE2"/>
+    </linearGradient>
+    <linearGradient id="sidebar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F2937"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="tabActive" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF6B6B"/>
+      <stop offset="100%" stop-color="#FF9F43"/>
+    </linearGradient>
+    <linearGradient id="cardA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFE7D2"/>
+      <stop offset="100%" stop-color="#FFD0B5"/>
+    </linearGradient>
+    <linearGradient id="cardB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D7F0FF"/>
+      <stop offset="100%" stop-color="#B6E2FF"/>
+    </linearGradient>
+    <linearGradient id="cardC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#E6E1FF"/>
+      <stop offset="100%" stop-color="#CDBFFF"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="2" result="b"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="800" fill="url(#bg)"/>
+
+  <g filter="url(#cardShadow)">
+    <rect x="60" y="60" width="1160" height="680" rx="18" fill="#FFFFFF"/>
+  </g>
+
+  <rect x="60" y="60" width="220" height="680" rx="18" fill="url(#sidebar)"/>
+  <rect x="280" y="60" width="1" height="680" fill="#0F172A" opacity="0.08"/>
+
+  <circle cx="115" cy="98" r="13" fill="#FF6B6B"/>
+  <circle cx="148" cy="98" r="13" fill="#FBBF24"/>
+  <circle cx="181" cy="98" r="13" fill="#34D399"/>
+
+  <text x="90" y="150" fill="#F9FAFB" font-size="14" font-weight="700">AgentBro</text>
+  <text x="90" y="170" fill="#9CA3AF" font-size="11">设置中心</text>
+
+  <g font-size="13" fill="#D1D5DB">
+    <text x="90" y="215">通用</text>
+    <text x="90" y="245">权限</text>
+    <text x="90" y="275">快捷键</text>
+    <rect x="80" y="290" width="180" height="32" rx="8" fill="#FFFFFF" opacity="0.10"/>
+    <text x="92" y="311" fill="#FFFFFF" font-weight="600">动态岛 · Pet</text>
+    <text x="90" y="345">皮肤</text>
+    <text x="90" y="375">关于</text>
+  </g>
+
+  <text x="300" y="100" fill="#0F172A" font-size="22" font-weight="700">动态岛与宠物</text>
+  <text x="300" y="124" fill="#475569" font-size="13">浏览、安装和管理 AgentBro 的 Pet 资源</text>
+
+  <g>
+    <rect x="300" y="150" width="380" height="32" rx="8" fill="#FFE4D6"/>
+    <text x="318" y="171" fill="#9A3412" font-size="13" font-weight="600">● 已安装</text>
+
+    <rect x="690" y="150" width="380" height="32" rx="8" fill="url(#tabActive)"/>
+    <text x="708" y="171" fill="#FFFFFF" font-size="13" font-weight="700">宠物市场 ↗</text>
+
+    <rect x="1080" y="150" width="140" height="32" rx="8" fill="#E0E7FF"/>
+    <text x="1098" y="171" fill="#3730A3" font-size="13" font-weight="600">＋ 上传</text>
+  </g>
+
+  <g>
+    <rect x="300" y="200" width="380" height="32" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="318" y="221" fill="#94A3B8" font-size="13">🔍  搜索 Pet 名称 / 作者</text>
+
+    <rect x="690" y="200" width="160" height="32" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="708" y="221" fill="#0F172A" font-size="13">源：官方 · GitHub ▾</text>
+
+    <rect x="860" y="200" width="100" height="32" rx="8" fill="#0F172A"/>
+    <text x="910" y="221" text-anchor="middle" fill="#FFFFFF" font-size="13">刷新</text>
+
+    <rect x="970" y="200" width="100" height="32" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="1020" y="221" text-anchor="middle" fill="#0F172A" font-size="13">管理源</text>
+  </g>
+
+  <g>
+    <rect x="300" y="260" width="240" height="220" rx="14" fill="url(#cardA)" filter="url(#cardShadow)"/>
+    <circle cx="420" cy="330" r="42" fill="#FFFFFF" opacity="0.6"/>
+    <text x="420" y="338" text-anchor="middle" font-size="38">🐱</text>
+    <text x="320" y="400" fill="#7C2D12" font-size="16" font-weight="700">Orange Neko</text>
+    <text x="320" y="420" fill="#9A3412" font-size="11">by @stardust</text>
+    <rect x="320" y="432" width="58" height="22" rx="11" fill="#16A34A"/>
+    <text x="349" y="447" text-anchor="middle" fill="#FFFFFF" font-size="11" font-weight="600">已安装</text>
+    <rect x="320" y="460" width="200" height="6" rx="3" fill="#FFFFFF" opacity="0.6"/>
+    <text x="320" y="481" fill="#7C2D12" font-size="10">8 动画 · 3 主题色</text>
+
+    <rect x="560" y="260" width="240" height="220" rx="14" fill="url(#cardB)" filter="url(#cardShadow)"/>
+    <circle cx="680" cy="330" r="42" fill="#FFFFFF" opacity="0.6"/>
+    <text x="680" y="338" text-anchor="middle" font-size="38">🐶</text>
+    <text x="580" y="400" fill="#0C4A6E" font-size="16" font-weight="700">Shiba Sprint</text>
+    <text x="580" y="420" fill="#0369A1" font-size="11">by @momo</text>
+    <rect x="580" y="434" width="200" height="32" rx="8" fill="#0EA5E9"/>
+    <text x="680" y="455" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="600">↓  安装</text>
+
+    <rect x="820" y="260" width="240" height="220" rx="14" fill="url(#cardC)" filter="url(#cardShadow)"/>
+    <circle cx="940" cy="330" r="42" fill="#FFFFFF" opacity="0.6"/>
+    <text x="940" y="338" text-anchor="middle" font-size="38">🦊</text>
+    <text x="840" y="400" fill="#3730A3" font-size="16" font-weight="700">Frosty Fox</text>
+    <text x="840" y="420" fill="#4F46E5" font-size="11">by @aurora</text>
+    <rect x="840" y="434" width="200" height="32" rx="8" fill="#0EA5E9"/>
+    <text x="940" y="455" text-anchor="middle" fill="#FFFFFF" font-size="13" font-weight="600">↓  安装</text>
+
+    <rect x="1080" y="260" width="140" height="220" rx="14" fill="#FFFFFF" stroke="#E2E8F0" stroke-dasharray="4 4"/>
+    <text x="1150" y="370" text-anchor="middle" font-size="42" fill="#94A3B8">＋</text>
+    <text x="1150" y="395" text-anchor="middle" font-size="12" fill="#64748B">更多市场</text>
+  </g>
+
+  <rect x="300" y="500" width="920" height="220" rx="14" fill="#FFFFFF" stroke="#E2E8F0"/>
+
+  <text x="320" y="530" fill="#0F172A" font-size="15" font-weight="700">已安装 Pet  ·  3</text>
+  <text x="1100" y="530" text-anchor="end" fill="#475569" font-size="12">provider · 状态 · 操作</text>
+
+  <g>
+    <rect x="320" y="550" width="40" height="40" rx="8" fill="#FFE7D2"/>
+    <text x="340" y="578" text-anchor="middle" font-size="22">🐱</text>
+    <text x="375" y="568" fill="#0F172A" font-size="13" font-weight="600">Orange Neko</text>
+    <text x="375" y="585" fill="#64748B" font-size="11">agentpro · v1.2.0</text>
+    <text x="1120" y="568" text-anchor="end" fill="#16A34A" font-size="11" font-weight="600">已启用</text>
+    <text x="1120" y="585" text-anchor="end" fill="#94A3B8" font-size="10">卸载</text>
+  </g>
+  <g>
+    <rect x="320" y="605" width="40" height="40" rx="8" fill="#FEF3C7"/>
+    <text x="340" y="633" text-anchor="middle" font-size="22">🐤</text>
+    <text x="375" y="623" fill="#0F172A" font-size="13" font-weight="600">Chirpy Chick</text>
+    <text x="375" y="640" fill="#64748B" font-size="11">codex · 内置</text>
+    <text x="1120" y="623" text-anchor="end" fill="#94A3B8" font-size="11">点击启用</text>
+  </g>
+  <g>
+    <rect x="320" y="660" width="40" height="40" rx="8" fill="#D7F0FF"/>
+    <text x="340" y="688" text-anchor="middle" font-size="22">🐢</text>
+    <text x="375" y="678" fill="#0F172A" font-size="13" font-weight="600">Lazy Turtle</text>
+    <text x="375" y="695" fill="#64748B" font-size="11">user · 自制</text>
+    <text x="1120" y="678" text-anchor="end" fill="#94A3B8" font-size="11">点击启用</text>
+  </g>
+
+  <g font-size="12" fill="#64748B">
+    <text x="60" y="780">设计稿 · 宠物市场 Tab · 三个区域：已安装 / 市场 / 上传</text>
+  </g>
+</svg>

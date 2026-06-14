@@ -231,7 +231,10 @@ export interface MarketplaceSkill {
   registryId: string
   name: string
   description: string | null
+  source: string | null
+  installCount: number | null
   downloadUrl: string
+  webUrl: string | null
   isInstalled: boolean
   syncedAt: string
   cacheUpdatedAt: string | null
@@ -258,6 +261,24 @@ export interface MarketplaceItem {
 }
 
 const isTauri = '__TAURI_INTERNALS__' in window
+
+const SKILLS_SH_REGISTRY: SkillRegistry = {
+  id: 'skills-sh',
+  name: 'skills.sh',
+  sourceType: 'skills.sh',
+  url: 'https://skills.sh',
+  isBuiltin: true,
+  isEnabled: true,
+  lastSynced: null,
+  lastAttemptedSync: null,
+  lastSyncStatus: 'live',
+  lastSyncError: null,
+  cacheUpdatedAt: null,
+  cacheExpiresAt: null,
+  etag: null,
+  lastModified: null,
+  createdAt: new Date().toISOString(),
+}
 
 export const skillApi = {
   scanAll: () => isTauri
@@ -500,7 +521,7 @@ export const skillApi = {
 
   listRegistries: () => isTauri
     ? invoke<SkillRegistry[]>('list_registries')
-    : Promise.resolve([]),
+    : Promise.resolve([SKILLS_SH_REGISTRY]),
 
   addRegistry: (name: string, sourceType: string, url: string) => isTauri
     ? invoke<SkillRegistry>('add_registry', { name, sourceType, url })
@@ -530,11 +551,11 @@ export const skillApi = {
     ? (options
         ? invoke<MarketplaceSkill[]>('sync_registry_with_options', { registryId, options })
         : invoke<MarketplaceSkill[]>('sync_registry', { registryId }))
-    : Promise.resolve([]),
+    : fetchSkillsShMarketplace(registryId, null),
 
-  searchMarketplaceSkills: (registryId?: string | null, query?: string | null) => isTauri
-    ? invoke<MarketplaceSkill[]>('search_marketplace_skills', { registryId: registryId ?? null, query: query ?? null })
-    : Promise.resolve([]),
+  searchMarketplaceSkills: (registryId?: string | null, query?: string | null, board?: string | null) => isTauri
+    ? invoke<MarketplaceSkill[]>('search_marketplace_skills', { registryId: registryId ?? null, query: query ?? null, board: board ?? null })
+    : fetchSkillsShMarketplace(registryId, query, board),
 
   installMarketplaceSkill: (skillId: string) => isTauri
     ? invoke('install_marketplace_skill', { skillId })
@@ -551,4 +572,96 @@ export const skillApi = {
   removeMarketplaceSource: (id: string) => isTauri
     ? invoke('remove_marketplace_source_cmd', { id })
     : Promise.resolve(),
+}
+
+interface SkillsShSearchSkill {
+  id?: string
+  skillId?: string
+  skill_id?: string
+  name?: string
+  source?: string
+  installs?: number
+}
+
+interface SkillsShSearchResponse {
+  skills?: SkillsShSearchSkill[]
+}
+
+async function fetchSkillsShMarketplace(
+  registryId?: string | null,
+  query?: string | null,
+  board?: string | null,
+): Promise<MarketplaceSkill[]> {
+  const wantsSkillsSh = !registryId || ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
+  if (!wantsSkillsSh || typeof fetch !== 'function') return []
+
+  try {
+    const url = new URL('https://skills.sh/api/search')
+    const queryText = query?.trim() || (board === 'hot' ? 'popular' : board === 'trending' ? 'trending' : 'skill')
+    url.searchParams.set('q', queryText)
+    url.searchParams.set('limit', '80')
+    const response = await fetch(url.toString())
+    if (!response.ok) return []
+
+    const value = (await response.json()) as SkillsShSearchResponse | SkillsShSearchSkill[]
+    const skills = Array.isArray(value) ? value : value.skills ?? []
+    const now = new Date().toISOString()
+    const mapped = skills
+      .map((skill) => toMarketplaceSkill(skill, now))
+      .filter((skill): skill is MarketplaceSkill => Boolean(skill))
+    return mapped.length > 0 ? mapped : fallbackSkillsShMarketplace(query, board)
+  } catch {
+    return fallbackSkillsShMarketplace(query, board)
+  }
+}
+
+function toMarketplaceSkill(skill: SkillsShSearchSkill, syncedAt: string): MarketplaceSkill | null {
+  const source = skill.source?.trim()
+  const skillId = (skill.skillId ?? skill.skill_id ?? '').trim()
+  if (!source || !skillId) return null
+
+  const id = skill.id?.trim()
+    ? `skillssh:${skill.id.trim().replace(/\//g, '@')}`
+    : `skillssh:${source.replace(/\//g, '@')}@${skillId.replace(/\//g, '@')}`
+  const installs = typeof skill.installs === 'number' ? skill.installs : 0
+  return {
+    id,
+    registryId: 'skills-sh',
+    name: skill.name?.trim() || skillId,
+    description: installs > 0 ? `skills.sh · ${installs} installs · ${source}` : `skills.sh · ${source}`,
+    source,
+    installCount: installs > 0 ? installs : null,
+    downloadUrl: `github:${source}/${skillId}`,
+    webUrl: `https://skills.sh/${source}/${skillId}`,
+    isInstalled: false,
+    syncedAt,
+    cacheUpdatedAt: syncedAt,
+  }
+}
+
+function fallbackSkillsShMarketplace(query?: string | null, board?: string | null): MarketplaceSkill[] {
+  const now = new Date().toISOString()
+  const rows: SkillsShSearchSkill[] = [
+    { id: 'vercel-labs/skills/find-skills', skillId: 'find-skills', name: 'find-skills', source: 'vercel-labs/skills', installs: 2_006_831 },
+    { id: 'anthropics/skills/frontend-design', skillId: 'frontend-design', name: 'frontend-design', source: 'anthropics/skills', installs: 541_500 },
+    { id: 'vercel-labs/agent-skills/vercel-react-best-practices', skillId: 'vercel-react-best-practices', name: 'vercel-react-best-practices', source: 'vercel-labs/agent-skills', installs: 474_400 },
+    { id: 'vercel-labs/agent-browser/agent-browser', skillId: 'agent-browser', name: 'agent-browser', source: 'vercel-labs/agent-browser', installs: 447_200 },
+    { id: 'microsoft/azure-skills/microsoft-foundry', skillId: 'microsoft-foundry', name: 'microsoft-foundry', source: 'microsoft/azure-skills', installs: 389_800 },
+    { id: 'vercel-labs/agent-skills/web-design-guidelines', skillId: 'web-design-guidelines', name: 'web-design-guidelines', source: 'vercel-labs/agent-skills', installs: 388_900 },
+    { id: 'microsoft/azure-skills/azure-ai', skillId: 'azure-ai', name: 'azure-ai', source: 'microsoft/azure-skills', installs: 387_400 },
+    { id: 'microsoft/azure-skills/azure-deploy', skillId: 'azure-deploy', name: 'azure-deploy', source: 'microsoft/azure-skills', installs: 387_000 },
+    { id: 'microsoft/azure-skills/azure-diagnostics', skillId: 'azure-diagnostics', name: 'azure-diagnostics', source: 'microsoft/azure-skills', installs: 386_900 },
+  ]
+  const q = query?.trim().toLowerCase()
+  const filtered = q
+    ? rows.filter((row) => [row.name, row.source, row.skillId].filter(Boolean).join(' ').toLowerCase().includes(q))
+    : rows
+  const ordered = board === 'trending'
+    ? [...filtered].sort((a, b) => (b.name || '').localeCompare(a.name || ''))
+    : board === 'hot'
+      ? [...filtered].sort((a, b) => (b.installs || 0) - (a.installs || 0)).slice(1)
+      : filtered
+  return ordered
+    .map((skill) => toMarketplaceSkill(skill, now))
+    .filter((skill): skill is MarketplaceSkill => Boolean(skill))
 }

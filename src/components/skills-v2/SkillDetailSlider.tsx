@@ -1,9 +1,23 @@
 import { useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { skillApi } from '../../services/skillApi'
 import type { SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
+
+type DetailTab = 'overview' | 'files' | 'agents' | 'source'
+type FileViewMode = 'preview' | 'source'
+
+export interface SkillDetailFallback {
+  id: string
+  name: string
+  centerPath: string
+  description?: string
+  sourceType?: string
+  sourceUri?: string | null
+}
 
 const STATUS_LABEL: Record<string, string> = {
   ok: '正常',
@@ -13,6 +27,7 @@ const STATUS_LABEL: Record<string, string> = {
   copy_diverged: '已分叉',
   broken_link: '坏链接',
   missing: '失效',
+  copyDiverged: '副本分叉',
 }
 
 export function SkillDetailSlider({
@@ -21,12 +36,14 @@ export function SkillDetailSlider({
   onClose,
   onDistribute,
   onDelete,
+  fallbackSkill,
 }: {
   skillId: string | null
   open: boolean
   onClose: () => void
-  onDistribute: (s: SkillSummary) => void
-  onDelete: (id: string) => void
+  onDistribute?: (s: SkillSummary) => void
+  onDelete?: (id: string) => void
+  fallbackSkill?: SkillDetailFallback | null
 }) {
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [loading, setLoading] = useState(false)
@@ -35,26 +52,58 @@ export function SkillDetailSlider({
   const [fileLoading, setFileLoading] = useState(false)
   const [syncing, setSyncing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<DetailTab>('overview')
+  const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
+  const [skillDocPath, setSkillDocPath] = useState<string | null>(null)
+  const [skillDocContent, setSkillDocContent] = useState('')
 
   useEffect(() => {
     if (!open || !skillId) return
     setLoading(true)
     setError(null)
+    setTab('overview')
+    setDetail(null)
+    setSkillDocContent('')
+    setFileContent('')
     skillApiV2
       .getSkillDetail(skillId)
       .then((d) => {
         setDetail(d)
-        // default to SKILL.md preview
         const skillMd = findFile(d.files, 'SKILL.md')
-        if (skillMd) loadFile(skillMd)
+        setSkillDocPath(skillMd)
+        if (skillMd) {
+          loadFile(skillMd)
+          skillApi.readFileContent(skillMd).then(setSkillDocContent).catch(() => setSkillDocContent(''))
+        } else {
+          setSkillDocContent('')
+        }
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => {
+        if (!fallbackSkill) {
+          setError(String(e))
+          return
+        }
+        const d = fallbackToSkillDetail(fallbackSkill)
+        setDetail(d)
+        setSkillDocPath(`${fallbackSkill.centerPath}/SKILL.md`)
+        skillApi
+          .readFileContent(`${fallbackSkill.centerPath}/SKILL.md`)
+          .then((content) => {
+            setSkillDocContent(content)
+            setFileContent(content)
+          })
+          .catch(() => {
+            setSkillDocContent('')
+            setFileContent('')
+          })
+      })
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, skillId])
+  }, [open, skillId, fallbackSkill?.centerPath])
 
   const loadFile = async (path: string) => {
     setActiveFile(path)
+    setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
     setFileLoading(true)
     try {
       const content = await skillApi.readFileContent(path)
@@ -82,126 +131,377 @@ export function SkillDetailSlider({
   }
 
   const summary: SkillSummary | null = detail
+  const tabs: Array<{ id: DetailTab; label: string }> = [
+    { id: 'overview', label: '概览' },
+    { id: 'files', label: '文件' },
+    { id: 'agents', label: `Agent (${detail?.targets.length || 0})` },
+    { id: 'source', label: '来源' },
+  ]
 
   return (
     <SlideOver
       open={open}
       onClose={onClose}
-      width={720}
+      width={1040}
       title={summary?.name || skillId || ''}
-      subtitle={summary?.description}
       actions={
         summary && (
           <>
-            <button className="sm2__btn sm2__btn--primary" onClick={() => onDistribute(summary)}>
-              分发
-            </button>
+            {onDistribute && (
+              <button className="sm2__btn sm2__btn--primary" onClick={() => onDistribute(summary)}>
+                分发
+              </button>
+            )}
             <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(summary.centerPath)}>
               打开目录
             </button>
-            <button className="sm2__btn sm2__btn--danger" onClick={() => onDelete(summary.id)}>
-              删除
-            </button>
+            {onDelete && (
+              <button className="sm2__btn sm2__btn--danger" onClick={() => onDelete(summary.id)}>
+                删除
+              </button>
+            )}
           </>
         )
       }
     >
       {loading && <div className="sm2__empty">加载中…</div>}
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-      {summary && (
-        <>
-          <div className="sm2__detail-meta" style={{ marginBottom: 12 }}>
-            <span className={`sm2__tag sm2__tag--${summary.status}`}>{STATUS_LABEL[summary.status] || summary.status}</span>{' '}
-            <span className="sm2__tag">{summary.sourceType}</span>{' '}
-            <span className="sm2__agents">
-              {summary.installedAgents.map((a) => (
-                <AgentIconBadge key={a.agentId} iconKey={a.iconKey} mode={a.mode} title={`${a.displayName} · ${a.mode}`} />
-              ))}
-            </span>
-          </div>
-
-          {/* File browser */}
-          <div className="sm2__detail-section">
-            <h4>目录与文件</h4>
-            <div className="sm2__filebrowser">
-              <div className="sm2__filetree settings-scroll">
-                {detail?.files ? (
-                  <FileTree node={detail.files} depth={0} active={activeFile} onSelect={loadFile} />
-                ) : (
-                  <div className="sm2__empty" style={{ padding: 12 }}>无文件</div>
-                )}
-              </div>
-              <div className="sm2__fileview settings-scroll">
-                <div className="sm2__fileview-path">{activeFile || '选择左侧文件查看内容'}</div>
-                <pre className="sm2__fileview-content">
-                  {fileLoading ? '加载中…' : fileContent || '（空）'}
-                </pre>
-              </div>
-            </div>
-          </div>
-
-          {/* Installed targets */}
-          <div className="sm2__detail-section">
-            <h4>已安装 Agent（{detail?.targets.length || 0}）</h4>
-            {detail?.targets.length === 0 ? (
-              <div className="sm2__empty" style={{ padding: 8 }}>尚未分发到任何 Agent</div>
-            ) : (
-              detail?.targets.map((t) => (
-                <div key={t.id} className="sm2__target-card">
-                  <div className="sm2__target-card-head">
-                    <AgentIconBadge iconKey={t.agentId} mode={t.actualMode as 'link' | 'copy'} size={24} />
-                    <div className="sm2__target-card-info">
-                      <strong>{t.agentId}</strong>
-                      <span className={`sm2__tag sm2__tag--${t.status}`}>{STATUS_LABEL[t.status] || t.status}</span>
-                      <span className="sm2__tag">{t.actualMode}</span>
-                    </div>
-                    <div className="sm2__claims">
-                      {t.claims.map((c) => (
-                        <span key={c.id} className="sm2__tag">
-                          {c.claimType === 'pack' ? `pack:${c.packName}` : 'direct'}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="sm2__detail-meta">{t.targetPath}</div>
-                  {t.actualMode === 'copy' && t.status !== 'ok' && (
-                    <div className="sm2__btn-row">
-                      {t.status === 'copy_outdated' && (
-                        <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'center_over_agent')}>更新副本</button>
-                      )}
-                      {t.status === 'copy_modified' && (
-                        <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'agent_over_center')}>推送到中心库</button>
-                      )}
-                      {t.status === 'copy_diverged' && (
-                        <>
-                          <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'center_over_agent')}>用中心库覆盖</button>
-                          <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'agent_over_center')}>用副本覆盖</button>
-                          <button className="sm2__btn" disabled={syncing === t.id} onClick={() => doSync(t.id, 'keep_diverged')}>保留分叉</button>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))
+      {detail && (
+        <div className="sm2__skill-detail">
+          <div className="sm2__detail-pills">
+            <span className={`sm2__tag sm2__tag--${detail.status}`}>{STATUS_LABEL[detail.status] || detail.status}</span>
+            <span className="sm2__tag">{detail.sourceType}</span>
+            <span className="sm2__tag">{detail.skillType}</span>
+            {detail.installedAgents.length > 0 && (
+              <span className="sm2__agents">
+                {detail.installedAgents.map((a) => (
+                  <AgentIconBadge key={a.agentId} iconKey={a.iconKey} mode={a.mode} title={`${a.displayName} · ${a.mode}`} />
+                ))}
+              </span>
             )}
           </div>
 
-          {/* Source */}
-          {detail?.source && (
-            <div className="sm2__detail-section">
-              <h4>来源</h4>
-              <div className="sm2__detail-meta">
-                <div>类型：{detail.source.sourceType}</div>
-                {detail.source.importedFromAgent && <div>来自 Agent：{detail.source.importedFromAgent}</div>}
-                {detail.source.importedFromPath && <div>原路径：{detail.source.importedFromPath}</div>}
-                <div>Hash：{summary.currentHash.slice(0, 16)}…</div>
-              </div>
-            </div>
+          <div className="sm2__subtabs">
+            {tabs.map((t) => (
+              <button key={t.id} className={`sm2__subtab${tab === t.id ? ' sm2__subtab--active' : ''}`} onClick={() => setTab(t.id)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'overview' && (
+            <OverviewTab
+              detail={detail}
+              docPath={skillDocPath}
+              docContent={skillDocContent || fileContent}
+              fileLoading={fileLoading}
+            />
           )}
-          <div style={{ height: 24 }} />
-        </>
+          {tab === 'files' && (
+            <FilesTab
+              detail={detail}
+              activeFile={activeFile}
+              fileContent={fileContent}
+              fileLoading={fileLoading}
+              viewMode={fileViewMode}
+              onViewModeChange={setFileViewMode}
+              onSelect={loadFile}
+            />
+          )}
+          {tab === 'agents' && <AgentsTab detail={detail} syncing={syncing} onSync={doSync} />}
+          {tab === 'source' && <SourceTab detail={detail} />}
+        </div>
       )}
     </SlideOver>
+  )
+}
+
+function OverviewTab({
+  detail,
+  docPath,
+  docContent,
+  fileLoading,
+}: {
+  detail: SkillDetail
+  docPath: string | null
+  docContent: string
+  fileLoading: boolean
+}) {
+  const frontmatter = Object.entries(detail.frontmatter || {})
+  const sourceLabel = detail.source?.sourceType || detail.sourceType
+  const sourceValue = detail.source?.sourceUri || detail.sourceUri || sourceLabel
+  return (
+    <div className="sm2__detail-overview sm2__detail-overview--reader">
+      <section className="sm2__skill-doc">
+        <div className="sm2__skill-doc-head">
+          <div>
+            <span>{docPath ? docPath.split('/').pop() : 'SKILL.md'}</span>
+            <strong>说明文档</strong>
+          </div>
+          <small>{STATUS_LABEL[detail.status] || detail.status}</small>
+        </div>
+        <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc">
+          {fileLoading ? (
+            <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
+          ) : docContent ? (
+            <>
+              <SkillFrontmatterIntro description={detail.frontmatter.description || detail.description} />
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(docContent)}</ReactMarkdown>
+            </>
+          ) : (
+            <div className="sm2__empty sm2__empty--compact">未找到说明文档</div>
+          )}
+        </div>
+      </section>
+
+      <aside className="sm2__skill-aside">
+        <section className="sm2__aside-panel">
+          <div className="sm2__aside-head">
+            <h3>Agent 安装</h3>
+            <span>{detail.targets.length}</span>
+          </div>
+          {detail.targets.length === 0 ? (
+            <div className="sm2__aside-empty">尚未分发到 Agent</div>
+          ) : (
+            <div className="sm2__install-mini-list">
+              {detail.targets.map((target) => {
+                const agent = detail.installedAgents.find((item) => item.agentId === target.agentId)
+                return (
+                  <div key={target.id} className="sm2__install-mini">
+                    <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={26} />
+                    <div>
+                      <strong>{agent?.displayName || target.agentId}</strong>
+                      <span>{target.actualMode} · {STATUS_LABEL[target.status] || target.status}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="sm2__aside-panel">
+          <div className="sm2__aside-head">
+            <h3>信息</h3>
+          </div>
+          <div className="sm2__compact-info">
+            <CompactInfo label="来源" value={sourceValue} />
+            <CompactInfo label="中心目录" value={detail.centerPath} mono />
+            <CompactInfo label="Hash" value={detail.currentHash} mono short />
+          </div>
+        </section>
+
+        {frontmatter.length > 0 && (
+          <details className="sm2__aside-panel sm2__metadata-disclosure">
+            <summary>
+              <span>元数据</span>
+              <strong>{frontmatter.length}</strong>
+            </summary>
+            <div className="sm2__compact-info sm2__compact-info--meta">
+              {frontmatter.map(([key, value]) => (
+                <CompactInfo key={key} label={key} value={formatMetaValue(value)} mono={isCodeLikeMeta(key, value)} />
+              ))}
+            </div>
+          </details>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+function FilesTab({
+  detail,
+  activeFile,
+  fileContent,
+  fileLoading,
+  viewMode,
+  onViewModeChange,
+  onSelect,
+}: {
+  detail: SkillDetail
+  activeFile: string | null
+  fileContent: string
+  fileLoading: boolean
+  viewMode: FileViewMode
+  onViewModeChange: (mode: FileViewMode) => void
+  onSelect: (path: string) => void
+}) {
+  const canPreview = Boolean(activeFile && isMarkdownPath(activeFile))
+  const effectiveMode = canPreview ? viewMode : 'source'
+  const activeName = activeFile ? activeFile.split('/').pop() || activeFile : '未选择文件'
+  const activeDisplayPath = activeFile ? relativeFilePath(activeFile, detail.centerPath) : '选择左侧文件查看内容'
+  const fileCount = countFiles(detail.files)
+  return (
+    <section className="sm2__panel sm2__panel--flush">
+      <div className="sm2__panel-head">
+        <h3>目录与文件</h3>
+        <span>{activeFile ? activeFile.split('/').pop() : '未选择'}</span>
+      </div>
+      <div className="sm2__filebrowser sm2__filebrowser--expansive">
+        <div className="sm2__filetree-pane">
+          <div className="sm2__filetree-head">
+            <span>文件</span>
+            <strong>{fileCount}</strong>
+          </div>
+          <div className="sm2__filetree settings-scroll">
+            {detail.files ? (
+              <FileTree node={detail.files} depth={0} active={activeFile} onSelect={onSelect} />
+            ) : (
+              <div className="sm2__empty sm2__empty--compact">无文件</div>
+            )}
+          </div>
+        </div>
+        <div className="sm2__fileview">
+          <div className="sm2__fileview-header">
+            <div className="sm2__fileview-title">
+              <strong>{activeName}</strong>
+              <span>{activeDisplayPath}</span>
+            </div>
+            <div className="sm2__filemode-toggle">
+              <button
+                className={effectiveMode === 'preview' ? 'active' : ''}
+                disabled={!canPreview}
+                onClick={() => onViewModeChange('preview')}
+              >
+                预览
+              </button>
+              <button
+                className={effectiveMode === 'source' ? 'active' : ''}
+                onClick={() => onViewModeChange('source')}
+              >
+                源码
+              </button>
+            </div>
+          </div>
+          <div className="sm2__filecontent settings-scroll">
+            {fileLoading ? (
+              <div className="sm2__empty sm2__empty--compact">加载中…</div>
+            ) : effectiveMode === 'preview' && canPreview ? (
+              <div className={`sm2__markdown sm2__markdown--file${isSkillMarkdownPath(activeFile) ? ' sm2__markdown--file-skill' : ''}`}>
+                {isSkillMarkdownPath(activeFile) && (
+                  <SkillFrontmatterIntro description={extractFrontmatterDescription(fileContent)} compact />
+                )}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(fileContent || '（空）')}</ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="sm2__fileview-content">{fileContent || '（空）'}</pre>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function AgentsTab({
+  detail,
+  syncing,
+  onSync,
+}: {
+  detail: SkillDetail
+  syncing: string | null
+  onSync: (targetId: string, action: string) => void
+}) {
+  if (detail.targets.length === 0) {
+    return <div className="sm2__empty sm2__empty--compact">尚未分发到任何 Agent</div>
+  }
+  return (
+    <section className="sm2__panel">
+      {detail.targets.map((t) => (
+        <div key={t.id} className="sm2__object-row sm2__object-row--path">
+          <div className="sm2__object-row-titleline">
+            <AgentIconBadge iconKey={t.agentId} mode={t.actualMode} size={26} />
+            <div>
+              <strong>{t.agentId}</strong>
+              <span>{t.actualMode} · {STATUS_LABEL[t.status] || t.status}</span>
+            </div>
+          </div>
+          <div className="sm2__object-row-body">
+            <code>{t.targetPath}</code>
+            <div className="sm2__claims">
+              {t.claims.map((c) => (
+                <span key={c.id} className="sm2__tag">
+                  {c.claimType === 'pack' ? `技能包：${c.packName}` : '独立安装'}
+                </span>
+              ))}
+            </div>
+            {t.actualMode === 'copy' && t.status !== 'ok' && (
+              <div className="sm2__btn-row">
+                {t.status === 'copy_outdated' && (
+                  <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'center_over_agent')}>用中心库更新</button>
+                )}
+                {t.status === 'copy_modified' && (
+                  <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'agent_over_center')}>推回中心库</button>
+                )}
+                {t.status === 'copy_diverged' && (
+                  <>
+                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'center_over_agent')}>中心库覆盖</button>
+                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'agent_over_center')}>副本覆盖</button>
+                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'keep_diverged')}>保留分叉</button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function SkillFrontmatterIntro({ description, compact = false }: { description?: string; compact?: boolean }) {
+  const text = description?.trim()
+  if (!text) return null
+  return (
+    <div className={`sm2__skill-frontmatter${compact ? ' sm2__skill-frontmatter--compact' : ''}`}>
+      <span>说明</span>
+      <p>{text}</p>
+    </div>
+  )
+}
+
+function SourceTab({ detail }: { detail: SkillDetail }) {
+  const rows = [
+    ['类型', detail.source?.sourceType],
+    ['来源 URI', detail.source?.sourceUri],
+    ['来源 Ref', detail.source?.sourceRef],
+    ['导入 Agent', detail.source?.importedFromAgent],
+    ['导入路径', detail.source?.importedFromPath],
+    ['安装方式', detail.source?.installedVia],
+    ['中心目录', detail.centerPath],
+    ['Hash', detail.currentHash],
+  ].filter(([, value]) => value)
+  return (
+    <section className="sm2__panel">
+      {rows.map(([label, value]) => (
+        <div key={label} className="sm2__object-row sm2__object-row--path">
+          <div>
+            <strong>{label}</strong>
+            <code>{value}</code>
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function CompactInfo({
+  label,
+  value,
+  mono = false,
+  short = false,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  short?: boolean
+}) {
+  const display = short && value.length > 12 ? value.slice(0, 12) : value
+  return (
+    <div className="sm2__compact-row">
+      <span>{label}</span>
+      {mono ? <code title={value}>{display}</code> : <strong title={value}>{display}</strong>}
+    </div>
   )
 }
 
@@ -217,6 +517,94 @@ function findFile(node: FileTreeNode | null, name: string): string | null {
   return null
 }
 
+function countFiles(node: FileTreeNode | null): number {
+  if (!node) return 0
+  if (node.nodeType === 'file') return 1
+  return node.children?.reduce((sum, child) => sum + countFiles(child), 0) || 0
+}
+
+function relativeFilePath(path: string, root: string): string {
+  if (path === root) return path.split('/').pop() || path
+  const prefix = root.endsWith('/') ? root : `${root}/`
+  if (path.startsWith(prefix)) return path.slice(prefix.length)
+  return path
+}
+
+function isMarkdownPath(path: string | null): boolean {
+  return Boolean(path && /\.(md|mdx|markdown)$/i.test(path))
+}
+
+function isSkillMarkdownPath(path: string | null): boolean {
+  return Boolean(path && /(^|\/)SKILL\.md$/i.test(path))
+}
+
+function formatMetaValue(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return '空'
+  if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) return parsed.join(', ')
+      if (typeof parsed === 'object' && parsed) return JSON.stringify(parsed, null, 2)
+    } catch {
+      return value
+    }
+  }
+  return value
+}
+
+function isCodeLikeMeta(key: string, value: string): boolean {
+  const normalizedKey = key.toLowerCase()
+  return normalizedKey.includes('path')
+    || normalizedKey.includes('bin')
+    || normalizedKey.includes('command')
+    || normalizedKey.includes('help')
+    || value.includes('/')
+    || value.includes('--')
+    || value.startsWith('[')
+    || value.startsWith('{')
+}
+
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content
+  const end = content.indexOf('\n---', 3)
+  if (end === -1) return content
+  return content.slice(end + 4).trim()
+}
+
+function extractFrontmatterDescription(content: string): string {
+  if (!content.startsWith('---')) return ''
+  const end = content.indexOf('\n---', 3)
+  if (end === -1) return ''
+  const frontmatter = content.slice(3, end)
+  const lines = frontmatter.split(/\r?\n/)
+  const descriptionLine = lines.find((line) => line.trim().startsWith('description:'))
+  if (!descriptionLine) return ''
+  return descriptionLine
+    .split(/:(.*)/s)[1]
+    ?.trim()
+    .replace(/^['"]|['"]$/g, '') || ''
+}
+
+function fallbackToSkillDetail(fallback: SkillDetailFallback): SkillDetail {
+  return {
+    id: fallback.id,
+    name: fallback.name,
+    description: fallback.description || '这个 Skill 尚未接管到中心库，只能预览本地说明文档。',
+    skillType: 'skill',
+    sourceType: fallback.sourceType || 'unmanaged_agent',
+    sourceUri: fallback.sourceUri || fallback.centerPath,
+    centerPath: fallback.centerPath,
+    currentHash: 'unmanaged',
+    status: 'unmanaged',
+    installedAgents: [],
+    frontmatter: {},
+    files: null,
+    targets: [],
+    source: null,
+  }
+}
+
 function FileTree({
   node,
   depth,
@@ -230,16 +618,25 @@ function FileTree({
 }) {
   const [expanded, setExpanded] = useState(depth < 1)
   const isDir = node.nodeType === 'dir'
+  const activeDescendant = Boolean(active && isDir && node.children?.some((child) => nodeContainsPath(child, active)))
+  const isActive = active === node.path
   return (
-    <div>
-      <div
-        className={`sm2__filetree-row${active === node.path ? ' sm2__filetree-row--active' : ''}`}
-        style={{ paddingLeft: 8 + depth * 12 }}
+    <div className={`sm2__filetree-node${isDir ? ' sm2__filetree-node--dir' : ' sm2__filetree-node--file'}`}>
+      <button
+        type="button"
+        className={[
+          'sm2__filetree-row',
+          isActive ? 'sm2__filetree-row--active' : '',
+          activeDescendant ? 'sm2__filetree-row--branch' : '',
+        ].filter(Boolean).join(' ')}
+        style={{ paddingLeft: 10 + depth * 14 }}
+        aria-expanded={isDir ? expanded : undefined}
         onClick={() => (isDir ? setExpanded(!expanded) : onSelect(node.path))}
       >
-        <span className="sm2__filetree-icon">{isDir ? (expanded ? '▾' : '▸') : '📄'}</span>
+        <span className="sm2__filetree-twist">{isDir ? (expanded ? '▾' : '▸') : ''}</span>
+        <span className={`sm2__filetree-kind${isDir ? ' sm2__filetree-kind--dir' : ' sm2__filetree-kind--file'}`} />
         <span className="sm2__filetree-name">{node.name}</span>
-      </div>
+      </button>
       {isDir && expanded && node.children && (
         <div>
           {node.children.map((c) => (
@@ -249,4 +646,9 @@ function FileTree({
       )}
     </div>
   )
+}
+
+function nodeContainsPath(node: FileTreeNode, path: string): boolean {
+  if (node.path === path) return true
+  return node.children?.some((child) => nodeContainsPath(child, path)) || false
 }

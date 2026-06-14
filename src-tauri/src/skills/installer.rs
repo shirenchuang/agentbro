@@ -128,6 +128,10 @@ fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), St
         return clone_github_spec(spec);
     }
 
+    if let Some(spec) = source.strip_prefix("skillssh:") {
+        return clone_skillssh_spec(spec);
+    }
+
     if source.starts_with("https://github.com/") || source.starts_with("http://github.com/") {
         return clone_github_url(source);
     }
@@ -146,6 +150,12 @@ fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), St
     }
 
     Err(format!("Source not found: {}", source))
+}
+
+pub(crate) fn resolve_external_skill_source(
+    source: &str,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    resolve_install_source(source)
 }
 
 fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
@@ -367,6 +377,122 @@ fn clone_github_url(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> 
         parsed.branch.as_deref(),
         parsed.subpath.as_deref(),
     )
+}
+
+fn clone_skillssh_spec(spec: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let normalized = spec.trim().replace('@', "/");
+    let parts: Vec<&str> = normalized
+        .trim_matches('/')
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 3 {
+        return Err(
+            "skills.sh source must be formatted as skillssh:owner/repo/skill-id".to_string(),
+        );
+    }
+
+    let repo_spec = format!("{}/{}", parts[0], parts[1]);
+    let skill_id = parts[2..].join("/");
+    let (repo_dir, temp_root) = clone_github_spec(&repo_spec)?;
+    match locate_skillssh_skill_dir(&repo_dir, &skill_id) {
+        Ok(skill_dir) => Ok((skill_dir, temp_root)),
+        Err(err) => {
+            if let Some(root) = temp_root {
+                let _ = fs::remove_dir_all(root);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn locate_skillssh_skill_dir(repo_dir: &Path, skill_id: &str) -> Result<PathBuf, String> {
+    let skill_id = skill_id.trim().trim_matches('/');
+    if skill_id.is_empty() {
+        return Err("skills.sh skill id is empty".to_string());
+    }
+
+    for candidate in [
+        repo_dir.join(skill_id),
+        repo_dir.join("skills").join(skill_id),
+        repo_dir.join(".agents").join("skills").join(skill_id),
+    ] {
+        if is_skill_source_dir(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    let mut previews = Vec::new();
+    collect_skill_previews(repo_dir, repo_dir, &mut previews)?;
+    if previews.is_empty() {
+        return Err(format!(
+            "No valid Skill directories found in cloned skills.sh repository for '{skill_id}'"
+        ));
+    }
+
+    let mut ranked = previews
+        .into_iter()
+        .filter_map(|preview| {
+            let score = skillssh_match_score(&preview, skill_id)?;
+            let source_len = preview.source_path.len();
+            let path = if preview.source_path.is_empty() {
+                repo_dir.to_path_buf()
+            } else {
+                repo_dir.join(&preview.source_path)
+            };
+            Some((score, source_len, path))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+
+    ranked
+        .into_iter()
+        .map(|(_, _, path)| path)
+        .next()
+        .ok_or_else(|| format!("Could not find skills.sh skill '{skill_id}' in cloned repository"))
+}
+
+fn is_skill_source_dir(dir: &Path) -> bool {
+    dir.join("SKILL.md").is_file()
+}
+
+fn skillssh_match_score(preview: &GitHubSkillPreview, skill_id: &str) -> Option<u8> {
+    let target = normalize_skillssh_match(skill_id);
+    if target.is_empty() {
+        return None;
+    }
+    if normalize_skillssh_match(&preview.source_path) == target {
+        return Some(0);
+    }
+    if normalize_skillssh_match(&preview.directory_name) == target {
+        return Some(1);
+    }
+    if normalize_skillssh_match(&preview.name) == target {
+        return Some(2);
+    }
+    let source_basename = preview
+        .source_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&preview.source_path);
+    if normalize_skillssh_match(source_basename) == target {
+        return Some(3);
+    }
+    None
+}
+
+fn normalize_skillssh_match(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.trim().trim_matches('/').chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '/' | '\\') {
+            out.push('/');
+        } else if matches!(ch, '-' | '_' | '.') || ch.is_whitespace() {
+            out.push('-');
+        }
+    }
+    out
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1017,5 +1143,64 @@ mod tests {
                 subpath: None,
             },
         );
+    }
+
+    #[test]
+    fn locate_skillssh_skill_dir_finds_nested_directory_match() {
+        let root = temp_test_dir("skillssh-nested");
+        let bogus = root.join("find-skills");
+        let real = root.join("providers").join("vercel").join("find-skills");
+        fs::create_dir_all(&bogus).unwrap();
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("SKILL.md"), "---\nname: find-skills\n---\n").unwrap();
+
+        let found = locate_skillssh_skill_dir(&root, "find-skills").unwrap();
+        assert_eq!(found, real);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn locate_skillssh_skill_dir_prefers_agents_skills_variant() {
+        let root = temp_test_dir("skillssh-agents");
+        let agents = root.join(".agents").join("skills").join("my-skill");
+        let cursor = root.join(".cursor").join("skills").join("my-skill");
+        for dir in [&agents, &cursor] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "content").unwrap();
+        }
+
+        let found = locate_skillssh_skill_dir(&root, "my-skill").unwrap();
+        assert_eq!(found, agents);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn locate_skillssh_skill_dir_finds_frontmatter_name_match() {
+        let root = temp_test_dir("skillssh-frontmatter");
+        let real = root.join("catalog").join("renamed-folder");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(
+            real.join("SKILL.md"),
+            "---\nname: Frontend Design\ndescription: design helper\n---\n",
+        )
+        .unwrap();
+
+        let found = locate_skillssh_skill_dir(&root, "frontend-design").unwrap();
+        assert_eq!(found, real);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore]
+    fn live_resolves_skills_sh_find_skills() {
+        let (dir, temp_root) =
+            resolve_install_source("skillssh:vercel-labs/skills/find-skills").unwrap();
+        assert!(dir.join("SKILL.md").is_file());
+        if let Some(root) = temp_root {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

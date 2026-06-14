@@ -96,7 +96,7 @@ export function SettingsPageV2() {
           <h4 style={{ margin: '0 0 8px' }}>SQLite / JSON 快照</h4>
           <div className="sm2__detail-meta">
             <div>SQLite：{settings.sqlitePath}</div>
-            <div>快照：~/.agentbro/skills/agentbro-skills.snapshot.json</div>
+            <div>快照：{settings.centerPath}/agentbro-skills.snapshot.json</div>
           </div>
           <div className="sm2__btn-row">
             <button className="sm2__btn" onClick={() => skillApiV2.exportSnapshot()}>导出/刷新 JSON 快照</button>

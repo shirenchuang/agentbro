@@ -3237,8 +3237,9 @@ async fn sync_registry_with_options(
 async fn search_marketplace_skills(
     registry_id: Option<String>,
     query: Option<String>,
+    board: Option<String>,
 ) -> Result<Vec<skills::marketplace::MarketplaceSkill>, String> {
-    skills::marketplace::search_marketplace_skills(registry_id, query)
+    skills::marketplace::search_marketplace_skills_async(registry_id, query, board).await
 }
 
 #[tauri::command]
@@ -5299,6 +5300,7 @@ pub fn run() {
             switch::commands::switch_list_model_pricing,
             switch::commands::switch_get_provider_health,
             switch::commands::switch_speed_test,
+            skills::v2::commands::skill_manager_bootstrap,
             skills::v2::commands::skill_manager_init,
             skills::v2::commands::skill_manager_overview,
             skills::v2::commands::skill_manager_refresh,
@@ -5320,14 +5322,18 @@ pub fn run() {
             skills::v2::commands::list_skill_packs_v2,
             skills::v2::commands::get_skill_pack_detail,
             skills::v2::commands::execute_upsert_skill_pack,
+            skills::v2::commands::preview_delete_skill_pack,
             skills::v2::commands::execute_delete_skill_pack,
             skills::v2::commands::preview_apply_skill_pack,
             skills::v2::commands::execute_apply_skill_pack,
+            skills::v2::commands::preview_remove_skill_pack_from_agent,
             skills::v2::commands::execute_remove_skill_pack_from_agent,
+            skills::v2::commands::preview_remove_skill_from_pack,
             skills::v2::commands::execute_remove_skill_from_pack,
             skills::v2::commands::list_managed_agents_v2,
             skills::v2::commands::get_agent_detail_v2,
             skills::v2::commands::list_unmanaged_v2,
+            skills::v2::commands::list_agent_skill_inventory_v2,
             skills::v2::commands::run_skill_manager_diagnosis,
             skills::v2::commands::list_diagnosis_issues,
             skills::v2::commands::preview_fix_diagnosis_issue,

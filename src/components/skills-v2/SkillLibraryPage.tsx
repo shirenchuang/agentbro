@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { filteredSkills, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { SkillSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
@@ -25,6 +25,10 @@ export function SkillLibraryPage() {
   const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
   const [busy, setBusy] = useState(false)
+  const sources = useMemo(
+    () => Array.from(new Set(state.skills.map((s) => s.sourceType).filter(Boolean))).sort(),
+    [state.skills],
+  )
 
   useEffect(() => {
     state.init()
@@ -33,7 +37,7 @@ export function SkillLibraryPage() {
 
   const refresh = () => state.refresh()
   const reload = async () => {
-    await state.loadOverview()
+    await state.loadOverview(true)
   }
 
   const openDelete = async (skillId: string) => {
@@ -55,7 +59,7 @@ export function SkillLibraryPage() {
       await skillApiV2.executeDeleteCenterSkill(deletePreview.skillId, removeLinked)
       setDeletePreview(null)
       setSliderSkillId(null)
-      await state.loadOverview()
+      await state.loadOverview(true)
     } catch (e) {
       state.setError(String(e))
     } finally {
@@ -69,10 +73,13 @@ export function SkillLibraryPage() {
 
   return (
     <div className="sm2">
-      <div className="sm2__header">
-        <h2 className="sm2__title">Skill 库</h2>
+      <div className="sm2__header sm2__header--stacked">
+        <div>
+          <h2 className="sm2__title">Skill 库</h2>
+          <p className="sm2__header-subtitle">统一管理中心库 Skills，查看安装到哪些 Agent，并处理分发、更新和删除。</p>
+        </div>
         <div className="sm2__tabs">
-          <button className="sm2__btn sm2__btn--primary" onClick={() => setInstallOpen(true)}>+ 添加到中心库</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={() => setInstallOpen(true)}>添加到中心库</button>
           <button className="sm2__btn" onClick={refresh} disabled={state.loading}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -80,7 +87,7 @@ export function SkillLibraryPage() {
       </div>
 
       {overview && (
-        <div className="sm2__metrics">
+        <div className="sm2__metrics sm2__library-metrics">
           <Metric value={overview.metrics.centerSkillCount} label="中心库 Skill" />
           <Metric value={overview.metrics.targetCount} label="Agent 安装" />
           <Metric value={overview.metrics.unmanagedCount} label="未管理" />
@@ -88,29 +95,39 @@ export function SkillLibraryPage() {
         </div>
       )}
 
-      <div className="sm2__toolbar">
-        <input
-          className="sm2__search"
-          placeholder="搜索名称 / 描述 / 来源 / Agent"
-          value={state.filters.query}
-          onChange={(e) => state.setFilter('query', e.target.value)}
-        />
-        <select className="sm2__select" value={state.filters.status} onChange={(e) => state.setFilter('status', e.target.value)}>
-          <option value="">全部状态</option>
-          <option value="ok">正常</option>
-          <option value="conflict">冲突</option>
-          <option value="copyDiverged">副本分叉</option>
-        </select>
-        <select className="sm2__select" value={state.filters.source} onChange={(e) => state.setFilter('source', e.target.value)}>
-          <option value="">全部来源</option>
-          <option value="local_folder">本地</option>
-          <option value="github">GitHub</option>
-          <option value="agent_import">Agent 接管</option>
-          <option value="manual_center">手动</option>
-        </select>
-        <div className="sm2__view-toggle">
-          <button className={state.viewMode === 'cards' ? 'active' : ''} onClick={() => state.setViewMode('cards')}>卡片</button>
-          <button className={state.viewMode === 'list' ? 'active' : ''} onClick={() => state.setViewMode('list')}>列表</button>
+      <div className="sm2__library-filterbar">
+        <div className="sm2__filter-search">
+          <span className="sm2__filter-icon">⌕</span>
+          <input
+            className="sm2__search sm2__search--quiet"
+            placeholder="搜索名称、描述、来源或 Agent"
+            value={state.filters.query}
+            onChange={(e) => state.setFilter('query', e.target.value)}
+          />
+        </div>
+        <div className="sm2__filter-controls">
+          <label className="sm2__select-field">
+            <span>状态</span>
+            <select className="sm2__select" value={state.filters.status} onChange={(e) => state.setFilter('status', e.target.value)}>
+              <option value="">全部状态</option>
+              <option value="ok">正常</option>
+              <option value="conflict">冲突</option>
+              <option value="copyDiverged">副本分叉</option>
+            </select>
+          </label>
+          <label className="sm2__select-field">
+            <span>来源</span>
+            <select className="sm2__select" value={state.filters.source} onChange={(e) => state.setFilter('source', e.target.value)}>
+              <option value="">全部来源</option>
+              {sources.map((source) => (
+                <option key={source} value={source}>{source}</option>
+              ))}
+            </select>
+          </label>
+          <div className="sm2__view-toggle sm2__view-toggle--soft">
+            <button className={state.viewMode === 'cards' ? 'active' : ''} onClick={() => state.setViewMode('cards')}>卡片</button>
+            <button className={state.viewMode === 'list' ? 'active' : ''} onClick={() => state.setViewMode('list')}>列表</button>
+          </div>
         </div>
       </div>
 
@@ -166,17 +183,23 @@ export function SkillLibraryPage() {
           confirmLabel="仅删除中心库"
           destructive
           busy={busy}
+          disabled={!deletePreview.removable}
           onCancel={() => setDeletePreview(null)}
           onConfirm={() => confirmDelete(false)}
         >
-          {deletePreview.warnings.map((w, i) => (
-            <div key={i} className="sm2__change sm2__change--blocked">{w}</div>
-          ))}
-          <p style={{ fontSize: 12, marginTop: 8 }}>
-            受影响 Agent 安装：{deletePreview.affectedTargets.length}
-          </p>
+          <div className="sm2__danger-summary">
+            <strong>删除前预览</strong>
+            <span>受影响 Agent 安装：{deletePreview.affectedTargets.length}</span>
+          </div>
+          {deletePreview.warnings.length > 0 && (
+            <div className="sm2__warning-list">
+              {deletePreview.warnings.map((w, i) => (
+                <div key={i} className="sm2__warning-item">{w}</div>
+              ))}
+            </div>
+          )}
           {deletePreview.affectedTargets.length > 0 && (
-            <div className="sm2__btn-row">
+            <div className="sm2__danger-inline-action">
               <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => confirmDelete(true)}>
                 同时移除所有 Agent 安装
               </button>
@@ -210,11 +233,20 @@ function AgentBadges({ skill }: { skill: SkillSummary }) {
 function SkillCard({ skill, onClick }: { skill: SkillSummary; onClick: () => void }) {
   return (
     <div className="sm2__card" onClick={onClick}>
-      <h3 className="sm2__card-title">{skill.name}</h3>
+      <div className="sm2__card-head">
+        <div className="sm2__skill-avatar">{skill.name.slice(0, 2).toUpperCase()}</div>
+        <div className="sm2__card-titleblock">
+          <h3 className="sm2__card-title">{skill.name}</h3>
+          <span>{skill.sourceType}</span>
+        </div>
+        <span className={`sm2__status-dot sm2__status-dot--${skill.status}`} />
+      </div>
       <p className="sm2__card-desc">{skill.description || '（无描述）'}</p>
       <div className="sm2__card-tags">
         <span className={`sm2__tag sm2__tag--${skill.status}`}>{STATUS_LABEL[skill.status] || skill.status}</span>
-        <span className="sm2__tag">{skill.sourceType}</span>
+        <span className="sm2__tag">{skill.skillType}</span>
+      </div>
+      <div className="sm2__card-foot">
         {skill.installedAgents.length > 0 && (
           <div className="sm2__agents">
             {skill.installedAgents.map((a) => (
@@ -222,6 +254,7 @@ function SkillCard({ skill, onClick }: { skill: SkillSummary; onClick: () => voi
             ))}
           </div>
         )}
+        {skill.installedAgents.length === 0 && <span className="sm2__row-sub">尚未分发到 Agent</span>}
       </div>
     </div>
   )

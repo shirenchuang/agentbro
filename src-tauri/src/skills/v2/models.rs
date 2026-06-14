@@ -27,10 +27,14 @@ pub struct SkillManagerSettings {
 }
 
 fn default_center_path() -> String {
-    crate::skills::v2::fsutil::default_center_path().to_string_lossy().to_string()
+    crate::skills::v2::fsutil::default_center_path()
+        .to_string_lossy()
+        .to_string()
 }
 fn default_sqlite_path() -> String {
-    crate::skills::v2::fsutil::default_sqlite_path().to_string_lossy().to_string()
+    crate::skills::v2::fsutil::default_sqlite_path()
+        .to_string_lossy()
+        .to_string()
 }
 fn default_mode() -> String {
     "link".to_string()
@@ -128,6 +132,7 @@ pub struct SkillSourceDetail {
 #[serde(rename_all = "camelCase")]
 pub struct SkillTargetDetail {
     pub id: String,
+    pub skill_id: String,
     pub agent_id: String,
     pub target_path: String,
     pub install_mode: String,
@@ -191,6 +196,9 @@ pub struct AppliedPackSummary {
     pub pack_id: String,
     pub pack_name: String,
     pub member_count: usize,
+    pub agent_id: Option<String>,
+    pub display_name: Option<String>,
+    pub icon_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +379,42 @@ pub struct AffectedTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteSkillPackPreview {
+    pub pack_id: String,
+    pub pack_name: String,
+    pub applied_agents: Vec<String>,
+    pub affected_targets: Vec<AffectedTarget>,
+    pub removable: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovePackFromAgentPreview {
+    pub pack_id: String,
+    pub pack_name: String,
+    pub agent_id: String,
+    pub display_name: String,
+    pub affected_targets: Vec<AffectedTarget>,
+    pub will_remove_targets: usize,
+    pub will_preserve_targets: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveSkillFromPackPreview {
+    pub pack_id: String,
+    pub pack_name: String,
+    pub skill_id: String,
+    pub skill_name: String,
+    pub affected_targets: Vec<AffectedTarget>,
+    pub applied_agent_count: usize,
+    pub can_keep_standalone: bool,
+    pub can_remove_targets: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnmanagedItemDto {
     pub id: String,
     pub item_type: String,
@@ -379,6 +423,38 @@ pub struct UnmanagedItemDto {
     pub inferred_skill_id: Option<String>,
     pub hash: Option<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillInventoryAgent {
+    pub agent_id: String,
+    pub display_name: String,
+    pub icon_key: String,
+    pub skills_dir: Option<String>,
+    pub installed: bool,
+    pub managed_count: usize,
+    pub unmanaged_count: usize,
+    pub importable_count: usize,
+    pub items: Vec<AgentSkillInventoryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillInventoryItem {
+    pub id: String,
+    pub agent_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub path: String,
+    pub managed: bool,
+    pub can_import: bool,
+    pub status: String,
+    pub status_label: String,
+    pub reason: Option<String>,
+    pub target_id: Option<String>,
+    pub actual_mode: Option<String>,
+    pub hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

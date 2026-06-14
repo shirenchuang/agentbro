@@ -52,22 +52,86 @@ pub fn managed_agent_ids() -> Vec<&'static str> {
 
 fn table() -> &'static [AgentMeta] {
     &[
-        AgentMeta { id: "claude-code", display_name: "Claude Code", icon_key: "claude-code" },
-        AgentMeta { id: "codex", display_name: "Codex", icon_key: "codex" },
-        AgentMeta { id: "gemini", display_name: "Gemini CLI", icon_key: "gemini" },
-        AgentMeta { id: "cursor", display_name: "Cursor", icon_key: "cursor" },
-        AgentMeta { id: "opencode", display_name: "OpenCode", icon_key: "opencode" },
-        AgentMeta { id: "copilot", display_name: "Copilot", icon_key: "copilot" },
-        AgentMeta { id: "qwen", display_name: "Qwen", icon_key: "qwen" },
-        AgentMeta { id: "kimi", display_name: "Kimi", icon_key: "kimi" },
-        AgentMeta { id: "deepseek", display_name: "DeepSeek", icon_key: "deepseek" },
-        AgentMeta { id: "windsurf", display_name: "Windsurf", icon_key: "windsurf" },
-        AgentMeta { id: "augment", display_name: "Augment", icon_key: "augment" },
-        AgentMeta { id: "kilocode", display_name: "Kilo Code", icon_key: "kilocode" },
-        AgentMeta { id: "aider", display_name: "Aider", icon_key: "aider" },
-        AgentMeta { id: "amp", display_name: "Amp", icon_key: "amp" },
-        AgentMeta { id: "kiro", display_name: "Kiro", icon_key: "kiro" },
-        AgentMeta { id: "hermes", display_name: "Hermes", icon_key: "hermes" },
+        AgentMeta {
+            id: "claude-code",
+            display_name: "Claude Code",
+            icon_key: "claude-code",
+        },
+        AgentMeta {
+            id: "codex",
+            display_name: "Codex",
+            icon_key: "codex",
+        },
+        AgentMeta {
+            id: "gemini",
+            display_name: "Gemini CLI",
+            icon_key: "gemini",
+        },
+        AgentMeta {
+            id: "cursor",
+            display_name: "Cursor",
+            icon_key: "cursor",
+        },
+        AgentMeta {
+            id: "opencode",
+            display_name: "OpenCode",
+            icon_key: "opencode",
+        },
+        AgentMeta {
+            id: "copilot",
+            display_name: "Copilot",
+            icon_key: "copilot",
+        },
+        AgentMeta {
+            id: "qwen",
+            display_name: "Qwen",
+            icon_key: "qwen",
+        },
+        AgentMeta {
+            id: "kimi",
+            display_name: "Kimi",
+            icon_key: "kimi",
+        },
+        AgentMeta {
+            id: "deepseek",
+            display_name: "DeepSeek",
+            icon_key: "deepseek",
+        },
+        AgentMeta {
+            id: "windsurf",
+            display_name: "Windsurf",
+            icon_key: "windsurf",
+        },
+        AgentMeta {
+            id: "augment",
+            display_name: "Augment",
+            icon_key: "augment",
+        },
+        AgentMeta {
+            id: "kilocode",
+            display_name: "Kilo Code",
+            icon_key: "kilocode",
+        },
+        AgentMeta {
+            id: "aider",
+            display_name: "Aider",
+            icon_key: "aider",
+        },
+        AgentMeta {
+            id: "amp",
+            display_name: "Amp",
+            icon_key: "amp",
+        },
+        AgentMeta {
+            id: "kiro",
+            display_name: "Kiro",
+            icon_key: "kiro",
+        },
+        AgentMeta {
+            id: "hermes",
+            display_name: "Hermes",
+            icon_key: "hermes",
+        },
     ]
 }
 

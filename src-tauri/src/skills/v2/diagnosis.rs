@@ -8,7 +8,7 @@ use crate::skills::v2::db::now_iso;
 use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::Service;
-use rusqlite::{params, types::ValueRef};
+use rusqlite::{params, types::ValueRef, OptionalExtension};
 use std::path::Path;
 
 pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
@@ -28,7 +28,14 @@ pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     Ok(issues)
 }
 
-fn info(id: &str, itype: &str, title: impl Into<String>, detail: impl Into<String>, entity: &str, eid: Option<String>) -> DiagnosisIssue {
+fn info(
+    id: &str,
+    itype: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    entity: &str,
+    eid: Option<String>,
+) -> DiagnosisIssue {
     DiagnosisIssue {
         id: id.to_string(),
         issue_type: itype.to_string(),
@@ -42,7 +49,15 @@ fn info(id: &str, itype: &str, title: impl Into<String>, detail: impl Into<Strin
     }
 }
 
-fn auto(id: &str, itype: &str, title: impl Into<String>, detail: impl Into<String>, entity: &str, eid: Option<String>, action_label: &str) -> DiagnosisIssue {
+fn auto(
+    id: &str,
+    itype: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    entity: &str,
+    eid: Option<String>,
+    action_label: &str,
+) -> DiagnosisIssue {
     DiagnosisIssue {
         id: id.to_string(),
         issue_type: itype.to_string(),
@@ -60,7 +75,16 @@ fn auto(id: &str, itype: &str, title: impl Into<String>, detail: impl Into<Strin
     }
 }
 
-fn confirm(id: &str, itype: &str, title: impl Into<String>, detail: impl Into<String>, entity: &str, eid: Option<String>, action_label: &str, destructive: bool) -> DiagnosisIssue {
+fn confirm(
+    id: &str,
+    itype: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    entity: &str,
+    eid: Option<String>,
+    action_label: &str,
+    destructive: bool,
+) -> DiagnosisIssue {
     DiagnosisIssue {
         id: id.to_string(),
         issue_type: itype.to_string(),
@@ -84,9 +108,15 @@ fn unmanaged_center_dirs(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     if !center.is_dir() {
         return Ok(out);
     }
-    for entry in std::fs::read_dir(&center).map_err(|e| e.to_string())?.flatten() {
+    for entry in std::fs::read_dir(&center)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy().to_string();
-        if fsutil::is_ignored_entry(&name) || name.starts_with('.') || name == "agentbro-skills.snapshot.json" {
+        if fsutil::is_ignored_entry(&name)
+            || name.starts_with('.')
+            || name == "agentbro-skills.snapshot.json"
+        {
             continue;
         }
         let path = entry.path();
@@ -99,7 +129,10 @@ fn unmanaged_center_dirs(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
                 &format!("center-unmanaged-{inferred}"),
                 "center_unmanaged",
                 "Center library directory not registered",
-                format!("'{}' exists in the center library but is not tracked. Import it to manage it.", name),
+                format!(
+                    "'{}' exists in the center library but is not tracked. Import it to manage it.",
+                    name
+                ),
                 "skill",
                 Some(inferred),
             ));
@@ -157,7 +190,11 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
                 &format!("target-missing-{id}"),
                 "target_missing",
                 "Stale target record",
-                format!("{} target '{}' no longer exists on disk.", agent_meta::display_name(&agent_id), target_path),
+                format!(
+                    "{} target '{}' no longer exists on disk.",
+                    agent_meta::display_name(&agent_id),
+                    target_path
+                ),
                 "target",
                 Some(id.clone()),
                 "Remove record",
@@ -166,7 +203,11 @@ fn broken_or_missing_targets(svc: &Service) -> Result<Vec<DiagnosisIssue>, Strin
                 &format!("target-broken-{id}"),
                 "broken_link",
                 "Broken symlink",
-                format!("{} link '{}' points at a missing skill.", agent_meta::display_name(&agent_id), target_path),
+                format!(
+                    "{} link '{}' points at a missing skill.",
+                    agent_meta::display_name(&agent_id),
+                    target_path
+                ),
                 "target",
                 Some(id.clone()),
                 "Clean broken link",
@@ -210,7 +251,11 @@ fn copy_divergence_issues(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> 
         let copy_hash = current
             .or_else(|| {
                 let p = Path::new(&target_path);
-                if p.is_dir() { Some(fsutil::hash_dir(p)) } else { None }
+                if p.is_dir() {
+                    Some(fsutil::hash_dir(p))
+                } else {
+                    None
+                }
             })
             .unwrap_or_default();
         let center_changed = center_hash != source_hash;
@@ -220,7 +265,10 @@ fn copy_divergence_issues(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> 
                 &format!("copy-diverged-{id}"),
                 "copy_diverged",
                 "Copy diverged from center",
-                format!("Both the center skill and the copy at '{}' changed. Choose how to reconcile.", target_path),
+                format!(
+                    "Both the center skill and the copy at '{}' changed. Choose how to reconcile.",
+                    target_path
+                ),
                 "target",
                 Some(id),
                 "Reconcile copy",
@@ -276,7 +324,10 @@ fn pack_member_missing(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
             &format!("pack-missing-{pack_id}-{skill_id}"),
             "pack_member_missing",
             "Pack member missing from center",
-            format!("Pack '{}' references skill '{}' which is no longer in the center library.", pack_id, skill_id),
+            format!(
+                "Pack '{}' references skill '{}' which is no longer in the center library.",
+                pack_id, skill_id
+            ),
             "pack",
             Some(pack_id),
         ));
@@ -308,7 +359,10 @@ fn orphan_claims(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
             &format!("orphan-claim-{claim_id}"),
             "orphan_claim",
             "Orphan pack claim",
-            format!("Pack '{}' has a claim whose target no longer exists.", pack_id),
+            format!(
+                "Pack '{}' has a claim whose target no longer exists.",
+                pack_id
+            ),
             "target",
             Some(claim_id),
             "Remove orphan claim",
@@ -318,7 +372,7 @@ fn orphan_claims(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
 }
 
 fn snapshot_stale(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
-    let snap = fsutil::default_snapshot_path();
+    let snap = crate::skills::v2::snapshot::snapshot_path(svc)?;
     if !snap.exists() {
         return Ok(vec![auto(
             "snapshot-missing",
@@ -334,8 +388,10 @@ fn snapshot_stale(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     let last_db: Option<String> = svc
         .db()
         .with_conn(|c| {
-            c.query_row("SELECT MAX(updated_at) FROM skills", [], |r| r.get::<_, Option<String>>(0))
-                .map_err(|e| e.to_string())
+            c.query_row("SELECT MAX(updated_at) FROM skills", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .map_err(|e| e.to_string())
         })
         .ok()
         .flatten();
@@ -391,20 +447,27 @@ fn persist_issues(svc: &Service, issues: &[DiagnosisIssue]) -> Result<(), String
 }
 
 fn skill_known(c: &rusqlite::Connection, skill_id: &str) -> Result<bool, String> {
-    Ok(c.query_row("SELECT 1 FROM skills WHERE id = ?1", params![skill_id], |_| Ok(()))
-        .ok()
-        .is_some())
+    Ok(c.query_row(
+        "SELECT 1 FROM skills WHERE id = ?1",
+        params![skill_id],
+        |_| Ok(()),
+    )
+    .ok()
+    .is_some())
 }
 
 fn skill_hash(c: &rusqlite::Connection, skill_id: &str) -> Result<String, String> {
-    let row: Result<String, rusqlite::Error> =
-        c.query_row("SELECT current_hash FROM skills WHERE id = ?1", params![skill_id], |r| {
+    let row: Result<String, rusqlite::Error> = c.query_row(
+        "SELECT current_hash FROM skills WHERE id = ?1",
+        params![skill_id],
+        |r| {
             // current_hash is NOT NULL
             match r.get_ref(0) {
                 Ok(ValueRef::Text(t)) => Ok(String::from_utf8_lossy(t).to_string()),
                 _ => Ok(String::new()),
             }
-        });
+        },
+    );
     row.or(Ok(String::new()))
 }
 
@@ -413,16 +476,34 @@ fn skill_hash(c: &rusqlite::Connection, skill_id: &str) -> Result<String, String
 pub fn execute_fix(svc: &Service, issue_type: &str, entity_id: &str) -> Result<(), String> {
     match issue_type {
         "broken_link" | "target_missing" => {
+            let target_path: Option<String> = svc.db().with_conn(|c| {
+                c.query_row(
+                    "SELECT target_path FROM skill_targets WHERE id = ?1",
+                    params![entity_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })?;
+            if let Some(path) = target_path {
+                fsutil::remove_path(Path::new(&path))?;
+            }
             svc.db().with_conn(|c| {
-                c.execute("DELETE FROM skill_targets WHERE id = ?1", params![entity_id])
-                    .map_err(|e| e.to_string())
+                c.execute(
+                    "DELETE FROM skill_targets WHERE id = ?1",
+                    params![entity_id],
+                )
+                .map_err(|e| e.to_string())
             })?;
             Ok(())
         }
         "orphan_claim" => {
             svc.db().with_conn(|c| {
-                c.execute("DELETE FROM skill_target_claims WHERE id = ?1", params![entity_id])
-                    .map_err(|e| e.to_string())
+                c.execute(
+                    "DELETE FROM skill_target_claims WHERE id = ?1",
+                    params![entity_id],
+                )
+                .map_err(|e| e.to_string())
             })?;
             Ok(())
         }
@@ -522,7 +603,11 @@ pub fn read_plugins(_svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
                     };
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                         out.push(PluginStatus {
-                            id: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                            id: v
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             name: v
                                 .get("displayName")
                                 .and_then(|n| n.as_str())

@@ -1,8 +1,8 @@
 //! SQLite storage for Skill Manager v2 — schema, migrations, and typed row
 //! access. The connection lives in a `Mutex<Connection>` held by `Service`.
 
-use crate::skills::v2::models::{Snapshot, SCHEMA_VERSION};
 use crate::skills::v2::fsutil;
+use crate::skills::v2::models::{Snapshot, SCHEMA_VERSION};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -156,7 +156,8 @@ impl Db {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("pragma: {}", e))?;
         for sql in MIGRATIONS {
-            conn.execute_batch(sql).map_err(|e| format!("migration: {}", e))?;
+            conn.execute_batch(sql)
+                .map_err(|e| format!("migration: {}", e))?;
         }
         // record applied version (idempotent)
         let now = now_iso();
@@ -239,11 +240,7 @@ pub fn export_snapshot(conn: &Connection, center_path: &str) -> Result<Snapshot,
         let mut stmt = conn
             .prepare(&format!("SELECT * FROM {table}"))
             .map_err(|e| e.to_string())?;
-        let cols: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt
             .query_map([], |r| {
                 let mut obj = serde_json::Map::new();

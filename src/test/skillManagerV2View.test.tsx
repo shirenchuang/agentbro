@@ -3,7 +3,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
-import type { SkillSummary, AgentSummary } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail } from '../services/skillApiV2'
 
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
@@ -140,6 +140,39 @@ describe('selecting a skill updates detail', () => {
 })
 
 describe('Skill detail slider + agent page render without crashing', () => {
+  const agentDetail: AgentDetail = {
+    id: 'claude-code',
+    displayName: 'Claude Code',
+    iconKey: 'claude-code',
+    version: null,
+    latestVersion: null,
+    skillsDir: '/c',
+    configPath: '/c/config.json',
+    mcpConfigPath: '/c/mcp.json',
+    pluginDir: '/c/plugins',
+    skills: [
+      {
+        id: 'target-1',
+        skillId: 'release-checklist',
+        agentId: 'claude-code',
+        targetPath: '/c/skills/release-checklist',
+        installMode: 'link',
+        actualMode: 'link',
+        sourceHash: 'hash1',
+        currentHash: 'hash1',
+        status: 'ok',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        claims: [{ id: 'claim-1', claimType: 'direct', packId: null, packName: null, createdAt: '2026-01-01T00:00:00Z' }],
+      },
+    ],
+    appliedPacks: [],
+    availablePacks: [],
+    mcpServers: [],
+    plugins: [],
+    health: [],
+  }
+
   beforeEach(() => {
     cleanup()
     useSkillStoreV2.setState({
@@ -157,9 +190,20 @@ describe('Skill detail slider + agent page render without crashing', () => {
       },
       loading: false, error: null,
       selectedSkillId: null, selectedSkillDetail: null,
-      selectedAgentId: null, selectedAgentDetail: null, agentDetailLoading: false,
+      selectedAgentId: 'claude-code', selectedAgentDetail: agentDetail, agentDetailLoading: false,
       selectedPackId: null, selectedPackDetail: null,
-      unmanaged: [], issues: [],
+      unmanaged: [
+        {
+          id: 'unmanaged-1',
+          agentId: 'claude-code',
+          itemType: 'skill',
+          path: '/c/skills/manual-skill',
+          inferredSkillId: 'manual-skill',
+          hash: null,
+          reason: 'not_in_center_library',
+        },
+      ],
+      issues: [],
     })
   })
 
@@ -171,17 +215,31 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container).toBeTruthy()
   })
 
-  it('AgentManagementPage renders rail + detail pane', async () => {
+  it('AgentManagementPage uses the sidebar agent list and renders no picker in the content pane', async () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
-    expect(container.querySelector('.sm2__rail')).not.toBeNull()
-    expect(container.querySelector('.sm2__detailpane')).not.toBeNull()
+    expect(container.querySelector('.sm2__rail')).toBeNull()
+    expect(container.querySelector('.sm2__agent-picker')).toBeNull()
+    expect(container.querySelector('.sm2__main--full')).not.toBeNull()
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
   })
 
-  it('SkillPackPage renders full-width master-detail', async () => {
+  it('Agent skills default to cards and can switch to list view', async () => {
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    expect(container.querySelector('.sm2__agent-skill-grid')).not.toBeNull()
+    expect(container.querySelector('.sm2__agent-skill-card')).not.toBeNull()
+    fireEvent.click(screen.getByText('列表'))
+    expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
+  })
+
+  it('SkillPackPage renders the redesigned pack workspace', async () => {
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     const { container } = render(<SkillPackPage />)
-    expect(container.querySelector('.sm2__rail')).not.toBeNull()
+    expect(container.querySelector('.sm2__pack-layout')).not.toBeNull()
+    expect(container.querySelector('.sm2__pack-sidebar')).not.toBeNull()
+    expect(container.querySelector('.sm2__pack-canvas')).not.toBeNull()
+    expect(container.querySelector('.sm2__rail')).toBeNull()
   })
 })

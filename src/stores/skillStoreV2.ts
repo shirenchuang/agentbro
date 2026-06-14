@@ -17,6 +17,8 @@ import { skillApiV2 } from '../services/skillApiV2'
 export type SkillManagerTab = 'library' | 'packs' | 'agents' | 'diagnostics' | 'settings'
 export type SkillViewMode = 'cards' | 'list'
 
+const OVERVIEW_CACHE_TTL_MS = 60_000
+
 export interface SkillFilters {
   query: string
   source: string
@@ -47,19 +49,20 @@ interface SkillV2State {
   lastPreview: DistributionPreview | null
   initialized: boolean
   agentDetailLoading: boolean
+  lastOverviewLoadedAt: number
 }
 
 interface SkillV2Actions {
   init: () => Promise<void>
   refresh: () => Promise<void>
-  loadOverview: () => Promise<void>
+  loadOverview: (force?: boolean) => Promise<void>
   setTab: (tab: SkillManagerTab) => void
   setViewMode: (mode: SkillViewMode) => void
   setFilter: <K extends keyof SkillFilters>(key: K, value: SkillFilters[K]) => void
   selectSkill: (id: string | null) => Promise<void>
   selectPack: (id: string | null) => Promise<void>
   selectAgent: (id: string | null) => Promise<void>
-  loadAgentDetail: (agentId: string) => Promise<void>
+  loadAgentDetail: (agentId: string, force?: boolean) => Promise<void>
   runDiagnosis: () => Promise<void>
   updateSettings: (patch: Partial<SkillManagerSettings>) => Promise<void>
   setBusy: (action: string | null) => void
@@ -90,18 +93,19 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   lastPreview: null,
   initialized: false,
   agentDetailLoading: false,
+  lastOverviewLoadedAt: 0,
 
   init: async () => {
-    // Backend init (DB + full scan) only runs once per session; subsequent
-    // entries just refresh the overview from the already-populated SQLite.
+    // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
+    // then reads cached SQLite state. Full filesystem scans stay behind refresh.
     if (get().initialized) {
-      await get().loadOverview()
+      if (!get().overview) await get().loadOverview(true)
       return
     }
     set({ loading: true, error: null })
     try {
-      await skillApiV2.init()
-      await get().loadOverview()
+      await skillApiV2.bootstrap()
+      await get().loadOverview(true)
       set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
@@ -110,14 +114,22 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   refresh: async () => {
+    set({ loading: true, error: null })
     try {
       await skillApiV2.refresh()
-      await get().loadOverview()
+      await get().loadOverview(true)
+      set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
+    } finally {
+      set({ loading: false })
     }
   },
-  loadOverview: async () => {
+  loadOverview: async (force = false) => {
+    const now = Date.now()
+    if (!force && get().overview && now - get().lastOverviewLoadedAt < OVERVIEW_CACHE_TTL_MS) {
+      return
+    }
     try {
       const overview = await skillApiV2.overview()
       set({
@@ -127,6 +139,8 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         packs: overview.packs,
         issues: overview.issues,
         settings: overview.settings,
+        lastOverviewLoadedAt: Date.now(),
+        initialized: true,
       })
     } catch (e) {
       set({ error: String(e) })
@@ -157,11 +171,17 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   selectAgent: async (id) => {
+    if (id && get().selectedAgentId === id && get().selectedAgentDetail && !get().agentDetailLoading) {
+      return
+    }
     set({ selectedAgentId: id, selectedAgentDetail: null, agentDetailLoading: !!id })
     if (id) await get().loadAgentDetail(id)
     else set({ selectedAgentDetail: null })
   },
-  loadAgentDetail: async (agentId) => {
+  loadAgentDetail: async (agentId, force = false) => {
+    if (!force && get().selectedAgentId === agentId && get().selectedAgentDetail && !get().agentDetailLoading) {
+      return
+    }
     set({ agentDetailLoading: true })
     try {
       const detail = await skillApiV2.getAgentDetail(agentId)
@@ -177,7 +197,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     try {
       const issues = await skillApiV2.runDiagnosis()
       const unmanaged = await skillApiV2.listUnmanaged()
-      set({ issues, unmanaged })
+      set({ issues, unmanaged, lastOverviewLoadedAt: 0 })
     } catch (e) {
       set({ error: String(e) })
     } finally {
