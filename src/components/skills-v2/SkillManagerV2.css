@@ -560,3 +560,33 @@
 .sm2-sidebar__subitem--active { background: rgba(255,255,255,0.16); }
 .sm2-sidebar__subitem-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm2-sidebar__subitem-dot { width: 7px; height: 7px; border-radius: 50%; background: #34c759; }
+
+/* ── Inline Install view (replaces modal) ─────────────────────── */
+.sm2__install { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.sm2__install-header { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--border, rgba(0,0,0,0.08)); }
+.sm2__install-tabs { display: flex; gap: 0; padding: 0 18px; border-bottom: 1px solid var(--border, rgba(0,0,0,0.1)); }
+.sm2__install-body { flex: 1; min-height: 0; overflow: auto; padding: 18px; }
+.sm2__install-searchrow { margin-bottom: 14px; }
+.sm2__install-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.sm2__install-card {
+  position: relative; background: var(--card-bg, #fff); border: 1px solid var(--border, rgba(0,0,0,0.08));
+  border-radius: 12px; padding: 14px 14px 12px; overflow: hidden; display: flex; flex-direction: column; gap: 6px;
+}
+.sm2__install-card-accent { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.sm2__install-card-body { padding-left: 6px; flex: 1; }
+.sm2__install-card-title { font-weight: 700; font-size: 14px; }
+.sm2__install-card-sub { font-size: 11px; color: var(--text-secondary, #6e6e73); }
+.sm2__install-card-desc { font-size: 12px; color: var(--text-secondary, #6e6e73); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sm2__install-card-foot { display: flex; align-items: center; justify-content: space-between; padding-left: 6px; }
+.sm2__install-form { max-width: 620px; }
+.sm2__install-h { margin: 0 0 6px; font-size: 16px; }
+.sm2__install-sub { font-size: 13px; color: var(--text-secondary, #6e6e73); margin: 0 0 14px; }
+.sm2__install-options { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.sm2__install-option {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; min-width: 140px;
+  padding: 18px; border: 2px dashed var(--border, rgba(0,0,0,0.16)); border-radius: 12px;
+  background: var(--card-bg, rgba(0,0,0,0.02)); cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.sm2__install-option:hover { border-color: var(--accent, #007aff); background: var(--hover-bg, rgba(0,122,255,0.05)); }
+.sm2__install-option-icon { font-size: 26px; }
+.sm2__install-option-label { font-size: 13px; font-weight: 600; }

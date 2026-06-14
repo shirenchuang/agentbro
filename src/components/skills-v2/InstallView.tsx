@@ -6,14 +6,19 @@ import type { AddCenterSkillPreview, AddCenterSkillDecision } from '../../servic
 
 type Tab = 'market' | 'local' | 'git'
 
-export function AddSkillDialog({
-  onClose,
-  onDone,
-}: {
-  onClose: () => void
-  onDone: () => void
-}) {
-  const [tab, setTab] = useState<Tab>('local')
+interface MarketItem {
+  id: string
+  name: string
+  description: string
+  author?: string
+  category?: string
+  source?: string
+  sourceType?: string
+  accent?: string
+}
+
+export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+  const [tab, setTab] = useState<Tab>('market')
   const [gitUrl, setGitUrl] = useState('')
 
   const installFromSource = (source?: string) => {
@@ -22,85 +27,102 @@ export function AddSkillDialog({
   }
 
   return (
-    <div className="sm2__overlay" onClick={onClose}>
-      <div className="sm2__modal sm2__modal--wide" onClick={(e) => e.stopPropagation()}>
-        <h3>添加到中心库</h3>
-        <div className="sm2__addtabs">
-          <button className={`sm2__addtab${tab === 'market' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('market')}>
-            浏览市场
-          </button>
-          <button className={`sm2__addtab${tab === 'local' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('local')}>
-            本地安装
-          </button>
-          <button className={`sm2__addtab${tab === 'git' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('git')}>
-            Git 安装
-          </button>
-        </div>
+    <div className="sm2__install">
+      <div className="sm2__install-header">
+        <button className="sm2__btn sm2__btn--ghost" onClick={onBack}>← 返回 Skill 库</button>
+        <h2 className="sm2__title">添加到中心库</h2>
+      </div>
 
-        {tab === 'market' && <MarketTab onClose={onClose} onInstall={installFromSource} />}
-        {tab === 'local' && <LocalTab onClose={onClose} onDone={onDone} />}
-        {tab === 'git' && <GitTab initialUrl={gitUrl} onClose={onClose} onDone={onDone} />}
+      <div className="sm2__install-tabs">
+        <button className={`sm2__addtab${tab === 'market' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('market')}>
+          浏览市场
+        </button>
+        <button className={`sm2__addtab${tab === 'local' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('local')}>
+          本地安装
+        </button>
+        <button className={`sm2__addtab${tab === 'git' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('git')}>
+          Git 安装
+        </button>
+      </div>
+
+      <div className="sm2__install-body settings-scroll">
+        {tab === 'market' && <MarketPanel onInstall={installFromSource} />}
+        {tab === 'local' && <LocalPanel onDone={onDone} />}
+        {tab === 'git' && <GitPanel initialUrl={gitUrl} onDone={onDone} />}
       </div>
     </div>
   )
 }
 
-function MarketTab({ onClose, onInstall }: { onClose: () => void; onInstall: (source?: string) => void }) {
-  const [items, setItems] = useState<Array<{ id: string; name: string; description: string; author?: string; category?: string; source?: string }>>([])
+// ── Marketplace ──────────────────────────────────────────────────
+
+function MarketPanel({ onInstall }: { onInstall: (source?: string) => void }) {
+  const [items, setItems] = useState<MarketItem[]>([])
+  const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     skillApi
       .listMarketplaceItems()
-      .then((list) => setItems(list as never[]))
+      .then((list) => setItems(list as MarketItem[]))
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false))
   }, [])
 
-  const install = (item: { source?: string; name: string }) => {
-    // Hand off to the Git tab pre-filled with the item's source — the git flow
-    // clones and imports into the center library.
-    if (!item.source) {
-      alert('该市场条目没有可解析的来源地址,请手动用 Git 安装。')
-      return
-    }
-    onInstall(item.source)
-  }
+  const filtered = items.filter((it) => {
+    const q = query.trim().toLowerCase()
+    if (!q) return true
+    return [it.name, it.description, it.author, it.category].filter(Boolean).join(' ').toLowerCase().includes(q)
+  })
 
   return (
-    <div>
-      <p className="sm2__addtab-sub">从市场查找并安装技能</p>
+    <div className="sm2__install-market">
+      <div className="sm2__install-searchrow">
+        <input
+          className="sm2__search"
+          placeholder="搜索技能名称、描述或标签"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
       {loading ? (
-        <div className="sm2__empty" style={{ padding: 16 }}>加载市场…</div>
+        <div className="sm2__empty">加载市场…</div>
       ) : error ? (
         <div className="sm2__error" style={{ margin: 0 }}>{error}</div>
-      ) : items.length === 0 ? (
-        <div className="sm2__empty" style={{ padding: 24 }}>
-          市场源为空。可在「设置」中添加市场源，或使用「本地安装 / Git 安装」。
+      ) : filtered.length === 0 ? (
+        <div className="sm2__empty">
+          {items.length === 0
+            ? '市场源为空。可在「设置」中添加市场源,或使用本地 / Git 安装。'
+            : '没有匹配的技能。'}
         </div>
       ) : (
-        <div className="sm2__scroll" style={{ maxHeight: 320 }}>
-          {items.map((it) => (
-            <div key={it.id} className="sm2__target-row" style={{ alignItems: 'center' }}>
-              <div>
-                <strong>{it.name}</strong>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{it.description}</div>
-                {it.author && <span className="sm2__tag">{it.author}</span>}
+        <div className="sm2__install-grid">
+          {filtered.map((it) => (
+            <div key={it.id} className="sm2__install-card">
+              <div className="sm2__install-card-accent" style={{ background: it.accent || '#34C759' }} />
+              <div className="sm2__install-card-body">
+                <div className="sm2__install-card-title">{it.name}</div>
+                <div className="sm2__install-card-sub">{it.author ? `@${it.author}` : it.sourceType || 'market'}</div>
+                <div className="sm2__install-card-desc">{it.description}</div>
               </div>
-              <button className="sm2__btn sm2__btn--primary" onClick={() => install(it)}>安装</button>
+              <div className="sm2__install-card-foot">
+                {it.category && <span className="sm2__tag">{it.category}</span>}
+                <button className="sm2__btn sm2__btn--primary" onClick={() => onInstall(it.source)}>
+                  安装
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
-      <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
-        <button className="sm2__btn" onClick={onClose}>关闭</button>
-      </div>
     </div>
   )
 }
 
-function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+// ── Local ────────────────────────────────────────────────────────
+
+function LocalPanel({ onDone }: { onDone: () => void }) {
   const [sourcePath, setSourcePath] = useState('')
   const [multi, setMulti] = useState(false)
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
@@ -148,7 +170,6 @@ function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void
       const r = await skillApiV2.executeAddCenterSkill({ sourcePath, sourceType: 'local_folder', multi }, decisions)
       alert(`导入完成：新增 ${r.skillIds.length}，更新 ${r.updated.length}，跳过 ${r.skipped.length}`)
       onDone()
-      onClose()
     } catch (e) {
       setError(String(e))
     } finally {
@@ -158,8 +179,8 @@ function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void
 
   if (preview) {
     return (
-      <div>
-        <p className="sm2__addtab-sub">确认导入预览</p>
+      <div className="sm2__install-form">
+        <h3 className="sm2__install-h">确认导入预览</h3>
         {preview.candidates.map((c) => (
           <div key={c.skillId} className="sm2__change">
             <strong>{c.name}</strong> → <code>{c.proposedSkillId}</code>{' '}
@@ -178,7 +199,7 @@ function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void
           </div>
         ))}
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-        <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
+        <div className="sm2__btn-row">
           <button className="sm2__btn" onClick={() => setPreview(null)} disabled={busy}>返回</button>
           <button className="sm2__btn sm2__btn--primary" onClick={execute} disabled={busy}>{busy ? '处理中…' : '执行导入'}</button>
         </div>
@@ -187,33 +208,46 @@ function LocalTab({ onClose, onDone }: { onClose: () => void; onDone: () => void
   }
 
   return (
-    <div>
-      <p className="sm2__addtab-sub">从本地文件夹或压缩包导入</p>
+    <div className="sm2__install-form">
+      <h3 className="sm2__install-h">从本地导入</h3>
+      <p className="sm2__install-sub">支持文件夹、压缩包,以及批量导入一个含多个 Skill 的目录。</p>
+
+      <div className="sm2__install-options">
+        <button className="sm2__install-option" onClick={chooseFolder}>
+          <span className="sm2__install-option-icon">📁</span>
+          <span className="sm2__install-option-label">选择文件夹</span>
+        </button>
+        <button className="sm2__install-option" onClick={chooseZip}>
+          <span className="sm2__install-option-icon">🗜️</span>
+          <span className="sm2__install-option-label">选择压缩包 (.zip)</span>
+        </button>
+      </div>
+
       <div className="sm2__field">
-        <label>来源</label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="选择包含 SKILL.md 的目录" style={{ flex: 1 }} />
-          <button className="sm2__btn" type="button" onClick={chooseFolder}>选目录</button>
-          <button className="sm2__btn" type="button" onClick={chooseZip}>选压缩包</button>
-        </div>
+        <label>来源路径</label>
+        <input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="选择或粘贴包含 SKILL.md 的目录 / .zip" />
       </div>
       <label className="sm2__checkbox-row">
         <input type="checkbox" checked={multi} onChange={(e) => setMulti(e.target.checked)} />
-        该目录包含多个 Skill（批量导入）
+        批量导入（该目录包含多个 Skill）
       </label>
+
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-      <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
+      <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
         每个 Skill 目录必须包含 SKILL.md。同名不同来源会被阻止并要求选择处理方式。
       </p>
-      <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
-        <button className="sm2__btn" onClick={onClose} disabled={busy}>取消</button>
-        <button className="sm2__btn sm2__btn--primary" onClick={runPreview} disabled={busy || !sourcePath}>{busy ? '处理中…' : '预览'}</button>
+      <div className="sm2__btn-row">
+        <button className="sm2__btn sm2__btn--primary" onClick={runPreview} disabled={busy || !sourcePath}>
+          {busy ? '处理中…' : '预览导入'}
+        </button>
       </div>
     </div>
   )
 }
 
-function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose: () => void; onDone: () => void }) {
+// ── Git ──────────────────────────────────────────────────────────
+
+function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: () => void }) {
   const [url, setUrl] = useState(initialUrl || '')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
@@ -230,8 +264,6 @@ function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose:
     setError(null)
     setStatus(null)
     try {
-      // Use the legacy github repo importer (clones + detects skills), then
-      // rescan the v2 center so imported skills appear in the library.
       const repo = await skillApi.previewGitHubRepoImport(url.trim())
       const selections = repo.skills.map((s) => ({ sourcePath: s.sourcePath, resolution: 'overwrite' as const }))
       if (selections.length === 0) {
@@ -240,7 +272,7 @@ function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose:
       }
       await skillApi.importGitHubRepoSkills(url.trim(), selections)
       await skillApiV2.refresh()
-      setStatus(`已导入 ${selections.length} 个 Skill`)
+      setStatus(`已导入 ${selections.length} 个 Skill 到中心库`)
       onDone()
     } catch (e) {
       setError(String(e))
@@ -250,8 +282,9 @@ function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose:
   }
 
   return (
-    <div>
-      <p className="sm2__addtab-sub">从 Git 仓库克隆并导入</p>
+    <div className="sm2__install-form">
+      <h3 className="sm2__install-h">从 Git 仓库克隆并导入</h3>
+      <p className="sm2__install-sub">输入 GitHub / Git 仓库地址,自动检测并导入其中的 Skill。</p>
       <div className="sm2__field">
         <label>仓库 URL</label>
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/username/repo" />
@@ -266,9 +299,10 @@ function GitTab({ initialUrl, onClose, onDone }: { initialUrl?: string; onClose:
       </div>
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
       {status && <div className="sm2__change" style={{ background: 'rgba(52,199,89,0.12)' }}>{status}</div>}
-      <div className="sm2__btn-row" style={{ justifyContent: 'flex-end' }}>
-        <button className="sm2__btn" onClick={onClose} disabled={busy}>取消</button>
-        <button className="sm2__btn sm2__btn--primary" onClick={run} disabled={busy}>{busy ? '克隆中…' : '安装'}</button>
+      <div className="sm2__btn-row">
+        <button className="sm2__btn sm2__btn--primary" onClick={run} disabled={busy}>
+          {busy ? '克隆中…' : '安装'}
+        </button>
       </div>
     </div>
   )

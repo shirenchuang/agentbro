@@ -3,7 +3,7 @@ import { filteredSkills, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { SkillSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
-import { AddSkillDialog } from './AddSkillDialog'
+import { InstallView } from './InstallView'
 import { DistributeDialog } from './DistributeDialog'
 import { SkillDetailSlider } from './SkillDetailSlider'
 import { PreviewDialog } from './PreviewDialog'
@@ -20,7 +20,7 @@ export function SkillLibraryPage() {
   const state = useSkillStoreV2()
   const skills = filteredSkills(state)
   const overview = state.overview
-  const [addOpen, setAddOpen] = useState(false)
+  const [installOpen, setInstallOpen] = useState(false)
   const [distributeFor, setDistributeFor] = useState<SkillSummary | null>(null)
   const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
@@ -63,12 +63,16 @@ export function SkillLibraryPage() {
     }
   }
 
+  if (installOpen) {
+    return <InstallView onBack={() => setInstallOpen(false)} onDone={reload} />
+  }
+
   return (
     <div className="sm2">
       <div className="sm2__header">
         <h2 className="sm2__title">Skill 库</h2>
         <div className="sm2__tabs">
-          <button className="sm2__btn sm2__btn--primary" onClick={() => setAddOpen(true)}>+ 添加到中心库</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={() => setInstallOpen(true)}>+ 添加到中心库</button>
           <button className="sm2__btn" onClick={refresh} disabled={state.loading}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -147,7 +151,6 @@ export function SkillLibraryPage() {
         onDelete={openDelete}
       />
 
-      {addOpen && <AddSkillDialog onClose={() => setAddOpen(false)} onDone={reload} />}
       {distributeFor && state.settings && (
         <DistributeDialog
           skill={distributeFor}
