@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
@@ -6,6 +6,7 @@ import { skillApi } from '../../services/skillApi'
 import type { AddCenterSkillPreview, AddCenterSkillDecision, AgentSkillInventoryAgent, AgentSkillInventoryItem } from '../../services/skillApiV2'
 import type { MarketplaceSkill, SkillRegistry } from '../../services/skillApi'
 import { AgentIconBadge } from './AgentIconBadge'
+import { SlideOver } from './SlideOver'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
@@ -56,17 +57,86 @@ export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: ()
 
 // ── Marketplace ──────────────────────────────────────────────────
 
-function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: () => void }) {
+const MARKET_PAGE_SIZE = 24
+
+function RegistrySelect({ value, options, onChange }: {
+  value: string
+  options: Array<{ id: string; name: string }>
+  onChange: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = options.find((o) => o.id === value) || options[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div className="sm2__custom-select" ref={ref}>
+      <button type="button" className="sm2__custom-select-trigger" onClick={() => setOpen((v) => !v)}>
+        <span>{selected?.name || value}</span>
+        <span className="sm2__custom-select-chevron">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div className="sm2__custom-select-menu">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              className={`sm2__custom-select-option${o.id === value ? ' sm2__custom-select-option--active' : ''}`}
+              onClick={() => { onChange(o.id); setOpen(false) }}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SkillAvatar({ source, name }: { source: string | null; name: string }) {
+  const [failed, setFailed] = useState(false)
+  const owner = (source || '').split('/')[0]
+  const avatarUrl = owner ? `https://github.com/${owner}.png?size=40` : ''
+
+  if (!avatarUrl || failed) {
+    return <div className="sm2__market-skill-icon">{initials(name)}</div>
+  }
+  return (
+    <img
+      src={avatarUrl}
+      alt={owner}
+      className="sm2__market-avatar"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+type MarketViewMode = 'list' | 'cards'
+
+export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: (skillId?: string) => void }) {
   const [items, setItems] = useState<MarketplaceSkill[]>([])
   const [registries, setRegistries] = useState<SkillRegistry[]>([])
   const [registryId, setRegistryId] = useState('skills-sh')
   const [board, setBoard] = useState<MarketBoard>('alltime')
   const [sourceFilter, setSourceFilter] = useState('')
   const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
+  const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
     { id: 'alltime', label: '全部' },
@@ -80,7 +150,12 @@ function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => vo
 
   useEffect(() => {
     setSourceFilter('')
+    setPage(1)
   }, [registryId, board, query])
+
+  useEffect(() => {
+    setPage(1)
+  }, [sourceFilter])
 
   useEffect(() => {
     let alive = true
@@ -135,6 +210,31 @@ function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => vo
     [items, sourceFilter],
   )
 
+  const totalPages = Math.max(1, Math.ceil(visibleItems.length / MARKET_PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  const paginatedItems = visibleItems.slice(
+    (currentPage - 1) * MARKET_PAGE_SIZE,
+    currentPage * MARKET_PAGE_SIZE,
+  )
+
+  const visiblePages = useMemo(() => {
+    return Array.from({ length: totalPages }, (_, i) => i + 1).filter((p) => {
+      if (totalPages <= 7) return true
+      if (p === 1 || p === totalPages) return true
+      return Math.abs(p - currentPage) <= 1
+    })
+  }, [totalPages, currentPage])
+
+  const changePage = useCallback((p: number) => {
+    setPage(p)
+    gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  const registryOptions = useMemo(
+    () => registries.length ? registries.map((r) => ({ id: r.id, name: r.name })) : [{ id: 'skills-sh', name: 'skills.sh' }],
+    [registries],
+  )
+
   const install = async (it: MarketplaceSkill) => {
     setInstalling(it.id)
     setError(null)
@@ -155,7 +255,7 @@ function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => vo
       }
       await skillApiV2.executeAddCenterSkill(input, [])
       setStatus(`已安装「${it.name}」到中心 Skill 库`)
-      onDone()
+      onDone(it.id)
     } catch (e) {
       setError(`${String(e)}。你也可以转到 Git 安装手动预览。`)
     } finally {
@@ -178,22 +278,23 @@ function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => vo
             </button>
           ))}
         </div>
+        <div className="sm2__search-wrapper">
+          <span className="sm2__search-icon">⌕</span>
+          <input
+            className="sm2__search sm2__search--with-icon"
+            placeholder="搜索 skills.sh 市场…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <RegistrySelect value={registryId} options={registryOptions} onChange={setRegistryId} />
+        <div className="sm2__view-toggle sm2__view-toggle--soft">
+          <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
+          <button className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
+        </div>
         <div className="sm2__market-count">
           {query.trim() ? '搜索结果' : boardTabs.find((tab) => tab.id === board)?.label || '全部'} · {visibleItems.length} 个
         </div>
-      </div>
-      <div className="sm2__install-searchrow sm2__market-toolbar">
-        <input
-          className="sm2__search"
-          placeholder="搜索 skills.sh 市场，例如 code review、browser、docs"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <select className="sm2__select" value={registryId} onChange={(e) => setRegistryId(e.target.value)}>
-          {(registries.length ? registries : [{ id: 'skills-sh', name: 'skills.sh' } as SkillRegistry]).map((r) => (
-            <option key={r.id} value={r.id}>{r.name}</option>
-          ))}
-        </select>
       </div>
       {sourceOptions.length > 0 && (
         <div className="sm2__market-source-row">
@@ -228,41 +329,192 @@ function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => vo
           没有匹配的技能。可换一个关键词，或使用本地 / Git 安装。
         </div>
       ) : (
-        <div className="sm2__install-grid">
-          {visibleItems.map((it) => (
-            <div key={it.id} className="sm2__install-card">
-              <div className="sm2__install-card-accent" />
-              <div className="sm2__install-card-body">
-                <div className="sm2__install-card-head">
-                  <div className="sm2__market-skill-icon">{initials(it.name)}</div>
-                  <div className="sm2__install-card-title">{it.name}</div>
-                  {it.webUrl && (
-                    <button className="sm2__icon-btn" title="在市场查看" onClick={() => openExternal(it.webUrl!)}>
-                      ↗
+        <>
+          {viewMode === 'list' ? (
+            <div className="sm2__market-list" ref={gridRef}>
+              {paginatedItems.map((it) => (
+                <div key={it.id} className="sm2__market-item" onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
+                  <SkillAvatar source={it.source} name={it.name} />
+                  <div className="sm2__market-item-main">
+                    <div className="sm2__market-item-title">
+                      <strong>{it.name}</strong>
+                      {it.webUrl && (
+                        <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
+                      )}
+                    </div>
+                    <div className="sm2__market-item-meta">
+                      <span className="sm2__source-pill">{it.source || it.registryId}</span>
+                      {typeof it.installCount === 'number' && (
+                        <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
+                      )}
+                      {it.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                    </div>
+                  </div>
+                  <button
+                    className="sm2__icon-btn sm2__icon-btn--add"
+                    title={it.isInstalled ? '已在中心库' : '安装到中心库'}
+                    disabled={installing === it.id || it.isInstalled}
+                    onClick={(e) => { e.stopPropagation(); install(it) }}
+                  >
+                    {installing === it.id ? '…' : '+'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="sm2__install-grid" ref={gridRef}>
+              {paginatedItems.map((it) => (
+                <div key={it.id} className="sm2__install-card" onClick={() => setDetailSkill(it)}>
+                  <div className="sm2__install-card-head">
+                    <SkillAvatar source={it.source} name={it.name} />
+                    <div className="sm2__install-card-title">{it.name}</div>
+                    {it.webUrl && (
+                      <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
+                    )}
+                    <button
+                      className={`sm2__icon-btn sm2__icon-btn--add${it.isInstalled ? ' sm2__icon-btn--installed' : ''}`}
+                      title={it.isInstalled ? '已在中心库' : '安装到中心库'}
+                      disabled={installing === it.id || it.isInstalled}
+                      onClick={(e) => { e.stopPropagation(); install(it) }}
+                    >
+                      {installing === it.id ? '…' : it.isInstalled ? '✓' : '+'}
                     </button>
-                  )}
+                  </div>
+                  <div className="sm2__install-card-meta">
+                    <span className="sm2__source-pill">{it.source || it.registryId}</span>
+                    {typeof it.installCount === 'number' && (
+                      <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
+                    )}
+                    {it.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                  </div>
                 </div>
-                <div className="sm2__install-card-meta">
-                  <span className="sm2__source-pill">{it.source || it.registryId}</span>
-                  {typeof it.installCount === 'number' && (
-                    <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
-                  )}
-                </div>
-                <div className="sm2__install-card-desc">{it.description || it.downloadUrl.replace(/^github:/, '')}</div>
-              </div>
-              <div className="sm2__install-card-foot">
-                <span className={`sm2__tag sm2__tag--${it.isInstalled ? 'ok' : 'unmanaged'}`}>
-                  {it.isInstalled ? '已在中心库' : '在线'}
-                </span>
-                <button className="sm2__btn sm2__btn--primary" disabled={installing === it.id || it.isInstalled} onClick={() => install(it)}>
-                  {installing === it.id ? '安装中…' : '安装到中心库'}
-                </button>
+              ))}
+            </div>
+          )}
+          {totalPages > 1 && (
+            <div className="sm2__pagination">
+              <button
+                className="sm2__page-btn sm2__page-btn--nav"
+                disabled={currentPage === 1}
+                onClick={() => changePage(Math.max(1, currentPage - 1))}
+              >
+                ‹ 上一页
+              </button>
+              {visiblePages.map((p, i) => {
+                const prev = visiblePages[i - 1]
+                const showGap = prev != null && p - prev > 1
+                return (
+                  <span key={p} className="sm2__page-group">
+                    {showGap && <span className="sm2__page-gap">…</span>}
+                    <button
+                      className={`sm2__page-btn${p === currentPage ? ' sm2__page-btn--active' : ''}`}
+                      onClick={() => changePage(p)}
+                    >
+                      {p}
+                    </button>
+                  </span>
+                )
+              })}
+              <button
+                className="sm2__page-btn sm2__page-btn--nav"
+                disabled={currentPage === totalPages}
+                onClick={() => changePage(Math.min(totalPages, currentPage + 1))}
+              >
+                下一页 ›
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      <MarketSkillDetail
+        skill={detailSkill}
+        onClose={() => setDetailSkill(null)}
+        installing={installing === detailSkill?.id}
+        onInstall={(it) => { setDetailSkill(null); install(it) }}
+      />
+    </div>
+  )
+}
+
+function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
+  skill: MarketplaceSkill | null
+  onClose: () => void
+  installing: boolean
+  onInstall: (it: MarketplaceSkill) => void
+}) {
+  return (
+    <SlideOver
+      open={!!skill}
+      onClose={onClose}
+      width={520}
+      title={skill?.name || ''}
+      subtitle={skill?.source || skill?.registryId}
+      actions={
+        skill?.webUrl ? (
+          <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(skill.webUrl!)}>在市场查看 ↗</button>
+        ) : undefined
+      }
+    >
+      {skill && (
+        <div className="sm2__market-detail">
+          <div className="sm2__market-detail-hero">
+            <SkillAvatar source={skill.source} name={skill.name} />
+            <div>
+              <h3 className="sm2__market-detail-name">{skill.name}</h3>
+              <div className="sm2__market-detail-meta">
+                <span className="sm2__source-pill">{skill.source || skill.registryId}</span>
+                {typeof skill.installCount === 'number' && (
+                  <span className="sm2__install-count">↓ {formatInstallCount(skill.installCount)}</span>
+                )}
+                {skill.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
               </div>
             </div>
-          ))}
+          </div>
+
+          {skill.description && (
+            <div className="sm2__market-detail-section">
+              <h4>描述</h4>
+              <p>{skill.description}</p>
+            </div>
+          )}
+
+          <div className="sm2__market-detail-section">
+            <h4>信息</h4>
+            <div className="sm2__compact-info">
+              <div className="sm2__compact-row">
+                <span>下载地址</span>
+                <code>{skill.downloadUrl}</code>
+              </div>
+              <div className="sm2__compact-row">
+                <span>来源仓库</span>
+                <strong>{skill.registryId}</strong>
+              </div>
+              {skill.syncedAt && (
+                <div className="sm2__compact-row">
+                  <span>同步时间</span>
+                  <strong>{new Date(skill.syncedAt).toLocaleString()}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="sm2__btn-row" style={{ marginTop: 20 }}>
+            <button
+              className="sm2__btn sm2__btn--primary"
+              disabled={installing || skill.isInstalled}
+              onClick={() => onInstall(skill)}
+            >
+              {installing ? '安装中…' : skill.isInstalled ? '已安装' : '安装到中心库'}
+            </button>
+            {skill.webUrl && (
+              <button className="sm2__btn" onClick={() => openExternal(skill.webUrl!)}>
+                在市场查看 ↗
+              </button>
+            )}
+          </div>
         </div>
       )}
-    </div>
+    </SlideOver>
   )
 }
 
@@ -293,7 +545,7 @@ function initials(value: string) {
 
 // ── Local Agent sync ─────────────────────────────────────────────
 
-function AgentSyncPanel({ onDone }: { onDone: () => void }) {
+export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void }) {
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -324,7 +576,6 @@ function AgentSyncPanel({ onDone }: { onDone: () => void }) {
 
   useEffect(() => {
     load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const scan = async () => {
@@ -511,7 +762,7 @@ function MetricLite({ value, label, tone }: { value: number; label: string; tone
 
 // ── Local ────────────────────────────────────────────────────────
 
-function LocalPanel({ onDone }: { onDone: () => void }) {
+export function LocalPanel({ onDone }: { onDone: (skillId?: string) => void }) {
   const [sourcePath, setSourcePath] = useState('')
   const [multi, setMulti] = useState(false)
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
@@ -638,7 +889,7 @@ function LocalPanel({ onDone }: { onDone: () => void }) {
 
 // ── Git ──────────────────────────────────────────────────────────
 
-function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: () => void }) {
+export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: (skillId?: string) => void }) {
   const [url, setUrl] = useState(initialUrl || '')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')

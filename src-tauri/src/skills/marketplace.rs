@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const SKILLS_SH_DEFAULT_QUERY: &str = "skill";
-const SKILLS_SH_SEARCH_LIMIT: usize = 80;
-const SKILLS_SH_LEADERBOARD_LIMIT: usize = 120;
+const SKILLS_SH_SEARCH_LIMIT: usize = 200;
+const SKILLS_SH_LEADERBOARD_LIMIT: usize = 300;
 const SKILLS_SH_CACHE_TTL: Duration = Duration::from_secs(300);
 const SKILLS_SH_SEARCH_CACHE_TTL: Duration = Duration::from_secs(120);
 const SKILLS_SH_USER_AGENT: &str = "AgentBro";
@@ -101,7 +101,7 @@ pub fn list_registries() -> Vec<SkillRegistry> {
     let mut registries = vec![
         SkillRegistry {
             id: "builtin".to_string(),
-            name: "Built-in Marketplace".to_string(),
+            name: "内置市场".to_string(),
             source_type: "builtin".to_string(),
             url: "agentbro://builtin-marketplace".to_string(),
             is_builtin: true,

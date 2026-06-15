@@ -285,15 +285,64 @@ fn parse_frontmatter_text(content: &str) -> std::collections::HashMap<String, St
     let Some(frontmatter) = content.split("---").nth(1) else {
         return map;
     };
+
+    let mut current_key: Option<String> = None;
+    let mut current_val = String::new();
+    let mut is_block_scalar = false;
+
     for line in frontmatter.lines() {
+        if is_block_scalar {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || (line.starts_with(|c: char| !c.is_whitespace()) && line.contains(':'))
+            {
+                if let Some(key) = current_key.take() {
+                    let val = current_val.trim().to_string();
+                    if !val.is_empty() {
+                        map.insert(key, val);
+                    }
+                }
+                is_block_scalar = false;
+                current_val.clear();
+            } else {
+                if !current_val.is_empty() {
+                    current_val.push(' ');
+                }
+                current_val.push_str(trimmed);
+                continue;
+            }
+        }
+
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if !key.trim().is_empty() && !value.is_empty() {
-            map.insert(key.trim().to_string(), value.to_string());
+        let key = key.trim();
+        let value = value.trim();
+
+        if key.is_empty() {
+            continue;
+        }
+
+        if value == ">" || value == "|" {
+            current_key = Some(key.to_string());
+            current_val.clear();
+            is_block_scalar = true;
+            continue;
+        }
+
+        let value = value.trim_matches('"').trim_matches('\'');
+        if !value.is_empty() {
+            map.insert(key.to_string(), value.to_string());
         }
     }
+
+    if let Some(key) = current_key.take() {
+        let val = current_val.trim().to_string();
+        if !val.is_empty() {
+            map.insert(key, val);
+        }
+    }
+
     map
 }
 

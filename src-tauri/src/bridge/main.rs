@@ -480,10 +480,17 @@ fn send_and_maybe_receive(
 }
 
 fn invocation_log_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".agentbro")
-        .join("hook-invocations.jsonl")
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    let new_path = home.join(".agentbro").join("hooks").join("invocations.jsonl");
+    // Migrate from old flat location
+    let old_path = home.join(".agentbro").join("hook-invocations.jsonl");
+    if old_path.exists() && !new_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::rename(&old_path, &new_path);
+    }
+    new_path
 }
 
 fn invocation_log_line(state: &serde_json::Value, forwarded: bool) -> String {

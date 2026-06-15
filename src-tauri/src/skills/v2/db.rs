@@ -152,6 +152,23 @@ impl Db {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create db dir {}: {}", parent.display(), e))?;
         }
+        // Migrate from old flat location (~/.agentbro/skill-manager.db)
+        let old_db = crate::data_dir::agentbro_home().join("skill-manager.db");
+        crate::data_dir::migrate_sqlite(&old_db, path);
+        // Detect incompatible legacy schema and nuke the file if needed.
+        if path.exists() {
+            if let Ok(probe) = Connection::open(path) {
+                let is_legacy: bool = probe
+                    .prepare("SELECT skill_type FROM skills LIMIT 0")
+                    .is_err();
+                drop(probe);
+                if is_legacy {
+                    let _ = std::fs::remove_file(path);
+                    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+                    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+                }
+            }
+        }
         let conn = Connection::open(path).map_err(|e| format!("open db: {}", e))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("pragma: {}", e))?;

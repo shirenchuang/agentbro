@@ -312,6 +312,7 @@ export function SettingsSidebar({
   if (activeSection === 'skill-manager-v2') {
     const skillTabs: Array<{ id: SkillManagerTab; label: string; icon: string; iconBg: string }> = [
       { id: 'library', label: 'Skill 库', icon: '🧩', iconBg: '#34C759' },
+      { id: 'install', label: '安装 Skill', icon: '⬇', iconBg: '#FF9500' },
       { id: 'packs', label: '技能包', icon: '📦', iconBg: '#5856D6' },
       { id: 'agents', label: 'Agent 管理', icon: '🤖', iconBg: '#007AFF' },
       { id: 'diagnostics', label: '诊断与修复', icon: '🩺', iconBg: '#FF9500' },

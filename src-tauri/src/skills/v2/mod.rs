@@ -48,8 +48,12 @@ fn build_service() -> Result<Arc<service::Service>, String> {
 
 fn resolve_sqlite_path(home: &std::path::Path) -> Result<PathBuf, String> {
     let default = fsutil::default_sqlite_path();
-    let settings_file = home.join(".agentbro/skill-manager-settings.json");
-    if let Ok(content) = std::fs::read_to_string(&settings_file) {
+    // Check new location first, then legacy flat location
+    let settings_file = fsutil::settings_path();
+    let legacy_settings = home.join(".agentbro/skill-manager-settings.json");
+    let content = std::fs::read_to_string(&settings_file)
+        .or_else(|_| std::fs::read_to_string(&legacy_settings));
+    if let Ok(content) = content {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(p) = v.get("sqlitePath").and_then(|p| p.as_str()) {
                 if !p.is_empty() {
@@ -58,5 +62,7 @@ fn resolve_sqlite_path(home: &std::path::Path) -> Result<PathBuf, String> {
             }
         }
     }
+    // Migrate legacy settings file if it exists
+    crate::data_dir::migrate_file(&legacy_settings, &settings_file);
     Ok(default)
 }

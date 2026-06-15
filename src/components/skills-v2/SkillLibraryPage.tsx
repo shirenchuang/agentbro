@@ -3,7 +3,6 @@ import { filteredSkills, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { SkillSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
-import { InstallView } from './InstallView'
 import { DistributeDialog } from './DistributeDialog'
 import { SkillDetailSlider } from './SkillDetailSlider'
 import { PreviewDialog } from './PreviewDialog'
@@ -20,7 +19,6 @@ export function SkillLibraryPage() {
   const state = useSkillStoreV2()
   const skills = filteredSkills(state)
   const overview = state.overview
-  const [installOpen, setInstallOpen] = useState(false)
   const [distributeFor, setDistributeFor] = useState<SkillSummary | null>(null)
   const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
@@ -67,10 +65,6 @@ export function SkillLibraryPage() {
     }
   }
 
-  if (installOpen) {
-    return <InstallView onBack={() => setInstallOpen(false)} onDone={reload} />
-  }
-
   return (
     <div className="sm2">
       <div className="sm2__header sm2__header--stacked">
@@ -79,7 +73,7 @@ export function SkillLibraryPage() {
           <p className="sm2__header-subtitle">统一管理中心库 Skills，查看安装到哪些 Agent，并处理分发、更新和删除。</p>
         </div>
         <div className="sm2__tabs">
-          <button className="sm2__btn sm2__btn--primary" onClick={() => setInstallOpen(true)}>添加到中心库</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={() => state.setTab('install')}>安装 Skill</button>
           <button className="sm2__btn" onClick={refresh} disabled={state.loading}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>

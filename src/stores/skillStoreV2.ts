@@ -14,7 +14,7 @@ import type {
 } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
-export type SkillManagerTab = 'library' | 'packs' | 'agents' | 'diagnostics' | 'settings'
+export type SkillManagerTab = 'library' | 'install' | 'packs' | 'agents' | 'diagnostics' | 'settings'
 export type SkillViewMode = 'cards' | 'list'
 
 const OVERVIEW_CACHE_TTL_MS = 60_000

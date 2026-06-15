@@ -42,7 +42,8 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const [updateMinimized, setUpdateMinimized] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const isMarketSection = activeSection === 'island' && activeIslandView === 'market'
-  const contentClassName = `settings-content settings-scroll${isMarketSection ? ' settings-content--market' : ''}`
+  const isSkillManager = activeSection === 'skill-manager-v2'
+  const contentClassName = `settings-content settings-scroll${isMarketSection ? ' settings-content--market' : ''}${isSkillManager ? ' settings-content--skill-manager' : ''}`
   const openCustomAgentDialog = () => {
     setActiveSection('agents')
     setActiveCapabilityView('agent')
@@ -103,15 +104,17 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         onAddCustomAgent={openCustomAgentDialog}
       />
       <div className={contentClassName}>
-        <div className="settings-window-brand" aria-hidden="true">
-          <span className="settings-window-brand__mark">
-            <img src="/agentbro-app-icon.png" alt="" />
-          </span>
-          <span className="settings-window-brand__copy">
-            <span className="settings-window-brand__name">AgentBro</span>
-            <span className="settings-window-brand__slogan">{t('notch.slogan')}</span>
-          </span>
-        </div>
+        {activeSection !== 'skill-manager-v2' && (
+          <div className="settings-window-brand" aria-hidden="true">
+            <span className="settings-window-brand__mark">
+              <img src="/agentbro-app-icon.png" alt="" />
+            </span>
+            <span className="settings-window-brand__copy">
+              <span className="settings-window-brand__name">AgentBro</span>
+              <span className="settings-window-brand__slogan">{t('notch.slogan')}</span>
+            </span>
+          </div>
+        )}
         <button
           className="settings-close-btn"
           onClick={handleCloseRequest}

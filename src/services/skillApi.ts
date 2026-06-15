@@ -599,7 +599,7 @@ async function fetchSkillsShMarketplace(
     const url = new URL('https://skills.sh/api/search')
     const queryText = query?.trim() || (board === 'hot' ? 'popular' : board === 'trending' ? 'trending' : 'skill')
     url.searchParams.set('q', queryText)
-    url.searchParams.set('limit', '80')
+    url.searchParams.set('limit', '200')
     const response = await fetch(url.toString())
     if (!response.ok) return []
 

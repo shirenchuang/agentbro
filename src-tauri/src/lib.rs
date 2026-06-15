@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod commands;
 pub mod config;
+pub mod data_dir;
 pub mod energy;
 pub mod hook_endpoint;
 pub mod hooks;

@@ -540,6 +540,16 @@
   left: 36px;
 }
 
+.settings-content--skill-manager {
+  padding-top: 16px;
+  padding-right: 16px;
+  padding-left: 16px;
+}
+
+.settings-content--skill-manager .settings-window-brand {
+  left: 16px;
+}
+
 .settings-window-brand {
   position: absolute;
   top: 24px;

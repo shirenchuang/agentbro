@@ -745,20 +745,68 @@ fn parse_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
     }
 
     let fm_text = parts[1];
+    parse_frontmatter_text(fm_text)
+}
+
+fn parse_frontmatter_text(fm_text: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
+    let mut current_key: Option<String> = None;
+    let mut current_val = String::new();
+    let mut is_block_scalar = false;
 
     for line in fm_text.lines() {
-        let line = line.trim();
-        if let Some(colon_pos) = line.find(':') {
-            let key = line[..colon_pos].trim().to_string();
-            let val = line[colon_pos + 1..]
-                .trim()
+        if is_block_scalar {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || (line.starts_with(|c: char| !c.is_whitespace()) && line.contains(':'))
+            {
+                if let Some(key) = current_key.take() {
+                    let val = current_val.trim().to_string();
+                    if !val.is_empty() {
+                        map.insert(key, val);
+                    }
+                }
+                is_block_scalar = false;
+                current_val.clear();
+            } else {
+                if !current_val.is_empty() {
+                    current_val.push(' ');
+                }
+                current_val.push_str(trimmed);
+                continue;
+            }
+        }
+
+        let trimmed = line.trim();
+        if let Some(colon_pos) = trimmed.find(':') {
+            let key = trimmed[..colon_pos].trim().to_string();
+            let val_part = trimmed[colon_pos + 1..].trim();
+
+            if key.is_empty() {
+                continue;
+            }
+
+            if val_part == ">" || val_part == "|" {
+                current_key = Some(key);
+                current_val.clear();
+                is_block_scalar = true;
+                continue;
+            }
+
+            let val = val_part
                 .trim_matches('"')
                 .trim_matches('\'')
                 .to_string();
-            if !key.is_empty() && !val.is_empty() {
+            if !val.is_empty() {
                 map.insert(key, val);
             }
+        }
+    }
+
+    if let Some(key) = current_key.take() {
+        let val = current_val.trim().to_string();
+        if !val.is_empty() {
+            map.insert(key, val);
         }
     }
 
