@@ -4,7 +4,7 @@ import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { skillApi } from '../../services/skillApi'
 import type { AddCenterSkillPreview, AddCenterSkillDecision, AgentSkillInventoryAgent, AgentSkillInventoryItem } from '../../services/skillApiV2'
-import type { MarketplaceSkill, SkillRegistry } from '../../services/skillApi'
+import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApi'
 import { AgentIconBadge } from './AgentIconBadge'
 import { SlideOver } from './SlideOver'
 
@@ -58,48 +58,30 @@ export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: ()
 // ── Marketplace ──────────────────────────────────────────────────
 
 const MARKET_PAGE_SIZE = 24
-
-function RegistrySelect({ value, options, onChange }: {
-  value: string
-  options: Array<{ id: string; name: string }>
-  onChange: (id: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  const selected = options.find((o) => o.id === value) || options[0]
-
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
-
-  return (
-    <div className="sm2__custom-select" ref={ref}>
-      <button type="button" className="sm2__custom-select-trigger" onClick={() => setOpen((v) => !v)}>
-        <span>{selected?.name || value}</span>
-        <span className="sm2__custom-select-chevron">{open ? '▴' : '▾'}</span>
-      </button>
-      {open && (
-        <div className="sm2__custom-select-menu">
-          {options.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              className={`sm2__custom-select-option${o.id === value ? ' sm2__custom-select-option--active' : ''}`}
-              onClick={() => { onChange(o.id); setOpen(false) }}
-            >
-              {o.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+const DEFAULT_RECOMMENDED_SOURCE_COUNT = 4
+const RECOMMENDED_PUBLISHERS = [
+  { id: 'anthropics', label: 'Anthropic' },
+  { id: 'microsoft', label: 'Microsoft' },
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'vercel-labs', label: 'Vercel' },
+  { id: 'firebase', label: 'Firebase' },
+  { id: 'supabase', label: 'Supabase' },
+  { id: 'larksuite', label: 'LarkSuite' },
+]
+const RECOMMENDED_SOURCES = [
+  'anthropics/claude-plugins-official',
+  'anthropics/skills',
+  'microsoft/azure-skills',
+  'larksuite/cli',
+  'vercel-labs/skills',
+  'vercel-labs/agent-skills',
+  'runcomfy-com/skills',
+  'agentspace-so/runcomfy-agent-skills',
+  'doany-ai/skills',
+  'firebase/agent-skills',
+  'supabase/agent-skills',
+  'qu-skills/skills',
+]
 
 function SkillAvatar({ source, name }: { source: string | null; name: string }) {
   const [failed, setFailed] = useState(false)
@@ -124,19 +106,24 @@ type MarketViewMode = 'list' | 'cards'
 
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: (skillId?: string) => void }) {
   const [items, setItems] = useState<MarketplaceSkill[]>([])
-  const [registries, setRegistries] = useState<SkillRegistry[]>([])
-  const [registryId, setRegistryId] = useState('skills-sh')
+  const [sourceItemsBySource, setSourceItemsBySource] = useState<Record<string, MarketplaceSkill[]>>({})
   const [board, setBoard] = useState<MarketBoard>('alltime')
+  const [publisherFilter, setPublisherFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [sourceLoading, setSourceLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [installing, setInstalling] = useState<string | null>(null)
+  const [sourceError, setSourceError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState<Set<string>>(() => new Set())
+  const [installedIds, setInstalledIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
+  const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
+  const registryId = 'skills-sh'
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
     { id: 'alltime', label: '全部' },
@@ -145,13 +132,16 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   ]
 
   useEffect(() => {
-    skillApi.listRegistries().then(setRegistries).catch(() => setRegistries([]))
-  }, [])
+    setPublisherFilter('')
+    setSourceFilter('')
+    setSourcesExpanded(false)
+    setPage(1)
+  }, [registryId, board, query])
 
   useEffect(() => {
     setSourceFilter('')
     setPage(1)
-  }, [registryId, board, query])
+  }, [publisherFilter])
 
   useEffect(() => {
     setPage(1)
@@ -194,21 +184,190 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     }
   }, [query, registryId, board])
 
-  const sourceOptions = useMemo(() => {
+  useEffect(() => {
+    if (!sourceFilter) {
+      setSourceLoading(false)
+      setSourceError(null)
+      return
+    }
+    if (Object.prototype.hasOwnProperty.call(sourceItemsBySource, sourceFilter)) {
+      setSourceError(null)
+      return
+    }
+
+    let alive = true
+    setSourceLoading(true)
+    setSourceError(null)
+    skillApi.searchMarketplaceSkills(registryId, sourceFilter, null)
+      .then((next) => {
+        if (!alive) return
+        const exactSourceItems = next.filter((item) => (item.source || item.registryId) === sourceFilter)
+        setSourceItemsBySource((prev) => ({ ...prev, [sourceFilter]: exactSourceItems }))
+      })
+      .catch((e) => {
+        if (alive) setSourceError(`加载「${sourceFilter}」失败：${String(e)}`)
+      })
+      .finally(() => {
+        if (alive) setSourceLoading(false)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [registryId, sourceFilter, sourceItemsBySource])
+
+  const recommendedPublishers = useMemo(() => {
+    const counts = new Map<string, { skills: number; sources: Set<string> }>()
+    for (const item of items) {
+      const source = item.source || item.registryId
+      const publisher = publisherFromSource(source)
+      const current = counts.get(publisher) || { skills: 0, sources: new Set<string>() }
+      current.skills += 1
+      current.sources.add(source)
+      counts.set(publisher, current)
+    }
+    const options = RECOMMENDED_PUBLISHERS
+      .map((entry) => {
+        const value = counts.get(entry.id)
+        if (!value) return null
+        return {
+          publisher: entry.id,
+          label: entry.label,
+          skillCount: value.skills,
+          sourceCount: value.sources.size,
+        }
+      })
+      .filter(Boolean) as Array<{ publisher: string; label: string; skillCount: number; sourceCount: number }>
+    if (publisherFilter && !options.some((option) => option.publisher === publisherFilter)) {
+      const value = counts.get(publisherFilter)
+      if (value) {
+        options.push({
+          publisher: publisherFilter,
+          label: publisherFilter,
+          skillCount: value.skills,
+          sourceCount: value.sources.size,
+        })
+      }
+    }
+    return options
+  }, [items, publisherFilter])
+
+  const recommendedSources = useMemo(() => {
     const counts = new Map<string, number>()
     for (const item of items) {
       const source = item.source || item.registryId
       counts.set(source, (counts.get(source) || 0) + 1)
     }
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 8)
-  }, [items])
+    const options = RECOMMENDED_SOURCES.map((source) => ({
+      source,
+      count: sourceItemsBySource[source]?.length ?? counts.get(source) ?? 0,
+    }))
+    if (sourceFilter && !options.some((option) => option.source === sourceFilter)) {
+      const count = sourceItemsBySource[sourceFilter]?.length ?? counts.get(sourceFilter)
+      if (count) {
+        options.push({ source: sourceFilter, count })
+      }
+    }
+    return options
+  }, [items, sourceFilter, sourceItemsBySource])
 
+  const visibleRecommendedSources = useMemo(() => {
+    if (sourcesExpanded) return recommendedSources
+    const collapsed = recommendedSources.slice(0, DEFAULT_RECOMMENDED_SOURCE_COUNT)
+    if (sourceFilter && !collapsed.some((option) => option.source === sourceFilter)) {
+      const selected = recommendedSources.find((option) => option.source === sourceFilter)
+      if (selected) return [...collapsed, selected]
+    }
+    return collapsed
+  }, [recommendedSources, sourceFilter, sourcesExpanded])
+
+  const sourceScopeLoaded = sourceFilter
+    ? Object.prototype.hasOwnProperty.call(sourceItemsBySource, sourceFilter)
+    : false
+  const sourceScopedItems = sourceFilter && sourceScopeLoaded ? sourceItemsBySource[sourceFilter] : null
+  const marketItems = sourceScopedItems || items
   const visibleItems = useMemo(
-    () => sourceFilter ? items.filter((item) => (item.source || item.registryId) === sourceFilter) : items,
-    [items, sourceFilter],
+    () => marketItems.filter((item) => {
+      const source = item.source || item.registryId
+      if (sourceFilter) return source === sourceFilter
+      if (publisherFilter) return publisherFromSource(source) === publisherFilter
+      return true
+    }),
+    [marketItems, publisherFilter, sourceFilter],
   )
+
+  const publisherMarketCards = useMemo(() => {
+    if (!publisherFilter || sourceFilter) return []
+    const sourceOrder = new Map(RECOMMENDED_SOURCES.map((source, index) => [source, index]))
+    const grouped = new Map<string, { source: string; skillCount: number; installCount: number; topSkills: string[] }>()
+    const scopedSources = new Set(Object.keys(sourceItemsBySource))
+    for (const source of RECOMMENDED_SOURCES) {
+      if (publisherFromSource(source) !== publisherFilter) continue
+      const scopedItems = sourceItemsBySource[source] || []
+      grouped.set(source, {
+        source,
+        skillCount: scopedItems.length,
+        installCount: scopedItems.reduce((sum, item) => sum + (item.installCount || 0), 0),
+        topSkills: scopedItems.slice(0, 3).map((item) => item.name),
+      })
+    }
+    for (const item of items) {
+      const source = item.source || item.registryId
+      if (publisherFromSource(source) !== publisherFilter) continue
+      if (scopedSources.has(source)) continue
+      const current = grouped.get(source) || { source, skillCount: 0, installCount: 0, topSkills: [] }
+      current.skillCount += 1
+      current.installCount += item.installCount || 0
+      if (current.topSkills.length < 3) current.topSkills.push(item.name)
+      grouped.set(source, current)
+    }
+    return Array.from(grouped.values()).sort((a, b) => {
+      const aOrder = sourceOrder.get(a.source) ?? Number.MAX_SAFE_INTEGER
+      const bOrder = sourceOrder.get(b.source) ?? Number.MAX_SAFE_INTEGER
+      return aOrder - bOrder || b.skillCount - a.skillCount || a.source.localeCompare(b.source)
+    })
+  }, [items, publisherFilter, sourceFilter, sourceItemsBySource])
+
+  const browsingPublisherMarkets = Boolean(publisherFilter && !sourceFilter)
+  const selectedPublisherLabel =
+    recommendedPublishers.find((option) => option.publisher === publisherFilter)?.label || publisherFilter
+  const viewLoading = loading || Boolean(sourceFilter && sourceLoading && !sourceScopeLoaded)
+  const viewError = error || sourceError
+
+  const selectPublisher = useCallback((publisher: string) => {
+    setPublisherFilter(publisher)
+    setSourceFilter('')
+  }, [])
+
+  const selectSource = useCallback((source: string) => {
+    setPublisherFilter(publisherFromSource(source))
+    setSourceFilter(source)
+  }, [])
+
+  const clearMarketScope = useCallback(() => {
+    setPublisherFilter('')
+    setSourceFilter('')
+  }, [])
+
+  const togglePublisher = useCallback((publisher: string) => {
+    if (publisherFilter === publisher && !sourceFilter) {
+      clearMarketScope()
+      return
+    }
+    selectPublisher(publisher)
+  }, [clearMarketScope, publisherFilter, selectPublisher, sourceFilter])
+
+  const toggleSource = useCallback((source: string) => {
+    if (sourceFilter === source) {
+      setSourceFilter('')
+      return
+    }
+    selectSource(source)
+  }, [selectSource, sourceFilter])
+
+  const openPublisherMarkets = useCallback((source: string) => {
+    selectPublisher(publisherFromSource(source))
+  }, [selectPublisher])
 
   const totalPages = Math.max(1, Math.ceil(visibleItems.length / MARKET_PAGE_SIZE))
   const currentPage = Math.min(page, totalPages)
@@ -230,13 +389,9 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
-  const registryOptions = useMemo(
-    () => registries.length ? registries.map((r) => ({ id: r.id, name: r.name })) : [{ id: 'skills-sh', name: 'skills.sh' }],
-    [registries],
-  )
-
   const install = async (it: MarketplaceSkill) => {
-    setInstalling(it.id)
+    if (installing.has(it.id)) return
+    setInstalling((prev) => new Set(prev).add(it.id))
     setError(null)
     setStatus(null)
     const sourceType = it.registryId === 'skills-sh' ? 'skillssh' : it.downloadUrl.startsWith('github:') ? 'github' : 'url'
@@ -247,19 +402,27 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
       multi: false,
     }
     try {
-      const preview = await skillApiV2.previewAddCenterSkill(input)
-      if (preview.blockers.length > 0) {
-        setError(`「${it.name}」与中心库已有 Skill 冲突，请转到 Git 安装确认覆盖/重命名。`)
-        onInstall(it.downloadUrl)
-        return
-      }
+      // execute_add_center_skill previews internally; calling it directly
+      // avoids a second remote download. A same-name/different-source
+      // conflict surfaces as an error, which we redirect to the Git tab.
       await skillApiV2.executeAddCenterSkill(input, [])
+      setInstalledIds((prev) => new Set([...prev, it.id]))
       setStatus(`已安装「${it.name}」到中心 Skill 库`)
       onDone(it.id)
     } catch (e) {
-      setError(`${String(e)}。你也可以转到 Git 安装手动预览。`)
+      const msg = String(e)
+      if (/Blocked skill|requires an explicit decision|冲突/.test(msg)) {
+        setError(`「${it.name}」与中心库已有 Skill 冲突，请转到 Git 安装确认覆盖/重命名。`)
+        onInstall(it.downloadUrl)
+      } else {
+        setError(`${msg}。你也可以转到 Git 安装手动预览。`)
+      }
     } finally {
-      setInstalling(null)
+      setInstalling((prev) => {
+        const next = new Set(prev)
+        next.delete(it.id)
+        return next
+      })
     }
   }
 
@@ -287,125 +450,226 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <RegistrySelect value={registryId} options={registryOptions} onChange={setRegistryId} />
         <div className="sm2__view-toggle sm2__view-toggle--soft">
           <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
           <button className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
         </div>
-        <div className="sm2__market-count">
-          {query.trim() ? '搜索结果' : boardTabs.find((tab) => tab.id === board)?.label || '全部'} · {visibleItems.length} 个
-        </div>
       </div>
-      {sourceOptions.length > 0 && (
+      {(recommendedPublishers.length > 0 || recommendedSources.length > 0) && (
         <div className="sm2__market-source-row">
-          <span>来源</span>
-          <button
-            className={`sm2__source-chip${sourceFilter === '' ? ' sm2__source-chip--active' : ''}`}
-            onClick={() => setSourceFilter('')}
-          >
-            全部来源
-          </button>
-          {sourceOptions.map(([source, count]) => (
-            <button
-              key={source}
-              className={`sm2__source-chip${sourceFilter === source ? ' sm2__source-chip--active' : ''}`}
-              onClick={() => setSourceFilter(source)}
-            >
-              {source} <small>{count}</small>
+          <div className="sm2__source-row-section">
+            <div className="sm2__source-row-head">
+              <span>推荐 Skill 创建者</span>
+              <small>优先看大厂和高可信发布者</small>
+            </div>
+            <div className="sm2__source-chip-cloud">
+              {recommendedPublishers.map(({ publisher, label, skillCount, sourceCount }) => (
+                <button
+                  key={publisher}
+                  className={`sm2__source-chip${publisherFilter === publisher ? ' sm2__source-chip--active' : ''}`}
+                  onClick={() => togglePublisher(publisher)}
+                  title={`${sourceCount} 个来源，${skillCount} 个 Skill`}
+                >
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="sm2__source-row-section sm2__source-row-section--repos">
+            <div className="sm2__source-row-head">
+              <span>推荐市场</span>
+              <small>常见、热门、维护活跃的来源仓库</small>
+            </div>
+            <div className="sm2__source-chip-cloud">
+              {visibleRecommendedSources.map(({ source, count }) => (
+                <button
+                  key={source}
+                  className={`sm2__source-chip${sourceFilter === source ? ' sm2__source-chip--active' : ''}`}
+                  onClick={() => toggleSource(source)}
+                  title={`${count} 个 Skill`}
+                >
+                  <span>{source}</span>
+                </button>
+              ))}
+              {recommendedSources.length > DEFAULT_RECOMMENDED_SOURCE_COUNT && (
+                <button
+                  className="sm2__source-toggle"
+                  onClick={() => setSourcesExpanded((value) => !value)}
+                >
+                  {sourcesExpanded ? '收起' : '展开更多'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {(publisherFilter || sourceFilter) && (
+            <button className="sm2__source-clear" onClick={clearMarketScope}>
+              清除筛选
             </button>
-          ))}
+          )}
         </div>
       )}
       <div className="sm2__market-note">
         默认从 skills.sh 在线市场读取榜单；输入关键词后切换为搜索结果。安装会先进中心库，之后再分发给各个 Agent。
       </div>
       {status && <div className="sm2__notice sm2__notice--ok">{status}</div>}
-      {loading ? (
-        <div className="sm2__empty">加载市场…</div>
-      ) : error ? (
-        <div className="sm2__error" style={{ margin: 0 }}>{error}</div>
+      {viewLoading ? (
+        <div className="sm2__empty">{sourceFilter ? `加载「${sourceFilter}」…` : '加载市场…'}</div>
+      ) : viewError ? (
+        <div className="sm2__error" style={{ margin: 0 }}>{viewError}</div>
       ) : visibleItems.length === 0 ? (
         <div className="sm2__empty">
           没有匹配的技能。可换一个关键词，或使用本地 / Git 安装。
         </div>
+      ) : browsingPublisherMarkets ? (
+        <div className="sm2__source-market-stage" ref={gridRef}>
+          <div className="sm2__source-market-head">
+            <div>
+              <span>选择市场</span>
+              <strong>{selectedPublisherLabel}</strong>
+            </div>
+            <small>进入一个来源仓库后，再查看和安装里面的 Skill。</small>
+          </div>
+          <div className="sm2__source-market-grid">
+            {publisherMarketCards.map((market) => (
+              <button
+                key={market.source}
+                className="sm2__source-market-card"
+                onClick={() => selectSource(market.source)}
+              >
+                <div className="sm2__source-market-card-head">
+                  <SkillAvatar source={market.source} name={market.source} />
+                  <div>
+                    <span>skills.sh market</span>
+                    <strong>{market.source}</strong>
+                  </div>
+                  <em>进入 ›</em>
+                </div>
+                <div className="sm2__source-market-stats">
+                  <span>{market.skillCount > 0 ? `${market.skillCount} 个 Skill` : '点击后加载'}</span>
+                  {market.installCount > 0 && <span>↓ {formatInstallCount(market.installCount)}</span>}
+                </div>
+                {market.topSkills.length > 0 && (
+                  <div className="sm2__source-market-samples">
+                    {market.topSkills.map((skillName) => (
+                      <span key={skillName}>{skillName}</span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
       ) : (
         <>
+          {sourceFilter && publisherFilter && (
+            <div className="sm2__market-backbar">
+              <button className="sm2__source-back" onClick={() => setSourceFilter('')}>
+                ← 返回 {selectedPublisherLabel} 的市场
+              </button>
+            </div>
+          )}
           {viewMode === 'list' ? (
             <div className="sm2__market-list" ref={gridRef}>
-              {paginatedItems.map((it) => (
-                <div key={it.id} className="sm2__market-item" onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
-                  <SkillAvatar source={it.source} name={it.name} />
-                  <div className="sm2__market-item-main">
-                    <div className="sm2__market-item-title">
-                      <strong>{it.name}</strong>
-                      {it.webUrl && (
-                        <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
-                      )}
+              {paginatedItems.map((it) => {
+                const isJustInstalled = installedIds.has(it.id)
+                const isCurrentInstalling = installing.has(it.id)
+                const done = it.isInstalled || isJustInstalled
+                return (
+                  <div key={it.id} className={`sm2__market-item${isCurrentInstalling ? ' sm2__market-item--installing' : ''}`} onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
+                    <SkillAvatar source={it.source} name={it.name} />
+                    <div className="sm2__market-item-main">
+                      <div className="sm2__market-item-title">
+                        <strong>{it.name}</strong>
+                        {it.webUrl && (
+                          <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
+                        )}
+                      </div>
+                      <div className="sm2__market-item-meta">
+                        <button
+                          className="sm2__source-pill"
+                          title="查看这个创建者的所有市场"
+                          onClick={(e) => { e.stopPropagation(); openPublisherMarkets(it.source || it.registryId) }}
+                        >
+                          {it.source || it.registryId}
+                        </button>
+                        {typeof it.installCount === 'number' && (
+                          <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
+                        )}
+                        {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                      </div>
+                      {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                     </div>
-                    <div className="sm2__market-item-meta">
-                      <span className="sm2__source-pill">{it.source || it.registryId}</span>
-                      {typeof it.installCount === 'number' && (
-                        <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
-                      )}
-                      {it.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
-                    </div>
+                    <button
+                      className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
+                      title={done ? '已在中心库' : '安装到中心库'}
+                      disabled={isCurrentInstalling || done}
+                      onClick={(e) => { e.stopPropagation(); install(it) }}
+                    >
+                      {isCurrentInstalling ? '…' : done ? '✓' : '+'}
+                    </button>
                   </div>
-                  <button
-                    className="sm2__icon-btn sm2__icon-btn--add"
-                    title={it.isInstalled ? '已在中心库' : '安装到中心库'}
-                    disabled={installing === it.id || it.isInstalled}
-                    onClick={(e) => { e.stopPropagation(); install(it) }}
-                  >
-                    {installing === it.id ? '…' : '+'}
-                  </button>
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="sm2__install-grid" ref={gridRef}>
-              {paginatedItems.map((it) => (
-                <div key={it.id} className="sm2__install-card" onClick={() => setDetailSkill(it)}>
-                  <div className="sm2__install-card-head">
-                    <SkillAvatar source={it.source} name={it.name} />
-                    <div className="sm2__install-card-title">{it.name}</div>
-                    {it.webUrl && (
-                      <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
-                    )}
-                    <button
-                      className={`sm2__icon-btn sm2__icon-btn--add${it.isInstalled ? ' sm2__icon-btn--installed' : ''}`}
-                      title={it.isInstalled ? '已在中心库' : '安装到中心库'}
-                      disabled={installing === it.id || it.isInstalled}
-                      onClick={(e) => { e.stopPropagation(); install(it) }}
-                    >
-                      {installing === it.id ? '…' : it.isInstalled ? '✓' : '+'}
-                    </button>
+              {paginatedItems.map((it) => {
+                const isJustInstalled = installedIds.has(it.id)
+                const isCurrentInstalling = installing.has(it.id)
+                const done = it.isInstalled || isJustInstalled
+                return (
+                  <div key={it.id} className={`sm2__install-card${isCurrentInstalling ? ' sm2__install-card--installing' : ''}${done ? ' sm2__install-card--installed' : ''}`} onClick={() => setDetailSkill(it)}>
+                    <div className="sm2__install-card-head">
+                      <SkillAvatar source={it.source} name={it.name} />
+                      <div className="sm2__install-card-title">{it.name}</div>
+                      {it.webUrl && (
+                        <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
+                      )}
+                      <button
+                        className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
+                        title={done ? '已在中心库' : '安装到中心库'}
+                        disabled={isCurrentInstalling || done}
+                        onClick={(e) => { e.stopPropagation(); install(it) }}
+                      >
+                        {isCurrentInstalling ? '…' : done ? '✓' : '+'}
+                      </button>
+                    </div>
+                    <div className="sm2__install-card-meta">
+                      <button
+                        className="sm2__source-pill"
+                        title="查看这个创建者的所有市场"
+                        onClick={(e) => { e.stopPropagation(); openPublisherMarkets(it.source || it.registryId) }}
+                      >
+                        {it.source || it.registryId}
+                      </button>
+                      {typeof it.installCount === 'number' && (
+                        <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
+                      )}
+                      {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                    </div>
+                    {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                   </div>
-                  <div className="sm2__install-card-meta">
-                    <span className="sm2__source-pill">{it.source || it.registryId}</span>
-                    {typeof it.installCount === 'number' && (
-                      <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
-                    )}
-                    {it.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
-          {totalPages > 1 && (
+          {!browsingPublisherMarkets && totalPages > 1 && (
             <div className="sm2__pagination">
               <button
                 className="sm2__page-btn sm2__page-btn--nav"
                 disabled={currentPage === 1}
                 onClick={() => changePage(Math.max(1, currentPage - 1))}
               >
-                ‹ 上一页
+                ‹
               </button>
               {visiblePages.map((p, i) => {
                 const prev = visiblePages[i - 1]
                 const showGap = prev != null && p - prev > 1
                 return (
                   <span key={p} className="sm2__page-group">
-                    {showGap && <span className="sm2__page-gap">…</span>}
+                    {showGap && <span className="sm2__page-gap">···</span>}
                     <button
                       className={`sm2__page-btn${p === currentPage ? ' sm2__page-btn--active' : ''}`}
                       onClick={() => changePage(p)}
@@ -420,7 +684,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                 disabled={currentPage === totalPages}
                 onClick={() => changePage(Math.min(totalPages, currentPage + 1))}
               >
-                下一页 ›
+                ›
               </button>
             </div>
           )}
@@ -429,7 +693,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
       <MarketSkillDetail
         skill={detailSkill}
         onClose={() => setDetailSkill(null)}
-        installing={installing === detailSkill?.id}
+        installing={detailSkill ? installing.has(detailSkill.id) : false}
         onInstall={(it) => { setDetailSkill(null); install(it) }}
       />
     </div>
@@ -442,16 +706,44 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
   installing: boolean
   onInstall: (it: MarketplaceSkill) => void
 }) {
+  const [remoteDetailState, setRemoteDetailState] = useState<{ key: string; detail: MarketplaceSkillDetail | null } | null>(null)
+  const source = skill?.source || skill?.registryId || ''
+  const skillId = skill ? marketSkillId(skill) : ''
+  const detailKey = skill && source && skillId && skill.registryId === 'skills-sh' ? `${source}/${skillId}` : ''
+  const remoteDetail = remoteDetailState?.key === detailKey ? remoteDetailState.detail : null
+  const detailLoading = Boolean(detailKey && remoteDetailState?.key !== detailKey)
+  const pathParts = skill ? marketSkillPathParts(skill) : []
+  const sourceUrl = source ? `https://www.skills.sh/${source}` : null
+  const githubUrl = skill ? marketGithubUrl(skill, remoteDetail) : null
+  const installCommand = skill ? (remoteDetail?.installCommand || marketInstallCommand(skill)) : ''
+  const detailDescription = skill ? marketDescription(skill, remoteDetail) : null
+
+  useEffect(() => {
+    if (!detailKey) return
+    let alive = true
+    skillApi.fetchMarketplaceSkillDetail(source, skillId)
+      .then((detail) => {
+        if (alive) setRemoteDetailState({ key: detailKey, detail })
+      })
+      .catch(() => {
+        if (alive) setRemoteDetailState({ key: detailKey, detail: null })
+      })
+    return () => {
+      alive = false
+    }
+  }, [detailKey, skillId, source])
+
   return (
     <SlideOver
       open={!!skill}
       onClose={onClose}
       width={520}
+      className="sm2__slideover--market-detail"
       title={skill?.name || ''}
-      subtitle={skill?.source || skill?.registryId}
+      subtitle={source || undefined}
       actions={
-        skill?.webUrl ? (
-          <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(skill.webUrl!)}>在市场查看 ↗</button>
+        githubUrl ? (
+          <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(githubUrl)}>GitHub ↗</button>
         ) : undefined
       }
     >
@@ -460,9 +752,10 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
           <div className="sm2__market-detail-hero">
             <SkillAvatar source={skill.source} name={skill.name} />
             <div>
+              <div className="sm2__market-detail-eyebrow">skills.sh skill</div>
               <h3 className="sm2__market-detail-name">{skill.name}</h3>
               <div className="sm2__market-detail-meta">
-                <span className="sm2__source-pill">{skill.source || skill.registryId}</span>
+                <span className="sm2__source-pill">{source}</span>
                 {typeof skill.installCount === 'number' && (
                   <span className="sm2__install-count">↓ {formatInstallCount(skill.installCount)}</span>
                 )}
@@ -471,10 +764,47 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
             </div>
           </div>
 
-          {skill.description && (
+          <div className="sm2__market-detail-stats">
+            <div className="sm2__market-detail-stat">
+              <span>路径</span>
+              <strong>{pathParts.length} 段</strong>
+            </div>
+            <div className="sm2__market-detail-stat">
+              <span>来源</span>
+              <strong>{source || 'skills.sh'}</strong>
+            </div>
+            <div className="sm2__market-detail-stat">
+              <span>安装量</span>
+              <strong>{typeof skill.installCount === 'number' ? formatInstallCount(skill.installCount) : '-'}</strong>
+            </div>
+          </div>
+
+          {(detailDescription || detailLoading) && (
             <div className="sm2__market-detail-section">
               <h4>描述</h4>
-              <p>{skill.description}</p>
+              <p>{detailDescription || '正在读取 skills.sh 详情描述...'}</p>
+            </div>
+          )}
+
+          <div className="sm2__market-detail-section">
+            <h4>skills.sh 路径</h4>
+            <div className="sm2__market-breadcrumb">
+              {pathParts.map((part, index) => {
+                const href = `https://www.skills.sh/${pathParts.slice(0, index + 1).join('/')}`
+                return (
+                  <span className="sm2__market-breadcrumb-part" key={`${part}-${index}`}>
+                    {index > 0 && <span className="sm2__market-breadcrumb-separator">/</span>}
+                    <button onClick={() => openExternal(href)}>{part}</button>
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+
+          {installCommand && (
+            <div className="sm2__market-install-command">
+              <span>安装命令</span>
+              <code>{installCommand}</code>
             </div>
           )}
 
@@ -486,7 +816,7 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
                 <code>{skill.downloadUrl}</code>
               </div>
               <div className="sm2__compact-row">
-                <span>来源仓库</span>
+                <span>来源市场</span>
                 <strong>{skill.registryId}</strong>
               </div>
               {skill.syncedAt && (
@@ -506,9 +836,19 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
             >
               {installing ? '安装中…' : skill.isInstalled ? '已安装' : '安装到中心库'}
             </button>
+            {sourceUrl && (
+              <button className="sm2__btn" onClick={() => openExternal(sourceUrl)}>
+                来源页 ↗
+              </button>
+            )}
+            {githubUrl && (
+              <button className="sm2__btn" onClick={() => openExternal(githubUrl)}>
+                GitHub ↗
+              </button>
+            )}
             {skill.webUrl && (
               <button className="sm2__btn" onClick={() => openExternal(skill.webUrl!)}>
-                在市场查看 ↗
+                Skill 页 ↗
               </button>
             )}
           </div>
@@ -516,6 +856,58 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
       )}
     </SlideOver>
   )
+}
+
+function marketSkillPathParts(skill: MarketplaceSkill) {
+  const sourceParts = (skill.source || '').split('/').filter(Boolean)
+  const skillId = marketSkillId(skill)
+  return [...sourceParts, skillId].filter(Boolean)
+}
+
+function marketSkillId(skill: MarketplaceSkill) {
+  const rawPath = skill.downloadUrl.replace(/^(github|skillssh):/, '')
+  const source = skill.source || ''
+  if (source && rawPath.startsWith(`${source}/`)) {
+    return rawPath.slice(source.length + 1) || skill.name
+  }
+  const parts = rawPath.split('/').filter(Boolean)
+  return parts.length > 2 ? parts.slice(2).join('/') : skill.name
+}
+
+function marketGithubUrl(skill: MarketplaceSkill, detail?: MarketplaceSkillDetail | null) {
+  if (detail?.githubUrl) return detail.githubUrl
+  const skillId = marketSkillId(skill)
+  const repoUrl = marketGithubRepoUrl(skill)
+  if (repoUrl && (skill.source || '').endsWith('/skills') && skillId && !skillId.includes('/')) {
+    return `${repoUrl}/tree/main/skills/${skillId}`
+  }
+  return repoUrl
+}
+
+function marketGithubRepoUrl(skill: MarketplaceSkill) {
+  const rawPath = skill.downloadUrl.replace(/^(github|skillssh):/, '')
+  const parts = rawPath.split('/').filter(Boolean)
+  if (parts.length >= 2) return `https://github.com/${parts[0]}/${parts[1]}`
+  const sourceParts = (skill.source || '').split('/').filter(Boolean)
+  if (sourceParts.length >= 2) return `https://github.com/${sourceParts[0]}/${sourceParts[1]}`
+  return null
+}
+
+function marketInstallCommand(skill: MarketplaceSkill) {
+  const skillId = marketSkillId(skill)
+  const repoUrl = marketGithubRepoUrl(skill)
+  if (repoUrl && skillId) return `npx skills add ${repoUrl} --skill ${skillId}`
+  if (skill.source) return `npx skills add ${skill.source}${skillId ? `/${skillId}` : ''}`
+  return ''
+}
+
+function marketDescription(skill: MarketplaceSkill, detail?: MarketplaceSkillDetail | null) {
+  if (detail?.description) return detail.description
+  const description = skill.description?.trim()
+  if (!description) return null
+  if (description.startsWith('来自 ') && description.endsWith(' 的在线 Skill')) return null
+  if (description.startsWith('skills.sh ·')) return null
+  return description
 }
 
 function openExternal(url: string) {
@@ -543,14 +935,38 @@ function initials(value: string) {
     .slice(0, 2) || 'SK'
 }
 
+function publisherFromSource(source: string) {
+  return source.split('/').filter(Boolean)[0] || source || 'skills.sh'
+}
+
 // ── Local Agent sync ─────────────────────────────────────────────
+
+type AgentSyncRow = { agent: AgentSkillInventoryAgent; item: AgentSkillInventoryItem }
+type AgentSyncViewMode = 'list' | 'cards'
+
+const AGENT_STATUS_TABS: Array<{ id: string; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'importable', label: '可接管' },
+  { id: 'unmanaged', label: '未管理' },
+  { id: 'managed', label: '已管理' },
+  { id: 'conflict', label: '同名冲突' },
+]
+const DEFAULT_AGENT_CHIP_COUNT = 6
+
+function statusTone(item: AgentSkillInventoryItem) {
+  if (item.status === 'conflict') return 'conflict'
+  return item.managed ? 'ok' : 'unmanaged'
+}
 
 export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void }) {
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
+  const [viewMode, setViewMode] = useState<AgentSyncViewMode>('cards')
+  const [agentsExpanded, setAgentsExpanded] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [detailRow, setDetailRow] = useState<AgentSyncRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -617,6 +1033,16 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
   const totalUnmanaged = agents.reduce((sum, agent) => sum + agent.unmanagedCount, 0)
   const totalImportable = agents.reduce((sum, agent) => sum + agent.importableCount, 0)
 
+  const visibleAgentChips = useMemo(() => {
+    if (agentsExpanded) return agents
+    const collapsed = agents.slice(0, DEFAULT_AGENT_CHIP_COUNT)
+    if (selectedAgent !== 'all' && !collapsed.some((agent) => agent.agentId === selectedAgent)) {
+      const selected = agents.find((agent) => agent.agentId === selectedAgent)
+      if (selected) return [...collapsed, selected]
+    }
+    return collapsed
+  }, [agents, agentsExpanded, selectedAgent])
+
   const toggle = (item: AgentSkillInventoryItem) => {
     if (!item.canImport) return
     setSelectedIds((current) => {
@@ -632,8 +1058,8 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
     setSelectedIds(new Set(importableRows.map(({ item }) => importKey(item))))
   }
 
-  const importSelected = async () => {
-    const selected = rows.filter(({ item }) => selectedIds.has(importKey(item)) && item.canImport)
+  const adoptItems = async (targets: AgentSkillInventoryItem[]) => {
+    const selected = targets.filter((item) => item.canImport)
     if (selected.length === 0) return
     setImporting(true)
     setError(null)
@@ -641,7 +1067,7 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
     try {
       let ok = 0
       const failed: string[] = []
-      for (const { item } of selected) {
+      for (const item of selected) {
         try {
           await skillApiV2.executeAdopt(item.agentId, item.id, 'import_keep')
           ok += 1
@@ -652,6 +1078,7 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
       await load()
       onDone()
       setSelectedIds(new Set())
+      setDetailRow(null)
       setNotice(`已接管 ${ok} 个 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
     } finally {
@@ -659,40 +1086,86 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
     }
   }
 
+  const importSelected = () => {
+    const selected = rows.filter(({ item }) => selectedIds.has(importKey(item))).map(({ item }) => item)
+    void adoptItems(selected)
+  }
+
   return (
-    <div className="sm2__agent-sync">
-      <div className="sm2__agent-sync-hero">
-        <div>
-          <h3>本地 Agent 同步</h3>
-          <p>按 Agent 的本地 Skills 目录检查状态，只能把未管理且无冲突的 Skill 接管到中心库。</p>
+    <div className="sm2__agent-sync sm2__install-market">
+      <div className="sm2__market-boardbar">
+        <div className="sm2__view-toggle sm2__market-boardtabs">
+          {AGENT_STATUS_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              className={statusFilter === tab.id ? 'active' : ''}
+              onClick={() => setStatusFilter(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-        <button className="sm2__btn" onClick={scan} disabled={scanning || importing}>
+        <div className="sm2__search-wrapper">
+          <span className="sm2__search-icon">⌕</span>
+          <input
+            className="sm2__search sm2__search--with-icon"
+            placeholder="搜索 Skill 名称 / 路径 / 状态…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <div className="sm2__view-toggle sm2__view-toggle--soft">
+          <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
+          <button className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
+        </div>
+      </div>
+
+      <div className="sm2__market-source-row">
+        <div className="sm2__source-row-section">
+          <div className="sm2__source-row-head">
+            <span>本地 Agent</span>
+            <small>按 Agent 过滤它的本地 Skills 目录</small>
+          </div>
+          <div className="sm2__source-chip-cloud">
+            <button
+              className={`sm2__source-chip sm2__source-chip--all${selectedAgent === 'all' ? ' sm2__source-chip--active' : ''}`}
+              onClick={() => setSelectedAgent('all')}
+            >
+              <span>全部 Agent</span>
+            </button>
+            {visibleAgentChips.map((agent) => (
+              <button
+                key={agent.agentId}
+                className={`sm2__source-chip${selectedAgent === agent.agentId ? ' sm2__source-chip--active' : ''}`}
+                onClick={() => setSelectedAgent((current) => (current === agent.agentId ? 'all' : agent.agentId))}
+                title={`${agent.managedCount} 已管理 · ${agent.importableCount} 可接管`}
+              >
+                <span>{agent.displayName}</span>
+                {agent.importableCount > 0 && <em>{agent.importableCount}</em>}
+              </button>
+            ))}
+            {agents.length > DEFAULT_AGENT_CHIP_COUNT && (
+              <button className="sm2__source-toggle" onClick={() => setAgentsExpanded((value) => !value)}>
+                {agentsExpanded ? '收起' : '展开更多'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <button className="sm2__source-clear" onClick={scan} disabled={scanning || importing}>
           {scanning ? '扫描中…' : '重新扫描 Agent'}
         </button>
       </div>
 
-      <div className="sm2__agent-sync-stats">
-        <MetricLite value={agents.length} label="Agent" />
-        <MetricLite value={totalManaged} label="已管理" />
-        <MetricLite value={totalUnmanaged} label="未管理" />
-        <MetricLite value={totalImportable} label="可接管" tone={totalImportable > 0 ? 'ok' : undefined} />
+      <div className="sm2__agent-sync-statline">
+        <span><strong>{agents.length}</strong> Agent</span>
+        <span><strong>{totalManaged}</strong> 已管理</span>
+        <span><strong>{totalUnmanaged}</strong> 未管理</span>
+        <span className="sm2__agent-sync-statline-ok"><strong>{totalImportable}</strong> 可接管</span>
       </div>
 
-      <div className="sm2__agent-sync-toolbar">
-        <input className="sm2__search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill 名称 / 路径 / 状态" />
-        <select className="sm2__select" value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)}>
-          <option value="all">全部 Agent</option>
-          {agents.map((agent) => (
-            <option key={agent.agentId} value={agent.agentId}>{agent.displayName}</option>
-          ))}
-        </select>
-        <select className="sm2__select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="all">全部状态</option>
-          <option value="importable">可接管</option>
-          <option value="unmanaged">未管理</option>
-          <option value="managed">已管理</option>
-          <option value="conflict">同名冲突</option>
-        </select>
+      <div className="sm2__market-note">
+        按 Agent 的本地 Skills 目录检查状态，只能把未管理且无冲突的 Skill 接管到中心库。点击任意 Skill 查看详情。
       </div>
 
       <div className="sm2__agent-sync-actions">
@@ -711,53 +1184,229 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
         <div className="sm2__empty">加载本地 Agent Skills…</div>
       ) : rows.length === 0 ? (
         <div className="sm2__empty">没有匹配的本地 Skill。可以先点击「重新扫描 Agent」。</div>
-      ) : (
-        <div className="sm2__agent-sync-list">
+      ) : viewMode === 'cards' ? (
+        <div className="sm2__install-grid">
           {rows.map(({ agent, item }) => {
             const key = importKey(item)
+            const checked = selectedIds.has(key)
+            const tone = statusTone(item)
             return (
-              <div key={key} className={`sm2__agent-sync-row sm2__agent-sync-row--${item.status}`}>
-                <label className="sm2__agent-sync-check">
+              <div
+                key={key}
+                className={`sm2__install-card sm2__agent-sync-card sm2__agent-sync-card--${tone}${checked ? ' sm2__agent-sync-card--selected' : ''}`}
+                onClick={() => setDetailRow({ agent, item })}
+              >
+                <div className="sm2__agent-sync-card-head">
                   <input
                     type="checkbox"
-                    checked={selectedIds.has(key)}
+                    className="sm2__agent-sync-checkbox"
+                    checked={checked}
                     disabled={!item.canImport || importing}
+                    onClick={(e) => e.stopPropagation()}
                     onChange={() => toggle(item)}
                   />
-                </label>
-                <AgentIconBadge iconKey={agent.iconKey} size={30} />
-                <div className="sm2__agent-sync-main">
-                  <div className="sm2__agent-sync-titleline">
-                    <strong>{item.name}</strong>
-                    <span>{agent.displayName}</span>
-                  </div>
-                  <code>{item.path}</code>
-                  {item.reason && <small>{item.reason}</small>}
+                  <AgentIconBadge iconKey={agent.iconKey} size={34} title={agent.displayName} />
+                  <div className="sm2__agent-sync-card-title">{item.name}</div>
+                  {item.canImport && (
+                    <button
+                      className="sm2__icon-btn sm2__icon-btn--add"
+                      title="接管到中心库"
+                      disabled={importing}
+                      onClick={(e) => { e.stopPropagation(); void adoptItems([item]) }}
+                    >
+                      +
+                    </button>
+                  )}
                 </div>
-                <span className={`sm2__tag sm2__tag--${item.status === 'conflict' ? 'conflict' : item.managed ? 'ok' : 'unmanaged'}`}>
-                  {item.statusLabel}
-                </span>
-                {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+                <div className="sm2__agent-sync-card-meta">
+                  <span className="sm2__source-pill">{agent.displayName}</span>
+                  <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
+                  {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+                </div>
+                <code className="sm2__agent-sync-card-path">{item.path}</code>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="sm2__market-list sm2__agent-sync-listview">
+          {rows.map(({ agent, item }) => {
+            const key = importKey(item)
+            const checked = selectedIds.has(key)
+            const tone = statusTone(item)
+            return (
+              <div
+                key={key}
+                className="sm2__market-item sm2__agent-sync-item"
+                onClick={() => setDetailRow({ agent, item })}
+                style={{ cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  className="sm2__agent-sync-checkbox"
+                  checked={checked}
+                  disabled={!item.canImport || importing}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggle(item)}
+                />
+                <AgentIconBadge iconKey={agent.iconKey} size={34} title={agent.displayName} />
+                <div className="sm2__market-item-main">
+                  <div className="sm2__market-item-title">
+                    <strong>{item.name}</strong>
+                  </div>
+                  <div className="sm2__market-item-meta">
+                    <span className="sm2__source-pill">{agent.displayName}</span>
+                    <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
+                    {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+                    <code className="sm2__agent-sync-item-path">{item.path}</code>
+                  </div>
+                </div>
+                {item.canImport && (
+                  <button
+                    className="sm2__icon-btn sm2__icon-btn--add"
+                    title="接管到中心库"
+                    disabled={importing}
+                    onClick={(e) => { e.stopPropagation(); void adoptItems([item]) }}
+                  >
+                    +
+                  </button>
+                )}
               </div>
             )
           })}
         </div>
       )}
+
+      <AgentSkillDetail
+        row={detailRow}
+        importing={importing}
+        onClose={() => setDetailRow(null)}
+        onAdopt={(item) => void adoptItems([item])}
+      />
     </div>
+  )
+}
+
+function AgentSkillDetail({ row, importing, onClose, onAdopt }: {
+  row: AgentSyncRow | null
+  importing: boolean
+  onClose: () => void
+  onAdopt: (item: AgentSkillInventoryItem) => void
+}) {
+  const agent = row?.agent
+  const item = row?.item
+  const tone = item ? statusTone(item) : 'unmanaged'
+  const pathSegments = (item?.path || '').split('/').filter(Boolean)
+
+  return (
+    <SlideOver
+      open={!!row}
+      onClose={onClose}
+      width={520}
+      className="sm2__slideover--market-detail"
+      title={item?.name || ''}
+      subtitle={agent?.displayName || undefined}
+      actions={
+        item ? (
+          <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(item.path)}>在 Finder 打开 ↗</button>
+        ) : undefined
+      }
+    >
+      {agent && item && (
+        <div className="sm2__market-detail">
+          <div className="sm2__market-detail-hero">
+            <AgentIconBadge iconKey={agent.iconKey} size={40} title={agent.displayName} />
+            <div>
+              <div className="sm2__market-detail-eyebrow">本地 Agent Skill</div>
+              <h3 className="sm2__market-detail-name">{item.name}</h3>
+              <div className="sm2__market-detail-meta">
+                <span className="sm2__source-pill">{agent.displayName}</span>
+                <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
+                {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+              </div>
+            </div>
+          </div>
+
+          <div className="sm2__market-detail-stats">
+            <div className="sm2__market-detail-stat">
+              <span>状态</span>
+              <strong>{item.statusLabel}</strong>
+            </div>
+            <div className="sm2__market-detail-stat">
+              <span>来源 Agent</span>
+              <strong>{agent.displayName}</strong>
+            </div>
+            <div className="sm2__market-detail-stat">
+              <span>接管</span>
+              <strong>{item.canImport ? '可接管' : '不可接管'}</strong>
+            </div>
+          </div>
+
+          {item.reason && (
+            <div className="sm2__market-detail-section">
+              <h4>说明</h4>
+              <p>{item.reason}</p>
+            </div>
+          )}
+
+          <div className="sm2__market-detail-section">
+            <h4>本地路径</h4>
+            <div className="sm2__market-breadcrumb">
+              {pathSegments.map((part, index) => (
+                <span className="sm2__market-breadcrumb-part" key={`${part}-${index}`}>
+                  {index > 0 && <span className="sm2__market-breadcrumb-separator">/</span>}
+                  <span>{part}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="sm2__market-detail-section">
+            <h4>信息</h4>
+            <div className="sm2__compact-info">
+              <div className="sm2__compact-row">
+                <span>完整路径</span>
+                <code>{item.path}</code>
+              </div>
+              <div className="sm2__compact-row">
+                <span>Skill ID</span>
+                <strong>{item.skillId}</strong>
+              </div>
+              {item.actualMode && (
+                <div className="sm2__compact-row">
+                  <span>安装模式</span>
+                  <strong>{item.actualMode}</strong>
+                </div>
+              )}
+              {item.hash && (
+                <div className="sm2__compact-row">
+                  <span>内容哈希</span>
+                  <code>{item.hash.slice(0, 16)}</code>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="sm2__btn-row" style={{ marginTop: 20 }}>
+            <button
+              className="sm2__btn sm2__btn--primary"
+              disabled={!item.canImport || importing}
+              onClick={() => onAdopt(item)}
+            >
+              {importing ? '接管中…' : item.canImport ? '接管到中心库' : item.managed ? '已被管理' : '无法接管'}
+            </button>
+            <button className="sm2__btn" onClick={() => openExternal(item.path)}>
+              在 Finder 打开 ↗
+            </button>
+          </div>
+        </div>
+      )}
+    </SlideOver>
   )
 }
 
 function importKey(item: AgentSkillInventoryItem) {
   return `${item.agentId}:${item.id}`
-}
-
-function MetricLite({ value, label, tone }: { value: number; label: string; tone?: 'ok' }) {
-  return (
-    <div className={`sm2__agent-sync-stat${tone ? ` sm2__agent-sync-stat--${tone}` : ''}`}>
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
-  )
 }
 
 // ── Local ────────────────────────────────────────────────────────
@@ -889,33 +1538,121 @@ export function LocalPanel({ onDone }: { onDone: (skillId?: string) => void }) {
 
 // ── Git ──────────────────────────────────────────────────────────
 
+type GitRepoSkill = GitHubRepoPreview['skills'][number]
+type GitStage = 'input' | 'select' | 'done'
+type ConflictMode = 'rename' | 'overwrite'
+
+interface GitDoneSummary {
+  imported: number
+  skipped: number
+  skills: string[]
+}
+
+function buildGitRef(url: string, branch: string): string {
+  const trimmedUrl = url.trim().replace(/\/+$/, '')
+  const trimmedBranch = branch.trim()
+  if (!trimmedBranch || /\/tree\//.test(trimmedUrl)) return trimmedUrl
+  return `${trimmedUrl}/tree/${trimmedBranch}`
+}
+
+function urlHasSubpath(ref: string): boolean {
+  const match = ref.match(/\/tree\/[^/]+\/(.+)$/)
+  return Boolean(match && match[1])
+}
+
 export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: (skillId?: string) => void }) {
   const [url, setUrl] = useState(initialUrl || '')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
 
-  const run = async () => {
+  const [stage, setStage] = useState<GitStage>('input')
+  const [repo, setRepo] = useState<GitHubRepoPreview | null>(null)
+  const [activeRef, setActiveRef] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [conflictMode, setConflictMode] = useState<Record<string, ConflictMode>>({})
+  const [renames, setRenames] = useState<Record<string, string>>({})
+  const [summary, setSummary] = useState<GitDoneSummary | null>(null)
+
+  const resetToInput = () => {
+    setStage('input')
+    setRepo(null)
+    setSelected(new Set())
+    setConflictMode({})
+    setRenames({})
+    setSummary(null)
+    setError(null)
+  }
+
+  const buildSelections = (skills: GitRepoSkill[], picked: Set<string>) =>
+    skills
+      .filter((s) => picked.has(s.sourcePath))
+      .map((s) => {
+        if (!s.conflict) return { sourcePath: s.sourcePath, resolution: 'overwrite' as const }
+        const mode = conflictMode[s.sourcePath] || 'rename'
+        if (mode === 'overwrite') return { sourcePath: s.sourcePath, resolution: 'overwrite' as const }
+        const renamed = renames[s.sourcePath]?.trim()
+        if (!renamed) return { sourcePath: s.sourcePath, resolution: 'skip' as const }
+        return { sourcePath: s.sourcePath, resolution: 'rename' as const, renamedSkillId: renamed }
+      })
+
+  const importSelections = async (
+    ref: string,
+    selections: ReturnType<typeof buildSelections>,
+    skills: GitRepoSkill[],
+    picked: Set<string>,
+  ) => {
+    const result = await skillApi.importGitHubRepoSkills(ref, selections)
+    await skillApiV2.refresh()
+    const importedCount = result.importedSkills.length || selections.filter((s) => s.resolution !== 'skip').length
+    const skippedCount = result.skippedSkills.length || selections.filter((s) => s.resolution === 'skip').length
+    setSummary({
+      imported: importedCount,
+      skipped: skippedCount,
+      skills: skills.filter((s) => picked.has(s.sourcePath)).map((s) => s.skillName),
+    })
+    setStage('done')
+    onDone()
+  }
+
+  const detect = async () => {
     if (!url.trim()) {
       setError('请输入 Git 仓库 URL')
       return
     }
+    const ref = buildGitRef(url, branch)
     setBusy(true)
     setError(null)
-    setStatus(null)
     try {
-      const repo = await skillApi.previewGitHubRepoImport(url.trim())
-      const selections = repo.skills.map((s) => ({ sourcePath: s.sourcePath, resolution: 'overwrite' as const }))
-      if (selections.length === 0) {
+      const preview = await skillApi.previewGitHubRepoImport(ref)
+      if (preview.skills.length === 0) {
         setError('该仓库未检测到任何 Skill（需含 SKILL.md）')
         return
       }
-      await skillApi.importGitHubRepoSkills(url.trim(), selections)
-      await skillApiV2.refresh()
-      setStatus(`已导入 ${selections.length} 个 Skill 到中心库`)
-      onDone()
+      setActiveRef(ref)
+      setRepo(preview)
+
+      const single = preview.skills[0]
+      // 具体 skill 路径 + 唯一 + 无冲突 → 直接安装，零额外点击
+      if (preview.skills.length === 1 && urlHasSubpath(ref) && !single.conflict) {
+        const picked = new Set([single.sourcePath])
+        setSelected(picked)
+        await importSelections(
+          ref,
+          [{ sourcePath: single.sourcePath, resolution: 'overwrite' as const }],
+          preview.skills,
+          picked,
+        )
+        return
+      }
+
+      // 默认勾选无冲突项；冲突项默认不勾选
+      setSelected(new Set(preview.skills.filter((s) => !s.conflict).map((s) => s.sourcePath)))
+      setConflictMode({})
+      setRenames({})
+      setStage('select')
     } catch (e) {
       setError(String(e))
     } finally {
@@ -923,29 +1660,215 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     }
   }
 
+  const installSelected = async () => {
+    if (!repo) return
+    const selections = buildSelections(repo.skills, selected)
+    const effective = selections.filter((s) => s.resolution !== 'skip')
+    if (effective.length === 0) {
+      setError('请至少选择一个可安装的 Skill（冲突项需选择覆盖或填写新名称）')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await importSelections(activeRef, selections, repo.skills, selected)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggle = (sourcePath: string) => {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(sourcePath)) next.delete(sourcePath)
+      else next.add(sourcePath)
+      return next
+    })
+  }
+
+  // ── done ───────────────────────────────────────────────────────
+  if (stage === 'done' && summary) {
+    return (
+      <div className="sm2__git">
+        <div className="sm2__git-done">
+          <div className="sm2__git-done-icon">✓</div>
+          <h3>已导入 {summary.imported} 个 Skill</h3>
+          <p>
+            导入到中心 Skill 库{summary.skipped > 0 ? `，跳过 ${summary.skipped} 个` : ''}。
+            可在「Skill 库」中分发给各个 Agent。
+          </p>
+          {summary.skills.length > 0 && (
+            <div className="sm2__git-done-chips">
+              {summary.skills.map((name) => (
+                <span key={name} className="sm2__git-chip">{name}</span>
+              ))}
+            </div>
+          )}
+          <div className="sm2__btn-row" style={{ justifyContent: 'center' }}>
+            <button className="sm2__btn sm2__btn--primary" onClick={resetToInput}>继续安装</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── select ─────────────────────────────────────────────────────
+  if (stage === 'select' && repo) {
+    const owner = repo.repo.owner
+    const total = repo.skills.length
+    const selectedCount = repo.skills.filter((s) => selected.has(s.sourcePath)).length
+    const allSelected = selectedCount === total && total > 0
+    return (
+      <div className="sm2__git">
+        <div className="sm2__git-manifest">
+          <GitOwnerAvatar owner={owner} />
+          <div className="sm2__git-manifest-main">
+            <div className="sm2__git-manifest-repo">
+              <strong>{owner}/{repo.repo.repo}</strong>
+              <span className="sm2__git-branch-chip">⑂ {repo.repo.branch}</span>
+            </div>
+            <span className="sm2__git-manifest-count">
+              检测到 <strong>{total}</strong> 个 Skill · 已选 <strong>{selectedCount}</strong>
+            </span>
+          </div>
+          <button
+            className="sm2__btn sm2__btn--ghost"
+            onClick={() =>
+              setSelected(allSelected ? new Set() : new Set(repo.skills.map((s) => s.sourcePath)))
+            }
+          >
+            {allSelected ? '全不选' : '全选'}
+          </button>
+        </div>
+
+        <div className="sm2__git-skill-list">
+          {repo.skills.map((s) => {
+            const checked = selected.has(s.sourcePath)
+            const mode = conflictMode[s.sourcePath] || 'rename'
+            return (
+              <div
+                key={s.sourcePath}
+                className={`sm2__git-skill-row${checked ? ' sm2__git-skill-row--on' : ''}${s.conflict ? ' sm2__git-skill-row--conflict' : ''}`}
+              >
+                <label className="sm2__git-skill-check">
+                  <input type="checkbox" checked={checked} onChange={() => toggle(s.sourcePath)} />
+                </label>
+                <div className="sm2__git-skill-main" onClick={() => toggle(s.sourcePath)}>
+                  <div className="sm2__git-skill-titleline">
+                    <strong>{s.skillName}</strong>
+                    {s.conflict && <span className="sm2__tag sm2__tag--conflict">中心库已存在</span>}
+                  </div>
+                  {s.description && <p className="sm2__git-skill-desc">{s.description}</p>}
+                  <code className="sm2__git-skill-path">{s.sourcePath || repo.repo.repo}</code>
+                </div>
+                {checked && s.conflict && (
+                  <div className="sm2__git-conflict-ctrl" onClick={(e) => e.stopPropagation()}>
+                    <div className="sm2__git-conflict-modes">
+                      <button
+                        className={mode === 'rename' ? 'active' : ''}
+                        onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'rename' }))}
+                      >
+                        重命名
+                      </button>
+                      <button
+                        className={mode === 'overwrite' ? 'active' : ''}
+                        onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'overwrite' }))}
+                      >
+                        覆盖
+                      </button>
+                    </div>
+                    {mode === 'rename' && (
+                      <input
+                        className="sm2__git-rename-input"
+                        value={renames[s.sourcePath] || ''}
+                        onChange={(e) => setRenames((r) => ({ ...r, [s.sourcePath]: e.target.value }))}
+                        placeholder={`${s.skillId}-copy（留空则跳过）`}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+        <div className="sm2__git-footer">
+          <button className="sm2__btn sm2__btn--ghost" onClick={resetToInput} disabled={busy}>← 重新输入</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={installSelected} disabled={busy || selectedCount === 0}>
+            {busy ? '安装中…' : `安装所选 (${selectedCount})`}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── input ──────────────────────────────────────────────────────
   return (
-    <div className="sm2__install-form">
-      <h3 className="sm2__install-h">从 Git 仓库克隆并导入</h3>
-      <p className="sm2__install-sub">输入 GitHub / Git 仓库地址,自动检测并导入其中的 Skill。</p>
-      <div className="sm2__field">
-        <label>仓库 URL</label>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/username/repo" />
+    <div className="sm2__git">
+      <div className="sm2__git-intro">
+        <h3 className="sm2__install-h">从 Git 仓库导入 Skill</h3>
+        <p className="sm2__install-sub">
+          粘贴仓库地址检测其中的 Skill。给整个仓库会列出全部供你勾选；给具体 Skill 路径
+          （如 <code>.../tree/main/skills/pdf</code>）则直接安装。
+        </p>
       </div>
-      <div className="sm2__field">
-        <label>分支（可选）</label>
-        <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+
+      <div className="sm2__git-input-card">
+        <div className="sm2__git-url-field">
+          <span className="sm2__git-url-icon">⑂</span>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://github.com/anthropics/skills/tree/main"
+            onKeyDown={(e) => e.key === 'Enter' && !busy && detect()}
+          />
+        </div>
+        <div className="sm2__git-input-row">
+          <label className="sm2__git-branch-field">
+            <span>分支</span>
+            <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+          </label>
+          <button
+            className="sm2__git-advanced-toggle"
+            onClick={() => setShowAdvanced((v) => !v)}
+            type="button"
+          >
+            {showAdvanced ? '收起高级' : '高级（私有仓库令牌）'}
+          </button>
+        </div>
+        {showAdvanced && (
+          <label className="sm2__git-token-field">
+            <span>访问令牌</span>
+            <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="ghp_..." />
+          </label>
+        )}
       </div>
-      <div className="sm2__field">
-        <label>访问令牌（私有仓库可选）</label>
-        <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="ghp_..." />
-      </div>
+
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-      {status && <div className="sm2__change" style={{ background: 'rgba(52,199,89,0.12)' }}>{status}</div>}
       <div className="sm2__btn-row">
-        <button className="sm2__btn sm2__btn--primary" onClick={run} disabled={busy}>
-          {busy ? '克隆中…' : '安装'}
+        <button className="sm2__btn sm2__btn--primary" onClick={detect} disabled={busy}>
+          {busy ? '检测中…' : '检测 Skill'}
         </button>
       </div>
     </div>
+  )
+}
+
+function GitOwnerAvatar({ owner }: { owner: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!owner || failed) {
+    return <div className="sm2__market-skill-icon">{initials(owner || 'git')}</div>
+  }
+  return (
+    <img
+      src={`https://github.com/${owner}.png?size=80`}
+      alt={owner}
+      className="sm2__market-avatar"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
   )
 }

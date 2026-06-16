@@ -58,14 +58,17 @@ pub fn get_skill_detail_v2(skill_id: String) -> Result<SkillDetail, String> {
     Ok(svc()?.get_skill_detail(&skill_id)?)
 }
 
-#[tauri::command]
+// `(async)` runs the blocking body on a worker thread instead of the main
+// thread, so a network skill download never freezes the webview and multiple
+// installs can run concurrently.
+#[tauri::command(async)]
 pub fn preview_add_center_skill(
     input: AddCenterSkillInput,
 ) -> Result<AddCenterSkillPreview, String> {
     Ok(svc()?.preview_add_center_skill(input)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn execute_add_center_skill(
     input: AddCenterSkillInput,
     decisions: Vec<AddCenterSkillDecision>,

@@ -6244,7 +6244,10 @@ fn collect_log_files() -> Vec<(String, Vec<u8>)> {
 
 fn bridge_invocations_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let new_path = home.join(".agentbro").join("hooks").join("invocations.jsonl");
+    let new_path = home
+        .join(".agentbro")
+        .join("hooks")
+        .join("invocations.jsonl");
     if new_path.exists() {
         return new_path;
     }

@@ -66,7 +66,7 @@ export function SkillLibraryPage() {
   }
 
   return (
-    <div className="sm2">
+    <div className="sm2 sm2--library">
       <div className="sm2__header sm2__header--stacked">
         <div>
           <h2 className="sm2__title">Skill 库</h2>
@@ -175,30 +175,64 @@ export function SkillLibraryPage() {
         <PreviewDialog
           title={`删除中心库 Skill「${deletePreview.skillId}」`}
           confirmLabel="仅删除中心库"
+          modalClassName="sm2__modal--delete-skill"
           destructive
           busy={busy}
           disabled={!deletePreview.removable}
           onCancel={() => setDeletePreview(null)}
           onConfirm={() => confirmDelete(false)}
         >
-          <div className="sm2__danger-summary">
-            <strong>删除前预览</strong>
-            <span>受影响 Agent 安装：{deletePreview.affectedTargets.length}</span>
+          <div className="sm2-delete-skill">
+            <div className="sm2-delete-skill__hero">
+              <div className="sm2-delete-skill__mark" aria-hidden="true">!</div>
+              <div className="sm2-delete-skill__hero-copy">
+                <strong>删除前确认</strong>
+                <span>
+                  {deletePreview.affectedTargets.length > 0
+                    ? '中心库记录会被删除，已安装到 Agent 的目标可选择一并移除。'
+                    : '当前没有 Agent 安装会被影响，只会移除中心库记录。'}
+                </span>
+              </div>
+              <div className="sm2-delete-skill__impact">
+                <strong>{deletePreview.affectedTargets.length}</strong>
+                <span>Agent 安装</span>
+              </div>
+            </div>
+
+            {deletePreview.affectedTargets.length > 0 ? (
+              <div className="sm2-delete-skill__targets">
+                {deletePreview.affectedTargets.map((target) => (
+                  <div key={target.targetId} className="sm2-delete-skill__target">
+                    <div>
+                      <strong>{target.displayName || target.agentId}</strong>
+                      <span>{target.mode} · {target.claimCount} 个引用</span>
+                    </div>
+                    <code>{target.targetPath}</code>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="sm2-delete-skill__zero">
+                这次删除不会触碰任何 Agent 目录。
+              </div>
+            )}
+
+            {deletePreview.warnings.length > 0 && (
+              <div className="sm2-delete-skill__warnings">
+                {deletePreview.warnings.map((w, i) => (
+                  <div key={i} className="sm2-delete-skill__warning">{w}</div>
+                ))}
+              </div>
+            )}
+
+            {deletePreview.affectedTargets.length > 0 && (
+              <div className="sm2-delete-skill__inline-action">
+                <button className="sm2__btn sm2-delete-skill__secondary-danger" disabled={busy} onClick={() => confirmDelete(true)}>
+                  同时移除所有 Agent 安装
+                </button>
+              </div>
+            )}
           </div>
-          {deletePreview.warnings.length > 0 && (
-            <div className="sm2__warning-list">
-              {deletePreview.warnings.map((w, i) => (
-                <div key={i} className="sm2__warning-item">{w}</div>
-              ))}
-            </div>
-          )}
-          {deletePreview.affectedTargets.length > 0 && (
-            <div className="sm2__danger-inline-action">
-              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => confirmDelete(true)}>
-                同时移除所有 Agent 安装
-              </button>
-            </div>
-          )}
         </PreviewDialog>
       )}
     </div>
@@ -228,7 +262,7 @@ function SkillCard({ skill, onClick }: { skill: SkillSummary; onClick: () => voi
   return (
     <div className="sm2__card" onClick={onClick}>
       <div className="sm2__card-head">
-        <div className="sm2__skill-avatar">{skill.name.slice(0, 2).toUpperCase()}</div>
+        <div className="sm2__skill-avatar">{(skill.name || 'SK').slice(0, 2).toUpperCase()}</div>
         <div className="sm2__card-titleblock">
           <h3 className="sm2__card-title">{skill.name}</h3>
           <span>{skill.sourceType}</span>

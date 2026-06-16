@@ -750,10 +750,7 @@ fn diagnosis_flags_broken_link_and_unmanaged() {
         .unwrap();
     svc.execute_distribute_skill(p, ClaimOrigin::Direct)
         .unwrap();
-    let target_path = svc
-        .get_skill_detail("release-checklist")
-        .unwrap()
-        .targets[0]
+    let target_path = svc.get_skill_detail("release-checklist").unwrap().targets[0]
         .target_path
         .clone();
     let center = svc.center_path().unwrap().join("release-checklist");

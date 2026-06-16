@@ -143,6 +143,7 @@ export function SkillDetailSlider({
       open={open}
       onClose={onClose}
       width={1040}
+      className="sm2__slideover--skill-detail"
       title={summary?.name || skillId || ''}
       actions={
         summary && (
@@ -333,14 +334,17 @@ function FilesTab({
   const fileCount = countFiles(detail.files)
   return (
     <section className="sm2__panel sm2__panel--flush">
-      <div className="sm2__panel-head">
-        <h3>目录与文件</h3>
-        <span>{activeFile ? activeFile.split('/').pop() : '未选择'}</span>
+      <div className="sm2__panel-head sm2__panel-head--filebrowser">
+        <div>
+          <h3>目录与文件</h3>
+          <span>{activeFile ? activeDisplayPath : '选择文件后查看内容'}</span>
+        </div>
+        <strong>{fileCount} 个文件</strong>
       </div>
       <div className="sm2__filebrowser sm2__filebrowser--expansive">
         <div className="sm2__filetree-pane">
           <div className="sm2__filetree-head">
-            <span>文件</span>
+            <span>目录</span>
             <strong>{fileCount}</strong>
           </div>
           <div className="sm2__filetree settings-scroll">
@@ -461,28 +465,48 @@ function SkillFrontmatterIntro({ description, compact = false }: { description?:
 }
 
 function SourceTab({ detail }: { detail: SkillDetail }) {
-  const rows = [
-    ['类型', detail.source?.sourceType],
-    ['来源 URI', detail.source?.sourceUri],
-    ['来源 Ref', detail.source?.sourceRef],
-    ['导入 Agent', detail.source?.importedFromAgent],
-    ['导入路径', detail.source?.importedFromPath],
-    ['安装方式', detail.source?.installedVia],
-    ['中心目录', detail.centerPath],
-    ['Hash', detail.currentHash],
-  ].filter(([, value]) => value)
+  const sourceType = detail.source?.sourceType || detail.sourceType
+  const sourceUri = detail.source?.sourceUri || detail.sourceUri
+  const summaryCards = [
+    { label: '类型', value: sourceType },
+    { label: '导入 Agent', value: detail.source?.importedFromAgent },
+    { label: '安装方式', value: detail.source?.installedVia },
+    { label: '来源 Ref', value: detail.source?.sourceRef },
+  ].filter(hasSourceValue)
+  const pathCards = [
+    { label: '导入路径', value: detail.source?.importedFromPath },
+    { label: '中心目录', value: detail.centerPath },
+    { label: '来源 URI', value: sourceUri },
+    { label: 'Hash', value: detail.currentHash },
+  ].filter(hasSourceValue)
   return (
-    <section className="sm2__panel">
-      {rows.map(([label, value]) => (
-        <div key={label} className="sm2__object-row sm2__object-row--path">
-          <div>
-            <strong>{label}</strong>
-            <code>{value}</code>
-          </div>
+    <section className="sm2__skill-source">
+      {summaryCards.length > 0 && (
+        <div className="sm2__skill-source-grid">
+          {summaryCards.map((item) => (
+            <div key={item.label} className="sm2__skill-source-card">
+              <span>{item.label}</span>
+              <strong title={item.value}>{item.value}</strong>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
+      {pathCards.length > 0 && (
+        <div className="sm2__skill-source-stack">
+          {pathCards.map((item) => (
+            <div key={item.label} className="sm2__skill-source-card sm2__skill-source-card--wide">
+              <span>{item.label}</span>
+              <code title={item.value}>{item.value}</code>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
+}
+
+function hasSourceValue(item: { label: string; value?: string | null }): item is { label: string; value: string } {
+  return typeof item.value === 'string' && item.value.length > 0
 }
 
 function CompactInfo({

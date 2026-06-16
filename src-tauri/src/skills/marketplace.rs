@@ -55,6 +55,15 @@ pub struct MarketplaceSkill {
     pub cache_updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSkillDetail {
+    pub description: Option<String>,
+    pub github_url: Option<String>,
+    pub install_command: Option<String>,
+    pub web_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillsShSkill {
@@ -221,6 +230,37 @@ pub async fn search_marketplace_skills_async(
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.id.clone()));
     Ok(items)
+}
+
+pub async fn fetch_skills_sh_skill_detail(
+    source: String,
+    skill_id: String,
+) -> Result<MarketplaceSkillDetail, String> {
+    let source = source.trim().trim_matches('/').to_string();
+    let skill_id = skill_id.trim().trim_matches('/').to_string();
+    if source.is_empty() || skill_id.is_empty() {
+        return Err("Missing skills.sh source or skill id".to_string());
+    }
+
+    let web_url = format!("https://skills.sh/{source}/{skill_id}");
+    let html = skills_sh_client()?
+        .get(&web_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch skills.sh skill detail: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read skills.sh skill detail: {e}"))?;
+
+    let github_url = parse_skills_sh_skill_github_url(&html, &source, &skill_id)
+        .or_else(|| github_url_from_skills_sh_source(&source));
+    Ok(MarketplaceSkillDetail {
+        description: parse_skills_sh_json_ld_description(&html)
+            .or_else(|| parse_skills_sh_meta_description(&html)),
+        github_url,
+        install_command: parse_skills_sh_install_command(&html),
+        web_url: Some(web_url),
+    })
 }
 
 pub fn install_marketplace_skill(skill_id: &str) -> Result<(), String> {
@@ -647,6 +687,100 @@ fn parse_skills_sh_with_regex(html: &str, pattern: &Regex) -> Vec<SkillsShSkill>
     skills
 }
 
+fn parse_skills_sh_meta_description(html: &str) -> Option<String> {
+    let pattern =
+        Regex::new(r#"<meta\s+name=["']description["']\s+content=["'](?P<value>[^"']+)["']"#)
+            .ok()?;
+    pattern
+        .captures(html)
+        .and_then(|caps| caps.name("value"))
+        .map(|value| decode_html_text(value.as_str()))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_skills_sh_json_ld_description(html: &str) -> Option<String> {
+    let pattern = Regex::new(
+        r#"(?s)<script[^>]*type=["']application/ld\+json["'][^>]*>(?P<json>[^<]*)</script>"#,
+    )
+    .ok()?;
+    for caps in pattern.captures_iter(html) {
+        let Some(raw_json) = caps.name("json") else {
+            continue;
+        };
+        let decoded = decode_html_text(raw_json.as_str());
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&decoded) else {
+            continue;
+        };
+        if let Some(description) = json_ld_description(&value) {
+            return Some(description);
+        }
+    }
+    None
+}
+
+fn json_ld_description(value: &serde_json::Value) -> Option<String> {
+    if let Some(description) = value.get("description").and_then(|value| value.as_str()) {
+        let description = decode_html_text(description).trim().to_string();
+        if !description.is_empty() {
+            return Some(description);
+        }
+    }
+    value.as_array()?.iter().find_map(json_ld_description)
+}
+
+fn parse_skills_sh_install_command(html: &str) -> Option<String> {
+    let pattern = Regex::new(r#"npx skills add [^<"\\]+"#).ok()?;
+    pattern
+        .find(html)
+        .map(|value| decode_html_text(value.as_str()))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_skills_sh_skill_github_url(html: &str, source: &str, skill_id: &str) -> Option<String> {
+    let repo_url = github_url_from_skills_sh_source(source)?;
+    let escaped_repo = regex::escape(&repo_url);
+    let escaped_skill_id = regex::escape(skill_id);
+    let blob_pattern = Regex::new(&format!(
+        r#"{escaped_repo}/blob/(?P<branch>HEAD|main|master)/(?P<dir>[^"\\<>]*{escaped_skill_id})/[^"\\<>]+"#
+    ))
+    .ok()?;
+    if let Some(caps) = blob_pattern.captures(html) {
+        let branch = caps
+            .name("branch")
+            .map(|value| value.as_str())
+            .filter(|value| *value != "HEAD")
+            .unwrap_or("main");
+        let dir = caps.name("dir")?.as_str().trim_matches('/');
+        return Some(format!("{repo_url}/tree/{branch}/{dir}"));
+    }
+
+    if source.ends_with("/skills") && !skill_id.contains('/') {
+        return Some(format!("{repo_url}/tree/main/skills/{skill_id}"));
+    }
+
+    Some(repo_url)
+}
+
+fn github_url_from_skills_sh_source(source: &str) -> Option<String> {
+    let mut parts = source.split('/').filter(|part| !part.trim().is_empty());
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
+fn decode_html_text(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace('…', "...")
+}
+
 fn normalize_skills_sh_board(board: Option<&str>) -> &'static str {
     match board.unwrap_or("alltime").trim().to_lowercase().as_str() {
         "trending" => "trending",
@@ -986,6 +1120,19 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].skill_id, "find-skills");
         assert_eq!(skills[0].source, "vercel-labs/skills");
+    }
+
+    #[test]
+    fn parses_full_skills_sh_json_ld_description() {
+        let html = r#"
+        <meta name="description" content="Short summary,...">
+        <script type="application/ld+json">{"name":"remotion-render","description":"Render videos from React/Remotion component code via inference.sh. Supports all Remotion APIs: useCurrentFrame, useVideoConfig, spring, interpolate, AbsoluteFill, Sequence."}</script>
+        "#;
+
+        assert_eq!(
+            parse_skills_sh_json_ld_description(html).as_deref(),
+            Some("Render videos from React/Remotion component code via inference.sh. Supports all Remotion APIs: useCurrentFrame, useVideoConfig, spring, interpolate, AbsoluteFill, Sequence.")
+        );
     }
 
     #[tokio::test]

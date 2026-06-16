@@ -481,7 +481,10 @@ fn send_and_maybe_receive(
 
 fn invocation_log_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    let new_path = home.join(".agentbro").join("hooks").join("invocations.jsonl");
+    let new_path = home
+        .join(".agentbro")
+        .join("hooks")
+        .join("invocations.jsonl");
     // Migrate from old flat location
     let old_path = home.join(".agentbro").join("hook-invocations.jsonl");
     if old_path.exists() && !new_path.exists() {

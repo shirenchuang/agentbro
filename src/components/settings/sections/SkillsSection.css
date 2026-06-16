@@ -2523,9 +2523,110 @@
 }
 
 .file-tree-row__icon {
-  font-size: 14px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   line-height: 1;
+}
+
+.file-tree-row__icon--folder {
+  width: 20px;
+  height: 16px;
+  margin-right: 1px;
+  border: 2px solid #f08a17;
+  border-radius: 5px;
+  background: rgba(240, 138, 23, 0.13);
+}
+
+.file-tree-row__folder-tab {
+  position: absolute;
+  top: -5px;
+  left: 4px;
+  width: 9px;
+  height: 6px;
+  border: 2px solid #f08a17;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  background: var(--settings-card-bg);
+}
+
+.file-tree-row__icon--folder-open {
+  background: rgba(240, 138, 23, 0.2);
+}
+
+.file-tree-row__icon--file {
+  border: 1.5px solid #8e8e93;
+  border-radius: 4px;
+  background: rgba(142, 142, 147, 0.1);
+  color: #6b7280;
+}
+
+.file-tree-row__file-corner {
+  position: absolute;
+  top: -1.5px;
+  right: -1.5px;
+  width: 6px;
+  height: 6px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  border-radius: 0 3px 0 2px;
+  background: var(--settings-card-bg);
+}
+
+.file-tree-row__file-label {
+  max-width: 15px;
+  overflow: hidden;
+  font-size: 6px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.file-tree-row__icon--markdown {
+  border-color: #4b7bec;
+  background: rgba(75, 123, 236, 0.12);
+  color: #3461c1;
+}
+
+.file-tree-row__icon--script,
+.file-tree-row__icon--python {
+  border-color: #34a853;
+  background: rgba(52, 168, 83, 0.13);
+  color: #20833b;
+}
+
+.file-tree-row__icon--json {
+  border-color: #f5a623;
+  background: rgba(245, 166, 35, 0.14);
+  color: #b87400;
+}
+
+.file-tree-row__icon--style {
+  border-color: #af52de;
+  background: rgba(175, 82, 222, 0.12);
+  color: #8b3bb2;
+}
+
+.file-tree-row__icon--image {
+  border-color: #00a7c2;
+  background: rgba(0, 167, 194, 0.12);
+  color: #007d91;
+}
+
+.file-tree-row__icon--archive {
+  border-color: #ff6b35;
+  background: rgba(255, 107, 53, 0.12);
+  color: #c64f25;
+}
+
+.file-tree-row__icon--document {
+  border-color: #ff3b30;
+  background: rgba(255, 59, 48, 0.1);
+  color: #c82d25;
 }
 
 .file-tree-row__name {

@@ -48,7 +48,9 @@ pub fn all_center_dirs() -> Vec<PathBuf> {
 }
 
 pub fn default_sqlite_path() -> PathBuf {
-    agentbro_home().join("skill-manager").join("skill-manager.db")
+    agentbro_home()
+        .join("skill-manager")
+        .join("skill-manager.db")
 }
 
 pub fn default_snapshot_path() -> PathBuf {

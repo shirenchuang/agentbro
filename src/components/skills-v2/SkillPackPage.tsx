@@ -133,7 +133,7 @@ export function SkillPackPage() {
           {state.packs.length === 0 ? (
             <div className="sm2__pack-empty-state">
               <strong>还没有技能包</strong>
-              <span>先选择中心库 Skills 组成一个可复用组合。</span>
+              <span>从中心库挑选 Skills，保存成可复用组合。</span>
               <button className="sm2__btn sm2__btn--primary" onClick={startCreate}>创建第一个</button>
             </div>
           ) : filteredPacks.length === 0 ? (
@@ -302,7 +302,7 @@ function PackListItem({
 function PackLanding({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="sm2__pack-landing">
-      <div className="sm2__pack-landing-mark">PK</div>
+      <div className="sm2__pack-landing-mark">PACK</div>
       <strong>选择一个技能包</strong>
       <span>右侧会显示成员、应用 Agent、claim 影响和可执行操作。</span>
       <button className="sm2__btn sm2__btn--primary" onClick={onCreate}>新建技能包</button>

@@ -793,10 +793,7 @@ fn parse_frontmatter_text(fm_text: &str) -> std::collections::HashMap<String, St
                 continue;
             }
 
-            let val = val_part
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
+            let val = val_part.trim_matches('"').trim_matches('\'').to_string();
             if !val.is_empty() {
                 map.insert(key, val);
             }

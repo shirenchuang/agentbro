@@ -9,6 +9,7 @@ interface SlideOverProps {
   subtitle?: ReactNode
   actions?: ReactNode
   children: ReactNode
+  className?: string
   /** drawer width in px (default 640) */
   width?: number
 }
@@ -20,6 +21,7 @@ export function SlideOver({
   subtitle,
   actions,
   children,
+  className,
   width = 640,
 }: SlideOverProps) {
   if (typeof document === 'undefined') return null
@@ -35,7 +37,7 @@ export function SlideOver({
           onClick={onClose}
         >
           <motion.div
-            className="sm2__slideover"
+            className={`sm2__slideover${className ? ` ${className}` : ''}`}
             style={{ width: `min(${width}px, 100vw)` }}
             initial={{ x: '100%' }}
             animate={{ x: 0 }}

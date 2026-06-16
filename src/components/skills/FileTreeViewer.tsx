@@ -18,6 +18,37 @@ function isBinaryFile(name: string): boolean {
   return BINARY_EXTENSIONS.has(ext)
 }
 
+function fileTypeClass(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+
+  if (['md', 'mdx', 'txt', 'rst'].includes(ext)) return 'markdown'
+  if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) return 'script'
+  if (['py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'cpp', 'h', 'hpp'].includes(ext)) return 'python'
+  if (['json', 'jsonc', 'yaml', 'yml', 'toml', 'xml'].includes(ext)) return 'json'
+  if (['css', 'scss', 'sass', 'less'].includes(ext)) return 'style'
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg'].includes(ext)) return 'image'
+  if (['zip', 'tar', 'gz', 'bz2', '7z', 'rar'].includes(ext)) return 'archive'
+  if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'document'
+
+  return 'default'
+}
+
+function fileTypeLabel(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (!ext || ext === name.toLowerCase()) return ''
+
+  if (['md', 'mdx'].includes(ext)) return 'MD'
+  if (['py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'cpp'].includes(ext)) return '</>'
+  if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) return 'JS'
+  if (['json', 'jsonc'].includes(ext)) return '{}'
+  if (['yaml', 'yml', 'toml', 'xml'].includes(ext)) return 'CFG'
+  if (['css', 'scss', 'sass', 'less'].includes(ext)) return '#'
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg'].includes(ext)) return 'IMG'
+  if (['zip', 'tar', 'gz', 'bz2', '7z', 'rar'].includes(ext)) return 'ZIP'
+
+  return ext.slice(0, 3).toUpperCase()
+}
+
 interface FileTreeViewerProps {
   tree: FileTreeNode
   onViewingFileChange?: (viewing: boolean) => void
@@ -122,8 +153,11 @@ function TreeRow({
           <span className={`file-tree-row__chevron ${expanded ? 'file-tree-row__chevron--open' : ''}`}>
             ›
           </span>
-          <span className="file-tree-row__icon">
-            {expanded ? '📂' : '📁'}
+          <span
+            className={`file-tree-row__icon file-tree-row__icon--folder ${expanded ? 'file-tree-row__icon--folder-open' : ''}`}
+            aria-hidden="true"
+          >
+            <span className="file-tree-row__folder-tab" />
           </span>
           <span className="file-tree-row__name file-tree-row__name--dir">{node.name}</span>
         </button>
@@ -146,7 +180,13 @@ function TreeRow({
       style={{ paddingLeft: paddingLeft + 18 }}
       onClick={() => onFileClick(node)}
     >
-      <span className="file-tree-row__icon">📄</span>
+      <span
+        className={`file-tree-row__icon file-tree-row__icon--file file-tree-row__icon--${fileTypeClass(node.name)}`}
+        aria-hidden="true"
+      >
+        <span className="file-tree-row__file-corner" />
+        <span className="file-tree-row__file-label">{fileTypeLabel(node.name)}</span>
+      </span>
       <span className="file-tree-row__name">{node.name}</span>
     </button>
   )

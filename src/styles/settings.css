@@ -3896,6 +3896,15 @@
     padding: 66px 24px 36px;
   }
 
+  .settings-content--skill-manager {
+    padding: 16px;
+    overflow-x: auto;
+  }
+
+  .settings-content--skill-manager > div {
+    min-width: 760px;
+  }
+
   .settings-window-brand {
     top: 22px;
     left: 24px;

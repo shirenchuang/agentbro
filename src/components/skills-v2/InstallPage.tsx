@@ -1,22 +1,22 @@
 import { useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import type { SkillSummary } from '../../services/skillApiV2'
-import { MarketPanel, AgentSyncPanel, LocalPanel, GitPanel } from './InstallView'
+import { AgentSyncPanel, LocalPanel, GitPanel } from './InstallView'
 import { OfficialSourcesPanel } from './OfficialSourcesPanel'
 import { DistributeDialog } from './DistributeDialog'
 
-type Tab = 'market' | 'official' | 'agent' | 'local' | 'git'
+type Tab = 'official' | 'agent' | 'local' | 'git'
 
 const TABS: Array<{ id: Tab; icon: string; label: string }> = [
-  { id: 'market', icon: '◎', label: '浏览榜单' },
   { id: 'official', icon: '★', label: '官方源' },
-  { id: 'agent', icon: '◌', label: '本地安装' },
+  { id: 'agent', icon: '◌', label: 'Agent 同步' },
+  { id: 'local', icon: '📁', label: '本地导入' },
   { id: 'git', icon: '⑂', label: 'Git 安装' },
 ]
 
 export function InstallPage() {
   const state = useSkillStoreV2()
-  const [tab, setTab] = useState<Tab>('market')
+  const [tab, setTab] = useState<Tab>('official')
   const [gitUrl, setGitUrl] = useState('')
   const [justInstalled, setJustInstalled] = useState<SkillSummary | null>(null)
 
@@ -56,8 +56,7 @@ export function InstallPage() {
       </div>
 
       <div className="sm2__install-page-body settings-scroll">
-        {tab === 'market' && <MarketPanel onInstall={installFromSource} onDone={handleDone} />}
-        {tab === 'official' && <OfficialSourcesPanel onDone={handleDone} />}
+        {tab === 'official' && <OfficialSourcesPanel onInstall={installFromSource} onDone={handleDone} />}
         {tab === 'agent' && <AgentSyncPanel onDone={handleDone} />}
         {tab === 'local' && <LocalPanel onDone={handleDone} />}
         {tab === 'git' && <GitPanel initialUrl={gitUrl} onDone={handleDone} />}

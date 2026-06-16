@@ -13,6 +13,7 @@ export function DiagnosisPage() {
   const state = useSkillStoreV2()
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState<'all' | 'auto' | 'confirm' | 'info'>('all')
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     state.runDiagnosis()
@@ -26,11 +27,13 @@ export function DiagnosisPage() {
       if (!confirm(`${issue.title}\n\n${issue.detail}\n\n确认执行？此操作可能不可逆。`)) return
     }
     setBusy(true)
+    setNotice(null)
     try {
       await skillApiV2.executeFixIssue(issue.issueType, issue.entityId || '')
       await state.runDiagnosis()
+      setNotice('修复成功')
     } catch (e) {
-      alert(String(e))
+      state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -38,12 +41,13 @@ export function DiagnosisPage() {
 
   const safeFix = async () => {
     setBusy(true)
+    setNotice(null)
     try {
       const n = await skillApiV2.executeSafeFixes()
       await state.runDiagnosis()
-      alert(`已修复 ${n} 个低风险项`)
+      setNotice(`已修复 ${n} 个低风险项`)
     } catch (e) {
-      alert(String(e))
+      state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -58,6 +62,9 @@ export function DiagnosisPage() {
           <button className="sm2__btn sm2__btn--primary" onClick={safeFix} disabled={busy}>一键修复安全项</button>
         </div>
       </div>
+
+      {notice && <div className="sm2__notice sm2__notice--ok">{notice}</div>}
+      {state.error && <div className="sm2__error">{state.error}</div>}
 
       <div className="sm2__toolbar">
         <select className="sm2__select" value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'auto' | 'confirm' | 'info')}>

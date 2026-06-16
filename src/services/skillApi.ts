@@ -240,6 +240,13 @@ export interface MarketplaceSkill {
   cacheUpdatedAt: string | null
 }
 
+export interface MarketplaceSkillDetail {
+  description: string | null
+  githubUrl: string | null
+  installCommand: string | null
+  webUrl: string | null
+}
+
 export interface MarketplaceItem {
   id: string
   name: string
@@ -556,6 +563,10 @@ export const skillApi = {
   searchMarketplaceSkills: (registryId?: string | null, query?: string | null, board?: string | null) => isTauri
     ? invoke<MarketplaceSkill[]>('search_marketplace_skills', { registryId: registryId ?? null, query: query ?? null, board: board ?? null })
     : fetchSkillsShMarketplace(registryId, query, board),
+
+  fetchMarketplaceSkillDetail: (source: string, skillId: string) => isTauri
+    ? invoke<MarketplaceSkillDetail>('fetch_marketplace_skill_detail', { source, skillId })
+    : Promise.resolve({ description: null, githubUrl: null, installCommand: null, webUrl: null }),
 
   installMarketplaceSkill: (skillId: string) => isTauri
     ? invoke('install_marketplace_skill', { skillId })

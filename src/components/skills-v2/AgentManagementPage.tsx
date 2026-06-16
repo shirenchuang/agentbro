@@ -392,9 +392,13 @@ function SkillsTab({
     if (!q) return unmanaged
     return unmanaged.filter((u) => [u.inferredSkillId, u.path, u.reason].filter(Boolean).join(' ').toLowerCase().includes(q))
   }, [q, unmanaged])
+  const [pageResetKey, setPageResetKey] = useState(`${q}|${detail.id}`)
+  const currentResetKey = `${q}|${detail.id}`
+  if (pageResetKey !== currentResetKey) {
+    setPageResetKey(currentResetKey)
+    if (page !== 1) setPage(1)
+  }
   const shownUnmanaged = filteredUnmanaged.slice(0, page * PAGE_SIZE)
-
-  useEffect(() => setPage(1), [q, detail.id])
 
   return (
     <div className="sm2__skills-tab">

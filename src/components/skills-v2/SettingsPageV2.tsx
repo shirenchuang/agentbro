@@ -38,18 +38,18 @@ export function SettingsPageV2() {
       </div>
       <div className="sm2__main">
         <div className="sm2__issue">
-          <h4 style={{ margin: '0 0 8px' }}>中心库路径</h4>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <h4 className="sm2__settings-label">中心库路径</h4>
+          <div className="sm2__settings-inline">
             <input className="sm2__search" value={settings.centerPath} readOnly />
             <button className="sm2__btn" onClick={chooseCenter} disabled={busy}>选择</button>
           </div>
-          <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+          <p className="sm2__settings-help">
             默认 ~/.agentbro/skills。修改后下次刷新生效。
           </p>
         </div>
 
         <div className="sm2__issue">
-          <h4 style={{ margin: '0 0 8px' }}>默认分发方式</h4>
+          <h4 className="sm2__settings-label">默认分发方式</h4>
           <select
             className="sm2__select"
             value={settings.defaultDistributeMode}
@@ -61,7 +61,7 @@ export function SettingsPageV2() {
         </div>
 
         <div className="sm2__issue">
-          <h4 style={{ margin: '0 0 8px' }}>link 失败策略</h4>
+          <h4 className="sm2__settings-label">link 失败策略</h4>
           <select
             className="sm2__select"
             value={settings.linkFailPolicy}
@@ -73,7 +73,7 @@ export function SettingsPageV2() {
         </div>
 
         <div className="sm2__issue">
-          <h4 style={{ margin: '0 0 8px' }}>扫描行为</h4>
+          <h4 className="sm2__settings-label">扫描行为</h4>
           <label className="sm2__checkbox-row">
             <input
               type="checkbox"
@@ -93,7 +93,7 @@ export function SettingsPageV2() {
         </div>
 
         <div className="sm2__issue">
-          <h4 style={{ margin: '0 0 8px' }}>SQLite / JSON 快照</h4>
+          <h4 className="sm2__settings-label">SQLite / JSON 快照</h4>
           <div className="sm2__detail-meta">
             <div>SQLite：{settings.sqlitePath}</div>
             <div>快照：{settings.centerPath}/agentbro-skills.snapshot.json</div>
@@ -102,7 +102,7 @@ export function SettingsPageV2() {
             <button className="sm2__btn" onClick={() => skillApiV2.exportSnapshot()}>导出/刷新 JSON 快照</button>
             <button className="sm2__btn" onClick={() => skillApiV2.openPath(settings.sqlitePath)}>打开 SQLite</button>
           </div>
-          <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+          <p className="sm2__settings-help">
             SQLite 是主存储；JSON 仅作为备份、快照与人工排查用途。
           </p>
         </div>

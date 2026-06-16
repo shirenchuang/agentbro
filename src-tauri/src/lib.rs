@@ -3244,6 +3244,14 @@ async fn search_marketplace_skills(
 }
 
 #[tauri::command]
+async fn fetch_marketplace_skill_detail(
+    source: String,
+    skill_id: String,
+) -> Result<skills::marketplace::MarketplaceSkillDetail, String> {
+    skills::marketplace::fetch_skills_sh_skill_detail(source, skill_id).await
+}
+
+#[tauri::command]
 async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
     skills::marketplace::install_marketplace_skill(&skill_id)
 }
@@ -5262,6 +5270,7 @@ pub fn run() {
             sync_registry,
             sync_registry_with_options,
             search_marketplace_skills,
+            fetch_marketplace_skill_detail,
             install_marketplace_skill,
             list_marketplace_sources_cmd,
             upsert_marketplace_source_cmd,

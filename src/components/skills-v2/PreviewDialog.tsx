@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 
 interface PreviewDialogProps {
@@ -5,6 +6,7 @@ interface PreviewDialogProps {
   children: ReactNode
   confirmLabel?: string
   cancelLabel?: string
+  modalClassName?: string
   destructive?: boolean
   busy?: boolean
   disabled?: boolean
@@ -17,15 +19,24 @@ export function PreviewDialog({
   children,
   confirmLabel = '确认执行',
   cancelLabel = '取消',
+  modalClassName,
   destructive = false,
   busy = false,
   disabled = false,
   onConfirm,
   onCancel,
 }: PreviewDialogProps) {
-  return (
+  if (typeof document === 'undefined') return null
+
+  const modalClass = [
+    'sm2__modal',
+    destructive ? 'sm2__modal--destructive' : '',
+    modalClassName ?? '',
+  ].filter(Boolean).join(' ')
+
+  return createPortal(
     <div className="sm2__overlay" onClick={onCancel}>
-      <div className={`sm2__modal${destructive ? ' sm2__modal--destructive' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div className={modalClass} onClick={(e) => e.stopPropagation()}>
         <div className="sm2__modal-head">
           <h3>{title}</h3>
         </div>
@@ -45,6 +56,7 @@ export function PreviewDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
