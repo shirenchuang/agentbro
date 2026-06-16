@@ -362,6 +362,95 @@ fn reuse_target_appends_claim_without_dup_files() {
     assert_eq!(claims.len(), 1);
 }
 
+#[test]
+fn distribute_blocker_can_be_skipped_or_overwritten() {
+    let (_home, svc, _lock) = fresh_service("distribute-blocker-decision");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "release-checklist",
+        "release-checklist",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let unmanaged = write_skill(
+        &svc.home.join(".claude/skills"),
+        "release-checklist",
+        "release-checklist",
+        Some("agent-version"),
+    );
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    assert_eq!(preview.blockers.len(), 1);
+    assert!(svc
+        .execute_distribute_skill(preview.clone(), ClaimOrigin::Direct)
+        .is_err());
+
+    let mut skip_preview = preview.clone();
+    skip_preview.blocker_decisions = vec![DistributionBlockerDecision {
+        skill_id: "release-checklist".to_string(),
+        agent_id: "claude-code".to_string(),
+        action: "skip".to_string(),
+    }];
+    let skipped = svc
+        .execute_distribute_skill(skip_preview, ClaimOrigin::Direct)
+        .unwrap();
+    assert_eq!(skipped.blockers.len(), 0);
+    assert_eq!(skipped.changes[0].action, "skip");
+    assert_eq!(
+        svc.get_skill_detail("release-checklist")
+            .unwrap()
+            .targets
+            .len(),
+        0
+    );
+    assert_eq!(
+        fs::read_to_string(unmanaged.join("reference.md")).unwrap(),
+        "agent-version"
+    );
+
+    let mut overwrite_preview = preview;
+    overwrite_preview.blocker_decisions = vec![DistributionBlockerDecision {
+        skill_id: "release-checklist".to_string(),
+        agent_id: "claude-code".to_string(),
+        action: "overwrite".to_string(),
+    }];
+    let overwritten = svc
+        .execute_distribute_skill(overwrite_preview, ClaimOrigin::Direct)
+        .unwrap();
+    assert!(overwritten
+        .changes
+        .iter()
+        .any(|change| change.action == "overwrite"));
+    assert_eq!(
+        svc.get_skill_detail("release-checklist")
+            .unwrap()
+            .targets
+            .len(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(unmanaged.join("reference.md")).unwrap(),
+        "center-version"
+    );
+}
+
 // ── Target / claim deletion rules ────────────────────────────────
 
 #[test]
@@ -815,6 +904,32 @@ fn agent_inventory_includes_unmanaged_agent_skill_items() {
     assert!(codex.items.iter().any(|item| {
         !item.managed && item.path == rogue.display().to_string() && item.status == "unmanaged"
     }));
+}
+
+#[test]
+fn kimi_does_not_claim_agentbro_center_skills() {
+    let (_home, svc, _lock) = fresh_service("kimi-center-is-not-kimi");
+    write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared",
+        "shared-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+
+    let inventory = svc.list_agent_skill_inventory().unwrap();
+    let kimi = inventory
+        .into_iter()
+        .find(|agent| agent.agent_id == "kimi")
+        .expect("kimi inventory");
+
+    assert!(!kimi.installed);
+    assert_eq!(
+        kimi.skills_dir,
+        Some(svc.home.join(".kimi/skills").display().to_string())
+    );
+    assert_eq!(kimi.unmanaged_count, 0);
+    assert!(kimi.items.is_empty());
 }
 
 // ── Snapshot ─────────────────────────────────────────────────────

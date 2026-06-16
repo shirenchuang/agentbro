@@ -3,10 +3,15 @@ use super::{
     GitHubSkillPreview, InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest,
     TargetConfig,
 };
+use base64::{engine::general_purpose, Engine as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const GITHUB_API_CONNECT_TIMEOUT_SECS: u64 = 6;
+const GITHUB_API_MAX_TIME_SECS: u64 = 18;
+const GITHUB_BLOB_MAX_TIME_SECS: u64 = 4;
 
 pub fn install_skill(
     source_path: &str,
@@ -108,6 +113,11 @@ pub fn preview_github_skills(source: &str) -> Result<Vec<GitHubSkillPreview>, St
     } else {
         format!("github:{source}")
     };
+
+    if let Ok(Some(previews)) = preview_github_skills_via_api(&normalized) {
+        return Ok(previews);
+    }
+
     let (src, temp_root) = resolve_install_source(&normalized)?;
     let mut previews = Vec::new();
     collect_skill_previews(&src, &src, &mut previews)?;
@@ -116,6 +126,93 @@ pub fn preview_github_skills(source: &str) -> Result<Vec<GitHubSkillPreview>, St
     }
     previews.sort_by(|a, b| a.source_path.cmp(&b.source_path));
     Ok(previews)
+}
+
+fn preview_github_skills_via_api(source: &str) -> Result<Option<Vec<GitHubSkillPreview>>, String> {
+    let parsed = if let Some(spec) = source.strip_prefix("github:") {
+        parse_github_spec_ref(spec)?
+    } else if source.starts_with("https://github.com/") || source.starts_with("http://github.com/")
+    {
+        parse_github_url_ref(source)?
+    } else {
+        return Ok(None);
+    };
+
+    let Some((owner, repo)) = github_owner_repo(&parsed.repo_url) else {
+        return Ok(None);
+    };
+    let branch = match parsed.branch {
+        Some(branch) => branch,
+        None => github_default_branch(&owner, &repo)?,
+    };
+    let tree_url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/git/trees/{}?recursive=1",
+        url_path_encode(&branch)
+    );
+    let value = curl_json(&tree_url)?;
+    if value
+        .get("truncated")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let root_prefix = parsed
+        .subpath
+        .as_deref()
+        .map(normalize_repo_path)
+        .filter(|path| !path.is_empty());
+    let Some(entries) = value.get("tree").and_then(|value| value.as_array()) else {
+        return Ok(None);
+    };
+
+    let mut previews = Vec::new();
+    for entry in entries {
+        if entry.get("type").and_then(|value| value.as_str()) != Some("blob") {
+            continue;
+        }
+        let Some(path) = entry.get("path").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !path.ends_with("/SKILL.md") && path != "SKILL.md" {
+            continue;
+        }
+        if let Some(prefix) = root_prefix.as_deref() {
+            if path != format!("{prefix}/SKILL.md") && !path.starts_with(&format!("{prefix}/")) {
+                continue;
+            }
+        }
+
+        let source_path = path.strip_suffix("/SKILL.md").unwrap_or("").to_string();
+        let directory_name = if source_path.is_empty() {
+            repo.clone()
+        } else {
+            source_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&source_path)
+                .to_string()
+        };
+        let frontmatter = entry
+            .get("url")
+            .and_then(|value| value.as_str())
+            .and_then(|url| read_github_blob_text(url).ok())
+            .map(|content| parse_frontmatter_text(&content))
+            .unwrap_or_default();
+        previews.push(GitHubSkillPreview {
+            source_path,
+            name: frontmatter
+                .get("name")
+                .cloned()
+                .unwrap_or_else(|| directory_name.clone()),
+            description: frontmatter.get("description").cloned().unwrap_or_default(),
+            directory_name,
+        });
+    }
+
+    previews.sort_by(|a, b| a.source_path.cmp(&b.source_path));
+    Ok(Some(previews))
 }
 
 fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
@@ -608,6 +705,104 @@ fn parse_github_url_ref(source: &str) -> Result<GithubCloneRef, String> {
         branch,
         subpath,
     })
+}
+
+fn github_owner_repo(repo_url: &str) -> Option<(String, String)> {
+    let rest = repo_url
+        .strip_prefix("https://github.com/")
+        .or_else(|| repo_url.strip_prefix("http://github.com/"))?;
+    let mut parts = rest.split('/').filter(|part| !part.is_empty());
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+fn github_default_branch(owner: &str, repo: &str) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let value = curl_json(&url)?;
+    value
+        .get("default_branch")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("GitHub API response missing default branch for {owner}/{repo}"))
+}
+
+fn curl_json(url: &str) -> Result<serde_json::Value, String> {
+    let content = curl_text(url)?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse GitHub API response: {e}"))
+}
+
+fn curl_text(url: &str) -> Result<String, String> {
+    curl_text_with_timeout(url, GITHUB_API_MAX_TIME_SECS)
+}
+
+fn curl_text_with_timeout(url: &str, max_time_secs: u64) -> Result<String, String> {
+    let output = Command::new("curl")
+        .args(authenticated_curl_args())
+        .arg("-L")
+        .arg("--fail")
+        .arg("--connect-timeout")
+        .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
+        .arg("--max-time")
+        .arg(max_time_secs.to_string())
+        .arg("-H")
+        .arg("Accept: application/vnd.github+json")
+        .arg("-H")
+        .arg("User-Agent: AgentBro")
+        .arg(url)
+        .output()
+        .map_err(|e| format!("Failed to run curl: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to fetch {url}: {}",
+            redact_token(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("GitHub response was not UTF-8: {e}"))
+}
+
+fn read_github_blob_text(url: &str) -> Result<String, String> {
+    let content = curl_text_with_timeout(url, GITHUB_BLOB_MAX_TIME_SECS)?;
+    let value = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| format!("Failed to parse GitHub blob response: {e}"))?;
+    let encoded = value
+        .get("content")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "GitHub blob response missing content".to_string())?
+        .replace(['\n', '\r'], "");
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("Failed to decode GitHub blob content: {e}"))?;
+    String::from_utf8(bytes).map_err(|e| format!("GitHub blob content was not UTF-8: {e}"))
+}
+
+fn normalize_repo_path(path: &str) -> String {
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn url_path_encode(path: &str) -> String {
+    path.split('/')
+        .map(url_segment_encode)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn url_segment_encode(segment: &str) -> String {
+    let mut out = String::new();
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 fn clone_repo(
@@ -1191,6 +1386,32 @@ mod tests {
                 branch: Some("dev".to_string()),
                 subpath: None,
             },
+        );
+    }
+
+    #[test]
+    fn builds_github_api_paths_without_clone_paths() {
+        assert_eq!(
+            github_owner_repo("https://github.com/anthropics/skills.git"),
+            Some(("anthropics".to_string(), "skills".to_string())),
+        );
+        assert_eq!(normalize_repo_path("/skills//pdf/"), "skills/pdf");
+        assert_eq!(
+            url_path_encode("feature/skill name"),
+            "feature/skill%20name"
+        );
+        assert_eq!(url_segment_encode("skill name+v1"), "skill%20name%2Bv1");
+    }
+
+    #[test]
+    #[ignore]
+    fn live_preview_github_skills_vercel_labs() {
+        let previews = preview_github_skills("https://github.com/vercel-labs/skills").unwrap();
+        assert!(
+            previews
+                .iter()
+                .any(|preview| preview.source_path.contains("find-skills")),
+            "expected find-skills in previews, got {previews:?}"
         );
     }
 

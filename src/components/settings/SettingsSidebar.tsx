@@ -1,13 +1,9 @@
 import { useTranslation } from 'react-i18next'
-import type { AgentProgramInfo } from '../../services/agentApi'
-import { useAgentStore } from '../../stores/agentStore'
-import { useSkillStore } from '../../stores/skillStore'
+import { useMemo, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
-import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
-import { isAgentProgramInstalled } from '../../utils/agentPrograms'
-import { displayVersionValue } from '../../utils/versions'
+import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 
 interface SidebarItem {
   id: string
@@ -39,65 +35,34 @@ const sidebarGroups: SidebarGroup[] = [
 
 interface SettingsSidebarProps {
   activeSection: string
-  activeCapabilityView: CapabilityView
   activeIslandView: IslandSettingsView
   activeMonitorView: MonitorSettingsView
   collapsed: boolean
   onCollapsedChange: (collapsed: boolean) => void
   onSelect: (section: string) => void
-  onCapabilityViewChange: (view: CapabilityView) => void
   onIslandViewChange: (view: IslandSettingsView) => void
   onMonitorViewChange: (view: MonitorSettingsView) => void
-  onAddCustomAgent: () => void
-}
-
-function isInstalled(agent: AgentProgramInfo) {
-  return isAgentProgramInstalled(agent)
-}
-
-function displayVersion(agent: AgentProgramInfo) {
-  const installed = displayVersionValue(agent.installedVersion)
-  const latest = displayVersionValue(agent.latestVersion)
-  if (agent.status === 'updateAvailable' && latest && installed) {
-    return `${installed} → ${latest}`
-  }
-  if (agent.status === 'updateAvailable' && latest) {
-    return `最新 ${latest}`
-  }
-  return installed
-}
-
-function agentStatusClass(agent: AgentProgramInfo) {
-  if (agent.status === 'installed') return 'settings-capability-agent--installed'
-  if (agent.status === 'updateAvailable') return 'settings-capability-agent--update'
-  return 'settings-capability-agent--available'
 }
 
 export function SettingsSidebar({
   activeSection,
-  activeCapabilityView,
   activeIslandView,
   activeMonitorView,
   collapsed,
   onCollapsedChange,
   onSelect,
-  onCapabilityViewChange,
   onIslandViewChange,
   onMonitorViewChange,
-  onAddCustomAgent,
 }: SettingsSidebarProps) {
   const { t } = useTranslation()
-  const {
-    agents,
-    selectedAgentId,
-    focusAgent,
-  } = useAgentStore()
-  const { skills, packs } = useSkillStore()
   const skillActiveTab = useSkillStoreV2((s) => s.activeTab)
   const setSkillTab = useSkillStoreV2((s) => s.setTab)
   const skillAgents = useSkillStoreV2((s) => s.agents)
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
+  const [showUninstalledSkillAgents, setShowUninstalledSkillAgents] = useState(false)
+  const installedSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.installed), [skillAgents])
+  const uninstalledSkillAgents = useMemo(() => skillAgents.filter((agent) => !agent.installed), [skillAgents])
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -218,97 +183,6 @@ export function SettingsSidebar({
     )
   }
 
-  if (activeSection === 'agents') {
-    const installedAgents = agents.filter(isInstalled)
-    const availableAgents = agents.filter((agent) => !isInstalled(agent))
-    const centralCount = skills.filter((skill) => skill.source === 'island' || skill.agents.some((agent) => agent.agent === 'central')).length
-    const skillCount = skills.filter((skill) => skill.skillType === 'skill').length
-    const pluginCount = packs.length + skills.filter((skill) => skill.skillType === 'plugin' || skill.skillType === 'mcp').length
-    const profileCount = packs.length
-
-    const navItems: Array<{ id: CapabilityView; label: string; icon: string; count?: number }> = [
-      { id: 'agent', label: 'Agent 管理', icon: '🤖', count: agents.length },
-      { id: 'central', label: '中央技能库', icon: '▣', count: centralCount },
-      { id: 'skills', label: '全部 Skills', icon: '🧩', count: skillCount },
-      { id: 'plugins', label: '插件与 MCP', icon: '🔌', count: pluginCount },
-      { id: 'profiles', label: '技能包', icon: '📦', count: profileCount },
-      { id: 'discover', label: '项目发现', icon: '🔎' },
-      { id: 'market', label: '市场', icon: '🏪' },
-      { id: 'sync', label: '同步', icon: '☁' },
-    ]
-
-    const chooseAgent = (agentId: string) => {
-      focusAgent(agentId)
-      onCapabilityViewChange('agent')
-    }
-
-    return (
-      <nav className={capabilitySidebarClassName}>
-        {toggleSidebar}
-
-        <div className="settings-capability-nav">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={activeCapabilityView === item.id ? 'active' : ''}
-              aria-label={item.label}
-              title={item.label}
-              onClick={() => onCapabilityViewChange(item.id)}
-            >
-              <span className="settings-capability-nav__icon">{item.icon}</span>
-              <span className="settings-sidebar__label-text">{item.label}</span>
-              {typeof item.count === 'number' && <em>{item.count}</em>}
-            </button>
-          ))}
-        </div>
-
-        <div className="settings-sidebar__separator" />
-
-        <div className="settings-sidebar__group-label">已安装 AGENTS</div>
-        <div className="settings-capability-agent-list">
-          {installedAgents.map((agent) => (
-            <button
-              key={agent.id}
-              type="button"
-              className={`settings-capability-agent ${agentStatusClass(agent)} ${selectedAgentId === agent.id && activeCapabilityView === 'agent' ? 'active' : ''}`}
-              onClick={() => chooseAgent(agent.id)}
-            >
-              <i />
-              <span>{agent.displayName}</span>
-              <em>{displayVersion(agent)}</em>
-            </button>
-          ))}
-          {installedAgents.length === 0 && <div className="settings-capability-empty">暂无已安装 Agent</div>}
-        </div>
-
-        <div className="settings-sidebar__group-label">未安装</div>
-        <div className="settings-capability-agent-list">
-          {availableAgents.map((agent) => (
-            <button
-              key={agent.id}
-              type="button"
-              className={`settings-capability-agent ${agentStatusClass(agent)} ${selectedAgentId === agent.id && activeCapabilityView === 'agent' ? 'active' : ''}`}
-              onClick={() => chooseAgent(agent.id)}
-            >
-              <i />
-              <span>{agent.displayName}</span>
-              <em>{agent.kind === 'cli' ? 'CLI' : 'APP'}</em>
-            </button>
-          ))}
-          {availableAgents.length === 0 && <div className="settings-capability-empty">暂无可安装 Agent</div>}
-          <button
-            type="button"
-            className="settings-capability-more"
-            onClick={onAddCustomAgent}
-          >
-            + 添加自定义
-          </button>
-        </div>
-      </nav>
-    )
-  }
-
   if (activeSection === 'skill-manager-v2') {
     const skillTabs: Array<{ id: SkillManagerTab; label: string; icon: string; iconBg: string }> = [
       { id: 'library', label: 'Skill 库', icon: '🧩', iconBg: '#34C759' },
@@ -343,22 +217,58 @@ export function SettingsSidebar({
           ))}
           {skillActiveTab === 'agents' && (
             <div className="sm2-sidebar__subgroup">
-              <div className="sm2-sidebar__subgroup-label">已识别 Agent</div>
+              <div className="sm2-sidebar__subgroup-label">
+                <span>已安装 Agent</span>
+                <em>{installedSkillAgents.length}</em>
+              </div>
               {skillAgents.length === 0 ? (
                 <div className="sm2-sidebar__subgroup-empty">暂无</div>
               ) : (
-                skillAgents.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
-                    onClick={() => selectAgent(a.id)}
-                  >
-                    <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
-                    <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
-                    {a.installed && <span className="sm2-sidebar__subitem-dot" />}
-                  </button>
-                ))
+                <>
+                  {installedSkillAgents.length === 0 ? (
+                    <div className="sm2-sidebar__subgroup-empty">暂无已安装 Agent</div>
+                  ) : (
+                    installedSkillAgents.map((a) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
+                        onClick={() => selectAgent(a.id)}
+                      >
+                        <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
+                        <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
+                        <span className="sm2-sidebar__subitem-dot" />
+                      </button>
+                    ))
+                  )}
+                  {uninstalledSkillAgents.length > 0 && (
+                    <div className="sm2-sidebar__subgroup-section">
+                      <button
+                        type="button"
+                        className="sm2-sidebar__fold-toggle"
+                        aria-expanded={showUninstalledSkillAgents}
+                        onClick={() => setShowUninstalledSkillAgents((open) => !open)}
+                      >
+                        <span className={`sm2-sidebar__fold-chevron${showUninstalledSkillAgents ? ' sm2-sidebar__fold-chevron--open' : ''}`}>
+                          ›
+                        </span>
+                        <span>未安装 Agent</span>
+                        <em>{uninstalledSkillAgents.length}</em>
+                      </button>
+                      {showUninstalledSkillAgents && uninstalledSkillAgents.map((a) => (
+                        <button
+                          key={a.id}
+                          type="button"
+                          className={`sm2-sidebar__subitem sm2-sidebar__subitem--muted${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
+                          onClick={() => selectAgent(a.id)}
+                        >
+                          <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
+                          <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

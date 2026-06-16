@@ -87,6 +87,15 @@ export interface SkillDetail extends SkillSummary {
   source: SkillSourceDetail | null
 }
 
+export interface SkillExplanation {
+  skillId: string
+  lang: string
+  model: string
+  text: string
+  cachedAt: string
+  fromCache: boolean
+}
+
 export interface AgentSummary {
   id: string
   displayName: string
@@ -203,10 +212,16 @@ export interface ConflictBlocker {
 export interface DistributionChange {
   skillId: string
   agentId: string
-  action: 'create' | 'reuse' | 'appendClaim' | 'skip' | 'blocked' | string
+  action: 'create' | 'reuse' | 'appendClaim' | 'skip' | 'blocked' | 'overwrite' | string
   actualMode?: 'link' | 'copy'
   reason?: string
   targetPath: string
+}
+
+export interface DistributionBlockerDecision {
+  skillId: string
+  agentId: string
+  action: 'overwrite' | 'skip'
 }
 
 export interface DistributionPreview {
@@ -215,6 +230,7 @@ export interface DistributionPreview {
   requestedMode: 'link' | 'copy'
   changes: DistributionChange[]
   blockers: ConflictBlocker[]
+  blockerDecisions: DistributionBlockerDecision[]
 }
 
 export interface AddCenterSkillInput {
@@ -402,6 +418,71 @@ export interface UpsertPackInput {
   skillIds: string[]
 }
 
+export interface GitHubRepoPreview {
+  repo: {
+    owner: string
+    repo: string
+    branch: string
+    normalizedUrl: string
+  }
+  skills: Array<{
+    sourcePath: string
+    skillId: string
+    skillName: string
+    description: string | null
+    rootDirectory: string
+    skillDirectoryName: string
+    downloadUrl: string
+    conflict: {
+      existingSkillId: string
+      existingName: string
+      existingCanonicalPath: string | null
+      proposedSkillId: string
+      proposedName: string
+    } | null
+  }>
+}
+
+export interface GitHubSkillImportSelection {
+  sourcePath: string
+  resolution: 'overwrite' | 'skip' | 'rename'
+  renamedSkillId?: string | null
+}
+
+export interface GitHubRepoImportResult {
+  repo: GitHubRepoPreview['repo']
+  importedSkills: Array<{
+    sourcePath: string
+    originalSkillId: string
+    importedSkillId: string
+    skillName: string
+    targetDirectory: string
+    resolution: string
+  }>
+  skippedSkills: string[]
+}
+
+export interface MarketplaceSkill {
+  id: string
+  registryId: string
+  name: string
+  description: string | null
+  source: string | null
+  installCount: number | null
+  downloadUrl: string
+  webUrl: string | null
+  isInstalled: boolean
+  syncedAt: string
+  cacheUpdatedAt: string | null
+}
+
+export interface MarketplaceSkillDetail {
+  description: string | null
+  githubUrl: string | null
+  installCommand: string | null
+  webUrl: string | null
+}
+
 const isTauri = '__TAURI_INTERNALS__' in window
 
 export const skillApiV2 = {
@@ -441,6 +522,21 @@ export const skillApiV2 = {
     isTauri ? invoke<SkillSummary[]>('list_center_skills_v2') : Promise.resolve([]),
   getSkillDetail: (skillId: string) =>
     isTauri ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }) : Promise.resolve(null as unknown as SkillDetail),
+  readFileContent: (filePath: string) =>
+    isTauri ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
+  getSkillExplanation: (skillId: string, lang: string) =>
+    isTauri ? invoke<SkillExplanation | null>('get_skill_explanation_cmd', { skillId, lang }) : Promise.resolve(null),
+  generateSkillExplanation: (skillId: string, skillPath: string, lang: string, refresh = false) =>
+    isTauri
+      ? invoke<SkillExplanation>('generate_skill_explanation_cmd', { skillId, skillPath, lang, refresh })
+      : Promise.resolve({
+          skillId,
+          lang,
+          model: 'demo',
+          text: '解释生成功能需要在 Tauri 应用中使用。',
+          cachedAt: new Date().toISOString(),
+          fromCache: false,
+        }),
 
   previewAddCenterSkill: (input: AddCenterSkillInput) =>
     isTauri
@@ -450,6 +546,18 @@ export const skillApiV2 = {
     isTauri
       ? invoke<AddCenterSkillResult>('execute_add_center_skill', { input, decisions })
       : Promise.resolve({ skillIds: [], updated: [], skipped: [] }),
+  previewGitHubRepoImport: (repoUrl: string) =>
+    isTauri
+      ? invoke<GitHubRepoPreview>('preview_github_repo_import', { repoUrl })
+      : Promise.resolve({ repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl }, skills: [] }),
+  importGitHubRepoSkills: (repoUrl: string, selections: GitHubSkillImportSelection[]) =>
+    isTauri
+      ? invoke<GitHubRepoImportResult>('import_github_repo_skills', { repoUrl, selections })
+      : Promise.resolve({
+          repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl },
+          importedSkills: [],
+          skippedSkills: selections.filter(item => item.resolution === 'skip').map(item => item.sourcePath),
+        }),
 
   previewDeleteCenterSkill: (skillId: string) =>
     isTauri
@@ -463,7 +571,7 @@ export const skillApiV2 = {
   previewDistribute: (skillIds: string[], targetAgents: string[], requestedMode: 'link' | 'copy') =>
     isTauri
       ? invoke<DistributionPreview>('preview_distribute_skill', { skillIds, targetAgents, requestedMode })
-      : Promise.resolve({ skillIds, targetAgents, requestedMode, changes: [], blockers: [] }),
+      : Promise.resolve({ skillIds, targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
   executeDistribute: (preview: DistributionPreview) =>
     isTauri ? invoke<DistributionPreview>('execute_distribute_skill', { preview }) : Promise.resolve(preview),
 
@@ -490,9 +598,9 @@ export const skillApiV2 = {
   deletePack: (packId: string) =>
     isTauri ? invoke<void>('execute_delete_skill_pack', { packId }) : Promise.resolve(),
   previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
-    isTauri ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [] }),
+    isTauri ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
   executeApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
-    isTauri ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [] }),
+    isTauri ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
   previewRemovePackFromAgent: (packId: string, agentId: string) =>
     isTauri ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
   removePackFromAgent: (packId: string, agentId: string) =>
@@ -519,6 +627,106 @@ export const skillApiV2 = {
 
   exportSnapshot: () => (isTauri ? invoke<string>('skill_manager_export_snapshot') : Promise.resolve('')),
   openPath: (path: string) => (isTauri ? invoke<void>('open_skill_path', { path }) : Promise.resolve()),
+  searchMarketplaceSkills: (registryId?: string | null, query?: string | null, board?: string | null) =>
+    isTauri
+      ? invoke<MarketplaceSkill[]>('search_marketplace_skills', { registryId: registryId ?? null, query: query ?? null, board: board ?? null })
+      : fetchSkillsShMarketplace(registryId, query, board),
+  fetchMarketplaceSkillDetail: (source: string, skillId: string) =>
+    isTauri
+      ? invoke<MarketplaceSkillDetail>('fetch_marketplace_skill_detail', { source, skillId })
+      : Promise.resolve({ description: null, githubUrl: null, installCommand: null, webUrl: `https://skills.sh/${source}/${skillId}` }),
+}
+
+interface SkillsShSearchSkill {
+  id?: string
+  skillId?: string
+  skill_id?: string
+  name?: string
+  source?: string
+  installs?: number
+}
+
+interface SkillsShSearchResponse {
+  skills?: SkillsShSearchSkill[]
+}
+
+async function fetchSkillsShMarketplace(
+  registryId?: string | null,
+  query?: string | null,
+  board?: string | null,
+): Promise<MarketplaceSkill[]> {
+  const wantsSkillsSh = !registryId || ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
+  if (!wantsSkillsSh || typeof fetch !== 'function') return []
+
+  try {
+    const url = new URL('https://skills.sh/api/search')
+    const queryText = query?.trim() || (board === 'hot' ? 'popular' : board === 'trending' ? 'trending' : 'skill')
+    url.searchParams.set('q', queryText)
+    url.searchParams.set('limit', '200')
+    const response = await fetch(url.toString())
+    if (!response.ok) return fallbackSkillsShMarketplace(query, board)
+
+    const value = (await response.json()) as SkillsShSearchResponse | SkillsShSearchSkill[]
+    const skills = Array.isArray(value) ? value : value.skills ?? []
+    const now = new Date().toISOString()
+    const mapped = skills
+      .map((skill) => toMarketplaceSkill(skill, now))
+      .filter((skill): skill is MarketplaceSkill => Boolean(skill))
+    return mapped.length > 0 ? mapped : fallbackSkillsShMarketplace(query, board)
+  } catch {
+    return fallbackSkillsShMarketplace(query, board)
+  }
+}
+
+function toMarketplaceSkill(skill: SkillsShSearchSkill, syncedAt: string): MarketplaceSkill | null {
+  const source = skill.source?.trim()
+  const skillId = (skill.skillId ?? skill.skill_id ?? '').trim()
+  if (!source || !skillId) return null
+
+  const id = skill.id?.trim()
+    ? `skillssh:${skill.id.trim().replace(/\//g, '@')}`
+    : `skillssh:${source.replace(/\//g, '@')}@${skillId.replace(/\//g, '@')}`
+  const installs = typeof skill.installs === 'number' ? skill.installs : 0
+  return {
+    id,
+    registryId: 'skills-sh',
+    name: skill.name?.trim() || skillId,
+    description: installs > 0 ? `skills.sh · ${installs} installs · ${source}` : `skills.sh · ${source}`,
+    source,
+    installCount: installs > 0 ? installs : null,
+    downloadUrl: `skillssh:${source}/${skillId}`,
+    webUrl: `https://skills.sh/${source}/${skillId}`,
+    isInstalled: false,
+    syncedAt,
+    cacheUpdatedAt: syncedAt,
+  }
+}
+
+function fallbackSkillsShMarketplace(query?: string | null, board?: string | null): MarketplaceSkill[] {
+  const now = new Date().toISOString()
+  const rows: SkillsShSearchSkill[] = [
+    { id: 'vercel-labs/skills/find-skills', skillId: 'find-skills', name: 'find-skills', source: 'vercel-labs/skills', installs: 2_006_831 },
+    { id: 'anthropics/skills/frontend-design', skillId: 'frontend-design', name: 'frontend-design', source: 'anthropics/skills', installs: 541_500 },
+    { id: 'vercel-labs/agent-skills/vercel-react-best-practices', skillId: 'vercel-react-best-practices', name: 'vercel-react-best-practices', source: 'vercel-labs/agent-skills', installs: 474_400 },
+    { id: 'vercel-labs/agent-browser/agent-browser', skillId: 'agent-browser', name: 'agent-browser', source: 'vercel-labs/agent-browser', installs: 447_200 },
+    { id: 'microsoft/azure-skills/microsoft-foundry', skillId: 'microsoft-foundry', name: 'microsoft-foundry', source: 'microsoft/azure-skills', installs: 389_800 },
+    { id: 'vercel-labs/agent-skills/web-design-guidelines', skillId: 'web-design-guidelines', name: 'web-design-guidelines', source: 'vercel-labs/agent-skills', installs: 388_900 },
+    { id: 'microsoft/azure-skills/azure-ai', skillId: 'azure-ai', name: 'azure-ai', source: 'microsoft/azure-skills', installs: 387_400 },
+    { id: 'microsoft/azure-skills/azure-deploy', skillId: 'azure-deploy', name: 'azure-deploy', source: 'microsoft/azure-skills', installs: 387_000 },
+    { id: 'microsoft/azure-skills/azure-diagnostics', skillId: 'azure-diagnostics', name: 'azure-diagnostics', source: 'microsoft/azure-skills', installs: 386_900 },
+  ]
+  const q = query?.trim().toLowerCase()
+  const filtered = q
+    ? rows.filter((row) => [row.name, row.source, row.skillId].filter(Boolean).join(' ').toLowerCase().includes(q))
+    : rows
+  const ordered = board === 'trending'
+    ? [...filtered].sort((a, b) => (b.name || '').localeCompare(a.name || ''))
+    : board === 'hot'
+      ? [...filtered].sort((a, b) => (b.installs || 0) - (a.installs || 0)).slice(1)
+      : filtered
+  return ordered
+    .map((skill) => toMarketplaceSkill(skill, now))
+    .filter((skill): skill is MarketplaceSkill => Boolean(skill))
 }
 
 function demoAgentInventory(): AgentSkillInventoryAgent[] {

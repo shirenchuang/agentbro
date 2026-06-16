@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { skillApi } from '../../services/skillApi'
 import type { SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -73,7 +72,7 @@ export function SkillDetailSlider({
         setSkillDocPath(skillMd)
         if (skillMd) {
           loadFile(skillMd)
-          skillApi.readFileContent(skillMd).then(setSkillDocContent).catch(() => setSkillDocContent(''))
+          skillApiV2.readFileContent(skillMd).then(setSkillDocContent).catch(() => setSkillDocContent(''))
         } else {
           setSkillDocContent('')
         }
@@ -86,7 +85,7 @@ export function SkillDetailSlider({
         const d = fallbackToSkillDetail(fallbackSkill)
         setDetail(d)
         setSkillDocPath(`${fallbackSkill.centerPath}/SKILL.md`)
-        skillApi
+        skillApiV2
           .readFileContent(`${fallbackSkill.centerPath}/SKILL.md`)
           .then((content) => {
             setSkillDocContent(content)
@@ -106,7 +105,7 @@ export function SkillDetailSlider({
     setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
     setFileLoading(true)
     try {
-      const content = await skillApi.readFileContent(path)
+      const content = await skillApiV2.readFileContent(path)
       setFileContent(content)
     } catch (e) {
       setFileContent(`无法读取文件：${e}`)

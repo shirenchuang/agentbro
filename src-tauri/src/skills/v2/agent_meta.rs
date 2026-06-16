@@ -161,7 +161,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "opencode" => ".opencode/skills",
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
-        "kimi" => ".agents/skills",
+        "kimi" => ".kimi/skills",
         "deepseek" => ".deepseek/skills",
         "windsurf" => ".windsurf/skills",
         "augment" => ".augment/skills",

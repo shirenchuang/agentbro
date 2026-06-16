@@ -53,7 +53,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
-        "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".agents/skills"),
+        "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".kimi/skills"),
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),

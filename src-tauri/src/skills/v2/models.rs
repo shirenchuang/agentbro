@@ -286,6 +286,14 @@ pub struct ConflictBlocker {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DistributionBlockerDecision {
+    pub skill_id: String,
+    pub agent_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DistributionChange {
     pub skill_id: String,
     pub agent_id: String,
@@ -303,6 +311,8 @@ pub struct DistributionPreview {
     pub requested_mode: String,
     pub changes: Vec<DistributionChange>,
     pub blockers: Vec<ConflictBlocker>,
+    #[serde(default)]
+    pub blocker_decisions: Vec<DistributionBlockerDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

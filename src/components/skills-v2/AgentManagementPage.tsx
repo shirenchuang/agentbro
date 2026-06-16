@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
+import { agentApi, type AgentOutputEvent, type AgentProgramInfo } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentDetail, AdoptPreview, RemovePackFromAgentPreview, UnmanagedItemDto } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -22,11 +23,55 @@ export function AgentManagementPage() {
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [detailFallback, setDetailFallback] = useState<SkillDetailFallback | null>(null)
   const [busy, setBusy] = useState(false)
+  const [scanningAgentId, setScanningAgentId] = useState<string | null>(null)
+  const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null)
+  const [installingAgentId, setInstallingAgentId] = useState<string | null>(null)
+  const [programs, setPrograms] = useState<Record<string, AgentProgramInfo>>({})
+  const [programLoading, setProgramLoading] = useState(false)
+  const [agentOutput, setAgentOutput] = useState<string[]>([])
   const [notice, setNotice] = useState<string | null>(null)
+  const selectedAgentIdRef = useRef<string | null>(null)
+  const actionBusy = busy || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null
+
+  const loadPrograms = useCallback(async () => {
+    setProgramLoading(true)
+    try {
+      const next = await agentApi.refresh()
+      setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setProgramLoading(false)
+    }
+  }, [state])
 
   useEffect(() => {
     state.loadOverview()
+    loadPrograms()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    selectedAgentIdRef.current = state.selectedAgentId
+  }, [state.selectedAgentId])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let alive = true
+    agentApi.onOutput((event) => {
+      if (event.agentId !== selectedAgentIdRef.current) return
+      setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
+    }).then((next) => {
+      if (alive) unlisten = next
+      else next()
+    }).catch(() => {
+      // Output streaming is best-effort; the awaited install/update command
+      // still reports failure through the action itself.
+    })
+    return () => {
+      alive = false
+      unlisten?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -39,6 +84,7 @@ export function AgentManagementPage() {
   useEffect(() => {
     setTab('overview')
     setNotice(null)
+    setAgentOutput([])
   }, [state.selectedAgentId])
 
   const openAdopt = async (agentId: string, unmanagedId: string) => {
@@ -87,7 +133,7 @@ export function AgentManagementPage() {
   }
 
   const scanAgent = async (agentId: string) => {
-    setBusy(true)
+    setScanningAgentId(agentId)
     setNotice(null)
     try {
       const result = await skillApiV2.scanAgentInventory(agentId)
@@ -99,8 +145,55 @@ export function AgentManagementPage() {
     } catch (e) {
       state.setError(String(e))
     } finally {
-      setBusy(false)
+      setScanningAgentId(null)
     }
+  }
+
+  const updateAgent = async (agentId: string) => {
+    setUpdatingAgentId(agentId)
+    setNotice(null)
+    setAgentOutput([])
+    try {
+      await agentApi.update(agentId)
+      await loadPrograms()
+      await state.loadOverview(true)
+      await state.loadAgentDetail(agentId, true)
+      setNotice('Agent 更新完成')
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setUpdatingAgentId(null)
+    }
+  }
+
+  const installAgent = async (agentId: string) => {
+    setInstallingAgentId(agentId)
+    setNotice(null)
+    setAgentOutput([])
+    try {
+      await agentApi.install(agentId)
+      await loadPrograms()
+      await state.loadOverview(true)
+      await state.loadAgentDetail(agentId, true)
+      setNotice('Agent 安装完成')
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setInstallingAgentId(null)
+    }
+  }
+
+  const openAgentDownload = async (agentId: string) => {
+    try {
+      await agentApi.openDownload(agentId)
+    } catch (e) {
+      state.setError(String(e))
+    }
+  }
+
+  const refreshAll = async () => {
+    await Promise.all([state.loadOverview(true), loadPrograms()])
+    if (state.selectedAgentId) await state.loadAgentDetail(state.selectedAgentId, true)
   }
 
   const openSkillDetail = (skillId: string, fallback?: SkillDetailFallback | null) => {
@@ -116,8 +209,12 @@ export function AgentManagementPage() {
           <p className="sm2__header-subtitle">查看每个 Agent 的 Skills、技能包、MCP、插件与 Hook 状态。</p>
         </div>
         <div className="sm2__tabs">
-          <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || busy}>
+          <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || actionBusy}>
             刷新总览
+          </button>
+          <button className="sm2__btn" onClick={refreshAll} disabled={state.loading || actionBusy || programLoading}>
+            {programLoading && <span className="sm2__spinner" />}
+            获取版本
           </button>
         </div>
       </div>
@@ -135,11 +232,20 @@ export function AgentManagementPage() {
             detail={detail}
             tab={tab}
             onTab={setTab}
-            busy={busy}
+            busy={actionBusy}
+            scanning={scanningAgentId === detail.id}
+            updating={updatingAgentId === detail.id}
+            installing={installingAgentId === detail.id}
+            program={programs[detail.id] || null}
+            programLoading={programLoading}
+            agentOutput={agentOutput}
             onAdopt={openAdopt}
             onRevoke={revoke}
             onApplyPack={applyPack}
             onScan={scanAgent}
+            onUpdate={updateAgent}
+            onInstall={installAgent}
+            onOpenDownload={openAgentDownload}
             onOpenSkillDetail={openSkillDetail}
           />
         )}
@@ -194,28 +300,68 @@ export function AgentManagementPage() {
   )
 }
 
+function formatAgentOutput(event: AgentOutputEvent) {
+  const prefix = event.stream === 'stderr' ? '!' : event.stream === 'stdout' ? '>' : '*'
+  return `${prefix} ${event.line}`
+}
+
 function AgentDetailView({
   detail,
   tab,
   onTab,
   busy,
+  scanning,
+  updating,
+  installing,
+  program,
+  programLoading,
+  agentOutput,
   onAdopt,
   onRevoke,
   onApplyPack,
   onScan,
+  onUpdate,
+  onInstall,
+  onOpenDownload,
   onOpenSkillDetail,
 }: {
   detail: AgentDetail
   tab: DetailTab
   onTab: (t: DetailTab) => void
   busy: boolean
+  scanning: boolean
+  updating: boolean
+  installing: boolean
+  program: AgentProgramInfo | null
+  programLoading: boolean
+  agentOutput: string[]
   onAdopt: (agentId: string, unmanagedId: string) => void
   onRevoke: (packId: string, agentId: string) => void
   onApplyPack: (packId: string, agentId: string) => void
   onScan: (agentId: string) => void
+  onUpdate: (agentId: string) => void
+  onInstall: (agentId: string) => void
+  onOpenDownload: (agentId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
   const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => u.agentId === detail.id)
+  const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : true
+  const canInstall = Boolean(program?.installCommand)
+  const canOpenDownload = Boolean(program?.downloadUrl)
+  const installedVersion = program?.installedVersion ?? detail.version
+  const latestVersion = program?.latestVersion ?? detail.latestVersion
+  const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
+  const versionLabel = installed ? installedVersion || '未知' : '未安装'
+  const updateLabel = !installed
+    ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
+    : latestVersion
+      ? hasUpdate ? `可更新到 ${latestVersion}` : '已是最新版本'
+      : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+  const primaryAction = !installed
+    ? canInstall
+      ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
+      : { label: '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: false }
+    : { label: updating ? '正在更新' : hasUpdate ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !hasUpdate, onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${detail.skills.length + unmanaged.length})` },
@@ -228,29 +374,39 @@ function AgentDetailView({
   return (
     <div className="sm2__agent-workspace">
       <div className="sm2__agent-hero">
-        <AgentIconBadge iconKey={detail.iconKey} size={52} />
+        <AgentIconBadge iconKey={detail.iconKey} size={38} />
         <div className="sm2__agent-hero-main">
           <div className="sm2__agent-hero-title">{detail.displayName}</div>
-          <div className="sm2__agent-hero-sub">
-            版本 {detail.version || '未知'}
-            {detail.latestVersion && detail.latestVersion !== detail.version ? ` · 可更新到 ${detail.latestVersion}` : ''}
+          <div className="sm2__agent-version-row">
+            <span className="sm2__agent-version-pill">当前版本 {versionLabel}</span>
+            <span className={`sm2__agent-update-state${hasUpdate ? ' sm2__agent-update-state--available' : ''}`}>
+              {updateLabel}
+            </span>
           </div>
-          <PathLine label="Skills" value={detail.skillsDir} />
-          <PathLine label="MCP" value={detail.mcpConfigPath} />
+        </div>
+        <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">
+          <Stat value={detail.skills.length} label="已管理" />
+          <Stat value={unmanaged.length} label="未管理" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />
+          <Stat value={detail.appliedPacks.length} label="技能包" />
+          <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
         </div>
         <div className="sm2__btn-row" style={{ margin: 0 }}>
-          <button className="sm2__btn" disabled={busy} onClick={() => onScan(detail.id)}>
-            重新扫描此 Agent
+          <button className="sm2__btn sm2__btn--primary" disabled={primaryAction.disabled} onClick={primaryAction.onClick}>
+            {primaryAction.busy && <span className="sm2__spinner" />}
+            {primaryAction.label}
+          </button>
+          <button className="sm2__btn" disabled={busy || scanning || updating || installing || !installed} onClick={() => onScan(detail.id)}>
+            {scanning && <span className="sm2__spinner" />}
+            {scanning ? '正在扫描' : '重新扫描此 Agent'}
           </button>
         </div>
       </div>
 
-      <div className="sm2__stat-grid">
-        <Stat value={detail.skills.length} label="已管理 Skills" />
-        <Stat value={unmanaged.length} label="未管理 Skills" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />
-        <Stat value={detail.appliedPacks.length} label="已应用技能包" />
-        <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP / Plugins" />
-      </div>
+      {agentOutput.length > 0 && (
+        <div className="sm2__agent-output" aria-label="安装更新输出">
+          {agentOutput.map((line, index) => <code key={`${index}-${line}`}>{line}</code>)}
+        </div>
+      )}
 
       {detail.health.length > 0 && (
         <div className="sm2__notice sm2__notice--warn">
@@ -287,16 +443,6 @@ function Stat({ value, label, tone }: { value: number; label: string; tone?: 'ok
     <div className={`sm2__stat${tone ? ` sm2__stat--${tone}` : ''}`}>
       <strong>{value}</strong>
       <span>{label}</span>
-    </div>
-  )
-}
-
-function PathLine({ label, value }: { label: string; value: string | null }) {
-  if (!value) return null
-  return (
-    <div className="sm2__pathline">
-      <span>{label}</span>
-      <code>{value}</code>
     </div>
   )
 }
@@ -500,10 +646,16 @@ function ManagedSkillCard({
     >
       <div className="sm2__agent-skill-card-head">
         <div className="sm2__agent-skill-icon">{initials(name)}</div>
+        <div className="sm2__agent-skill-card-titleline">
+          <strong>{name}</strong>
+          <span>{claims.length > 0 ? claims.join(' / ') : '独立安装'}</span>
+        </div>
         <span className={`sm2__tag sm2__tag--${skill.status}`}>{skill.status}</span>
       </div>
-      <strong>{name}</strong>
-      <span>{skill.actualMode} · {claims.length > 0 ? claims.join(' / ') : '独立安装'}</span>
+      <div className="sm2__agent-skill-meta">
+        <span className="sm2__source-pill">{skill.actualMode}</span>
+        <span className="sm2__source-pill">{skill.claims[0]?.claimType || 'direct'}</span>
+      </div>
       <code>{skill.targetPath}</code>
     </article>
   )
@@ -581,10 +733,12 @@ function UnmanagedSkillCollection({
         >
           <div className="sm2__agent-skill-card-head">
             <div className="sm2__agent-skill-icon">{initials(u.inferredSkillId || u.path.split('/').pop() || 'SK')}</div>
+            <div className="sm2__agent-skill-card-titleline">
+              <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
+              <span>{u.reason}</span>
+            </div>
             <span className="sm2__tag sm2__tag--unmanaged">未管理</span>
           </div>
-          <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
-          <span>{u.reason}</span>
           <code>{u.path}</code>
           <button className="sm2__btn sm2__btn--primary" onClick={(e) => {
             e.stopPropagation()
@@ -925,6 +1079,9 @@ function AdoptDialog({
   const [renamedId, setRenamedId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const selectedOption = preview.options.find((o) => o.value === option)
+  const optionCopy = selectedOption ? adoptOptionCopy(selectedOption) : null
+  const effectiveRenamedId = renamedId.trim() || `${preview.inferredSkillId}-import`
 
   const execute = async () => {
     setBusy(true)
@@ -942,32 +1099,138 @@ function AdoptDialog({
   return (
     <PreviewDialog
       title="接管未管理 Skill"
-      confirmLabel="执行接管"
-      destructive={preview.options.find((o) => o.value === option)?.destructive}
+      confirmLabel={option === 'skip' ? '保持未管理' : '执行接管'}
+      modalClassName="sm2__modal--adopt"
+      destructive={selectedOption?.destructive}
       busy={busy}
       onConfirm={execute}
       onCancel={onClose}
     >
-      <div className="sm2__detail-meta">
-        <div>Skill：{preview.inferredSkillId}</div>
-        <div>路径：{preview.skillPath}</div>
-        <div>中心库已有同名：{preview.centerHasSameId ? '是' : '否'}</div>
-      </div>
-      <div className="sm2__field" style={{ marginTop: 12 }}>
-        <label>处理方式</label>
-        <select value={option} onChange={(e) => setOption(e.target.value)}>
-          {preview.options.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-      </div>
-      {option === 'rename' && (
-        <div className="sm2__field">
-          <label>新的 Skill ID</label>
-          <input value={renamedId} onChange={(e) => setRenamedId(e.target.value)} placeholder={`${preview.inferredSkillId}-import`} />
+      <div className="sm2-adopt">
+        <div className="sm2-adopt__summary">
+          <div>
+            <span>Skill</span>
+            <strong>{preview.inferredSkillId || '未命名 Skill'}</strong>
+          </div>
+          <div>
+            <span>中心库同名</span>
+            <strong>{preview.centerHasSameId ? '已存在' : '无冲突'}</strong>
+          </div>
+          <div className="sm2-adopt__summary-path">
+            <span>Agent 路径</span>
+            <code>{preview.skillPath}</code>
+          </div>
         </div>
-      )}
-      {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+
+        <section className="sm2-adopt__section">
+          <div className="sm2-adopt__section-head">
+            <h4>选择接管方式</h4>
+            <span>{preview.canQuickAdopt ? '可以直接导入中心库' : '中心库已有不同内容，需要处理冲突'}</span>
+          </div>
+          <div className="sm2-adopt__options" role="radiogroup" aria-label="接管方式">
+            {preview.options.map((o) => {
+              const copy = adoptOptionCopy(o)
+              const active = option === o.value
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  className={`sm2-adopt__option${active ? ' sm2-adopt__option--active' : ''}${o.destructive ? ' sm2-adopt__option--destructive' : ''}`}
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => {
+                    setOption(o.value)
+                    if (o.value === 'rename' && !renamedId.trim()) setRenamedId(`${preview.inferredSkillId}-import`)
+                  }}
+                >
+                  <span className="sm2-adopt__radio" />
+                  <span className="sm2-adopt__option-main">
+                    <strong>{copy.title}</strong>
+                    <span>{copy.description}</span>
+                  </span>
+                  <em>{copy.badge}</em>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        {option === 'rename' && (
+          <div className="sm2-adopt__rename">
+            <label htmlFor="sm2-adopt-rename">新的 Skill ID</label>
+            <input
+              id="sm2-adopt-rename"
+              value={renamedId}
+              onChange={(e) => setRenamedId(e.target.value)}
+              placeholder={`${preview.inferredSkillId}-import`}
+            />
+            <span>将以「{effectiveRenamedId}」写入中心库，原 Agent 文件会作为副本目标被管理。</span>
+          </div>
+        )}
+
+        {optionCopy && (
+          <div className={`sm2-adopt__impact${selectedOption?.destructive ? ' sm2-adopt__impact--warn' : ''}`}>
+            <strong>{selectedOption?.destructive ? '会改动 Agent 目录' : '不会删除现有文件'}</strong>
+            <span>{optionCopy.impact}</span>
+          </div>
+        )}
+
+        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      </div>
     </PreviewDialog>
   )
+}
+
+function adoptOptionCopy(option: { value: string; label: string; destructive: boolean }) {
+  switch (option.value) {
+    case 'import_keep':
+      return {
+        title: '导入中心库，保留 Agent 文件',
+        description: '把这个 Skill 纳入中心库记录，Agent 目录里的原文件保持不动。',
+        badge: '推荐',
+        impact: '适合先接管已有文件，后续再决定是否改成链接或副本。',
+      }
+    case 'import_link':
+      return {
+        title: '导入中心库，并替换为链接',
+        description: '中心库成为唯一来源，Agent 目录改为指向中心库的链接。',
+        badge: '链接',
+        impact: '会删除当前 Agent 目录中的 Skill 文件夹，再创建到中心库的链接。',
+      }
+    case 'import_copy':
+      return {
+        title: '导入中心库，并替换为副本',
+        description: '中心库保存一份，Agent 目录重新写入一份托管副本。',
+        badge: '副本',
+        impact: '会删除当前 Agent 目录中的 Skill 文件夹，再从中心库复制回 Agent。',
+      }
+    case 'overwrite_center':
+      return {
+        title: '用当前文件覆盖中心库',
+        description: '中心库已有同名 Skill，将以这个 Agent 里的版本为准。',
+        badge: '覆盖',
+        impact: '会替换中心库同名 Skill 的内容，请确认当前 Agent 文件是正确版本。',
+      }
+    case 'rename':
+      return {
+        title: '改名导入中心库',
+        description: '保留中心库已有同名 Skill，把当前文件作为新的 Skill ID 导入。',
+        badge: '改名',
+        impact: '不会覆盖中心库已有 Skill，也不会删除当前 Agent 文件。',
+      }
+    case 'skip':
+      return {
+        title: '暂不接管',
+        description: '保持这个 Skill 为未管理状态，本次不写入中心库。',
+        badge: '跳过',
+        impact: '不会改动中心库或 Agent 目录；下次扫描仍可能看到它。',
+      }
+    default:
+      return {
+        title: option.label,
+        description: '使用 AgentBro 后端建议的处理方式。',
+        badge: option.destructive ? '会改动' : '安全',
+        impact: option.destructive ? '执行前请确认该操作会修改现有文件。' : '该操作不会删除现有文件。',
+      }
+  }
 }

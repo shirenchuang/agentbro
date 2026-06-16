@@ -8,7 +8,6 @@ import { UpdateDialog } from './UpdateDialog'
 import { FirstRunWelcome } from './FirstRunWelcome'
 import { GeneralSection } from './sections/GeneralSection'
 import { IslandSection } from './sections/IslandSection'
-import { AgentsSection } from './sections/AgentsSection'
 import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
@@ -16,7 +15,7 @@ import { SkillManagerSection } from '../skills-v2/SkillManagerSection'
 import { useUpdater } from '../../hooks/useUpdater'
 import { useConfigStore } from '../../stores/configStore'
 import { isTauri } from '../../services/tauriApi'
-import type { CapabilityView, IslandSettingsView, MonitorSettingsView } from '../../types/capability'
+import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
@@ -34,22 +33,14 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
   const analyticsConsentPromptCompleted = useConfigStore((s) => s.analyticsConsentPromptCompleted)
   const [activeSection, setActiveSection] = useState('general')
-  const [activeCapabilityView, setActiveCapabilityView] = useState<CapabilityView>('agent')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
   const [activeMonitorView, setActiveMonitorView] = useState<MonitorSettingsView>('overview')
-  const [customAgentDialogOpen, setCustomAgentDialogOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [updateMinimized, setUpdateMinimized] = useState(false)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const isMarketSection = activeSection === 'island' && activeIslandView === 'market'
   const isSkillManager = activeSection === 'skill-manager-v2'
   const contentClassName = `settings-content settings-scroll${isMarketSection ? ' settings-content--market' : ''}${isSkillManager ? ' settings-content--skill-manager' : ''}`
-  const openCustomAgentDialog = () => {
-    setActiveSection('agents')
-    setActiveCapabilityView('agent')
-    setCustomAgentDialogOpen(true)
-  }
-
   // Closing the settings window destroys it, which kills an in-flight update
   // download. Guard both the in-app close button and the macOS traffic-light.
   const downloadingRef = useRef(false)
@@ -92,16 +83,13 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
     <div className="settings-app">
       <SettingsSidebar
         activeSection={activeSection}
-        activeCapabilityView={activeCapabilityView}
         activeIslandView={activeIslandView}
         activeMonitorView={activeMonitorView}
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
         onSelect={setActiveSection}
-        onCapabilityViewChange={setActiveCapabilityView}
         onIslandViewChange={setActiveIslandView}
         onMonitorViewChange={setActiveMonitorView}
-        onAddCustomAgent={openCustomAgentDialog}
       />
       <div className={contentClassName}>
         {activeSection !== 'skill-manager-v2' && (
@@ -147,13 +135,6 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
               <AgentMonitorSection activeView={activeMonitorView} />
             ) : activeSection === 'switch' ? (
               <SwitchSection />
-            ) : activeSection === 'agents' ? (
-              <AgentsSection
-                activeView={activeCapabilityView}
-                onViewChange={setActiveCapabilityView}
-                customAgentDialogOpen={customAgentDialogOpen}
-                onCustomAgentDialogOpenChange={setCustomAgentDialogOpen}
-              />
             ) : activeSection === 'about' ? (
               <AboutSection
                 updateStatus={updater.status}

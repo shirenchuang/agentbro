@@ -1730,6 +1730,7 @@ impl Service {
             requested_mode,
             changes,
             blockers,
+            blocker_decisions: Vec::new(),
         })
     }
 
@@ -1765,11 +1766,85 @@ impl Service {
         preview: DistributionPreview,
         claim_origin: ClaimOrigin,
     ) -> Result<DistributionPreview, String> {
-        if !preview.blockers.is_empty() {
+        let mut result = preview.clone();
+        if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Err(format!(
                 "{} blocker(s) prevent distribution. Resolve them first.",
                 preview.blockers.len()
             ));
+        }
+        if !preview.blockers.is_empty() {
+            let decision_by_target: HashMap<(String, String), String> = preview
+                .blocker_decisions
+                .iter()
+                .map(|d| ((d.skill_id.clone(), d.agent_id.clone()), d.action.clone()))
+                .collect();
+            let mut remaining = Vec::new();
+            for blocker in &preview.blockers {
+                let key = (blocker.skill_id.clone(), blocker.agent_id.clone());
+                let Some(action) = decision_by_target.get(&key) else {
+                    remaining.push(blocker.clone());
+                    continue;
+                };
+                match action.as_str() {
+                    "skip" => {
+                        result.changes.push(DistributionChange {
+                            skill_id: blocker.skill_id.clone(),
+                            agent_id: blocker.agent_id.clone(),
+                            action: "skip".to_string(),
+                            actual_mode: None,
+                            reason: Some("Skipped by user decision.".to_string()),
+                            target_path: blocker.existing_path.clone().unwrap_or_default(),
+                        });
+                    }
+                    "overwrite" => {
+                        let existing_path = blocker.existing_path.as_ref().ok_or_else(|| {
+                            format!(
+                                "Cannot overwrite {}/{} because no target path was reported.",
+                                blocker.skill_id, blocker.agent_id
+                            )
+                        })?;
+                        self.skill_row(&blocker.skill_id)?.ok_or_else(|| {
+                            format!("Skill '{}' is not in the center library.", blocker.skill_id)
+                        })?;
+                        let path = Path::new(existing_path);
+                        fsutil::remove_path(path)?;
+                        let actual =
+                            self.resolve_actual_mode(&preview.requested_mode, &blocker.agent_id)?;
+                        self.create_target(
+                            &blocker.skill_id,
+                            &blocker.agent_id,
+                            existing_path,
+                            &preview.requested_mode,
+                            &actual,
+                            claim_origin.clone(),
+                        )?;
+                        result.changes.push(DistributionChange {
+                            skill_id: blocker.skill_id.clone(),
+                            agent_id: blocker.agent_id.clone(),
+                            action: "overwrite".to_string(),
+                            actual_mode: Some(actual),
+                            reason: Some(
+                                "Overwrote an unmanaged target by user decision.".to_string(),
+                            ),
+                            target_path: existing_path.clone(),
+                        });
+                    }
+                    other => {
+                        return Err(format!(
+                            "Unknown distribution blocker decision '{}' for {}/{}.",
+                            other, blocker.skill_id, blocker.agent_id
+                        ));
+                    }
+                }
+            }
+            if !remaining.is_empty() {
+                return Err(format!(
+                    "{} blocker(s) still require an explicit decision.",
+                    remaining.len()
+                ));
+            }
+            result.blockers.clear();
         }
         for change in &preview.changes {
             match change.action.as_str() {
@@ -1795,7 +1870,7 @@ impl Service {
         }
         self.scan_all_agents_into_db()?;
         self.refresh_snapshot_best_effort();
-        Ok(preview)
+        Ok(result)
     }
 
     fn create_target(

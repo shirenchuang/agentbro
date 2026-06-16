@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { DistributionPreview, AgentSummary, SkillSummary } from '../../services/skillApiV2'
+import type { ConflictBlocker, DistributionPreview, AgentSummary, SkillSummary } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
+
+type BlockerDecision = 'overwrite' | 'skip'
+
+function blockerKey(blocker: ConflictBlocker) {
+  return `${blocker.skillId}\u0000${blocker.agentId}`
+}
 
 export function DistributeDialog({
   skill,
@@ -20,6 +26,7 @@ export function DistributeDialog({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
   const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const installedAgents = agents.filter((agent) => agent.installed)
@@ -48,6 +55,7 @@ export function DistributeDialog({
     try {
       const p = await skillApiV2.previewDistribute([skill.id], Array.from(selected), mode)
       setPreview(p)
+      setBlockerDecisions({})
     } catch (e) {
       setError(String(e))
     } finally {
@@ -60,7 +68,13 @@ export function DistributeDialog({
     setBusy(true)
     setError(null)
     try {
-      await skillApiV2.executeDistribute(preview)
+      const blockerDecisionsPayload = preview.blockers
+        .map((blocker) => {
+          const action = blockerDecisions[blockerKey(blocker)]
+          return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
+        })
+        .filter((item): item is { skillId: string; agentId: string; action: BlockerDecision } => Boolean(item))
+      await skillApiV2.executeDistribute({ ...preview, blockerDecisions: blockerDecisionsPayload })
       onDone()
       onClose()
     } catch (e) {
@@ -171,13 +185,15 @@ export function DistributeDialog({
     )
   }
 
+  const unresolvedBlockers = preview.blockers.filter((blocker) => !blockerDecisions[blockerKey(blocker)]).length
+
   return (
     <PreviewDialog
       title="确认分发"
-      confirmLabel="执行分发"
+      confirmLabel={preview.blockers.length > 0 ? '按选择执行' : '执行分发'}
       modalClassName="sm2__modal--distribute"
       busy={busy}
-      disabled={preview.blockers.length > 0}
+      disabled={unresolvedBlockers > 0}
       onConfirm={execute}
       onCancel={() => setPreview(null)}
     >
@@ -189,8 +205,12 @@ export function DistributeDialog({
             <span>{preview.targetAgents.length}</span>
           </div>
           <div className="sm2-distribute__summary-copy">
-            <strong>将影响 {preview.changes.length} 个目标</strong>
-            <span>{preview.blockers.length > 0 ? '存在阻止项，暂不能执行' : '检查无阻止项，可以执行分发'}</span>
+            <strong>将影响 {preview.changes.length + preview.blockers.length} 个目标</strong>
+            <span>
+              {preview.blockers.length > 0
+                ? unresolvedBlockers > 0 ? `还有 ${unresolvedBlockers} 个阻止项需要选择处理方式` : '阻止项已选择处理方式，可以继续'
+                : '检查无阻止项，可以执行分发'}
+            </span>
           </div>
         </div>
 
@@ -208,20 +228,48 @@ export function DistributeDialog({
               {c.action !== 'create' && c.reason && <span className="sm2-distribute__change-reason">{c.reason}</span>}
             </div>
           ))}
-          {preview.blockers.map((b, i) => (
-            <div key={i} className="sm2-distribute__change sm2-distribute__change--blocked">
+          {preview.blockers.map((b) => {
+            const key = blockerKey(b)
+            const decision = blockerDecisions[key]
+            return (
+            <div key={key} className="sm2-distribute__change sm2-distribute__change--blocked">
               <div className="sm2-distribute__change-main">
                 <span className="sm2-distribute__change-action">阻止</span>
                 <strong>{agentNameById.get(b.agentId) ?? b.agentId}</strong>
+                {decision && (
+                  <span className="sm2__tag sm2__tag--unmanaged">
+                    {decision === 'overwrite' ? '将覆盖' : '将忽略'}
+                  </span>
+                )}
               </div>
               <span className="sm2-distribute__change-reason">{b.reason}</span>
+              {b.existingPath && <code>{b.existingPath}</code>}
+              <div className="sm2-distribute__decision-row" role="radiogroup" aria-label={`${agentNameById.get(b.agentId) ?? b.agentId} 阻止项处理方式`}>
+                {b.existingPath && (
+                  <button
+                    type="button"
+                    className={`sm2-distribute__decision${decision === 'overwrite' ? ' sm2-distribute__decision--active' : ''}`}
+                    onClick={() => setBlockerDecisions((prev) => ({ ...prev, [key]: 'overwrite' }))}
+                  >
+                    覆盖安装
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`sm2-distribute__decision${decision === 'skip' ? ' sm2-distribute__decision--active' : ''}`}
+                  onClick={() => setBlockerDecisions((prev) => ({ ...prev, [key]: 'skip' }))}
+                >
+                  忽略此目标
+                </button>
+              </div>
             </div>
-          ))}
+            )
+          })}
         </div>
 
         {preview.blockers.length > 0 && (
           <p className="sm2-distribute__blocked-note">
-            请先在诊断或 Agent 管理中接管同名未管理 Skill。
+            覆盖会删除目标目录中的同名未管理 Skill 后重新安装；忽略只跳过该目标，其余选择继续执行。
           </p>
         )}
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}

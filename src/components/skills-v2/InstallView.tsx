@@ -2,19 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { skillApi } from '../../services/skillApi'
 import type { AddCenterSkillPreview, AddCenterSkillDecision, AgentSkillInventoryAgent, AgentSkillInventoryItem } from '../../services/skillApiV2'
-import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApi'
+import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { SlideOver } from './SlideOver'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
+type InstallDoneHandler = (skillId?: string) => void | Promise<void>
 
 const MARKET_CACHE_TTL_MS = 5 * 60 * 1000
 const marketCache = new Map<string, { timestamp: number; data: MarketplaceSkill[] }>()
 
-export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: InstallDoneHandler }) {
   const [tab, setTab] = useState<Tab>('market')
   const [gitUrl, setGitUrl] = useState('')
 
@@ -103,8 +105,9 @@ function SkillAvatar({ source, name }: { source: string | null; name: string }) 
 }
 
 type MarketViewMode = 'list' | 'cards'
+type LocalPreviewViewMode = 'list' | 'cards'
 
-export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: (skillId?: string) => void }) {
+export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
   const [items, setItems] = useState<MarketplaceSkill[]>([])
   const [sourceItemsBySource, setSourceItemsBySource] = useState<Record<string, MarketplaceSkill[]>>({})
   const [board, setBoard] = useState<MarketBoard>('alltime')
@@ -123,6 +126,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
+  const centerSkills = useSkillStoreV2((s) => s.skills)
   const registryId = 'skills-sh'
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
@@ -161,7 +165,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
 
       setLoading(true)
       setError(null)
-      const request = skillApi.searchMarketplaceSkills(registryId || null, query.trim() || null, board)
+      const request = skillApiV2.searchMarketplaceSkills(registryId || null, query.trim() || null, board)
       const timeout = new Promise<MarketplaceSkill[]>((_, reject) => {
         window.setTimeout(() => reject(new Error('市场加载超时，请稍后重试，或先使用本地 Agent 同步 / Git 安装。')), 18_000)
       })
@@ -198,7 +202,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     let alive = true
     setSourceLoading(true)
     setSourceError(null)
-    skillApi.searchMarketplaceSkills(registryId, sourceFilter, null)
+    skillApiV2.searchMarketplaceSkills(registryId, sourceFilter, null)
       .then((next) => {
         if (!alive) return
         const exactSourceItems = next.filter((item) => (item.source || item.registryId) === sourceFilter)
@@ -405,10 +409,11 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
       // execute_add_center_skill previews internally; calling it directly
       // avoids a second remote download. A same-name/different-source
       // conflict surfaces as an error, which we redirect to the Git tab.
-      await skillApiV2.executeAddCenterSkill(input, [])
+      const result = await skillApiV2.executeAddCenterSkill(input, [])
+      const installedSkillId = result.skillIds[0] || result.updated[0] || marketSkillId(it)
       setInstalledIds((prev) => new Set([...prev, it.id]))
       setStatus(`已安装「${it.name}」到中心 Skill 库`)
-      onDone(it.id)
+      await onDone(installedSkillId)
     } catch (e) {
       const msg = String(e)
       if (/Blocked skill|requires an explicit decision|冲突/.test(msg)) {
@@ -473,35 +478,45 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                   <span>{label}</span>
                 </button>
               ))}
-            </div>
-          </div>
-
-          <div className="sm2__source-row-section sm2__source-row-section--repos">
-            <div className="sm2__source-row-head">
-              <span>推荐市场</span>
-              <small>常见、热门、维护活跃的来源仓库</small>
-            </div>
-            <div className="sm2__source-chip-cloud">
-              {visibleRecommendedSources.map(({ source, count }) => (
-                <button
-                  key={source}
-                  className={`sm2__source-chip${sourceFilter === source ? ' sm2__source-chip--active' : ''}`}
-                  onClick={() => toggleSource(source)}
-                  title={`${count} 个 Skill`}
-                >
-                  <span>{source}</span>
-                </button>
-              ))}
-              {recommendedSources.length > DEFAULT_RECOMMENDED_SOURCE_COUNT && (
+              {recommendedSources.length > DEFAULT_RECOMMENDED_SOURCE_COUNT && !sourcesExpanded && !sourceFilter && (
                 <button
                   className="sm2__source-toggle"
-                  onClick={() => setSourcesExpanded((value) => !value)}
+                  onClick={() => setSourcesExpanded(true)}
                 >
-                  {sourcesExpanded ? '收起' : '展开更多'}
+                  展开更多
                 </button>
               )}
             </div>
           </div>
+
+          {(sourcesExpanded || sourceFilter) && (
+            <div className="sm2__source-row-section sm2__source-row-section--repos">
+              <div className="sm2__source-row-head">
+                <span>推荐市场</span>
+                <small>常见、热门、维护活跃的来源仓库</small>
+              </div>
+              <div className="sm2__source-chip-cloud">
+                {visibleRecommendedSources.map(({ source, count }) => (
+                  <button
+                    key={source}
+                    className={`sm2__source-chip${sourceFilter === source ? ' sm2__source-chip--active' : ''}`}
+                    onClick={() => toggleSource(source)}
+                    title={`${count} 个 Skill`}
+                  >
+                    <span>{source}</span>
+                  </button>
+                ))}
+                {recommendedSources.length > DEFAULT_RECOMMENDED_SOURCE_COUNT && (
+                  <button
+                    className="sm2__source-toggle"
+                    onClick={() => setSourcesExpanded((value) => !value)}
+                  >
+                    {sourcesExpanded ? '收起' : '展开更多'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {(publisherFilter || sourceFilter) && (
             <button className="sm2__source-clear" onClick={clearMarketScope}>
@@ -575,7 +590,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
               {paginatedItems.map((it) => {
                 const isJustInstalled = installedIds.has(it.id)
                 const isCurrentInstalling = installing.has(it.id)
-                const done = it.isInstalled || isJustInstalled
+                const done = it.isInstalled || isJustInstalled || isMarketItemInstalled(it, centerSkills)
                 return (
                   <div key={it.id} className={`sm2__market-item${isCurrentInstalling ? ' sm2__market-item--installing' : ''}`} onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
                     <SkillAvatar source={it.source} name={it.name} />
@@ -618,7 +633,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
               {paginatedItems.map((it) => {
                 const isJustInstalled = installedIds.has(it.id)
                 const isCurrentInstalling = installing.has(it.id)
-                const done = it.isInstalled || isJustInstalled
+                const done = it.isInstalled || isJustInstalled || isMarketItemInstalled(it, centerSkills)
                 return (
                   <div key={it.id} className={`sm2__install-card${isCurrentInstalling ? ' sm2__install-card--installing' : ''}${done ? ' sm2__install-card--installed' : ''}`} onClick={() => setDetailSkill(it)}>
                     <div className="sm2__install-card-head">
@@ -694,16 +709,18 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         skill={detailSkill}
         onClose={() => setDetailSkill(null)}
         installing={detailSkill ? installing.has(detailSkill.id) : false}
+        installed={detailSkill ? installedIds.has(detailSkill.id) || isMarketItemInstalled(detailSkill, centerSkills) : false}
         onInstall={(it) => { setDetailSkill(null); install(it) }}
       />
     </div>
   )
 }
 
-function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
+function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }: {
   skill: MarketplaceSkill | null
   onClose: () => void
   installing: boolean
+  installed: boolean
   onInstall: (it: MarketplaceSkill) => void
 }) {
   const [remoteDetailState, setRemoteDetailState] = useState<{ key: string; detail: MarketplaceSkillDetail | null } | null>(null)
@@ -721,7 +738,7 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
   useEffect(() => {
     if (!detailKey) return
     let alive = true
-    skillApi.fetchMarketplaceSkillDetail(source, skillId)
+    skillApiV2.fetchMarketplaceSkillDetail(source, skillId)
       .then((detail) => {
         if (alive) setRemoteDetailState({ key: detailKey, detail })
       })
@@ -759,7 +776,7 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
                 {typeof skill.installCount === 'number' && (
                   <span className="sm2__install-count">↓ {formatInstallCount(skill.installCount)}</span>
                 )}
-                {skill.isInstalled && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                {(skill.isInstalled || installed) && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
               </div>
             </div>
           </div>
@@ -831,10 +848,10 @@ function MarketSkillDetail({ skill, onClose, installing, onInstall }: {
           <div className="sm2__btn-row" style={{ marginTop: 20 }}>
             <button
               className="sm2__btn sm2__btn--primary"
-              disabled={installing || skill.isInstalled}
+              disabled={installing || skill.isInstalled || installed}
               onClick={() => onInstall(skill)}
             >
-              {installing ? '安装中…' : skill.isInstalled ? '已安装' : '安装到中心库'}
+              {installing ? '安装中…' : skill.isInstalled || installed ? '已安装' : '安装到中心库'}
             </button>
             {sourceUrl && (
               <button className="sm2__btn" onClick={() => openExternal(sourceUrl)}>
@@ -862,16 +879,6 @@ function marketSkillPathParts(skill: MarketplaceSkill) {
   const sourceParts = (skill.source || '').split('/').filter(Boolean)
   const skillId = marketSkillId(skill)
   return [...sourceParts, skillId].filter(Boolean)
-}
-
-function marketSkillId(skill: MarketplaceSkill) {
-  const rawPath = skill.downloadUrl.replace(/^(github|skillssh):/, '')
-  const source = skill.source || ''
-  if (source && rawPath.startsWith(`${source}/`)) {
-    return rawPath.slice(source.length + 1) || skill.name
-  }
-  const parts = rawPath.split('/').filter(Boolean)
-  return parts.length > 2 ? parts.slice(2).join('/') : skill.name
 }
 
 function marketGithubUrl(skill: MarketplaceSkill, detail?: MarketplaceSkillDetail | null) {
@@ -958,7 +965,23 @@ function statusTone(item: AgentSkillInventoryItem) {
   return item.managed ? 'ok' : 'unmanaged'
 }
 
-export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void }) {
+function installedAgentInventory(agents: AgentSkillInventoryAgent[]) {
+  return agents
+    .filter((agent) => agent.installed)
+    .sort((a, b) => {
+      const skillCountDiff = localSkillCount(b) - localSkillCount(a)
+      if (skillCountDiff !== 0) return skillCountDiff
+      const importableDiff = b.importableCount - a.importableCount
+      if (importableDiff !== 0) return importableDiff
+      return a.displayName.localeCompare(b.displayName)
+    })
+}
+
+function localSkillCount(agent: AgentSkillInventoryAgent) {
+  return agent.managedCount + agent.unmanagedCount
+}
+
+export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -977,8 +1000,12 @@ export function AgentSyncPanel({ onDone }: { onDone: (skillId?: string) => void 
     setLoading(true)
     setError(null)
     try {
-      const next = await skillApiV2.listAgentSkillInventory()
+      const next = installedAgentInventory(await skillApiV2.listAgentSkillInventory())
       setAgents(next)
+      setSelectedAgent((current) => {
+        if (current === 'all') return current
+        return next.some((agent) => agent.agentId === current) ? current : 'all'
+      })
       setSelectedIds((current) => {
         const valid = new Set(next.flatMap((agent) => agent.items.filter((item) => item.canImport).map((item) => importKey(item))))
         return new Set(Array.from(current).filter((id) => valid.has(id)))
@@ -1411,10 +1438,11 @@ function importKey(item: AgentSkillInventoryItem) {
 
 // ── Local ────────────────────────────────────────────────────────
 
-export function LocalPanel({ onDone }: { onDone: (skillId?: string) => void }) {
+export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [sourcePath, setSourcePath] = useState('')
   const [multi, setMulti] = useState(false)
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
+  const [localViewMode, setLocalViewMode] = useState<LocalPreviewViewMode>('cards')
   const [renames, setRenames] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1469,28 +1497,62 @@ export function LocalPanel({ onDone }: { onDone: (skillId?: string) => void }) {
   }
 
   if (preview) {
+    const totalChanges = preview.candidates.length + preview.blockers.length
     return (
-      <div className="sm2__install-form">
-        <h3 className="sm2__install-h">确认导入预览</h3>
-        {preview.candidates.map((c) => (
-          <div key={c.skillId} className="sm2__change">
-            <strong>{c.name}</strong> → <code>{c.proposedSkillId}</code>{' '}
-            <span className={`sm2__tag sm2__tag--${c.action === 'update' ? 'ok' : 'unmanaged'}`}>
-              {c.action === 'update' ? '更新' : '新增'}
-            </span>
+      <div className="sm2__local-preview">
+        <div className="sm2__local-preview-head">
+          <div>
+            <h3 className="sm2__install-h">确认导入预览</h3>
+            <p className="sm2__install-sub">
+              将导入到中心库：{preview.centerPath || '中心 Skill 库'}
+            </p>
           </div>
-        ))}
-        {preview.blockers.map((b) => (
-          <div key={b.skillId} className="sm2__change sm2__change--blocked">
-            <strong>{b.skillId}</strong>：{b.reason}
-            <div className="sm2__field" style={{ marginTop: 6 }}>
-              <label>重命名为（留空则跳过）</label>
-              <input value={renames[b.skillId] || ''} onChange={(e) => setRenames({ ...renames, [b.skillId]: e.target.value })} placeholder={`${b.skillId}-rename`} />
+          <div className="sm2__local-preview-actions">
+            <div className="sm2__local-preview-stats">
+              <span><strong>{preview.candidates.length}</strong> 可导入</span>
+              <span><strong>{preview.blockers.length}</strong> 需处理</span>
+            </div>
+            <div className="sm2__view-toggle sm2__view-toggle--soft">
+              <button className={localViewMode === 'list' ? 'active' : ''} onClick={() => setLocalViewMode('list')}>列表</button>
+              <button className={localViewMode === 'cards' ? 'active' : ''} onClick={() => setLocalViewMode('cards')}>卡片</button>
             </div>
           </div>
-        ))}
+        </div>
+
+        {totalChanges === 0 ? (
+          <div className="sm2__empty">没有检测到可导入的 Skill。</div>
+        ) : localViewMode === 'cards' ? (
+          <div className="sm2__local-preview-grid">
+            {preview.candidates.map((c) => (
+              <LocalCandidateCard key={c.skillId} candidate={c} />
+            ))}
+            {preview.blockers.map((b) => (
+              <LocalBlockerCard
+                key={b.skillId}
+                blocker={b}
+                value={renames[b.skillId] || ''}
+                onChange={(value) => setRenames((current) => ({ ...current, [b.skillId]: value }))}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="sm2__local-preview-list">
+            {preview.candidates.map((c) => (
+              <LocalCandidateRow key={c.skillId} candidate={c} />
+            ))}
+            {preview.blockers.map((b) => (
+              <LocalBlockerRow
+                key={b.skillId}
+                blocker={b}
+                value={renames[b.skillId] || ''}
+                onChange={(value) => setRenames((current) => ({ ...current, [b.skillId]: value }))}
+              />
+            ))}
+          </div>
+        )}
+
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-        <div className="sm2__btn-row">
+        <div className="sm2__btn-row sm2__local-preview-footer">
           <button className="sm2__btn" onClick={() => setPreview(null)} disabled={busy}>返回</button>
           <button className="sm2__btn sm2__btn--primary" onClick={execute} disabled={busy}>{busy ? '处理中…' : '执行导入'}</button>
         </div>
@@ -1536,6 +1598,106 @@ export function LocalPanel({ onDone }: { onDone: (skillId?: string) => void }) {
   )
 }
 
+function LocalCandidateCard({ candidate }: { candidate: AddCenterSkillPreview['candidates'][number] }) {
+  const tone = localActionTone(candidate.action)
+  return (
+    <div className={`sm2__local-skill-card sm2__local-skill-card--${tone}`}>
+      <div className="sm2__local-skill-card-head">
+        <div className="sm2__market-skill-icon">{initials(candidate.name || candidate.skillId)}</div>
+        <div className="sm2__local-skill-titleblock">
+          <strong>{candidate.name || candidate.skillId}</strong>
+          <code>{candidate.skillId} → {candidate.proposedSkillId}</code>
+        </div>
+        <span className={`sm2__tag sm2__tag--${tone}`}>{localActionLabel(candidate.action)}</span>
+      </div>
+      {candidate.description && <p className="sm2__local-skill-desc">{candidate.description}</p>}
+      <code className="sm2__local-skill-path">{candidate.sourceDir}</code>
+    </div>
+  )
+}
+
+function LocalCandidateRow({ candidate }: { candidate: AddCenterSkillPreview['candidates'][number] }) {
+  const tone = localActionTone(candidate.action)
+  return (
+    <div className={`sm2__local-skill-row sm2__local-skill-row--${tone}`}>
+      <div className="sm2__market-skill-icon">{initials(candidate.name || candidate.skillId)}</div>
+      <div className="sm2__local-skill-row-main">
+        <div className="sm2__local-skill-row-title">
+          <strong>{candidate.name || candidate.skillId}</strong>
+          <code>{candidate.skillId} → {candidate.proposedSkillId}</code>
+        </div>
+        <code className="sm2__local-skill-path">{candidate.sourceDir}</code>
+      </div>
+      <span className={`sm2__tag sm2__tag--${tone}`}>{localActionLabel(candidate.action)}</span>
+    </div>
+  )
+}
+
+function LocalBlockerCard({
+  blocker,
+  value,
+  onChange,
+}: {
+  blocker: AddCenterSkillPreview['blockers'][number]
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="sm2__local-skill-card sm2__local-skill-card--conflict">
+      <div className="sm2__local-skill-card-head">
+        <div className="sm2__market-skill-icon">!</div>
+        <div className="sm2__local-skill-titleblock">
+          <strong>{blocker.name || blocker.skillId}</strong>
+          <code>{blocker.skillId}</code>
+        </div>
+        <span className="sm2__tag sm2__tag--conflict">需处理</span>
+      </div>
+      <p className="sm2__local-skill-desc">{blocker.reason || '同名 Skill 需要选择处理方式。'}</p>
+      <label className="sm2__local-rename-field">
+        <span>重命名为</span>
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={`${blocker.skillId}-rename`} />
+      </label>
+    </div>
+  )
+}
+
+function LocalBlockerRow({
+  blocker,
+  value,
+  onChange,
+}: {
+  blocker: AddCenterSkillPreview['blockers'][number]
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="sm2__local-skill-row sm2__local-skill-row--conflict">
+      <div className="sm2__market-skill-icon">!</div>
+      <div className="sm2__local-skill-row-main">
+        <div className="sm2__local-skill-row-title">
+          <strong>{blocker.name || blocker.skillId}</strong>
+          <span>{blocker.reason || '同名 Skill 需要选择处理方式。'}</span>
+        </div>
+        <label className="sm2__local-rename-field sm2__local-rename-field--inline">
+          <span>重命名为</span>
+          <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={`${blocker.skillId}-rename`} />
+        </label>
+      </div>
+      <span className="sm2__tag sm2__tag--conflict">需处理</span>
+    </div>
+  )
+}
+
+function localActionLabel(action: string) {
+  if (action === 'update') return '更新'
+  if (action === 'create') return '新增'
+  return action
+}
+
+function localActionTone(action: string) {
+  return action === 'update' ? 'ok' : 'unmanaged'
+}
+
 // ── Git ──────────────────────────────────────────────────────────
 
 type GitRepoSkill = GitHubRepoPreview['skills'][number]
@@ -1560,11 +1722,12 @@ function urlHasSubpath(ref: string): boolean {
   return Boolean(match && match[1])
 }
 
-export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: (skillId?: string) => void }) {
+export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: InstallDoneHandler }) {
   const [url, setUrl] = useState(initialUrl || '')
   const [branch, setBranch] = useState('')
   const [token, setToken] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -1604,7 +1767,7 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     skills: GitRepoSkill[],
     picked: Set<string>,
   ) => {
-    const result = await skillApi.importGitHubRepoSkills(ref, selections)
+    const result = await skillApiV2.importGitHubRepoSkills(ref, selections)
     await skillApiV2.refresh()
     const importedCount = result.importedSkills.length || selections.filter((s) => s.resolution !== 'skip').length
     const skippedCount = result.skippedSkills.length || selections.filter((s) => s.resolution === 'skip').length
@@ -1626,7 +1789,7 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setBusy(true)
     setError(null)
     try {
-      const preview = await skillApi.previewGitHubRepoImport(ref)
+      const preview = await skillApiV2.previewGitHubRepoImport(ref)
       if (preview.skills.length === 0) {
         setError('该仓库未检测到任何 Skill（需含 SKILL.md）')
         return
@@ -1688,6 +1851,33 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     })
   }
 
+  const renderConflictControls = (s: GitRepoSkill, mode: ConflictMode) => (
+    <div className="sm2__git-conflict-ctrl" onClick={(e) => e.stopPropagation()}>
+      <div className="sm2__git-conflict-modes">
+        <button
+          className={mode === 'rename' ? 'active' : ''}
+          onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'rename' }))}
+        >
+          重命名
+        </button>
+        <button
+          className={mode === 'overwrite' ? 'active' : ''}
+          onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'overwrite' }))}
+        >
+          覆盖
+        </button>
+      </div>
+      {mode === 'rename' && (
+        <input
+          className="sm2__git-rename-input"
+          value={renames[s.sourcePath] || ''}
+          onChange={(e) => setRenames((r) => ({ ...r, [s.sourcePath]: e.target.value }))}
+          placeholder={`${s.skillId}-copy（留空则跳过）`}
+        />
+      )}
+    </div>
+  )
+
   // ── done ───────────────────────────────────────────────────────
   if (stage === 'done' && summary) {
     return (
@@ -1733,66 +1923,77 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
               检测到 <strong>{total}</strong> 个 Skill · 已选 <strong>{selectedCount}</strong>
             </span>
           </div>
-          <button
-            className="sm2__btn sm2__btn--ghost"
-            onClick={() =>
-              setSelected(allSelected ? new Set() : new Set(repo.skills.map((s) => s.sourcePath)))
-            }
-          >
-            {allSelected ? '全不选' : '全选'}
-          </button>
+          <div className="sm2__git-manifest-actions">
+            <div className="sm2__view-toggle sm2__view-toggle--soft">
+              <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
+              <button className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
+            </div>
+            <button
+              className="sm2__btn sm2__btn--ghost"
+              onClick={() =>
+                setSelected(allSelected ? new Set() : new Set(repo.skills.map((s) => s.sourcePath)))
+              }
+            >
+              {allSelected ? '全不选' : '全选'}
+            </button>
+          </div>
         </div>
 
-        <div className="sm2__git-skill-list">
-          {repo.skills.map((s) => {
-            const checked = selected.has(s.sourcePath)
-            const mode = conflictMode[s.sourcePath] || 'rename'
-            return (
-              <div
-                key={s.sourcePath}
-                className={`sm2__git-skill-row${checked ? ' sm2__git-skill-row--on' : ''}${s.conflict ? ' sm2__git-skill-row--conflict' : ''}`}
-              >
-                <label className="sm2__git-skill-check">
-                  <input type="checkbox" checked={checked} onChange={() => toggle(s.sourcePath)} />
-                </label>
-                <div className="sm2__git-skill-main" onClick={() => toggle(s.sourcePath)}>
-                  <div className="sm2__git-skill-titleline">
-                    <strong>{s.skillName}</strong>
-                    {s.conflict && <span className="sm2__tag sm2__tag--conflict">中心库已存在</span>}
-                  </div>
-                  {s.description && <p className="sm2__git-skill-desc">{s.description}</p>}
-                  <code className="sm2__git-skill-path">{s.sourcePath || repo.repo.repo}</code>
-                </div>
-                {checked && s.conflict && (
-                  <div className="sm2__git-conflict-ctrl" onClick={(e) => e.stopPropagation()}>
-                    <div className="sm2__git-conflict-modes">
-                      <button
-                        className={mode === 'rename' ? 'active' : ''}
-                        onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'rename' }))}
-                      >
-                        重命名
-                      </button>
-                      <button
-                        className={mode === 'overwrite' ? 'active' : ''}
-                        onClick={() => setConflictMode((m) => ({ ...m, [s.sourcePath]: 'overwrite' }))}
-                      >
-                        覆盖
-                      </button>
+        {viewMode === 'cards' ? (
+          <div className="sm2__git-skill-grid">
+            {repo.skills.map((s) => {
+              const checked = selected.has(s.sourcePath)
+              const mode = conflictMode[s.sourcePath] || 'rename'
+              return (
+                <div
+                  key={s.sourcePath}
+                  className={`sm2__git-skill-card${checked ? ' sm2__git-skill-card--on' : ''}${s.conflict ? ' sm2__git-skill-card--conflict' : ''}`}
+                >
+                  <div className="sm2__git-skill-card-head">
+                    <label className="sm2__git-skill-check" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={checked} onChange={() => toggle(s.sourcePath)} />
+                    </label>
+                    <div className="sm2__git-skill-main" onClick={() => toggle(s.sourcePath)}>
+                      <div className="sm2__git-skill-titleline">
+                        <strong>{s.skillName}</strong>
+                        {s.conflict && <span className="sm2__tag sm2__tag--conflict">中心库已存在</span>}
+                      </div>
+                      {s.description && <p className="sm2__git-skill-desc">{s.description}</p>}
+                      <code className="sm2__git-skill-path">{s.sourcePath || repo.repo.repo}</code>
                     </div>
-                    {mode === 'rename' && (
-                      <input
-                        className="sm2__git-rename-input"
-                        value={renames[s.sourcePath] || ''}
-                        onChange={(e) => setRenames((r) => ({ ...r, [s.sourcePath]: e.target.value }))}
-                        placeholder={`${s.skillId}-copy（留空则跳过）`}
-                      />
-                    )}
                   </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+                  {checked && s.conflict && renderConflictControls(s, mode)}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="sm2__git-skill-list">
+            {repo.skills.map((s) => {
+              const checked = selected.has(s.sourcePath)
+              const mode = conflictMode[s.sourcePath] || 'rename'
+              return (
+                <div
+                  key={s.sourcePath}
+                  className={`sm2__git-skill-row${checked ? ' sm2__git-skill-row--on' : ''}${s.conflict ? ' sm2__git-skill-row--conflict' : ''}`}
+                >
+                  <label className="sm2__git-skill-check">
+                    <input type="checkbox" checked={checked} onChange={() => toggle(s.sourcePath)} />
+                  </label>
+                  <div className="sm2__git-skill-main" onClick={() => toggle(s.sourcePath)}>
+                    <div className="sm2__git-skill-titleline">
+                      <strong>{s.skillName}</strong>
+                      {s.conflict && <span className="sm2__tag sm2__tag--conflict">中心库已存在</span>}
+                    </div>
+                    {s.description && <p className="sm2__git-skill-desc">{s.description}</p>}
+                    <code className="sm2__git-skill-path">{s.sourcePath || repo.repo.repo}</code>
+                  </div>
+                  {checked && s.conflict && renderConflictControls(s, mode)}
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         <div className="sm2__git-footer">
