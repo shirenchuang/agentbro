@@ -63,6 +63,7 @@ interface SkillV2Actions {
   selectPack: (id: string | null) => Promise<void>
   selectAgent: (id: string | null) => Promise<void>
   loadAgentDetail: (agentId: string, force?: boolean) => Promise<void>
+  loadDiagnosisIssues: () => Promise<void>
   runDiagnosis: () => Promise<void>
   updateSettings: (patch: Partial<SkillManagerSettings>) => Promise<void>
   setBusy: (action: string | null) => void
@@ -97,7 +98,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
 
   init: async () => {
     // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
-    // then reads cached SQLite state. Full filesystem scans stay behind refresh.
+    // then reads cached SQLite state unless startup scanning is enabled.
     if (get().initialized) {
       if (!get().overview) await get().loadOverview(true)
       return
@@ -106,6 +107,10 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     try {
       await skillApiV2.bootstrap()
       await get().loadOverview(true)
+      if (get().settings?.startupScan) {
+        await skillApiV2.init()
+        await get().loadOverview(true)
+      }
       set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
@@ -190,6 +195,14 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       set({ error: String(e) })
     } finally {
       set({ agentDetailLoading: false })
+    }
+  },
+  loadDiagnosisIssues: async () => {
+    try {
+      const issues = await skillApiV2.listDiagnosisIssues()
+      set({ issues })
+    } catch (e) {
+      set({ error: String(e) })
     }
   },
   runDiagnosis: async () => {

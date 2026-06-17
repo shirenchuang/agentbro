@@ -6,10 +6,12 @@ interface PreviewDialogProps {
   children: ReactNode
   confirmLabel?: string
   cancelLabel?: string
+  busyLabel?: string
   modalClassName?: string
   destructive?: boolean
   busy?: boolean
   disabled?: boolean
+  actions?: ReactNode
   onConfirm: () => void
   onCancel: () => void
 }
@@ -19,10 +21,12 @@ export function PreviewDialog({
   children,
   confirmLabel = '确认执行',
   cancelLabel = '取消',
+  busyLabel = '处理中…',
   modalClassName,
   destructive = false,
   busy = false,
   disabled = false,
+  actions,
   onConfirm,
   onCancel,
 }: PreviewDialogProps) {
@@ -44,16 +48,20 @@ export function PreviewDialog({
           {children}
         </div>
         <div className="sm2__modal-actions">
-          <button className="sm2__btn" onClick={onCancel} disabled={busy}>
-            {cancelLabel}
-          </button>
-          <button
-            className={`sm2__btn sm2__btn--primary${destructive ? ' sm2__btn--danger' : ''}`}
-            onClick={onConfirm}
-            disabled={busy || disabled}
-          >
-            {busy ? '处理中…' : confirmLabel}
-          </button>
+          {actions ?? (
+            <>
+              <button className="sm2__btn" onClick={onCancel} disabled={busy}>
+                {cancelLabel}
+              </button>
+              <button
+                className={`sm2__btn sm2__btn--primary${destructive ? ' sm2__btn--danger' : ''}`}
+                onClick={onConfirm}
+                disabled={busy || disabled}
+              >
+                {busy ? busyLabel : confirmLabel}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>,

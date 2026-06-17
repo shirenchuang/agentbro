@@ -63,6 +63,7 @@ export interface SkillTargetDetail {
   skillId: string
   agentId: string
   targetPath: string
+  resolvedTargetPath: string | null
   installMode: 'link' | 'copy'
   actualMode: 'link' | 'copy'
   sourceHash: string
@@ -207,6 +208,8 @@ export interface ConflictBlocker {
   agentId: string
   reason: string
   existingPath: string | null
+  existingPathKind?: 'symlink' | 'directory' | 'file' | 'broken_symlink' | 'missing' | string | null
+  resolvedExistingPath?: string | null
 }
 
 export interface DistributionChange {
@@ -221,7 +224,7 @@ export interface DistributionChange {
 export interface DistributionBlockerDecision {
   skillId: string
   agentId: string
-  action: 'overwrite' | 'skip'
+  action: 'overwrite' | 'agent_over_center' | 'skip'
 }
 
 export interface DistributionPreview {
@@ -522,6 +525,22 @@ export const skillApiV2 = {
     isTauri ? invoke<SkillSummary[]>('list_center_skills_v2') : Promise.resolve([]),
   getSkillDetail: (skillId: string) =>
     isTauri ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }) : Promise.resolve(null as unknown as SkillDetail),
+  readFileTree: (skillPath: string) =>
+    isTauri
+      ? invoke<FileTreeNode>('read_skill_files', { skillPath })
+      : Promise.resolve({
+          name: skillPath.split('/').filter(Boolean).pop() || 'skill',
+          nodeType: 'dir' as const,
+          path: skillPath,
+          children: [
+            {
+              name: 'SKILL.md',
+              nodeType: 'file' as const,
+              path: `${skillPath}/SKILL.md`,
+              children: null,
+            },
+          ],
+        }),
   readFileContent: (filePath: string) =>
     isTauri ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
   getSkillExplanation: (skillId: string, lang: string) =>
@@ -627,6 +646,7 @@ export const skillApiV2 = {
 
   exportSnapshot: () => (isTauri ? invoke<string>('skill_manager_export_snapshot') : Promise.resolve('')),
   openPath: (path: string) => (isTauri ? invoke<void>('open_skill_path', { path }) : Promise.resolve()),
+  revealPath: (path: string) => (isTauri ? invoke<void>('reveal_skill_path', { path }) : Promise.resolve()),
   searchMarketplaceSkills: (registryId?: string | null, query?: string | null, board?: string | null) =>
     isTauri
       ? invoke<MarketplaceSkill[]>('search_marketplace_skills', { registryId: registryId ?? null, query: query ?? null, board: board ?? null })

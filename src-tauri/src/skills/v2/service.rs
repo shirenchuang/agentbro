@@ -469,7 +469,8 @@ impl Service {
         skill_id: &str,
         path: &Path,
     ) -> Result<(), String> {
-        let (actual_mode, source_hash) = self.target_actual_mode_and_source(target_id)?;
+        let (stored_mode, source_hash) = self.target_actual_mode_and_source(target_id)?;
+        let actual_mode = filesystem_target_mode(path).unwrap_or(stored_mode);
         let current_hash = if actual_mode == "copy" {
             if path.is_dir() {
                 Some(fsutil::hash_dir(path))
@@ -840,6 +841,7 @@ impl Service {
                     id: t.id,
                     skill_id: t.skill_id,
                     agent_id: t.agent_id,
+                    resolved_target_path: resolved_target_path(&t.target_path),
                     target_path: t.target_path,
                     install_mode: t.install_mode,
                     actual_mode: t.actual_mode,
@@ -1521,7 +1523,6 @@ impl Service {
             .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
         let targets = self.targets_for_skill(skill_id)?;
         let mut affected = Vec::new();
-        let mut warnings = Vec::new();
         for t in &targets {
             let claim_count = self.count_claims(&t.id)?;
             affected.push(AffectedTarget {
@@ -1532,20 +1533,13 @@ impl Service {
                 mode: t.actual_mode.clone(),
                 claim_count,
             });
-            if t.actual_mode == "link" {
-                warnings.push(format!(
-                    "{} link target '{}' points at this skill; deleting will break it.",
-                    agent_meta::display_name(&t.agent_id),
-                    t.target_path
-                ));
-            }
         }
         let removable = affected.is_empty();
         Ok(DeleteCenterSkillPreview {
             skill_id: skill_id.to_string(),
             affected_targets: affected,
             removable,
-            warnings,
+            warnings: Vec::new(),
         })
     }
 
@@ -1555,22 +1549,23 @@ impl Service {
         remove_linked: bool,
     ) -> Result<(), String> {
         let preview = self.preview_delete_center_skill(skill_id)?;
-        if !preview.removable && !remove_linked {
-            return Err(format!(
-                "Skill '{}' has {} active target(s). Confirm removal of linked installations to proceed.",
-                skill_id,
-                preview.affected_targets.len()
-            ));
-        }
-        // remove affected targets first (claims cascade)
-        for t in &preview.affected_targets {
-            self.remove_target_completely(&t.target_id)?;
-        }
-        // remove center dir
         let row = self
             .skill_row(skill_id)?
             .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
         let center_path = Path::new(&row.center_path);
+        if remove_linked {
+            for t in &preview.affected_targets {
+                self.remove_target_completely(&t.target_id)?;
+            }
+        } else {
+            for t in &preview.affected_targets {
+                if t.mode == "link" {
+                    let target_path = Path::new(&t.target_path);
+                    fsutil::remove_path(target_path)?;
+                    fsutil::copy_dir_recursive(center_path, target_path)?;
+                }
+            }
+        }
         if center_path.exists() {
             fsutil::remove_path(center_path)?;
         }
@@ -1578,6 +1573,18 @@ impl Service {
             c.execute("DELETE FROM skills WHERE id = ?1", params![skill_id])
                 .map_err(|e| e.to_string())
         })?;
+        if !remove_linked {
+            let mut agents = preview
+                .affected_targets
+                .iter()
+                .map(|t| t.agent_id.clone())
+                .collect::<Vec<_>>();
+            agents.sort();
+            agents.dedup();
+            for agent in agents {
+                self.scan_one_agent_into_db(&agent)?;
+            }
+        }
         self.refresh_snapshot_best_effort();
         Ok(())
     }
@@ -1663,6 +1670,8 @@ impl Service {
                             agent_id: agent.clone(),
                             reason: format!("Skill '{}' is not in the center library.", skill_id),
                             existing_path: None,
+                            existing_path_kind: None,
+                            resolved_existing_path: None,
                         });
                     }
                     continue;
@@ -1677,6 +1686,8 @@ impl Service {
                             agent_id: agent.clone(),
                             reason: format!("Agent '{}' has no known skills directory.", agent),
                             existing_path: None,
+                            existing_path_kind: None,
+                            resolved_existing_path: None,
                         });
                         continue;
                     }
@@ -1684,12 +1695,48 @@ impl Service {
                 let target_path = dir.join(skill_id);
                 let existing = self.find_target_by_path(agent, &target_path)?;
                 match existing {
-                    Some(_) => {
+                    Some((target_id, _, _)) => {
+                        let actual = self.resolve_actual_mode(&requested_mode, agent)?;
+                        let current_mode = self.target_actual_mode_for_id(&target_id)?;
+                        if current_mode != actual {
+                            if current_mode == "copy" && actual == "link" {
+                                let sync = self.preview_sync_copy_target(&target_id)?;
+                                if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged")
+                                {
+                                    let (existing_path_kind, resolved_existing_path) =
+                                        existing_path_info(&target_path);
+                                    blockers.push(ConflictBlocker {
+                                        skill_id: skill_id.clone(),
+                                        agent_id: agent.clone(),
+                                        reason: format!(
+                                            "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before converting.",
+                                            skill_id
+                                        ),
+                                        existing_path: Some(target_path.display().to_string()),
+                                        existing_path_kind,
+                                        resolved_existing_path,
+                                    });
+                                    continue;
+                                }
+                            }
+                            changes.push(DistributionChange {
+                                skill_id: skill_id.clone(),
+                                agent_id: agent.clone(),
+                                action: "convert".to_string(),
+                                actual_mode: Some(actual),
+                                reason: Some(format!(
+                                    "Already managed as {} — will convert to {}.",
+                                    current_mode, requested_mode
+                                )),
+                                target_path: target_path.display().to_string(),
+                            });
+                            continue;
+                        }
                         changes.push(DistributionChange {
                             skill_id: skill_id.clone(),
                             agent_id: agent.clone(),
                             action: "reuse".to_string(),
-                            actual_mode: Some(self.target_actual_mode_for_skill(skill_id, agent)?),
+                            actual_mode: Some(current_mode),
                             reason: Some(
                                 "Already managed — will append a direct claim.".to_string(),
                             ),
@@ -1709,6 +1756,8 @@ impl Service {
                             });
                         }
                         _ => {
+                            let (existing_path_kind, resolved_existing_path) =
+                                existing_path_info(&target_path);
                             blockers.push(ConflictBlocker {
                                     skill_id: skill_id.clone(),
                                     agent_id: agent.clone(),
@@ -1717,6 +1766,8 @@ impl Service {
                                         skill_id
                                     ),
                                     existing_path: Some(target_path.display().to_string()),
+                                    existing_path_kind,
+                                    resolved_existing_path,
                                 });
                         }
                     },
@@ -1734,11 +1785,11 @@ impl Service {
         })
     }
 
-    fn target_actual_mode_for_skill(&self, skill_id: &str, agent: &str) -> Result<String, String> {
+    fn target_actual_mode_for_id(&self, target_id: &str) -> Result<String, String> {
         self.db.with_conn(|c| {
             c.query_row(
-                "SELECT actual_mode FROM skill_targets WHERE skill_id = ?1 AND agent_id = ?2",
-                params![skill_id, agent],
+                "SELECT actual_mode FROM skill_targets WHERE id = ?1",
+                params![target_id],
                 |r| r.get::<_, String>(0),
             )
             .map_err(|e| e.to_string())
@@ -1797,7 +1848,7 @@ impl Service {
                             target_path: blocker.existing_path.clone().unwrap_or_default(),
                         });
                     }
-                    "overwrite" => {
+                    "overwrite" | "agent_over_center" => {
                         let existing_path = blocker.existing_path.as_ref().ok_or_else(|| {
                             format!(
                                 "Cannot overwrite {}/{} because no target path was reported.",
@@ -1813,25 +1864,59 @@ impl Service {
                             &blocker.agent_id,
                             path,
                         )?;
-                        fsutil::remove_path(path)?;
                         let actual =
                             self.resolve_actual_mode(&preview.requested_mode, &blocker.agent_id)?;
-                        self.create_target(
-                            &blocker.skill_id,
-                            &blocker.agent_id,
-                            existing_path,
-                            &preview.requested_mode,
-                            &actual,
-                            claim_origin.clone(),
-                        )?;
+                        if let Some((target_id, existing_skill_id, _)) =
+                            self.find_target_by_path(&blocker.agent_id, path)?
+                        {
+                            if existing_skill_id != blocker.skill_id {
+                                return Err(format!(
+                                    "Target {} belongs to skill '{}', not '{}'.",
+                                    existing_path, existing_skill_id, blocker.skill_id
+                                ));
+                            }
+                            if action == "agent_over_center" {
+                                self.execute_sync_copy_target(&target_id, "agent_over_center")?;
+                            }
+                            self.convert_target(
+                                &target_id,
+                                &blocker.skill_id,
+                                &blocker.agent_id,
+                                existing_path,
+                                &preview.requested_mode,
+                                &actual,
+                            )?;
+                            self.append_claim(
+                                existing_path,
+                                &blocker.agent_id,
+                                claim_origin.clone(),
+                            )?;
+                        } else {
+                            fsutil::remove_path(path)?;
+                            self.create_target(
+                                &blocker.skill_id,
+                                &blocker.agent_id,
+                                existing_path,
+                                &preview.requested_mode,
+                                &actual,
+                                claim_origin.clone(),
+                            )?;
+                        }
                         result.changes.push(DistributionChange {
                             skill_id: blocker.skill_id.clone(),
                             agent_id: blocker.agent_id.clone(),
-                            action: "overwrite".to_string(),
+                            action: if action == "agent_over_center" {
+                                "agent_over_center".to_string()
+                            } else {
+                                "overwrite".to_string()
+                            },
                             actual_mode: Some(actual),
-                            reason: Some(
-                                "Overwrote an unmanaged target by user decision.".to_string(),
-                            ),
+                            reason: Some(if action == "agent_over_center" {
+                                "Used the agent copy as source, then converted by user decision."
+                                    .to_string()
+                            } else {
+                                "Used the center library as source by user decision.".to_string()
+                            }),
                             target_path: existing_path.clone(),
                         });
                     }
@@ -1868,6 +1953,30 @@ impl Service {
                     )?;
                 }
                 "reuse" => {
+                    self.append_claim(&change.target_path, &change.agent_id, claim_origin.clone())?;
+                }
+                "convert" => {
+                    let actual = change
+                        .actual_mode
+                        .clone()
+                        .unwrap_or_else(|| preview.requested_mode.clone());
+                    let (target_id, existing_skill_id, _) = self
+                        .find_target_by_path(&change.agent_id, Path::new(&change.target_path))?
+                        .ok_or_else(|| format!("Target not found: {}", change.target_path))?;
+                    if existing_skill_id != change.skill_id {
+                        return Err(format!(
+                            "Target {} belongs to skill '{}', not '{}'.",
+                            change.target_path, existing_skill_id, change.skill_id
+                        ));
+                    }
+                    self.convert_target(
+                        &target_id,
+                        &change.skill_id,
+                        &change.agent_id,
+                        &change.target_path,
+                        &preview.requested_mode,
+                        &actual,
+                    )?;
                     self.append_claim(&change.target_path, &change.agent_id, claim_origin.clone())?;
                 }
                 _ => {}
@@ -1961,6 +2070,65 @@ impl Service {
         Ok(())
     }
 
+    fn convert_target(
+        &self,
+        target_id: &str,
+        skill_id: &str,
+        agent_id: &str,
+        target_path: &str,
+        requested_mode: &str,
+        actual_mode: &str,
+    ) -> Result<(), String> {
+        let row = self
+            .skill_row(skill_id)?
+            .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+        let center = Path::new(&row.center_path);
+        let target = Path::new(target_path);
+        self.ensure_distribution_target_path(skill_id, agent_id, target)?;
+        fsutil::remove_path(target)?;
+        let actual = match actual_mode {
+            "link" => {
+                let linked = fsutil::try_symlink(center, target)?;
+                if linked {
+                    "link".to_string()
+                } else {
+                    let policy = self.settings()?.link_fail_policy;
+                    if policy == "copy" {
+                        fsutil::copy_dir_recursive(center, target)?;
+                        "copy".to_string()
+                    } else {
+                        return Err(format!(
+                            "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
+                            target.display()
+                        ));
+                    }
+                }
+            }
+            "copy" => {
+                fsutil::copy_dir_recursive(center, target)?;
+                "copy".to_string()
+            }
+            other => return Err(format!("Unknown mode: {other}")),
+        };
+        let source_hash = fsutil::hash_dir(center);
+        let current_hash = if actual == "copy" {
+            Some(fsutil::hash_dir(target))
+        } else {
+            None
+        };
+        let now = db::now_iso();
+        self.db.with_conn(|c| {
+            c.execute(
+                "UPDATE skill_targets
+                 SET install_mode = ?1, actual_mode = ?2, source_hash = ?3, current_hash = ?4, status = 'ok', updated_at = ?5
+                 WHERE id = ?6",
+                params![requested_mode, actual, source_hash, current_hash, now, target_id],
+            )
+            .map_err(|e| e.to_string())
+        })?;
+        Ok(())
+    }
+
     fn ensure_distribution_target_path(
         &self,
         skill_id: &str,
@@ -1982,9 +2150,7 @@ impl Service {
                 skill_id
             ));
         }
-        if fsutil::normalized_path(parent) != fsutil::normalized_path(&skills_dir)
-            || !fsutil::is_path_within(&skills_dir, target)
-        {
+        if fsutil::normalized_path(parent) != fsutil::normalized_path(&skills_dir) {
             return Err(format!(
                 "Target path '{}' must be a direct child of {}.",
                 target.display(),
@@ -2206,7 +2372,14 @@ impl Service {
         // 2. optionally replace agent file
         match option {
             "import_keep" | "overwrite_center" | "rename" => {
-                self.upsert_target_managed(agent_id, &target_skill_id, src, "copy", "copy")?;
+                let actual_mode = existing_target_mode(src);
+                self.upsert_target_managed(
+                    agent_id,
+                    &target_skill_id,
+                    src,
+                    actual_mode,
+                    actual_mode,
+                )?;
             }
             "import_link" => {
                 fsutil::remove_path(src)?;
@@ -3104,6 +3277,7 @@ impl Service {
                 id: t.id,
                 skill_id: t.skill_id,
                 agent_id: t.agent_id,
+                resolved_target_path: resolved_target_path(&t.target_path),
                 target_path: t.target_path,
                 install_mode: t.install_mode,
                 actual_mode: t.actual_mode,
@@ -3123,6 +3297,15 @@ impl Service {
         let health = crate::skills::v2::diagnosis::agent_health(self, agent_id);
         let agent_paths = crate::skills::agent_paths::paths_for_agent(agent_id);
         let mcp_config_path = agent_paths.mcp_config.map(|p| p.display().to_string());
+        let config_path = crate::agents::profiles::profile_for_agent(agent_id)
+            .and_then(|profile| {
+                crate::agents::profiles::activation_url(&profile)
+                    .or_else(|| Some(crate::agents::profiles::configuration_url(&profile)))
+            })
+            .or(agent_paths.settings_file)
+            .map(|p| p.display().to_string());
+        let plugin_dir =
+            crate::skills::agent_paths::plugin_cache_dir(agent_id).map(|p| p.display().to_string());
 
         Ok(AgentDetail {
             id: summary.id,
@@ -3131,9 +3314,9 @@ impl Service {
             version: summary.version,
             latest_version: summary.latest_version,
             skills_dir: summary.skills_dir,
-            config_path: None,
+            config_path,
             mcp_config_path,
-            plugin_dir: None,
+            plugin_dir,
             skills,
             applied_packs,
             available_packs,
@@ -3277,6 +3460,40 @@ struct TargetRow {
     created_at: String,
     updated_at: String,
 }
+
+fn resolved_target_path(path: &str) -> Option<String> {
+    fsutil::resolved_symlink_target(Path::new(path)).map(|p| p.display().to_string())
+}
+
+fn existing_target_mode(path: &Path) -> &'static str {
+    if fsutil::resolved_symlink_target(path).is_some() {
+        "link"
+    } else {
+        "copy"
+    }
+}
+
+fn filesystem_target_mode(path: &Path) -> Option<String> {
+    match inspect_path(path) {
+        PathKind::Symlink(_) => Some("link".to_string()),
+        PathKind::Dir | PathKind::File => Some("copy".to_string()),
+        PathKind::Missing | PathKind::BrokenSymlink => None,
+    }
+}
+
+fn existing_path_info(path: &Path) -> (Option<String>, Option<String>) {
+    match inspect_path(path) {
+        PathKind::Symlink(target) => (
+            Some("symlink".to_string()),
+            Some(target.display().to_string()),
+        ),
+        PathKind::Dir => (Some("directory".to_string()), None),
+        PathKind::File => (Some("file".to_string()), None),
+        PathKind::BrokenSymlink => (Some("broken_symlink".to_string()), None),
+        PathKind::Missing => (Some("missing".to_string()), None),
+    }
+}
+
 struct PackRow {
     id: String,
     name: String,

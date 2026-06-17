@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSkillStoreV2, filteredSkills } from '../stores/skillStoreV2'
 import type { SkillSummary, SkillManagerOverview } from '../services/skillApiV2'
+import { skillApiV2 } from '../services/skillApiV2'
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
   return {
@@ -66,6 +67,78 @@ describe('skillStoreV2 view mode + filters', () => {
     expect(filteredSkills(useSkillStoreV2.getState()).length).toBe(1)
     state.setFilter('query', '')
     expect(filteredSkills(useSkillStoreV2.getState()).length).toBe(3)
+  })
+})
+
+describe('skillStoreV2 startup scan setting', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  beforeEach(() => {
+    useSkillStoreV2.setState({
+      overview: null,
+      settings: null,
+      skills: [],
+      agents: [],
+      packs: [],
+      issues: [],
+      unmanaged: [],
+      loading: false,
+      error: null,
+      initialized: false,
+      lastOverviewLoadedAt: 0,
+    })
+  })
+
+  it('runs a full skill manager scan on init when startupScan is enabled', async () => {
+    const overview: SkillManagerOverview = {
+      metrics: { centerSkillCount: 0, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
+      skills: [],
+      agents: [],
+      packs: [],
+      issues: [],
+      settings: {
+        centerPath: '~/.agentbro/skills',
+        sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link',
+        linkFailPolicy: 'ask',
+        startupScan: true,
+        showUnmanaged: true,
+      },
+    }
+    vi.spyOn(skillApiV2, 'bootstrap').mockResolvedValue(undefined)
+    const fullScan = vi.spyOn(skillApiV2, 'init').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+
+    await useSkillStoreV2.getState().init()
+
+    expect(fullScan).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips the full skill manager scan on init when startupScan is disabled', async () => {
+    const overview: SkillManagerOverview = {
+      metrics: { centerSkillCount: 0, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
+      skills: [],
+      agents: [],
+      packs: [],
+      issues: [],
+      settings: {
+        centerPath: '~/.agentbro/skills',
+        sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link',
+        linkFailPolicy: 'ask',
+        startupScan: false,
+        showUnmanaged: true,
+      },
+    }
+    vi.spyOn(skillApiV2, 'bootstrap').mockResolvedValue(undefined)
+    const fullScan = vi.spyOn(skillApiV2, 'init').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+
+    await useSkillStoreV2.getState().init()
+
+    expect(fullScan).not.toHaveBeenCalled()
   })
 })
 

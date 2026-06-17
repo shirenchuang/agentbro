@@ -29,8 +29,8 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
                 h.join(".agents").join("skills"),
                 h.join(".codex").join("agents"),
             ],
-            mcp_config: Some(h.join(".codex").join("config.json")),
-            settings_file: Some(h.join(".codex").join("config.json")),
+            mcp_config: Some(h.join(".codex").join("config.toml")),
+            settings_file: Some(h.join(".codex").join("config.toml")),
         },
         "gemini" | "gemini-cli" => SkillPaths {
             skill_dirs: vec![h.join(".gemini").join("skills")],
@@ -163,6 +163,15 @@ pub fn central_skills_dir() -> PathBuf {
 
 pub fn legacy_agentbro_skills_dir() -> PathBuf {
     home().join(".agentbro").join("skills")
+}
+
+pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
+    let h = home();
+    match agent {
+        "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
+        "codex" => Some(h.join(".codex").join("plugins").join("cache")),
+        _ => None,
+    }
 }
 
 pub fn central_skill_dirs() -> Vec<PathBuf> {

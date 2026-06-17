@@ -135,6 +135,7 @@ pub struct SkillTargetDetail {
     pub skill_id: String,
     pub agent_id: String,
     pub target_path: String,
+    pub resolved_target_path: Option<String>,
     pub install_mode: String,
     pub actual_mode: String,
     pub source_hash: String,
@@ -282,6 +283,8 @@ pub struct ConflictBlocker {
     pub agent_id: String,
     pub reason: String,
     pub existing_path: Option<String>,
+    pub existing_path_kind: Option<String>,
+    pub resolved_existing_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

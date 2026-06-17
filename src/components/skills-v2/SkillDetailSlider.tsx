@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
+import type { AnchorHTMLAttributes, MouseEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
+import { isTauri } from '../../services/tauriApi'
 import type { SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
+import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
@@ -29,6 +34,10 @@ const STATUS_LABEL: Record<string, string> = {
   copyDiverged: '副本分叉',
 }
 
+const markdownComponents = {
+  a: MarkdownLink,
+}
+
 export function SkillDetailSlider({
   skillId,
   open,
@@ -44,6 +53,7 @@ export function SkillDetailSlider({
   onDelete?: (id: string) => void
   fallbackSkill?: SkillDetailFallback | null
 }) {
+  const { t } = useTranslation()
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [activeFile, setActiveFile] = useState<string | null>(null)
@@ -170,12 +180,12 @@ export function SkillDetailSlider({
         <div className="sm2__skill-detail">
           <div className="sm2__detail-pills">
             <span className={`sm2__tag sm2__tag--${detail.status}`}>{STATUS_LABEL[detail.status] || detail.status}</span>
-            <span className="sm2__tag">{detail.sourceType}</span>
+            <span className="sm2__tag">{skillSourceTypeLabel(t, detail.sourceType)}</span>
             <span className="sm2__tag">{detail.skillType}</span>
             {detail.installedAgents.length > 0 && (
               <span className="sm2__agents">
                 {detail.installedAgents.map((a) => (
-                  <AgentIconBadge key={a.agentId} iconKey={a.iconKey} mode={a.mode} title={`${a.displayName} · ${a.mode}`} />
+                  <AgentIconBadge key={a.agentId} iconKey={a.iconKey} mode={a.mode} title={`${a.displayName} · ${skillModeLabel(t, a.mode)}`} />
                 ))}
               </span>
             )}
@@ -227,8 +237,9 @@ function OverviewTab({
   docContent: string
   fileLoading: boolean
 }) {
+  const { t } = useTranslation()
   const frontmatter = Object.entries(detail.frontmatter || {})
-  const sourceLabel = detail.source?.sourceType || detail.sourceType
+  const sourceLabel = skillSourceTypeLabel(t, detail.source?.sourceType || detail.sourceType)
   const sourceValue = detail.source?.sourceUri || detail.sourceUri || sourceLabel
   return (
     <div className="sm2__detail-overview sm2__detail-overview--reader">
@@ -240,13 +251,13 @@ function OverviewTab({
           </div>
           <small>{STATUS_LABEL[detail.status] || detail.status}</small>
         </div>
-        <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc">
+        <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc selectable">
           {fileLoading ? (
             <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
           ) : docContent ? (
             <>
               <SkillFrontmatterIntro description={detail.frontmatter.description || detail.description} />
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(docContent)}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{stripFrontmatter(docContent)}</ReactMarkdown>
             </>
           ) : (
             <div className="sm2__empty sm2__empty--compact">未找到说明文档</div>
@@ -271,7 +282,7 @@ function OverviewTab({
                     <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={26} />
                     <div>
                       <strong>{agent?.displayName || target.agentId}</strong>
-                      <span>{target.actualMode} · {STATUS_LABEL[target.status] || target.status}</span>
+                      <span>{skillModeLabel(t, target.actualMode)} · {STATUS_LABEL[target.status] || target.status}</span>
                     </div>
                   </div>
                 )
@@ -380,14 +391,14 @@ function FilesTab({
             {fileLoading ? (
               <div className="sm2__empty sm2__empty--compact">加载中…</div>
             ) : effectiveMode === 'preview' && canPreview ? (
-              <div className={`sm2__markdown sm2__markdown--file${isSkillMarkdownPath(activeFile) ? ' sm2__markdown--file-skill' : ''}`}>
+              <div className={`sm2__markdown sm2__markdown--file selectable${isSkillMarkdownPath(activeFile) ? ' sm2__markdown--file-skill' : ''}`}>
                 {isSkillMarkdownPath(activeFile) && (
                   <SkillFrontmatterIntro description={extractFrontmatterDescription(fileContent)} compact />
                 )}
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(fileContent || '（空）')}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{stripFrontmatter(fileContent || '（空）')}</ReactMarkdown>
               </div>
             ) : (
-              <pre className="sm2__fileview-content">{fileContent || '（空）'}</pre>
+              <pre className="sm2__fileview-content selectable">{fileContent || '（空）'}</pre>
             )}
           </div>
         </div>
@@ -405,49 +416,87 @@ function AgentsTab({
   syncing: string | null
   onSync: (targetId: string, action: string) => void
 }) {
+  const { t } = useTranslation()
   if (detail.targets.length === 0) {
     return <div className="sm2__empty sm2__empty--compact">尚未分发到任何 Agent</div>
   }
   return (
-    <section className="sm2__panel">
-      {detail.targets.map((t) => (
-        <div key={t.id} className="sm2__object-row sm2__object-row--path">
-          <div className="sm2__object-row-titleline">
-            <AgentIconBadge iconKey={t.agentId} mode={t.actualMode} size={26} />
-            <div>
-              <strong>{t.agentId}</strong>
-              <span>{t.actualMode} · {STATUS_LABEL[t.status] || t.status}</span>
-            </div>
-          </div>
-          <div className="sm2__object-row-body">
-            <code>{t.targetPath}</code>
-            <div className="sm2__claims">
-              {t.claims.map((c) => (
-                <span key={c.id} className="sm2__tag">
-                  {c.claimType === 'pack' ? `技能包：${c.packName}` : '独立安装'}
+    <section className="sm2__panel sm2__agent-targets">
+      <div className="sm2__agent-target-grid">
+        {detail.targets.map((target) => {
+          const agent = detail.installedAgents.find((item) => item.agentId === target.agentId)
+          const agentName = agent?.displayName || target.agentId
+          const statusLabel = STATUS_LABEL[target.status] || target.status
+          const modeLabel = skillModeLabel(t, target.actualMode)
+          return (
+            <article key={target.id} className={`sm2__agent-target-card sm2__agent-target-card--${target.actualMode}`}>
+              <div className="sm2__agent-target-head">
+                <div className="sm2__agent-target-title">
+                  <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={34} />
+                  <div>
+                    <strong>{agentName}</strong>
+                    <span>{target.agentId}</span>
+                    <span>{modeLabel} · {statusLabel}</span>
+                  </div>
+                </div>
+                <span className={`sm2__agent-target-status sm2__agent-target-status--${target.status}`}>
+                  {statusLabel}
                 </span>
-              ))}
-            </div>
-            {t.actualMode === 'copy' && t.status !== 'ok' && (
-              <div className="sm2__btn-row">
-                {t.status === 'copy_outdated' && (
-                  <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'center_over_agent')}>用中心库更新</button>
+              </div>
+
+              <div className="sm2__agent-target-tags" aria-label={`${agentName} 安装标记`}>
+                <span className={`sm2__target-chip sm2__target-chip--${target.actualMode}`}>
+                  {modeLabel}
+                </span>
+                {target.claims.length === 0 && (
+                  <span className="sm2__target-chip sm2__target-chip--claim-direct">
+                    {targetClaimLabel(t, null)}
+                  </span>
                 )}
-                {t.status === 'copy_modified' && (
-                  <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'agent_over_center')}>推回中心库</button>
-                )}
-                {t.status === 'copy_diverged' && (
-                  <>
-                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'center_over_agent')}>中心库覆盖</button>
-                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'agent_over_center')}>副本覆盖</button>
-                    <button className="sm2__btn" disabled={syncing === t.id} onClick={() => onSync(t.id, 'keep_diverged')}>保留分叉</button>
-                  </>
+                {target.claims.map((c) => (
+                  <span key={c.id} className={`sm2__target-chip sm2__target-chip--claim-${c.claimType}`}>
+                    {targetClaimLabel(t, c)}
+                  </span>
+                ))}
+              </div>
+
+              <div className="sm2__agent-target-paths">
+                <code>{target.targetPath}</code>
+                {target.resolvedTargetPath && target.resolvedTargetPath !== target.targetPath && (
+                  <div className="sm2__agent-target-resolved">
+                    <span>真实路径</span>
+                    <small>打开将跳转到真实路径</small>
+                    <code>{target.resolvedTargetPath}</code>
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      ))}
+
+              <div className="sm2__agent-target-actions">
+                {target.actualMode === 'copy' && target.status !== 'ok' && (
+                  <div className="sm2__btn-row">
+                    {target.status === 'copy_outdated' && (
+                      <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'center_over_agent')}>用中心库更新</button>
+                    )}
+                    {target.status === 'copy_modified' && (
+                      <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'agent_over_center')}>推回中心库</button>
+                    )}
+                    {target.status === 'copy_diverged' && (
+                      <>
+                        <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'center_over_agent')}>中心库覆盖</button>
+                        <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'agent_over_center')}>副本覆盖</button>
+                        <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'keep_diverged')}>保留分叉</button>
+                      </>
+                    )}
+                  </div>
+                )}
+                <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(target.targetPath)}>
+                  {t('skills.actions.open', { defaultValue: 'Open' })}
+                </button>
+              </div>
+            </article>
+          )
+        })}
+      </div>
     </section>
   )
 }
@@ -464,10 +513,11 @@ function SkillFrontmatterIntro({ description, compact = false }: { description?:
 }
 
 function SourceTab({ detail }: { detail: SkillDetail }) {
+  const { t } = useTranslation()
   const sourceType = detail.source?.sourceType || detail.sourceType
   const sourceUri = detail.source?.sourceUri || detail.sourceUri
   const summaryCards = [
-    { label: '类型', value: sourceType },
+    { label: '类型', value: skillSourceTypeLabel(t, sourceType) },
     { label: '导入 Agent', value: detail.source?.importedFromAgent },
     { label: '安装方式', value: detail.source?.installedVia },
     { label: '来源 Ref', value: detail.source?.sourceRef },
@@ -526,6 +576,31 @@ function CompactInfo({
       {mono ? <code title={value}>{display}</code> : <strong title={value}>{display}</strong>}
     </div>
   )
+}
+
+function MarkdownLink({ href, children, onClick, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    onClick?.(event)
+    if (event.defaultPrevented || !href || href.startsWith('#')) return
+    event.preventDefault()
+    openMarkdownHref(href)
+  }
+
+  return (
+    <a {...props} href={href} target="_blank" rel="noreferrer" onClick={handleClick}>
+      {children}
+    </a>
+  )
+}
+
+function openMarkdownHref(href: string) {
+  const target = href.trim()
+  if (!target || /^javascript:/i.test(target)) return
+  if (isTauri()) {
+    openShell(target).catch((err) => console.warn('[skills] open markdown link:', err))
+  } else {
+    window.open(target, '_blank', 'noopener,noreferrer')
+  }
 }
 
 function findFile(node: FileTreeNode | null, name: string): string | null {

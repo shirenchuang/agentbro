@@ -710,6 +710,81 @@
     "githubRepo": "GitHub Repository",
     "subPath": "Sub-path",
     "directCopy": "Direct Copy",
+    "deleteCenterSkill": {
+      "title": "中央ライブラリの Skill「{{skillId}}」を削除",
+      "confirmTitle": "削除前の確認",
+      "impactWithTargets": "中央ライブラリの記録は削除されます。Agent のインストールは一緒に削除するか、独立したコピーとして残せます。",
+      "impactNoTargets": "影響を受ける Agent インストールはありません。中央ライブラリの記録だけを削除します。",
+      "agentInstalls": "Agent インストール",
+      "referenceCount": "{{count}} 件の参照",
+      "noTargets": "この削除では Agent ディレクトリには触れません。",
+      "linkWarning": "メモ: {{agent}} はシンボリックリンクです。残す場合は先に独立したコピーへ変換します。",
+      "removeAgentInstalls": "Agent インストールを削除",
+      "preserveCopies": "Agent コピーを残す",
+      "deleteCenterOnly": "中央を削除",
+      "processing": "処理中..."
+    },
+    "sourceType": {
+      "local_folder": "ローカルフォルダ",
+      "archive": "アーカイブ",
+      "agent_import": "Agent インポート",
+      "manual_center": "中央ライブラリ手動登録",
+      "github": "GitHub",
+      "git": "Git",
+      "skillssh": "skills.sh",
+      "skills_sh": "skills.sh",
+      "url": "URL",
+      "unmanaged_agent": "未管理 Agent",
+      "agent_override": "Agent 上書き",
+      "builtin": "組み込み",
+      "json": "JSON"
+    },
+    "mode": {
+      "link": "シンボリックリンク",
+      "copy": "コピー"
+    },
+    "status": {
+      "ok": "正常",
+      "conflict": "競合",
+      "unmanaged": "未管理",
+      "copyDiverged": "コピー分岐",
+      "copy_outdated": "更新可能",
+      "copy_modified": "変更済み",
+      "copy_diverged": "分岐",
+      "broken_link": "壊れたリンク",
+      "missing": "見つかりません"
+    },
+    "claim": {
+      "direct": "直接配布",
+      "pack": "パック",
+      "packNamed": "パック: {{name}}"
+    },
+    "reason": {
+      "not_in_center_library": "中央ライブラリにありません",
+      "center_library_conflict": "中央ライブラリの同名競合"
+    },
+    "blocker": {
+      "unmanagedExists": "ターゲットパスには未管理の Skill '{{skillId}}' がすでに存在します。先に取り込み、上書き、または名前変更してください。"
+    },
+    "pathKind": {
+      "symlink": "シンボリックリンク",
+      "directory": "実ディレクトリ",
+      "file": "ファイル",
+      "broken_symlink": "壊れたシンボリックリンク",
+      "missing": "存在しません"
+    },
+    "labels": {
+      "realPath": "実パス"
+    },
+    "actions": {
+      "open": "開く",
+      "openFolder": "フォルダを開く"
+    },
+    "errors": {
+      "targetDirectChild": "ターゲットパス '{{targetPath}}' は {{skillsDir}} の直接の子である必要があります。",
+      "targetNoParent": "ターゲットパス '{{targetPath}}' には親ディレクトリがありません。",
+      "targetNameMismatch": "ターゲットパス '{{targetPath}}' は Skill '{{skillId}}' と一致しません。"
+    },
     "installing": "Installing...",
     "sync": "Sync",
     "githubSyncDesc": "Sync skill configs via a private GitHub repository.",

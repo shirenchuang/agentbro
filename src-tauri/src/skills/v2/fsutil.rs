@@ -154,6 +154,24 @@ pub fn open_path(target: &str) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| format!("open: {}", e))
 }
 
+/// Reveal a path in Finder without resolving symlinks to their destination.
+pub fn reveal_path(target: &str) -> Result<(), String> {
+    let target = expand_tilde(target);
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("reveal: {}", e));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        open_path(&target.display().to_string())
+    }
+}
+
 /// Stable hash over a directory's files: relative paths + contents, sorted,
 /// ignoring noise entries. Returns hex digest.
 pub fn hash_dir(dir: &Path) -> String {
@@ -455,6 +473,13 @@ pub fn inspect_path(path: &Path) -> PathKind {
         PathKind::Dir
     } else {
         PathKind::File
+    }
+}
+
+pub fn resolved_symlink_target(path: &Path) -> Option<PathBuf> {
+    match inspect_path(path) {
+        PathKind::Symlink(target) => Some(target),
+        _ => None,
     }
 }
 

@@ -302,6 +302,11 @@ pub fn open_skill_path(path: String) -> Result<(), String> {
     crate::skills::v2::fsutil::open_path(&path)
 }
 
+#[tauri::command]
+pub fn reveal_skill_path(path: String) -> Result<(), String> {
+    crate::skills::v2::fsutil::reveal_path(&path)
+}
+
 fn pack_members(svc: &Service, pack_id: &str) -> Result<Vec<String>, String> {
     Ok(svc
         .get_skill_pack_detail(pack_id)?

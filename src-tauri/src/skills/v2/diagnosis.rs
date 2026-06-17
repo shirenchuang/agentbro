@@ -542,6 +542,9 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
     let Ok(content) = std::fs::read_to_string(&config) else {
         return vec![];
     };
+    if config.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        return read_toml_mcp_servers(&content);
+    }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
         return vec![];
     };
@@ -580,6 +583,73 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
             });
         }
     }
+    out
+}
+
+fn read_toml_mcp_servers(content: &str) -> Vec<McpServerStatus> {
+    #[derive(Default)]
+    struct Pending {
+        name: String,
+        command: String,
+        args: Vec<String>,
+    }
+
+    fn push_pending(out: &mut Vec<McpServerStatus>, pending: Option<Pending>) {
+        if let Some(server) = pending {
+            let valid = !server.command.is_empty();
+            out.push(McpServerStatus {
+                name: server.name,
+                command: server.command,
+                args: server.args,
+                valid,
+                message: if valid {
+                    "configured".to_string()
+                } else {
+                    "missing command".to_string()
+                },
+            });
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut pending: Option<Pending> = None;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix("[mcp_servers.")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            push_pending(&mut out, pending.take());
+            pending = Some(Pending {
+                name: name.trim_matches('"').to_string(),
+                ..Pending::default()
+            });
+            continue;
+        }
+        let Some(server) = pending.as_mut() else {
+            continue;
+        };
+        if let Some(value) = line.strip_prefix("command").and_then(|v| v.split_once('=')) {
+            server.command = value.1.trim().trim_matches('"').to_string();
+        } else if let Some(value) = line.strip_prefix("args").and_then(|v| v.split_once('=')) {
+            let args = value
+                .1
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .filter_map(|part| {
+                    let arg = part.trim().trim_matches('"');
+                    (!arg.is_empty()).then(|| arg.to_string())
+                })
+                .collect();
+            server.args = args;
+        }
+    }
+    push_pending(&mut out, pending);
     out
 }
 

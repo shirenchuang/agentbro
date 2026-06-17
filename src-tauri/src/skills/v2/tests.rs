@@ -363,6 +363,133 @@ fn reuse_target_appends_claim_without_dup_files() {
 }
 
 #[test]
+#[cfg(unix)]
+fn distributing_existing_managed_target_with_different_mode_converts_it() {
+    let (_home, svc, _lock) = fresh_service("distribute-convert-mode");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "release-checklist",
+        "release-checklist",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let copy_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(copy_preview, ClaimOrigin::Direct)
+        .unwrap();
+
+    let link_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert!(link_preview.blockers.is_empty());
+    assert_eq!(link_preview.changes.len(), 1);
+    assert_eq!(link_preview.changes[0].action, "convert");
+    assert_eq!(link_preview.changes[0].actual_mode.as_deref(), Some("link"));
+
+    svc.execute_distribute_skill(link_preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].actual_mode, "link");
+    assert!(Path::new(&detail.targets[0].target_path).is_symlink());
+}
+
+#[test]
+#[cfg(unix)]
+fn converting_modified_copy_to_link_requires_source_decision() {
+    let (_home, svc, _lock) = fresh_service("distribute-convert-copy-decision");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "release-checklist",
+        "release-checklist",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let copy_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(copy_preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target_path = svc.get_skill_detail("release-checklist").unwrap().targets[0]
+        .target_path
+        .clone();
+    fs::write(
+        Path::new(&target_path).join("reference.md"),
+        "agent-version",
+    )
+    .unwrap();
+
+    let mut link_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert!(link_preview.changes.is_empty());
+    assert_eq!(link_preview.blockers.len(), 1);
+    assert!(link_preview.blockers[0].reason.contains("Managed copy"));
+    assert!(svc
+        .execute_distribute_skill(link_preview.clone(), ClaimOrigin::Direct)
+        .is_err());
+
+    link_preview.blocker_decisions = vec![DistributionBlockerDecision {
+        skill_id: "release-checklist".to_string(),
+        agent_id: "claude-code".to_string(),
+        action: "agent_over_center".to_string(),
+    }];
+    svc.execute_distribute_skill(link_preview, ClaimOrigin::Direct)
+        .unwrap();
+
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].actual_mode, "link");
+    assert!(Path::new(&detail.targets[0].target_path).is_symlink());
+    let center = svc.center_path().unwrap().join("release-checklist");
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "agent-version"
+    );
+}
+
+#[test]
 fn distribute_blocker_can_be_skipped_or_overwritten() {
     let (_home, svc, _lock) = fresh_service("distribute-blocker-decision");
     let src = write_skill(
@@ -449,6 +576,88 @@ fn distribute_blocker_can_be_skipped_or_overwritten() {
         fs::read_to_string(unmanaged.join("reference.md")).unwrap(),
         "center-version"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn distribute_overwrite_can_replace_unmanaged_symlink_target() {
+    let (_home, svc, _lock) = fresh_service("distribute-overwrite-symlink");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "find-skills",
+        "find-skills",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let old_source = write_skill(
+        &svc.home.join(".skills-manager/skills"),
+        "find-skills",
+        "find-skills",
+        Some("old-version"),
+    );
+    let codex_dir = svc.home.join(".codex/skills");
+    fs::create_dir_all(&codex_dir).unwrap();
+    let old_link = codex_dir.join("find-skills");
+    std::os::unix::fs::symlink(&old_source, &old_link).unwrap();
+
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["find-skills".to_string()],
+            vec!["codex".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert_eq!(preview.blockers.len(), 1);
+    assert_eq!(
+        preview.blockers[0].existing_path_kind.as_deref(),
+        Some("symlink")
+    );
+    assert_eq!(
+        preview.blockers[0].resolved_existing_path.as_deref(),
+        Some(old_source.display().to_string().as_str())
+    );
+
+    let mut overwrite_preview = preview;
+    overwrite_preview.blocker_decisions = vec![DistributionBlockerDecision {
+        skill_id: "find-skills".to_string(),
+        agent_id: "codex".to_string(),
+        action: "overwrite".to_string(),
+    }];
+    svc.execute_distribute_skill(overwrite_preview, ClaimOrigin::Direct)
+        .unwrap();
+
+    let detail = svc.get_skill_detail("find-skills").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].agent_id, "codex");
+    assert_eq!(detail.targets[0].actual_mode, "link");
+    assert_eq!(
+        detail.targets[0].resolved_target_path.as_deref(),
+        Some(
+            svc.center_path()
+                .unwrap()
+                .join("find-skills")
+                .display()
+                .to_string()
+                .as_str()
+        )
+    );
+    assert!(
+        old_source.exists(),
+        "overwrite must not delete symlink target"
+    );
+    assert_ne!(std::fs::read_link(&old_link).unwrap(), old_source);
 }
 
 #[test]
@@ -611,6 +820,8 @@ fn distribution_execution_rejects_preview_paths_outside_agent_skill_dir() {
             agent_id: "claude-code".to_string(),
             reason: "injected blocker".to_string(),
             existing_path: Some(outside_target.display().to_string()),
+            existing_path_kind: Some("directory".to_string()),
+            resolved_existing_path: None,
         }],
         blocker_decisions: vec![DistributionBlockerDecision {
             skill_id: "github-code-review".to_string(),
@@ -898,14 +1109,62 @@ fn delete_center_skill_preview_lists_targets() {
     assert!(!preview.removable, "linked targets block removal");
     assert_eq!(preview.affected_targets.len(), 1);
 
-    // refuse without confirmation
-    let err = svc.execute_delete_center_skill("release-checklist", false);
-    assert!(err.is_err());
+    let target_path = PathBuf::from(&preview.affected_targets[0].target_path);
+    assert!(target_path.is_symlink());
 
-    // with confirmation removes linked + center dir
+    // default action keeps Agent installs by turning links into standalone copies.
+    svc.execute_delete_center_skill("release-checklist", false)
+        .unwrap();
+    assert!(svc.get_skill_detail("release-checklist").is_err());
+    assert!(target_path.is_dir());
+    assert!(!target_path.is_symlink());
+    assert!(target_path.join("SKILL.md").exists());
+    assert_eq!(
+        svc.list_unmanaged()
+            .unwrap()
+            .iter()
+            .filter(|item| item.path == target_path.display().to_string())
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn delete_center_skill_can_remove_agent_installs() {
+    let (_home, svc, _lock) = fresh_service("delete-remove-targets");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let p = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(p, ClaimOrigin::Direct)
+        .unwrap();
+
+    let preview = svc
+        .preview_delete_center_skill("release-checklist")
+        .unwrap();
+    let target_path = PathBuf::from(&preview.affected_targets[0].target_path);
+    assert!(target_path.is_symlink());
+
     svc.execute_delete_center_skill("release-checklist", true)
         .unwrap();
     assert!(svc.get_skill_detail("release-checklist").is_err());
+    assert!(!target_path.exists());
 }
 
 // ── Adopt unmanaged agent skill ─────────────────────────────────
@@ -948,6 +1207,55 @@ fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_import_keep_preserves_symlink_mode_and_reports_resolved_path() {
+    let (_home, svc, _lock) = fresh_service("adopt-keep-symlink");
+    let source = write_skill(
+        &svc.home.join(".skills-manager/skills"),
+        "kuaifa",
+        "kuaifa",
+        Some("v1"),
+    );
+    let agent_dir = svc.home.join(".claude/skills");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let link = agent_dir.join("kuaifa");
+    std::os::unix::fs::symlink(&source, &link).unwrap();
+
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.path == link.display().to_string())
+        .expect("unmanaged symlink skill found");
+
+    let adopted = svc
+        .execute_adopt_agent_skill("claude-code", &unmanaged.id, "import_keep", None)
+        .unwrap();
+    assert_eq!(adopted, "kuaifa");
+
+    let detail = svc.get_skill_detail("kuaifa").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].actual_mode, "link");
+    assert_eq!(
+        detail.targets[0].resolved_target_path.as_deref(),
+        Some(source.display().to_string().as_str())
+    );
+
+    svc.db
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE skill_targets SET actual_mode = 'copy' WHERE skill_id = 'kuaifa'",
+                [],
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+    let refreshed = svc.get_skill_detail("kuaifa").unwrap();
+    assert_eq!(refreshed.targets[0].actual_mode, "link");
 }
 
 // ── Migration from legacy metadata ───────────────────────────────
@@ -1118,6 +1426,14 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
     .unwrap();
 
     let detail = svc.get_agent_detail("claude-code").unwrap();
+    assert_eq!(
+        detail.config_path,
+        Some(claude_dir.join("settings.json").display().to_string())
+    );
+    assert_eq!(
+        detail.plugin_dir,
+        Some(claude_dir.join("plugins/cache").display().to_string())
+    );
     let filesystem = detail
         .mcp_servers
         .iter()
@@ -1138,6 +1454,39 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
         .health
         .iter()
         .any(|issue| issue.kind == "skills_dir_missing"));
+}
+
+#[test]
+fn agent_detail_reports_codex_toml_config_paths() {
+    let (_home, svc, _lock) = fresh_service("codex-config-paths");
+    let codex_dir = svc.home.join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        codex_dir.join("config.toml"),
+        r#"[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+"#,
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("codex").unwrap();
+    assert_eq!(
+        detail.config_path,
+        Some(codex_dir.join("config.toml").display().to_string())
+    );
+    assert_eq!(
+        detail.mcp_config_path,
+        Some(codex_dir.join("config.toml").display().to_string())
+    );
+    assert_eq!(
+        detail.plugin_dir,
+        Some(codex_dir.join("plugins/cache").display().to_string())
+    );
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "filesystem" && server.command == "npx"));
 }
 
 #[test]

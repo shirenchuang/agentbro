@@ -709,6 +709,81 @@
     "githubRepo": "GitHub Repository",
     "subPath": "Sub-path",
     "directCopy": "Direct Copy",
+    "deleteCenterSkill": {
+      "title": "Delete center Skill \"{{skillId}}\"",
+      "confirmTitle": "Confirm before deleting",
+      "impactWithTargets": "The center library record will be deleted. Agent installs can be removed, or kept as standalone copies.",
+      "impactNoTargets": "No Agent installs will be affected. Only the center library record will be removed.",
+      "agentInstalls": "Agent installs",
+      "referenceCount": "{{count}} reference(s)",
+      "noTargets": "This deletion will not touch any Agent directory.",
+      "linkWarning": "Note: {{agent}} is a symlink. Keeping Agent installs turns it into a standalone copy first.",
+      "removeAgentInstalls": "Remove Agent installs",
+      "preserveCopies": "Keep Agent copies",
+      "deleteCenterOnly": "Delete center",
+      "processing": "Processing..."
+    },
+    "sourceType": {
+      "local_folder": "Local folder",
+      "archive": "Archive",
+      "agent_import": "Agent import",
+      "manual_center": "Manual center",
+      "github": "GitHub",
+      "git": "Git",
+      "skillssh": "skills.sh",
+      "skills_sh": "skills.sh",
+      "url": "URL",
+      "unmanaged_agent": "Unmanaged agent",
+      "agent_override": "Agent override",
+      "builtin": "Built-in",
+      "json": "JSON"
+    },
+    "mode": {
+      "link": "Symlink",
+      "copy": "Copy"
+    },
+    "status": {
+      "ok": "OK",
+      "conflict": "Conflict",
+      "unmanaged": "Unmanaged",
+      "copyDiverged": "Copy diverged",
+      "copy_outdated": "Update available",
+      "copy_modified": "Modified",
+      "copy_diverged": "Diverged",
+      "broken_link": "Broken link",
+      "missing": "Missing"
+    },
+    "claim": {
+      "direct": "Direct distribution",
+      "pack": "Pack",
+      "packNamed": "Pack: {{name}}"
+    },
+    "reason": {
+      "not_in_center_library": "Not in center library",
+      "center_library_conflict": "Center library name conflict"
+    },
+    "blocker": {
+      "unmanagedExists": "An unmanaged Skill '{{skillId}}' already exists at the target path. Adopt, overwrite, or rename it first."
+    },
+    "pathKind": {
+      "symlink": "Symlink",
+      "directory": "Real directory",
+      "file": "File",
+      "broken_symlink": "Broken symlink",
+      "missing": "Missing"
+    },
+    "labels": {
+      "realPath": "Real path"
+    },
+    "actions": {
+      "open": "Open",
+      "openFolder": "Open Folder"
+    },
+    "errors": {
+      "targetDirectChild": "Target path '{{targetPath}}' must be a direct child of {{skillsDir}}.",
+      "targetNoParent": "Target path '{{targetPath}}' has no parent directory.",
+      "targetNameMismatch": "Target path '{{targetPath}}' does not match Skill '{{skillId}}'."
+    },
     "installing": "Installing...",
     "sync": "Sync",
     "githubSyncDesc": "Sync skill configs via a private GitHub repository.",

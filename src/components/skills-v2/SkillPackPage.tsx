@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
@@ -11,6 +13,7 @@ import type {
 } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
+import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
 
@@ -156,18 +159,7 @@ export function SkillPackPage() {
         </aside>
 
         <main className="sm2__pack-canvas settings-scroll">
-          {builderMode ? (
-            <PackBuilderPanel
-              mode={builderMode}
-              existing={builderMode === 'create' ? null : detail}
-              onCancel={() => setBuilderMode(null)}
-              onSaved={async (packId) => {
-                setBuilderMode(null)
-                await state.loadOverview(true)
-                await state.selectPack(packId)
-              }}
-            />
-          ) : !detail ? (
+          {!detail ? (
             <PackLanding onCreate={startCreate} />
           ) : (
             <PackDetail
@@ -183,6 +175,19 @@ export function SkillPackPage() {
           )}
         </main>
       </div>
+
+      {builderMode && (
+        <PackBuilderDialog
+          mode={builderMode}
+          existing={builderMode === 'create' ? null : detail}
+          onCancel={() => setBuilderMode(null)}
+          onSaved={async (packId) => {
+            setBuilderMode(null)
+            await state.loadOverview(true)
+            await state.selectPack(packId)
+          }}
+        />
+      )}
 
       {applyFor && (
         <ApplyPackDialog
@@ -261,6 +266,37 @@ export function SkillPackPage() {
         />
       )}
     </div>
+  )
+}
+
+function PackBuilderDialog({
+  mode,
+  existing,
+  onCancel,
+  onSaved,
+}: {
+  mode: BuilderMode
+  existing: SkillPackDetail | null
+  onCancel: () => void
+  onSaved: (packId: string) => void
+}) {
+  if (typeof document === 'undefined') return null
+
+  const title = mode === 'edit' ? '编辑技能包' : mode === 'duplicate' ? '复制技能包' : '创建技能包'
+
+  return createPortal(
+    <div className="sm2__overlay sm2__pack-builder-overlay" onClick={onCancel}>
+      <div
+        className="sm2__modal sm2__pack-builder-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <PackBuilderPanel mode={mode} existing={existing} onCancel={onCancel} onSaved={onSaved} />
+      </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -443,6 +479,7 @@ function PackBuilderPanel({
   onSaved: (packId: string) => void
 }) {
   const skills = useSkillStoreV2((s) => s.skills)
+  const { t } = useTranslation()
   const [name, setName] = useState(mode === 'duplicate' && existing ? `${existing.name} Copy` : existing?.name || '')
   const [description, setDescription] = useState(existing?.description || '')
   const [tagsText, setTagsText] = useState(existing?.tags.join(', ') || '')
@@ -457,12 +494,12 @@ function PackBuilderPanel({
     const q = query.trim().toLowerCase()
     if (!q) return skills
     return skills.filter((skill) =>
-      [skill.name, skill.id, skill.description, skill.sourceType]
+      [skill.name, skill.id, skill.description, skill.sourceType, skillSourceTypeLabel(t, skill.sourceType)]
         .join(' ')
         .toLowerCase()
         .includes(q),
     )
-  }, [query, skills])
+  }, [query, skills, t])
   const selectedSkills = skills.filter((skill) => selected.has(skill.id))
 
   const toggle = (id: string) => {
@@ -531,7 +568,7 @@ function PackBuilderPanel({
       </header>
 
       <div className="sm2__pack-builder2-grid">
-        <section className="sm2__pack-section">
+        <section className="sm2__pack-section sm2__pack-section--selected">
           <div className="sm2__pack-section-head">
             <div>
               <h3>基本信息</h3>
@@ -574,7 +611,7 @@ function PackBuilderPanel({
                     <strong>{skill.name}</strong>
                     <span>{skill.description || skill.id}</span>
                   </span>
-                  <span className="sm2__tag">{skill.sourceType}</span>
+                  <span className="sm2__tag">{skillSourceTypeLabel(t, skill.sourceType)}</span>
                 </button>
               ))
             )}
@@ -667,7 +704,7 @@ function RemoveSkillFromPackDialog({
   return (
     <PreviewDialog
       title={`从「${preview.packName}」移除「${preview.skillName}」`}
-      confirmLabel="保留为独立安装"
+      confirmLabel="保留为直接分发"
       busy={busy}
       onConfirm={() => onExecute(false)}
       onCancel={onClose}
@@ -744,6 +781,7 @@ function ApplyPackDialog({
   onClose: () => void
   onDone: () => void
 }) {
+  const { t } = useTranslation()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
   const [preview, setPreview] = useState<DistributionPreview | null>(null)
@@ -810,8 +848,8 @@ function ApplyPackDialog({
           <div className="sm2__field">
             <label>分发方式</label>
             <select value={mode} onChange={(e) => setMode(e.target.value as 'link' | 'copy')}>
-              <option value="link">link</option>
-              <option value="copy">copy</option>
+              <option value="link">{skillModeLabel(t, 'link')}</option>
+              <option value="copy">{skillModeLabel(t, 'copy')}</option>
             </select>
           </div>
           <div className="sm2__field">
@@ -852,7 +890,7 @@ function ApplyPackDialog({
       {preview.changes.map((change, index) => (
         <div key={index} className="sm2__change">
           {change.action === 'create'
-            ? `新增 ${change.agentId} / ${change.skillId} (${change.actualMode})`
+            ? `新增 ${change.agentId} / ${change.skillId} (${skillModeLabel(t, change.actualMode)})`
             : `复用 ${change.agentId} / ${change.skillId}`}
         </div>
       ))}

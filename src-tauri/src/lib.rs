@@ -701,6 +701,12 @@ async fn get_all_hook_status(
                 .map(display_path_with_home)
                 .unwrap_or_default();
             let install_status = hook_health.as_status_str();
+            let bridge_command = profile
+                .as_ref()
+                .and_then(|profile| agents::profiles::managed_bridge_command(profile).ok());
+            let bridge_path = profile
+                .as_ref()
+                .map(|_| display_path_with_home(&agents::hook_manager::bridge_binary_path()));
             serde_json::json!({
                 "toolId": tool_id,
                 "adapterId": a.name(),
@@ -715,6 +721,8 @@ async fn get_all_hook_status(
                 "supportsEventSelection": supports_event_selection,
                 "events": events,
                 "enabledEventNames": enabled_event_names,
+                "bridgeCommand": bridge_command,
+                "bridgePath": bridge_path,
             })
         })
         .collect();
@@ -754,6 +762,17 @@ async fn get_all_hook_status(
             .as_ref()
             .map(agents::profiles::selected_event_names)
             .unwrap_or_default();
+        let bridge_command = profile.as_ref().and_then(|profile| {
+            agents::profiles::managed_bridge_command_labeled(
+                profile,
+                Some(&entry.display_name),
+                Some(&base_dir.display().to_string()),
+            )
+            .ok()
+        });
+        let bridge_path = profile
+            .as_ref()
+            .map(|_| display_path_with_home(&agents::hook_manager::bridge_binary_path()));
         let tool_id = format!("custom:{}", entry.id);
         results.push(serde_json::json!({
             "toolId": tool_id,
@@ -769,6 +788,8 @@ async fn get_all_hook_status(
             "supportsEventSelection": supports_event_selection,
             "events": events,
             "enabledEventNames": enabled_event_names,
+            "bridgeCommand": bridge_command,
+            "bridgePath": bridge_path,
             "isCustom": true,
             "customId": entry.id,
         }));
@@ -2846,11 +2867,97 @@ fn normalize_github_repo_ref(input: &str) -> Result<GithubRepoRefCompat, String>
 }
 
 fn github_import_source(repo_spec: &str, source_path: &str) -> String {
-    let path = source_path.trim().trim_matches('/');
+    let path = normalize_github_import_path(source_path);
     if path.is_empty() || path == "." {
         format!("github:{repo_spec}")
+    } else if let Some(spec) = rebase_github_import_spec(repo_spec, &path) {
+        format!("github:{spec}")
     } else {
         format!("github:{repo_spec}/{path}")
+    }
+}
+
+fn normalize_github_import_path(path: &str) -> String {
+    path.trim()
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn rebase_github_import_spec(repo_spec: &str, source_path: &str) -> Option<String> {
+    let spec = repo_spec.trim().trim_matches('/');
+    let parts = spec
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return None;
+    }
+    if parts.len() >= 5 && parts[2] == "tree" {
+        let base_path = normalize_github_import_path(&parts[4..].join("/"));
+        if repo_path_contains(&base_path, source_path) {
+            return Some(format!(
+                "{}/{}/tree/{}/{}",
+                parts[0], parts[1], parts[3], source_path
+            ));
+        }
+        return None;
+    }
+    if parts[2] != "tree" {
+        let base_path = normalize_github_import_path(&parts[2..].join("/"));
+        if repo_path_contains(&base_path, source_path) {
+            return Some(format!("{}/{}/{}", parts[0], parts[1], source_path));
+        }
+    }
+    None
+}
+
+fn repo_path_contains(base_path: &str, source_path: &str) -> bool {
+    source_path == base_path
+        || source_path
+            .strip_prefix(base_path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod github_import_source_tests {
+    use super::github_import_source;
+
+    #[test]
+    fn specific_tree_skill_path_is_not_appended_twice() {
+        assert_eq!(
+            github_import_source(
+                "vercel-labs/skills/tree/main/skills/find-skills",
+                "skills/find-skills",
+            ),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn tree_parent_path_uses_preview_repo_path_without_repeating_parent() {
+        assert_eq!(
+            github_import_source("vercel-labs/skills/tree/main/skills", "skills/find-skills"),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn shorthand_subpath_uses_preview_repo_path_without_repeating_parent() {
+        assert_eq!(
+            github_import_source("owner/repo/skills", "skills/find-skills"),
+            "github:owner/repo/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn relative_preview_path_still_appends_to_repo_spec() {
+        assert_eq!(
+            github_import_source("vercel-labs/skills/tree/main/skills", "find-skills"),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
     }
 }
 
@@ -5352,6 +5459,7 @@ pub fn run() {
             skills::v2::commands::skill_manager_export_snapshot,
             skills::v2::commands::skill_manager_get_snapshot,
             skills::v2::commands::open_skill_path,
+            skills::v2::commands::reveal_skill_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");

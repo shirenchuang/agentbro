@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentDetail, AdoptPreview, RemovePackFromAgentPreview, UnmanagedItemDto } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
+import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
+import { skillModeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
@@ -344,7 +347,8 @@ function AgentDetailView({
   onOpenDownload: (agentId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
-  const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => u.agentId === detail.id)
+  const showUnmanaged = useSkillStoreV2((s) => s.settings?.showUnmanaged ?? true)
+  const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => showUnmanaged && u.agentId === detail.id)
   const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : true
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
@@ -386,7 +390,7 @@ function AgentDetailView({
         </div>
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">
           <Stat value={detail.skills.length} label="已管理" />
-          <Stat value={unmanaged.length} label="未管理" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />
+          {showUnmanaged && <Stat value={unmanaged.length} label="未管理" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />}
           <Stat value={detail.appliedPacks.length} label="技能包" />
           <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
         </div>
@@ -428,11 +432,22 @@ function AgentDetailView({
 
       <div className="sm2__subtab-body">
         {tab === 'overview' && <OverviewTab detail={detail} busy={busy} onRevoke={onRevoke} onApplyPack={onApplyPack} />}
-        {tab === 'skills' && <SkillsTab detail={detail} unmanaged={unmanaged} onAdopt={onAdopt} onOpenSkillDetail={onOpenSkillDetail} />}
+        {tab === 'skills' && (
+          <SkillsTab
+            detail={detail}
+            unmanaged={unmanaged}
+            showUnmanaged={showUnmanaged}
+            busy={busy}
+            scanning={scanning}
+            onAdopt={onAdopt}
+            onScan={onScan}
+            onOpenSkillDetail={onOpenSkillDetail}
+          />
+        )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginsTab detail={detail} />}
         {tab === 'hooks' && <HooksTab agentId={detail.id} />}
-        {tab === 'config' && <ConfigTab detail={detail} />}
+        {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
   )
@@ -511,14 +526,23 @@ function OverviewTab({
 function SkillsTab({
   detail,
   unmanaged,
+  showUnmanaged,
+  busy,
+  scanning,
   onAdopt,
+  onScan,
   onOpenSkillDetail,
 }: {
   detail: AgentDetail
   unmanaged: UnmanagedItemDto[]
+  showUnmanaged: boolean
+  busy: boolean
+  scanning: boolean
   onAdopt: (agentId: string, unmanagedId: string) => void
+  onScan: (agentId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
+  const { t } = useTranslation()
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [viewMode, setViewMode] = useState<AgentSkillViewMode>('cards')
@@ -536,8 +560,14 @@ function SkillsTab({
   }, [q, detail.skills])
   const filteredUnmanaged = useMemo(() => {
     if (!q) return unmanaged
-    return unmanaged.filter((u) => [u.inferredSkillId, u.path, u.reason].filter(Boolean).join(' ').toLowerCase().includes(q))
-  }, [q, unmanaged])
+    return unmanaged.filter((u) =>
+      [u.inferredSkillId, u.path, u.reason, unmanagedReasonLabel(t, u.reason)]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [q, t, unmanaged])
   const [pageResetKey, setPageResetKey] = useState(`${q}|${detail.id}`)
   const currentResetKey = `${q}|${detail.id}`
   if (pageResetKey !== currentResetKey) {
@@ -563,32 +593,42 @@ function SkillsTab({
         <ManagedSkillCollection skills={filteredManaged} mode={viewMode} onOpenSkillDetail={onOpenSkillDetail} />
       </section>
 
-      <section className="sm2__panel">
-        <div className="sm2__panel-head">
-          <h3>未管理 Skills</h3>
-          <span>{filteredUnmanaged.length}</span>
-        </div>
-        {filteredUnmanaged.length === 0 ? (
-          <div className="sm2__empty sm2__empty--compact">
-            {unmanaged.length === 0 ? '没有未管理 Skill。若刚手动安装过，请点击「重新扫描此 Agent」。' : '没有匹配的未管理 Skill'}
+      {showUnmanaged && (
+        <section className="sm2__panel">
+          <div className="sm2__panel-head">
+            <h3>未管理 Skills</h3>
+            <span>{filteredUnmanaged.length}</span>
           </div>
-        ) : (
-          <>
-            <UnmanagedSkillCollection
-              skills={shownUnmanaged}
-              mode={viewMode}
-              agentId={detail.id}
-              onAdopt={onAdopt}
-              onOpenSkillDetail={onOpenSkillDetail}
-            />
-            {shownUnmanaged.length < filteredUnmanaged.length && (
-              <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
-                继续显示 {Math.min(PAGE_SIZE, filteredUnmanaged.length - shownUnmanaged.length)} 个
-              </button>
-            )}
-          </>
-        )}
-      </section>
+          {filteredUnmanaged.length === 0 ? (
+            <div className="sm2__empty sm2__empty--compact sm2__unmanaged-empty">
+              <span>
+                {unmanaged.length === 0 ? '没有未管理 Skill。若刚手动安装过，可以重新扫描。' : '没有匹配的未管理 Skill'}
+              </span>
+              {unmanaged.length === 0 && (
+                <button className="sm2__btn" disabled={busy} onClick={() => onScan(detail.id)}>
+                  {scanning && <span className="sm2__spinner" />}
+                  {scanning ? '正在扫描' : '重新扫描此 Agent'}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <UnmanagedSkillCollection
+                skills={shownUnmanaged}
+                mode={viewMode}
+                agentId={detail.id}
+                onAdopt={onAdopt}
+                onOpenSkillDetail={onOpenSkillDetail}
+              />
+              {shownUnmanaged.length < filteredUnmanaged.length && (
+                <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
+                  继续显示 {Math.min(PAGE_SIZE, filteredUnmanaged.length - shownUnmanaged.length)} 个
+                </button>
+              )}
+            </>
+          )}
+        </section>
+      )}
     </div>
   )
 }
@@ -632,8 +672,9 @@ function ManagedSkillCard({
   skill: AgentDetail['skills'][number]
   onOpenSkillDetail: (skillId: string) => void
 }) {
+  const { t } = useTranslation()
   const name = skill.targetPath.split('/').pop() || skill.id
-  const claims = skill.claims.map((c) => c.packName || c.claimType).filter(Boolean)
+  const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   return (
     <article
       className="sm2__agent-skill-card sm2__agent-skill-card--clickable"
@@ -648,13 +689,13 @@ function ManagedSkillCard({
         <div className="sm2__agent-skill-icon">{initials(name)}</div>
         <div className="sm2__agent-skill-card-titleline">
           <strong>{name}</strong>
-          <span>{claims.length > 0 ? claims.join(' / ') : '独立安装'}</span>
+          <span>{claims.length > 0 ? claims.join(' / ') : targetClaimLabel(t, null)}</span>
         </div>
-        <span className={`sm2__tag sm2__tag--${skill.status}`}>{skill.status}</span>
+        <span className={`sm2__tag sm2__tag--${skill.status}`}>{skillStatusLabel(t, skill.status)}</span>
       </div>
       <div className="sm2__agent-skill-meta">
-        <span className="sm2__source-pill">{skill.actualMode}</span>
-        <span className="sm2__source-pill">{skill.claims[0]?.claimType || 'direct'}</span>
+        <span className="sm2__source-pill">{skillModeLabel(t, skill.actualMode)}</span>
+        <span className="sm2__source-pill">{targetClaimLabel(t, skill.claims[0])}</span>
       </div>
       <code>{skill.targetPath}</code>
     </article>
@@ -668,11 +709,13 @@ function ManagedSkillListRow({
   skill: AgentDetail['skills'][number]
   onOpenSkillDetail: (skillId: string) => void
 }) {
+  const { t } = useTranslation()
+  const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   return (
     <div className="sm2__object-row sm2__object-row--path sm2__object-row--clickable" onClick={() => onOpenSkillDetail(skill.skillId)}>
       <div>
         <strong>{skill.targetPath.split('/').pop()}</strong>
-        <span>{skill.actualMode} · {skill.status} · {skill.claims.map((c) => c.packName || c.claimType).join(' / ')}</span>
+        <span>{skillModeLabel(t, skill.actualMode)} · {skillStatusLabel(t, skill.status)} · {claims.join(' / ')}</span>
         <code>{skill.targetPath}</code>
       </div>
     </div>
@@ -692,6 +735,7 @@ function UnmanagedSkillCollection({
   onAdopt: (agentId: string, unmanagedId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
+  const { t } = useTranslation()
   if (mode === 'list') {
     return (
       <div className="sm2__agent-skill-list">
@@ -699,11 +743,11 @@ function UnmanagedSkillCollection({
           <div
             key={u.id}
             className="sm2__object-row sm2__object-row--path sm2__object-row--clickable"
-            onClick={() => openUnmanagedSkill(u, onOpenSkillDetail)}
+            onClick={() => openUnmanagedSkill(u, onOpenSkillDetail, unmanagedReasonLabel(t, u.reason))}
           >
             <div>
               <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
-              <span>{u.reason}</span>
+              <span>{unmanagedReasonLabel(t, u.reason)}</span>
               <code>{u.path}</code>
             </div>
             <button className="sm2__btn sm2__btn--primary" onClick={(e) => {
@@ -726,16 +770,16 @@ function UnmanagedSkillCollection({
           className="sm2__agent-skill-card sm2__agent-skill-card--unmanaged sm2__agent-skill-card--clickable"
           role="button"
           tabIndex={0}
-          onClick={() => openUnmanagedSkill(u, onOpenSkillDetail)}
+            onClick={() => openUnmanagedSkill(u, onOpenSkillDetail, unmanagedReasonLabel(t, u.reason))}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') openUnmanagedSkill(u, onOpenSkillDetail)
+            if (e.key === 'Enter' || e.key === ' ') openUnmanagedSkill(u, onOpenSkillDetail, unmanagedReasonLabel(t, u.reason))
           }}
         >
           <div className="sm2__agent-skill-card-head">
             <div className="sm2__agent-skill-icon">{initials(u.inferredSkillId || u.path.split('/').pop() || 'SK')}</div>
             <div className="sm2__agent-skill-card-titleline">
               <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
-              <span>{u.reason}</span>
+              <span>{unmanagedReasonLabel(t, u.reason)}</span>
             </div>
             <span className="sm2__tag sm2__tag--unmanaged">未管理</span>
           </div>
@@ -755,13 +799,14 @@ function UnmanagedSkillCollection({
 function openUnmanagedSkill(
   item: UnmanagedItemDto,
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void,
+  reasonLabel?: string,
 ) {
   const name = item.inferredSkillId || item.path.split('/').pop() || item.id
   onOpenSkillDetail(name, {
     id: name,
     name,
     centerPath: item.path,
-    description: `${item.reason} · ${item.path}`,
+    description: `${reasonLabel || item.reason} · ${item.path}`,
     sourceType: 'unmanaged_agent',
     sourceUri: item.path,
   })
@@ -904,12 +949,38 @@ function HooksTab({ agentId }: { agentId: string }) {
           <span>{statusLabel}</span>
           {hook.configPath && <code>{hook.configPath}</code>}
         </div>
-        {hook.installed ? (
-          <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={uninstall}>卸载 Hook</button>
-        ) : (
-          <button className="sm2__btn sm2__btn--primary" disabled={busy} onClick={install}>安装 Hook</button>
-        )}
+        <div className="sm2__btn-row sm2__hook-actions">
+          {hook.configPath && (
+            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configPath!)}>
+              打开配置
+            </button>
+          )}
+          {hook.configDir && (
+            <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.configDir!)}>
+              打开目录
+            </button>
+          )}
+          {hook.installed ? (
+            <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={uninstall}>卸载 Hook</button>
+          ) : (
+            <button className="sm2__btn sm2__btn--primary" disabled={busy} onClick={install}>安装 Hook</button>
+          )}
+        </div>
       </section>
+      {(hook.bridgeCommand || hook.bridgePath) && (
+        <section className="sm2__panel sm2__hook-bridge">
+          <div className="sm2__panel-head">
+            <h3>桥接命令</h3>
+            {hook.bridgePath && (
+              <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => skillApiV2.openPath(hook.bridgePath!)}>
+                打开脚本
+              </button>
+            )}
+          </div>
+          {hook.bridgeCommand && <code>{hook.bridgeCommand}</code>}
+          {hook.bridgePath && <span>脚本路径：{hook.bridgePath}</span>}
+        </section>
+      )}
       {hook.supportsEventSelection && grouped.length > 0 ? (
         grouped.map((group) => (
           <section key={group.category} className="sm2__panel sm2__hook-group">
@@ -1000,15 +1071,21 @@ function HookEventRow({
   )
 }
 
-function ConfigTab({ detail }: { detail: AgentDetail }) {
+function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
+  const currentVersion = program?.installedVersion ?? detail.version
+  const latestVersion = program?.latestVersion ?? detail.latestVersion
+  const executablePath = program?.binaryPath ?? program?.appPath ?? null
+  const skillsDir = detail.skillsDir ?? program?.skillsDir ?? null
   const rows: Array<{ label: string; value: string | null; openable?: boolean }> = [
     { label: 'Agent ID', value: detail.id },
-    { label: '当前版本', value: detail.version },
-    { label: '最新版本', value: detail.latestVersion },
-    { label: 'Skills 目录', value: detail.skillsDir, openable: true },
+    { label: '当前版本', value: currentVersion },
+    { label: '最新版本', value: latestVersion },
+    { label: program?.kind === 'app' ? '应用路径' : '可执行文件', value: executablePath, openable: true },
+    { label: '配置目录', value: program?.configDir ?? null, openable: true },
+    { label: '配置文件', value: detail.configPath, openable: true },
+    { label: 'Skills 目录', value: skillsDir, openable: true },
     { label: 'MCP 配置', value: detail.mcpConfigPath, openable: true },
     { label: 'Plugin 目录', value: detail.pluginDir, openable: true },
-    { label: '配置文件', value: detail.configPath, openable: true },
   ]
   return (
     <section className="sm2__panel">
@@ -1064,173 +1141,4 @@ function RevokePackDialog({
       )}
     </PreviewDialog>
   )
-}
-
-function AdoptDialog({
-  preview,
-  onClose,
-  onDone,
-}: {
-  preview: AdoptPreview
-  onClose: () => void
-  onDone: () => void
-}) {
-  const [option, setOption] = useState(preview.options[0]?.value || 'import_keep')
-  const [renamedId, setRenamedId] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const selectedOption = preview.options.find((o) => o.value === option)
-  const optionCopy = selectedOption ? adoptOptionCopy(selectedOption) : null
-  const effectiveRenamedId = renamedId.trim() || `${preview.inferredSkillId}-import`
-
-  const execute = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      await skillApiV2.executeAdopt(preview.agentId, preview.unmanagedId, option, option === 'rename' ? renamedId : null)
-      onDone()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <PreviewDialog
-      title="接管未管理 Skill"
-      confirmLabel={option === 'skip' ? '保持未管理' : '执行接管'}
-      modalClassName="sm2__modal--adopt"
-      destructive={selectedOption?.destructive}
-      busy={busy}
-      onConfirm={execute}
-      onCancel={onClose}
-    >
-      <div className="sm2-adopt">
-        <div className="sm2-adopt__summary">
-          <div>
-            <span>Skill</span>
-            <strong>{preview.inferredSkillId || '未命名 Skill'}</strong>
-          </div>
-          <div>
-            <span>中心库同名</span>
-            <strong>{preview.centerHasSameId ? '已存在' : '无冲突'}</strong>
-          </div>
-          <div className="sm2-adopt__summary-path">
-            <span>Agent 路径</span>
-            <code>{preview.skillPath}</code>
-          </div>
-        </div>
-
-        <section className="sm2-adopt__section">
-          <div className="sm2-adopt__section-head">
-            <h4>选择接管方式</h4>
-            <span>{preview.canQuickAdopt ? '可以直接导入中心库' : '中心库已有不同内容，需要处理冲突'}</span>
-          </div>
-          <div className="sm2-adopt__options" role="radiogroup" aria-label="接管方式">
-            {preview.options.map((o) => {
-              const copy = adoptOptionCopy(o)
-              const active = option === o.value
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  className={`sm2-adopt__option${active ? ' sm2-adopt__option--active' : ''}${o.destructive ? ' sm2-adopt__option--destructive' : ''}`}
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => {
-                    setOption(o.value)
-                    if (o.value === 'rename' && !renamedId.trim()) setRenamedId(`${preview.inferredSkillId}-import`)
-                  }}
-                >
-                  <span className="sm2-adopt__radio" />
-                  <span className="sm2-adopt__option-main">
-                    <strong>{copy.title}</strong>
-                    <span>{copy.description}</span>
-                  </span>
-                  <em>{copy.badge}</em>
-                </button>
-              )
-            })}
-          </div>
-        </section>
-
-        {option === 'rename' && (
-          <div className="sm2-adopt__rename">
-            <label htmlFor="sm2-adopt-rename">新的 Skill ID</label>
-            <input
-              id="sm2-adopt-rename"
-              value={renamedId}
-              onChange={(e) => setRenamedId(e.target.value)}
-              placeholder={`${preview.inferredSkillId}-import`}
-            />
-            <span>将以「{effectiveRenamedId}」写入中心库，原 Agent 文件会作为副本目标被管理。</span>
-          </div>
-        )}
-
-        {optionCopy && (
-          <div className={`sm2-adopt__impact${selectedOption?.destructive ? ' sm2-adopt__impact--warn' : ''}`}>
-            <strong>{selectedOption?.destructive ? '会改动 Agent 目录' : '不会删除现有文件'}</strong>
-            <span>{optionCopy.impact}</span>
-          </div>
-        )}
-
-        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
-      </div>
-    </PreviewDialog>
-  )
-}
-
-function adoptOptionCopy(option: { value: string; label: string; destructive: boolean }) {
-  switch (option.value) {
-    case 'import_keep':
-      return {
-        title: '导入中心库，保留 Agent 文件',
-        description: '把这个 Skill 纳入中心库记录，Agent 目录里的原文件保持不动。',
-        badge: '推荐',
-        impact: '适合先接管已有文件，后续再决定是否改成链接或副本。',
-      }
-    case 'import_link':
-      return {
-        title: '导入中心库，并替换为链接',
-        description: '中心库成为唯一来源，Agent 目录改为指向中心库的链接。',
-        badge: '链接',
-        impact: '会删除当前 Agent 目录中的 Skill 文件夹，再创建到中心库的链接。',
-      }
-    case 'import_copy':
-      return {
-        title: '导入中心库，并替换为副本',
-        description: '中心库保存一份，Agent 目录重新写入一份托管副本。',
-        badge: '副本',
-        impact: '会删除当前 Agent 目录中的 Skill 文件夹，再从中心库复制回 Agent。',
-      }
-    case 'overwrite_center':
-      return {
-        title: '用当前文件覆盖中心库',
-        description: '中心库已有同名 Skill，将以这个 Agent 里的版本为准。',
-        badge: '覆盖',
-        impact: '会替换中心库同名 Skill 的内容，请确认当前 Agent 文件是正确版本。',
-      }
-    case 'rename':
-      return {
-        title: '改名导入中心库',
-        description: '保留中心库已有同名 Skill，把当前文件作为新的 Skill ID 导入。',
-        badge: '改名',
-        impact: '不会覆盖中心库已有 Skill，也不会删除当前 Agent 文件。',
-      }
-    case 'skip':
-      return {
-        title: '暂不接管',
-        description: '保持这个 Skill 为未管理状态，本次不写入中心库。',
-        badge: '跳过',
-        impact: '不会改动中心库或 Agent 目录；下次扫描仍可能看到它。',
-      }
-    default:
-      return {
-        title: option.label,
-        description: '使用 AgentBro 后端建议的处理方式。',
-        badge: option.destructive ? '会改动' : '安全',
-        impact: option.destructive ? '执行前请确认该操作会修改现有文件。' : '该操作不会删除现有文件。',
-      }
-  }
 }

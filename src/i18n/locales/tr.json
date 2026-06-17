@@ -555,6 +555,84 @@
     "daysRemaining": "Deneme: {{days}} gün kaldı",
     "dismiss": "Kapat"
   },
+  "skills": {
+    "cancel": "İptal",
+    "deleteCenterSkill": {
+      "title": "Merkez Skill \"{{skillId}}\" sil",
+      "confirmTitle": "Silmeden önce onayla",
+      "impactWithTargets": "Merkez kütüphane kaydı silinecek. Agent kurulumları birlikte kaldırılabilir veya bağımsız kopyalar olarak korunabilir.",
+      "impactNoTargets": "Etkilenen Agent kurulumu yok. Yalnızca merkez kütüphane kaydı kaldırılacak.",
+      "agentInstalls": "Agent kurulumları",
+      "referenceCount": "{{count}} referans",
+      "noTargets": "Bu silme işlemi hiçbir Agent dizinine dokunmaz.",
+      "linkWarning": "Not: {{agent}} bir sembolik bağlantı. Korursanız önce bağımsız kopyaya çevrilir.",
+      "removeAgentInstalls": "Agent kurulumlarını kaldır",
+      "preserveCopies": "Agent kopyalarını koru",
+      "deleteCenterOnly": "Merkezi sil",
+      "processing": "İşleniyor..."
+    },
+    "sourceType": {
+      "local_folder": "Yerel klasör",
+      "archive": "Arşiv",
+      "agent_import": "Agent içe aktarımı",
+      "manual_center": "Merkeze elle ekleme",
+      "github": "GitHub",
+      "git": "Git",
+      "skillssh": "skills.sh",
+      "skills_sh": "skills.sh",
+      "url": "URL",
+      "unmanaged_agent": "Yönetilmeyen Agent",
+      "agent_override": "Agent geçersiz kılma",
+      "builtin": "Yerleşik",
+      "json": "JSON"
+    },
+    "mode": {
+      "link": "Sembolik bağlantı",
+      "copy": "Kopya"
+    },
+    "status": {
+      "ok": "Normal",
+      "conflict": "Çakışma",
+      "unmanaged": "Yönetilmiyor",
+      "copyDiverged": "Kopya ayrıştı",
+      "copy_outdated": "Güncelleme var",
+      "copy_modified": "Değiştirildi",
+      "copy_diverged": "Ayrıştı",
+      "broken_link": "Bozuk bağlantı",
+      "missing": "Eksik"
+    },
+    "claim": {
+      "direct": "Doğrudan dağıtım",
+      "pack": "Paket",
+      "packNamed": "Paket: {{name}}"
+    },
+    "reason": {
+      "not_in_center_library": "Merkez kütüphanede yok",
+      "center_library_conflict": "Merkez kütüphane ad çakışması"
+    },
+    "blocker": {
+      "unmanagedExists": "Hedef yolda yönetilmeyen Skill '{{skillId}}' zaten var. Önce içe alın, üzerine yazın veya yeniden adlandırın."
+    },
+    "pathKind": {
+      "symlink": "Sembolik bağlantı",
+      "directory": "Gerçek dizin",
+      "file": "Dosya",
+      "broken_symlink": "Bozuk sembolik bağlantı",
+      "missing": "Eksik"
+    },
+    "labels": {
+      "realPath": "Gerçek yol"
+    },
+    "actions": {
+      "open": "Aç",
+      "openFolder": "Klasörü Aç"
+    },
+    "errors": {
+      "targetDirectChild": "Hedef yol '{{targetPath}}', {{skillsDir}} dizininin doğrudan alt öğesi olmalıdır.",
+      "targetNoParent": "Hedef yol '{{targetPath}}' için üst dizin yok.",
+      "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor."
+    }
+  },
   "update": {
     "availableTitle": "Güncelleme Mevcut",
     "readyTitle": "Güncelleme Hazır",

@@ -684,7 +684,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "npm",
             "@anthropic-ai/claude-code",
             "npm install -g @anthropic-ai/claude-code",
-            "npm update -g @anthropic-ai/claude-code",
+            "npm install -g @anthropic-ai/claude-code@latest",
             "npm uninstall -g @anthropic-ai/claude-code",
             "~/.claude",
             "https://docs.anthropic.com/en/docs/claude-code",
@@ -694,7 +694,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "npm",
             "@openai/codex",
             "npm install -g @openai/codex",
-            "npm update -g @openai/codex",
+            "npm install -g @openai/codex@latest",
             "npm uninstall -g @openai/codex",
             "~/.codex",
             "https://developers.openai.com/codex",
@@ -704,7 +704,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "npm",
             "@google/gemini-cli",
             "npm install -g @google/gemini-cli",
-            "npm update -g @google/gemini-cli",
+            "npm install -g @google/gemini-cli@latest",
             "npm uninstall -g @google/gemini-cli",
             "~/.gemini",
             "https://github.com/google-gemini/gemini-cli",
@@ -714,7 +714,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "npm",
             "opencode-ai",
             "npm install -g opencode-ai",
-            "npm update -g opencode-ai",
+            "npm install -g opencode-ai@latest",
             "npm uninstall -g opencode-ai",
             "~/.config/opencode",
             "https://opencode.ai",
@@ -881,7 +881,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "npm",
             "@sourcegraph/amp",
             "npm install -g @sourcegraph/amp",
-            "npm update -g @sourcegraph/amp",
+            "npm install -g @sourcegraph/amp@latest",
             "npm uninstall -g @sourcegraph/amp",
             "~/.amp",
             "https://ampcode.com",
@@ -996,5 +996,25 @@ fn app(
         app_path: Some(app_path),
         config_dir: Some(config_dir),
         download_url: Some(url),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npm_agent_updates_install_latest_package_directly() {
+        let claude = metadata_for("claude-code").expect("claude metadata");
+        assert_eq!(
+            claude.update_command,
+            Some("npm install -g @anthropic-ai/claude-code@latest"),
+        );
+
+        let codex = metadata_for("codex").expect("codex metadata");
+        assert_eq!(
+            codex.update_command,
+            Some("npm install -g @openai/codex@latest"),
+        );
     }
 }

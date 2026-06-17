@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { AnchorHTMLAttributes, CSSProperties, MouseEvent } from 'react'
+import { useTranslation } from 'react-i18next'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AddCenterSkillPreview, AddCenterSkillDecision, AgentSkillInventoryAgent, AgentSkillInventoryItem } from '../../services/skillApiV2'
+import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode } from '../../services/skillApiV2'
 import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
+import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
+import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
+import { skillModeLabel, unmanagedReasonLabel } from './skillLabels'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
@@ -106,6 +113,7 @@ function SkillAvatar({ source, name }: { source: string | null; name: string }) 
 
 type MarketViewMode = 'list' | 'cards'
 type LocalPreviewViewMode = 'list' | 'cards'
+type FileViewMode = 'preview' | 'source'
 
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
   const [items, setItems] = useState<MarketplaceSkill[]>([])
@@ -950,6 +958,9 @@ function publisherFromSource(source: string) {
 
 type AgentSyncRow = { agent: AgentSkillInventoryAgent; item: AgentSkillInventoryItem }
 type AgentSyncViewMode = 'list' | 'cards'
+type AgentSkillDetailTab = 'overview' | 'files' | 'source'
+type AgentSyncImportProgress = { current: number; total: number; currentName: string }
+type OneClickOrganizeMode = 'import_link' | 'import_copy' | 'import_keep'
 
 const AGENT_STATUS_TABS: Array<{ id: string; label: string }> = [
   { id: 'all', label: '全部' },
@@ -958,11 +969,13 @@ const AGENT_STATUS_TABS: Array<{ id: string; label: string }> = [
   { id: 'managed', label: '已管理' },
   { id: 'conflict', label: '同名冲突' },
 ]
-const DEFAULT_AGENT_CHIP_COUNT = 6
-
 function statusTone(item: AgentSkillInventoryItem) {
   if (item.status === 'conflict') return 'conflict'
   return item.managed ? 'ok' : 'unmanaged'
+}
+
+function canOpenAdopt(item: AgentSkillInventoryItem) {
+  return !item.managed && (item.canImport || item.status === 'conflict')
 }
 
 function installedAgentInventory(agents: AgentSkillInventoryAgent[]) {
@@ -982,19 +995,23 @@ function localSkillCount(agent: AgentSkillInventoryAgent) {
 }
 
 export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
+  const { t } = useTranslation()
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
   const [viewMode, setViewMode] = useState<AgentSyncViewMode>('cards')
-  const [agentsExpanded, setAgentsExpanded] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [detailRow, setDetailRow] = useState<AgentSyncRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importProgress, setImportProgress] = useState<AgentSyncImportProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [adoptPreview, setAdoptPreview] = useState<AdoptPreview | null>(null)
+  const [adoptOpeningId, setAdoptOpeningId] = useState<string | null>(null)
+  const [oneClickOpen, setOneClickOpen] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -1056,19 +1073,21 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       })
   }, [visibleAgents, statusFilter, q])
   const importableRows = rows.filter(({ item }) => item.canImport)
+  const oneClickItems = useMemo(
+    () => visibleAgents.flatMap((agent) => agent.items),
+    [visibleAgents],
+  )
+  const oneClickImportable = useMemo(
+    () => oneClickItems.filter((item) => item.canImport),
+    [oneClickItems],
+  )
+  const oneClickConflicts = useMemo(
+    () => oneClickItems.filter((item) => !item.managed && item.status === 'conflict'),
+    [oneClickItems],
+  )
   const totalManaged = agents.reduce((sum, agent) => sum + agent.managedCount, 0)
   const totalUnmanaged = agents.reduce((sum, agent) => sum + agent.unmanagedCount, 0)
   const totalImportable = agents.reduce((sum, agent) => sum + agent.importableCount, 0)
-
-  const visibleAgentChips = useMemo(() => {
-    if (agentsExpanded) return agents
-    const collapsed = agents.slice(0, DEFAULT_AGENT_CHIP_COUNT)
-    if (selectedAgent !== 'all' && !collapsed.some((agent) => agent.agentId === selectedAgent)) {
-      const selected = agents.find((agent) => agent.agentId === selectedAgent)
-      if (selected) return [...collapsed, selected]
-    }
-    return collapsed
-  }, [agents, agentsExpanded, selectedAgent])
 
   const toggle = (item: AgentSkillInventoryItem) => {
     if (!item.canImport) return
@@ -1085,16 +1104,42 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     setSelectedIds(new Set(importableRows.map(({ item }) => importKey(item))))
   }
 
+  const openAdoptPreview = async (item: AgentSkillInventoryItem) => {
+    if (!canOpenAdopt(item) || importing || adoptOpeningId) return
+    setAdoptOpeningId(importKey(item))
+    setError(null)
+    setNotice(null)
+    try {
+      const preview = await skillApiV2.previewAdopt(item.agentId, item.id)
+      setAdoptPreview(preview)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setAdoptOpeningId(null)
+    }
+  }
+
+  const finishAdoptPreview = async () => {
+    setAdoptPreview(null)
+    await load()
+    await onDone()
+    setSelectedIds(new Set())
+    setDetailRow(null)
+    setNotice('已接管 1 个 Skill')
+  }
+
   const adoptItems = async (targets: AgentSkillInventoryItem[]) => {
     const selected = targets.filter((item) => item.canImport)
     if (selected.length === 0) return
     setImporting(true)
+    setImportProgress({ current: 0, total: selected.length, currentName: selected[0]?.name ?? '' })
     setError(null)
     setNotice(null)
     try {
       let ok = 0
       const failed: string[] = []
-      for (const item of selected) {
+      for (const [index, item] of selected.entries()) {
+        setImportProgress({ current: index + 1, total: selected.length, currentName: item.name })
         try {
           await skillApiV2.executeAdopt(item.agentId, item.id, 'import_keep')
           ok += 1
@@ -1110,12 +1155,58 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
     } finally {
       setImporting(false)
+      setImportProgress(null)
     }
   }
 
   const importSelected = () => {
     const selected = rows.filter(({ item }) => selectedIds.has(importKey(item))).map(({ item }) => item)
     void adoptItems(selected)
+  }
+
+  const openOneClickOrganize = () => {
+    if (oneClickImportable.length === 0) {
+      setNotice(null)
+      setError(oneClickConflicts.length > 0
+        ? `${oneClickConflicts.length} 个 Skill 需要先处理冲突。点击卡片里的「处理冲突」继续。`
+        : '当前没有可一键整理的未管理 Skill。')
+      return
+    }
+    setError(null)
+    setNotice(null)
+    setOneClickOpen(true)
+  }
+
+  const executeOneClickOrganize = async (mode: OneClickOrganizeMode) => {
+    const importable = oneClickImportable
+    const conflicts = oneClickConflicts
+    setOneClickOpen(false)
+    setImporting(true)
+    setImportProgress({ current: 0, total: importable.length, currentName: importable[0]?.name ?? '' })
+    setError(null)
+    setNotice(null)
+    try {
+      let ok = 0
+      const failed: string[] = []
+      for (const [index, item] of importable.entries()) {
+        setImportProgress({ current: index + 1, total: importable.length, currentName: item.name })
+        try {
+          await skillApiV2.executeAdopt(item.agentId, item.id, mode, null)
+          ok += 1
+        } catch (e) {
+          failed.push(`${item.name}: ${String(e)}`)
+        }
+      }
+      await load()
+      onDone()
+      setSelectedIds(new Set())
+      setDetailRow(null)
+      setNotice(`已整理 ${ok} 个 Skill${modeNoticeSuffix(mode)}${conflicts.length ? `，${conflicts.length} 个需要处理冲突` : ''}${failed.length ? `，${failed.length} 个失败` : ''}`)
+      if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
+    } finally {
+      setImporting(false)
+      setImportProgress(null)
+    }
   }
 
   return (
@@ -1141,47 +1232,26 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <label className="sm2__agent-select">
+          <span>选择 Agent</span>
+          <select
+            aria-label="选择 Agent"
+            value={selectedAgent}
+            onChange={(e) => setSelectedAgent(e.target.value)}
+            disabled={importing || scanning}
+          >
+            <option value="all">全部 Agent</option>
+            {agents.map((agent) => (
+              <option key={agent.agentId} value={agent.agentId}>
+                {agent.displayName} · {agent.importableCount} 可接管
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="sm2__view-toggle sm2__view-toggle--soft">
           <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
           <button className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
         </div>
-      </div>
-
-      <div className="sm2__market-source-row">
-        <div className="sm2__source-row-section">
-          <div className="sm2__source-row-head">
-            <span>本地 Agent</span>
-            <small>按 Agent 过滤它的本地 Skills 目录</small>
-          </div>
-          <div className="sm2__source-chip-cloud">
-            <button
-              className={`sm2__source-chip sm2__source-chip--all${selectedAgent === 'all' ? ' sm2__source-chip--active' : ''}`}
-              onClick={() => setSelectedAgent('all')}
-            >
-              <span>全部 Agent</span>
-            </button>
-            {visibleAgentChips.map((agent) => (
-              <button
-                key={agent.agentId}
-                className={`sm2__source-chip${selectedAgent === agent.agentId ? ' sm2__source-chip--active' : ''}`}
-                onClick={() => setSelectedAgent((current) => (current === agent.agentId ? 'all' : agent.agentId))}
-                title={`${agent.managedCount} 已管理 · ${agent.importableCount} 可接管`}
-              >
-                <span>{agent.displayName}</span>
-                {agent.importableCount > 0 && <em>{agent.importableCount}</em>}
-              </button>
-            ))}
-            {agents.length > DEFAULT_AGENT_CHIP_COUNT && (
-              <button className="sm2__source-toggle" onClick={() => setAgentsExpanded((value) => !value)}>
-                {agentsExpanded ? '收起' : '展开更多'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        <button className="sm2__source-clear" onClick={scan} disabled={scanning || importing}>
-          {scanning ? '扫描中…' : '重新扫描 Agent'}
-        </button>
       </div>
 
       <div className="sm2__agent-sync-statline">
@@ -1192,17 +1262,25 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       </div>
 
       <div className="sm2__market-note">
-        按 Agent 的本地 Skills 目录检查状态，只能把未管理且无冲突的 Skill 接管到中心库。点击任意 Skill 查看详情。
+        推荐使用「一键整理」把未管理 Skill 导入中心库，并把 Agent 目录改成指向中心库的软连接；同名冲突仍按原流程处理。
       </div>
 
       <div className="sm2__agent-sync-actions">
         <span>已选择 {selectedIds.size} 个</span>
+        <button className="sm2__btn sm2__btn--featured" onClick={openOneClickOrganize} disabled={(oneClickImportable.length === 0 && oneClickConflicts.length === 0) || importing || scanning}>
+          {importing ? '整理中…' : '一键整理'}
+        </button>
+        <button className="sm2__btn" onClick={scan} disabled={scanning || importing}>
+          {scanning ? '扫描中…' : '重新扫描 Agent'}
+        </button>
         <button className="sm2__btn" onClick={selectAllVisible} disabled={importableRows.length === 0 || importing}>选择当前可接管</button>
         <button className="sm2__btn" onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0 || importing}>清空</button>
         <button className="sm2__btn sm2__btn--primary" onClick={importSelected} disabled={selectedIds.size === 0 || importing}>
           {importing ? '接管中…' : '接管到中心库'}
         </button>
       </div>
+
+      {importProgress && <AgentSyncProgress progress={importProgress} />}
 
       {notice && <div className="sm2__notice sm2__notice--ok">{notice}</div>}
       {error && <div className="sm2__error" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{error}</div>}
@@ -1238,17 +1316,27 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                     <button
                       className="sm2__icon-btn sm2__icon-btn--add"
                       title="接管到中心库"
-                      disabled={importing}
-                      onClick={(e) => { e.stopPropagation(); void adoptItems([item]) }}
+                      disabled={importing || adoptOpeningId === key}
+                      onClick={(e) => { e.stopPropagation(); void openAdoptPreview(item) }}
                     >
                       +
+                    </button>
+                  )}
+                  {!item.canImport && item.status === 'conflict' && (
+                    <button
+                      className="sm2__btn sm2__btn--small"
+                      title="处理同名冲突"
+                      disabled={importing || adoptOpeningId === key}
+                      onClick={(e) => { e.stopPropagation(); void openAdoptPreview(item) }}
+                    >
+                      处理冲突
                     </button>
                   )}
                 </div>
                 <div className="sm2__agent-sync-card-meta">
                   <span className="sm2__source-pill">{agent.displayName}</span>
                   <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
-                  {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+                  {item.actualMode && <span className="sm2__tag">{skillModeLabel(t, item.actualMode)}</span>}
                 </div>
                 <code className="sm2__agent-sync-card-path">{item.path}</code>
               </div>
@@ -1284,7 +1372,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                   <div className="sm2__market-item-meta">
                     <span className="sm2__source-pill">{agent.displayName}</span>
                     <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
-                    {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
+                    {item.actualMode && <span className="sm2__tag">{skillModeLabel(t, item.actualMode)}</span>}
                     <code className="sm2__agent-sync-item-path">{item.path}</code>
                   </div>
                 </div>
@@ -1292,10 +1380,19 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                   <button
                     className="sm2__icon-btn sm2__icon-btn--add"
                     title="接管到中心库"
-                    disabled={importing}
-                    onClick={(e) => { e.stopPropagation(); void adoptItems([item]) }}
+                    disabled={importing || adoptOpeningId === key}
+                    onClick={(e) => { e.stopPropagation(); void openAdoptPreview(item) }}
                   >
                     +
+                  </button>
+                )}
+                {!item.canImport && item.status === 'conflict' && (
+                  <button
+                    className="sm2__btn sm2__btn--small"
+                    disabled={importing || adoptOpeningId === key}
+                    onClick={(e) => { e.stopPropagation(); void openAdoptPreview(item) }}
+                  >
+                    处理冲突
                   </button>
                 )}
               </div>
@@ -1307,129 +1404,644 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       <AgentSkillDetail
         row={detailRow}
         importing={importing}
+        opening={Boolean(adoptOpeningId)}
         onClose={() => setDetailRow(null)}
-        onAdopt={(item) => void adoptItems([item])}
+        onAdopt={(item) => void openAdoptPreview(item)}
       />
+
+      {adoptPreview && (
+        <AdoptDialog
+          preview={adoptPreview}
+          onClose={() => setAdoptPreview(null)}
+          onDone={finishAdoptPreview}
+        />
+      )}
+      {oneClickOpen && (
+        <OneClickOrganizeDialog
+          importableCount={oneClickImportable.length}
+          conflictCount={oneClickConflicts.length}
+          busy={importing}
+          onClose={() => setOneClickOpen(false)}
+          onConfirm={(mode) => void executeOneClickOrganize(mode)}
+        />
+      )}
     </div>
   )
 }
 
-function AgentSkillDetail({ row, importing, onClose, onAdopt }: {
+function modeNoticeSuffix(mode: OneClickOrganizeMode) {
+  switch (mode) {
+    case 'import_link':
+      return ' 为中心库软连接'
+    case 'import_copy':
+      return ' 为中心库副本'
+    case 'import_keep':
+      return ' 并保留现有文件'
+  }
+}
+
+function OneClickOrganizeDialog({
+  importableCount,
+  conflictCount,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  importableCount: number
+  conflictCount: number
+  busy: boolean
+  onClose: () => void
+  onConfirm: (mode: OneClickOrganizeMode) => void
+}) {
+  const [mode, setMode] = useState<OneClickOrganizeMode>('import_link')
+
+  return (
+    <PreviewDialog
+      title="一键整理 Skills"
+      confirmLabel="开始整理"
+      modalClassName="sm2__modal--adopt sm2__modal--one-click"
+      busy={busy}
+      onConfirm={() => onConfirm(mode)}
+      onCancel={onClose}
+    >
+      <div className="sm2-oneclick">
+        <div className="sm2-oneclick__summary">
+          <strong>将整理 {importableCount} 个可接管 Skill</strong>
+          <span>AgentBro 会先同步到中心库，再按你选择的方式更新当前 Agent 目录。</span>
+          {conflictCount > 0 && (
+            <em>{conflictCount} 个同名冲突会保留给原来的冲突处理流程。</em>
+          )}
+        </div>
+
+        <div className="sm2-oneclick__options" role="radiogroup" aria-label="一键整理方式">
+          {ONE_CLICK_ORGANIZE_OPTIONS.map((option) => {
+            const active = mode === option.value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`sm2-oneclick__option${active ? ' sm2-oneclick__option--active' : ''}`}
+                role="radio"
+                aria-checked={active}
+                aria-label={option.label}
+                onClick={() => setMode(option.value)}
+              >
+                <span className="sm2-oneclick__radio" />
+                <span className="sm2-oneclick__option-main">
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </span>
+                {option.badge && <em>{option.badge}</em>}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </PreviewDialog>
+  )
+}
+
+const ONE_CLICK_ORGANIZE_OPTIONS: Array<{
+  value: OneClickOrganizeMode
+  label: string
+  description: string
+  badge?: string
+}> = [
+  {
+    value: 'import_link',
+    label: '软连接（推荐）',
+    description: '中心库作为唯一来源，Agent 目录改成指向中心库的软连接，后续同步最省心。',
+    badge: '推荐',
+  },
+  {
+    value: 'import_copy',
+    label: '复制到 Agent',
+    description: '中心库保存一份，再复制一份到 Agent 目录，适合不想使用软连接的环境。',
+  },
+  {
+    value: 'import_keep',
+    label: '保留现有文件',
+    description: '只把现有 Skill 纳入管理，Agent 目录里的文件先不替换。',
+  },
+]
+
+function AgentSyncProgress({ progress }: { progress: AgentSyncImportProgress }) {
+  const percent = progress.total > 0
+    ? Math.max(4, Math.round((progress.current / progress.total) * 100))
+    : 4
+
+  return (
+    <div className="sm2__agent-sync-progress" role="status" aria-live="polite">
+      <div className="sm2__agent-sync-progress-main">
+        <span>正在接管 {progress.current} / {progress.total}</span>
+        <strong>{progress.currentName || '准备中'}</strong>
+      </div>
+      <div
+        className="sm2__agent-sync-progress-bar"
+        aria-hidden="true"
+        style={{ '--sm2-agent-sync-progress': `${percent}%` } as CSSProperties}
+      >
+        <span />
+      </div>
+    </div>
+  )
+}
+
+function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
   row: AgentSyncRow | null
   importing: boolean
+  opening: boolean
   onClose: () => void
   onAdopt: (item: AgentSkillInventoryItem) => void
 }) {
   const agent = row?.agent
   const item = row?.item
-  const tone = item ? statusTone(item) : 'unmanaged'
-  const pathSegments = (item?.path || '').split('/').filter(Boolean)
 
   return (
     <SlideOver
       open={!!row}
       onClose={onClose}
-      width={520}
-      className="sm2__slideover--market-detail"
+      width={1040}
+      className="sm2__slideover--skill-detail"
       title={item?.name || ''}
       subtitle={agent?.displayName || undefined}
       actions={
         item ? (
-          <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(item.path)}>在 Finder 打开 ↗</button>
+          <>
+            <button
+              className="sm2__btn sm2__btn--primary"
+              disabled={!canOpenAdopt(item) || importing || opening}
+              onClick={() => onAdopt(item)}
+            >
+              {importing || opening ? '准备中…' : item.canImport ? '接管到中心库' : item.status === 'conflict' ? '处理冲突' : item.managed ? '已被管理' : '无法接管'}
+            </button>
+            <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(item.path)}>在 Finder 打开 ↗</button>
+          </>
         ) : undefined
       }
     >
       {agent && item && (
-        <div className="sm2__market-detail">
-          <div className="sm2__market-detail-hero">
-            <AgentIconBadge iconKey={agent.iconKey} size={40} title={agent.displayName} />
-            <div>
-              <div className="sm2__market-detail-eyebrow">本地 Agent Skill</div>
-              <h3 className="sm2__market-detail-name">{item.name}</h3>
-              <div className="sm2__market-detail-meta">
-                <span className="sm2__source-pill">{agent.displayName}</span>
-                <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
-                {item.actualMode && <span className="sm2__tag">{item.actualMode}</span>}
-              </div>
-            </div>
-          </div>
-
-          <div className="sm2__market-detail-stats">
-            <div className="sm2__market-detail-stat">
-              <span>状态</span>
-              <strong>{item.statusLabel}</strong>
-            </div>
-            <div className="sm2__market-detail-stat">
-              <span>来源 Agent</span>
-              <strong>{agent.displayName}</strong>
-            </div>
-            <div className="sm2__market-detail-stat">
-              <span>接管</span>
-              <strong>{item.canImport ? '可接管' : '不可接管'}</strong>
-            </div>
-          </div>
-
-          {item.reason && (
-            <div className="sm2__market-detail-section">
-              <h4>说明</h4>
-              <p>{item.reason}</p>
-            </div>
-          )}
-
-          <div className="sm2__market-detail-section">
-            <h4>本地路径</h4>
-            <div className="sm2__market-breadcrumb">
-              {pathSegments.map((part, index) => (
-                <span className="sm2__market-breadcrumb-part" key={`${part}-${index}`}>
-                  {index > 0 && <span className="sm2__market-breadcrumb-separator">/</span>}
-                  <span>{part}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="sm2__market-detail-section">
-            <h4>信息</h4>
-            <div className="sm2__compact-info">
-              <div className="sm2__compact-row">
-                <span>完整路径</span>
-                <code>{item.path}</code>
-              </div>
-              <div className="sm2__compact-row">
-                <span>Skill ID</span>
-                <strong>{item.skillId}</strong>
-              </div>
-              {item.actualMode && (
-                <div className="sm2__compact-row">
-                  <span>安装模式</span>
-                  <strong>{item.actualMode}</strong>
-                </div>
-              )}
-              {item.hash && (
-                <div className="sm2__compact-row">
-                  <span>内容哈希</span>
-                  <code>{item.hash.slice(0, 16)}</code>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="sm2__btn-row" style={{ marginTop: 20 }}>
-            <button
-              className="sm2__btn sm2__btn--primary"
-              disabled={!item.canImport || importing}
-              onClick={() => onAdopt(item)}
-            >
-              {importing ? '接管中…' : item.canImport ? '接管到中心库' : item.managed ? '已被管理' : '无法接管'}
-            </button>
-            <button className="sm2__btn" onClick={() => openExternal(item.path)}>
-              在 Finder 打开 ↗
-            </button>
-          </div>
-        </div>
+        <AgentSkillDetailBody key={`${agent.agentId}:${item.id}:${item.path}`} agent={agent} item={item} />
       )}
     </SlideOver>
   )
+}
+
+function AgentSkillDetailBody({ agent, item }: { agent: AgentSkillInventoryAgent; item: AgentSkillInventoryItem }) {
+  const { t } = useTranslation()
+  const tone = statusTone(item)
+  const [tab, setTab] = useState<AgentSkillDetailTab>('overview')
+  const skillMdPath = `${item.path}/SKILL.md`
+  const [fileTree, setFileTree] = useState<FileTreeNode | null>(null)
+  const [activeFile, setActiveFile] = useState<string | null>(skillMdPath)
+  const [fileContent, setFileContent] = useState('')
+  const [fileLoading, setFileLoading] = useState(true)
+  const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
+  const [doc, setDoc] = useState<{ content: string; loading: boolean; error: string | null }>({
+    content: '',
+    loading: true,
+    error: null,
+  })
+  const tabs: Array<{ id: AgentSkillDetailTab; label: string }> = [
+    { id: 'overview', label: '概览' },
+    { id: 'files', label: '文件' },
+    { id: 'source', label: '来源' },
+  ]
+  const reason = unmanagedReasonLabel(t, item.reason)
+  const mode = item.actualMode ? skillModeLabel(t, item.actualMode) : ''
+  const docDescription = extractSkillDescription(doc.content) || reason
+
+  useEffect(() => {
+    let alive = true
+    Promise.allSettled([
+      skillApiV2.readFileTree(item.path),
+      skillApiV2.readFileContent(skillMdPath),
+    ]).then(([treeResult, contentResult]) => {
+      if (!alive) return
+      if (treeResult.status === 'fulfilled') {
+        setFileTree(treeResult.value)
+      } else {
+        setFileTree(localSkillFallbackTree(item.path))
+      }
+      if (contentResult.status === 'fulfilled') {
+        setDoc({ content: contentResult.value, loading: false, error: null })
+        setFileContent(contentResult.value)
+      } else {
+        const error = String(contentResult.reason)
+        setDoc({ content: '', loading: false, error })
+        setFileContent(`无法读取文件：${error}`)
+      }
+      setFileLoading(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [item.path, skillMdPath])
+
+  const loadFile = (path: string) => {
+    setActiveFile(path)
+    setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
+    setFileLoading(true)
+    skillApiV2
+      .readFileContent(path)
+      .then((content) => {
+        setFileContent(content)
+        if (path === skillMdPath) {
+          setDoc({ content, loading: false, error: null })
+        }
+      })
+      .catch((e) => {
+        setFileContent(`无法读取文件：${e}`)
+        if (path === skillMdPath) {
+          setDoc({ content: '', loading: false, error: String(e) })
+        }
+      })
+      .finally(() => {
+        setFileLoading(false)
+      })
+  }
+
+  return (
+    <div className="sm2__skill-detail sm2__local-skill-detail">
+      <div className="sm2__detail-pills">
+        <span className={`sm2__tag sm2__tag--${tone}`}>{item.statusLabel}</span>
+        <span className="sm2__tag">本地 Agent Skill</span>
+        <span className="sm2__tag">{agent.displayName}</span>
+        {mode && <span className="sm2__tag">{mode}</span>}
+      </div>
+
+      <div className="sm2__subtabs">
+        {tabs.map((entry) => (
+          <button
+            key={entry.id}
+            className={`sm2__subtab${tab === entry.id ? ' sm2__subtab--active' : ''}`}
+            onClick={() => setTab(entry.id)}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && (
+        <div className="sm2__detail-overview sm2__detail-overview--reader">
+          <section className="sm2__skill-doc">
+            <div className="sm2__skill-doc-head">
+              <div>
+                <span>SKILL.md</span>
+                <strong>说明文档</strong>
+              </div>
+              <small>{item.statusLabel}</small>
+            </div>
+            <div className="sm2__markdown sm2__markdown--document sm2__markdown--skilldoc selectable">
+              {doc.loading ? (
+                <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
+              ) : doc.content ? (
+                <>
+                  <LocalSkillIntro description={docDescription} />
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={localMarkdownComponents}>{stripSkillFrontmatter(doc.content)}</ReactMarkdown>
+                </>
+              ) : (
+                <div className="sm2__empty sm2__empty--compact">{doc.error ? `无法读取说明文档：${doc.error}` : '未找到说明文档'}</div>
+              )}
+            </div>
+          </section>
+
+          <aside className="sm2__skill-aside">
+            <section className="sm2__aside-panel">
+              <div className="sm2__aside-head">
+                <h3>Agent 安装</h3>
+                <span>1</span>
+              </div>
+              <div className="sm2__install-mini-list">
+                <div className="sm2__install-mini">
+                  <AgentIconBadge iconKey={agent.iconKey} mode={item.actualMode || undefined} size={26} />
+                  <div>
+                    <strong>{agent.displayName}</strong>
+                    <span>{mode ? `${mode} · ${item.statusLabel}` : item.statusLabel}</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="sm2__aside-panel">
+              <div className="sm2__aside-head">
+                <h3>信息</h3>
+              </div>
+              <div className="sm2__compact-info">
+                <CompactInfoRow label="来源" value={agent.skillsDir || agent.displayName} mono={Boolean(agent.skillsDir)} />
+                <CompactInfoRow label="本地目录" value={item.path} mono />
+                <CompactInfoRow label="Skill ID" value={item.skillId} />
+                {item.hash && <CompactInfoRow label="Hash" value={item.hash} mono short />}
+              </div>
+            </section>
+          </aside>
+        </div>
+      )}
+
+      {tab === 'files' && (
+        <LocalFilesTab
+          rootPath={item.path}
+          files={fileTree}
+          activeFile={activeFile}
+          fileContent={fileContent}
+          fileLoading={fileLoading}
+          viewMode={fileViewMode}
+          onViewModeChange={setFileViewMode}
+          onSelect={loadFile}
+        />
+      )}
+
+      {tab === 'source' && (
+        <section className="sm2__skill-source">
+          <div className="sm2__skill-source-grid">
+            <div className="sm2__skill-source-card">
+              <span>类型</span>
+              <strong>本地 Agent Skill</strong>
+            </div>
+            <div className="sm2__skill-source-card">
+              <span>导入 Agent</span>
+              <strong>{agent.displayName}</strong>
+            </div>
+            <div className="sm2__skill-source-card">
+              <span>接管</span>
+              <strong>{item.canImport ? '可接管' : '不可接管'}</strong>
+            </div>
+            <div className="sm2__skill-source-card">
+              <span>状态</span>
+              <strong>{item.statusLabel}</strong>
+            </div>
+          </div>
+          <div className="sm2__skill-source-stack">
+            <div className="sm2__skill-source-card sm2__skill-source-card--wide">
+              <span>本地路径</span>
+              <code title={item.path}>{item.path}</code>
+            </div>
+            {agent.skillsDir && (
+              <div className="sm2__skill-source-card sm2__skill-source-card--wide">
+                <span>Agent Skills 目录</span>
+                <code title={agent.skillsDir}>{agent.skillsDir}</code>
+              </div>
+            )}
+            {reason && (
+              <div className="sm2__skill-source-card sm2__skill-source-card--wide">
+                <span>说明</span>
+                <code title={reason}>{reason}</code>
+              </div>
+            )}
+            {item.hash && (
+              <div className="sm2__skill-source-card sm2__skill-source-card--wide">
+                <span>Hash</span>
+                <code title={item.hash}>{item.hash}</code>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function LocalFilesTab({
+  rootPath,
+  files,
+  activeFile,
+  fileContent,
+  fileLoading,
+  viewMode,
+  onViewModeChange,
+  onSelect,
+}: {
+  rootPath: string
+  files: FileTreeNode | null
+  activeFile: string | null
+  fileContent: string
+  fileLoading: boolean
+  viewMode: FileViewMode
+  onViewModeChange: (mode: FileViewMode) => void
+  onSelect: (path: string) => void
+}) {
+  const canPreview = Boolean(activeFile && isMarkdownPath(activeFile))
+  const effectiveMode = canPreview ? viewMode : 'source'
+  const activeName = activeFile ? activeFile.split('/').pop() || activeFile : '未选择文件'
+  const activeDisplayPath = activeFile ? relativeFilePath(activeFile, rootPath) : '选择左侧文件查看内容'
+  const fileCount = countFiles(files)
+  return (
+    <section className="sm2__panel sm2__panel--flush">
+      <div className="sm2__panel-head sm2__panel-head--filebrowser">
+        <div>
+          <h3>目录与文件</h3>
+          <span>{activeFile ? activeDisplayPath : '选择文件后查看内容'}</span>
+        </div>
+        <strong>{fileCount} 个文件</strong>
+      </div>
+      <div className="sm2__filebrowser sm2__filebrowser--expansive">
+        <div className="sm2__filetree-pane">
+          <div className="sm2__filetree-head">
+            <span>目录</span>
+            <strong>{fileCount}</strong>
+          </div>
+          <div className="sm2__filetree settings-scroll">
+            {files ? (
+              <LocalFileTree node={files} depth={0} active={activeFile} onSelect={onSelect} />
+            ) : (
+              <div className="sm2__empty sm2__empty--compact">读取目录…</div>
+            )}
+          </div>
+        </div>
+        <div className="sm2__fileview">
+          <div className="sm2__fileview-header">
+            <div className="sm2__fileview-title">
+              <strong>{activeName}</strong>
+              <span>{activeDisplayPath}</span>
+            </div>
+            <div className="sm2__filemode-toggle">
+              <button
+                className={effectiveMode === 'preview' ? 'active' : ''}
+                disabled={!canPreview}
+                onClick={() => onViewModeChange('preview')}
+              >
+                预览
+              </button>
+              <button
+                className={effectiveMode === 'source' ? 'active' : ''}
+                onClick={() => onViewModeChange('source')}
+              >
+                源码
+              </button>
+            </div>
+          </div>
+          <div className="sm2__filecontent settings-scroll">
+            {fileLoading ? (
+              <div className="sm2__empty sm2__empty--compact">加载中…</div>
+            ) : effectiveMode === 'preview' && canPreview ? (
+              <div className={`sm2__markdown sm2__markdown--file selectable${isSkillMarkdownPath(activeFile) ? ' sm2__markdown--file-skill' : ''}`}>
+                {isSkillMarkdownPath(activeFile) && (
+                  <LocalSkillIntro description={extractSkillDescription(fileContent)} compact />
+                )}
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={localMarkdownComponents}>{stripSkillFrontmatter(fileContent || '（空）')}</ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="sm2__fileview-content selectable">{fileContent || '（空）'}</pre>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function LocalFileTree({
+  node,
+  depth,
+  active,
+  onSelect,
+}: {
+  node: FileTreeNode
+  depth: number
+  active: string | null
+  onSelect: (path: string) => void
+}) {
+  const [expanded, setExpanded] = useState(depth < 1)
+  const isDir = node.nodeType === 'dir'
+  const activeDescendant = Boolean(active && isDir && node.children?.some((child) => nodeContainsPath(child, active)))
+  const isActive = active === node.path
+  return (
+    <div className={`sm2__filetree-node${isDir ? ' sm2__filetree-node--dir' : ' sm2__filetree-node--file'}`}>
+      <button
+        type="button"
+        className={`sm2__filetree-row${isActive ? ' sm2__filetree-row--active' : ''}${activeDescendant ? ' sm2__filetree-row--contains-active' : ''}${isDir ? ' sm2__filetree-row--branch' : ''}`}
+        style={{ paddingLeft: 10 + depth * 16 }}
+        onClick={() => {
+          if (isDir) setExpanded((value) => !value)
+          else onSelect(node.path)
+        }}
+      >
+        <span className="sm2__filetree-caret">{isDir ? (expanded ? '⌄' : '›') : ''}</span>
+        <span className="sm2__filetree-icon">{isDir ? '▣' : '▪'}</span>
+        <span className="sm2__filetree-name">{node.name || node.path}</span>
+      </button>
+      {isDir && expanded && node.children && (
+        <div className="sm2__filetree-children">
+          {node.children.map((child) => (
+            <LocalFileTree key={child.path} node={child} depth={depth + 1} active={active} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const localMarkdownComponents = {
+  a: LocalMarkdownLink,
+}
+
+function LocalSkillIntro({ description, compact = false }: { description?: string; compact?: boolean }) {
+  const text = description?.trim()
+  if (!text) return null
+  return (
+    <div className={`sm2__skill-frontmatter${compact ? ' sm2__skill-frontmatter--compact' : ''}`}>
+      <span>说明</span>
+      <p>{text}</p>
+    </div>
+  )
+}
+
+function CompactInfoRow({
+  label,
+  value,
+  mono = false,
+  short = false,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  short?: boolean
+}) {
+  const display = short && value.length > 12 ? value.slice(0, 12) : value
+  return (
+    <div className="sm2__compact-row">
+      <span>{label}</span>
+      {mono ? <code title={value}>{display}</code> : <strong title={value}>{display}</strong>}
+    </div>
+  )
+}
+
+function LocalMarkdownLink({ href, children, onClick, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    onClick?.(event)
+    if (event.defaultPrevented || !href || href.startsWith('#')) return
+    event.preventDefault()
+    openExternal(href)
+  }
+
+  return (
+    <a {...props} href={href} target="_blank" rel="noreferrer" onClick={handleClick}>
+      {children}
+    </a>
+  )
+}
+
+function stripSkillFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content
+  const end = content.indexOf('\n---', 3)
+  if (end === -1) return content
+  return content.slice(end + 4).trim()
+}
+
+function countFiles(node: FileTreeNode | null): number {
+  if (!node) return 0
+  if (node.nodeType === 'file') return 1
+  return node.children?.reduce((sum, child) => sum + countFiles(child), 0) || 0
+}
+
+function relativeFilePath(path: string, root: string): string {
+  if (path === root) return path.split('/').pop() || path
+  const prefix = root.endsWith('/') ? root : `${root}/`
+  if (path.startsWith(prefix)) return path.slice(prefix.length)
+  return path
+}
+
+function isMarkdownPath(path: string | null): boolean {
+  return Boolean(path && /\.(md|mdx|markdown)$/i.test(path))
+}
+
+function isSkillMarkdownPath(path: string | null): boolean {
+  return Boolean(path && /(^|\/)SKILL\.md$/i.test(path))
+}
+
+function nodeContainsPath(node: FileTreeNode, path: string): boolean {
+  if (node.path === path) return true
+  return Boolean(node.children?.some((child) => nodeContainsPath(child, path)))
+}
+
+function localSkillFallbackTree(skillPath: string): FileTreeNode {
+  return {
+    name: skillPath.split('/').filter(Boolean).pop() || 'skill',
+    nodeType: 'dir',
+    path: skillPath,
+    children: [
+      {
+        name: 'SKILL.md',
+        nodeType: 'file',
+        path: `${skillPath}/SKILL.md`,
+        children: null,
+      },
+    ],
+  }
+}
+
+function extractSkillDescription(content: string): string {
+  if (!content.startsWith('---')) return ''
+  const end = content.indexOf('\n---', 3)
+  if (end === -1) return ''
+  const frontmatter = content.slice(3, end)
+  const lines = frontmatter.split(/\r?\n/)
+  const descriptionLine = lines.find((line) => line.trim().startsWith('description:'))
+  if (!descriptionLine) return ''
+  return descriptionLine
+    .split(/:(.*)/s)[1]
+    ?.trim()
+    .replace(/^['"]|['"]$/g, '') || ''
 }
 
 function importKey(item: AgentSkillInventoryItem) {
