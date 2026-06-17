@@ -1808,6 +1808,11 @@ impl Service {
                             format!("Skill '{}' is not in the center library.", blocker.skill_id)
                         })?;
                         let path = Path::new(existing_path);
+                        self.ensure_distribution_target_path(
+                            &blocker.skill_id,
+                            &blocker.agent_id,
+                            path,
+                        )?;
                         fsutil::remove_path(path)?;
                         let actual =
                             self.resolve_actual_mode(&preview.requested_mode, &blocker.agent_id)?;
@@ -1887,6 +1892,7 @@ impl Service {
             .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
         let center = Path::new(&row.center_path);
         let target = Path::new(target_path);
+        self.ensure_distribution_target_path(skill_id, agent_id, target)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
@@ -1952,6 +1958,39 @@ impl Service {
             .map_err(|e| e.to_string())?;
             Ok(())
         })?;
+        Ok(())
+    }
+
+    fn ensure_distribution_target_path(
+        &self,
+        skill_id: &str,
+        agent_id: &str,
+        target: &Path,
+    ) -> Result<(), String> {
+        let skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id)
+            .ok_or_else(|| format!("Agent '{}' has no known skills directory.", agent_id))?;
+        let parent = target.parent().ok_or_else(|| {
+            format!(
+                "Target path '{}' has no parent directory.",
+                target.display()
+            )
+        })?;
+        if target.file_name().and_then(|name| name.to_str()) != Some(skill_id) {
+            return Err(format!(
+                "Target path '{}' does not match skill '{}'.",
+                target.display(),
+                skill_id
+            ));
+        }
+        if fsutil::normalized_path(parent) != fsutil::normalized_path(&skills_dir)
+            || !fsutil::is_path_within(&skills_dir, target)
+        {
+            return Err(format!(
+                "Target path '{}' must be a direct child of {}.",
+                target.display(),
+                skills_dir.display()
+            ));
+        }
         Ok(())
     }
 

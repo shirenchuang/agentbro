@@ -6,7 +6,7 @@
 
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Ignore these directory/file names when hashing or copying skill contents.
 pub fn is_ignored_entry(name: &str) -> bool {
@@ -67,6 +67,67 @@ pub fn expand_tilde(p: &str) -> PathBuf {
     } else {
         PathBuf::from(p)
     }
+}
+
+pub fn normalized_path(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .unwrap_or_else(|_| resolve_non_existing_path(path))
+}
+
+pub fn is_path_within(base: &Path, target: &Path) -> bool {
+    let base_resolved = normalized_path(base);
+    let target_resolved = target
+        .canonicalize()
+        .unwrap_or_else(|_| resolve_non_existing_path(target));
+    target_resolved.starts_with(base_resolved)
+}
+
+fn resolve_non_existing_path(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = ancestor.canonicalize() {
+            let mut out = real;
+            if let Ok(rest) = path.strip_prefix(ancestor) {
+                out.push(rest);
+            }
+            return normalize_path(&out);
+        }
+    }
+    normalize_path(path)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn ensure_destination_not_inside_source(src: &Path, dst: &Path) -> Result<(), String> {
+    let Ok(src_resolved) = src.canonicalize() else {
+        return Ok(());
+    };
+    let dst_resolved = dst.canonicalize().ok().or_else(|| {
+        let parent = dst.parent()?.canonicalize().ok()?;
+        let name = dst.file_name()?;
+        Some(parent.join(name))
+    });
+    if let Some(dst_resolved) = dst_resolved {
+        if dst_resolved.starts_with(&src_resolved) {
+            return Err(format!(
+                "Destination {} is inside source {}; refusing recursive copy",
+                dst.display(),
+                src.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Open a path or URL in the OS-default app. Best-effort.
@@ -300,6 +361,7 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.is_dir() {
         return Err(format!("Source is not a directory: {}", src.display()));
     }
+    ensure_destination_not_inside_source(src, dst)?;
     fs::create_dir_all(dst).map_err(|e| format!("create dir {}: {}", dst.display(), e))?;
     let rd = fs::read_dir(src).map_err(|e| format!("read dir {}: {}", src.display(), e))?;
     for entry in rd.flatten() {

@@ -451,6 +451,186 @@ fn distribute_blocker_can_be_skipped_or_overwritten() {
     );
 }
 
+#[test]
+fn distribute_multiple_skills_to_multiple_agents_is_isolated_and_idempotent() {
+    let (_home, svc, _lock) = fresh_service("multi-agent-distribution");
+    let review = write_skill(
+        &svc.home.join("s"),
+        "review",
+        "github-code-review",
+        Some("review-v1"),
+    );
+    let debug = write_skill(
+        &svc.home.join("s"),
+        "debug",
+        "database-debugging",
+        Some("debug-v1"),
+    );
+
+    for src in [&review, &debug] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    let skill_ids = vec![
+        "github-code-review".to_string(),
+        "database-debugging".to_string(),
+    ];
+    let target_agents = vec!["claude-code".to_string(), "codex".to_string()];
+    let preview = svc
+        .preview_distribute_skill(skill_ids.clone(), target_agents.clone(), "copy".to_string())
+        .unwrap();
+
+    assert!(preview.blockers.is_empty());
+    assert_eq!(preview.changes.len(), 4);
+    for skill_id in &skill_ids {
+        for agent_id in &target_agents {
+            assert!(preview.changes.iter().any(|change| {
+                change.skill_id == *skill_id
+                    && change.agent_id == *agent_id
+                    && change.action == "create"
+                    && change.actual_mode.as_deref() == Some("copy")
+            }));
+        }
+    }
+
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+
+    for skill_id in &skill_ids {
+        let detail = svc.get_skill_detail(skill_id).unwrap();
+        assert_eq!(
+            detail.targets.len(),
+            2,
+            "{skill_id} is installed on both agents"
+        );
+        for agent_id in &target_agents {
+            let target = detail
+                .targets
+                .iter()
+                .find(|target| target.agent_id == *agent_id)
+                .expect("target for agent");
+            assert_eq!(target.actual_mode, "copy");
+            assert_eq!(target.claims.len(), 1);
+            assert_eq!(target.claims[0].claim_type, "direct");
+            assert!(Path::new(&target.target_path).exists());
+        }
+    }
+
+    for agent_id in &target_agents {
+        let detail = svc.get_agent_detail(agent_id).unwrap();
+        let mut installed: Vec<_> = detail
+            .skills
+            .iter()
+            .map(|target| target.skill_id.as_str())
+            .collect();
+        installed.sort_unstable();
+        assert_eq!(installed, vec!["database-debugging", "github-code-review"]);
+    }
+
+    let reuse = svc
+        .preview_distribute_skill(skill_ids.clone(), target_agents, "copy".to_string())
+        .unwrap();
+    assert!(reuse.blockers.is_empty());
+    assert_eq!(reuse.changes.len(), 4);
+    assert!(reuse.changes.iter().all(|change| change.action == "reuse"));
+    svc.execute_distribute_skill(reuse, ClaimOrigin::Direct)
+        .unwrap();
+
+    for skill_id in skill_ids {
+        let detail = svc.get_skill_detail(&skill_id).unwrap();
+        assert_eq!(detail.targets.len(), 2);
+        assert!(detail
+            .targets
+            .iter()
+            .all(|target| target.claims.len() == 1 && target.claims[0].claim_type == "direct"));
+    }
+}
+
+#[test]
+fn distribution_execution_rejects_preview_paths_outside_agent_skill_dir() {
+    let (_home, svc, _lock) = fresh_service("distribution-path-guard");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "review",
+        "github-code-review",
+        Some("review-v1"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let outside_target = svc.home.join("outside").join("github-code-review");
+    let mut create_preview = svc
+        .preview_distribute_skill(
+            vec!["github-code-review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    create_preview.changes[0].target_path = outside_target.display().to_string();
+    let err = svc.execute_distribute_skill(create_preview, ClaimOrigin::Direct);
+    assert!(err.is_err());
+    assert!(!outside_target.exists());
+    assert_eq!(
+        svc.get_skill_detail("github-code-review")
+            .unwrap()
+            .targets
+            .len(),
+        0
+    );
+
+    fs::create_dir_all(&outside_target).unwrap();
+    fs::write(outside_target.join("SKILL.md"), "# user-owned").unwrap();
+    let overwrite_preview = DistributionPreview {
+        skill_ids: vec!["github-code-review".to_string()],
+        target_agents: vec!["claude-code".to_string()],
+        requested_mode: "copy".to_string(),
+        changes: vec![],
+        blockers: vec![ConflictBlocker {
+            skill_id: "github-code-review".to_string(),
+            agent_id: "claude-code".to_string(),
+            reason: "injected blocker".to_string(),
+            existing_path: Some(outside_target.display().to_string()),
+        }],
+        blocker_decisions: vec![DistributionBlockerDecision {
+            skill_id: "github-code-review".to_string(),
+            agent_id: "claude-code".to_string(),
+            action: "overwrite".to_string(),
+        }],
+    };
+
+    let err = svc.execute_distribute_skill(overwrite_preview, ClaimOrigin::Direct);
+    assert!(err.is_err());
+    assert!(
+        outside_target.exists(),
+        "guard must run before overwrite deletion"
+    );
+    assert_eq!(
+        fs::read_to_string(outside_target.join("SKILL.md")).unwrap(),
+        "# user-owned"
+    );
+}
+
 // ── Target / claim deletion rules ────────────────────────────────
 
 #[test]
@@ -904,6 +1084,60 @@ fn agent_inventory_includes_unmanaged_agent_skill_items() {
     assert!(codex.items.iter().any(|item| {
         !item.managed && item.path == rogue.display().to_string() && item.status == "unmanaged"
     }));
+}
+
+#[test]
+fn agent_detail_reports_mcp_plugins_and_path_health() {
+    let (_home, svc, _lock) = fresh_service("agent-detail-health");
+    let claude_dir = svc.home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] },
+                "broken": { "args": ["missing-command"] }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let plugin_manifest =
+        claude_dir.join("plugins/cache/agentbro/reviewer/.claude-plugin/plugin.json");
+    fs::create_dir_all(plugin_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &plugin_manifest,
+        serde_json::json!({
+            "name": "reviewer",
+            "displayName": "Reviewer Tools",
+            "version": "1.2.3"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("claude-code").unwrap();
+    let filesystem = detail
+        .mcp_servers
+        .iter()
+        .find(|server| server.name == "filesystem")
+        .expect("filesystem mcp server");
+    assert!(filesystem.valid);
+    assert_eq!(filesystem.command, "npx");
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "broken" && !server.valid));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "reviewer"
+            && plugin.name == "Reviewer Tools"
+            && plugin.version.as_deref() == Some("1.2.3")
+    }));
+    assert!(detail
+        .health
+        .iter()
+        .any(|issue| issue.kind == "skills_dir_missing"));
 }
 
 #[test]

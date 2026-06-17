@@ -423,6 +423,41 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
   })
 
+  it('renders MCP, plugin, config, and health details for the selected agent', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        mcpServers: [
+          { name: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'], valid: true, message: 'configured' },
+          { name: 'broken', command: '', args: [], valid: false, message: 'missing command' },
+        ],
+        plugins: [
+          { id: 'reviewer', name: 'Reviewer Tools', version: '1.2.3', enabled: true, source: 'claude-plugin' },
+        ],
+        health: [
+          { kind: 'skills_dir_missing', message: 'Skills directory does not exist: /c/skills', severity: 'warning' },
+        ],
+      },
+    })
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    expect(screen.getByText('Skills directory does not exist: /c/skills')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('MCP (2)'))
+    expect(screen.getByText('filesystem')).toBeInTheDocument()
+    expect(screen.getByText('broken')).toBeInTheDocument()
+    expect(screen.getByText('missing command')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Plugins (1)'))
+    expect(screen.getByText('Reviewer Tools')).toBeInTheDocument()
+    expect(screen.getByText('claude-plugin · v1.2.3')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('路径与设置'))
+    expect(screen.getByText('/c')).toBeInTheDocument()
+    expect(screen.getByText('/c/config.json')).toBeInTheDocument()
+    expect(screen.getByText('/c/mcp.json')).toBeInTheDocument()
+  })
+
   it('uses the install action when the selected agent is not installed', async () => {
     const codexDetail: AgentDetail = {
       ...agentDetail,
