@@ -14,24 +14,24 @@ fn svc() -> Result<Arc<Service>, String> {
     crate::skills::v2::service()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skill_manager_bootstrap() -> Result<(), String> {
     let svc = svc()?;
     svc.bootstrap()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skill_manager_init() -> Result<(), String> {
     let svc = svc()?;
     svc.init()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skill_manager_overview() -> Result<SkillManagerOverview, String> {
     Ok(svc()?.overview()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skill_manager_refresh() -> Result<(), String> {
     svc()?.refresh()
 }

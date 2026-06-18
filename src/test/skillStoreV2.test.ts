@@ -73,6 +73,7 @@ describe('skillStoreV2 view mode + filters', () => {
 describe('skillStoreV2 startup scan setting', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    useSkillStoreV2.setState({ startupScanInFlight: false, busyAction: null })
   })
 
   beforeEach(() => {
@@ -87,6 +88,7 @@ describe('skillStoreV2 startup scan setting', () => {
       loading: false,
       error: null,
       initialized: false,
+      startupScanInFlight: false,
       lastOverviewLoadedAt: 0,
     })
   })
@@ -114,6 +116,45 @@ describe('skillStoreV2 startup scan setting', () => {
     await useSkillStoreV2.getState().init()
 
     expect(fullScan).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not wait for the startup scan before init resolves', async () => {
+    let resolveScan: (() => void) | undefined
+    const scanPromise = new Promise<void>((resolve) => {
+      resolveScan = resolve
+    })
+    const overview: SkillManagerOverview = {
+      metrics: { centerSkillCount: 1, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
+      skills: [makeSkill()],
+      agents: [],
+      packs: [],
+      issues: [],
+      settings: {
+        centerPath: '~/.agentbro/skills',
+        sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link',
+        linkFailPolicy: 'ask',
+        startupScan: true,
+        showUnmanaged: true,
+      },
+    }
+    vi.spyOn(skillApiV2, 'bootstrap').mockResolvedValue(undefined)
+    const fullScan = vi.spyOn(skillApiV2, 'init').mockReturnValue(scanPromise)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+
+    await useSkillStoreV2.getState().init()
+
+    expect(fullScan).toHaveBeenCalledTimes(1)
+    expect(useSkillStoreV2.getState().initialized).toBe(true)
+    expect(useSkillStoreV2.getState().loading).toBe(false)
+    expect(useSkillStoreV2.getState().startupScanInFlight).toBe(true)
+
+    resolveScan?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useSkillStoreV2.getState().startupScanInFlight).toBe(false)
   })
 
   it('skips the full skill manager scan on init when startupScan is disabled', async () => {

@@ -1515,6 +1515,36 @@ fn kimi_does_not_claim_agentbro_center_skills() {
     assert!(kimi.items.is_empty());
 }
 
+#[test]
+fn shared_agents_skills_dir_is_scanned_as_own_target() {
+    let (_home, svc, _lock) = fresh_service("shared-agents-skills");
+    write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared",
+        "shared-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+
+    let inventory = svc.list_agent_skill_inventory().unwrap();
+    let shared = inventory
+        .into_iter()
+        .find(|agent| agent.agent_id == "agents")
+        .expect(".agents inventory");
+
+    assert!(shared.installed);
+    assert_eq!(
+        shared.skills_dir,
+        Some(svc.home.join(".agents/skills").display().to_string())
+    );
+    assert_eq!(shared.unmanaged_count, 1);
+    assert_eq!(shared.importable_count, 1);
+    assert_eq!(
+        shared.items[0].path,
+        svc.home.join(".agents/skills/shared").display().to_string()
+    );
+}
+
 // ── Snapshot ─────────────────────────────────────────────────────
 
 #[test]
@@ -1583,6 +1613,18 @@ fn settings_round_trip() {
     assert_eq!(updated.default_distribute_mode, "copy");
     assert_eq!(updated.link_fail_policy, "copy");
     assert!(!updated.startup_scan);
+
+    let migrated = svc
+        .update_settings(SettingsUpdate {
+            center_path: Some(svc.home.join(".agents/skills").display().to_string()),
+            sqlite_path: None,
+            default_distribute_mode: None,
+            link_fail_policy: None,
+            startup_scan: None,
+            show_unmanaged: None,
+        })
+        .unwrap();
+    assert!(migrated.center_path.ends_with(".agentbro/skills"));
 }
 
 #[test]

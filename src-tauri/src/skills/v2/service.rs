@@ -43,7 +43,17 @@ impl Service {
                 db::save_settings_json(c, &val)?;
                 Ok(def)
             } else {
-                serde_json::from_value(v).map_err(|e| e.to_string())
+                let mut settings: SkillManagerSettings =
+                    serde_json::from_value(v).map_err(|e| e.to_string())?;
+                if normalize_shared_agents_center_path(&self.home, &mut settings) {
+                    let val = serde_json::to_value(&settings).map_err(|e| e.to_string())?;
+                    db::save_settings_json(c, &val)?;
+                    let _ = std::fs::write(
+                        fsutil::settings_path(),
+                        serde_json::to_string_pretty(&val).unwrap_or_default(),
+                    );
+                }
+                Ok(settings)
             }
         })
     }
@@ -77,6 +87,7 @@ impl Service {
             if let Some(v) = update.show_unmanaged {
                 current.show_unmanaged = v;
             }
+            normalize_shared_agents_center_path(&self.home, &mut current);
             let val = serde_json::to_value(&current).map_err(|e| e.to_string())?;
             db::save_settings_json(c, &val)?;
             // mirror to file for human inspection
@@ -3479,6 +3490,20 @@ fn filesystem_target_mode(path: &Path) -> Option<String> {
         PathKind::Dir | PathKind::File => Some("copy".to_string()),
         PathKind::Missing | PathKind::BrokenSymlink => None,
     }
+}
+
+fn normalize_shared_agents_center_path(home: &Path, settings: &mut SkillManagerSettings) -> bool {
+    let configured = fsutil::normalized_path(&fsutil::expand_tilde(&settings.center_path));
+    let shared_agents = fsutil::normalized_path(&home.join(".agents").join("skills"));
+    if configured != shared_agents {
+        return false;
+    }
+    settings.center_path = home
+        .join(".agentbro")
+        .join("skills")
+        .to_string_lossy()
+        .to_string();
+    true
 }
 
 fn existing_path_info(path: &Path) -> (Option<String>, Option<String>) {

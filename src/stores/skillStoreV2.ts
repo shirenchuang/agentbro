@@ -49,6 +49,7 @@ interface SkillV2State {
   lastPreview: DistributionPreview | null
   initialized: boolean
   agentDetailLoading: boolean
+  startupScanInFlight: boolean
   lastOverviewLoadedAt: number
 }
 
@@ -94,11 +95,13 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   lastPreview: null,
   initialized: false,
   agentDetailLoading: false,
+  startupScanInFlight: false,
   lastOverviewLoadedAt: 0,
 
   init: async () => {
     // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
-    // then reads cached SQLite state unless startup scanning is enabled.
+    // then reads cached SQLite state. Startup scanning runs in the background
+    // so opening the library is not blocked by walking every Agent skill dir.
     if (get().initialized) {
       if (!get().overview) await get().loadOverview(true)
       return
@@ -107,11 +110,24 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     try {
       await skillApiV2.bootstrap()
       await get().loadOverview(true)
-      if (get().settings?.startupScan) {
-        await skillApiV2.init()
-        await get().loadOverview(true)
-      }
       set({ initialized: true })
+
+      if (get().settings?.startupScan && !get().startupScanInFlight) {
+        set({ startupScanInFlight: true, busyAction: get().busyAction ?? 'startupScan' })
+        void (async () => {
+          try {
+            await skillApiV2.init()
+            await get().loadOverview(true)
+          } catch (e) {
+            set({ error: String(e) })
+          } finally {
+            set((s) => ({
+              startupScanInFlight: false,
+              busyAction: s.busyAction === 'startupScan' ? null : s.busyAction,
+            }))
+          }
+        })()
+      }
     } catch (e) {
       set({ error: String(e) })
     } finally {

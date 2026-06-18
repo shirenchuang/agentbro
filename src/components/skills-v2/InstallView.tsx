@@ -994,6 +994,14 @@ function localSkillCount(agent: AgentSkillInventoryAgent) {
   return agent.managedCount + agent.unmanagedCount
 }
 
+function shouldLinkOnBatchAdopt(item: AgentSkillInventoryItem) {
+  return item.agentId === 'agents' || item.path.includes('/.agents/skills/')
+}
+
+function defaultBatchAdoptMode(item: AgentSkillInventoryItem): OneClickOrganizeMode {
+  return shouldLinkOnBatchAdopt(item) ? 'import_link' : 'import_keep'
+}
+
 export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const { t } = useTranslation()
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
@@ -1141,7 +1149,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       for (const [index, item] of selected.entries()) {
         setImportProgress({ current: index + 1, total: selected.length, currentName: item.name })
         try {
-          await skillApiV2.executeAdopt(item.agentId, item.id, 'import_keep')
+          await skillApiV2.executeAdopt(item.agentId, item.id, defaultBatchAdoptMode(item))
           ok += 1
         } catch (e) {
           failed.push(`${item.name}: ${String(e)}`)

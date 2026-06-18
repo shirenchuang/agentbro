@@ -12,7 +12,7 @@ export function AdoptDialog({
   onClose: () => void
   onDone: () => void | Promise<void>
 }) {
-  const [option, setOption] = useState(preview.options[0]?.value || 'import_keep')
+  const [option, setOption] = useState(() => preferredAdoptOption(preview.options))
   const [renamedId, setRenamedId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -126,7 +126,7 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         title: '导入中心库，保留 Agent 文件',
         shortLabel: '保留 Agent 文件',
         description: '把这个 Skill 纳入中心库记录，Agent 目录里的原文件保持不动。',
-        badge: '推荐',
+        badge: '保留',
         impact: '适合先接管已有文件，后续再决定是否改成链接或副本。',
       }
     case 'import_link':
@@ -134,7 +134,7 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         title: '导入中心库，并替换为链接',
         shortLabel: '替换为软连接',
         description: '中心库成为唯一来源，Agent 目录改为指向中心库的链接。',
-        badge: '链接',
+        badge: '推荐',
         impact: '会删除当前 Agent 目录中的 Skill 文件夹，再创建到中心库的链接。',
       }
     case 'import_copy':
@@ -178,4 +178,8 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         impact: option.destructive ? '执行前请确认该操作会修改现有文件。' : '该操作不会删除现有文件。',
       }
   }
+}
+
+function preferredAdoptOption(options: Array<{ value: string }>) {
+  return options.find((option) => option.value === 'import_link')?.value || options[0]?.value || 'import_keep'
 }

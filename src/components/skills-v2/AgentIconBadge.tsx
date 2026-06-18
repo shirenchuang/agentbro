@@ -32,6 +32,7 @@ const agentIcons: Record<string, string> = {
 }
 
 const agentColors: Record<string, string> = {
+  agents: '#0F766E',
   'claude-code': '#D97706',
   codex: '#10B981',
   gemini: '#6366F1',
@@ -51,6 +52,7 @@ const agentColors: Record<string, string> = {
 }
 
 const agentLabels: Record<string, string> = {
+  agents: 'Ag',
   'claude-code': 'C',
   codex: 'X',
   gemini: 'G',

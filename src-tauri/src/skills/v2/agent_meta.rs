@@ -31,6 +31,7 @@ pub fn icon_key(id: &str) -> String {
 /// Agents that can be managed targets, in canonical display order.
 pub fn managed_agent_ids() -> Vec<&'static str> {
     vec![
+        "agents",
         "claude-code",
         "codex",
         "gemini",
@@ -52,6 +53,11 @@ pub fn managed_agent_ids() -> Vec<&'static str> {
 
 fn table() -> &'static [AgentMeta] {
     &[
+        AgentMeta {
+            id: "agents",
+            display_name: ".agents",
+            icon_key: "agents",
+        },
         AgentMeta {
             id: "claude-code",
             display_name: "Claude Code",
@@ -154,6 +160,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
     // agent_paths uses dirs::home_dir(), so we pass-through; for tests we set
     // HOME env. To support a custom home we replicate the minimal mapping here.
     let rel = match agent {
+        "agents" => ".agents/skills",
         "claude-code" => ".claude/skills",
         "codex" => ".codex/skills",
         "gemini" => ".gemini/skills",

@@ -27,6 +27,7 @@ export function SkillLibraryPage() {
   const state = useSkillStoreV2()
   const skills = filteredSkills(state)
   const overview = state.overview
+  const startupScanInFlight = state.startupScanInFlight
   const [distributeFor, setDistributeFor] = useState<SkillSummary[] | null>(null)
   const [batchMode, setBatchMode] = useState(false)
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
@@ -142,8 +143,8 @@ export function SkillLibraryPage() {
           <button className={`sm2__btn${batchMode ? ' sm2__btn--active' : ''}`} onClick={toggleBatchMode}>
             {batchMode ? '完成选择' : '批量分发'}
           </button>
-          <button className="sm2__btn" onClick={refresh} disabled={state.loading}>
-            {state.loading ? '刷新中…' : '刷新'}
+          <button className="sm2__btn" onClick={refresh} disabled={state.loading || startupScanInFlight}>
+            {state.loading ? '刷新中…' : startupScanInFlight ? '后台同步中…' : '刷新'}
           </button>
         </div>
       </div>
@@ -211,7 +212,11 @@ export function SkillLibraryPage() {
       {state.error && <div className="sm2__error">{state.error}</div>}
 
       <div className="sm2__main sm2__main--full">
-        {skills.length === 0 ? (
+        {state.loading && !overview ? (
+          <div className="sm2__empty">加载 Skill 库…</div>
+        ) : startupScanInFlight && skills.length === 0 ? (
+          <div className="sm2__empty">正在后台同步 Skill 数据…</div>
+        ) : skills.length === 0 ? (
           <div className="sm2__empty">
             中心库为空。点击「添加到中心库」导入第一个 Skill，或把 Skill 文件夹放入
             <code style={{ margin: '0 4px' }}>{state.settings?.centerPath}</code> 后刷新。

@@ -45,11 +45,13 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: Some(h.join(".cursor").join("mcp.json")),
             settings_file: Some(h.join(".cursor").join("mcp.json")),
         },
-        "antigravity" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => SkillPaths {
-            skill_dirs: vec![h.join(".agents").join("skills")],
-            mcp_config: None,
-            settings_file: None,
-        },
+        "agents" | "antigravity" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => {
+            SkillPaths {
+                skill_dirs: vec![h.join(".agents").join("skills")],
+                mcp_config: None,
+                settings_file: None,
+            }
+        }
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
@@ -125,6 +127,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "qoder",
         "qoder-cli",
         "copilot",
+        "agents",
         "antigravity",
         "qwen",
         "kimi",

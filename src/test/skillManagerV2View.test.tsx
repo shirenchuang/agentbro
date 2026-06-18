@@ -482,6 +482,52 @@ describe('Agent sync local agent chips', () => {
     finishFirstAdopt()
   })
 
+  it('batch adopts shared .agents skills as center symlinks', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'agents',
+        displayName: '.agents',
+        iconKey: 'agents',
+        skillsDir: '/Users/me/.agents/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'shared-local-alpha',
+            agentId: 'agents',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.agents/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('alpha')
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByLabelText('选择 Agent')).toHaveTextContent('.agents · 1 可接管')
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByText('接管到中心库'))
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('agents', 'shared-local-alpha', 'import_link')
+    })
+  })
+
   it('previews one-click organize and defaults to center symlinks', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const inventory: AgentSkillInventoryAgent[] = [
@@ -659,8 +705,9 @@ describe('Agent sync local agent chips', () => {
     expect(await screen.findByText('接管 bird')).toBeInTheDocument()
     expect(screen.getAllByText('Claude Code').length).toBeGreaterThan(0)
     expect(screen.getAllByText('/Users/me/.claude/skills/bird').length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('替换为软连接')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('保留 Agent 文件')).toHaveAttribute('aria-checked', 'false')
 
-    fireEvent.click(screen.getByLabelText('替换为软连接'))
     fireEvent.click(screen.getByText('确认接管'))
 
     await waitFor(() => expect(execute).toHaveBeenCalledWith('claude-code', 'local-bird', 'import_link', null))
