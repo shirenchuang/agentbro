@@ -242,7 +242,7 @@ export function SkillLibraryPage() {
             {skills.map((s) => (
               <div
                 key={s.id}
-                className={`sm2__row${batchMode ? ' sm2__row--selectable' : ''}${selectedSkillIds.has(s.id) ? ' sm2__row--batch-selected' : ''}`}
+                className={`sm2__row${batchMode ? ' sm2__row--selectable' : ''}${selectedSkillIds.has(s.id) ? ' sm2__row--batch-selected' : ''}${copyDiffCount(s) > 0 ? ' sm2__row--copy-diff' : ''}`}
                 onClick={() => {
                   if (batchMode) toggleSkillSelection(s.id)
                   else setSliderSkillId(s.id)
@@ -265,6 +265,7 @@ export function SkillLibraryPage() {
                   <div className="sm2__row-title">{s.name}</div>
                   <div className="sm2__row-sub">{skillSourceTypeLabel(t, s.sourceType)} · {STATUS_LABEL[s.status] || s.status}</div>
                 </div>
+                <CopyDiffMarker count={copyDiffCount(s)} />
                 <AgentBadges skill={s} />
               </div>
             ))}
@@ -473,6 +474,25 @@ function AgentBadges({ skill }: { skill: SkillSummary }) {
   )
 }
 
+function copyDiffCount(skill: SkillSummary): number {
+  const changedAgents = skill.installedAgents.filter((agent) => agent.mode === 'copy' && isCopyDiffStatus(agent.status)).length
+  return changedAgents > 0 || !isCopyDiffStatus(skill.status) ? changedAgents : 1
+}
+
+function isCopyDiffStatus(status: string): boolean {
+  return status === 'copy_modified' || status === 'copy_diverged' || status === 'copy_outdated' || status === 'copyDiverged'
+}
+
+function CopyDiffMarker({ count }: { count: number }) {
+  if (count === 0) return null
+  return (
+    <span className="sm2__copy-diff-marker" title={`${count} 个复制安装与中心库不同`}>
+      <b>Diff</b>
+      <span>{count} 个副本有变更</span>
+    </span>
+  )
+}
+
 function SkillCard({
   skill,
   batchMode,
@@ -487,8 +507,9 @@ function SkillCard({
   onClick: () => void
 }) {
   const { t } = useTranslation()
+  const diffCount = copyDiffCount(skill)
   return (
-    <div className={`sm2__card${batchMode ? ' sm2__card--selectable' : ''}${selected ? ' sm2__card--batch-selected' : ''}`} onClick={onClick}>
+    <div className={`sm2__card${batchMode ? ' sm2__card--selectable' : ''}${selected ? ' sm2__card--batch-selected' : ''}${diffCount > 0 ? ' sm2__card--copy-diff' : ''}`} onClick={onClick}>
       <div className="sm2__card-head">
         <div className="sm2__skill-avatar">{(skill.name || 'SK').slice(0, 2).toUpperCase()}</div>
         <div className="sm2__card-titleblock">
@@ -508,7 +529,10 @@ function SkillCard({
             {selected ? '✓' : ''}
           </button>
         ) : (
-          <span className={`sm2__status-dot sm2__status-dot--${skill.status}`} />
+          <div className="sm2__card-signals">
+            <CopyDiffMarker count={diffCount} />
+            <span className={`sm2__status-dot sm2__status-dot--${skill.status}`} />
+          </div>
         )}
       </div>
       <p className="sm2__card-desc">{skill.description || '（无描述）'}</p>

@@ -763,6 +763,11 @@
       "not_in_center_library": "중앙 라이브러리에 없음",
       "center_library_conflict": "중앙 라이브러리 이름 충돌"
     },
+    "distributionReason": {
+      "convertManaged": "이미 {{from}}로 관리 중입니다. {{to}}로 변환합니다.",
+      "refreshManaged": "이미 관리 중입니다. 중앙 라이브러리에서 대상을 새로 고칩니다.",
+      "skippedByUser": "사용자 선택에 따라 건너뛰었습니다."
+    },
     "blocker": {
       "unmanagedExists": "대상 경로에 관리되지 않는 Skill '{{skillId}}'이(가) 이미 있습니다. 먼저 가져오기, 덮어쓰기 또는 이름 변경을 진행하세요."
     },

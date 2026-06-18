@@ -762,6 +762,11 @@
       "not_in_center_library": "Not in center library",
       "center_library_conflict": "Center library name conflict"
     },
+    "distributionReason": {
+      "convertManaged": "Already managed as {{from}}; will convert to {{to}}.",
+      "refreshManaged": "Already managed; will refresh the target from the center library.",
+      "skippedByUser": "Skipped by user decision."
+    },
     "blocker": {
       "unmanagedExists": "An unmanaged Skill '{{skillId}}' already exists at the target path. Adopt, overwrite, or rename it first."
     },

@@ -405,6 +405,22 @@ export interface CopySyncPreview {
   suggested: 'none' | 'center_over_agent' | 'agent_over_center' | 'manual' | string
 }
 
+export interface CopyTargetDiffFile {
+  path: string
+  changeType: 'modified' | 'copy_added' | 'copy_removed' | string
+  centerContent: string | null
+  copyContent: string | null
+}
+
+export interface CopyTargetDiffPreview {
+  targetId: string
+  skillId: string
+  targetPath: string
+  centerPath: string
+  state: 'ok' | 'copy_outdated' | 'copy_modified' | 'copy_diverged' | string
+  files: CopyTargetDiffFile[]
+}
+
 export interface RevokeResult {
   packId: string
   agentId: string
@@ -496,6 +512,10 @@ export const skillApiV2 = {
       ? invoke<SkillManagerOverview>('skill_manager_overview')
       : Promise.resolve(demoOverview()),
   refresh: () => (isTauri ? invoke<void>('skill_manager_refresh') : Promise.resolve()),
+  refreshOverview: () =>
+    isTauri
+      ? invoke<SkillManagerOverview>('skill_manager_refresh_overview')
+      : Promise.resolve(demoOverview()),
   getSettings: () =>
     isTauri
       ? invoke<SkillManagerSettings>('skill_manager_settings')
@@ -604,8 +624,12 @@ export const skillApiV2 = {
 
   previewSyncCopy: (targetId: string) =>
     isTauri ? invoke<CopySyncPreview>('preview_sync_copy_target', { targetId }) : Promise.resolve(null as unknown as CopySyncPreview),
+  previewCopyTargetDiff: (targetId: string) =>
+    isTauri ? invoke<CopyTargetDiffPreview>('preview_copy_target_diff', { targetId }) : Promise.resolve(null as unknown as CopyTargetDiffPreview),
   executeSyncCopy: (targetId: string, action: string) =>
     isTauri ? invoke<CopySyncPreview>('execute_sync_copy_target', { targetId, action }) : Promise.resolve(null as unknown as CopySyncPreview),
+  deleteSkillTargetDistribution: (targetId: string) =>
+    isTauri ? invoke<void>('delete_skill_target_distribution', { targetId }) : Promise.resolve(),
 
   listPacks: () => (isTauri ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
   getPackDetail: (packId: string) =>

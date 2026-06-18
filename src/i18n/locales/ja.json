@@ -763,6 +763,11 @@
       "not_in_center_library": "中央ライブラリにありません",
       "center_library_conflict": "中央ライブラリの同名競合"
     },
+    "distributionReason": {
+      "convertManaged": "すでに{{from}}で管理されています。{{to}}に変換します。",
+      "refreshManaged": "すでに管理されています。中央ライブラリからターゲットを更新します。",
+      "skippedByUser": "ユーザーの選択によりスキップされました。"
+    },
     "blocker": {
       "unmanagedExists": "ターゲットパスには未管理の Skill '{{skillId}}' がすでに存在します。先に取り込み、上書き、または名前変更してください。"
     },

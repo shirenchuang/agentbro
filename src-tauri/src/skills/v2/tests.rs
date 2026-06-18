@@ -324,6 +324,33 @@ fn distribute_link_and_copy_record_actual_mode() {
 }
 
 #[test]
+fn distribute_rejects_shared_agents_directory_as_target() {
+    let (_home, svc, _lock) = fresh_service("distribute-reject-agents-target");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let err = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["agents".to_string()],
+            "link".to_string(),
+        )
+        .unwrap_err();
+    assert!(err.contains("shared .agents skills directory"));
+}
+
+#[test]
 fn reuse_target_appends_claim_without_dup_files() {
     let (_home, svc, _lock) = fresh_service("reuse");
     let src = write_skill(
@@ -360,6 +387,58 @@ fn reuse_target_appends_claim_without_dup_files() {
     let claims = &detail.targets[0].claims;
     // direct claims are unique by (target, claim_type, pack_id) — one direct claim
     assert_eq!(claims.len(), 1);
+}
+
+#[test]
+fn redistributing_modified_copy_requires_source_decision() {
+    let (_home, svc, _lock) = fresh_service("redistribute-copy-decision");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "release-checklist",
+        "release-checklist",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let copy_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(copy_preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target_path = svc.get_skill_detail("release-checklist").unwrap().targets[0]
+        .target_path
+        .clone();
+    fs::write(
+        Path::new(&target_path).join("reference.md"),
+        "agent-version",
+    )
+    .unwrap();
+
+    let copy_preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    assert!(copy_preview.changes.is_empty());
+    assert_eq!(copy_preview.blockers.len(), 1);
+    assert!(copy_preview.blockers[0].reason.contains("Managed copy"));
 }
 
 #[test]
@@ -752,7 +831,10 @@ fn distribute_multiple_skills_to_multiple_agents_is_isolated_and_idempotent() {
         .unwrap();
     assert!(reuse.blockers.is_empty());
     assert_eq!(reuse.changes.len(), 4);
-    assert!(reuse.changes.iter().all(|change| change.action == "reuse"));
+    assert!(reuse
+        .changes
+        .iter()
+        .all(|change| change.action == "reinstall"));
     svc.execute_distribute_skill(reuse, ClaimOrigin::Direct)
         .unwrap();
 
@@ -958,6 +1040,136 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
+fn default_pack_is_virtual_and_always_contains_all_center_skills() {
+    let (_home, svc, _lock) = fresh_service("default-pack-virtual");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    let packs = svc.list_skill_packs().unwrap();
+    let default = packs.iter().find(|pack| pack.id == "default").unwrap();
+    assert_eq!(default.name, "全量技能包");
+    assert_eq!(default.member_count, 2);
+    assert!(default.healthy);
+
+    let detail = svc.get_skill_pack_detail("default").unwrap();
+    assert_eq!(detail.members.len(), 2);
+    assert!(detail.members.iter().any(|member| member.skill_id == "skill-one"));
+    assert!(detail.members.iter().any(|member| member.skill_id == "skill-two"));
+
+    let err = svc
+        .upsert_skill_pack(UpsertPackInput {
+            id: "default".to_string(),
+            name: "Changed".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string()],
+        })
+        .unwrap_err();
+    assert!(err.contains("cannot be edited"));
+}
+
+#[test]
+fn revoking_default_pack_preserves_direct_claims() {
+    let (_home, svc, _lock) = fresh_service("default-pack-revoke-direct");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    let direct_preview = svc
+        .preview_distribute_skill(
+            vec!["skill-one".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(direct_preview, ClaimOrigin::Direct)
+        .unwrap();
+    svc.apply_skill_pack("default", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let one = svc.get_skill_detail("skill-one").unwrap();
+    assert_eq!(one.targets[0].claims.len(), 2);
+    let two = svc.get_skill_detail("skill-two").unwrap();
+    assert_eq!(two.targets[0].claims.len(), 1);
+
+    let res = svc
+        .remove_skill_pack_from_agent("default", "codex")
+        .unwrap();
+    assert_eq!(res.removed_claims, 2);
+    assert_eq!(res.preserved_targets, 1);
+    assert_eq!(res.removed_targets, 1);
+
+    let one = svc.get_skill_detail("skill-one").unwrap();
+    assert_eq!(one.targets.len(), 1);
+    assert_eq!(one.targets[0].claims.len(), 1);
+    assert_eq!(one.targets[0].claims[0].claim_type, "direct");
+    assert!(svc.get_skill_detail("skill-two").unwrap().targets.is_empty());
+}
+
+#[test]
+fn revoking_default_pack_keeps_agent_detail_and_overview_readable() {
+    let (_home, svc, _lock) = fresh_service("default-pack-revoke-refresh");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    svc.apply_skill_pack("default", vec!["hermes".to_string()], "link".to_string())
+        .unwrap();
+    let detail = svc.get_agent_detail("hermes").unwrap();
+    assert_eq!(detail.applied_packs.len(), 1);
+    assert_eq!(detail.applied_packs[0].pack_name, "全量技能包");
+
+    svc.remove_skill_pack_from_agent("default", "hermes")
+        .unwrap();
+
+    let detail = svc.get_agent_detail("hermes").unwrap();
+    assert!(detail.applied_packs.is_empty());
+    let overview = svc.overview().unwrap();
+    let default_pack = overview.packs.iter().find(|pack| pack.id == "default").unwrap();
+    assert_eq!(default_pack.applied_agent_count, 0);
+}
+
+#[test]
 fn remove_skill_from_applied_pack_can_keep_standalone() {
     let (_home, svc, _lock) = fresh_service("pack-keep-standalone");
     let src = write_skill(&svc.home.join("s"), "lint", "lint-helper", Some("v1"));
@@ -1073,6 +1285,176 @@ fn copy_sync_detects_outdated_modified_diverged() {
     let prev = svc.preview_sync_copy_target(&target_id).unwrap();
     assert_eq!(prev.state, "copy_diverged");
     assert_eq!(prev.suggested, "manual");
+}
+
+#[test]
+fn copy_target_diff_lists_changed_files_against_center() {
+    let (_home, svc, _lock) = fresh_service("copy-diff");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    let target = detail.targets[0].clone();
+    let center = svc.center_path().unwrap().join("release-checklist");
+    let copy = Path::new(&target.target_path);
+
+    fs::write(center.join("center-only.md"), "only in center").unwrap();
+    fs::write(copy.join("reference.md"), "edited in agent").unwrap();
+    fs::write(copy.join("copy-only.md"), "only in copy").unwrap();
+
+    let diff = svc.preview_copy_target_diff(&target.id).unwrap();
+    let files: Vec<_> = diff
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.change_type.as_str()))
+        .collect();
+
+    assert_eq!(diff.state, "copy_diverged");
+    assert!(files.contains(&("center-only.md", "copy_removed")));
+    assert!(files.contains(&("reference.md", "modified")));
+    assert!(files.contains(&("copy-only.md", "copy_added")));
+    let modified = diff.files.iter().find(|file| file.path == "reference.md").unwrap();
+    assert_eq!(modified.center_content.as_deref(), Some("original"));
+    assert_eq!(modified.copy_content.as_deref(), Some("edited in agent"));
+}
+
+#[test]
+fn list_center_skills_refreshes_live_copy_status() {
+    let (_home, svc, _lock) = fresh_service("list-refresh-copy-status");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["hermes".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    let target_path = Path::new(&detail.targets[0].target_path);
+    fs::write(target_path.join("reference.md"), "edited in agent").unwrap();
+
+    let summary = svc
+        .list_center_skills()
+        .unwrap()
+        .into_iter()
+        .find(|skill| skill.id == "release-checklist")
+        .unwrap();
+
+    assert_eq!(summary.status, "copyDiverged");
+    assert_eq!(summary.installed_agents[0].status, "copy_modified");
+}
+
+#[test]
+fn refresh_overview_returns_fresh_copy_status_without_second_live_list_refresh() {
+    let (_home, svc, _lock) = fresh_service("refresh-overview-copy-status");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    fs::write(
+        Path::new(&detail.targets[0].target_path).join("reference.md"),
+        "edited in agent",
+    )
+    .unwrap();
+
+    let overview = svc.refresh_overview().unwrap();
+    let summary = overview
+        .skills
+        .into_iter()
+        .find(|skill| skill.id == "release-checklist")
+        .unwrap();
+
+    assert_eq!(summary.status, "copyDiverged");
+    assert_eq!(summary.installed_agents[0].status, "copy_modified");
+}
+
+#[test]
+fn delete_skill_target_distribution_removes_copy_and_db_target() {
+    let (_home, svc, _lock) = fresh_service("delete-target-distribution");
+    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target = svc.get_skill_detail("release-checklist").unwrap().targets[0].clone();
+    let target_path = Path::new(&target.target_path);
+    assert!(target_path.exists());
+
+    svc.delete_skill_target_distribution(&target.id).unwrap();
+
+    assert!(!target_path.exists());
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    assert!(detail.targets.is_empty());
+    assert!(detail.summary.installed_agents.is_empty());
 }
 
 // ── Delete center skill preview ──────────────────────────────────

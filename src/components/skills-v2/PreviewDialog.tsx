@@ -57,8 +57,11 @@ export function PreviewDialog({
                 className={`sm2__btn sm2__btn--primary${destructive ? ' sm2__btn--danger' : ''}`}
                 onClick={onConfirm}
                 disabled={busy || disabled}
+                aria-busy={busy || undefined}
+                data-busy={busy ? 'true' : undefined}
               >
-                {busy ? busyLabel : confirmLabel}
+                {busy && <span className="sm2__spinner" aria-hidden="true" />}
+                <span className="sm2__btn-label">{busy ? busyLabel : confirmLabel}</span>
               </button>
             </>
           )}

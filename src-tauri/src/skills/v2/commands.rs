@@ -36,6 +36,11 @@ pub fn skill_manager_refresh() -> Result<(), String> {
     svc()?.refresh()
 }
 
+#[tauri::command(async)]
+pub fn skill_manager_refresh_overview() -> Result<SkillManagerOverview, String> {
+    Ok(svc()?.refresh_overview()?)
+}
+
 #[tauri::command]
 pub fn skill_manager_settings() -> Result<SkillManagerSettings, String> {
     Ok(svc()?.settings()?)
@@ -139,11 +144,23 @@ pub fn preview_sync_copy_target(
 }
 
 #[tauri::command]
+pub fn preview_copy_target_diff(
+    target_id: String,
+) -> Result<crate::skills::v2::service::CopyTargetDiffPreview, String> {
+    Ok(svc()?.preview_copy_target_diff(&target_id)?)
+}
+
+#[tauri::command]
 pub fn execute_sync_copy_target(
     target_id: String,
     action: String,
 ) -> Result<crate::skills::v2::service::CopySyncPreview, String> {
     svc()?.execute_sync_copy_target(&target_id, &action)
+}
+
+#[tauri::command]
+pub fn delete_skill_target_distribution(target_id: String) -> Result<(), String> {
+    svc()?.delete_skill_target_distribution(&target_id)
 }
 
 #[tauri::command]

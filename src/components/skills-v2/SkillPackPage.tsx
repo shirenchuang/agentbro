@@ -17,6 +17,9 @@ import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
 
+const SHARED_SKILLS_AGENT_ID = 'agents'
+const DEFAULT_SKILL_PACK_ID = 'default'
+
 export function SkillPackPage() {
   const state = useSkillStoreV2()
   const [packQuery, setPackQuery] = useState('')
@@ -318,15 +321,16 @@ function PackListItem({
   active: boolean
   onClick: () => void
 }) {
+  const isDefault = pack.id === DEFAULT_SKILL_PACK_ID
   return (
-    <button className={`sm2__pack-list-item${active ? ' sm2__pack-list-item--active' : ''}`} onClick={onClick}>
+    <button className={`sm2__pack-list-item${active ? ' sm2__pack-list-item--active' : ''}${isDefault ? ' sm2__pack-list-item--default' : ''}`} onClick={onClick}>
       <span className="sm2__pack-list-top">
         <strong>{pack.name}</strong>
         <span className={`sm2__pack-health ${pack.healthy ? 'sm2__pack-health--ok' : 'sm2__pack-health--warn'}`}>
-          {pack.healthy ? 'OK' : '缺失'}
+          {isDefault ? '系统' : pack.healthy ? 'OK' : '缺失'}
         </span>
       </span>
-      <span className="sm2__pack-list-desc">{pack.description || '无描述'}</span>
+      <span className="sm2__pack-list-desc">{pack.description || '自定义 Skill 组合'}</span>
       <span className="sm2__pack-list-meta">
         <span>{pack.memberCount} Skills</span>
         <span>{pack.appliedAgentCount} Agents</span>
@@ -366,26 +370,40 @@ function PackDetail({
   onRevoke: (agentId: string) => void
 }) {
   const missing = detail.members.filter((member) => member.missing)
+  const isDefault = detail.id === DEFAULT_SKILL_PACK_ID
   return (
     <div className="sm2__pack-workbench">
       <header className="sm2__pack-detail-hero">
         <div className="sm2__pack-detail-main">
-          <div className="sm2__pack-kicker">Skill Pack</div>
+          <div className="sm2__pack-kicker">{isDefault ? 'Built-in Pack' : 'Skill Pack'}</div>
           <h3>{detail.name}</h3>
-          <p>{detail.description || '这个技能包还没有描述。'}</p>
-          <div className="sm2__pack-tagline">
-            {detail.tags.length > 0 ? detail.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>未设置标签</span>}
-          </div>
+          <p>{detail.description || '保存一组中心库 Skill ID，方便应用到 Agent。'}</p>
+          {isDefault ? (
+            <div className="sm2__pack-tagline">
+              <span>自动包含中心库全部 Skills</span>
+              <span>不可编辑</span>
+            </div>
+          ) : detail.tags.length > 0 ? (
+            <div className="sm2__pack-tagline">
+              {detail.tags.map((tag) => <span key={tag}>{tag}</span>)}
+            </div>
+          ) : null}
         </div>
         <div className="sm2__pack-actions">
           <button className="sm2__btn sm2__btn--primary" onClick={onApply} disabled={busy || detail.members.length === 0 || missing.length > 0}>
             应用
           </button>
-          <button className="sm2__btn" onClick={onEdit} disabled={busy}>编辑</button>
-          <button className="sm2__btn" onClick={onDuplicate} disabled={busy}>复制</button>
-          <button className="sm2__btn sm2__btn--danger" onClick={onDelete} disabled={busy}>删除</button>
+          {!isDefault && <button className="sm2__btn" onClick={onEdit} disabled={busy}>编辑</button>}
+          {!isDefault && <button className="sm2__btn" onClick={onDuplicate} disabled={busy}>复制</button>}
+          {!isDefault && <button className="sm2__btn sm2__btn--danger" onClick={onDelete} disabled={busy}>删除</button>}
         </div>
       </header>
+
+      {isDefault && (
+        <div className="sm2__notice sm2__notice--ok">
+          全量技能包是系统内置入口，成员始终等于当前中心库全量；这里只能应用或从 Agent 撤销应用。
+        </div>
+      )}
 
       {missing.length > 0 && (
         <div className="sm2__notice sm2__notice--warn">
@@ -423,9 +441,11 @@ function PackDetail({
                     <span className={`sm2__tag sm2__tag--${member.missing ? 'conflict' : 'ok'}`}>
                       {member.missing ? '缺失' : '就绪'}
                     </span>
-                    <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => onRemoveSkill(member.skillId)}>
-                      移除
-                    </button>
+                    {!isDefault && (
+                      <button className="sm2__btn sm2__btn--ghost" disabled={busy} onClick={() => onRemoveSkill(member.skillId)}>
+                        移除
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -481,8 +501,6 @@ function PackBuilderPanel({
   const skills = useSkillStoreV2((s) => s.skills)
   const { t } = useTranslation()
   const [name, setName] = useState(mode === 'duplicate' && existing ? `${existing.name} Copy` : existing?.name || '')
-  const [description, setDescription] = useState(existing?.description || '')
-  const [tagsText, setTagsText] = useState(existing?.tags.join(', ') || '')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set(existing?.members.map((member) => member.skillId) || []))
   const [busy, setBusy] = useState(false)
@@ -501,6 +519,7 @@ function PackBuilderPanel({
     )
   }, [query, skills, t])
   const selectedSkills = skills.filter((skill) => selected.has(skill.id))
+  const selectedVisibleCount = filtered.filter((skill) => selected.has(skill.id)).length
 
   const toggle = (id: string) => {
     if (existingApplied && existingMemberIds.has(id) && selected.has(id)) {
@@ -516,6 +535,20 @@ function PackBuilderPanel({
     })
   }
 
+  const selectVisible = () => {
+    setError(null)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      filtered.forEach((skill) => next.add(skill.id))
+      return next
+    })
+  }
+
+  const clearSelected = () => {
+    setError(null)
+    setSelected(existingApplied ? new Set(existingMemberIds) : new Set())
+  }
+
   const save = async () => {
     if (!name.trim()) {
       setError('技能包名称必填。')
@@ -529,18 +562,14 @@ function PackBuilderPanel({
       }
     }
     const skillIds = Array.from(selected)
-    const tags = tagsText
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter(Boolean)
     setBusy(true)
     setError(null)
     try {
       const saved = await skillApiV2.upsertPack({
         id: mode === 'edit' ? existing?.id || '' : '',
         name: name.trim(),
-        description: description.trim(),
-        tags,
+        description: '',
+        tags: [],
         skillIds,
       })
       onSaved(saved.id)
@@ -567,46 +596,59 @@ function PackBuilderPanel({
         </div>
       </header>
 
+      <div className="sm2__pack-builder-rail" aria-hidden="true">
+        <span className="sm2__pack-builder-rail-item sm2__pack-builder-rail-item--active">命名</span>
+        <span className={`sm2__pack-builder-rail-item${selected.size > 0 ? ' sm2__pack-builder-rail-item--active' : ''}`}>
+          {selected.size > 0 ? `${selected.size} Skills` : '选择 Skills'}
+        </span>
+        <span className={`sm2__pack-builder-rail-item${name.trim() && selected.size > 0 ? ' sm2__pack-builder-rail-item--ready' : ''}`}>
+          保存组合
+        </span>
+      </div>
+
       <div className="sm2__pack-builder2-grid">
-        <section className="sm2__pack-section sm2__pack-section--selected">
+        <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-builder-card--identity">
           <div className="sm2__pack-section-head">
             <div>
               <h3>基本信息</h3>
-              <span>名称、用途和标签。</span>
+              <span>只需要一个名称。</span>
             </div>
           </div>
           <div className="sm2__builder-form2">
             <label className="sm2__field">
-              <span>名称 *</span>
+              <span>技能包名称</span>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Code Review 工具集" />
-            </label>
-            <label className="sm2__field">
-              <span>描述</span>
-              <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="这个技能包适合什么场景" />
-            </label>
-            <label className="sm2__field">
-              <span>标签</span>
-              <input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="review, frontend, release" />
             </label>
           </div>
         </section>
 
-        <section className="sm2__pack-section sm2__pack-section--picker">
+        <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-section--picker">
           <div className="sm2__pack-section-head">
             <div>
               <h3>中心库 Skills</h3>
               <span>{filtered.length} 个可选。</span>
             </div>
-            <span>{selected.size} 已选</span>
+            <span>{selectedVisibleCount}/{filtered.length}</span>
           </div>
-          <input className="sm2__search sm2__search--full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill" />
+          <div className="sm2__pack-picker-tools">
+            <input className="sm2__search sm2__search--full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill" />
+            <button className="sm2__btn sm2__btn--ghost" onClick={selectVisible} disabled={filtered.length === 0 || selectedVisibleCount === filtered.length}>
+              全选当前
+            </button>
+          </div>
           <div className="sm2__skill-picker2">
             {filtered.length === 0 ? (
               <div className="sm2__empty sm2__empty--compact">没有匹配的 Skill</div>
             ) : (
               filtered.map((skill) => (
-                <button key={skill.id} className={`sm2__skill-pick${selected.has(skill.id) ? ' sm2__skill-pick--selected' : ''}`} onClick={() => toggle(skill.id)}>
-                  <span className="sm2__skill-pick-check">{selected.has(skill.id) ? '✓' : ''}</span>
+                <button
+                  key={skill.id}
+                  className={`sm2__skill-pick${selected.has(skill.id) ? ' sm2__skill-pick--selected' : ''}`}
+                  aria-label={`选择 ${skill.name}`}
+                  aria-pressed={selected.has(skill.id)}
+                  onClick={() => toggle(skill.id)}
+                >
+                  <span className="sm2__skill-pick-check" aria-hidden="true">{selected.has(skill.id) ? '✓' : ''}</span>
                   <span className="sm2__skill-pick-body">
                     <strong>{skill.name}</strong>
                     <span>{skill.description || skill.id}</span>
@@ -618,16 +660,25 @@ function PackBuilderPanel({
           </div>
         </section>
 
-        <section className="sm2__pack-section">
+        <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-builder-card--selected">
           <div className="sm2__pack-section-head">
             <div>
               <h3>已选择</h3>
               <span>保存后的成员顺序。</span>
             </div>
-            <span>{selectedSkills.length}</span>
+            <span role="status" aria-label="已选择 Skill 数量">{selectedSkills.length}</span>
+          </div>
+          <div className="sm2__pack-selected-tools">
+            <span>{selectedSkills.length === 0 ? '从右侧选择 Skill' : `将保存 ${selectedSkills.length} 个 Skill ID`}</span>
+            <button className="sm2__btn sm2__btn--ghost" onClick={clearSelected} disabled={selectedSkills.length === 0 || (existingApplied && selectedSkills.length === existingMemberIds.size)}>
+              清空
+            </button>
           </div>
           {selectedSkills.length === 0 ? (
-            <div className="sm2__empty sm2__empty--compact">还没有选择 Skill</div>
+            <div className="sm2__pack-selected-empty">
+              <strong>还没有成员</strong>
+              <span>点击右侧 Skill，它会立即加入这个包。</span>
+            </div>
           ) : (
             <div className="sm2__pack-member-list">
               {selectedSkills.map((skill, index) => (
@@ -637,7 +688,7 @@ function PackBuilderPanel({
                     <strong>{skill.name}</strong>
                     <span>{skill.id}</span>
                   </div>
-                  <button className="sm2__btn sm2__btn--ghost" onClick={() => toggle(skill.id)}>移除</button>
+                  <button className="sm2__btn sm2__btn--ghost" aria-label={`移除 ${skill.name}`} onClick={() => toggle(skill.id)}>移除</button>
                 </div>
               ))}
             </div>
@@ -788,7 +839,7 @@ function ApplyPackDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const installedAgents = agents.filter((agent) => agent.installed)
+  const installedAgents = agents.filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
   const changesByAction = useMemo(() => {
     const grouped = { create: 0, reuse: 0, other: 0 }
     if (!preview) return grouped

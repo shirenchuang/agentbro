@@ -137,8 +137,16 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   refresh: async () => {
     set({ loading: true, error: null })
     try {
-      await skillApiV2.refresh()
-      await get().loadOverview(true)
+      const overview = await skillApiV2.refreshOverview()
+      set({
+        overview,
+        skills: overview.skills,
+        agents: overview.agents,
+        packs: overview.packs,
+        issues: overview.issues,
+        settings: overview.settings,
+        lastOverviewLoadedAt: Date.now(),
+      })
       set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
@@ -255,7 +263,12 @@ export function filteredSkills(state: SkillV2State): SkillSummary[] {
         s.name,
         s.description,
         s.sourceType,
+        s.status,
+        skillStatusSearchLabel(s.status),
         s.installedAgents.map((a) => a.displayName).join(' '),
+        s.installedAgents.map((a) => a.status).join(' '),
+        s.installedAgents.map((a) => targetStatusSearchLabel(a.status)).join(' '),
+        hasChangedCopyInstall(s) ? 'diff 副本分叉 副本变更 副本已修改 已修改' : '',
       ]
         .join(' ')
         .toLowerCase()
@@ -266,4 +279,36 @@ export function filteredSkills(state: SkillV2State): SkillSummary[] {
     if (filters.type && s.skillType !== filters.type) return false
     return true
   })
+}
+
+function hasChangedCopyInstall(skill: SkillSummary): boolean {
+  return skill.installedAgents.some((agent) => (
+    agent.mode === 'copy'
+    && ['copy_modified', 'copy_diverged', 'copy_outdated', 'copyDiverged'].includes(agent.status)
+  ))
+}
+
+function skillStatusSearchLabel(status: string): string {
+  const labels: Record<string, string> = {
+    ok: '正常',
+    conflict: '冲突',
+    copyDiverged: '副本分叉',
+    updateAvailable: '可更新',
+    unmanaged: '未管理',
+  }
+  return labels[status] || status
+}
+
+function targetStatusSearchLabel(status: string): string {
+  const labels: Record<string, string> = {
+    ok: '正常',
+    conflict: '冲突',
+    copy_outdated: '可更新 副本可更新',
+    copy_modified: '已修改 副本已修改 副本分叉',
+    copy_diverged: '已分叉 副本分叉',
+    copyDiverged: '副本分叉',
+    broken_link: '坏链接',
+    missing: '失效',
+  }
+  return labels[status] || status
 }

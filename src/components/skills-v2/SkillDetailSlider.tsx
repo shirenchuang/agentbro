@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
-import type { AnchorHTMLAttributes, MouseEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { AnchorHTMLAttributes, MouseEvent, RefObject, UIEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { isTauri } from '../../services/tauriApi'
-import type { SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
+import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
+import { PreviewDialog } from './PreviewDialog'
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
@@ -60,6 +62,11 @@ export function SkillDetailSlider({
   const [fileContent, setFileContent] = useState('')
   const [fileLoading, setFileLoading] = useState(false)
   const [syncing, setSyncing] = useState<string | null>(null)
+  const [diffPreview, setDiffPreview] = useState<CopyTargetDiffPreview | null>(null)
+  const [diffLoadingTarget, setDiffLoadingTarget] = useState<string | null>(null)
+  const [diffError, setDiffError] = useState<string | null>(null)
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
+  const [deletingTarget, setDeletingTarget] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('overview')
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
@@ -74,6 +81,9 @@ export function SkillDetailSlider({
     setDetail(null)
     setSkillDocContent('')
     setFileContent('')
+    setDiffPreview(null)
+    setDiffError(null)
+    setDeleteTargetId(null)
     skillApiV2
       .getSkillDetail(skillId)
       .then((d) => {
@@ -132,10 +142,44 @@ export function SkillDetailSlider({
         const d = await skillApiV2.getSkillDetail(skillId)
         setDetail(d)
       }
+      setDiffPreview(null)
     } catch (e) {
       setError(String(e))
     } finally {
       setSyncing(null)
+    }
+  }
+
+  const openDiff = async (targetId: string) => {
+    setDiffLoadingTarget(targetId)
+    setDiffError(null)
+    try {
+      const preview = await skillApiV2.previewCopyTargetDiff(targetId)
+      setDiffPreview(preview)
+    } catch (e) {
+      setDiffError(String(e))
+    } finally {
+      setDiffLoadingTarget(null)
+    }
+  }
+
+  const confirmDeleteTarget = async () => {
+    if (!deleteTargetId) return
+    setDeletingTarget(true)
+    try {
+      await skillApiV2.deleteSkillTargetDistribution(deleteTargetId)
+      if (skillId) {
+        const d = await skillApiV2.getSkillDetail(skillId)
+        setDetail(d)
+      }
+      if (diffPreview?.targetId === deleteTargetId) {
+        setDiffPreview(null)
+      }
+      setDeleteTargetId(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setDeletingTarget(false)
     }
   }
 
@@ -147,7 +191,11 @@ export function SkillDetailSlider({
     { id: 'source', label: '来源' },
   ]
 
+  const deleteTarget = detail?.targets.find((target) => target.id === deleteTargetId) ?? null
+  const deleteAgent = deleteTarget ? detail?.installedAgents.find((agent) => agent.agentId === deleteTarget.agentId) : null
+
   return (
+    <>
     <SlideOver
       open={open}
       onClose={onClose}
@@ -179,7 +227,9 @@ export function SkillDetailSlider({
       {detail && (
         <div className="sm2__skill-detail">
           <div className="sm2__detail-pills">
-            <span className={`sm2__tag sm2__tag--${detail.status}`}>{STATUS_LABEL[detail.status] || detail.status}</span>
+            <span className={`sm2__tag sm2__tag--${detail.status}${isCopyDiffStatus(detail.status) ? ' sm2__detail-status--copy-diff' : ''}`}>
+              {STATUS_LABEL[detail.status] || detail.status}
+            </span>
             <span className="sm2__tag">{skillSourceTypeLabel(t, detail.sourceType)}</span>
             <span className="sm2__tag">{detail.skillType}</span>
             {detail.installedAgents.length > 0 && (
@@ -218,11 +268,43 @@ export function SkillDetailSlider({
               onSelect={loadFile}
             />
           )}
-          {tab === 'agents' && <AgentsTab detail={detail} syncing={syncing} onSync={doSync} />}
+          {tab === 'agents' && (
+            <AgentsTab
+              detail={detail}
+              syncing={syncing}
+              diffLoadingTarget={diffLoadingTarget}
+              diffError={diffError}
+              onSync={doSync}
+              onOpenDiff={openDiff}
+              onDeleteTarget={setDeleteTargetId}
+            />
+          )}
           {tab === 'source' && <SourceTab detail={detail} />}
         </div>
       )}
     </SlideOver>
+    {diffPreview && (
+      <CopyDiffDialog key={diffPreview.targetId} preview={diffPreview} onClose={() => setDiffPreview(null)} />
+    )}
+    {deleteTarget && (
+      <PreviewDialog
+        title="删除 Agent 分发"
+        confirmLabel="确认删除"
+        busyLabel="删除中…"
+        destructive
+        busy={deletingTarget}
+        onCancel={() => setDeleteTargetId(null)}
+        onConfirm={confirmDeleteTarget}
+      >
+        <div className="sm2__delete-target-preview">
+          <p>
+            将从 <strong>{deleteAgent?.displayName || deleteTarget.agentId}</strong> 移除这个 Skill 分发，并删除对应的本地目标。
+          </p>
+          <code>{deleteTarget.targetPath}</code>
+        </div>
+      </PreviewDialog>
+    )}
+    </>
   )
 }
 
@@ -277,12 +359,15 @@ function OverviewTab({
             <div className="sm2__install-mini-list">
               {detail.targets.map((target) => {
                 const agent = detail.installedAgents.find((item) => item.agentId === target.agentId)
+                const changedCopy = target.actualMode === 'copy' && isCopyDiffStatus(target.status)
                 return (
-                  <div key={target.id} className="sm2__install-mini">
+                  <div key={target.id} className={`sm2__install-mini${changedCopy ? ' sm2__install-mini--copy-diff' : ''}`}>
                     <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={26} />
                     <div>
                       <strong>{agent?.displayName || target.agentId}</strong>
-                      <span>{skillModeLabel(t, target.actualMode)} · {STATUS_LABEL[target.status] || target.status}</span>
+                      <span className={changedCopy ? 'sm2__install-mini-status--copy-diff' : undefined}>
+                        {skillModeLabel(t, target.actualMode)} · {STATUS_LABEL[target.status] || target.status}
+                      </span>
                     </div>
                   </div>
                 )
@@ -410,11 +495,19 @@ function FilesTab({
 function AgentsTab({
   detail,
   syncing,
+  diffLoadingTarget,
+  diffError,
   onSync,
+  onOpenDiff,
+  onDeleteTarget,
 }: {
   detail: SkillDetail
   syncing: string | null
+  diffLoadingTarget: string | null
+  diffError: string | null
   onSync: (targetId: string, action: string) => void
+  onOpenDiff: (targetId: string) => void
+  onDeleteTarget: (targetId: string) => void
 }) {
   const { t } = useTranslation()
   if (detail.targets.length === 0) {
@@ -428,14 +521,14 @@ function AgentsTab({
           const agentName = agent?.displayName || target.agentId
           const statusLabel = STATUS_LABEL[target.status] || target.status
           const modeLabel = skillModeLabel(t, target.actualMode)
+          const hasCopyDiff = target.actualMode === 'copy' && isCopyDiffStatus(target.status)
           return (
-            <article key={target.id} className={`sm2__agent-target-card sm2__agent-target-card--${target.actualMode}`}>
+            <article key={target.id} className={`sm2__agent-target-card sm2__agent-target-card--${target.actualMode}${hasCopyDiff ? ' sm2__agent-target-card--copy-diff' : ''}`}>
               <div className="sm2__agent-target-head">
                 <div className="sm2__agent-target-title">
-                  <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={34} />
+                  <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={38} />
                   <div>
                     <strong>{agentName}</strong>
-                    <span>{target.agentId}</span>
                     <span>{modeLabel} · {statusLabel}</span>
                   </div>
                 </div>
@@ -444,41 +537,53 @@ function AgentsTab({
                 </span>
               </div>
 
-              <div className="sm2__agent-target-tags" aria-label={`${agentName} 安装标记`}>
-                <span className={`sm2__target-chip sm2__target-chip--${target.actualMode}`}>
-                  {modeLabel}
-                </span>
-                {target.claims.length === 0 && (
-                  <span className="sm2__target-chip sm2__target-chip--claim-direct">
-                    {targetClaimLabel(t, null)}
+              <div className="sm2__agent-target-body">
+                <div className="sm2__agent-target-tags" aria-label={`${agentName} 安装标记`}>
+                  <span className={`sm2__target-chip sm2__target-chip--${target.actualMode}`}>
+                    {modeLabel}
                   </span>
-                )}
-                {target.claims.map((c) => (
-                  <span key={c.id} className={`sm2__target-chip sm2__target-chip--claim-${c.claimType}`}>
-                    {targetClaimLabel(t, c)}
-                  </span>
-                ))}
-              </div>
+                  {target.claims.length === 0 && (
+                    <span className="sm2__target-chip sm2__target-chip--claim-direct">
+                      {targetClaimLabel(t, null)}
+                    </span>
+                  )}
+                  {target.claims.map((c) => (
+                    <span key={c.id} className={`sm2__target-chip sm2__target-chip--claim-${c.claimType}`}>
+                      {targetClaimLabel(t, c)}
+                    </span>
+                  ))}
+                </div>
 
-              <div className="sm2__agent-target-paths">
-                <code>{target.targetPath}</code>
-                {target.resolvedTargetPath && target.resolvedTargetPath !== target.targetPath && (
-                  <div className="sm2__agent-target-resolved">
-                    <span>真实路径</span>
-                    <small>打开将跳转到真实路径</small>
-                    <code>{target.resolvedTargetPath}</code>
-                  </div>
-                )}
+                <div className="sm2__agent-target-paths">
+                  <span>目标目录</span>
+                  <code>{target.targetPath}</code>
+                  {target.resolvedTargetPath && target.resolvedTargetPath !== target.targetPath && (
+                    <div className="sm2__agent-target-resolved">
+                      <span>真实路径</span>
+                      <small>打开将跳转到真实路径</small>
+                      <code>{target.resolvedTargetPath}</code>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="sm2__agent-target-actions">
-                {target.actualMode === 'copy' && target.status !== 'ok' && (
-                  <div className="sm2__btn-row">
+                <div className="sm2__agent-target-actions-main">
+                  {target.actualMode === 'copy' && target.status !== 'ok' && (
+                    <>
+                    {hasCopyDiff && (
+                      <button className="sm2__btn sm2__btn--copy-diff" disabled={diffLoadingTarget === target.id} onClick={() => onOpenDiff(target.id)}>
+                        {diffLoadingTarget === target.id ? '读取 diff…' : '查看 diff'}
+                      </button>
+                    )}
                     {target.status === 'copy_outdated' && (
-                      <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'center_over_agent')}>用中心库更新</button>
+                      <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'center_over_agent')}>同步中心库</button>
                     )}
                     {target.status === 'copy_modified' && (
-                      <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'agent_over_center')}>推回中心库</button>
+                      <>
+                        <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'center_over_agent')}>同步中心库</button>
+                        <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'agent_over_center')}>推回中心库</button>
+                      </>
                     )}
                     {target.status === 'copy_diverged' && (
                       <>
@@ -487,18 +592,377 @@ function AgentsTab({
                         <button className="sm2__btn" disabled={syncing === target.id} onClick={() => onSync(target.id, 'keep_diverged')}>保留分叉</button>
                       </>
                     )}
-                  </div>
-                )}
-                <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(target.targetPath)}>
-                  {t('skills.actions.open', { defaultValue: 'Open' })}
-                </button>
+                    </>
+                  )}
+                </div>
+                <div className="sm2__agent-target-actions-tail">
+                  <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(target.targetPath)}>
+                    {t('skills.actions.open', { defaultValue: 'Open' })}
+                  </button>
+                  <button className="sm2__btn sm2__btn--danger-ghost" onClick={() => onDeleteTarget(target.id)}>
+                    删除分发
+                  </button>
+                </div>
               </div>
             </article>
           )
         })}
       </div>
+      {diffError && <div className="sm2__error sm2__copy-diff-error">{diffError}</div>}
     </section>
   )
+}
+
+function CopyDiffDialog({ preview, onClose }: { preview: CopyTargetDiffPreview; onClose: () => void }) {
+  const [activePath, setActivePath] = useState(preview.files[0]?.path ?? null)
+  const oldScrollRef = useRef<HTMLDivElement | null>(null)
+  const newScrollRef = useRef<HTMLDivElement | null>(null)
+  const syncingScrollRef = useRef(false)
+  const activeFile = preview.files.find((file) => file.path === activePath) ?? preview.files[0] ?? null
+  const tree = buildDiffTree(preview.files)
+  const rows = activeFile ? buildSplitDiff(activeFile) : []
+
+  const syncVerticalScroll = (side: 'old' | 'new', event: UIEvent<HTMLDivElement>) => {
+    if (syncingScrollRef.current) return
+    const next = side === 'old' ? newScrollRef.current : oldScrollRef.current
+    if (!next) return
+    syncingScrollRef.current = true
+    next.scrollTop = event.currentTarget.scrollTop
+    requestAnimationFrame(() => {
+      syncingScrollRef.current = false
+    })
+  }
+
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
+    <div className="sm2__copy-diff-overlay" onClick={onClose}>
+      <section className="sm2__copy-diff-dialog" role="dialog" aria-modal="true" aria-label="Agent 副本 diff" onClick={(e) => e.stopPropagation()}>
+        <header className="sm2__copy-diff-dialog-head">
+          <div>
+            <span>Agent 副本 diff</span>
+            <h3>中心库对比 Agent 副本</h3>
+          </div>
+          <div className="sm2__copy-diff-dialog-meta">
+            <strong>{preview.files.length} 个文件有差异</strong>
+            <button className="sm2__slideover-close" aria-label="关闭 diff" onClick={onClose}>✕</button>
+          </div>
+        </header>
+
+        <div className="sm2__copy-diff-pathbar">
+          <code>{preview.centerPath}</code>
+          <span>→</span>
+          <code>{preview.targetPath}</code>
+        </div>
+
+        {preview.files.length === 0 ? (
+          <div className="sm2__empty sm2__empty--compact">这个副本当前与中心库一致</div>
+        ) : (
+          <div className="sm2__copy-diff-workspace">
+            <aside className="sm2__copy-diff-tree-pane">
+              <div className="sm2__copy-diff-tree-head">
+                <span>目录树</span>
+                <strong>{preview.files.length}</strong>
+              </div>
+              <div className="sm2__copy-diff-tree settings-scroll">
+                {tree.children.map((node) => (
+                  <DiffTreeNodeView key={node.path} node={node} activePath={activeFile?.path ?? null} onSelect={setActivePath} />
+                ))}
+              </div>
+            </aside>
+
+            <main className="sm2__copy-diff-code-pane">
+              {activeFile && (
+                <>
+                  <div className="sm2__copy-diff-code-head">
+                    <div>
+                      <strong>{activeFile.path}</strong>
+                      <span>{copyDiffChangeLabel(activeFile.changeType)}</span>
+                    </div>
+                  </div>
+                  <div className="sm2__copy-diff-code settings-scroll selectable">
+                    <div className="sm2__copy-diff-split">
+                      <DiffSide title="中心库" side="old" rows={rows} scrollRef={oldScrollRef} onScroll={syncVerticalScroll} />
+                      <DiffSide title="Agent 副本" side="new" rows={rows} scrollRef={newScrollRef} onScroll={syncVerticalScroll} />
+                    </div>
+                  </div>
+                </>
+              )}
+            </main>
+          </div>
+        )}
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+function DiffSide({
+  title,
+  side,
+  rows,
+  scrollRef,
+  onScroll,
+}: {
+  title: string
+  side: 'old' | 'new'
+  rows: SplitDiffRow[]
+  scrollRef: RefObject<HTMLDivElement | null>
+  onScroll: (side: 'old' | 'new', event: UIEvent<HTMLDivElement>) => void
+}) {
+  return (
+    <section className={`sm2__copy-diff-side sm2__copy-diff-side--${side}`} aria-label={`${title}文件`}>
+      <div className="sm2__copy-diff-side-title">{title}</div>
+      <div
+        ref={scrollRef}
+        className="sm2__copy-diff-side-scroll"
+        data-scroll-mode="independent-x-fixed-y-sync"
+        onScroll={(event) => onScroll(side, event)}
+      >
+        {rows.map((row, index) => (
+          row.type === 'hunk' ? (
+            <div key={`hunk-${side}-${index}`} className="sm2__copy-diff-side-hunk">
+              {row.hunk}
+            </div>
+          ) : (
+            <div key={`${side}-${index}-${row.oldLine ?? ''}-${row.newLine ?? ''}`} className="sm2__copy-diff-side-row">
+              <span className="sm2__copy-diff-ln">{side === 'old' ? row.oldLine ?? '' : row.newLine ?? ''}</span>
+              <code className={`sm2__copy-diff-cell sm2__copy-diff-cell--${side === 'old' ? row.oldKind : row.newKind}`}>
+                {side === 'old' ? row.oldText ?? '' : row.newText ?? ''}
+              </code>
+            </div>
+          )
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function isCopyDiffStatus(status: string): boolean {
+  return status === 'copy_modified' || status === 'copy_diverged' || status === 'copy_outdated' || status === 'copyDiverged'
+}
+
+function copyDiffChangeLabel(changeType: string): string {
+  if (changeType === 'copy_added') return '副本新增'
+  if (changeType === 'copy_removed') return '副本缺失'
+  if (changeType === 'modified') return '内容不同'
+  return changeType
+}
+
+type CopyDiffFile = CopyTargetDiffPreview['files'][number]
+
+interface DiffTreeNode {
+  name: string
+  path: string
+  children: DiffTreeNode[]
+  file?: CopyDiffFile
+}
+
+type DiffCellKind = 'context' | 'add' | 'remove' | 'empty'
+
+interface DiffOp {
+  type: 'context' | 'add' | 'remove'
+  text: string
+  oldLine?: number
+  newLine?: number
+}
+
+type SplitDiffRow = {
+  type: 'hunk'
+  hunk: string
+} | {
+  type: 'line'
+  oldLine?: number
+  oldText?: string
+  oldKind: DiffCellKind
+  newLine?: number
+  newText?: string
+  newKind: DiffCellKind
+}
+
+function buildDiffTree(files: CopyDiffFile[]): DiffTreeNode {
+  const root: DiffTreeNode = { name: '', path: '', children: [] }
+  for (const file of files) {
+    const parts = file.path.split('/').filter(Boolean)
+    let node = root
+    parts.forEach((part, index) => {
+      const path = parts.slice(0, index + 1).join('/')
+      let child = node.children.find((item) => item.name === part)
+      if (!child) {
+        child = { name: part, path, children: [] }
+        node.children.push(child)
+        node.children.sort((a, b) => {
+          if (Boolean(a.file) !== Boolean(b.file)) return a.file ? 1 : -1
+          return a.name.localeCompare(b.name)
+        })
+      }
+      node = child
+    })
+    node.file = file
+  }
+  return root
+}
+
+function DiffTreeNodeView({
+  node,
+  activePath,
+  onSelect,
+  depth = 0,
+}: {
+  node: DiffTreeNode
+  activePath: string | null
+  onSelect: (path: string) => void
+  depth?: number
+}) {
+  if (node.file) {
+    return (
+      <button
+        className={`sm2__copy-diff-tree-file${node.path === activePath ? ' sm2__copy-diff-tree-file--active' : ''}`}
+        style={{ paddingLeft: 10 + depth * 14 }}
+        onClick={() => onSelect(node.path)}
+      >
+        <span>{node.name}</span>
+        <em>{copyDiffChangeLabel(node.file.changeType)}</em>
+      </button>
+    )
+  }
+  return (
+    <div className="sm2__copy-diff-tree-dir">
+      <div className="sm2__copy-diff-tree-dir-name" style={{ paddingLeft: 10 + depth * 14 }}>
+        {node.name}
+      </div>
+      {node.children.map((child) => (
+        <DiffTreeNodeView key={child.path} node={child} activePath={activePath} onSelect={onSelect} depth={depth + 1} />
+      ))}
+    </div>
+  )
+}
+
+function buildSplitDiff(file: CopyDiffFile): SplitDiffRow[] {
+  const oldLines = splitDiffLines(file.centerContent)
+  const newLines = splitDiffLines(file.copyContent)
+  const rows: SplitDiffRow[] = [{
+    type: 'hunk',
+    hunk: `@@ -1,${Math.max(oldLines.length, 1)} +1,${Math.max(newLines.length, 1)} @@`,
+  }]
+
+  if (file.changeType === 'copy_added') {
+    return rows.concat(newLines.map((text, index) => ({
+      type: 'line',
+      oldKind: 'empty',
+      newLine: index + 1,
+      newText: text,
+      newKind: 'add',
+    })))
+  }
+  if (file.changeType === 'copy_removed') {
+    return rows.concat(oldLines.map((text, index) => ({
+      type: 'line',
+      oldLine: index + 1,
+      oldText: text,
+      oldKind: 'remove',
+      newKind: 'empty',
+    })))
+  }
+  return rows.concat(opsToSplitRows(buildDiffOps(oldLines, newLines)))
+}
+
+function buildDiffOps(oldLines: string[], newLines: string[]): DiffOp[] {
+  if (oldLines.length * newLines.length > 1000000) {
+    return [
+      ...oldLines.map((text, index) => ({ type: 'remove' as const, text, oldLine: index + 1 })),
+      ...newLines.map((text, index) => ({ type: 'add' as const, text, newLine: index + 1 })),
+    ]
+  }
+  const table = longestCommonSubsequenceTable(oldLines, newLines)
+  const ops: DiffOp[] = []
+  let oldIndex = 0
+  let newIndex = 0
+  let oldLine = 1
+  let newLine = 1
+  while (oldIndex < oldLines.length || newIndex < newLines.length) {
+    if (oldIndex < oldLines.length && newIndex < newLines.length && oldLines[oldIndex] === newLines[newIndex]) {
+      ops.push({ type: 'context', text: oldLines[oldIndex], oldLine, newLine })
+      oldIndex += 1
+      newIndex += 1
+      oldLine += 1
+      newLine += 1
+    } else if (newIndex < newLines.length && (oldIndex === oldLines.length || table[oldIndex][newIndex + 1] > table[oldIndex + 1][newIndex])) {
+      ops.push({ type: 'add', text: newLines[newIndex], newLine })
+      newIndex += 1
+      newLine += 1
+    } else if (oldIndex < oldLines.length) {
+      ops.push({ type: 'remove', text: oldLines[oldIndex], oldLine })
+      oldIndex += 1
+      oldLine += 1
+    }
+  }
+  return ops
+}
+
+function opsToSplitRows(ops: DiffOp[]): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = []
+  let index = 0
+  while (index < ops.length) {
+    const op = ops[index]
+    if (op.type === 'context') {
+      rows.push({
+        type: 'line',
+        oldLine: op.oldLine,
+        oldText: op.text,
+        oldKind: 'context',
+        newLine: op.newLine,
+        newText: op.text,
+        newKind: 'context',
+      })
+      index += 1
+      continue
+    }
+
+    const removes: DiffOp[] = []
+    const adds: DiffOp[] = []
+    while (index < ops.length && ops[index].type !== 'context') {
+      const changed = ops[index]
+      if (changed.type === 'remove') removes.push(changed)
+      if (changed.type === 'add') adds.push(changed)
+      index += 1
+    }
+
+    const rowCount = Math.max(removes.length, adds.length)
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const removed = removes[rowIndex]
+      const added = adds[rowIndex]
+      rows.push({
+        type: 'line',
+        oldLine: removed?.oldLine,
+        oldText: removed?.text,
+        oldKind: removed ? 'remove' : 'empty',
+        newLine: added?.newLine,
+        newText: added?.text,
+        newKind: added ? 'add' : 'empty',
+      })
+    }
+  }
+  return rows
+}
+
+function splitDiffLines(content?: string | null): string[] {
+  if (content == null) return []
+  const lines = content.split(/\r?\n/)
+  if (lines.length > 1 && lines[lines.length - 1] === '') return lines.slice(0, -1)
+  return lines
+}
+
+function longestCommonSubsequenceTable(oldLines: string[], newLines: string[]): number[][] {
+  const table = Array.from({ length: oldLines.length + 1 }, () => Array(newLines.length + 1).fill(0))
+  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+      table[oldIndex][newIndex] = oldLines[oldIndex] === newLines[newIndex]
+        ? table[oldIndex + 1][newIndex + 1] + 1
+        : Math.max(table[oldIndex + 1][newIndex], table[oldIndex][newIndex + 1])
+    }
+  }
+  return table
 }
 
 function SkillFrontmatterIntro({ description, compact = false }: { description?: string; compact?: boolean }) {

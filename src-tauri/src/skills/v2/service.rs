@@ -13,9 +13,15 @@ use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const SHARED_SKILLS_AGENT_ID: &str = "agents";
+const DEFAULT_SKILL_PACK_ID: &str = "default";
+const DEFAULT_SKILL_PACK_NAME: &str = "全量技能包";
+const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
+    "中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。";
 
 pub struct Service {
     pub db: Arc<Db>,
@@ -575,8 +581,15 @@ impl Service {
     // ── Overview & reads ──────────────────────────────────────────
 
     pub fn overview(&self) -> Result<SkillManagerOverview, String> {
+        self.overview_with_target_refresh(true)
+    }
+
+    fn overview_with_target_refresh(
+        &self,
+        refresh_targets: bool,
+    ) -> Result<SkillManagerOverview, String> {
         self.init_if_needed()?;
-        let skills = self.list_center_skills()?;
+        let skills = self.list_center_skills_with_target_refresh(refresh_targets)?;
         let agents = self.list_managed_agents()?;
         let packs = self.list_skill_packs()?;
         let issues = self.list_current_diagnosis_issues()?;
@@ -654,6 +667,11 @@ impl Service {
         Ok(())
     }
 
+    pub fn refresh_overview(&self) -> Result<SkillManagerOverview, String> {
+        self.refresh()?;
+        self.overview_with_target_refresh(false)
+    }
+
     fn count_targets(&self) -> Result<usize, String> {
         self.db.with_conn(|c| {
             c.query_row("SELECT COUNT(*) FROM skill_targets", [], |r| {
@@ -674,6 +692,13 @@ impl Service {
     }
 
     pub fn list_center_skills(&self) -> Result<Vec<SkillSummary>, String> {
+        self.list_center_skills_with_target_refresh(true)
+    }
+
+    fn list_center_skills_with_target_refresh(
+        &self,
+        refresh_targets: bool,
+    ) -> Result<Vec<SkillSummary>, String> {
         let rows = self.db.with_conn(|c| {
             let mut stmt = c
                 .prepare(
@@ -703,6 +728,12 @@ impl Service {
             }
             Ok(v)
         })?;
+
+        if refresh_targets {
+            for row in &rows {
+                self.refresh_targets_for_skill(&row.id)?;
+            }
+        }
 
         let mut targets_by_skill = self.targets_by_skill()?;
         let mut summaries = Vec::new();
@@ -1637,6 +1668,23 @@ impl Service {
         })
     }
 
+    pub fn delete_skill_target_distribution(&self, target_id: &str) -> Result<(), String> {
+        let agent_id = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                params![target_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })?;
+        let agent_id = agent_id.ok_or_else(|| format!("Target not found: {target_id}"))?;
+        self.remove_target_completely(target_id)?;
+        self.scan_one_agent_into_db(&agent_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
     /// Remove a target's file/link AND all its DB rows (claims cascade).
     fn remove_target_completely(&self, target_id: &str) -> Result<(), String> {
         let target_path = self.db.with_conn(|c| {
@@ -1669,6 +1717,15 @@ impl Service {
         target_agents: Vec<String>,
         requested_mode: String,
     ) -> Result<DistributionPreview, String> {
+        if target_agents
+            .iter()
+            .any(|agent| agent == SHARED_SKILLS_AGENT_ID)
+        {
+            return Err(
+                "The shared .agents skills directory cannot be selected as a distribution target."
+                    .to_string(),
+            );
+        }
         let mut changes = Vec::new();
         let mut blockers = Vec::new();
         for skill_id in &skill_ids {
@@ -1709,6 +1766,25 @@ impl Service {
                     Some((target_id, _, _)) => {
                         let actual = self.resolve_actual_mode(&requested_mode, agent)?;
                         let current_mode = self.target_actual_mode_for_id(&target_id)?;
+                        if current_mode == "copy" && actual == "copy" {
+                            let sync = self.preview_sync_copy_target(&target_id)?;
+                            if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged") {
+                                let (existing_path_kind, resolved_existing_path) =
+                                    existing_path_info(&target_path);
+                                blockers.push(ConflictBlocker {
+                                    skill_id: skill_id.clone(),
+                                    agent_id: agent.clone(),
+                                    reason: format!(
+                                        "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before redistributing.",
+                                        skill_id
+                                    ),
+                                    existing_path: Some(target_path.display().to_string()),
+                                    existing_path_kind,
+                                    resolved_existing_path,
+                                });
+                                continue;
+                            }
+                        }
                         if current_mode != actual {
                             if current_mode == "copy" && actual == "link" {
                                 let sync = self.preview_sync_copy_target(&target_id)?;
@@ -1746,10 +1822,11 @@ impl Service {
                         changes.push(DistributionChange {
                             skill_id: skill_id.clone(),
                             agent_id: agent.clone(),
-                            action: "reuse".to_string(),
+                            action: "reinstall".to_string(),
                             actual_mode: Some(current_mode),
                             reason: Some(
-                                "Already managed — will append a direct claim.".to_string(),
+                                "Already managed — will refresh target from the center library."
+                                    .to_string(),
                             ),
                             target_path: target_path.display().to_string(),
                         });
@@ -1966,7 +2043,7 @@ impl Service {
                 "reuse" => {
                     self.append_claim(&change.target_path, &change.agent_id, claim_origin.clone())?;
                 }
-                "convert" => {
+                "convert" | "reinstall" => {
                     let actual = change
                         .actual_mode
                         .clone()
@@ -2554,6 +2631,55 @@ impl Service {
         })
     }
 
+    pub fn preview_copy_target_diff(&self, target_id: &str) -> Result<CopyTargetDiffPreview, String> {
+        let sync = self.preview_sync_copy_target(target_id)?;
+        let center = self
+            .skill_row(&sync.skill_id)?
+            .ok_or_else(|| format!("Skill not found: {}", sync.skill_id))?;
+        let center_path = Path::new(&center.center_path);
+        let copy_path = Path::new(&sync.target_path);
+        if !center_path.is_dir() {
+            return Err(format!("Center path is not a directory: {}", center_path.display()));
+        }
+        if !copy_path.is_dir() {
+            return Err(format!("Copy target is not a directory: {}", copy_path.display()));
+        }
+
+        let center_files = collect_relative_files(center_path)?;
+        let copy_files = collect_relative_files(copy_path)?;
+        let all_files: BTreeSet<String> = center_files.union(&copy_files).cloned().collect();
+        let mut files = Vec::new();
+        for rel in all_files {
+            let center_bytes = read_relative_file(center_path, &rel)?;
+            let copy_bytes = read_relative_file(copy_path, &rel)?;
+            if center_bytes == copy_bytes {
+                continue;
+            }
+            let change_type = match (&center_bytes, &copy_bytes) {
+                (Some(_), Some(_)) => "modified",
+                (Some(_), None) => "copy_removed",
+                (None, Some(_)) => "copy_added",
+                (None, None) => continue,
+            }
+            .to_string();
+            files.push(CopyTargetDiffFile {
+                path: rel,
+                change_type,
+                center_content: center_bytes.as_deref().map(String::from_utf8_lossy).map(String::from),
+                copy_content: copy_bytes.as_deref().map(String::from_utf8_lossy).map(String::from),
+            });
+        }
+
+        Ok(CopyTargetDiffPreview {
+            target_id: target_id.to_string(),
+            skill_id: sync.skill_id,
+            target_path: sync.target_path,
+            center_path: center.center_path,
+            state: sync.state,
+            files,
+        })
+    }
+
     pub fn execute_sync_copy_target(
         &self,
         target_id: &str,
@@ -2641,10 +2767,10 @@ impl Service {
     pub fn list_skill_packs(&self) -> Result<Vec<SkillPackSummary>, String> {
         let packs = self.db.with_conn(|c| {
             let mut stmt = c
-                .prepare("SELECT id, name, description, tags_json FROM skill_packs ORDER BY name COLLATE NOCASE")
+                .prepare("SELECT id, name, description, tags_json FROM skill_packs WHERE id <> ?1 ORDER BY name COLLATE NOCASE")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map([DEFAULT_SKILL_PACK_ID], |r| {
                     Ok(PackRow {
                         id: r.get(0)?,
                         name: r.get(1)?,
@@ -2659,7 +2785,7 @@ impl Service {
             }
             Ok(v)
         })?;
-        let mut out = Vec::new();
+        let mut out = vec![self.default_skill_pack_summary()?];
         for p in packs {
             let member_count = self.pack_member_count(&p.id)?;
             let applied_agent_count = self.pack_applied_agent_count(&p.id)?;
@@ -2678,7 +2804,30 @@ impl Service {
         Ok(out)
     }
 
+    fn default_skill_pack_summary(&self) -> Result<SkillPackSummary, String> {
+        Ok(SkillPackSummary {
+            id: DEFAULT_SKILL_PACK_ID.to_string(),
+            name: DEFAULT_SKILL_PACK_NAME.to_string(),
+            description: DEFAULT_SKILL_PACK_DESCRIPTION.to_string(),
+            tags: Vec::new(),
+            member_count: self.center_skill_count()?,
+            applied_agent_count: self.pack_applied_agent_count(DEFAULT_SKILL_PACK_ID)?,
+            healthy: true,
+        })
+    }
+
+    fn center_skill_count(&self) -> Result<usize, String> {
+        self.db.with_conn(|c| {
+            c.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .map_err(|e| e.to_string())
+        })
+    }
+
     fn pack_member_count(&self, pack_id: &str) -> Result<usize, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return self.center_skill_count();
+        }
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT COUNT(*) FROM skill_pack_members WHERE pack_id = ?1",
@@ -2690,6 +2839,9 @@ impl Service {
         })
     }
     fn pack_members_healthy(&self, pack_id: &str) -> Result<bool, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Ok(true);
+        }
         // healthy if all member skills still exist in center
         self.db.with_conn(|c| {
             let missing: i64 = c
@@ -2718,6 +2870,18 @@ impl Service {
     }
 
     pub fn get_skill_pack_detail(&self, pack_id: &str) -> Result<SkillPackDetail, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Ok(SkillPackDetail {
+                id: DEFAULT_SKILL_PACK_ID.to_string(),
+                name: DEFAULT_SKILL_PACK_NAME.to_string(),
+                description: DEFAULT_SKILL_PACK_DESCRIPTION.to_string(),
+                tags: Vec::new(),
+                members: self.pack_members(DEFAULT_SKILL_PACK_ID)?,
+                applied_agents: self.pack_applied_agents(DEFAULT_SKILL_PACK_ID)?,
+                created_at: String::new(),
+                updated_at: String::new(),
+            });
+        }
         let row = self.db.with_conn(|c| {
             c.query_row(
                 "SELECT id, name, description, tags_json, created_at, updated_at FROM skill_packs WHERE id = ?1",
@@ -2752,6 +2916,28 @@ impl Service {
     }
 
     fn pack_members(&self, pack_id: &str) -> Result<Vec<PackMember>, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return self.db.with_conn(|c| {
+                let mut stmt = c
+                    .prepare("SELECT id, name FROM skills ORDER BY name COLLATE NOCASE, id")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for (idx, row) in rows.enumerate() {
+                    let (skill_id, skill_name) = row.map_err(|e| e.to_string())?;
+                    out.push(PackMember {
+                        skill_id,
+                        skill_name,
+                        required: true,
+                        sort_order: idx as i64,
+                        missing: false,
+                    });
+                }
+                Ok(out)
+            });
+        }
         self.db.with_conn(|c| {
             let mut stmt = c
                 .prepare(
@@ -2819,6 +3005,9 @@ impl Service {
     }
 
     fn pack_name(&self, pack_id: &str) -> Result<String, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Ok(DEFAULT_SKILL_PACK_NAME.to_string());
+        }
         self.db.with_conn(|c| {
             c.query_row(
                 "SELECT name FROM skill_packs WHERE id = ?1",
@@ -2931,6 +3120,16 @@ impl Service {
         &self,
         pack_id: &str,
     ) -> Result<DeleteSkillPackPreview, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Ok(DeleteSkillPackPreview {
+                pack_id: DEFAULT_SKILL_PACK_ID.to_string(),
+                pack_name: DEFAULT_SKILL_PACK_NAME.to_string(),
+                applied_agents: Vec::new(),
+                affected_targets: Vec::new(),
+                removable: false,
+                warnings: vec!["全量技能包是系统内置入口，不能删除。".to_string()],
+            });
+        }
         let pack_name = self.pack_name(pack_id)?;
         let affected_targets = self.affected_targets_for_pack(pack_id, None, None)?;
         let mut applied_agents = affected_targets
@@ -2987,6 +3186,9 @@ impl Service {
         pack_id: &str,
         skill_id: &str,
     ) -> Result<RemoveSkillFromPackPreview, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Err("全量技能包始终包含中心库全部 Skills，不能编辑成员。".to_string());
+        }
         let pack_name = self.pack_name(pack_id)?;
         let skill_name = self
             .skill_name(skill_id)
@@ -3011,6 +3213,9 @@ impl Service {
     }
 
     pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {
+        if pack.id == DEFAULT_SKILL_PACK_ID {
+            return Err("全量技能包是系统内置入口，cannot be edited.".to_string());
+        }
         if pack.name.trim().is_empty() {
             return Err("Pack name is required.".to_string());
         }
@@ -3056,6 +3261,9 @@ impl Service {
     }
 
     pub fn delete_skill_pack(&self, pack_id: &str) -> Result<(), String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Err("全量技能包是系统内置入口，不能删除。".to_string());
+        }
         let applied = self.pack_applied_agent_count(pack_id)?;
         if applied > 0 {
             return Err(format!(
@@ -3102,7 +3310,7 @@ impl Service {
                         ClaimOrigin::Pack(pack_id.to_string()),
                     )?;
                 }
-                "reuse" => {
+                "reuse" | "reinstall" => {
                     self.append_claim(
                         &change.target_path,
                         &change.agent_id,
@@ -3112,12 +3320,14 @@ impl Service {
                 _ => {}
             }
         }
-        self.scan_all_agents_into_db()?;
+        for agent_id in &preview.target_agents {
+            self.scan_one_agent_into_db(agent_id)?;
+        }
         // mark changes as applied
         for c in preview.changes.iter_mut() {
             if c.action == "create" {
                 c.reason = Some("pack claim created".to_string());
-            } else if c.action == "reuse" {
+            } else if c.action == "reuse" || c.action == "reinstall" {
                 c.reason = Some("pack claim appended".to_string());
             }
         }
@@ -3189,6 +3399,9 @@ impl Service {
         skill_id: &str,
         also_remove_targets: bool,
     ) -> Result<(), String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Err("全量技能包始终包含中心库全部 Skills，不能编辑成员。".to_string());
+        }
         // Are there pack claims for this skill under this pack?
         let applied = self.pack_applied_agent_count(pack_id)?;
         if applied > 0 {
@@ -3424,6 +3637,26 @@ pub struct CopySyncPreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CopyTargetDiffPreview {
+    pub target_id: String,
+    pub skill_id: String,
+    pub target_path: String,
+    pub center_path: String,
+    pub state: String,
+    pub files: Vec<CopyTargetDiffFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyTargetDiffFile {
+    pub path: String,
+    pub change_type: String,
+    pub center_content: Option<String>,
+    pub copy_content: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RevokeResult {
     pub pack_id: String,
     pub agent_id: String,
@@ -3490,6 +3723,51 @@ fn filesystem_target_mode(path: &Path) -> Option<String> {
         PathKind::Dir | PathKind::File => Some("copy".to_string()),
         PathKind::Missing | PathKind::BrokenSymlink => None,
     }
+}
+
+fn collect_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    collect_relative_files_inner(root, root, &mut out)?;
+    Ok(out)
+}
+
+fn collect_relative_files_inner(
+    root: &Path,
+    dir: &Path,
+    out: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {}", dir.display(), e))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if fsutil::is_ignored_entry(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if path.is_symlink() {
+                continue;
+            }
+            collect_relative_files_inner(root, &path, out)?;
+        } else if file_type.is_file() {
+            if let Ok(rel) = path.strip_prefix(root) {
+                out.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_relative_file(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, String> {
+    let path = root.join(rel);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    std::fs::read(&path)
+        .map(Some)
+        .map_err(|e| format!("read {}: {}", path.display(), e))
 }
 
 fn normalize_shared_agents_center_path(home: &Path, settings: &mut SkillManagerSettings) -> bool {

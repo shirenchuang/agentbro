@@ -610,6 +610,11 @@
       "not_in_center_library": "Merkez kütüphanede yok",
       "center_library_conflict": "Merkez kütüphane ad çakışması"
     },
+    "distributionReason": {
+      "convertManaged": "Zaten {{from}} olarak yönetiliyor; {{to}} biçimine dönüştürülecek.",
+      "refreshManaged": "Zaten yönetiliyor; hedef merkez kütüphaneden yenilenecek.",
+      "skippedByUser": "Kullanıcı kararıyla atlandı."
+    },
     "blocker": {
       "unmanagedExists": "Hedef yolda yönetilmeyen Skill '{{skillId}}' zaten var. Önce içe alın, üzerine yazın veya yeniden adlandırın."
     },

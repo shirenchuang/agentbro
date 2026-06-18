@@ -9,6 +9,8 @@ import { skillModeLabel } from './skillLabels'
 
 type BlockerDecision = 'overwrite' | 'agent_over_center' | 'skip'
 
+const SHARED_SKILLS_AGENT_ID = 'agents'
+
 function blockerKey(blocker: ConflictBlocker) {
   return `${blocker.skillId}\u0000${blocker.agentId}`
 }
@@ -56,8 +58,41 @@ function blockerPathKindLabel(t: TFunction, kind?: string | null) {
   return t(`skills.pathKind.${kind}`, { defaultValue: kind })
 }
 
+function distributionChangeReason(t: TFunction, reason?: string | null) {
+  if (!reason) return null
+  const convert = reason.match(/^Already managed as (link|copy)\s+[—-]\s+will convert to (link|copy)\.$/)
+  if (convert) {
+    return t('skills.distributionReason.convertManaged', {
+      from: skillModeLabel(t, convert[1] as 'link' | 'copy'),
+      to: skillModeLabel(t, convert[2] as 'link' | 'copy'),
+      defaultValue: reason,
+    })
+  }
+  if (/^Already managed\s+[—-]\s+will refresh target from the center library\.$/.test(reason)) {
+    return t('skills.distributionReason.refreshManaged', { defaultValue: reason })
+  }
+  if (reason === 'Skipped by user decision.') {
+    return t('skills.distributionReason.skippedByUser', { defaultValue: reason })
+  }
+  return reason
+}
+
 function isManagedCopyBlocker(blocker: ConflictBlocker) {
   return blocker.reason.startsWith('Managed copy ')
+}
+
+function installedCopyStatusLabel(status?: string) {
+  switch (status) {
+    case 'copy_modified':
+      return '副本已修改'
+    case 'copy_diverged':
+    case 'copyDiverged':
+      return '副本已分叉'
+    case 'copy_outdated':
+      return '副本可更新'
+    default:
+      return null
+  }
 }
 
 export function DistributeDialog({
@@ -81,6 +116,7 @@ export function DistributeDialog({
   const [preview, setPreview] = useState<DistributionPreview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
+  const [distributionProgress, setDistributionProgress] = useState<{ total: number; percent: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const selectedSkills = skills ?? (skill ? [skill] : [])
   const skillIds = selectedSkills.map((item) => item.id)
@@ -98,17 +134,13 @@ export function DistributeDialog({
     }
   }
   const installedCountForAgent = (agentId: string) => installedRefsByAgent.get(agentId)?.length ?? 0
-  const needsDistributionForAgent = (agentId: string) => selectedSkills.some((item) => {
-    const ref = installedRefByAgentSkill.get(`${agentId}\u0000${item.id}`)
-    return !ref || ref.mode !== mode
-  })
   const visibleAgents = agents
-    .filter((agent) => agent.installed)
+    .filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
     .sort((a, b) => {
       const installedDelta = installedCountForAgent(b.id) - installedCountForAgent(a.id)
       return installedDelta || (agentOrder.get(a.id) ?? 0) - (agentOrder.get(b.id) ?? 0)
     })
-  const selectableAgents = visibleAgents.filter((agent) => needsDistributionForAgent(agent.id))
+  const selectableAgents = visibleAgents
   const agentNameById = new Map(agents.map((agent) => [agent.id, agent.displayName]))
 
   useEffect(() => {
@@ -116,7 +148,6 @@ export function DistributeDialog({
   }, [defaultMode])
 
   const toggle = (id: string) => {
-    if (!needsDistributionForAgent(id)) return
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -131,6 +162,7 @@ export function DistributeDialog({
       return
     }
     setBusy(true)
+    setDistributionProgress(null)
     setError(null)
     try {
       const p = await skillApiV2.previewDistribute(skillIds, Array.from(selected), mode)
@@ -146,6 +178,8 @@ export function DistributeDialog({
   const execute = async () => {
     if (!preview) return
     setBusy(true)
+    const totalTargets = Math.max(1, preview.changes.length + preview.blockers.length)
+    setDistributionProgress({ total: totalTargets, percent: 8 })
     setError(null)
     try {
       const blockerDecisionsPayload = preview.blockers
@@ -154,10 +188,13 @@ export function DistributeDialog({
           return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
         })
         .filter((item): item is { skillId: string; agentId: string; action: BlockerDecision } => Boolean(item))
+      setDistributionProgress({ total: totalTargets, percent: 28 })
       await skillApiV2.executeDistribute({ ...preview, blockerDecisions: blockerDecisionsPayload })
+      setDistributionProgress({ total: totalTargets, percent: 100 })
       onDone()
       onClose()
     } catch (e) {
+      setDistributionProgress(null)
       setError(distributionErrorMessage(t, e))
     } finally {
       setBusy(false)
@@ -239,34 +276,35 @@ export function DistributeDialog({
                 visibleAgents.map((a) => {
                   const installedRefs = installedRefsByAgent.get(a.id) ?? []
                   const checked = selected.has(a.id)
-                  const disabled = !needsDistributionForAgent(a.id)
+                  const statusText = installedCopyStatusLabel(installedRefs.find((ref) => installedCopyStatusLabel(ref.status))?.status)
                   const installText = installedRefs.length === 0
-                    ? 'Hook 已安装'
+                    ? null
                     : isBatch
                       ? installedRefs.length >= selectedSkills.length
-                        ? disabled
-                          ? '已全部安装'
-                          : `已全部安装 · 可转换为${skillModeLabel(t, mode)}`
-                        : `${installedRefs.length}/${selectedSkills.length} 已安装`
-                      : disabled
-                        ? `已安装 · ${skillModeLabel(t, installedRefs[0].mode)}`
-                        : `已安装 · 可转换为${skillModeLabel(t, mode)}`
+                        ? statusText
+                          ? `已全部安装 · ${statusText} · 将重新${skillModeLabel(t, mode)}`
+                          : `已全部安装 · 将重新${skillModeLabel(t, mode)}`
+                        : `${installedRefs.length}/${selectedSkills.length} 已安装 · 将补齐或覆盖`
+                      : statusText
+                        ? `已安装 · ${statusText} · 将重新${skillModeLabel(t, mode)}`
+                        : installedRefs[0].mode === mode
+                          ? `已安装 · 将重新${skillModeLabel(t, mode)}`
+                          : `已安装 · 可转换为${skillModeLabel(t, mode)}`
                   return (
                     <label
                       key={a.id}
-                      className={`sm2-distribute__agent${checked ? ' sm2-distribute__agent--active' : ''}${disabled ? ' sm2-distribute__agent--disabled sm2-distribute__agent--installed' : ''}`}
+                      className={`sm2-distribute__agent${checked ? ' sm2-distribute__agent--active' : ''}${installedRefs.length > 0 ? ' sm2-distribute__agent--installed' : ''}`}
                     >
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() => toggle(a.id)}
-                        disabled={disabled}
                       />
                       <span className="sm2-distribute__check" aria-hidden="true">{checked ? '✓' : ''}</span>
                       <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={28} />
                       <span className="sm2-distribute__agent-main">
                         <strong>{a.displayName}</strong>
-                        <span>{installText}</span>
+                        {installText && <span>{installText}</span>}
                       </span>
                     </label>
                   )
@@ -315,13 +353,15 @@ export function DistributeDialog({
             <div key={i} className="sm2-distribute__change">
               <div className="sm2-distribute__change-main">
                 <span className="sm2-distribute__change-action">
-                  {c.action === 'create' ? '新增' : c.action === 'reuse' ? '复用' : c.action === 'convert' ? '转换' : c.action}
+                  {c.action === 'create' ? '新增' : c.action === 'reuse' ? '复用' : c.action === 'convert' ? '转换' : c.action === 'reinstall' ? '重装' : c.action}
                 </span>
                 <strong>{skillNameById.get(c.skillId) ?? c.skillId} → {agentNameById.get(c.agentId) ?? c.agentId}</strong>
                 {c.action === 'create' && <span className="sm2__tag sm2__tag--ok">{skillModeLabel(t, c.actualMode)}</span>}
               </div>
               <code>{c.targetPath}</code>
-              {c.action !== 'create' && c.reason && <span className="sm2-distribute__change-reason">{c.reason}</span>}
+              {c.action !== 'create' && c.reason && (
+                <span className="sm2-distribute__change-reason">{distributionChangeReason(t, c.reason)}</span>
+              )}
             </div>
           ))}
           {preview.blockers.map((b) => {
@@ -384,6 +424,25 @@ export function DistributeDialog({
             )
           })}
         </div>
+
+        {distributionProgress && (
+          <div className="sm2-distribute__progress" aria-live="polite">
+            <div className="sm2-distribute__progress-head">
+              <strong>正在分发 {distributionProgress.total} 个目标</strong>
+              <span>{distributionProgress.percent}%</span>
+            </div>
+            <div
+              className="sm2-distribute__progress-track"
+              role="progressbar"
+              aria-label="分发进度"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={distributionProgress.percent}
+            >
+              <span style={{ width: `${distributionProgress.percent}%` }} />
+            </div>
+          </div>
+        )}
 
         {preview.blockers.length > 0 && (
           <p className="sm2-distribute__blocked-note">

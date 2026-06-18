@@ -19,6 +19,25 @@ function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
   }
 }
 
+function makeOverview(overrides: Partial<SkillManagerOverview> = {}): SkillManagerOverview {
+  return {
+    metrics: { centerSkillCount: 0, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
+    skills: [],
+    agents: [],
+    packs: [],
+    issues: [],
+    settings: {
+      centerPath: '~/.agentbro/skills',
+      sqlitePath: '~/.agentbro/skill-manager.db',
+      defaultDistributeMode: 'link',
+      linkFailPolicy: 'ask',
+      startupScan: true,
+      showUnmanaged: true,
+    },
+    ...overrides,
+  }
+}
+
 describe('skillStoreV2 view mode + filters', () => {
   beforeEach(() => {
     useSkillStoreV2.setState({
@@ -52,6 +71,26 @@ describe('skillStoreV2 view mode + filters', () => {
     state.setFilter('status', 'copyDiverged')
     const result = filteredSkills(useSkillStoreV2.getState())
     expect(result.map((s) => s.id)).toEqual(['database-debugging'])
+  })
+
+  it('finds changed copy installs by their visible status text', () => {
+    useSkillStoreV2.setState({
+      filters: { query: '副本分叉', source: '', status: '', type: '' },
+      skills: [
+        makeSkill({
+          id: 'ai-daily-briefing',
+          name: 'AI Daily Briefing',
+          status: 'ok',
+          installedAgents: [
+            { agentId: 'hermes', displayName: 'Hermes', iconKey: 'hermes', mode: 'copy', status: 'copy_modified' },
+          ],
+        }),
+      ],
+    })
+
+    const result = filteredSkills(useSkillStoreV2.getState())
+
+    expect(result.map((s) => s.id)).toEqual(['ai-daily-briefing'])
   })
 
   it('filters by source', () => {
@@ -180,6 +219,40 @@ describe('skillStoreV2 startup scan setting', () => {
     await useSkillStoreV2.getState().init()
 
     expect(fullScan).not.toHaveBeenCalled()
+  })
+})
+
+describe('skillStoreV2 refresh', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    useSkillStoreV2.setState({
+      overview: null,
+      skills: [],
+      agents: [],
+      packs: [],
+      issues: [],
+      loading: false,
+      error: null,
+      initialized: false,
+      lastOverviewLoadedAt: 0,
+    })
+  })
+
+  it('loads the refreshed overview in one backend call', async () => {
+    const overview = makeOverview({
+      metrics: { centerSkillCount: 1, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
+      skills: [makeSkill({ id: 'fast-refresh', name: 'Fast Refresh' })],
+    })
+    const refreshOverview = vi.spyOn(skillApiV2, 'refreshOverview').mockResolvedValue(overview)
+    const refresh = vi.spyOn(skillApiV2, 'refresh').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+
+    await useSkillStoreV2.getState().refresh()
+
+    expect(refreshOverview).toHaveBeenCalledTimes(1)
+    expect(refresh).not.toHaveBeenCalled()
+    expect(loadOverview).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().skills.map((skill) => skill.id)).toEqual(['fast-refresh'])
   })
 })
 

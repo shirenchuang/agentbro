@@ -17,6 +17,8 @@ interface SidebarGroup {
   items: SidebarItem[]
 }
 
+const SHARED_SKILLS_AGENT_ID = 'agents'
+
 const sidebarGroups: SidebarGroup[] = [
   {
     items: [
@@ -61,8 +63,9 @@ export function SettingsSidebar({
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
   const [showUninstalledSkillAgents, setShowUninstalledSkillAgents] = useState(false)
-  const installedSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.installed), [skillAgents])
-  const uninstalledSkillAgents = useMemo(() => skillAgents.filter((agent) => !agent.installed), [skillAgents])
+  const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID), [skillAgents])
+  const installedSkillAgents = useMemo(() => visibleSkillAgents.filter((agent) => agent.installed), [visibleSkillAgents])
+  const uninstalledSkillAgents = useMemo(() => visibleSkillAgents.filter((agent) => !agent.installed), [visibleSkillAgents])
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -221,7 +224,7 @@ export function SettingsSidebar({
                 <span>已安装 Agent</span>
                 <em>{installedSkillAgents.length}</em>
               </div>
-              {skillAgents.length === 0 ? (
+              {visibleSkillAgents.length === 0 ? (
                 <div className="sm2-sidebar__subgroup-empty">暂无</div>
               ) : (
                 <>

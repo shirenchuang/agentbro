@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
@@ -8,7 +8,7 @@ import { agentApi, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
-import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, SkillPackDetail } from '../services/skillApiV2'
 
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
@@ -106,6 +106,30 @@ describe('Skill library view mode (no Agent matrix)', () => {
     render(<SkillLibraryPage />)
     expect(screen.getByText('Release Checklist')).toBeInTheDocument()
     expect(screen.getByText('Database Debugging')).toBeInTheDocument()
+  })
+
+  it('marks skills with changed copy installs in card and list views', async () => {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill({
+          status: 'copyDiverged',
+          installedAgents: [
+            { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'copy', status: 'copy_modified' },
+          ],
+        }),
+      ],
+    })
+
+    const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
+    render(<SkillLibraryPage />)
+
+    expect(screen.getByText('Diff')).toBeInTheDocument()
+    expect(screen.getByText('1 个副本有变更')).toBeInTheDocument()
+    expect(document.body.querySelector('.sm2__copy-diff-strip')).toBeNull()
+
+    fireEvent.click(screen.getByText('列表'))
+    expect(screen.getByText(/Local folder · 副本分叉/)).toBeInTheDocument()
+    expect(screen.getByText('1 个副本有变更')).toBeInTheDocument()
   })
 
   it('switches to list view and keeps content', async () => {
@@ -312,6 +336,214 @@ describe('Agent sync local agent chips', () => {
     cleanup()
   })
 
+  it('shows a task-focused pending inbox by default and hides managed skills', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 3,
+        unmanagedCount: 2,
+        importableCount: 1,
+        items: [
+          {
+            id: 'managed-alpha',
+            agentId: 'claude-code',
+            skillId: 'managed-alpha',
+            name: 'managed-alpha',
+            path: '/Users/me/.claude/skills/managed-alpha',
+            managed: true,
+            canImport: false,
+            status: 'managed',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-managed-alpha',
+            actualMode: 'link',
+            hash: 'hash-managed-alpha',
+          },
+          {
+            id: 'local-alpha',
+            agentId: 'claude-code',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.claude/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+          {
+            id: 'local-bird',
+            agentId: 'claude-code',
+            skillId: 'bird',
+            name: 'bird',
+            path: '/Users/me/.claude/skills/bird',
+            managed: false,
+            canImport: false,
+            status: 'conflict',
+            statusLabel: '未管理 · 同名冲突',
+            reason: 'same_name_as_center_skill',
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-bird',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('本机 Agent 同步')).toBeInTheDocument()
+    expect(screen.getByText('把散落在各 Agent 里的 Skills 收进中心库')).toBeInTheDocument()
+    expect(screen.getByText('发现 1 个可接管 Skill，1 个同名冲突')).toBeInTheDocument()
+    expect(screen.getByText('待处理收纳箱')).toBeInTheDocument()
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+    expect(screen.getByText('bird')).toBeInTheDocument()
+    expect(screen.queryByText('managed-alpha')).not.toBeInTheDocument()
+    expect(screen.getByText('3 已管理，默认隐藏')).toBeInTheDocument()
+  })
+
+  it('can reveal managed skills from advanced controls', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 1,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'managed-alpha',
+            agentId: 'claude-code',
+            skillId: 'managed-alpha',
+            name: 'managed-alpha',
+            path: '/Users/me/.claude/skills/managed-alpha',
+            managed: true,
+            canImport: false,
+            status: 'managed',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-managed-alpha',
+            actualMode: 'link',
+            hash: 'hash-managed-alpha',
+          },
+          {
+            id: 'local-alpha',
+            agentId: 'claude-code',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.claude/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('alpha')).toBeInTheDocument()
+    expect(screen.queryByText('managed-alpha')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '高级查看' }))
+    fireEvent.click(screen.getByLabelText('显示已管理 Skills'))
+    expect(screen.getByText('managed-alpha')).toBeInTheDocument()
+  })
+
+  it('keeps list and card views on the same pending dataset', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 1,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'managed-alpha',
+            agentId: 'claude-code',
+            skillId: 'managed-alpha',
+            name: 'managed-alpha',
+            path: '/Users/me/.claude/skills/managed-alpha',
+            managed: true,
+            canImport: false,
+            status: 'managed',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-managed-alpha',
+            actualMode: 'link',
+            hash: 'hash-managed-alpha',
+          },
+          {
+            id: 'local-alpha',
+            agentId: 'claude-code',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.claude/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    const { container } = render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('alpha')).toBeInTheDocument()
+    expect(container.querySelector('.sm2__agent-sync-listview')).not.toBeNull()
+    expect(screen.queryByText('managed-alpha')).not.toBeInTheDocument()
+
+    const listCheckbox = container.querySelector('.sm2__agent-sync-listview .sm2__agent-sync-checkbox') as HTMLInputElement
+    fireEvent.click(listCheckbox)
+    expect(listCheckbox).toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: '卡片' }))
+
+    expect(container.querySelector('.sm2__install-grid')).not.toBeNull()
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+    expect(screen.queryByText('managed-alpha')).not.toBeInTheDocument()
+    const selectedCard = container.querySelector('.sm2__agent-sync-card--selected')
+    expect(selectedCard).not.toBeNull()
+    expect(selectedCard?.querySelector('.sm2__agent-sync-checkbox')).toBeChecked()
+
+    fireEvent.click(selectedCard!)
+    expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('alpha')
+    expect(document.body.querySelector('.sm2__slideover--skill-detail')).toHaveTextContent('/Users/me/.claude/skills/alpha')
+  })
+
   it('only shows locally installed agents', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const inventory: AgentSkillInventoryAgent[] = [
@@ -360,9 +592,9 @@ describe('Agent sync local agent chips', () => {
     const { container } = render(<AgentSyncPanel onDone={() => {}} />)
 
     expect(await screen.findByLabelText('选择 Agent')).toHaveTextContent('Claude Code · 1 可接管')
-    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(container.querySelector('.sm2__agent-sync-agent-strip')).toHaveTextContent('Claude Code')
     expect(screen.queryByText('DeepSeek')).not.toBeInTheDocument()
-    expect(container.querySelector('.sm2__agent-sync-statline')).toHaveTextContent('1 Agent')
+    expect(container.querySelector('.sm2__agent-sync-summary')).toHaveTextContent('1 Agent')
   })
 
   it('uses a compact agent dropdown sorted by local skill count', async () => {
@@ -414,7 +646,195 @@ describe('Agent sync local agent chips', () => {
     expect(screen.queryByText('DeepSeek')).not.toBeInTheDocument()
 
     fireEvent.change(select, { target: { value: 'claude-code' } })
-    expect(container.querySelector('.sm2__agent-sync-statline')).toHaveTextContent('2 Agent')
+    expect(select.value).toBe('claude-code')
+    expect(container.querySelector('.sm2__agent-sync-agent-card--active')).toHaveTextContent('Claude Code')
+  })
+
+  it('scopes summary actions and accessibility state to the selected agent', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 2,
+        importableCount: 2,
+        items: [
+          {
+            id: 'codex-alpha',
+            agentId: 'codex',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.codex/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+          {
+            id: 'codex-beta',
+            agentId: 'codex',
+            skillId: 'beta',
+            name: 'beta',
+            path: '/Users/me/.codex/skills/beta',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-beta',
+          },
+        ],
+      },
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 1,
+        unmanagedCount: 1,
+        importableCount: 0,
+        items: [
+          {
+            id: 'claude-bird',
+            agentId: 'claude-code',
+            skillId: 'bird',
+            name: 'bird',
+            path: '/Users/me/.claude/skills/bird',
+            managed: false,
+            canImport: false,
+            status: 'conflict',
+            statusLabel: '未管理 · 同名冲突',
+            reason: 'same_name_as_center_skill',
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-bird',
+          },
+          {
+            id: 'claude-managed',
+            agentId: 'claude-code',
+            skillId: 'managed',
+            name: 'managed',
+            path: '/Users/me/.claude/skills/managed',
+            managed: true,
+            canImport: false,
+            status: 'managed',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-managed',
+            actualMode: 'link',
+            hash: 'hash-managed',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+    const preview = vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValueOnce({
+      agentId: 'claude-code',
+      unmanagedId: 'claude-bird',
+      skillPath: '/Users/me/.claude/skills/bird',
+      inferredSkillId: 'bird',
+      hash: 'hash-bird',
+      centerHasSameId: true,
+      canQuickAdopt: false,
+      options: [
+        { value: 'overwrite_center', label: 'Overwrite center skill with this one', destructive: true },
+        { value: 'rename', label: 'Import under a new id', destructive: false },
+        { value: 'skip', label: 'Keep as unmanaged', destructive: false },
+      ],
+    })
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('发现 2 个可接管 Skill，1 个同名冲突')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '一键整理 2 个' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /全部 Agent/ })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Claude Code/ }))
+
+    expect(screen.getByText('发现 1 个同名冲突')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '处理冲突' })[0]).toHaveClass('sm2__btn--featured')
+    expect(screen.getAllByRole('button', { name: '处理冲突' })[0]).toBeEnabled()
+    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeDisabled()
+    fireEvent.click(screen.getAllByRole('button', { name: '处理冲突' })[0])
+    await waitFor(() => expect(preview).toHaveBeenCalledWith('claude-code', 'claude-bird'))
+    expect(screen.getByRole('button', { name: /全部 Agent/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /Claude Code/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('1 已管理，默认隐藏')).toBeInTheDocument()
+  })
+
+  it('shows a rescanable empty state when no agent skill directories are installed', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue([])
+    const refresh = vi.spyOn(skillApiV2, 'refresh').mockResolvedValue(undefined)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('未发现可同步的 Agent Skills 目录')).toBeInTheDocument()
+    expect(screen.getAllByText('没有找到可同步的 Agent Skills 目录。可以点击「重新扫描」再试。')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeDisabled()
+
+    fireEvent.click(screen.getAllByRole('button', { name: '重新扫描' }).at(-1)!)
+
+    await waitFor(() => {
+      expect(refresh).toHaveBeenCalled()
+    })
+  })
+
+  it('labels import buttons in both list and card views', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'local-alpha',
+            agentId: 'claude-code',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.claude/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByRole('button', { name: '接管到中心库：alpha' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '卡片' }))
+
+    expect(screen.getByRole('button', { name: '接管到中心库：alpha' })).toBeInTheDocument()
   })
 
   it('shows progress while adopting selected local agent skills', async () => {
@@ -479,6 +899,10 @@ describe('Agent sync local agent chips', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在接管 1 / 2')
     expect(screen.getByRole('status')).toHaveTextContent('alpha')
+    expect(screen.getByRole('status')).toHaveClass('sm2__agent-sync-progress--floating')
+    expect(screen.getByLabelText('选择 Agent')).not.toBeDisabled()
+    fireEvent.click(screen.getByText('beta'))
+    expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('beta')
     finishFirstAdopt()
   })
 
@@ -581,7 +1005,7 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    fireEvent.click(await screen.findByText('一键整理'))
+    fireEvent.click(await screen.findByRole('button', { name: /一键整理 1 个/ }))
 
     expect(await screen.findByText('一键整理 Skills')).toBeInTheDocument()
     expect(screen.getByText('将整理 1 个可接管 Skill')).toBeInTheDocument()
@@ -638,7 +1062,7 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    fireEvent.click(await screen.findByText('一键整理'))
+    fireEvent.click(await screen.findByRole('button', { name: /一键整理 1 个/ }))
     fireEvent.click(await screen.findByLabelText('保留现有文件'))
     fireEvent.click(screen.getByText('开始整理'))
 
@@ -926,6 +1350,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
   beforeEach(() => {
     cleanup()
+    vi.restoreAllMocks()
     i18n.changeLanguage('zh')
     useSkillStoreV2.setState({
       viewMode: 'cards',
@@ -967,6 +1392,28 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container).toBeTruthy()
   })
 
+  it('does not repeat the agent id under the agent display name', async () => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
+      ...makeSkill({
+        installedAgents: [
+          { agentId: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', mode: 'link', status: 'ok' },
+        ],
+      }),
+      frontmatter: {},
+      files: null,
+      targets: agentDetail.skills,
+      source: null,
+    })
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
+
+    fireEvent.click(await screen.findByText('Agent (1)'))
+    const title = document.body.querySelector('.sm2__agent-target-title')
+    expect(title).toHaveTextContent('Claude Code')
+    expect(title).not.toHaveTextContent('claude-code')
+  })
+
   it('marks rendered skill markdown as selectable for copying text', async () => {
     vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
       ...makeSkill(),
@@ -999,6 +1446,131 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('文件'))
     const filePreview = document.body.querySelector('.sm2__markdown--file')
     expect(filePreview).toHaveClass('selectable')
+  })
+
+  it('opens a center-to-copy diff from a changed copy target', async () => {
+    const centerLines = Array.from({ length: 275 }, (_, index) => `line ${index + 1}`)
+    const copyLines = [...centerLines]
+    copyLines[2] = 'line 3 123'
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
+      ...makeSkill({
+        status: 'copyDiverged',
+        installedAgents: [
+          { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'copy', status: 'copy_modified' },
+        ],
+      }),
+      frontmatter: {},
+      files: null,
+      targets: [
+        {
+          id: 'target-codex',
+          skillId: 'release-checklist',
+          agentId: 'codex',
+          targetPath: '/Users/me/.codex/skills/release-checklist',
+          resolvedTargetPath: null,
+          installMode: 'copy',
+          actualMode: 'copy',
+          sourceHash: 'hash1',
+          currentHash: 'hash2',
+          status: 'copy_modified',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          claims: [],
+        },
+      ],
+      source: null,
+    })
+    const previewDiff = vi.spyOn(skillApiV2, 'previewCopyTargetDiff').mockResolvedValueOnce({
+      targetId: 'target-codex',
+      skillId: 'release-checklist',
+      targetPath: '/Users/me/.codex/skills/release-checklist',
+      centerPath: '/center/release-checklist',
+      state: 'copy_modified',
+      files: [
+        {
+          path: 'SKILL.md',
+          changeType: 'modified',
+          centerContent: centerLines.join('\n'),
+          copyContent: copyLines.join('\n'),
+        },
+      ],
+    })
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.sm2__detail-status--copy-diff')).not.toBeNull()
+      expect(document.body.querySelector('.sm2__install-mini--copy-diff')).not.toBeNull()
+    })
+
+    fireEvent.click(await screen.findByText('Agent (1)'))
+    fireEvent.click(screen.getByRole('button', { name: '查看 diff' }))
+
+    await waitFor(() => expect(previewDiff).toHaveBeenCalledWith('target-codex'))
+    expect(await screen.findByRole('dialog', { name: 'Agent 副本 diff' })).toBeInTheDocument()
+    expect(screen.getByText('目录树')).toBeInTheDocument()
+    expect(screen.getAllByText('SKILL.md').length).toBeGreaterThan(0)
+    expect(screen.getByText('中心库')).toBeInTheDocument()
+    expect(screen.getByText('Agent 副本')).toBeInTheDocument()
+    expect(screen.getByText('line 3')).toBeInTheDocument()
+    expect(screen.getByText('line 3 123')).toBeInTheDocument()
+    expect(document.body.querySelectorAll('.sm2__copy-diff-side-scroll')).toHaveLength(2)
+    expect(document.body.querySelectorAll('.sm2__copy-diff-side-scroll[data-scroll-mode="independent-x-fixed-y-sync"]')).toHaveLength(2)
+    expect(document.body.querySelectorAll('.sm2__copy-diff-cell--remove')).toHaveLength(1)
+    expect(document.body.querySelectorAll('.sm2__copy-diff-cell--add')).toHaveLength(1)
+  })
+
+  it('deletes a single agent distribution from the Agent tab', async () => {
+    const afterDelete = makeSkill({
+      installedAgents: [],
+    })
+    vi.spyOn(skillApiV2, 'getSkillDetail')
+      .mockResolvedValueOnce({
+        ...makeSkill({
+          installedAgents: [
+            { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'copy', status: 'ok' },
+          ],
+        }),
+        frontmatter: {},
+        files: null,
+        targets: [
+          {
+            id: 'target-codex',
+            skillId: 'release-checklist',
+            agentId: 'codex',
+            targetPath: '/Users/me/.codex/skills/release-checklist',
+            resolvedTargetPath: null,
+            installMode: 'copy',
+            actualMode: 'copy',
+            sourceHash: 'hash1',
+            currentHash: 'hash1',
+            status: 'ok',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+            claims: [],
+          },
+        ],
+        source: null,
+      })
+      .mockResolvedValueOnce({
+        ...afterDelete,
+        frontmatter: {},
+        files: null,
+        targets: [],
+        source: null,
+      })
+    const deleteTarget = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValueOnce()
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
+
+    fireEvent.click(await screen.findByText('Agent (1)'))
+    fireEvent.click(screen.getByRole('button', { name: '删除分发' }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-codex'))
+    expect(await screen.findByText('尚未分发到任何 Agent')).toBeInTheDocument()
   })
 
   it('opens skill documentation links with the system browser', async () => {
@@ -1046,14 +1618,256 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
   })
 
+  it('does not treat the shared .agents directory as an agent in management views', async () => {
+    const sharedDetail: AgentDetail = {
+      ...agentDetail,
+      id: 'agents',
+      displayName: '.agents',
+      iconKey: 'agents',
+      skillsDir: '/Users/me/.agents/skills',
+      skills: [],
+    }
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      selectedAgentId: 'agents',
+      selectedAgentDetail: sharedDetail,
+      agents: [
+        { id: 'agents', displayName: '.agents', iconKey: 'agents', enabled: true, skillsDir: '/Users/me/.agents/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 68 } as AgentSummary,
+        { id: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', enabled: true, skillsDir: '/c', version: null, latestVersion: null, installed: true, managedSkillCount: 1, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+    })
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(agentDetail)
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText('.agents')).not.toBeInTheDocument()
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('已安装 Agent').parentElement).toHaveTextContent('1')
+
+    cleanup()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    await waitFor(() => expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code'))
+    expect(screen.queryByText('.agents')).not.toBeInTheDocument()
+  })
+
   it('Agent skills default to cards and can switch to list view', async () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (2)'))
+    expect(screen.getByRole('button', { name: '已管理 1' })).toHaveClass('active')
+    expect(screen.queryByText('未管理 Skills')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('选择 release-checklist')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /批量删除/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量选择' })).toBeInTheDocument()
     expect(container.querySelector('.sm2__agent-skill-grid')).not.toBeNull()
     expect(container.querySelector('.sm2__agent-skill-card')).not.toBeNull()
     fireEvent.click(screen.getByText('列表'))
     expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
+  })
+
+  it('opens a center library install dialog from Agent skills and distributes only to the selected agent', async () => {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill({
+          id: 'release-checklist',
+          name: 'Release Checklist',
+          description: 'Pre-release QA skill',
+          sourceType: 'skills.sh',
+          installedAgents: [
+            { agentId: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', mode: 'link', status: 'ok' },
+          ],
+        }),
+        makeSkill({
+          id: 'frontend-design',
+          name: 'frontend-design',
+          description: 'Visual design guidance',
+          sourceType: 'github',
+          installedAgents: [],
+        }),
+      ],
+    })
+    const preview: DistributionPreview = {
+      skillIds: ['frontend-design'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [
+        {
+          skillId: 'frontend-design',
+          agentId: 'claude-code',
+          action: 'create',
+          actualMode: 'link',
+          targetPath: '/c/skills/frontend-design',
+        },
+      ],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const previewDistribute = vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValueOnce(preview)
+    const executeDistribute = vi.spyOn(skillApiV2, 'executeDistribute').mockResolvedValueOnce(preview)
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '新增SKILL' }))
+
+    expect(screen.getByRole('heading', { name: '从技能库添加' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '从技能库添加' }).closest('.sm2__modal')).toHaveClass('sm2__modal--light-surface')
+    expect(screen.getByText('目标：')).toBeInTheDocument()
+    expect(screen.getAllByText('Claude Code').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: '未安装 1' })).toHaveClass('active')
+    expect(screen.getByText('frontend-design')).toBeInTheDocument()
+    expect(screen.queryByText('Release Checklist')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '已安装 1' }))
+    expect(screen.getByText('Release Checklist')).toBeInTheDocument()
+    expect(screen.queryByText('frontend-design')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '未安装 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'GitHub' }))
+    fireEvent.click(screen.getByLabelText('选择 frontend-design'))
+    fireEvent.click(screen.getByRole('button', { name: '添加 1 个 Skill' }))
+
+    await waitFor(() => {
+      expect(previewDistribute).toHaveBeenCalledWith(['frontend-design'], ['claude-code'], 'link')
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '执行分发' }))
+    await waitFor(() => expect(executeDistribute).toHaveBeenCalledWith(preview))
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('hides pack controls and center-library install action on unmanaged skills', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    expect(screen.queryByLabelText('技能包应用')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新增SKILL' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+  })
+
+  it('enters managed skill multi-select only after a batch action', async () => {
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+
+    expect(screen.queryByLabelText('选择 release-checklist')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+
+    expect(screen.getByLabelText('选择 release-checklist')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量删除 0 个' })).toBeInTheDocument()
+  })
+
+  it('shows immediate deleting feedback for a managed skill card', async () => {
+    let finishDelete: (() => void) | null = null
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishDelete = resolve
+    }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+
+    const deletingButton = (await screen.findAllByRole('button', { name: /删除中/ })).find((element) => element.tagName === 'BUTTON')
+    expect(deletingButton).toBeTruthy()
+    expect(deletingButton!).toHaveAttribute('aria-busy', 'true')
+    expect(container.querySelector('.sm2__agent-skill-card--deleting')).not.toBeNull()
+
+    expect(finishDelete).toBeTypeOf('function')
+    ;(finishDelete as unknown as () => void)()
+  })
+
+  it('deletes managed skills directly from the agent skill cards and in batches', async () => {
+    const deleteTarget = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
+    deleteTarget.mockClear()
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+    fireEvent.click(screen.getByLabelText('选择 release-checklist'))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 1 个' }))
+    expect(screen.getByRole('heading', { name: '确认批量删除 Skill？' })).toBeInTheDocument()
+    expect(screen.getByText('1个SKILL 将从当前Agent直接删除，您后续仍旧可以从中心库安装')).toBeInTheDocument()
+    expect(deleteTarget).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deleteTarget).toHaveBeenCalledTimes(2))
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('cancels managed skill batch deletion from the confirmation dialog', async () => {
+    const deleteTarget = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
+    deleteTarget.mockClear()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+    fireEvent.click(screen.getByLabelText('选择 release-checklist'))
+
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 1 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(screen.queryByRole('heading', { name: '确认批量删除 Skill？' })).not.toBeInTheDocument()
+    expect(deleteTarget).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('选择 release-checklist')).toBeChecked()
+  })
+
+  it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
+    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    expect(screen.queryByLabelText('选择 manual-skill')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+    expect(screen.queryByText('选择当前可接管')).not.toBeInTheDocument()
+    expect(screen.queryByText('已管理 Skills')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('claude-code', 'unmanaged-1', 'import_keep', null)
+    })
+    expect(listUnmanaged).toHaveBeenCalled()
   })
 
   it('localizes managed mode, direct claim, and unmanaged reason labels on the agent page', async () => {
@@ -1064,6 +1878,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('软连接')).toBeInTheDocument()
     expect(screen.getAllByText('直接分发').length).toBeGreaterThan(0)
     expect(screen.getByText('正常')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
     expect(screen.getByText('未在中心库')).toBeInTheDocument()
     expect(screen.queryByText('link')).not.toBeInTheDocument()
     expect(screen.queryByText('direct')).not.toBeInTheDocument()
@@ -1112,7 +1927,24 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText('link')).not.toBeInTheDocument()
   })
 
-  it('only offers hook-installed agents that do not already have the skill', async () => {
+  it('allows hook-installed agents to be selected even when the skill is already distributed', async () => {
+    const previewDistribute = vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValueOnce({
+      skillIds: ['release-checklist'],
+      targetAgents: ['codex'],
+      requestedMode: 'link',
+      changes: [
+        {
+          skillId: 'release-checklist',
+          agentId: 'codex',
+          action: 'reinstall',
+          actualMode: 'link',
+          targetPath: '/codex/release-checklist',
+          reason: 'Already managed - will refresh target from the center library.',
+        },
+      ],
+      blockers: [],
+      blockerDecisions: [],
+    })
     const { DistributeDialog } = await import('../components/skills-v2/DistributeDialog')
     render(
       <DistributeDialog
@@ -1135,19 +1967,168 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.queryByText('Gemini CLI')).not.toBeInTheDocument()
-    expect(screen.getByText('0/1')).toBeInTheDocument()
-    expect(screen.getByText('1 个可选')).toBeInTheDocument()
-    expect(screen.getByText('已安装 · 软连接')).toBeInTheDocument()
+    expect(screen.getByText('0/2')).toBeInTheDocument()
+    expect(screen.getByText('2 个可选')).toBeInTheDocument()
+    expect(screen.getByText('已安装 · 将重新软连接')).toBeInTheDocument()
     expect(Array.from(document.body.querySelectorAll('.sm2-distribute__agent strong')).map((node) => node.textContent)).toEqual([
       'Codex',
       'Claude Code',
     ])
 
     const codexRow = screen.getByText('Codex').closest('label')
-    expect(codexRow?.querySelector('input')).toBeDisabled()
+    expect(codexRow?.querySelector('input')).not.toBeDisabled()
 
     fireEvent.click(screen.getByText('Codex'))
-    expect(screen.getByText('预览影响').closest('button')).toBeDisabled()
+    fireEvent.click(screen.getByText('预览影响'))
+
+    await waitFor(() => {
+      expect(previewDistribute).toHaveBeenCalledWith(['release-checklist'], ['codex'], 'link')
+    })
+  })
+
+  it('localizes distribution change reasons in the confirmation preview', async () => {
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValueOnce({
+      skillIds: ['release-checklist'],
+      targetAgents: ['codex'],
+      requestedMode: 'copy',
+      changes: [
+        {
+          skillId: 'release-checklist',
+          agentId: 'codex',
+          action: 'convert',
+          actualMode: 'copy',
+          targetPath: '/codex/release-checklist',
+          reason: 'Already managed as link — will convert to copy.',
+        },
+      ],
+      blockers: [],
+      blockerDecisions: [],
+    })
+    const { DistributeDialog } = await import('../components/skills-v2/DistributeDialog')
+    render(
+      <DistributeDialog
+        skill={makeSkill({
+          installedAgents: [
+            { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'link', status: 'ok' },
+          ],
+        })}
+        agents={[
+          { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/codex', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+        ]}
+        defaultMode="copy"
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Codex'))
+    fireEvent.click(screen.getByText('预览影响'))
+
+    expect(await screen.findByText('已通过软连接管理，将转换为复制。')).toBeInTheDocument()
+    expect(screen.queryByText('Already managed as link — will convert to copy.')).not.toBeInTheDocument()
+  })
+
+  it('shows busy feedback while executing the final distribution action', async () => {
+    const distributionPreview: DistributionPreview = {
+      skillIds: ['release-checklist'],
+      targetAgents: ['codex'],
+      requestedMode: 'link',
+      changes: [
+        {
+          skillId: 'release-checklist',
+          agentId: 'codex',
+          action: 'reinstall',
+          actualMode: 'link',
+          targetPath: '/codex/release-checklist',
+          reason: 'Already managed - will refresh target from the center library.',
+        },
+      ],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValueOnce(distributionPreview)
+    let resolveExecute: (preview: DistributionPreview) => void = () => {}
+    const executePromise = new Promise<typeof distributionPreview>((resolve) => {
+      resolveExecute = resolve
+    })
+    const execute = vi.spyOn(skillApiV2, 'executeDistribute').mockReturnValue(executePromise)
+    const { DistributeDialog } = await import('../components/skills-v2/DistributeDialog')
+    render(
+      <DistributeDialog
+        skill={makeSkill({
+          installedAgents: [
+            { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'link', status: 'ok' },
+          ],
+        })}
+        agents={[
+          { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/codex', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+        ]}
+        defaultMode="link"
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Codex'))
+    fireEvent.click(screen.getByText('预览影响'))
+    fireEvent.click(await screen.findByRole('button', { name: '执行分发' }))
+
+    await waitFor(() => expect(execute).toHaveBeenCalledTimes(1))
+    const busyButton = screen.getByRole('button', { name: '处理中…' })
+    expect(busyButton).toBeDisabled()
+    expect(busyButton).toHaveAttribute('aria-busy', 'true')
+    expect(busyButton).toHaveAttribute('data-busy', 'true')
+    expect(busyButton.querySelector('.sm2__spinner')).not.toBeNull()
+    expect(screen.getByText('正在分发 1 个目标')).toBeInTheDocument()
+    const progress = screen.getByRole('progressbar', { name: '分发进度' })
+    expect(progress).toHaveAttribute('aria-valuemin', '0')
+    expect(progress).toHaveAttribute('aria-valuemax', '100')
+    expect(progress).toHaveAttribute('aria-valuenow')
+
+    resolveExecute(distributionPreview)
+  })
+
+  it('does not offer the shared .agents directory as a distribution target', async () => {
+    const { DistributeDialog } = await import('../components/skills-v2/DistributeDialog')
+    render(
+      <DistributeDialog
+        skill={makeSkill({ installedAgents: [] })}
+        agents={[
+          { id: 'agents', displayName: '.agents', iconKey: 'agents', enabled: true, skillsDir: '/Users/me/.agents/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+          { id: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', enabled: true, skillsDir: '/c', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+        ]}
+        defaultMode="link"
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText('.agents')).not.toBeInTheDocument()
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('1 个可选')).toBeInTheDocument()
+  })
+
+  it('marks changed copy targets before redistributing them', async () => {
+    const { DistributeDialog } = await import('../components/skills-v2/DistributeDialog')
+    render(
+      <DistributeDialog
+        skill={makeSkill({
+          installedAgents: [
+            { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'copy', status: 'copy_modified' },
+          ],
+        })}
+        agents={[
+          { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/codex', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+        ]}
+        defaultMode="copy"
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('已安装 · 副本已修改 · 将重新复制')).toBeInTheDocument()
+    expect(screen.getByText('1 个可选')).toBeInTheDocument()
+    expect(screen.getByText('Codex').closest('label')?.querySelector('input')).not.toBeDisabled()
   })
 
   it('allows selecting fully installed agents when switching distribution mode', async () => {
@@ -1293,6 +2274,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (1)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 0' }))
 
     const empty = container.querySelector('.sm2__unmanaged-empty')
     expect(empty).not.toBeNull()
@@ -1301,6 +2283,39 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(button!)
     await waitFor(() => expect(scan).toHaveBeenCalledWith('claude-code'))
+  })
+
+  it('shows immediate busy feedback while preparing to adopt an unmanaged skill', async () => {
+    let resolvePreview: (preview: AdoptPreview) => void = () => {}
+    const previewPromise = new Promise<AdoptPreview>((resolve) => {
+      resolvePreview = resolve
+    })
+    const preview = vi.spyOn(skillApiV2, 'previewAdopt').mockReturnValue(previewPromise)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
+
+    await waitFor(() => expect(preview).toHaveBeenCalledWith('claude-code', 'unmanaged-1'))
+    const busyButton = screen.getByRole('button', { name: '准备接管' })
+    expect(busyButton).toBeDisabled()
+    expect(busyButton).toHaveAttribute('aria-busy', 'true')
+
+    resolvePreview({
+      agentId: 'claude-code',
+      unmanagedId: 'unmanaged-1',
+      skillPath: '/c/skills/manual-skill',
+      inferredSkillId: 'manual-skill',
+      hash: 'manual-hash',
+      centerHasSameId: false,
+      canQuickAdopt: true,
+      options: [
+        { value: 'import_keep', label: 'Import to center, keep agent file as-is', destructive: false },
+      ],
+    })
   })
 
   it('hides unmanaged skills when the setting is disabled', async () => {
@@ -1511,6 +2526,280 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(document.body.querySelector('.sm2__pack-builder-modal')).not.toBeNull()
     expect(document.body.querySelector('.sm2__pack-builder-modal .sm2__skill-picker2')).not.toBeNull()
     expect(container.querySelector('.sm2__pack-canvas .sm2__pack-builder2')).toBeNull()
+  })
+
+  it('keeps custom pack creation focused on name and members only', async () => {
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    const { container } = render(<SkillPackPage />)
+
+    fireEvent.click(container.querySelector('.sm2__header .sm2__btn--primary')!)
+
+    expect(screen.getByLabelText('技能包名称')).toBeInTheDocument()
+    expect(screen.queryByText('描述')).not.toBeInTheDocument()
+    expect(screen.queryByText('标签')).not.toBeInTheDocument()
+  })
+
+  it('keeps pack builder skill choices visible and removable', async () => {
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    const { container } = render(<SkillPackPage />)
+
+    fireEvent.click(container.querySelector('.sm2__header .sm2__btn--primary')!)
+    fireEvent.click(screen.getByRole('button', { name: '选择 Release Checklist' }))
+
+    expect(screen.getByRole('button', { name: '选择 Release Checklist' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('status', { name: '已选择 Skill 数量' })).toHaveTextContent('1')
+
+    fireEvent.click(screen.getByRole('button', { name: '移除 Release Checklist' }))
+    expect(screen.getByRole('button', { name: '选择 Release Checklist' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('status', { name: '已选择 Skill 数量' })).toHaveTextContent('0')
+  })
+
+  it('treats the built-in full pack as read-only in the pack workspace', async () => {
+    const defaultPack: SkillPackDetail = {
+      id: 'default',
+      name: '全量技能包',
+      description: '中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [],
+      createdAt: '',
+      updatedAt: '',
+    }
+    useSkillStoreV2.setState({
+      packs: [
+        { id: 'default', name: '全量技能包', description: defaultPack.description, tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+      ],
+      selectedPackId: 'default',
+      selectedPackDetail: defaultPack,
+    })
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+
+    expect(screen.getAllByText('全量技能包').length).toBeGreaterThan(1)
+    expect(screen.getByText(/系统内置入口/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '应用' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '编辑' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '复制' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '移除' })).not.toBeInTheDocument()
+  })
+
+  it('shows pack toggles in the Agent Skills tab', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 0, healthy: true },
+          { id: 'pack-review', name: 'Code Review', description: '', tags: [], memberCount: 3, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(screen.getByText('Skills (2)'))
+
+    expect(screen.getByRole('button', { name: '应用 全量技能包' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '应用 Code Review' })).toBeInTheDocument()
+  })
+
+  it('applies an unapplied pack from the Agent Skills tab without a preview round trip', async () => {
+    const preview: DistributionPreview = {
+      skillIds: ['release-checklist'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const previewApply = vi.spyOn(skillApiV2, 'previewApplyPack')
+    const executeApply = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(preview)
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+
+    const applyButton = screen.getByRole('button', { name: '应用 全量技能包' })
+    expect(applyButton).not.toHaveClass('sm2__agent-pack-toggle--applied')
+
+    fireEvent.click(applyButton)
+
+    await waitFor(() => expect(executeApply).toHaveBeenCalledWith('default', ['claude-code'], 'link'))
+    expect(previewApply).not.toHaveBeenCalled()
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('removes an applied pack from the Agent Skills tab without a preview round trip', async () => {
+    const previewRemove = vi.spyOn(skillApiV2, 'previewRemovePackFromAgent')
+    const removePack = vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
+      packId: 'default',
+      agentId: 'claude-code',
+      removedClaims: 1,
+      removedTargets: 1,
+      preservedTargets: 0,
+    })
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        appliedPacks: [
+          { packId: 'default', packName: '全量技能包', memberCount: 73, agentId: 'claude-code', displayName: 'Claude Code' },
+        ],
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 1, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
+
+    await waitFor(() => expect(removePack).toHaveBeenCalledWith('default', 'claude-code'))
+    expect(previewRemove).not.toHaveBeenCalled()
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('clears stale page errors after a successful pack toggle', async () => {
+    vi.spyOn(skillApiV2, 'previewRemovePackFromAgent')
+    vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
+      packId: 'default',
+      agentId: 'claude-code',
+      removedClaims: 1,
+      removedTargets: 1,
+      preservedTargets: 0,
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      error: 'Query returned no rows',
+      selectedAgentDetail: {
+        ...agentDetail,
+        appliedPacks: [
+          { packId: 'default', packName: '全量技能包', memberCount: 73, agentId: 'claude-code', displayName: 'Claude Code' },
+        ],
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 1, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    expect(screen.getByText('Query returned no rows')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '取消应用 全量技能包' }))
+
+    await waitFor(() => expect(screen.queryByText('Query returned no rows')).not.toBeInTheDocument())
+  })
+
+  it('shows a floating progress toast immediately while applying a pack', async () => {
+    const preview: DistributionPreview = {
+      skillIds: ['release-checklist'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    let resolveExecute: (value: DistributionPreview) => void = () => {}
+    const executePromise = new Promise<DistributionPreview>((resolve) => {
+      resolveExecute = resolve
+    })
+    vi.spyOn(skillApiV2, 'previewApplyPack')
+    vi.spyOn(skillApiV2, 'executeApplyPack').mockReturnValue(executePromise)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '应用 全量技能包' }))
+
+    const progressToast = await screen.findByRole('status', { name: '技能包应用进度' })
+    expect(progressToast).toHaveClass('sm2__pack-apply-progress--floating')
+    expect(progressToast).toHaveTextContent('正在应用')
+    expect(progressToast).toHaveTextContent('全量技能包')
+    expect(screen.queryByText('确认应用「全量技能包」？')).not.toBeInTheDocument()
+    expect(skillApiV2.previewApplyPack).not.toHaveBeenCalled()
+    expect(screen.getByRole('progressbar', { name: '技能包应用进度条' })).toHaveAttribute('aria-valuenow')
+
+    resolveExecute(preview)
+
+    await waitFor(() => expect(progressToast).toHaveTextContent('已应用'))
+    expect(screen.getByRole('progressbar', { name: '技能包应用进度条' })).toHaveAttribute('aria-valuenow', '100')
+  })
+
+  it('auto dismisses the completed pack progress toast', async () => {
+    vi.useFakeTimers()
+    const preview: DistributionPreview = {
+      skillIds: ['release-checklist'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(preview)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 73, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+    })
+
+    try {
+      const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+      render(<AgentManagementPage />)
+      fireEvent.click(screen.getByText('Skills (2)'))
+      fireEvent.click(screen.getByRole('button', { name: '应用 全量技能包' }))
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('status', { name: '技能包应用进度' })).toHaveTextContent('已应用')
+
+      await act(async () => {
+        vi.advanceTimersByTime(2500)
+      })
+
+      expect(screen.queryByRole('status', { name: '技能包应用进度' })).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
