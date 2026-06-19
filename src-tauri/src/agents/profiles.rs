@@ -1588,7 +1588,13 @@ fn hook_selection_path() -> PathBuf {
         return PathBuf::from(path);
     }
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    home.join(".agentbro").join("hook-event-selections.json")
+    let new_path = home
+        .join(".agentbro")
+        .join("hooks")
+        .join("event-selections.json");
+    let old_path = home.join(".agentbro").join("hook-event-selections.json");
+    crate::data_dir::migrate_file(&old_path, &new_path);
+    new_path
 }
 
 fn load_stored_hook_selections() -> StoredHookSelections {

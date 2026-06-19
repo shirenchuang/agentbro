@@ -241,7 +241,7 @@ impl RemoteInstaller {
 
     pub fn remote_agent_attach_command(host: &RemoteHost) -> String {
         format!(
-            "python3 \"$HOME/.agentbro/remote-agent.py\" --mode attach --control-socket {}",
+            "python3 \"$HOME/.agentbro/remote/agent.py\" --mode attach --control-socket {}",
             crate::agents::hook_manager::shell_quote(&remote_agent_control_socket_path(host))
         )
     }
@@ -259,7 +259,7 @@ home = pathlib.Path.home()
 config_path = home
 for part in json.loads(r'''{config_path_parts_json}'''):
     config_path = config_path / part
-hook_script = home / ".agentbro" / "remote-hook.py"
+hook_script = home / ".agentbro" / "remote" / "hook.py"
 if not hook_script.exists():
     print("no_script")
 elif not config_path.exists():
@@ -269,7 +269,7 @@ else:
         data = json.loads(config_path.read_text() or "{{}}")
         hooks = data.get("hooks", {{}})
         found = any(
-            "remote-hook.py" in json.dumps(entry, sort_keys=True)
+            "remote-hook.py" in json.dumps(entry, sort_keys=True) or "remote/hook.py" in json.dumps(entry, sort_keys=True)
             for entries in hooks.values()
             if isinstance(entries, list)
             for entry in entries
@@ -296,7 +296,7 @@ else:
 
         let python = format!(
             r#"import base64, os, pathlib
-target = pathlib.Path.home() / ".agentbro" / "remote-agent.py"
+target = pathlib.Path.home() / ".agentbro" / "remote" / "agent.py"
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_bytes(base64.b64decode('{}'))
 os.chmod(target, 0o755)
@@ -337,7 +337,7 @@ print(target)
 
         let python = format!(
             r#"import base64, os, pathlib
-target = pathlib.Path.home() / ".agentbro" / "remote-hook.py"
+target = pathlib.Path.home() / ".agentbro" / "remote" / "hook.py"
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_bytes(base64.b64decode('{}'))
 os.chmod(target, 0o755)
@@ -398,7 +398,7 @@ hook_cmd = " ".join([
     "AGENTBRO_HOST_ID=" + shlex.quote(host_id),
     "AGENTBRO_HOST_NAME=" + shlex.quote(host_name),
     "AGENTBRO_AGENT=" + shlex.quote(source),
-    "python3 ~/.agentbro/remote-hook.py",
+    "python3 ~/.agentbro/remote/hook.py",
 ])
 
 def is_agentbro_entry(value):
@@ -408,6 +408,7 @@ def is_agentbro_entry(value):
         text = str(value)
     return (
         "remote-hook.py" in text
+        or "remote/hook.py" in text
         or "agentbro-bridge" in text
         or "AgentBro managed integration" in text
     )
@@ -494,7 +495,7 @@ config_path = home
 for part in json.loads(r'''{config_path_parts_json}'''):
     config_path = config_path / part
 source = json.loads(r'''{source_json}''')
-hook_script = home / ".agentbro" / "remote-hook.py"
+hook_script = home / ".agentbro" / "remote" / "hook.py"
 
 def is_agentbro_entry(value):
     try:
@@ -503,6 +504,7 @@ def is_agentbro_entry(value):
         text = str(value)
     return (
         "remote-hook.py" in text
+        or "remote/hook.py" in text
         or "agentbro-bridge" in text
         or "AgentBro managed integration" in text
     )
@@ -673,7 +675,7 @@ def _safe_state_name(session_id):
     return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in text)[:160]
 
 def _session_state_path(session_id):
-    root = os.path.expanduser("~/.agentbro/remote-state")
+    root = os.path.expanduser("~/.agentbro/remote/state")
     try:
         os.makedirs(root, exist_ok=True)
     except Exception:
@@ -1020,14 +1022,14 @@ fn remote_agent_control_socket_path(host: &RemoteHost) -> String {
 
 fn remote_agent_service_pattern(host: &RemoteHost) -> String {
     format!(
-        ".agentbro/remote-agent.py --mode service --hook-socket {}",
+        ".agentbro/remote/agent.py --mode service --hook-socket {}",
         host.remote_socket_path
     )
 }
 
 fn remote_agent_attach_pattern(host: &RemoteHost) -> String {
     format!(
-        ".agentbro/remote-agent.py --mode attach --control-socket {}",
+        ".agentbro/remote/agent.py --mode attach --control-socket {}",
         remote_agent_control_socket_path(host)
     )
 }
@@ -1045,8 +1047,8 @@ fn remote_agent_service_command(host: &RemoteHost) -> String {
         r#"
 hook_socket={hook_socket}
 control_socket={control_socket}
-install_root="${{HOME:-.}}/.agentbro"
-agent_script="$install_root/remote-agent.py"
+install_root="${{HOME:-.}}/.agentbro/remote"
+agent_script="$install_root/agent.py"
 mkdir -p "$install_root" "$install_root/run" "$install_root/logs" "$(dirname "$hook_socket")" "$(dirname "$control_socket")"
 if [ -S "$hook_socket" ] && [ -S "$control_socket" ]; then
   exit 0
@@ -1414,7 +1416,7 @@ elif [ -e "$control_path" ]; then
 else
   printf 'remote_agent_control=missing\n'
 fi
-agent_script="${{HOME:-}}/.agentbro/remote-agent.py"
+agent_script="${{HOME:-}}/.agentbro/remote/agent.py"
 if [ -x "$agent_script" ]; then
   printf 'remote_agent_script=executable\n'
 elif [ -f "$agent_script" ]; then
@@ -1422,12 +1424,12 @@ elif [ -f "$agent_script" ]; then
 else
   printf 'remote_agent_script=missing\n'
 fi
-if command -v pgrep >/dev/null 2>&1 && pgrep -f ".agentbro/remote-agent.py --mode service --hook-socket $socket_path" >/dev/null 2>&1; then
+if command -v pgrep >/dev/null 2>&1 && pgrep -f ".agentbro/remote/agent.py --mode service --hook-socket $socket_path" >/dev/null 2>&1; then
   printf 'remote_agent_service=running\n'
 else
   printf 'remote_agent_service=stopped\n'
 fi
-hook_script="${{HOME:-}}/.agentbro/remote-hook.py"
+hook_script="${{HOME:-}}/.agentbro/remote/hook.py"
 if [ -x "$hook_script" ]; then
   printf 'hook_script=executable\n'
 elif [ -f "$hook_script" ]; then
@@ -1743,9 +1745,9 @@ fn build_probe_checks(
         }
         .to_string(),
         detail: match hook_script {
-            "executable" => "~/.agentbro/remote-hook.py is executable".to_string(),
-            "present" => "~/.agentbro/remote-hook.py exists but is not executable".to_string(),
-            _ => "~/.agentbro/remote-hook.py is not installed".to_string(),
+            "executable" => "~/.agentbro/remote/hook.py is executable".to_string(),
+            "present" => "~/.agentbro/remote/hook.py exists but is not executable".to_string(),
+            _ => "~/.agentbro/remote/hook.py is not installed".to_string(),
         },
     });
 
@@ -2032,7 +2034,7 @@ mod tests {
         );
 
         let ensure = remote_agent_service_command(&host);
-        assert!(ensure.contains("remote-agent.py"));
+        assert!(ensure.contains("remote/agent.py"));
         assert!(ensure.contains("--mode service"));
         assert!(ensure.contains("--hook-socket \"$hook_socket\""));
         assert!(ensure.contains("--control-socket \"$control_socket\""));

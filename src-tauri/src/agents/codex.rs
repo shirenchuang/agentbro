@@ -487,7 +487,7 @@ impl AgentAdapter for CodexAdapter {
         raw: &serde_json::Value,
     ) -> Result<AgentEvent, Box<dyn std::error::Error>> {
         let agent = raw.get("agent").and_then(|v| v.as_str()).unwrap_or("");
-        if !agent.is_empty() && agent != "codex" {
+        if !agent.is_empty() && !matches!(agent, "codex" | "openai.codex") {
             return Err("not a codex event".into());
         }
 
@@ -1235,6 +1235,25 @@ trust_level = "trusted"
             } => {
                 assert_eq!(agent_type, "codex");
                 assert_eq!(project, "agentbro");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_openai_codex_alias_as_codex_session() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "openai.codex",
+                "event": "SessionStart",
+                "session_id": "s1",
+                "cwd": "/tmp/agentbro"
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::SessionStart { agent_type, .. } => {
+                assert_eq!(agent_type, "codex");
             }
             other => panic!("unexpected event: {other:?}"),
         }

@@ -185,23 +185,9 @@ fn local_explanation(skill_id: &str, content: &str, lang: &str) -> String {
 }
 
 fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    if !content.starts_with("---") {
-        return map;
-    }
-    let Some(frontmatter) = content.split("---").nth(1) else {
-        return map;
-    };
-    for line in frontmatter.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if !key.trim().is_empty() && !value.is_empty() {
-            map.insert(key.trim().to_string(), value.to_string());
-        }
-    }
-    map
+    crate::skills::frontmatter::parse_content(content)
+        .into_iter()
+        .collect()
 }
 
 fn first_non_empty_body_line(content: &str) -> Option<String> {

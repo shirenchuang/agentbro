@@ -13,19 +13,15 @@ impl StepFunAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".stepfun");
-        let status = if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        };
+        let status = Self::detect_status();
         Self {
             config_root,
             status,
         }
     }
 
-    fn is_installed() -> bool {
-        std::path::Path::new("/Applications/StepFun.app").exists()
+    fn detect_status() -> AdapterStatus {
+        super::programs::detected_status_for_agent_program("stepfun")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -61,11 +57,7 @@ impl AgentAdapter for StepFunAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        }
+        Self::detect_status()
     }
 
     fn parse_event(

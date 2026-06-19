@@ -64,17 +64,15 @@ fn detect_tool(
     }
 }
 
-/// Cursor-specific detection (CLI or macOS app bundle)
+/// Cursor-specific detection (CLI or desktop app)
 fn detect_cursor() -> DetectedTool {
-    let binary_path = find_binary(&["cursor"]);
+    let binary_path = find_binary(&["cursor", "cursor-agent"]);
     let config_dir = find_config_dir(&[".cursor"]);
+    let program_status = super::programs::detected_status_for_agent_program("cursor");
 
-    let app_installed = std::path::Path::new("/Applications/Cursor.app").exists()
-        || std::path::Path::new("/Applications/Cursor.app/Contents/MacOS/Cursor").exists();
-
-    let status = if binary_path.is_some() || app_installed {
+    let status = if binary_path.is_some() || matches!(program_status, AdapterStatus::Available) {
         AdapterStatus::Available
-    } else if config_dir.is_some() {
+    } else if config_dir.is_some() || matches!(program_status, AdapterStatus::Installed) {
         AdapterStatus::Installed
     } else {
         AdapterStatus::Unavailable

@@ -6243,10 +6243,20 @@ fn collect_log_files() -> Vec<(String, Vec<u8>)> {
 }
 
 fn bridge_invocations_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let new_path = home
         .join(".agentbro")
-        .join("hook-invocations.jsonl")
+        .join("hooks")
+        .join("invocations.jsonl");
+    if new_path.exists() {
+        return new_path;
+    }
+    // Fall back to legacy path for reading
+    let old_path = home.join(".agentbro").join("hook-invocations.jsonl");
+    if old_path.exists() {
+        return old_path;
+    }
+    new_path
 }
 
 fn recent_bridge_invocations(limit: usize) -> Vec<String> {

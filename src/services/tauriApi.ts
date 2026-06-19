@@ -1443,6 +1443,8 @@ export interface HookStatus {
   supportsEventSelection?: boolean
   events?: HookEventStatus[]
   enabledEventNames?: string[]
+  bridgeCommand?: string | null
+  bridgePath?: string | null
   isCustom?: boolean
   customId?: string
 }

@@ -29,8 +29,8 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
                 h.join(".agents").join("skills"),
                 h.join(".codex").join("agents"),
             ],
-            mcp_config: Some(h.join(".codex").join("config.json")),
-            settings_file: Some(h.join(".codex").join("config.json")),
+            mcp_config: Some(h.join(".codex").join("config.toml")),
+            settings_file: Some(h.join(".codex").join("config.toml")),
         },
         "gemini" | "gemini-cli" => SkillPaths {
             skill_dirs: vec![h.join(".gemini").join("skills")],
@@ -45,15 +45,17 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: Some(h.join(".cursor").join("mcp.json")),
             settings_file: Some(h.join(".cursor").join("mcp.json")),
         },
-        "antigravity" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => SkillPaths {
-            skill_dirs: vec![h.join(".agents").join("skills")],
-            mcp_config: None,
-            settings_file: None,
-        },
+        "agents" | "antigravity" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => {
+            SkillPaths {
+                skill_dirs: vec![h.join(".agents").join("skills")],
+                mcp_config: None,
+                settings_file: None,
+            }
+        }
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
-        "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".agents/skills"),
+        "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".kimi/skills"),
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),
@@ -125,6 +127,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "qoder",
         "qoder-cli",
         "copilot",
+        "agents",
         "antigravity",
         "qwen",
         "kimi",
@@ -163,6 +166,15 @@ pub fn central_skills_dir() -> PathBuf {
 
 pub fn legacy_agentbro_skills_dir() -> PathBuf {
     home().join(".agentbro").join("skills")
+}
+
+pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
+    let h = home();
+    match agent {
+        "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
+        "codex" => Some(h.join(".codex").join("plugins").join("cache")),
+        _ => None,
+    }
 }
 
 pub fn central_skill_dirs() -> Vec<PathBuf> {

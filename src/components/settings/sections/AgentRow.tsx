@@ -1,7 +1,7 @@
 import type { MouseEvent } from 'react'
 import type { AgentOperationState } from '../../../stores/agentStore'
 import type { AgentProgramInfo } from '../../../services/agentApi'
-import { InlineConfirmAction } from '../../skills/InlineConfirmAction'
+import { InlineConfirmAction } from '../../shared/InlineConfirmAction'
 
 interface AgentRowProps {
   agent: AgentProgramInfo

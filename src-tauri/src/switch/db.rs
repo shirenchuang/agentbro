@@ -14,6 +14,9 @@ impl SwitchDatabase {
         let db_dir = Self::db_dir()?;
         std::fs::create_dir_all(&db_dir)?;
         let db_path = db_dir.join("switch.db");
+        // Migrate from old flat location
+        let old_db = crate::data_dir::agentbro_home().join("switch.db");
+        crate::data_dir::migrate_sqlite(&old_db, &db_path);
         let conn = Connection::open(&db_path)?;
         Self::init_connection(&conn, true)?;
         Ok(Self {
@@ -63,7 +66,7 @@ impl SwitchDatabase {
 
     fn db_dir() -> anyhow::Result<PathBuf> {
         dirs::home_dir()
-            .map(|home| home.join(".agentbro"))
+            .map(|home| home.join(".agentbro").join("switch"))
             .ok_or_else(|| anyhow::anyhow!("home dir not found"))
     }
 }
