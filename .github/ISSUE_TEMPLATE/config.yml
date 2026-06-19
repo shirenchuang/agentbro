@@ -1,5 +1,14 @@
 blank_issues_enabled: false
 contact_links:
+  - name: 使用问题 / Q&A
+    url: https://github.com/shirenchuang/agentbro/discussions/categories/q-a
+    about: 安装、Hook Doctor、权限、远程 SSH、Agent 接入等使用问题请优先发到 Discussions。
+  - name: 展示你的 AgentBro 配置
+    url: https://github.com/shirenchuang/agentbro/discussions/categories/show-and-tell
+    about: 分享你的 Agent 栈、主题、宠物、Skill Center 或远程开发工作流。
   - name: AgentBro 微信交流群
     url: https://www.agentbro.net
     about: 加入 AgentBro 社区，讨论使用问题、接入建议和路线图。
+  - name: 安全漏洞 / Security report
+    url: https://github.com/shirenchuang/agentbro/security/advisories/new
+    about: 请不要公开提交安全漏洞、密钥泄露、签名或供应链风险。

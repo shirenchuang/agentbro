@@ -1,7 +1,11 @@
 name: Agent 接入请求
 description: 请求 AgentBro 支持新的 AI 编程 Agent。
-labels: ["agent-request"]
+labels: ["enhancement", "agent-adapter"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        这个模板用于请求新的 AI 编程 Agent 接入。请尽量提供官方文档和事件样例，这会显著降低适配成本。
   - type: input
     id: agent_name
     attributes:
@@ -16,6 +20,17 @@ body:
       placeholder: https://github.com/...
     validations:
       required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: 安装方式
+      description: 请提供官方安装命令、下载页、包管理器名称，或 App 路径信息。
+      placeholder: |
+        brew install ...
+        npm install -g ...
+        /Applications/...
+    validations:
+      required: false
   - type: dropdown
     id: hook_type
     attributes:
@@ -26,15 +41,37 @@ body:
         - YAML 配置
         - TOML 配置
         - CLI 参数 / 环境变量
+        - 本地日志 / transcript 文件
+        - MCP / 插件机制
         - 其他 / 暂不清楚
     validations:
       required: true
+  - type: input
+    id: hook_docs
+    attributes:
+      label: Hook / 事件文档链接
+      placeholder: https://...
+    validations:
+      required: false
   - type: textarea
     id: event_examples
     attributes:
       label: 事件样例
       description: 如果有 hook 输出、配置片段或日志样例，请贴在这里。注意删除 token、路径隐私等敏感信息。
       render: json
+    validations:
+      required: false
+  - type: checkboxes
+    id: support_scope
+    attributes:
+      label: 期望支持范围
+      options:
+        - label: 灵动岛运行时事件展示
+        - label: 权限请求 / 问题 / 计划审批
+        - label: Agent 管理安装状态检测
+        - label: Skills / MCP / 插件 / 路径扫描
+        - label: 项目级配置扫描
+        - label: 远程 SSH 转发
     validations:
       required: false
   - type: textarea

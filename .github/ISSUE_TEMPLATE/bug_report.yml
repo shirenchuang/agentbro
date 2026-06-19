@@ -2,6 +2,10 @@ name: Bug 反馈
 description: 反馈 AgentBro 中不符合预期的行为。
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先确认你没有贴出 API token、SSH 密钥、私有仓库名、公司内网域名或其它敏感信息。
   - type: textarea
     id: description
     attributes:
@@ -9,6 +13,31 @@ body:
       description: 清楚描述你遇到的问题，以及它影响了哪个功能或使用场景。
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      description: 这个问题主要出现在哪一块？
+      options:
+        - 灵动岛 / 浮窗
+        - Hook 接入 / Hook Doctor
+        - Agent 管理
+        - Skill Center / Skill Packs
+        - 宠物模式 / 宠物市场
+        - 远程 SSH 转发
+        - 安装 / 更新 / 启动
+        - 主题 / 外观
+        - 其它
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: 相关 Agent
+      description: 如果问题和某个 Agent 有关，请填写名称和版本。
+      placeholder: 例如 Claude Code 1.x / Codex CLI / Gemini CLI / Cursor
+    validations:
+      required: false
   - type: textarea
     id: expected
     attributes:
@@ -35,14 +64,29 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: install_source
+    attributes:
+      label: 安装来源
+      options:
+        - Homebrew Cask
+        - GitHub Releases DMG
+        - 国内直链 DMG
+        - 本地源码构建
+        - Windows 安装包
+        - 其它
+    validations:
+      required: true
+  - type: dropdown
     id: os
     attributes:
-      label: macOS 版本
+      label: 系统版本
       options:
+        - macOS 16
         - macOS 15 (Sequoia)
         - macOS 14 (Sonoma)
         - macOS 13 (Ventura)
-        - 其他
+        - Windows 预览版
+        - 其他 / 不确定
     validations:
       required: true
   - type: dropdown
@@ -52,8 +96,18 @@ body:
       options:
         - Apple Silicon (arm64)
         - Intel (x86_64)
+        - Windows x64
+        - 不确定
     validations:
       required: true
+  - type: textarea
+    id: hook_doctor
+    attributes:
+      label: Hook Doctor / 诊断结果
+      description: 如果问题和 Hook、Agent 接入或远程转发有关，请贴出 Hook Doctor 相关结果。请先删除 token、路径隐私和机器名。
+      render: text
+    validations:
+      required: false
   - type: textarea
     id: logs
     attributes:

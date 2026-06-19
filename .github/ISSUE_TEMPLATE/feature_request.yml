@@ -2,6 +2,28 @@ name: 功能建议
 description: 提议新功能或现有功能改进。
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        如果只是使用问题或想先讨论方案，请优先发到 [GitHub Discussions](https://github.com/shirenchuang/agentbro/discussions)。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 功能范围
+      description: 这个建议主要属于哪一类？
+      options:
+        - 灵动岛 / 浮窗体验
+        - Hook 接入 / Agent 事件
+        - Agent 管理
+        - Skill Center / Skill Packs
+        - 宠物模式 / 宠物市场
+        - 远程 SSH 转发
+        - 通知 / Webhook
+        - 主题 / 外观
+        - 文档 / 社区
+        - 其它
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
@@ -24,6 +46,17 @@ body:
       placeholder: |
         - ...
         - ...
+    validations:
+      required: false
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 你认为的优先级
+      description: 这只是帮助 maintainer 判断需求强度，不代表排期承诺。
+      options:
+        - Nice to have
+        - 重要，但有 workaround
+        - 阻塞我的日常使用
     validations:
       required: false
   - type: textarea
