@@ -1617,8 +1617,8 @@ impl Service {
         let hooks = root.join(".codex").join("hooks.json");
         let skills = scan_project_skills(agent_id, &skills_dir, center_hashes)?;
         let config_paths = existing_paths(&[config.clone(), hooks]);
-        let mcp_config_paths = existing_paths(&[config.clone()]);
-        let plugin_config_paths = existing_paths(&[config.clone()]);
+        let mcp_config_paths = existing_paths(std::slice::from_ref(&config));
+        let plugin_config_paths = existing_paths(std::slice::from_ref(&config));
         let mcp_servers = read_toml_mcp_servers_path(&config);
         let plugins = read_codex_project_plugins_path(&config);
         let mut health = Vec::new();
@@ -2905,10 +2905,7 @@ impl Service {
                 // deleting and re-importing it.
             }
         }
-        if !dest.exists() {
-            fsutil::copy_dir_recursive(src, &dest)?;
-            wrote_center = true;
-        } else if option == "overwrite_center" {
+        if !dest.exists() || option == "overwrite_center" {
             fsutil::copy_dir_recursive(src, &dest)?;
             wrote_center = true;
         }
@@ -4644,7 +4641,7 @@ fn read_codex_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|plugin| plugin.name.to_lowercase());
     out
 }
 

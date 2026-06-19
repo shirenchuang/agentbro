@@ -159,12 +159,12 @@ pub fn reveal_path(target: &str) -> Result<(), String> {
     let target = expand_tilde(target);
     #[cfg(target_os = "macos")]
     {
-        return std::process::Command::new("open")
+        std::process::Command::new("open")
             .arg("-R")
             .arg(&target)
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("reveal: {}", e));
+            .map_err(|e| format!("reveal: {}", e))
     }
     #[cfg(not(target_os = "macos"))]
     {

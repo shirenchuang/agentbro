@@ -793,7 +793,7 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
                 .or_else(|| Some(source_label.to_string())),
         });
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|plugin| plugin.name.to_lowercase());
     out
 }
 
