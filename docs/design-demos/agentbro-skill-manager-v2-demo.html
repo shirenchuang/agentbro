@@ -1,0 +1,2203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgentBro Skill Manager v2</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef3f1;
+      --surface: #fbfcfb;
+      --surface-2: #f4f7f6;
+      --surface-3: #e9f0ee;
+      --ink: #17211f;
+      --muted: #68726f;
+      --faint: #8c9692;
+      --line: #d9e2df;
+      --line-strong: #becbc7;
+      --brand: #0f766e;
+      --brand-ink: #074b45;
+      --blue: #2f6fb3;
+      --amber: #b8641b;
+      --red: #b23a48;
+      --green: #1e855f;
+      --violet: #6d57b8;
+      --shadow: 0 20px 60px rgba(23, 33, 31, 0.13);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(15, 118, 110, 0.09) 1px, transparent 1px) 0 0 / 48px 48px,
+        linear-gradient(0deg, rgba(47, 111, 179, 0.06) 1px, transparent 1px) 0 0 / 48px 48px,
+        radial-gradient(circle at 18% 12%, rgba(15, 118, 110, 0.11), transparent 28%),
+        radial-gradient(circle at 80% 8%, rgba(184, 100, 27, 0.1), transparent 26%),
+        var(--bg);
+      letter-spacing: 0;
+    }
+
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+
+    .app {
+      width: min(1480px, calc(100vw - 28px));
+      height: min(930px, calc(100vh - 28px));
+      min-height: 760px;
+      margin: 14px auto;
+      display: grid;
+      grid-template-columns: 246px minmax(0, 1fr);
+      overflow: hidden;
+      background: rgba(251, 252, 251, 0.96);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .rail {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: #dfe9e5;
+      border-right: 1px solid var(--line-strong);
+    }
+
+    .brand {
+      height: 74px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .brand img {
+      width: 38px;
+      height: 38px;
+      object-fit: contain;
+      border-radius: 10px;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.1;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .nav {
+      padding: 14px 10px;
+    }
+
+    .nav-label {
+      padding: 14px 10px 7px;
+      color: #77827e;
+      font-size: 11px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .nav button {
+      width: 100%;
+      min-width: 0;
+      height: 42px;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin: 2px 0;
+      padding: 0 10px;
+      border: 0;
+      border-radius: var(--radius);
+      background: transparent;
+      color: #53605c;
+      text-align: left;
+    }
+
+    .nav button:hover {
+      background: rgba(255, 255, 255, 0.52);
+      color: var(--ink);
+    }
+
+    .nav button.active {
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: inset 3px 0 0 var(--brand), inset 0 0 0 1px rgba(23, 33, 31, 0.05);
+    }
+
+    .nav .glyph,
+    .mini-glyph {
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 7px;
+      background: rgba(23, 33, 31, 0.08);
+      color: #22302d;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .nav .count {
+      min-width: 22px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 999px;
+      background: rgba(23, 33, 31, 0.08);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .rail-footer {
+      margin-top: auto;
+      padding: 14px;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .path-card {
+      padding: 12px;
+      border: 1px solid rgba(15, 118, 110, 0.2);
+      border-radius: 10px;
+      background: rgba(244, 252, 249, 0.82);
+    }
+
+    .path-card strong {
+      display: block;
+      font-size: 12px;
+    }
+
+    .path-card code {
+      display: block;
+      margin-top: 7px;
+      color: var(--brand-ink);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 74px minmax(0, 1fr);
+      background: var(--surface);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .heading h1 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.15;
+    }
+
+    .heading p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .btn {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .btn:hover {
+      border-color: #a8b7b2;
+      background: #f9fbfa;
+    }
+
+    .btn.primary {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .btn.warning {
+      border-color: rgba(184, 100, 27, 0.34);
+      color: #6b3c13;
+      background: #fff6ec;
+    }
+
+    .btn.danger {
+      border-color: rgba(178, 58, 72, 0.32);
+      color: #7d2030;
+      background: #fff2f4;
+    }
+
+    .content {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0)),
+        var(--surface);
+    }
+
+    .view {
+      display: none;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .view.active { display: block; }
+
+    .skills-layout {
+      height: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 342px;
+      min-height: 0;
+    }
+
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 22px 22px 32px;
+    }
+
+    .inspector {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 18px;
+      border-left: 1px solid var(--line);
+      background: #f8faf9;
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      min-width: 0;
+      min-height: 82px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 23px;
+      line-height: 1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 14px;
+    }
+
+    .search {
+      flex: 1 1 180px;
+      height: 36px;
+      min-width: 0;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .search:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .view-toggle {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 3px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+
+    .view-toggle button {
+      height: 26px;
+      min-width: 54px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 780;
+    }
+
+    .view-toggle button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 4px rgba(23, 33, 31, 0.08);
+    }
+
+    .skill-browser {
+      min-width: 0;
+    }
+
+    .skill-card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .skill-card,
+    .skill-list-row {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      text-align: left;
+    }
+
+    .skill-card {
+      min-height: 176px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 13px;
+    }
+
+    .skill-card:hover,
+    .skill-list-row:hover {
+      border-color: var(--line-strong);
+      background: #fbfcfb;
+    }
+
+    .skill-card.active,
+    .skill-list-row.active {
+      border-color: rgba(15, 118, 110, 0.42);
+      background: #eef8f4;
+      box-shadow: inset 3px 0 0 var(--brand);
+    }
+
+    .skill-card-head,
+    .skill-list-title {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .skill-card h3,
+    .skill-list-title h3 {
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    .skill-card p,
+    .skill-list-title p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .skill-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .agent-icon-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .agent-icon {
+      width: 26px;
+      height: 26px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #4f5b57;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+
+    .agent-icon.link {
+      border-color: rgba(15, 118, 110, 0.28);
+      background: #dff5ee;
+      color: #07524d;
+    }
+
+    .agent-icon.copy {
+      border-color: rgba(47, 111, 179, 0.24);
+      background: #e5f0fb;
+      color: #174f83;
+    }
+
+    .agent-icon.warn {
+      border-color: rgba(184, 100, 27, 0.28);
+      background: #fff0dd;
+      color: #71400f;
+    }
+
+    .agent-icon.bad {
+      border-color: rgba(178, 58, 72, 0.3);
+      background: #ffe5e9;
+      color: #7d2030;
+    }
+
+    .skill-list-view {
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .skill-list-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(170px, 0.75fr) 132px auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 74px;
+      padding: 11px 12px;
+      border-width: 0 0 1px 0;
+      border-radius: 0;
+    }
+
+    .skill-list-row:last-child {
+      border-bottom: 0;
+    }
+
+    .skill-list-row.active {
+      box-shadow: inset 3px 0 0 var(--brand);
+    }
+
+    .skill-browser.list .skill-card-grid {
+      display: none;
+    }
+
+    .skill-browser.list .skill-list-view {
+      display: block;
+    }
+
+    .source {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 7px;
+      color: var(--faint);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .status-pill {
+      min-width: 66px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 780;
+      white-space: nowrap;
+    }
+
+    .status-pill.link { color: #07524d; background: #dff5ee; }
+    .status-pill.copy { color: #174f83; background: #e5f0fb; }
+    .status-pill.update { color: #71400f; background: #fff0dd; }
+    .status-pill.unmanaged { color: #5d4a86; background: #efeafd; }
+    .status-pill.conflict { color: #7d2030; background: #ffe5e9; }
+    .status-pill.empty { color: #7f8a86; background: #eef2f0; }
+
+    .tiny-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .icon-btn {
+      width: 30px;
+      height: 30px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .icon-btn:hover {
+      color: var(--ink);
+      border-color: var(--line-strong);
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .panel + .panel { margin-top: 12px; }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-head strong {
+      font-size: 13px;
+    }
+
+    .panel-body { padding: 12px; }
+
+    .detail-title {
+      display: grid;
+      grid-template-columns: 40px 1fr;
+      gap: 11px;
+      align-items: center;
+    }
+
+    .detail-title h2 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.2;
+    }
+
+    .detail-title p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      gap: 9px;
+      align-items: start;
+      padding: 8px 0;
+      border-bottom: 1px solid #eef2f0;
+      font-size: 12px;
+    }
+
+    .kv:last-child { border-bottom: 0; }
+    .kv span { color: var(--muted); }
+    .kv code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .claim-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .claim {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfb;
+      font-size: 12px;
+    }
+
+    .claim small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .pack-layout,
+    .agent-management-layout {
+      display: grid;
+      grid-template-columns: 292px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .side-panel,
+    .detail-panel,
+    .diagnostic-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .side-panel header,
+    .detail-panel header,
+    .diagnostic-card header {
+      padding: 13px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfb;
+    }
+
+    .side-panel h3,
+    .detail-panel h3,
+    .diagnostic-card h3 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+    }
+
+    .side-panel p,
+    .detail-panel p,
+    .diagnostic-card p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .side-panel .body,
+    .detail-panel .body,
+    .diagnostic-card .body {
+      padding: 13px;
+    }
+
+    .list-menu {
+      display: grid;
+      gap: 6px;
+    }
+
+    .list-menu button {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      background: transparent;
+      text-align: left;
+      color: var(--ink);
+    }
+
+    .list-menu button:hover {
+      border-color: var(--line);
+      background: #fbfcfb;
+    }
+
+    .list-menu button.active {
+      border-color: rgba(15, 118, 110, 0.28);
+      background: #eef8f4;
+    }
+
+    .list-menu strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .list-menu small {
+      display: block;
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .summary-cell {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface-2);
+    }
+
+    .summary-cell strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .summary-cell span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .chip-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #52605c;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .chip.ok { border-color: rgba(30, 133, 95, 0.22); background: #eaf8f1; color: #126142; }
+    .chip.warn { border-color: rgba(184, 100, 27, 0.28); background: #fff2e2; color: #7a450e; }
+    .chip.bad { border-color: rgba(178, 58, 72, 0.28); background: #ffecef; color: #842536; }
+
+    .pack-actions,
+    .diag-actions {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      margin-top: 13px;
+    }
+
+    .pack-builder {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 12px;
+    }
+
+    .builder-steps,
+    .impact-list,
+    .data-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .step-item,
+    .member-row,
+    .data-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfb;
+      font-size: 12px;
+    }
+
+    .member-row {
+      grid-template-columns: 22px 1fr auto;
+    }
+
+    .step-item strong,
+    .member-row strong,
+    .data-row strong {
+      display: block;
+      font-size: 12px;
+    }
+
+    .step-item span,
+    .member-row span,
+    .data-row span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .form-field {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .form-field.full { grid-column: span 2; }
+
+    .fake-input,
+    .fake-textarea {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--ink);
+      font-weight: 520;
+    }
+
+    .fake-input {
+      min-height: 36px;
+      padding: 0 10px;
+    }
+
+    .fake-textarea {
+      min-height: 70px;
+      align-items: start;
+      padding: 10px;
+      line-height: 1.45;
+    }
+
+    .agent-header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfb;
+    }
+
+    .agent-title {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 11px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .agent-title h3 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.15;
+    }
+
+    .agent-title p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .agent-header .pack-actions {
+      justify-content: flex-end;
+      margin-top: 0;
+    }
+
+    .agent-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 14px 0;
+      overflow: auto;
+    }
+
+    .agent-tabs button {
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .agent-tabs button.active {
+      border-color: rgba(15, 118, 110, 0.28);
+      background: #eef8f4;
+      color: var(--brand-ink);
+    }
+
+    .agent-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .integration-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .diagnostic-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .diagnostic-card.priority {
+      grid-column: span 2;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 260px;
+    }
+
+    .diagnostic-card.priority header {
+      border-bottom: 0;
+      border-right: 1px solid var(--line);
+    }
+
+    .fix-row {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid #edf2f0;
+      font-size: 12px;
+    }
+
+    .fix-row:last-child { border-bottom: 0; }
+
+    .fix-row strong {
+      display: block;
+      font-size: 12px;
+    }
+
+    .fix-row span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid #edf2f0;
+    }
+
+    .setting-row:last-child { border-bottom: 0; }
+
+    .setting-row strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .setting-row span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .segmented {
+      display: inline-flex;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-2);
+    }
+
+    .segmented button {
+      height: 28px;
+      min-width: 64px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .segmented button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 4px rgba(23, 33, 31, 0.08);
+    }
+
+    .drawer {
+      position: fixed;
+      inset: 0;
+      display: none;
+      background: rgba(17, 27, 25, 0.28);
+      z-index: 8;
+    }
+
+    .drawer.open { display: block; }
+
+    .drawer-panel {
+      width: min(560px, calc(100vw - 32px));
+      height: calc(100vh - 32px);
+      margin: 16px 16px 16px auto;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .drawer-head,
+    .drawer-foot {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-foot {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .drawer-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .drawer-head h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .drawer-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .drawer-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 16px;
+    }
+
+    .check-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .check-item {
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfb;
+      font-size: 13px;
+    }
+
+    .check-item input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--brand);
+    }
+
+    .check-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 76px 1fr;
+      }
+
+      .brand div,
+      .nav button span,
+      .nav-label,
+      .nav .count,
+      .rail-footer {
+        display: none;
+      }
+
+      .brand {
+        justify-content: center;
+        padding: 0;
+      }
+
+      .nav button {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        padding: 0;
+      }
+
+      .skills-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .inspector {
+        display: none;
+      }
+
+      .skill-card-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .skill-list-row {
+        grid-template-columns: minmax(220px, 1fr) minmax(150px, 0.7fr) auto;
+      }
+
+      .skill-list-row > .chip {
+        display: none;
+      }
+
+      .pack-layout,
+      .pack-builder,
+      .agent-management-layout,
+      .agent-detail-grid,
+      .info-grid,
+      .integration-grid,
+      .settings-grid,
+      .diagnostic-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .diagnostic-card.priority {
+        grid-column: span 1;
+        grid-template-columns: 1fr;
+      }
+
+      .diagnostic-card.priority header {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        width: 100vw;
+        height: 100vh;
+        min-height: 0;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        grid-template-columns: 1fr;
+      }
+
+      .rail {
+        display: none;
+      }
+
+      .topbar {
+        height: auto;
+        min-height: 78px;
+        align-items: start;
+        flex-direction: column;
+        padding: 16px;
+      }
+
+      .top-actions {
+        width: 100%;
+        overflow: auto;
+        padding-bottom: 2px;
+      }
+
+      .workspace {
+        padding: 16px;
+      }
+
+      .status-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .skill-card-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .skill-list-row {
+        grid-template-columns: 1fr;
+        align-items: start;
+      }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .form-field.full {
+        grid-column: auto;
+      }
+
+      .workspace.library-wrap {
+        overflow: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">
+        <img src="../../public/agentbro-logo.png" alt="AgentBro" />
+        <div>
+          <strong>AgentBro</strong>
+          <span>Skill Manager v2</span>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Skill Manager">
+        <div class="nav-label">管理</div>
+        <button class="active" data-view="library"><span class="glyph">SK</span><span>Skill 库</span><span class="count">27</span></button>
+        <button data-view="packs"><span class="glyph">PK</span><span>技能包</span><span class="count">6</span></button>
+        <button data-view="agents"><span class="glyph">AG</span><span>Agent 管理</span><span class="count">5</span></button>
+        <button data-view="diagnostics"><span class="glyph">DX</span><span>诊断与修复</span><span class="count">9</span></button>
+        <div class="nav-label">配置</div>
+        <button data-view="settings"><span class="glyph">ST</span><span>设置</span></button>
+      </nav>
+      <div class="rail-footer">
+        <div class="path-card">
+          <strong>中心库</strong>
+          <code>~/.agentbro/skills</code>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="heading">
+          <h1 id="view-title">Skill 库</h1>
+          <p id="view-subtitle">浏览中心库里的 Skills，点击任意 Skill 查看安装详情和管理动作。</p>
+        </div>
+        <div class="top-actions">
+          <button class="btn" data-open="addCenter">添加到中心库</button>
+          <button class="btn" data-open="scanAdopt">扫描并接管</button>
+          <button class="btn primary" data-open="diagnose">运行诊断</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="view active" id="library">
+          <div class="skills-layout">
+            <div class="workspace library-wrap">
+              <div class="status-strip">
+                <div class="metric"><strong>27</strong><span>中心库 Skills，3 个为手动复制后纳入管理</span></div>
+                <div class="metric"><strong>46</strong><span>Agent targets，link 31 个，copy 15 个</span></div>
+                <div class="metric"><strong>8</strong><span>未管理 Agent Skills 可接管</span></div>
+                <div class="metric"><strong>4</strong><span>copy 副本可更新或发生漂移</span></div>
+              </div>
+
+              <div class="toolbar">
+                <input class="search" placeholder="搜索 Skill、来源或 Agent 安装状态" />
+                <button class="btn">全部状态</button>
+                <button class="btn">来源筛选</button>
+                <div class="view-toggle" aria-label="Skill 展示方式">
+                  <button class="active" data-skill-mode="cards">卡片</button>
+                  <button data-skill-mode="list">列表</button>
+                </div>
+                <button class="btn primary" data-open="packBuilder">创建技能包</button>
+              </div>
+
+              <div class="skill-browser" data-current-mode="cards">
+                <div class="skill-card-grid" aria-label="Skill 卡片">
+                  <button class="skill-card active" data-skill="github-code-review">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">CR</span>
+                      <div>
+                        <h3>github-code-review</h3>
+                        <p>PR 审查、风险定位、评论回复</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip ok">github</span>
+                      <span class="chip">5 Agents</span>
+                      <span class="chip warn">1 copy 可更新</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon link" title="Claude Code · link">CL</span>
+                      <span class="agent-icon copy" title="Codex · copy">CX</span>
+                      <span class="agent-icon warn" title="Cursor · copy 可更新">CU</span>
+                      <span class="agent-icon link" title="OpenCode · link">OC</span>
+                    </div>
+                  </button>
+
+                  <button class="skill-card" data-skill="test-driven-development">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">TD</span>
+                      <div>
+                        <h3>test-driven-development</h3>
+                        <p>先写测试，再实现，并保持回归面清楚</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip ok">official</span>
+                      <span class="chip">3 Agents</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon link" title="Claude Code · link">CL</span>
+                      <span class="agent-icon link" title="Codex · link">CX</span>
+                      <span class="agent-icon copy" title="OpenCode · copy">OC</span>
+                    </div>
+                  </button>
+
+                  <button class="skill-card" data-skill="database-debugging">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">DB</span>
+                      <div>
+                        <h3>database-debugging</h3>
+                        <p>SQLite、迁移、数据一致性排查</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip warn">agent import</span>
+                      <span class="chip">2 Agents</span>
+                      <span class="chip bad">1 冲突</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon warn" title="Claude Code · 未接管">CL</span>
+                      <span class="agent-icon bad" title="Cursor · 同名冲突">CU</span>
+                    </div>
+                  </button>
+
+                  <button class="skill-card" data-skill="release-checklist">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">RL</span>
+                      <div>
+                        <h3>release-checklist</h3>
+                        <p>发布前检查、变更日志、构建验证</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip">manual center</span>
+                      <span class="chip">2 Agents</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon copy" title="Codex · copy">CX</span>
+                      <span class="agent-icon copy" title="Gemini CLI · copy">GM</span>
+                    </div>
+                  </button>
+
+                  <button class="skill-card" data-skill="skill-authoring">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">SK</span>
+                      <div>
+                        <h3>skill-authoring</h3>
+                        <p>编写、校验、发布 Agent Skill</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip ok">github</span>
+                      <span class="chip">3 Agents</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon link" title="Claude Code · link">CL</span>
+                      <span class="agent-icon link" title="Codex · link">CX</span>
+                      <span class="agent-icon link" title="Gemini CLI · link">GM</span>
+                    </div>
+                  </button>
+
+                  <button class="skill-card" data-skill="frontend-ux-review">
+                    <div class="skill-card-head">
+                      <span class="mini-glyph">UX</span>
+                      <div>
+                        <h3>frontend-ux-review</h3>
+                        <p>组件体验、视觉回归、交互验收</p>
+                      </div>
+                    </div>
+                    <div class="skill-card-meta">
+                      <span class="chip">local</span>
+                      <span class="chip">1 Agent</span>
+                      <span class="chip warn">copy 分叉</span>
+                    </div>
+                    <div class="agent-icon-row" aria-label="已安装 Agent">
+                      <span class="agent-icon warn" title="Claude Code · copy 分叉">CL</span>
+                    </div>
+                  </button>
+                </div>
+
+                <div class="skill-list-view" aria-label="Skill 列表">
+                  <button class="skill-list-row active" data-skill="github-code-review">
+                    <div class="skill-list-title"><span class="mini-glyph">CR</span><div><h3>github-code-review</h3><p>PR 审查、风险定位、评论回复</p></div></div>
+                    <span class="source">github · shirenchuang/review-skills</span>
+                    <div class="agent-icon-row"><span class="agent-icon link" title="Claude Code · link">CL</span><span class="agent-icon copy" title="Codex · copy">CX</span><span class="agent-icon warn" title="Cursor · copy 可更新">CU</span><span class="agent-icon link" title="OpenCode · link">OC</span></div>
+                    <span class="chip warn">1 可更新</span>
+                  </button>
+                  <button class="skill-list-row" data-skill="test-driven-development">
+                    <div class="skill-list-title"><span class="mini-glyph">TD</span><div><h3>test-driven-development</h3><p>先写测试，再实现，并保持回归面清楚</p></div></div>
+                    <span class="source">official · recommended</span>
+                    <div class="agent-icon-row"><span class="agent-icon link" title="Claude Code · link">CL</span><span class="agent-icon link" title="Codex · link">CX</span><span class="agent-icon copy" title="OpenCode · copy">OC</span></div>
+                    <span class="chip ok">健康</span>
+                  </button>
+                  <button class="skill-list-row" data-skill="database-debugging">
+                    <div class="skill-list-title"><span class="mini-glyph">DB</span><div><h3>database-debugging</h3><p>SQLite、迁移、数据一致性排查</p></div></div>
+                    <span class="source">agent import · Claude Code</span>
+                    <div class="agent-icon-row"><span class="agent-icon warn" title="Claude Code · 未接管">CL</span><span class="agent-icon bad" title="Cursor · 同名冲突">CU</span></div>
+                    <span class="chip bad">冲突</span>
+                  </button>
+                  <button class="skill-list-row" data-skill="release-checklist">
+                    <div class="skill-list-title"><span class="mini-glyph">RL</span><div><h3>release-checklist</h3><p>发布前检查、变更日志、构建验证</p></div></div>
+                    <span class="source">manual center · ~/.agentbro/skills</span>
+                    <div class="agent-icon-row"><span class="agent-icon copy" title="Codex · copy">CX</span><span class="agent-icon copy" title="Gemini CLI · copy">GM</span></div>
+                    <span class="chip">2 安装</span>
+                  </button>
+                  <button class="skill-list-row" data-skill="skill-authoring">
+                    <div class="skill-list-title"><span class="mini-glyph">SK</span><div><h3>skill-authoring</h3><p>编写、校验、发布 Agent Skill</p></div></div>
+                    <span class="source">github · agentbro/skill-packs</span>
+                    <div class="agent-icon-row"><span class="agent-icon link" title="Claude Code · link">CL</span><span class="agent-icon link" title="Codex · link">CX</span><span class="agent-icon link" title="Gemini CLI · link">GM</span></div>
+                    <span class="chip ok">健康</span>
+                  </button>
+                  <button class="skill-list-row" data-skill="frontend-ux-review">
+                    <div class="skill-list-title"><span class="mini-glyph">UX</span><div><h3>frontend-ux-review</h3><p>组件体验、视觉回归、交互验收</p></div></div>
+                    <span class="source">local · ~/.agentbro/skills</span>
+                    <div class="agent-icon-row"><span class="agent-icon warn" title="Claude Code · copy 分叉">CL</span></div>
+                    <span class="chip warn">分叉</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <aside class="inspector">
+              <div class="panel">
+                <div class="panel-body">
+                  <div class="detail-title">
+                    <span class="mini-glyph" id="skill-detail-glyph">CR</span>
+                    <div>
+                      <h2 id="skill-detail-name">github-code-review</h2>
+                      <p id="skill-detail-meta">中心库版本 · hash 9f34a2 · 4 个 Agent 安装记录</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>来源与中心库</strong><span class="chip ok" id="skill-detail-status">可更新</span></div>
+                <div class="panel-body">
+                  <div class="kv"><span>中心路径</span><code id="skill-detail-path">~/.agentbro/skills/github-code-review</code></div>
+                  <div class="kv"><span>来源</span><code id="skill-detail-source">github.com/shirenchuang/review-skills</code></div>
+                  <div class="kv"><span>安装时间</span><code id="skill-detail-time">2026-06-13 15:41</code></div>
+                  <div class="kv"><span>说明</span><code id="skill-detail-note">默认 link，本次操作可覆盖</code></div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>安装原因</strong><button class="btn">管理</button></div>
+                <div class="panel-body claim-list" id="skill-detail-claims">
+                  <div class="claim"><div>Claude Code<small>pack: Code Review + direct</small></div><span class="status-pill link">link</span></div>
+                  <div class="claim"><div>Codex<small>pack: Daily Dev</small></div><span class="status-pill copy">copy</span></div>
+                  <div class="claim"><div>Cursor<small>copy 副本落后</small></div><span class="status-pill update">更新</span></div>
+                  <div class="claim"><div>OpenCode<small>direct install</small></div><span class="status-pill link">link</span></div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>下一步</strong></div>
+                <div class="panel-body stack">
+                  <button class="btn primary" data-open="distribute">分发到 Agent</button>
+                  <button class="btn warning">更新 copy 副本</button>
+                  <button class="btn">加入技能包</button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+        <div class="view" id="packs">
+          <div class="workspace">
+            <div class="toolbar">
+              <input class="search" placeholder="搜索技能包、成员 Skill 或应用的 Agent" />
+              <button class="btn">只看异常</button>
+              <button class="btn">批量应用</button>
+              <button class="btn primary" data-open="packBuilder">新建技能包</button>
+            </div>
+
+            <div class="pack-layout">
+              <aside class="side-panel">
+                <header>
+                  <h3>技能包列表</h3>
+                  <p>技能包只维护中心库 Skill 的组合，不绑定 Agent 或分发方式。</p>
+                </header>
+                <div class="body">
+                  <div class="list-menu">
+                    <button class="active">
+                      <span><strong>Code Review</strong><small>6 Skills · 3 Agents</small></span>
+                      <span class="chip ok">健康</span>
+                    </button>
+                    <button>
+                      <span><strong>Release Flow</strong><small>5 Skills · 2 Agents</small></span>
+                      <span class="chip warn">更新</span>
+                    </button>
+                    <button>
+                      <span><strong>Skill Builder</strong><small>4 Skills · 未应用</small></span>
+                      <span class="chip bad">缺失</span>
+                    </button>
+                    <button>
+                      <span><strong>Daily Dev</strong><small>9 Skills · 4 Agents</small></span>
+                      <span class="chip ok">健康</span>
+                    </button>
+                    <button>
+                      <span><strong>Database Ops</strong><small>3 Skills · 1 Agent</small></span>
+                      <span class="chip">草稿</span>
+                    </button>
+                  </div>
+                </div>
+              </aside>
+
+              <div class="stack">
+                <section class="detail-panel">
+                  <header>
+                    <h3>Code Review</h3>
+                    <p>用于 PR 审查、跨文件风险定位、评论回复和回归验证。</p>
+                  </header>
+                  <div class="body stack">
+                    <div class="summary-grid">
+                      <div class="summary-cell"><strong>6</strong><span>成员 Skills</span></div>
+                      <div class="summary-cell"><strong>3</strong><span>已应用 Agents</span></div>
+                      <div class="summary-cell"><strong>18</strong><span>有效 claims</span></div>
+                      <div class="summary-cell"><strong>1</strong><span>部分应用</span></div>
+                    </div>
+                    <div class="chip-line">
+                      <span class="chip ok">Claude Code 完整</span>
+                      <span class="chip ok">Codex 完整</span>
+                      <span class="chip warn">Cursor 4/6</span>
+                      <span class="chip">默认 link</span>
+                    </div>
+                    <div class="data-list">
+                      <div class="data-row"><span class="mini-glyph">CR</span><div><strong>github-code-review</strong><span>PR 审查、风险定位、评论回复</span></div><span class="status-pill link">核心</span></div>
+                      <div class="data-row"><span class="mini-glyph">TD</span><div><strong>test-driven-development</strong><span>测试先行、回归边界、失败复现</span></div><span class="status-pill link">核心</span></div>
+                      <div class="data-row"><span class="mini-glyph">DB</span><div><strong>database-debugging</strong><span>SQLite、迁移、数据一致性排查</span></div><span class="status-pill update">可选</span></div>
+                    </div>
+                    <div class="pack-actions">
+                      <button class="btn primary" data-open="applyPack">应用到 Agent</button>
+                      <button class="btn warning" data-open="removePack">取消应用</button>
+                      <button class="btn">编辑成员</button>
+                      <button class="btn">复制为新包</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="detail-panel">
+                  <header>
+                    <h3>新建技能包</h3>
+                    <p>先定义用途，再从中心库选择 Skills，保存前预览对各 Agent 的影响。</p>
+                  </header>
+                  <div class="body">
+                    <div class="pack-builder">
+                      <div class="stack">
+                        <div class="builder-steps">
+                          <div class="step-item"><span class="mini-glyph">1</span><div><strong>基本信息</strong><span>名称、用途、适用场景，用于后续搜索和诊断解释。</span></div><span class="chip ok">当前</span></div>
+                          <div class="step-item"><span class="mini-glyph">2</span><div><strong>选择 Skills</strong><span>只能选择已进入中心库的 Skill；未接管的先转入中心库。</span></div><span class="chip">下一步</span></div>
+                          <div class="step-item"><span class="mini-glyph">3</span><div><strong>预览应用</strong><span>展示新增、复用、冲突、copy 更新和可能移除项。</span></div><span class="chip">确认前</span></div>
+                        </div>
+
+                        <div class="form-grid">
+                          <label class="form-field">
+                            技能包名称
+                            <span class="fake-input">Frontend Review</span>
+                          </label>
+                          <label class="form-field">
+                            类型
+                            <span class="fake-input">团队预设包</span>
+                          </label>
+                          <label class="form-field full">
+                            使用说明
+                            <span class="fake-textarea">适合前端项目审查：组件边界、状态同步、可访问性、构建回归和视觉验收。</span>
+                          </label>
+                        </div>
+
+                        <div class="data-list">
+                          <div class="member-row"><input type="checkbox" checked /><div><strong>react-review</strong><span>组件结构、hooks 边界、渲染性能</span></div><span class="chip ok">已选</span></div>
+                          <div class="member-row"><input type="checkbox" checked /><div><strong>playwright-qa</strong><span>浏览器验证、截图、交互回归</span></div><span class="chip ok">已选</span></div>
+                          <div class="member-row"><input type="checkbox" /><div><strong>database-debugging</strong><span>非前端核心，建议不加入此包</span></div><span class="chip">可选</span></div>
+                        </div>
+                      </div>
+
+                      <aside class="stack">
+                        <div class="summary-grid">
+                          <div class="summary-cell"><strong>2</strong><span>已选 Skills</span></div>
+                          <div class="summary-cell"><strong>4</strong><span>可应用 Agents</span></div>
+                          <div class="summary-cell"><strong>0</strong><span>同名冲突</span></div>
+                          <div class="summary-cell"><strong>link</strong><span>默认方式</span></div>
+                        </div>
+                        <div class="impact-list">
+                          <div class="data-row"><span class="mini-glyph">✓</span><div><strong>Claude Code</strong><span>新增 2 个 link，复用 1 个 direct claim。</span></div><span class="chip ok">可应用</span></div>
+                          <div class="data-row"><span class="mini-glyph">↻</span><div><strong>Codex</strong><span>已有 copy，可选择保留 copy 或改 link。</span></div><span class="chip warn">需确认</span></div>
+                          <div class="data-row"><span class="mini-glyph">!</span><div><strong>Cursor</strong><span>存在未管理同名 Skill，保存后先提示接管。</span></div><span class="chip bad">阻止</span></div>
+                        </div>
+                        <div class="pack-actions">
+                          <button class="btn primary" data-open="packBuilder">保存并预览</button>
+                          <button class="btn">保存草稿</button>
+                        </div>
+                      </aside>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="detail-panel">
+                  <header>
+                    <h3>从技能包移除 Skill 时</h3>
+                    <p>先检查这个 Skill 是否通过技能包应用在 Agent 上，再决定保留还是同步移除。</p>
+                  </header>
+                  <div class="body">
+                    <div class="fix-row">
+                      <span class="mini-glyph">1</span>
+                      <div><strong>检查 pack claims</strong><span>找出这个 Skill 通过该技能包应用到哪些 Agent。</span></div>
+                      <button class="btn">预览</button>
+                    </div>
+                    <div class="fix-row">
+                      <span class="mini-glyph">2</span>
+                      <div><strong>保留为独立安装或同步移除</strong><span>保留时删除 pack claim 并转为 direct claim；移除时只有无其他 claim 才删除 Agent 文件。</span></div>
+                      <button class="btn">选择</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="agents">
+          <div class="workspace">
+            <div class="toolbar">
+              <input class="search" placeholder="搜索 Agent、Skill、MCP、Plugin 或路径" />
+              <button class="btn">全部 Agent</button>
+              <button class="btn">只看异常</button>
+              <button class="btn primary" data-open="scanAdopt">重新扫描</button>
+            </div>
+
+            <div class="agent-management-layout">
+              <aside class="side-panel">
+                <header>
+                  <h3>已安装 Agent</h3>
+                  <p>统一查看每个 Agent 的版本、目录、Skills、MCP 和 Plugin 状态。</p>
+                </header>
+                <div class="body">
+                  <div class="list-menu">
+                    <button class="active">
+                      <span><strong>Claude Code</strong><small>v1.2.18 · 14 Skills · 2 未管理</small></span>
+                      <span class="chip warn">可接管</span>
+                    </button>
+                    <button>
+                      <span><strong>Codex</strong><small>v0.31.0 · 12 Skills · 3 copy 可更新</small></span>
+                      <span class="chip warn">更新</span>
+                    </button>
+                    <button>
+                      <span><strong>Cursor</strong><small>v0.52.4 · 5 Skills · 1 冲突</small></span>
+                      <span class="chip bad">异常</span>
+                    </button>
+                    <button>
+                      <span><strong>Gemini CLI</strong><small>v0.8.7 · 3 Skills · 全部未管理</small></span>
+                      <span class="chip warn">接管</span>
+                    </button>
+                    <button>
+                      <span><strong>OpenCode</strong><small>v0.6.3 · 8 Skills · 健康</small></span>
+                      <span class="chip ok">健康</span>
+                    </button>
+                  </div>
+                </div>
+              </aside>
+
+              <section class="detail-panel">
+                <div class="agent-header">
+                  <div class="agent-title">
+                    <span class="mini-glyph">CL</span>
+                    <div>
+                      <h3>Claude Code</h3>
+                      <p>~/.claude/skills · ~/.claude/settings.json · 最近扫描 2 分钟前</p>
+                    </div>
+                  </div>
+                  <div class="pack-actions">
+                    <button class="btn primary" data-open="applyPack">应用技能包</button>
+                    <button class="btn warning" data-open="scanAdopt">接管未管理</button>
+                    <button class="btn" data-open="agentUpdate">检查更新</button>
+                  </div>
+                </div>
+
+                <div class="agent-tabs">
+                  <button class="active">Skills</button>
+                  <button>技能包</button>
+                  <button>MCP</button>
+                  <button>Plugins</button>
+                  <button>路径与诊断</button>
+                </div>
+
+                <div class="agent-detail-grid">
+                  <div class="stack">
+                    <div class="info-grid">
+                      <div class="summary-cell"><strong>1.2.18</strong><span>当前版本</span></div>
+                      <div class="summary-cell"><strong>1.2.21</strong><span>发现可更新版本</span></div>
+                      <div class="summary-cell"><strong>14</strong><span>安装 Skills</span></div>
+                      <div class="summary-cell"><strong>12</strong><span>纳入管理</span></div>
+                      <div class="summary-cell"><strong>2</strong><span>未管理，可接管</span></div>
+                      <div class="summary-cell"><strong>0</strong><span>异常文件</span></div>
+                    </div>
+
+                    <div class="data-list">
+                      <div class="data-row"><span class="mini-glyph">CR</span><div><strong>github-code-review</strong><span>来源中心库 · pack: Code Review + direct · ~/.claude/skills/github-code-review</span></div><span class="status-pill link">link</span></div>
+                      <div class="data-row"><span class="mini-glyph">TD</span><div><strong>test-driven-development</strong><span>来源中心库 · pack: Code Review · 跟随中心库自动生效</span></div><span class="status-pill link">link</span></div>
+                      <div class="data-row"><span class="mini-glyph">DB</span><div><strong>database-debugging</strong><span>手动安装在 Agent 目录，同名 Skill 已可导入中心库。</span></div><span class="status-pill unmanaged">未接管</span></div>
+                      <div class="data-row"><span class="mini-glyph">UX</span><div><strong>frontend-ux-review</strong><span>本地 copy，Agent 副本有修改，可选择覆盖中心库或保留分叉。</span></div><span class="status-pill update">copy 分叉</span></div>
+                    </div>
+                  </div>
+
+                  <aside class="stack">
+                    <div class="data-list">
+                      <div class="data-row"><span class="mini-glyph">PK</span><div><strong>已应用技能包</strong><span>Code Review、Daily Dev、Release Flow；支持叠加和单独撤销。</span></div><button class="btn">管理</button></div>
+                      <div class="data-row"><span class="mini-glyph">AP</span><div><strong>可应用技能包</strong><span>Frontend Review、Database Ops 可一键应用到 Claude Code。</span></div><button class="btn primary" data-open="applyPack">应用</button></div>
+                      <div class="data-row"><span class="mini-glyph">RM</span><div><strong>撤销预览</strong><span>撤销 Code Review 会移除 4 个 pack claims，2 个 direct 保留。</span></div><button class="btn warning" data-open="removePack">预览</button></div>
+                    </div>
+
+                    <div class="integration-grid">
+                      <div class="data-list">
+                        <div class="data-row"><span class="mini-glyph">FS</span><div><strong>filesystem</strong><span>MCP · enabled · v0.4.2</span></div><span class="chip ok">正常</span></div>
+                        <div class="data-row"><span class="mini-glyph">GH</span><div><strong>github</strong><span>MCP · token expires in 18d</span></div><span class="chip ok">正常</span></div>
+                      </div>
+                      <div class="data-list">
+                        <div class="data-row"><span class="mini-glyph">BR</span><div><strong>Browser</strong><span>Plugin · installed · 26.609</span></div><span class="chip ok">正常</span></div>
+                        <div class="data-row"><span class="mini-glyph">GD</span><div><strong>Google Drive</strong><span>Plugin · login required</span></div><span class="chip warn">需登录</span></div>
+                      </div>
+                    </div>
+
+                    <div class="data-list">
+                      <div class="data-row"><span class="mini-glyph">P</span><div><strong>路径健康</strong><span>skills 目录可写；settings.json 可读；中心库 link 权限正常。</span></div><span class="chip ok">通过</span></div>
+                      <div class="data-row"><span class="mini-glyph">S</span><div><strong>同步建议</strong><span>优先接管 database-debugging，再处理 frontend-ux-review 的 copy 分叉。</span></div><button class="btn warning">处理</button></div>
+                    </div>
+                  </aside>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="diagnostics">
+          <div class="workspace">
+            <div class="diagnostic-layout">
+              <article class="diagnostic-card priority">
+                <header>
+                  <h3>一键诊断</h3>
+                  <p>扫描中心库、SQLite 元数据、Agent 目录、copy/link 状态和技能包 claims。</p>
+                </header>
+                <div class="body">
+                  <div class="diag-actions">
+                    <button class="btn primary">重新扫描</button>
+                    <button class="btn warning">修复安全项</button>
+                    <button class="btn">导出报告</button>
+                  </div>
+                </div>
+              </article>
+
+              <article class="diagnostic-card">
+                <header><h3>可一键修复</h3><p>无需覆盖用户内容的低风险操作。</p></header>
+                <div class="body">
+                  <div class="fix-row"><span class="mini-glyph">L</span><div><strong>坏链接 1 个</strong><span>Cursor / skill-authoring 指向已删除中心库目录。</span></div><button class="btn">修复</button></div>
+                  <div class="fix-row"><span class="mini-glyph">M</span><div><strong>失效 target 2 个</strong><span>SQLite 记录存在，但 Agent 目录已手动删除。</span></div><button class="btn">清理</button></div>
+                  <div class="fix-row"><span class="mini-glyph">J</span><div><strong>JSON 快照落后</strong><span>中心库索引已变更，快照需要刷新。</span></div><button class="btn">刷新</button></div>
+                </div>
+              </article>
+
+              <article class="diagnostic-card">
+                <header><h3>需要确认</h3><p>涉及覆盖、接管或分叉选择。</p></header>
+                <div class="body">
+                  <div class="fix-row"><span class="mini-glyph">U</span><div><strong>未管理 Skills 8 个</strong><span>来自 Claude、Gemini 和中心库手动复制目录。</span></div><button class="btn warning">接管</button></div>
+                  <div class="fix-row"><span class="mini-glyph">C</span><div><strong>同名冲突 2 个</strong><span>多个 Agent 里同名但 hash 不同。</span></div><button class="btn danger">处理</button></div>
+                  <div class="fix-row"><span class="mini-glyph">S</span><div><strong>copy 分叉 1 个</strong><span>中心库和 Agent 副本都已变化。</span></div><button class="btn warning">选择版本</button></div>
+                </div>
+              </article>
+
+              <article class="diagnostic-card">
+                <header><h3>更新建议</h3><p>中心库和 Agent copy 副本的版本状态。</p></header>
+                <div class="body">
+                  <div class="fix-row"><span class="mini-glyph">↑</span><div><strong>远程来源可更新 3 个</strong><span>GitHub revision 有变化，更新中心库后 link 自动生效。</span></div><button class="btn">检查</button></div>
+                  <div class="fix-row"><span class="mini-glyph">↗</span><div><strong>copy 副本落后 4 个</strong><span>可用中心库覆盖 Agent 副本。</span></div><button class="btn warning">更新副本</button></div>
+                </div>
+              </article>
+
+              <article class="diagnostic-card">
+                <header><h3>技能包健康</h3><p>技能包成员、应用 claims 和 Agent 文件是否一致。</p></header>
+                <div class="body">
+                  <div class="fix-row"><span class="mini-glyph">P</span><div><strong>缺失成员 1 个</strong><span>Skill Builder 引用了已删除的中心库 Skill。</span></div><button class="btn">移除引用</button></div>
+                  <div class="fix-row"><span class="mini-glyph">Q</span><div><strong>孤立 claim 1 个</strong><span>pack claim 存在，但 target 已被手动删除。</span></div><button class="btn">清理</button></div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="settings">
+          <div class="workspace">
+            <div class="settings-grid">
+              <div class="panel">
+                <div class="panel-head"><strong>分发默认值</strong></div>
+                <div class="panel-body">
+                  <div class="setting-row">
+                    <div><strong>默认分发方式</strong><span>操作时仍可临时覆盖。</span></div>
+                    <div class="segmented"><button class="active">link</button><button>copy</button></div>
+                  </div>
+                  <div class="setting-row">
+                    <div><strong>link 失败时</strong><span>记录实际模式和失败原因。</span></div>
+                    <div class="segmented"><button class="active">询问</button><button>copy</button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>中心库</strong></div>
+                <div class="panel-body">
+                  <div class="setting-row">
+                    <div><strong>中心库路径</strong><span><code>~/.agentbro/skills</code></span></div>
+                    <button class="btn">更改</button>
+                  </div>
+                  <div class="setting-row">
+                    <div><strong>JSON 快照</strong><span>用于备份、恢复和人工排查。</span></div>
+                    <button class="btn">刷新</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>扫描</strong></div>
+                <div class="panel-body">
+                  <div class="setting-row">
+                    <div><strong>启动时扫描各 Agent 的 Skills</strong><span>识别手动安装、坏链接和冲突。</span></div>
+                    <div class="segmented"><button class="active">开</button><button>关</button></div>
+                  </div>
+                  <div class="setting-row">
+                    <div><strong>显示未管理 Skills</strong><span>可在 Agent 管理和诊断页快速接管。</span></div>
+                    <div class="segmented"><button class="active">开</button><button>关</button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head"><strong>数据库</strong></div>
+                <div class="panel-body">
+                  <div class="setting-row">
+                    <div><strong>SQLite 主存储</strong><span><code>~/.agentbro/skill-manager.db</code></span></div>
+                    <button class="btn">重建索引</button>
+                  </div>
+                  <div class="setting-row">
+                    <div><strong>导出诊断包</strong><span>包含 SQLite 摘要、JSON 快照和扫描结果。</span></div>
+                    <button class="btn">导出</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer" id="drawer">
+    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-head">
+        <div>
+          <h2 id="drawer-title">应用技能包</h2>
+          <p id="drawer-copy">选择目标 Agent 和本次分发方式，确认前会预览冲突和可复用项。</p>
+        </div>
+        <button class="icon-btn" data-close title="关闭">×</button>
+      </div>
+      <div class="drawer-body">
+        <div class="panel">
+          <div class="panel-head"><strong>目标 Agent</strong><span class="chip ok">3 个已选择</span></div>
+          <div class="panel-body check-list">
+            <label class="check-item"><input type="checkbox" checked /><div><strong>Claude Code</strong><span>~/.claude/skills · 当前 14 个 Skills</span></div><span class="status-pill link">link</span></label>
+            <label class="check-item"><input type="checkbox" checked /><div><strong>Codex</strong><span>~/.codex/skills · 3 个 copy 可更新</span></div><span class="status-pill copy">copy</span></label>
+            <label class="check-item"><input type="checkbox" /><div><strong>Gemini CLI</strong><span>3 个未管理 Skills，可接管</span></div><span class="status-pill unmanaged">未接管</span></label>
+            <label class="check-item"><input type="checkbox" checked /><div><strong>Cursor</strong><span>1 个同名冲突，安装时将跳过</span></div><span class="status-pill conflict">冲突</span></label>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><strong>分发方式</strong></div>
+          <div class="panel-body">
+            <div class="setting-row">
+              <div><strong>本次操作</strong><span>默认使用全局 link；也可以临时改为 copy。</span></div>
+              <div class="segmented"><button class="active">默认 link</button><button>copy</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><strong>预览</strong><span class="chip warn">2 个会跳过</span></div>
+          <div class="panel-body">
+            <div class="fix-row"><span class="mini-glyph">✓</span><div><strong>将安装 12 项</strong><span>对不存在的目标创建 link 或 copy。</span></div><span class="chip ok">安全</span></div>
+            <div class="fix-row"><span class="mini-glyph">↻</span><div><strong>复用 4 项</strong><span>已有 target，追加 pack claim，不重复写文件。</span></div><span class="chip ok">复用</span></div>
+            <div class="fix-row"><span class="mini-glyph">!</span><div><strong>跳过 2 项</strong><span>Cursor 存在同名未管理 Skill，操作后集中处理。</span></div><span class="chip bad">冲突</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="drawer-foot">
+        <button class="btn" data-close>取消</button>
+        <button class="btn primary">确认应用</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const viewMeta = {
+      library: ['Skill 库', '浏览中心库里的 Skills，点击任意 Skill 查看安装详情和管理动作。'],
+      packs: ['技能包', '技能包只保存一组 Skills；应用时再选择 Agent 和分发方式。'],
+      agents: ['Agent 管理', '按 Agent 查看版本、Skills、技能包、MCP、Plugin 和路径健康。'],
+      diagnostics: ['诊断与修复', '把中心库、Agent 目录、SQLite 元数据和技能包 claims 汇总成行动建议。'],
+      settings: ['设置', '中心库、默认分发方式、扫描和快照选项。']
+    };
+
+    document.querySelectorAll('.nav button[data-view]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const id = button.dataset.view;
+        document.querySelectorAll('.nav button[data-view]').forEach((item) => item.classList.toggle('active', item === button));
+        document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === id));
+        document.getElementById('view-title').textContent = viewMeta[id][0];
+        document.getElementById('view-subtitle').textContent = viewMeta[id][1];
+      });
+    });
+
+    const skillDetails = {
+      'github-code-review': {
+        glyph: 'CR',
+        name: 'github-code-review',
+        meta: '中心库版本 · hash 9f34a2 · 4 个 Agent 安装记录',
+        status: ['chip warn', '可更新'],
+        path: '~/.agentbro/skills/github-code-review',
+        source: 'github.com/shirenchuang/review-skills',
+        time: '2026-06-13 15:41',
+        note: 'Cursor 的 copy 副本落后中心库，可单独更新。',
+        claims: [
+          ['Claude Code', 'pack: Code Review + direct', 'status-pill link', 'link'],
+          ['Codex', 'pack: Daily Dev', 'status-pill copy', 'copy'],
+          ['Cursor', 'copy 副本落后', 'status-pill update', '更新'],
+          ['OpenCode', 'direct install', 'status-pill link', 'link']
+        ]
+      },
+      'test-driven-development': {
+        glyph: 'TD',
+        name: 'test-driven-development',
+        meta: '中心库版本 · hash 82ac19 · 3 个 Agent 安装记录',
+        status: ['chip ok', '健康'],
+        path: '~/.agentbro/skills/test-driven-development',
+        source: 'official/recommended',
+        time: '2026-06-11 09:18',
+        note: '适合放进团队默认技能包，当前没有冲突。',
+        claims: [
+          ['Claude Code', 'pack: Code Review', 'status-pill link', 'link'],
+          ['Codex', 'pack: Daily Dev', 'status-pill link', 'link'],
+          ['OpenCode', 'direct install', 'status-pill copy', 'copy']
+        ]
+      },
+      'database-debugging': {
+        glyph: 'DB',
+        name: 'database-debugging',
+        meta: '待接管 Skill · hash 不一致 · 2 个 Agent 安装记录',
+        status: ['chip bad', '冲突'],
+        path: '~/.agentbro/skills/database-debugging',
+        source: 'agent import / Claude Code',
+        time: '2026-06-13 16:08',
+        note: 'Claude Code 里是未接管版本，Cursor 里存在同名不同来源，需要先选择保留策略。',
+        claims: [
+          ['Claude Code', '未接管，可导入中心库', 'status-pill unmanaged', '未接管'],
+          ['Cursor', '同名不同来源', 'status-pill conflict', '冲突']
+        ]
+      },
+      'release-checklist': {
+        glyph: 'RL',
+        name: 'release-checklist',
+        meta: '中心库版本 · hash 5f0d22 · 2 个 Agent 安装记录',
+        status: ['chip', '手动导入'],
+        path: '~/.agentbro/skills/release-checklist',
+        source: 'manual center / ~/.agentbro/skills',
+        time: '2026-06-10 22:03',
+        note: '当前只通过 copy 分发；中心库更新后需要主动同步到 Agent。',
+        claims: [
+          ['Codex', 'direct copy', 'status-pill copy', 'copy'],
+          ['Gemini CLI', 'pack: Release Flow', 'status-pill copy', 'copy']
+        ]
+      },
+      'skill-authoring': {
+        glyph: 'SK',
+        name: 'skill-authoring',
+        meta: '中心库版本 · hash d1a832 · 3 个 Agent 安装记录',
+        status: ['chip ok', '健康'],
+        path: '~/.agentbro/skills/skill-authoring',
+        source: 'github.com/agentbro/skill-packs',
+        time: '2026-06-12 12:20',
+        note: '通过 link 分发到三个 Agent，中心库更新会自动生效。',
+        claims: [
+          ['Claude Code', 'pack: Skill Builder', 'status-pill link', 'link'],
+          ['Codex', 'pack: Skill Builder', 'status-pill link', 'link'],
+          ['Gemini CLI', 'direct install', 'status-pill link', 'link']
+        ]
+      },
+      'frontend-ux-review': {
+        glyph: 'UX',
+        name: 'frontend-ux-review',
+        meta: '中心库版本 · hash 22b4e0 · 1 个 Agent 安装记录',
+        status: ['chip warn', 'copy 分叉'],
+        path: '~/.agentbro/skills/frontend-ux-review',
+        source: 'local / ~/.agentbro/skills',
+        time: '2026-06-13 17:26',
+        note: 'Claude Code 的 copy 已被手动修改，需要选择用 Agent 覆盖中心库，或用中心库覆盖 Agent。',
+        claims: [
+          ['Claude Code', 'copy 已修改', 'status-pill update', '分叉']
+        ]
+      }
+    };
+
+    const updateSkillDetail = (skillId) => {
+      const detail = skillDetails[skillId];
+      if (!detail) return;
+      document.querySelectorAll('[data-skill]').forEach((item) => item.classList.toggle('active', item.dataset.skill === skillId));
+      document.getElementById('skill-detail-glyph').textContent = detail.glyph;
+      document.getElementById('skill-detail-name').textContent = detail.name;
+      document.getElementById('skill-detail-meta').textContent = detail.meta;
+      const status = document.getElementById('skill-detail-status');
+      status.className = detail.status[0];
+      status.textContent = detail.status[1];
+      document.getElementById('skill-detail-path').textContent = detail.path;
+      document.getElementById('skill-detail-source').textContent = detail.source;
+      document.getElementById('skill-detail-time').textContent = detail.time;
+      document.getElementById('skill-detail-note').textContent = detail.note;
+      document.getElementById('skill-detail-claims').innerHTML = detail.claims.map(([agent, reason, className, label]) => (
+        `<div class="claim"><div>${agent}<small>${reason}</small></div><span class="${className}">${label}</span></div>`
+      )).join('');
+    };
+
+    document.querySelectorAll('[data-skill]').forEach((button) => {
+      button.addEventListener('click', () => updateSkillDetail(button.dataset.skill));
+    });
+
+    document.querySelectorAll('[data-skill-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const mode = button.dataset.skillMode;
+        document.querySelectorAll('[data-skill-mode]').forEach((item) => item.classList.toggle('active', item === button));
+        document.querySelector('.skill-browser').classList.toggle('list', mode === 'list');
+      });
+    });
+
+    const drawer = document.getElementById('drawer');
+    const drawerTitle = document.getElementById('drawer-title');
+    const drawerCopy = document.getElementById('drawer-copy');
+    const drawerText = {
+      addCenter: ['添加到中心库', '把目录、压缩包或远程来源统一安装到 ~/.agentbro/skills，并记录来源、hash 和导入方式。'],
+      scanAdopt: ['扫描并接管', '扫描各 Agent 目录，发现手动安装、未接管、同名冲突、坏链接和可纳入管理的 Skill。'],
+      diagnose: ['运行诊断', '检查中心库、SQLite、JSON 快照、Agent 目录、copy/link 状态、MCP、Plugin 和技能包 claims。'],
+      packBuilder: ['新建技能包', '先定义用途，再选择中心库 Skills；保存或应用前会预览影响范围和冲突。'],
+      applyPack: ['应用技能包', '选择目标 Agent 和本次分发方式，确认前会预览冲突和可复用项。'],
+      removePack: ['取消应用技能包', '撤销 pack claims 前先预览哪些 Skill 会保留为独立安装，哪些会从 Agent 中移除。'],
+      agentUpdate: ['检查 Agent 更新', '读取 Agent 版本、安装来源和可用更新；更新前保留 Skills、MCP 与 Plugin 状态快照。'],
+      distribute: ['分发 Skill', '把中心库 Skill 通过 link 或 copy 分发到一个或多个 Agent。']
+    };
+
+    document.querySelectorAll('[data-open]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const key = button.dataset.open;
+        const copy = drawerText[key] || drawerText.applyPack;
+        drawerTitle.textContent = copy[0];
+        drawerCopy.textContent = copy[1];
+        drawer.classList.add('open');
+      });
+    });
+
+    document.querySelectorAll('[data-close]').forEach((button) => {
+      button.addEventListener('click', () => drawer.classList.remove('open'));
+    });
+
+    drawer.addEventListener('click', (event) => {
+      if (event.target === drawer) drawer.classList.remove('open');
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') drawer.classList.remove('open');
+    });
+  </script>
+</body>
+</html>

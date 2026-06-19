@@ -2,16 +2,25 @@
 
 ## English
 
-This hotfix improves external-display pet behavior and tightens native host resizing for the Dynamic Island.
+AgentBro v{{VERSION}} expands the app from a runtime Dynamic Island into a local-first Agent Management workspace. This release focuses on managing AI coding agents, skills, hooks, MCP servers, plugins, and project-level configuration from one desktop control panel.
 
-### Fixes
+### Highlights
 
-- **Fix pet dragging across displays** - Pet windows now use native Tauri dragging when available, preserving the final position after dragging across monitors.
-- **Keep pet clicks reliable on external displays** - External-display pet windows remain interactive, avoiding click-through loss after moving the pet off the primary screen.
-- **Shrink the native host on hover** - The Dynamic Island native host now resizes promptly when leaving the stable collapsed canvas, reducing accidental occlusion.
+- **Agent Management workspace** - Scan local CLIs and desktop agents, then review install state, versions, executable paths, config directories, official install pages, hooks, skills, MCP servers, plugins, and health state in one place.
+- **Skill Center library** - Discover skills scattered across agent folders, adopt unmanaged skills into the center library, and distribute them to selected agents by symlink or copy.
+- **Skill packs** - Group reusable skills into packs, apply or revoke them from agent detail pages, and handle conflicts with overwrite, skip, or keep-agent-copy choices.
+- **Project management** - Import repositories, inspect project-level Claude Code and Codex instructions/config, scan project skills, MCP servers, and plugins, and install center skills into projects.
+- **Per-agent hook management** - Install or remove hooks for each supported agent, inspect bridge commands and config paths, and toggle event groups such as approvals, notifications, lifecycle, and activity.
+- **Diagnostics and recovery** - Surface broken links, changed copies, missing paths, unmanaged skills, and other local configuration issues so they can be fixed from the workspace.
+
+### Documentation
+
+- README and README.en now explain the Agent Management workflow, Skill Center, supported agent scopes, screenshots, and updated onboarding steps.
+- Release assets continue to include macOS universal DMGs, updater files, and early Windows installer artifacts.
 
 ### Contributors
 
+- @guijilvren
 - @nicobeyond
 - @shirenchuang
 
@@ -36,16 +45,25 @@ This hotfix improves external-display pet behavior and tightens native host resi
 
 ## 中文
 
-这是一次热修复，改善外接显示器上的宠物窗口拖动与点击，并收紧灵动岛 native host 的尺寸切换。
+AgentBro v{{VERSION}} 从运行时灵动岛，进一步扩展成一个本地优先的 Agent 管理工作台。这个版本重点更新 AI 编程 Agent 的管理能力，把 Agent 安装、版本、Hook、Skills、MCP、插件和项目级配置收进同一个桌面控制面板。
 
-### 修复
+### 重点更新
 
-- **修复跨屏拖动宠物窗口** - 可用时改用 Tauri 原生拖动，跨显示器拖动后能保留最终窗口位置。
-- **保持外接屏宠物可点击** - 宠物移动到非主屏后仍保持交互，避免点击穿透失控。
-- **hover 时及时收缩 native host** - 灵动岛离开 collapsed 稳定画布后会及时调整 native host 尺寸，减少遮挡。
+- **Agent 管理工作台** - 自动扫描本机 CLI 和桌面 Agent，统一查看安装状态、版本、可执行文件路径、配置目录、官方下载入口、Hook、Skills、MCP、插件和健康状态。
+- **Skill 中心库** - 扫描散落在不同 Agent 目录里的 Skills，把未管理的 Skill 接管到中心库，再按软链接或拷贝分发到指定 Agent。
+- **技能包** - 把常用 Skills 组合成可复用包，在 Agent 详情页一键应用或撤销；遇到冲突时可选择覆盖、跳过或保留 Agent 现有副本。
+- **项目管理** - 导入本地仓库，检查项目级 Claude Code / Codex 指令和配置，扫描项目 Skills、MCP、插件，并把中心库 Skills 安装到项目里。
+- **按 Agent 管理 Hook** - 为每个支持的 Agent 安装或移除 Hook，查看 Bridge 命令和配置路径，并按审批、通知、生命周期、活动等事件组开关。
+- **诊断与修复** - 暴露坏链接、副本变更、路径缺失、未接管 Skills 等本地配置问题，方便从工作台统一处理。
+
+### 文档
+
+- README 和 README.en 已更新 Agent 管理流程、Skill 中心库、支持范围、截图和接入步骤。
+- 发布产物继续包含 macOS 通用 DMG、自动更新文件，以及早期 Windows 安装包。
 
 ### 贡献者
 
+- @guijilvren
 - @nicobeyond
 - @shirenchuang
 

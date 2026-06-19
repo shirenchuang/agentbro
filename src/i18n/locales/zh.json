@@ -142,6 +142,7 @@
     "sound": "声音",
     "shortcuts": "快捷键",
     "agentMonitor": "Agent监控",
+    "skillManager": "Agent管理",
     "agents": "Agent 与技能",
     "switch": "Agent Switch",
     "skills": "技能管理",
@@ -676,8 +677,8 @@
     "allowHorizontalDragDesc": "开启后，直接拖拽灵动岛可左右移动",
     "resetIslandPosition": "重置灵动岛位置",
     "resetCenter": "重置到居中",
-    "islandResetDefaults": "恢复灵动岛默认设置",
-    "islandResetDefaultsDesc": "恢复灵动岛显示、行为、声音、快捷键和通知设置。",
+    "islandResetDefaults": "恢复灵动岛 / 宠物默认设置",
+    "islandResetDefaultsDesc": "恢复灵动岛显示、行为、声音、快捷键和通知设置,并将宠物重置到默认位置。",
     "reset": "重置",
     "maxVisibleSessions": "最大可见会话数",
     "maxVisibleSessionsDesc": "超过数量的会话将通过滚动查看",
@@ -749,6 +750,86 @@
     "githubRepo": "GitHub 仓库",
     "subPath": "子路径",
     "directCopy": "直接复制",
+    "deleteCenterSkill": {
+      "title": "删除中心库 Skill「{{skillId}}」",
+      "confirmTitle": "删除前确认",
+      "impactWithTargets": "中心库记录会被删除。Agent 安装可一并移除，也可保留为独立副本。",
+      "impactNoTargets": "当前没有 Agent 安装会被影响，只会移除中心库记录。",
+      "agentInstalls": "Agent 安装",
+      "referenceCount": "{{count}} 个引用",
+      "noTargets": "这次删除不会触碰任何 Agent 目录。",
+      "linkWarning": "提示：{{agent}} 是软连接。选择保留时，会先转成独立副本。",
+      "removeAgentInstalls": "移除 Agent 安装",
+      "preserveCopies": "保留 Agent 副本",
+      "deleteCenterOnly": "删除中心库",
+      "processing": "处理中…"
+    },
+    "sourceType": {
+      "local_folder": "本地文件夹",
+      "archive": "压缩包",
+      "agent_import": "Agent 导入",
+      "manual_center": "手动加入中心库",
+      "github": "GitHub",
+      "git": "Git",
+      "skillssh": "skills.sh",
+      "skills_sh": "skills.sh",
+      "url": "URL",
+      "unmanaged_agent": "未管理 Agent",
+      "agent_override": "Agent 覆盖",
+      "builtin": "内置",
+      "json": "JSON"
+    },
+    "mode": {
+      "link": "软连接",
+      "copy": "复制"
+    },
+    "status": {
+      "ok": "正常",
+      "conflict": "冲突",
+      "unmanaged": "未管理",
+      "copyDiverged": "副本分叉",
+      "copy_outdated": "可更新",
+      "copy_modified": "已修改",
+      "copy_diverged": "已分叉",
+      "broken_link": "坏链接",
+      "missing": "失效"
+    },
+    "claim": {
+      "direct": "直接分发",
+      "pack": "技能包",
+      "packNamed": "技能包：{{name}}"
+    },
+    "reason": {
+      "not_in_center_library": "未在中心库",
+      "center_library_conflict": "中心库同名冲突"
+    },
+    "distributionReason": {
+      "convertManaged": "已通过{{from}}管理，将转换为{{to}}。",
+      "refreshManaged": "已管理，将从中心库刷新目标。",
+      "skippedByUser": "已按用户选择跳过。"
+    },
+    "blocker": {
+      "unmanagedExists": "目标路径已存在未管理的 Skill '{{skillId}}'。请先接管、覆盖或重命名。"
+    },
+    "pathKind": {
+      "symlink": "软连接",
+      "directory": "实际目录",
+      "file": "文件",
+      "broken_symlink": "失效软连接",
+      "missing": "不存在"
+    },
+    "labels": {
+      "realPath": "真实路径"
+    },
+    "actions": {
+      "open": "打开",
+      "openFolder": "打开文件夹"
+    },
+    "errors": {
+      "targetDirectChild": "目标路径 '{{targetPath}}' 必须直接位于 {{skillsDir}} 下。",
+      "targetNoParent": "目标路径 '{{targetPath}}' 没有父目录。",
+      "targetNameMismatch": "目标路径 '{{targetPath}}' 与 Skill '{{skillId}}' 不匹配。"
+    },
     "installing": "安装中...",
     "sync": "同步",
     "githubSyncDesc": "通过 GitHub 私有仓库同步技能配置。",

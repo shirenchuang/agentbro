@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import type { AgentProgramInfo } from '../../../services/agentApi'
 import { PlatformIcon } from '../../platform/PlatformIcon'
-import { InlineConfirmAction } from '../../skills/InlineConfirmAction'
+import { InlineConfirmAction } from '../../shared/InlineConfirmAction'
 
 interface AgentDetailSliderProps {
   agent: AgentProgramInfo | null

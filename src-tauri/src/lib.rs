@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod commands;
 pub mod config;
+pub mod data_dir;
 pub mod energy;
 pub mod hook_endpoint;
 pub mod hooks;
@@ -700,6 +701,12 @@ async fn get_all_hook_status(
                 .map(display_path_with_home)
                 .unwrap_or_default();
             let install_status = hook_health.as_status_str();
+            let bridge_command = profile
+                .as_ref()
+                .and_then(|profile| agents::profiles::managed_bridge_command(profile).ok());
+            let bridge_path = profile
+                .as_ref()
+                .map(|_| display_path_with_home(&agents::hook_manager::bridge_binary_path()));
             serde_json::json!({
                 "toolId": tool_id,
                 "adapterId": a.name(),
@@ -714,6 +721,8 @@ async fn get_all_hook_status(
                 "supportsEventSelection": supports_event_selection,
                 "events": events,
                 "enabledEventNames": enabled_event_names,
+                "bridgeCommand": bridge_command,
+                "bridgePath": bridge_path,
             })
         })
         .collect();
@@ -753,6 +762,17 @@ async fn get_all_hook_status(
             .as_ref()
             .map(agents::profiles::selected_event_names)
             .unwrap_or_default();
+        let bridge_command = profile.as_ref().and_then(|profile| {
+            agents::profiles::managed_bridge_command_labeled(
+                profile,
+                Some(&entry.display_name),
+                Some(&base_dir.display().to_string()),
+            )
+            .ok()
+        });
+        let bridge_path = profile
+            .as_ref()
+            .map(|_| display_path_with_home(&agents::hook_manager::bridge_binary_path()));
         let tool_id = format!("custom:{}", entry.id);
         results.push(serde_json::json!({
             "toolId": tool_id,
@@ -768,6 +788,8 @@ async fn get_all_hook_status(
             "supportsEventSelection": supports_event_selection,
             "events": events,
             "enabledEventNames": enabled_event_names,
+            "bridgeCommand": bridge_command,
+            "bridgePath": bridge_path,
             "isCustom": true,
             "customId": entry.id,
         }));
@@ -2845,11 +2867,97 @@ fn normalize_github_repo_ref(input: &str) -> Result<GithubRepoRefCompat, String>
 }
 
 fn github_import_source(repo_spec: &str, source_path: &str) -> String {
-    let path = source_path.trim().trim_matches('/');
+    let path = normalize_github_import_path(source_path);
     if path.is_empty() || path == "." {
         format!("github:{repo_spec}")
+    } else if let Some(spec) = rebase_github_import_spec(repo_spec, &path) {
+        format!("github:{spec}")
     } else {
         format!("github:{repo_spec}/{path}")
+    }
+}
+
+fn normalize_github_import_path(path: &str) -> String {
+    path.trim()
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn rebase_github_import_spec(repo_spec: &str, source_path: &str) -> Option<String> {
+    let spec = repo_spec.trim().trim_matches('/');
+    let parts = spec
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return None;
+    }
+    if parts.len() >= 5 && parts[2] == "tree" {
+        let base_path = normalize_github_import_path(&parts[4..].join("/"));
+        if repo_path_contains(&base_path, source_path) {
+            return Some(format!(
+                "{}/{}/tree/{}/{}",
+                parts[0], parts[1], parts[3], source_path
+            ));
+        }
+        return None;
+    }
+    if parts[2] != "tree" {
+        let base_path = normalize_github_import_path(&parts[2..].join("/"));
+        if repo_path_contains(&base_path, source_path) {
+            return Some(format!("{}/{}/{}", parts[0], parts[1], source_path));
+        }
+    }
+    None
+}
+
+fn repo_path_contains(base_path: &str, source_path: &str) -> bool {
+    source_path == base_path
+        || source_path
+            .strip_prefix(base_path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod github_import_source_tests {
+    use super::github_import_source;
+
+    #[test]
+    fn specific_tree_skill_path_is_not_appended_twice() {
+        assert_eq!(
+            github_import_source(
+                "vercel-labs/skills/tree/main/skills/find-skills",
+                "skills/find-skills",
+            ),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn tree_parent_path_uses_preview_repo_path_without_repeating_parent() {
+        assert_eq!(
+            github_import_source("vercel-labs/skills/tree/main/skills", "skills/find-skills"),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn shorthand_subpath_uses_preview_repo_path_without_repeating_parent() {
+        assert_eq!(
+            github_import_source("owner/repo/skills", "skills/find-skills"),
+            "github:owner/repo/skills/find-skills",
+        );
+    }
+
+    #[test]
+    fn relative_preview_path_still_appends_to_repo_spec() {
+        assert_eq!(
+            github_import_source("vercel-labs/skills/tree/main/skills", "find-skills"),
+            "github:vercel-labs/skills/tree/main/skills/find-skills",
+        );
     }
 }
 
@@ -3237,8 +3345,17 @@ async fn sync_registry_with_options(
 async fn search_marketplace_skills(
     registry_id: Option<String>,
     query: Option<String>,
+    board: Option<String>,
 ) -> Result<Vec<skills::marketplace::MarketplaceSkill>, String> {
-    skills::marketplace::search_marketplace_skills(registry_id, query)
+    skills::marketplace::search_marketplace_skills_async(registry_id, query, board).await
+}
+
+#[tauri::command]
+async fn fetch_marketplace_skill_detail(
+    source: String,
+    skill_id: String,
+) -> Result<skills::marketplace::MarketplaceSkillDetail, String> {
+    skills::marketplace::fetch_skills_sh_skill_detail(source, skill_id).await
 }
 
 #[tauri::command]
@@ -3821,9 +3938,42 @@ fn pet_window_rect_has_visible_area(monitor: Rect, window: Rect) -> bool {
     visible_width >= required_width && visible_height >= required_height
 }
 
+fn clamp_point_into_rect(rect: Rect, x: f64, y: f64, margin: f64) -> (f64, f64) {
+    let min_x = rect.x + margin;
+    let max_x = rect.x + rect.width - margin;
+    let min_y = rect.y + margin;
+    let max_y = rect.y + rect.height - margin;
+    (
+        x.clamp(min_x, max_x.max(min_x)),
+        y.clamp(min_y, max_y.max(min_y)),
+    )
+}
+
+fn distance_point_to_rect(rect: Rect, x: f64, y: f64) -> f64 {
+    let right = rect.x + rect.width;
+    let bottom = rect.y + rect.height;
+    let dx = if x < rect.x {
+        rect.x - x
+    } else if x > right {
+        x - right
+    } else {
+        0.0
+    };
+    let dy = if y < rect.y {
+        rect.y - y
+    } else if y > bottom {
+        y - bottom
+    } else {
+        0.0
+    };
+    dx.hypot(dy)
+}
+
 #[cfg(test)]
 mod pet_window_tests {
-    use super::{pet_window_rect_has_visible_area, Rect};
+    use super::{
+        clamp_point_into_rect, distance_point_to_rect, pet_window_rect_has_visible_area, Rect,
+    };
 
     #[test]
     fn saved_pet_window_origin_must_leave_visible_area_on_screen() {
@@ -3859,6 +4009,53 @@ mod pet_window_tests {
                 height: 360.0,
             },
         ));
+    }
+
+    #[test]
+    fn clamp_pulls_offscreen_point_back_inside_rect() {
+        let monitor = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let (cx, cy) = clamp_point_into_rect(monitor, -500.0, 9999.0, 24.0);
+        assert_eq!(cx, 24.0);
+        assert_eq!(cy, 1117.0 - 24.0);
+    }
+
+    #[test]
+    fn clamp_leaves_onscreen_point_unchanged() {
+        let monitor = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let (cx, cy) = clamp_point_into_rect(monitor, 500.0, 500.0, 24.0);
+        assert_eq!(cx, 500.0);
+        assert_eq!(cy, 500.0);
+    }
+
+    #[test]
+    fn nearest_rect_is_the_one_closer_to_an_offscreen_point() {
+        let primary = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        let above = Rect {
+            x: 0.0,
+            y: -1117.0,
+            width: 1728.0,
+            height: 1117.0,
+        };
+        // A point far above the primary screen sits closer to the upper monitor.
+        assert!(
+            distance_point_to_rect(above, 864.0, -1500.0)
+                < distance_point_to_rect(primary, 864.0, -1500.0)
+        );
     }
 }
 
@@ -3945,6 +4142,30 @@ fn monitor_containing_point(app: &tauri::AppHandle, x: f64, y: f64) -> Option<ta
         let right = left + size.width as f64;
         let bottom = top + size.height as f64;
         x >= left && x < right && y >= top && y < bottom
+    })
+}
+
+fn monitor_rect(monitor: &tauri::Monitor) -> Rect {
+    let pos = monitor.position();
+    let size = monitor.size();
+    Rect {
+        x: pos.x as f64,
+        y: pos.y as f64,
+        width: size.width as f64,
+        height: size.height as f64,
+    }
+}
+
+fn clamp_point_into_monitor(monitor: &tauri::Monitor, x: f64, y: f64) -> (f64, f64) {
+    let scale = monitor.scale_factor().max(1.0);
+    clamp_point_into_rect(monitor_rect(monitor), x, y, 24.0 * scale)
+}
+
+fn nearest_monitor_for_point(app: &tauri::AppHandle, x: f64, y: f64) -> Option<tauri::Monitor> {
+    app.available_monitors().ok()?.into_iter().min_by(|a, b| {
+        let da = distance_point_to_rect(monitor_rect(a), x, y);
+        let db = distance_point_to_rect(monitor_rect(b), x, y);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
     })
 }
 
@@ -4392,6 +4613,19 @@ async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, St
                     origin.y = (pet_center_y - new_top - new_size / 2.0).round();
                 }
                 result_anchor = new_anchor;
+            } else if let Some(monitor) =
+                nearest_monitor_for_point(&app, pet_center_x, pet_center_y)
+            {
+                // The OS-native drag has no screen bounds, so a pet can land
+                // entirely off-screen. Pull its center back inside the closest
+                // monitor before committing the position so it stays reachable.
+                let (cx, cy) = clamp_point_into_monitor(&monitor, pet_center_x, pet_center_y);
+                let new_anchor = pet_stage_anchor_for_center(&monitor, cx, cy);
+                let (new_left, new_top, new_size) =
+                    pet_rect_in_window(w, h, window_scale, pet_scale, new_anchor);
+                origin.x = (cx - new_left - new_size / 2.0).round();
+                origin.y = (cy - new_top - new_size / 2.0).round();
+                result_anchor = new_anchor;
             }
         }
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
@@ -4411,6 +4645,20 @@ async fn end_pet_drag(app: tauri::AppHandle) -> Result<Option<PetDragResult>, St
         anchor_left: result_anchor.left,
         anchor_top: result_anchor.top,
     }))
+}
+
+#[tauri::command]
+async fn reset_pet_position(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut config = state.config_store.get();
+    config.island_pet_window_origin = None;
+    config.island_pet_window_anchor = None;
+    state.config_store.update(config.clone())?;
+    // With no saved origin, sync_pet_window_visibility -> position_pet_window
+    // drops the pet back at its default bottom-right spot. A no-op when the
+    // app is not in pet mode (the window is destroyed instead).
+    sync_pet_window_visibility(&app, &config);
+    Ok(())
 }
 
 /// Resize the notch window dynamically from the frontend and re-center
@@ -4994,6 +5242,7 @@ pub fn run() {
             end_notch_drag,
             start_pet_drag,
             end_pet_drag,
+            reset_pet_position,
             pets::discover_pets,
             market::check_abpets_available,
             market::install_abpets_globally,
@@ -5128,6 +5377,7 @@ pub fn run() {
             sync_registry,
             sync_registry_with_options,
             search_marketplace_skills,
+            fetch_marketplace_skill_detail,
             install_marketplace_skill,
             list_marketplace_sources_cmd,
             upsert_marketplace_source_cmd,
@@ -5167,6 +5417,60 @@ pub fn run() {
             switch::commands::switch_list_model_pricing,
             switch::commands::switch_get_provider_health,
             switch::commands::switch_speed_test,
+            skills::v2::commands::skill_manager_bootstrap,
+            skills::v2::commands::skill_manager_init,
+            skills::v2::commands::skill_manager_overview,
+            skills::v2::commands::skill_manager_refresh,
+            skills::v2::commands::skill_manager_refresh_overview,
+            skills::v2::commands::skill_manager_settings,
+            skills::v2::commands::skill_manager_update_settings,
+            skills::v2::commands::list_center_skills_v2,
+            skills::v2::commands::get_skill_detail_v2,
+            skills::v2::commands::preview_add_center_skill,
+            skills::v2::commands::execute_add_center_skill,
+            skills::v2::commands::preview_delete_center_skill,
+            skills::v2::commands::execute_delete_center_skill,
+            skills::v2::commands::preview_distribute_skill,
+            skills::v2::commands::execute_distribute_skill,
+            skills::v2::commands::scan_agent_inventory,
+            skills::v2::commands::preview_adopt_agent_skill,
+            skills::v2::commands::execute_adopt_agent_skill,
+            skills::v2::commands::preview_sync_copy_target,
+            skills::v2::commands::preview_copy_target_diff,
+            skills::v2::commands::execute_sync_copy_target,
+            skills::v2::commands::delete_skill_target_distribution,
+            skills::v2::commands::delete_skill_target_distributions,
+            skills::v2::commands::list_skill_packs_v2,
+            skills::v2::commands::get_skill_pack_detail,
+            skills::v2::commands::execute_upsert_skill_pack,
+            skills::v2::commands::preview_delete_skill_pack,
+            skills::v2::commands::execute_delete_skill_pack,
+            skills::v2::commands::preview_apply_skill_pack,
+            skills::v2::commands::execute_apply_skill_pack,
+            skills::v2::commands::preview_remove_skill_pack_from_agent,
+            skills::v2::commands::execute_remove_skill_pack_from_agent,
+            skills::v2::commands::preview_remove_skill_from_pack,
+            skills::v2::commands::execute_remove_skill_from_pack,
+            skills::v2::commands::list_managed_agents_v2,
+            skills::v2::commands::get_agent_detail_v2,
+            skills::v2::commands::list_unmanaged_v2,
+            skills::v2::commands::list_agent_skill_inventory_v2,
+            skills::v2::commands::list_skill_projects_v2,
+            skills::v2::commands::add_skill_project_v2,
+            skills::v2::commands::remove_skill_project_v2,
+            skills::v2::commands::get_skill_project_detail_v2,
+            skills::v2::commands::scan_skill_project_v2,
+            skills::v2::commands::install_center_skills_to_project_v2,
+            skills::v2::commands::install_skill_pack_to_project_v2,
+            skills::v2::commands::run_skill_manager_diagnosis,
+            skills::v2::commands::list_diagnosis_issues,
+            skills::v2::commands::preview_fix_diagnosis_issue,
+            skills::v2::commands::execute_fix_diagnosis_issue,
+            skills::v2::commands::execute_safe_fixes,
+            skills::v2::commands::skill_manager_export_snapshot,
+            skills::v2::commands::skill_manager_get_snapshot,
+            skills::v2::commands::open_skill_path,
+            skills::v2::commands::reveal_skill_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentBro");

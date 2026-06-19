@@ -12,24 +12,15 @@ impl CursorAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".cursor");
-        let status = if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        };
+        let status = Self::detect_status();
         Self {
             config_root,
             status,
         }
     }
 
-    fn is_installed() -> bool {
-        // Check for cursor CLI or app
-        if super::executable::command_exists("cursor") {
-            return true;
-        }
-        // Check for macOS app bundle
-        std::path::Path::new("/Applications/Cursor.app").exists()
+    fn detect_status() -> AdapterStatus {
+        super::programs::detected_status_for_agent_program("cursor")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -65,11 +56,7 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        }
+        Self::detect_status()
     }
 
     fn parse_event(
@@ -129,7 +116,7 @@ impl AgentAdapter for CursorAdapter {
 
 impl CursorAdapter {
     pub fn is_cursor_installed() -> bool {
-        Self::is_installed()
+        !matches!(Self::detect_status(), AdapterStatus::Unavailable)
     }
 
     pub fn has_agentbro_hooks(&self) -> bool {

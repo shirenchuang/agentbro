@@ -29,6 +29,7 @@ import {
   runHookDoctor, uninstallAllHooks,
   getConfig, updateConfig as updateBackendConfig, listUsageProviders, authorizeUsageProvider,
   setAgentDefaultPet,
+  resetPetPosition,
 } from '../../../services/tauriApi'
 import type { BackendDisplayInfo, ConnectionStatus, HookDoctorCheck, HookDoctorReport, HookEventStatus, RemoteHost, RemoteProbeReport, SshConfigHost, UsageProviderStatus } from '../../../services/tauriApi'
 import type { IslandLayoutPreviewMode, IslandLayoutPreviewOptions } from '../../../services/tauriApi'
@@ -584,6 +585,8 @@ function OverviewTab() {
     setDisplayId('auto')
       .then(() => repositionNotch('auto', 0))
       .catch((e) => console.error('Failed to reset island position:', e))
+    resetPetPosition()
+      .catch((e) => console.error('Failed to reset pet position:', e))
   }
 
   return (

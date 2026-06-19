@@ -3132,6 +3132,7 @@ fn canonical_agent_id(agent: &str) -> &str {
     match agent {
         "codybuddycn" => "codebuddycn",
         "claude" => "claude-code",
+        "openai.codex" => "codex",
         other => other,
     }
 }
@@ -3184,6 +3185,38 @@ mod tests {
         assert_eq!(session.project, "my-project");
         assert_eq!(session.cwd, "/tmp/my-project");
         assert_eq!(session.terminal, "/dev/ttys001");
+    }
+
+    #[test]
+    fn canonical_agent_id_maps_codex_aliases() {
+        assert_eq!(canonical_agent_id("openai.codex"), "codex");
+        assert_eq!(canonical_agent_id("codex"), "codex");
+    }
+
+    #[test]
+    fn parse_with_adapters_routes_openai_codex_to_codex_adapter() {
+        let adapters: Vec<Arc<dyn AgentAdapter>> =
+            vec![Arc::new(crate::agents::codex::CodexAdapter::new())];
+        let raw = serde_json::json!({
+            "agent": "openai.codex",
+            "event": "SessionStart",
+            "session_id": "codex-alias-session",
+            "cwd": "/tmp/agentbro"
+        });
+
+        let event = HookServer::parse_with_adapters(&adapters, &raw).expect("codex alias parses");
+
+        match event {
+            AgentEvent::SessionStart {
+                session_id,
+                agent_type,
+                ..
+            } => {
+                assert_eq!(session_id, "codex-alias-session");
+                assert_eq!(agent_type, "codex");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

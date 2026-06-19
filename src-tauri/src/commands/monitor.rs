@@ -314,7 +314,8 @@ from pathlib import Path
 from urllib import request as urlrequest
 
 cwd = Path(sys.argv[1])
-state_path = Path.home() / ".agentbro" / "network-monitor.json"
+state_path = Path.home() / ".agentbro" / "network" / "monitor-state.json"
+legacy_state_path = Path.home() / ".agentbro" / "network-monitor.json"
 default = "https://api.anthropic.com"
 
 def read_json(path):
@@ -323,7 +324,7 @@ def read_json(path):
     except Exception:
         return None
 
-state = read_json(state_path) or {}
+state = read_json(state_path) or read_json(legacy_state_path) or {}
 proxy = state.get("proxyUrl") if state.get("enabled") else None
 if not proxy:
     print("")

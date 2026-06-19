@@ -595,7 +595,15 @@ fn join_upstream_url(upstream_base_url: &str, path_and_query: &str) -> Result<St
 }
 
 fn monitor_state_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".agentbro").join("network-monitor.json"))
+    dirs::home_dir().map(|home| {
+        let new_path = home
+            .join(".agentbro")
+            .join("network")
+            .join("monitor-state.json");
+        let old_path = home.join(".agentbro").join("network-monitor.json");
+        crate::data_dir::migrate_file(&old_path, &new_path);
+        new_path
+    })
 }
 
 fn write_monitor_state(enabled: bool, port: Option<u16>) {

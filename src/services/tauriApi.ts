@@ -1245,6 +1245,11 @@ export async function endPetDrag(): Promise<PetDragResult | null> {
   return invoke<PetDragResult | null>('end_pet_drag')
 }
 
+export async function resetPetPosition(): Promise<void> {
+  if (!isTauri()) return
+  return invoke<void>('reset_pet_position')
+}
+
 // ── Pet Discovery & Selection ────────────────────────────────────
 
 interface PetDiscoveryResult {
@@ -1438,6 +1443,8 @@ export interface HookStatus {
   supportsEventSelection?: boolean
   events?: HookEventStatus[]
   enabledEventNames?: string[]
+  bridgeCommand?: string | null
+  bridgePath?: string | null
   isCustom?: boolean
   customId?: string
 }
