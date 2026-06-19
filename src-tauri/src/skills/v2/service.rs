@@ -1568,10 +1568,18 @@ impl Service {
         plugins.extend(read_claude_project_plugins_path(&local_settings));
         let mut health = Vec::new();
         if skills_dir.exists() && skills.is_empty() {
-            health.push(project_agent_issue(agent_id, "empty_skills_dir", &skills_dir));
+            health.push(project_agent_issue(
+                agent_id,
+                "empty_skills_dir",
+                &skills_dir,
+            ));
         }
         if settings.exists() && !settings.is_file() {
-            health.push(project_agent_issue(agent_id, "invalid_settings_path", &settings));
+            health.push(project_agent_issue(
+                agent_id,
+                "invalid_settings_path",
+                &settings,
+            ));
             config_paths.retain(|path| path != &settings.display().to_string());
         }
         let detected = !skills.is_empty()
@@ -1615,7 +1623,11 @@ impl Service {
         let plugins = read_codex_project_plugins_path(&config);
         let mut health = Vec::new();
         if skills_dir.exists() && skills.is_empty() {
-            health.push(project_agent_issue(agent_id, "empty_skills_dir", &skills_dir));
+            health.push(project_agent_issue(
+                agent_id,
+                "empty_skills_dir",
+                &skills_dir,
+            ));
         }
         let detected = !skills.is_empty()
             || !mcp_servers.is_empty()
@@ -4327,7 +4339,10 @@ fn normalize_project_root(input: &str) -> Result<PathBuf, String> {
     let expanded = fsutil::expand_tilde(input);
     let normalized = fsutil::normalized_path(&expanded);
     if !normalized.is_dir() {
-        return Err(format!("Project path is not a directory: {}", normalized.display()));
+        return Err(format!(
+            "Project path is not a directory: {}",
+            normalized.display()
+        ));
     }
     Ok(normalized)
 }
@@ -4378,10 +4393,7 @@ fn scan_project_skills(
         };
         out.push(ProjectSkillItem {
             id: id.clone(),
-            name: fm
-                .name()
-                .map(str::to_string)
-                .unwrap_or_else(|| id.clone()),
+            name: fm.name().map(str::to_string).unwrap_or_else(|| id.clone()),
             description: fm.description().to_string(),
             agent_id: agent_id.to_string(),
             path: path.display().to_string(),
@@ -4443,7 +4455,9 @@ fn project_agent_skills_dir(root: &Path, agent_id: &str) -> Result<PathBuf, Stri
     match agent_id {
         "claude-code" => Ok(root.join(".claude").join("skills")),
         "codex" => Ok(root.join(".agents").join("skills")),
-        other => Err(format!("Project-level skills are not supported for {other} yet.")),
+        other => Err(format!(
+            "Project-level skills are not supported for {other} yet."
+        )),
     }
 }
 
@@ -4570,7 +4584,10 @@ fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return Vec::new();
     };
-    let Some(plugins) = json.get("enabledPlugins").and_then(|value| value.as_object()) else {
+    let Some(plugins) = json
+        .get("enabledPlugins")
+        .and_then(|value| value.as_object())
+    else {
         return Vec::new();
     };
     plugins
