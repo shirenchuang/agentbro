@@ -9,7 +9,8 @@ use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::Service;
 use rusqlite::{params, types::ValueRef, OptionalExtension};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     let mut issues = Vec::new();
@@ -653,47 +654,179 @@ fn read_toml_mcp_servers(content: &str) -> Vec<McpServerStatus> {
     out
 }
 
-pub fn read_plugins(_svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
-    if agent_id != "claude-code" {
-        return vec![];
-    }
-    let home = crate::skills::v2::fsutil::home();
-    let cache = home.join(".claude/plugins/cache");
+pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
+    let (cache, marker_dir, source_label, config_path) = match agent_id {
+        "claude-code" => (
+            svc.home.join(".claude/plugins/cache"),
+            ".claude-plugin",
+            "claude-plugin",
+            Some(svc.home.join(".claude/settings.json")),
+        ),
+        "codex" => (
+            svc.home.join(".codex/plugins/cache"),
+            ".codex-plugin",
+            "codex-plugin",
+            Some(svc.home.join(".codex/config.toml")),
+        ),
+        _ => return vec![],
+    };
+    let enabled_plugins = config_path
+        .as_ref()
+        .map(|path| read_plugin_enabled_config(path))
+        .unwrap_or_default();
     let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&cache) {
-        for publisher in rd.flatten() {
-            if !publisher.path().is_dir() {
-                continue;
+    for manifest in plugin_manifests(&cache, marker_dir) {
+        let Ok(content) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let id = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let source = plugin_cache_source(&cache, &manifest);
+        let config_key = source
+            .as_deref()
+            .map(|source| format!("{id}@{source}"))
+            .unwrap_or_else(|| id.clone());
+        let enabled = enabled_plugins
+            .get(&config_key)
+            .or_else(|| enabled_plugins.get(&id))
+            .copied()
+            .unwrap_or(true);
+        let status_id = if agent_id == "codex" {
+            config_key
+        } else {
+            id.clone()
+        };
+        out.push(PluginStatus {
+            id: status_id,
+            name: v
+                .pointer("/interface/displayName")
+                .and_then(|n| n.as_str())
+                .or_else(|| v.get("displayName").and_then(|n| n.as_str()))
+                .or_else(|| v.get("name").and_then(|n| n.as_str()))
+                .unwrap_or("")
+                .to_string(),
+            version: v.get("version").and_then(|n| n.as_str()).map(String::from),
+            enabled,
+            source: source
+                .map(|source| format!("{source_label}:{source}"))
+                .or_else(|| Some(source_label.to_string())),
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+fn plugin_manifests(cache: &Path, marker_dir: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_plugin_manifests(cache, marker_dir, 0, &mut out);
+    out
+}
+
+fn collect_plugin_manifests(dir: &Path, marker_dir: &str, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 8 {
+        return;
+    }
+    let manifest = dir.join(marker_dir).join("plugin.json");
+    if manifest.is_file() {
+        out.push(manifest);
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_plugin_manifests(&path, marker_dir, depth + 1, out);
+        }
+    }
+}
+
+fn plugin_cache_source(cache: &Path, manifest: &Path) -> Option<String> {
+    manifest
+        .strip_prefix(cache)
+        .ok()?
+        .components()
+        .next()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+}
+
+fn read_plugin_enabled_config(path: &Path) -> HashMap<String, bool> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        return read_toml_plugin_enabled_config(&content);
+    }
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|json| {
+            json.get("enabledPlugins")
+                .and_then(|value| value.as_object())
+                .cloned()
+        })
+        .map(|plugins| {
+            plugins
+                .into_iter()
+                .filter_map(|(key, value)| value.as_bool().map(|enabled| (key, enabled)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_toml_plugin_enabled_config(content: &str) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    let mut current_plugin: Option<String> = None;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            current_plugin = parse_toml_plugin_header(line);
+            if let Some(plugin) = current_plugin.as_ref() {
+                out.entry(plugin.clone()).or_insert(true);
             }
-            if let Ok(plugins) = std::fs::read_dir(publisher.path()) {
-                for plugin in plugins.flatten() {
-                    let manifest = plugin.path().join(".claude-plugin/plugin.json");
-                    let Ok(content) = std::fs::read_to_string(&manifest) else {
-                        continue;
-                    };
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        out.push(PluginStatus {
-                            id: v
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            name: v
-                                .get("displayName")
-                                .and_then(|n| n.as_str())
-                                .or_else(|| v.get("name").and_then(|n| n.as_str()))
-                                .unwrap_or("")
-                                .to_string(),
-                            version: v.get("version").and_then(|n| n.as_str()).map(String::from),
-                            enabled: true,
-                            source: Some("claude-plugin".to_string()),
-                        });
-                    }
+            continue;
+        }
+        let Some(plugin) = current_plugin.as_ref() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "enabled" {
+            match value.trim() {
+                "true" => {
+                    out.insert(plugin.clone(), true);
                 }
+                "false" => {
+                    out.insert(plugin.clone(), false);
+                }
+                _ => {}
             }
         }
     }
     out
+}
+
+fn parse_toml_plugin_header(line: &str) -> Option<String> {
+    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
+    let key = inner.strip_prefix("plugins.")?.trim();
+    Some(strip_toml_quotes(key).to_string())
+}
+
+fn strip_toml_quotes(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 pub fn agent_health(svc: &Service, agent_id: &str) -> Vec<AgentHealthIssue> {

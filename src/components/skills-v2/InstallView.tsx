@@ -15,12 +15,14 @@ import { SlideOver } from './SlideOver'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
 import { skillModeLabel, unmanagedReasonLabel } from './skillLabels'
+import { extractSkillDescription, stripSkillFrontmatter } from './frontmatter'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
 type InstallDoneHandler = (skillId?: string) => void | Promise<void>
 
 const MARKET_CACHE_TTL_MS = 5 * 60 * 1000
+const AGENT_SYNC_NOTICE_DISMISS_MS = 3200
 const marketCache = new Map<string, { timestamp: number; data: MarketplaceSkill[] }>()
 
 export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: InstallDoneHandler }) {
@@ -999,7 +1001,7 @@ function pluralSkill(count: number) {
 }
 
 function agentAttentionLabel(agent: AgentSkillInventoryAgent) {
-  const conflicts = agent.items.filter((item) => !item.managed && item.status === 'conflict').length
+  const conflicts = agentConflictCount(agent)
   if (agent.importableCount > 0 && conflicts > 0) return `${agent.importableCount} 可接管 · ${conflicts} 冲突`
   if (agent.importableCount > 0) return `${agent.importableCount} 可接管`
   if (conflicts > 0) return `${conflicts} 冲突`
@@ -1007,9 +1009,13 @@ function agentAttentionLabel(agent: AgentSkillInventoryAgent) {
 }
 
 function agentAttentionTone(agent: AgentSkillInventoryAgent) {
-  if (agent.items.some((item) => !item.managed && item.status === 'conflict')) return 'conflict'
+  if (agentConflictCount(agent) > 0) return 'conflict'
   if (agent.importableCount > 0 || agent.unmanagedCount > 0) return 'attention'
   return 'ok'
+}
+
+function agentConflictCount(agent: AgentSkillInventoryAgent) {
+  return agent.items.filter((item) => !item.managed && item.status === 'conflict').length
 }
 
 function shouldLinkOnBatchAdopt(item: AgentSkillInventoryItem) {
@@ -1026,7 +1032,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
-  const [viewMode, setViewMode] = useState<AgentSyncViewMode>('list')
+  const [viewMode, setViewMode] = useState<AgentSyncViewMode>('cards')
   const [showManaged, setShowManaged] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -1066,6 +1072,12 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     load()
   }, [])
 
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), AGENT_SYNC_NOTICE_DISMISS_MS)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
   const scan = async () => {
     setScanning(true)
     setError(null)
@@ -1081,9 +1093,21 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     }
   }
 
+  const sortedAgents = useMemo(
+    () => agents
+      .map((agent, index) => ({ agent, index }))
+      .sort((a, b) => {
+        const conflictDiff = agentConflictCount(b.agent) - agentConflictCount(a.agent)
+        if (conflictDiff !== 0) return conflictDiff
+        return a.index - b.index
+      })
+      .map(({ agent }) => agent),
+    [agents],
+  )
+
   const visibleAgents = useMemo(
-    () => selectedAgent === 'all' ? agents : agents.filter((agent) => agent.agentId === selectedAgent),
-    [agents, selectedAgent],
+    () => selectedAgent === 'all' ? sortedAgents : sortedAgents.filter((agent) => agent.agentId === selectedAgent),
+    [selectedAgent, sortedAgents],
   )
 
   const allRows = useMemo(
@@ -1115,6 +1139,13 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
         return true
       })
       .filter(matchesQuery)
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const conflictDiff = Number(b.row.item.status === 'conflict') - Number(a.row.item.status === 'conflict')
+        if (conflictDiff !== 0) return conflictDiff
+        return a.index - b.index
+      })
+      .map(({ row }) => row)
   }, [baseRows, matchesQuery, statusFilter])
 
   useEffect(() => {
@@ -1168,7 +1199,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const primaryActionDisabled = noInstalledAgents
     ? importing || scanning
     : (scopedImportableCount === 0 && scopedConflictCount === 0) || importing || scanning
-  const secondaryActionDisabled = noInstalledAgents || scopedImportableCount === 0 || importing || scanning
+  const scanDisabled = scanning || importing
 
   const toggle = (item: AgentSkillInventoryItem) => {
     if (!item.canImport) return
@@ -1301,17 +1332,6 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
   return (
     <div className="sm2__agent-sync sm2__install-market">
-      <div className="sm2__agent-sync-header">
-        <div>
-          <span>本机 Agent 同步</span>
-          <h3>把散落在各 Agent 里的 Skills 收进中心库</h3>
-          <p>优先处理未管理和冲突项；已管理 Skills 默认隐藏。</p>
-        </div>
-        <button className="sm2__btn sm2__btn--secondary" onClick={scan} disabled={scanning || importing}>
-          {scanning ? '扫描中…' : '重新扫描'}
-        </button>
-      </div>
-
       <div className="sm2__agent-sync-summary">
         <div className="sm2__agent-sync-summary-main">
           <strong>{summaryTitle}</strong>
@@ -1323,9 +1343,11 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           </div>
         </div>
         <div className="sm2__agent-sync-summary-actions">
-          <button className="sm2__btn" onClick={openOneClickOrganize} disabled={secondaryActionDisabled}>
-            查看整理方式
-          </button>
+          {!noInstalledAgents && (
+            <button className="sm2__btn" onClick={scan} disabled={scanDisabled}>
+              {scanning ? '扫描中…' : '重新扫描'}
+            </button>
+          )}
           <button
             className="sm2__btn sm2__btn--featured"
             onClick={handlePrimarySyncAction}
@@ -1344,13 +1366,13 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           disabled={scanning}
           aria-pressed={selectedAgent === 'all'}
         >
-          <AgentIconBadge iconKey="agents" size={32} title="全部 Agent" />
+          <AgentIconBadge iconKey="agents" size={28} title="全部 Agent" />
           <span>
             <strong>全部 Agent</strong>
             <small>{pendingCount > 0 ? `${pendingCount} 待处理` : '健康'}</small>
           </span>
         </button>
-        {agents.map((agent) => {
+        {sortedAgents.map((agent) => {
           const tone = agentAttentionTone(agent)
           return (
             <button
@@ -1361,7 +1383,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
               disabled={scanning}
               aria-pressed={selectedAgent === agent.agentId}
             >
-              <AgentIconBadge iconKey={agent.iconKey} size={32} title={agent.displayName} />
+              <AgentIconBadge iconKey={agent.iconKey} size={28} title={agent.displayName} />
               <span>
                 <strong>{agent.displayName}</strong>
                 <small>{agentAttentionLabel(agent)}</small>
@@ -1397,7 +1419,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                 disabled={scanning}
               >
                 <option value="all">全部 Agent</option>
-                {agents.map((agent) => (
+                {sortedAgents.map((agent) => (
                   <option key={agent.agentId} value={agent.agentId}>
                     {agent.displayName} · {agent.importableCount} 可接管
                   </option>
@@ -1408,14 +1430,15 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
               <button aria-pressed={viewMode === 'list'} className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>列表</button>
               <button aria-pressed={viewMode === 'cards'} className={viewMode === 'cards' ? 'active' : ''} onClick={() => setViewMode('cards')}>卡片</button>
             </div>
+            <div className="sm2__agent-sync-batch-actions">
+              <button className="sm2__btn" onClick={selectAllVisible} disabled={importableRows.length === 0 || importing}>选择当前可接管</button>
+              <button className="sm2__btn" onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0 || importing}>清空</button>
+              <button className="sm2__btn sm2__btn--primary" onClick={importSelected} disabled={selectedIds.size === 0 || importing}>
+                {importing ? '接管中…' : '接管到中心库'}
+              </button>
+            </div>
+            {notice && <AgentSyncNotice notice={notice} onDismiss={() => setNotice(null)} />}
           </div>
-        </div>
-        <div className="sm2__agent-sync-actions">
-          <button className="sm2__btn" onClick={selectAllVisible} disabled={importableRows.length === 0 || importing}>选择当前可接管</button>
-          <button className="sm2__btn" onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0 || importing}>清空</button>
-          <button className="sm2__btn sm2__btn--primary" onClick={importSelected} disabled={selectedIds.size === 0 || importing}>
-            {importing ? '接管中…' : '接管到中心库'}
-          </button>
         </div>
 
         <div className="sm2__agent-sync-advanced">
@@ -1459,7 +1482,6 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
         {importProgress && <AgentSyncProgress progress={importProgress} />}
 
-        {notice && <div className="sm2__notice sm2__notice--ok">{notice}</div>}
         {error && <div className="sm2__error" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{error}</div>}
 
         {loading ? (
@@ -1709,6 +1731,16 @@ const ONE_CLICK_ORGANIZE_OPTIONS: Array<{
   },
 ]
 
+function AgentSyncNotice({ notice, onDismiss }: { notice: string; onDismiss: () => void }) {
+  return (
+    <div className="sm2__agent-sync-notice" role="status" aria-live="polite">
+      <span className="sm2__agent-sync-notice-mark" aria-hidden="true">✓</span>
+      <span>{notice}</span>
+      <button type="button" onClick={onDismiss} aria-label="关闭提示">×</button>
+    </div>
+  )
+}
+
 function AgentSyncProgress({ progress }: { progress: AgentSyncImportProgress }) {
   const percent = progress.total > 0
     ? Math.max(4, Math.round((progress.current / progress.total) * 100))
@@ -1740,6 +1772,26 @@ function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
 }) {
   const agent = row?.agent
   const item = row?.item
+  const [revealBusy, setRevealBusy] = useState(false)
+  const [revealError, setRevealError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setRevealBusy(false)
+    setRevealError(null)
+  }, [item?.path])
+
+  const revealInFinder = async () => {
+    if (!item) return
+    setRevealBusy(true)
+    setRevealError(null)
+    try {
+      await skillApiV2.revealPath(item.path)
+    } catch (e) {
+      setRevealError(`无法在 Finder 中打开：${String(e)}`)
+    } finally {
+      setRevealBusy(false)
+    }
+  }
 
   return (
     <SlideOver
@@ -1759,13 +1811,18 @@ function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
             >
               {importing || opening ? '准备中…' : item.canImport ? '接管到中心库' : item.status === 'conflict' ? '处理冲突' : item.managed ? '已被管理' : '无法接管'}
             </button>
-            <button className="sm2__btn sm2__btn--ghost" onClick={() => openExternal(item.path)}>在 Finder 打开 ↗</button>
+            <button className="sm2__btn sm2__btn--ghost" disabled={revealBusy} onClick={() => void revealInFinder()}>
+              {revealBusy ? '打开中…' : '打开目录 ↗'}
+            </button>
           </>
         ) : undefined
       }
     >
       {agent && item && (
-        <AgentSkillDetailBody key={`${agent.agentId}:${item.id}:${item.path}`} agent={agent} item={item} />
+        <>
+          {revealError && <div className="sm2__error" style={{ margin: 0 }}>{revealError}</div>}
+          <AgentSkillDetailBody key={`${agent.agentId}:${item.id}:${item.path}`} agent={agent} item={item} />
+        </>
       )}
     </SlideOver>
   )
@@ -2165,13 +2222,6 @@ function LocalMarkdownLink({ href, children, onClick, ...props }: AnchorHTMLAttr
   )
 }
 
-function stripSkillFrontmatter(content: string): string {
-  if (!content.startsWith('---')) return content
-  const end = content.indexOf('\n---', 3)
-  if (end === -1) return content
-  return content.slice(end + 4).trim()
-}
-
 function countFiles(node: FileTreeNode | null): number {
   if (!node) return 0
   if (node.nodeType === 'file') return 1
@@ -2212,20 +2262,6 @@ function localSkillFallbackTree(skillPath: string): FileTreeNode {
       },
     ],
   }
-}
-
-function extractSkillDescription(content: string): string {
-  if (!content.startsWith('---')) return ''
-  const end = content.indexOf('\n---', 3)
-  if (end === -1) return ''
-  const frontmatter = content.slice(3, end)
-  const lines = frontmatter.split(/\r?\n/)
-  const descriptionLine = lines.find((line) => line.trim().startsWith('description:'))
-  if (!descriptionLine) return ''
-  return descriptionLine
-    .split(/:(.*)/s)[1]
-    ?.trim()
-    .replace(/^['"]|['"]$/g, '') || ''
 }
 
 function importKey(item: AgentSkillInventoryItem) {

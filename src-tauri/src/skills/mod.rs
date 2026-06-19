@@ -1,5 +1,6 @@
 pub mod agent_paths;
 pub mod explanation;
+pub mod frontmatter;
 pub mod installer;
 pub mod marketplace;
 pub mod registry;
@@ -642,13 +643,21 @@ mod tests {
             agent: "codex".to_string(),
         })
         .expect("install codex plugin");
+        fs::write(
+            home.path.join(".codex/config.toml"),
+            r#"[plugins."context-plugin@agentbro"]
+enabled = false
+"#,
+        )
+        .expect("write codex plugin config");
         assert_eq!(installed_id, "plugin:context-plugin");
         assert!(
             scanner::scan_agent("codex")
                 .iter()
                 .any(|skill| skill.id == "plugin:context-plugin"
-                    && matches!(skill.skill_type, SkillType::Plugin)),
-            "installed codex plugin should scan"
+                    && matches!(skill.skill_type, SkillType::Plugin)
+                    && !skill.agents[0].enabled),
+            "installed codex plugin should scan TOML disabled state"
         );
 
         let manifest = home.path.join("market.json");

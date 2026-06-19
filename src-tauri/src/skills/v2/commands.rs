@@ -205,8 +205,14 @@ pub fn execute_apply_skill_pack(
     pack_id: String,
     target_agents: Vec<String>,
     requested_mode: String,
+    blocker_decisions: Option<Vec<DistributionBlockerDecision>>,
 ) -> Result<DistributionPreview, String> {
-    svc()?.apply_skill_pack(&pack_id, target_agents, requested_mode)
+    svc()?.apply_skill_pack_with_decisions(
+        &pack_id,
+        target_agents,
+        requested_mode,
+        blocker_decisions.unwrap_or_default(),
+    )
 }
 
 #[tauri::command]

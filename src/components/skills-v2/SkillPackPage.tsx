@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
+  ConflictBlocker,
   DeleteSkillPackPreview,
+  DistributionBlockerDecision,
   DistributionPreview,
   RemovePackFromAgentPreview,
   RemoveSkillFromPackPreview,
@@ -19,6 +21,15 @@ type BuilderMode = 'create' | 'edit' | 'duplicate'
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const DEFAULT_SKILL_PACK_ID = 'default'
+type BlockerDecision = DistributionBlockerDecision['action']
+
+function blockerKey(blocker: ConflictBlocker) {
+  return `${blocker.skillId}\u0000${blocker.agentId}`
+}
+
+function isManagedCopyBlocker(blocker: ConflictBlocker) {
+  return blocker.reason.startsWith('Managed copy ')
+}
 
 export function SkillPackPage() {
   const state = useSkillStoreV2()
@@ -836,6 +847,7 @@ function ApplyPackDialog({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
   const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -857,6 +869,7 @@ function ApplyPackDialog({
       if (next.has(id)) next.delete(id)
       else next.add(id)
       setPreview(null)
+      setBlockerDecisions({})
       return next
     })
 
@@ -865,6 +878,7 @@ function ApplyPackDialog({
     setError(null)
     try {
       setPreview(await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode))
+      setBlockerDecisions({})
     } catch (e) {
       setError(String(e))
     } finally {
@@ -876,7 +890,18 @@ function ApplyPackDialog({
     setBusy(true)
     setError(null)
     try {
-      await skillApiV2.executeApplyPack(pack.id, Array.from(selected), mode)
+      const blockerDecisionsPayload = preview?.blockers
+        .map((blocker) => {
+          const action = blockerDecisions[blockerKey(blocker)]
+          return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
+        })
+        .filter((item): item is DistributionBlockerDecision => Boolean(item)) ?? []
+      const result = await skillApiV2.executeApplyPack(pack.id, Array.from(selected), mode, blockerDecisionsPayload)
+      if (result.blockers.length > 0) {
+        setPreview(result)
+        setBlockerDecisions({})
+        return
+      }
       onDone()
     } catch (e) {
       setError(String(e))
@@ -923,13 +948,15 @@ function ApplyPackDialog({
     )
   }
 
+  const unresolvedBlockers = preview.blockers.filter((blocker) => !blockerDecisions[blockerKey(blocker)]).length
+
   return (
     <PreviewDialog
       title="确认应用预览"
-      confirmLabel="执行应用"
+      confirmLabel={preview.blockers.length > 0 ? '按选择执行' : '执行应用'}
       destructive
       busy={busy}
-      disabled={preview.blockers.length > 0}
+      disabled={unresolvedBlockers > 0}
       onConfirm={execute}
       onCancel={() => setPreview(null)}
     >
@@ -947,7 +974,44 @@ function ApplyPackDialog({
       ))}
       {preview.blockers.map((blocker, index) => (
         <div key={index} className="sm2__change sm2__change--blocked">
-          阻止 {blocker.skillId}/{blocker.agentId}：{blocker.reason}
+          <div>
+            阻止 {blocker.skillId}/{blocker.agentId}：{blocker.reason}
+          </div>
+          {blocker.existingPath && (
+            <div className="sm2-distribute__path-row" style={{ marginTop: 8 }}>
+              <code>{blocker.existingPath}</code>
+              <button type="button" className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(blocker.existingPath!)}>
+                打开
+              </button>
+            </div>
+          )}
+          <div className="sm2-distribute__decision-row" role="radiogroup" aria-label={`${blocker.agentId} 阻止项处理方式`}>
+            {blocker.existingPath && (
+              <button
+                type="button"
+                className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'overwrite' ? ' sm2-distribute__decision--active' : ''}`}
+                onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'overwrite' }))}
+              >
+                {isManagedCopyBlocker(blocker) ? '以中心库为准' : '覆盖安装'}
+              </button>
+            )}
+            {isManagedCopyBlocker(blocker) && (
+              <button
+                type="button"
+                className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'agent_over_center' ? ' sm2-distribute__decision--active' : ''}`}
+                onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'agent_over_center' }))}
+              >
+                以 Agent 为准
+              </button>
+            )}
+            <button
+              type="button"
+              className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'skip' ? ' sm2-distribute__decision--active' : ''}`}
+              onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'skip' }))}
+            >
+              忽略此目标
+            </button>
+          </div>
         </div>
       ))}
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}

@@ -3,7 +3,7 @@ use super::{
     AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ObsidianVault, ScannedSkill,
     SkillSource, SkillType,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -390,7 +390,7 @@ fn disabled_skill_ids(agent: &str) -> HashSet<String> {
     let Some(settings_path) = agent_paths::paths_for_agent(agent).settings_file else {
         return HashSet::new();
     };
-    let Ok(content) = fs::read_to_string(settings_path) else {
+    let Ok(content) = fs::read_to_string(&settings_path) else {
         return HashSet::new();
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
@@ -652,6 +652,7 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
     }
 
     let meta = fs::metadata(path).ok();
+    let plugin_config_key = plugin_config_key(path, agent, &plugin_id);
     results.push(ScannedSkill {
         id,
         name,
@@ -680,27 +681,96 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
             install_path: path.display().to_string(),
             link_target: None,
             install_mode: InstallMode::Direct,
-            enabled: plugin_enabled(agent, &plugin_id),
+            enabled: plugin_enabled(agent, &plugin_config_key, &plugin_id),
         }],
         frontmatter,
     });
 }
 
-fn plugin_enabled(agent: &str, plugin_id: &str) -> bool {
+fn plugin_config_key(path: &Path, agent: &str, plugin_id: &str) -> String {
+    if agent != "codex" {
+        return plugin_id.to_string();
+    }
+    let mut components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string());
+    while let Some(component) = components.next() {
+        if component == "cache" {
+            if let Some(source) = components.next() {
+                return format!("{plugin_id}@{source}");
+            }
+        }
+    }
+    plugin_id.to_string()
+}
+
+fn plugin_enabled(agent: &str, plugin_key: &str, plugin_id: &str) -> bool {
     let Some(settings_path) = agent_paths::paths_for_agent(agent).settings_file else {
         return true;
     };
-    let Ok(content) = fs::read_to_string(settings_path) else {
+    let Ok(content) = fs::read_to_string(&settings_path) else {
         return true;
     };
+    if settings_path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        let enabled_plugins = toml_plugin_enabled_config(&content);
+        return enabled_plugins
+            .get(plugin_key)
+            .or_else(|| enabled_plugins.get(plugin_id))
+            .copied()
+            .unwrap_or(true);
+    }
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return true;
     };
     json.get("enabledPlugins")
         .and_then(|value| value.as_object())
-        .and_then(|plugins| plugins.get(plugin_id))
+        .and_then(|plugins| plugins.get(plugin_key).or_else(|| plugins.get(plugin_id)))
         .and_then(|value| value.as_bool())
         .unwrap_or(true)
+}
+
+fn toml_plugin_enabled_config(content: &str) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    let mut current_plugin: Option<String> = None;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            current_plugin = toml_plugin_header(line);
+            if let Some(plugin) = current_plugin.as_ref() {
+                out.entry(plugin.clone()).or_insert(true);
+            }
+            continue;
+        }
+        let Some(plugin) = current_plugin.as_ref() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "enabled" {
+            match value.trim() {
+                "true" => {
+                    out.insert(plugin.clone(), true);
+                }
+                "false" => {
+                    out.insert(plugin.clone(), false);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn toml_plugin_header(line: &str) -> Option<String> {
+    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
+    let key = inner.strip_prefix("plugins.")?.trim();
+    Some(
+        key.strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or(key)
+            .to_string(),
+    )
 }
 
 fn symlink_target(path: &Path) -> Option<String> {
@@ -749,65 +819,9 @@ fn parse_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
 }
 
 fn parse_frontmatter_text(fm_text: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let mut current_key: Option<String> = None;
-    let mut current_val = String::new();
-    let mut is_block_scalar = false;
-
-    for line in fm_text.lines() {
-        if is_block_scalar {
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || (line.starts_with(|c: char| !c.is_whitespace()) && line.contains(':'))
-            {
-                if let Some(key) = current_key.take() {
-                    let val = current_val.trim().to_string();
-                    if !val.is_empty() {
-                        map.insert(key, val);
-                    }
-                }
-                is_block_scalar = false;
-                current_val.clear();
-            } else {
-                if !current_val.is_empty() {
-                    current_val.push(' ');
-                }
-                current_val.push_str(trimmed);
-                continue;
-            }
-        }
-
-        let trimmed = line.trim();
-        if let Some(colon_pos) = trimmed.find(':') {
-            let key = trimmed[..colon_pos].trim().to_string();
-            let val_part = trimmed[colon_pos + 1..].trim();
-
-            if key.is_empty() {
-                continue;
-            }
-
-            if val_part == ">" || val_part == "|" {
-                current_key = Some(key);
-                current_val.clear();
-                is_block_scalar = true;
-                continue;
-            }
-
-            let val = val_part.trim_matches('"').trim_matches('\'').to_string();
-            if !val.is_empty() {
-                map.insert(key, val);
-            }
-        }
-    }
-
-    if let Some(key) = current_key.take() {
-        let val = current_val.trim().to_string();
-        if !val.is_empty() {
-            map.insert(key, val);
-        }
-    }
-
-    map
+    crate::skills::frontmatter::parse_section(fm_text)
+        .into_iter()
+        .collect()
 }
 
 fn expand_user_path(path: &str) -> PathBuf {

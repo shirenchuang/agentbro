@@ -2346,6 +2346,11 @@ impl Service {
             } else {
                 vec![
                     AdoptOption {
+                        value: "center_over_agent".into(),
+                        label: "Use center skill and replace agent file with link".into(),
+                        destructive: true,
+                    },
+                    AdoptOption {
                         value: "overwrite_center".into(),
                         label: "Overwrite center skill with this one".into(),
                         destructive: true,
@@ -2408,6 +2413,9 @@ impl Service {
                     "A center skill already exists at '{}'.",
                     dest.display()
                 ));
+            } else if option == "center_over_agent" {
+                // Keep the center copy intact; the target replacement below will
+                // make the agent use this existing directory.
             } else if !(preview.center_has_same_id && preview.can_quick_adopt) {
                 return Err(format!(
                     "A different center skill already exists at '{}'. Re-run preview and choose overwrite or rename.",
@@ -2470,6 +2478,11 @@ impl Service {
                 )?;
             }
             "import_link" => {
+                fsutil::remove_path(src)?;
+                fsutil::try_symlink(&dest, src)?;
+                self.upsert_target_managed(agent_id, &target_skill_id, src, "link", "link")?;
+            }
+            "center_over_agent" => {
                 fsutil::remove_path(src)?;
                 fsutil::try_symlink(&dest, src)?;
                 self.upsert_target_managed(agent_id, &target_skill_id, src, "link", "link")?;
@@ -2631,7 +2644,10 @@ impl Service {
         })
     }
 
-    pub fn preview_copy_target_diff(&self, target_id: &str) -> Result<CopyTargetDiffPreview, String> {
+    pub fn preview_copy_target_diff(
+        &self,
+        target_id: &str,
+    ) -> Result<CopyTargetDiffPreview, String> {
         let sync = self.preview_sync_copy_target(target_id)?;
         let center = self
             .skill_row(&sync.skill_id)?
@@ -2639,10 +2655,16 @@ impl Service {
         let center_path = Path::new(&center.center_path);
         let copy_path = Path::new(&sync.target_path);
         if !center_path.is_dir() {
-            return Err(format!("Center path is not a directory: {}", center_path.display()));
+            return Err(format!(
+                "Center path is not a directory: {}",
+                center_path.display()
+            ));
         }
         if !copy_path.is_dir() {
-            return Err(format!("Copy target is not a directory: {}", copy_path.display()));
+            return Err(format!(
+                "Copy target is not a directory: {}",
+                copy_path.display()
+            ));
         }
 
         let center_files = collect_relative_files(center_path)?;
@@ -2665,8 +2687,14 @@ impl Service {
             files.push(CopyTargetDiffFile {
                 path: rel,
                 change_type,
-                center_content: center_bytes.as_deref().map(String::from_utf8_lossy).map(String::from),
-                copy_content: copy_bytes.as_deref().map(String::from_utf8_lossy).map(String::from),
+                center_content: center_bytes
+                    .as_deref()
+                    .map(String::from_utf8_lossy)
+                    .map(String::from),
+                copy_content: copy_bytes
+                    .as_deref()
+                    .map(String::from_utf8_lossy)
+                    .map(String::from),
             });
         }
 
@@ -3286,53 +3314,25 @@ impl Service {
         target_agents: Vec<String>,
         requested_mode: String,
     ) -> Result<DistributionPreview, String> {
+        self.apply_skill_pack_with_decisions(pack_id, target_agents, requested_mode, Vec::new())
+    }
+
+    pub fn apply_skill_pack_with_decisions(
+        &self,
+        pack_id: &str,
+        target_agents: Vec<String>,
+        requested_mode: String,
+        blocker_decisions: Vec<DistributionBlockerDecision>,
+    ) -> Result<DistributionPreview, String> {
         let detail = self.get_skill_pack_detail(pack_id)?;
         let skill_ids: Vec<String> = detail.members.iter().map(|m| m.skill_id.clone()).collect();
         let mut preview =
             self.preview_distribute_skill(skill_ids, target_agents, requested_mode)?;
-        if !preview.blockers.is_empty() {
+        preview.blocker_decisions = blocker_decisions;
+        if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
-        // execute with pack origin
-        for change in preview.changes.clone() {
-            match change.action.as_str() {
-                "create" => {
-                    let actual = change
-                        .actual_mode
-                        .clone()
-                        .unwrap_or_else(|| preview.requested_mode.clone());
-                    self.create_target(
-                        &change.skill_id,
-                        &change.agent_id,
-                        &change.target_path,
-                        &preview.requested_mode,
-                        &actual,
-                        ClaimOrigin::Pack(pack_id.to_string()),
-                    )?;
-                }
-                "reuse" | "reinstall" => {
-                    self.append_claim(
-                        &change.target_path,
-                        &change.agent_id,
-                        ClaimOrigin::Pack(pack_id.to_string()),
-                    )?;
-                }
-                _ => {}
-            }
-        }
-        for agent_id in &preview.target_agents {
-            self.scan_one_agent_into_db(agent_id)?;
-        }
-        // mark changes as applied
-        for c in preview.changes.iter_mut() {
-            if c.action == "create" {
-                c.reason = Some("pack claim created".to_string());
-            } else if c.action == "reuse" || c.action == "reinstall" {
-                c.reason = Some("pack claim appended".to_string());
-            }
-        }
-        self.refresh_snapshot_best_effort();
-        Ok(preview)
+        self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))
     }
 
     /// Revoke a pack from an agent: remove only the pack's claims; delete the
@@ -3736,7 +3736,8 @@ fn collect_relative_files_inner(
     dir: &Path,
     out: &mut BTreeSet<String>,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {}", dir.display(), e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {}", dir.display(), e))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if fsutil::is_ignored_entry(&name) {

@@ -1040,6 +1040,73 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
+fn apply_pack_accepts_blocker_decisions_for_unmanaged_targets() {
+    let (_home, svc, _lock) = fresh_service("pack-blocker-decisions");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "find-skills",
+        "find-skills",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let unmanaged = write_skill(
+        &svc.home.join(".codex/skills"),
+        "find-skills",
+        "find-skills",
+        Some("agent-version"),
+    );
+
+    let preview = svc
+        .apply_skill_pack("default", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+    assert_eq!(preview.blockers.len(), 1);
+    assert_eq!(
+        fs::read_to_string(unmanaged.join("reference.md")).unwrap(),
+        "agent-version"
+    );
+
+    let applied = svc
+        .apply_skill_pack_with_decisions(
+            "default",
+            vec!["codex".to_string()],
+            "copy".to_string(),
+            vec![DistributionBlockerDecision {
+                skill_id: "find-skills".to_string(),
+                agent_id: "codex".to_string(),
+                action: "overwrite".to_string(),
+            }],
+        )
+        .unwrap();
+    assert!(applied.blockers.is_empty());
+    assert!(applied
+        .changes
+        .iter()
+        .any(|change| change.action == "overwrite"));
+    assert_eq!(
+        fs::read_to_string(unmanaged.join("reference.md")).unwrap(),
+        "center-version"
+    );
+
+    let detail = svc.get_skill_detail("find-skills").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert!(detail.targets[0]
+        .claims
+        .iter()
+        .any(|claim| claim.claim_type == "pack" && claim.pack_id.as_deref() == Some("default")));
+}
+
+#[test]
 fn default_pack_is_virtual_and_always_contains_all_center_skills() {
     let (_home, svc, _lock) = fresh_service("default-pack-virtual");
     let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
@@ -1067,8 +1134,14 @@ fn default_pack_is_virtual_and_always_contains_all_center_skills() {
 
     let detail = svc.get_skill_pack_detail("default").unwrap();
     assert_eq!(detail.members.len(), 2);
-    assert!(detail.members.iter().any(|member| member.skill_id == "skill-one"));
-    assert!(detail.members.iter().any(|member| member.skill_id == "skill-two"));
+    assert!(detail
+        .members
+        .iter()
+        .any(|member| member.skill_id == "skill-one"));
+    assert!(detail
+        .members
+        .iter()
+        .any(|member| member.skill_id == "skill-two"));
 
     let err = svc
         .upsert_skill_pack(UpsertPackInput {
@@ -1130,7 +1203,11 @@ fn revoking_default_pack_preserves_direct_claims() {
     assert_eq!(one.targets.len(), 1);
     assert_eq!(one.targets[0].claims.len(), 1);
     assert_eq!(one.targets[0].claims[0].claim_type, "direct");
-    assert!(svc.get_skill_detail("skill-two").unwrap().targets.is_empty());
+    assert!(svc
+        .get_skill_detail("skill-two")
+        .unwrap()
+        .targets
+        .is_empty());
 }
 
 #[test]
@@ -1165,7 +1242,11 @@ fn revoking_default_pack_keeps_agent_detail_and_overview_readable() {
     let detail = svc.get_agent_detail("hermes").unwrap();
     assert!(detail.applied_packs.is_empty());
     let overview = svc.overview().unwrap();
-    let default_pack = overview.packs.iter().find(|pack| pack.id == "default").unwrap();
+    let default_pack = overview
+        .packs
+        .iter()
+        .find(|pack| pack.id == "default")
+        .unwrap();
     assert_eq!(default_pack.applied_agent_count, 0);
 }
 
@@ -1290,7 +1371,12 @@ fn copy_sync_detects_outdated_modified_diverged() {
 #[test]
 fn copy_target_diff_lists_changed_files_against_center() {
     let (_home, svc, _lock) = fresh_service("copy-diff");
-    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    let src = write_skill(
+        &svc.home.join("s"),
+        "rev",
+        "release-checklist",
+        Some("original"),
+    );
     svc.execute_add_center_skill(
         AddCenterSkillInput {
             source_path: src.display().to_string(),
@@ -1332,7 +1418,11 @@ fn copy_target_diff_lists_changed_files_against_center() {
     assert!(files.contains(&("center-only.md", "copy_removed")));
     assert!(files.contains(&("reference.md", "modified")));
     assert!(files.contains(&("copy-only.md", "copy_added")));
-    let modified = diff.files.iter().find(|file| file.path == "reference.md").unwrap();
+    let modified = diff
+        .files
+        .iter()
+        .find(|file| file.path == "reference.md")
+        .unwrap();
     assert_eq!(modified.center_content.as_deref(), Some("original"));
     assert_eq!(modified.copy_content.as_deref(), Some("edited in agent"));
 }
@@ -1340,7 +1430,12 @@ fn copy_target_diff_lists_changed_files_against_center() {
 #[test]
 fn list_center_skills_refreshes_live_copy_status() {
     let (_home, svc, _lock) = fresh_service("list-refresh-copy-status");
-    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    let src = write_skill(
+        &svc.home.join("s"),
+        "rev",
+        "release-checklist",
+        Some("original"),
+    );
     svc.execute_add_center_skill(
         AddCenterSkillInput {
             source_path: src.display().to_string(),
@@ -1380,7 +1475,12 @@ fn list_center_skills_refreshes_live_copy_status() {
 #[test]
 fn refresh_overview_returns_fresh_copy_status_without_second_live_list_refresh() {
     let (_home, svc, _lock) = fresh_service("refresh-overview-copy-status");
-    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    let src = write_skill(
+        &svc.home.join("s"),
+        "rev",
+        "release-checklist",
+        Some("original"),
+    );
     svc.execute_add_center_skill(
         AddCenterSkillInput {
             source_path: src.display().to_string(),
@@ -1423,7 +1523,12 @@ fn refresh_overview_returns_fresh_copy_status_without_second_live_list_refresh()
 #[test]
 fn delete_skill_target_distribution_removes_copy_and_db_target() {
     let (_home, svc, _lock) = fresh_service("delete-target-distribution");
-    let src = write_skill(&svc.home.join("s"), "rev", "release-checklist", Some("original"));
+    let src = write_skill(
+        &svc.home.join("s"),
+        "rev",
+        "release-checklist",
+        Some("original"),
+    );
     svc.execute_add_center_skill(
         AddCenterSkillInput {
             source_path: src.display().to_string(),
@@ -1584,6 +1689,74 @@ fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
     assert_eq!(detail.targets.len(), 1);
     assert_eq!(detail.targets[0].agent_id, "claude-code");
     assert_eq!(detail.targets[0].actual_mode, "copy");
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_conflict_can_use_center_as_source_of_truth() {
+    let (_home, svc, _lock) = fresh_service("adopt-center-over-agent");
+    let center_src = write_skill(
+        &svc.home.join("incoming"),
+        "agentbro-pet",
+        "AgentBroPet",
+        Some("center-version"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: center_src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some("file://incoming/agentbro-pet".to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let agent_skill = write_skill(
+        &svc.home.join(".codex/skills"),
+        "agentbro-pet",
+        "AgentBroPet",
+        Some("agent-version"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.path == agent_skill.display().to_string())
+        .expect("conflicting unmanaged skill found");
+
+    let preview = svc
+        .preview_adopt_agent_skill("codex", &unmanaged.id)
+        .unwrap();
+    assert!(preview.center_has_same_id);
+    assert!(!preview.can_quick_adopt);
+    assert_eq!(preview.options[0].value, "center_over_agent");
+
+    let adopted = svc
+        .execute_adopt_agent_skill("codex", &unmanaged.id, "center_over_agent", None)
+        .unwrap();
+    assert_eq!(adopted, "AgentBroPet");
+
+    let center = svc.center_path().unwrap().join("AgentBroPet");
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center-version"
+    );
+    assert!(agent_skill.is_symlink());
+    assert_eq!(fs::read_link(&agent_skill).unwrap(), center);
+
+    let detail = svc.get_skill_detail("AgentBroPet").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].agent_id, "codex");
+    assert_eq!(detail.targets[0].actual_mode, "link");
     assert!(svc
         .list_unmanaged()
         .unwrap()
@@ -1848,7 +2021,40 @@ fn agent_detail_reports_codex_toml_config_paths() {
         r#"[mcp_servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem"]
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."archived@openai-curated"]
+enabled = false
 "#,
+    )
+    .unwrap();
+    let plugin_manifest = codex_dir.join(
+        "plugins/cache/openai-primary-runtime/documents/26.614.11602/.codex-plugin/plugin.json",
+    );
+    fs::create_dir_all(plugin_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &plugin_manifest,
+        serde_json::json!({
+            "name": "documents",
+            "version": "26.614.11602",
+            "interface": { "displayName": "Documents" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let disabled_plugin_manifest =
+        codex_dir.join("plugins/cache/openai-curated/archived/0.1.0/.codex-plugin/plugin.json");
+    fs::create_dir_all(disabled_plugin_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &disabled_plugin_manifest,
+        serde_json::json!({
+            "name": "archived",
+            "version": "0.1.0",
+            "interface": { "displayName": "Archived Plugin" }
+        })
+        .to_string(),
     )
     .unwrap();
 
@@ -1869,6 +2075,17 @@ args = ["-y", "@modelcontextprotocol/server-filesystem"]
         .mcp_servers
         .iter()
         .any(|server| server.name == "filesystem" && server.command == "npx"));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "documents@openai-primary-runtime"
+            && plugin.name == "Documents"
+            && plugin.version.as_deref() == Some("26.614.11602")
+            && plugin.enabled
+            && plugin.source.as_deref() == Some("codex-plugin:openai-primary-runtime")
+    }));
+    assert!(detail
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "archived@openai-curated" && !plugin.enabled));
 }
 
 #[test]

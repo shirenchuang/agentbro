@@ -402,9 +402,8 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    expect(await screen.findByText('本机 Agent 同步')).toBeInTheDocument()
-    expect(screen.getByText('把散落在各 Agent 里的 Skills 收进中心库')).toBeInTheDocument()
-    expect(screen.getByText('发现 1 个可接管 Skill，1 个同名冲突')).toBeInTheDocument()
+    expect(await screen.findByText('发现 1 个可接管 Skill，1 个同名冲突')).toBeInTheDocument()
+    expect(screen.queryByText('把散落在各 Agent 里的 Skills 收进中心库')).not.toBeInTheDocument()
     expect(screen.getByText('待处理收纳箱')).toBeInTheDocument()
     expect(screen.getByText('alpha')).toBeInTheDocument()
     expect(screen.getByText('bird')).toBeInTheDocument()
@@ -523,7 +522,8 @@ describe('Agent sync local agent chips', () => {
     const { container } = render(<AgentSyncPanel onDone={() => {}} />)
 
     expect(await screen.findByText('alpha')).toBeInTheDocument()
-    expect(container.querySelector('.sm2__agent-sync-listview')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '列表' }))
+    await waitFor(() => expect(container.querySelector('.sm2__agent-sync-listview')).not.toBeNull())
     expect(screen.queryByText('managed-alpha')).not.toBeInTheDocument()
 
     const listCheckbox = container.querySelector('.sm2__agent-sync-listview .sm2__agent-sync-checkbox') as HTMLInputElement
@@ -759,7 +759,7 @@ describe('Agent sync local agent chips', () => {
 
     expect(await screen.findByText('发现 2 个可接管 Skill，1 个同名冲突')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '一键整理 2 个' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '重新扫描' })).toBeEnabled()
     expect(screen.getByRole('button', { name: /全部 Agent/ })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: /Claude Code/ }))
@@ -767,7 +767,7 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByText('发现 1 个同名冲突')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '处理冲突' })[0]).toHaveClass('sm2__btn--featured')
     expect(screen.getAllByRole('button', { name: '处理冲突' })[0]).toBeEnabled()
-    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '重新扫描' })).toBeEnabled()
     fireEvent.click(screen.getAllByRole('button', { name: '处理冲突' })[0])
     await waitFor(() => expect(preview).toHaveBeenCalledWith('claude-code', 'claude-bird'))
     expect(screen.getByRole('button', { name: /全部 Agent/ })).toHaveAttribute('aria-pressed', 'false')
@@ -785,7 +785,6 @@ describe('Agent sync local agent chips', () => {
 
     expect(await screen.findByText('未发现可同步的 Agent Skills 目录')).toBeInTheDocument()
     expect(screen.getAllByText('没有找到可同步的 Agent Skills 目录。可以点击「重新扫描」再试。')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: '查看整理方式' })).toBeDisabled()
 
     fireEvent.click(screen.getAllByRole('button', { name: '重新扫描' }).at(-1)!)
 
@@ -1197,6 +1196,67 @@ describe('Agent sync local agent chips', () => {
     await waitFor(() => expect(execute).toHaveBeenCalledWith('codex', 'codex-bird', 'rename', 'bird-codex'))
   })
 
+  it('defaults conflicting agent skills to the center-library version when available', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 0,
+        items: [
+          {
+            id: 'codex-bird',
+            agentId: 'codex',
+            skillId: 'bird',
+            name: 'bird',
+            path: '/Users/me/.codex/skills/bird',
+            managed: false,
+            canImport: false,
+            status: 'conflict',
+            statusLabel: '未管理 · 同名冲突',
+            reason: 'same_name_as_center_skill',
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-codex-bird',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+    vi.spyOn(skillApiV2, 'previewAdopt').mockResolvedValueOnce({
+      agentId: 'codex',
+      unmanagedId: 'codex-bird',
+      skillPath: '/Users/me/.codex/skills/bird',
+      inferredSkillId: 'bird',
+      hash: 'hash-codex-bird',
+      centerHasSameId: true,
+      canQuickAdopt: false,
+      options: [
+        { value: 'center_over_agent', label: 'Use center skill and replace agent file with link', destructive: true },
+        { value: 'overwrite_center', label: 'Overwrite center skill with this one', destructive: true },
+        { value: 'rename', label: 'Import under a new id', destructive: false },
+        { value: 'skip', label: 'Keep as unmanaged', destructive: false },
+      ],
+    })
+    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValueOnce('bird')
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    fireEvent.click(await screen.findByText('bird'))
+    fireEvent.click((await screen.findAllByText('处理冲突')).at(-1)!)
+
+    expect(await screen.findByLabelText('中心库为准')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByText('确认接管'))
+
+    await waitFor(() => expect(execute).toHaveBeenCalledWith('codex', 'codex-bird', 'center_over_agent', null))
+  })
+
   it('opens local agent skills in the skill-library detail layout', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const inventory: AgentSkillInventoryAgent[] = [
@@ -1275,6 +1335,59 @@ describe('Agent sync local agent chips', () => {
     fireEvent.click(screen.getByText('scripts'))
     expect(screen.getByText('find.js')).toBeInTheDocument()
     expect(container).toBeTruthy()
+  })
+
+  it('reveals a local agent skill directory from the detail action', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'local-alpha',
+            agentId: 'claude-code',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.claude/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.mocked(openShell).mockClear()
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValueOnce(inventory)
+    vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValueOnce({
+      name: 'alpha',
+      nodeType: 'dir',
+      path: '/Users/me/.claude/skills/alpha',
+      children: [],
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValueOnce('# Alpha\n\nLocal documentation.')
+    const revealPath = vi.spyOn(skillApiV2, 'revealPath').mockResolvedValueOnce(undefined)
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    fireEvent.click(await screen.findByText('alpha'))
+    fireEvent.click(screen.getByRole('button', { name: '打开目录 ↗' }))
+
+    await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/Users/me/.claude/skills/alpha'))
+    expect(openShell).not.toHaveBeenCalled()
+    expect(screen.queryByText('已在 Finder 中定位 Skill 目录')).not.toBeInTheDocument()
   })
 })
 
@@ -1390,6 +1503,55 @@ describe('Skill detail slider + agent page render without crashing', () => {
     // portal renders the slide-over
     expect(document.body.querySelector('.sm2__slideover')).not.toBeNull()
     expect(container).toBeTruthy()
+  })
+
+  it('loads the file tree for unmanaged fallback skills', async () => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValueOnce(new Error('not in center'))
+    const readFileTree = vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValueOnce({
+      name: 'manual-skill',
+      nodeType: 'dir',
+      path: '/c/skills/manual-skill',
+      children: [
+        {
+          name: 'SKILL.md',
+          nodeType: 'file',
+          path: '/c/skills/manual-skill/SKILL.md',
+          children: null,
+        },
+        {
+          name: 'reference.md',
+          nodeType: 'file',
+          path: '/c/skills/manual-skill/reference.md',
+          children: null,
+        },
+      ],
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValueOnce('# Manual Skill\n\nManual doc.')
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(
+      <SkillDetailSlider
+        skillId="manual-skill"
+        open={true}
+        onClose={() => {}}
+        fallbackSkill={{
+          id: 'manual-skill',
+          name: 'manual-skill',
+          centerPath: '/c/skills/manual-skill',
+          sourceType: 'unmanaged_agent',
+          sourceUri: '/c/skills/manual-skill',
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('Manual doc.')).toBeInTheDocument()
+    expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill')
+
+    fireEvent.click(screen.getByText('文件'))
+    expect(document.body.querySelector('.sm2__filetree-pane')).not.toBeNull()
+    expect(screen.getAllByText('SKILL.md').length).toBeGreaterThan(0)
+    expect(screen.getByText('reference.md')).toBeInTheDocument()
+    expect(screen.getByText('2 个文件')).toBeInTheDocument()
   })
 
   it('does not repeat the agent id under the agent display name', async () => {

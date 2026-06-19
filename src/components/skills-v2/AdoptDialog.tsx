@@ -145,6 +145,14 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         badge: '副本',
         impact: '会删除当前 Agent 目录中的 Skill 文件夹，再从中心库复制回 Agent。',
       }
+    case 'center_over_agent':
+      return {
+        title: '使用中心库版本接管',
+        shortLabel: '中心库为准',
+        description: '保留中心库已有 Skill，把当前 Agent 目录替换为中心库链接。',
+        badge: '推荐',
+        impact: '不会改动中心库；会删除当前 Agent 目录中的同名 Skill 文件夹，再创建到中心库的链接。',
+      }
     case 'overwrite_center':
       return {
         title: '用当前文件覆盖中心库',
@@ -181,5 +189,8 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
 }
 
 function preferredAdoptOption(options: Array<{ value: string }>) {
-  return options.find((option) => option.value === 'import_link')?.value || options[0]?.value || 'import_keep'
+  return options.find((option) => option.value === 'center_over_agent')?.value
+    || options.find((option) => option.value === 'import_link')?.value
+    || options[0]?.value
+    || 'import_keep'
 }

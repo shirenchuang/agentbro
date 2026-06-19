@@ -12,6 +12,7 @@ import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
 import { PreviewDialog } from './PreviewDialog'
+import { extractSkillDescription as extractFrontmatterDescription, stripSkillFrontmatter as stripFrontmatter } from './frontmatter'
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
@@ -79,6 +80,8 @@ export function SkillDetailSlider({
     setError(null)
     setTab('overview')
     setDetail(null)
+    setActiveFile(null)
+    setSkillDocPath(null)
     setSkillDocContent('')
     setFileContent('')
     setDiffPreview(null)
@@ -104,17 +107,29 @@ export function SkillDetailSlider({
         }
         const d = fallbackToSkillDetail(fallbackSkill)
         setDetail(d)
-        setSkillDocPath(`${fallbackSkill.centerPath}/SKILL.md`)
-        skillApiV2
-          .readFileContent(`${fallbackSkill.centerPath}/SKILL.md`)
-          .then((content) => {
+        const fallbackDocPath = `${fallbackSkill.centerPath}/SKILL.md`
+        setSkillDocPath(fallbackDocPath)
+        return skillApiV2.readFileTree(fallbackSkill.centerPath)
+          .then(async (files) => {
+            const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
+            setDetail({ ...d, files })
+            setSkillDocPath(skillMd)
+            setActiveFile(skillMd)
+            const content = await skillApiV2.readFileContent(skillMd)
             setSkillDocContent(content)
             setFileContent(content)
           })
-          .catch(() => {
-            setSkillDocContent('')
-            setFileContent('')
-          })
+          .catch(() => skillApiV2
+            .readFileContent(fallbackDocPath)
+            .then((content) => {
+              setActiveFile(fallbackDocPath)
+              setSkillDocContent(content)
+              setFileContent(content)
+            })
+            .catch(() => {
+              setSkillDocContent('')
+              setFileContent('')
+            }))
       })
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1125,27 +1140,6 @@ function isCodeLikeMeta(key: string, value: string): boolean {
     || value.includes('--')
     || value.startsWith('[')
     || value.startsWith('{')
-}
-
-function stripFrontmatter(content: string): string {
-  if (!content.startsWith('---')) return content
-  const end = content.indexOf('\n---', 3)
-  if (end === -1) return content
-  return content.slice(end + 4).trim()
-}
-
-function extractFrontmatterDescription(content: string): string {
-  if (!content.startsWith('---')) return ''
-  const end = content.indexOf('\n---', 3)
-  if (end === -1) return ''
-  const frontmatter = content.slice(3, end)
-  const lines = frontmatter.split(/\r?\n/)
-  const descriptionLine = lines.find((line) => line.trim().startsWith('description:'))
-  if (!descriptionLine) return ''
-  return descriptionLine
-    .split(/:(.*)/s)[1]
-    ?.trim()
-    .replace(/^['"]|['"]$/g, '') || ''
 }
 
 function fallbackToSkillDetail(fallback: SkillDetailFallback): SkillDetail {

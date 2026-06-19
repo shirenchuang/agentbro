@@ -5,7 +5,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
-import type { AgentDetail, AdoptPreview, ConflictBlocker, DistributionPreview, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
+import type { AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
@@ -17,12 +17,21 @@ type AgentSkillViewMode = 'cards' | 'list'
 type AgentSkillScope = 'managed' | 'unmanaged'
 type AgentLibraryScope = 'uninstalled' | 'installed' | 'all'
 type InstallBlockerDecision = 'overwrite' | 'skip'
+type PackBlockerDecision = DistributionBlockerDecision['action']
 type PackApplyProgress = {
   packName: string
   agentName: string
   state: 'running' | 'done'
   percent: number
   detail: string
+}
+type PackApplyConflictDialogState = {
+  packId: string
+  packName: string
+  agentId: string
+  agentName: string
+  mode: 'link' | 'copy'
+  preview: DistributionPreview
 }
 
 const PAGE_SIZE = 28
@@ -50,7 +59,10 @@ export function AgentManagementPage() {
   const [programLoading, setProgramLoading] = useState(false)
   const [agentOutput, setAgentOutput] = useState<string[]>([])
   const [notice, setNotice] = useState<string | null>(null)
+  const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
+  const [packApplyBusy, setPackApplyBusy] = useState(false)
   const selectedAgentIdRef = useRef<string | null>(null)
+  const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || openingAgentId !== null
 
   const loadPrograms = useCallback(async () => {
@@ -148,25 +160,78 @@ export function AgentManagementPage() {
     }
   }
 
-  const applyPack = async (packId: string, agentId: string) => {
+  const resolvePackApplyConflict = (applied: boolean) => {
+    packApplyResolverRef.current?.(applied)
+    packApplyResolverRef.current = null
+    setPackApplyConflict(null)
+  }
+
+  const openPackApplyConflict = (dialog: PackApplyConflictDialogState) =>
+    new Promise<boolean>((resolve) => {
+      packApplyResolverRef.current = resolve
+      setPackApplyConflict(dialog)
+    })
+
+  const packApplyDialogInfo = (packId: string, agentId: string, preview: DistributionPreview, mode: 'link' | 'copy'): PackApplyConflictDialogState => {
+    const detail = useSkillStoreV2.getState().selectedAgentDetail
+    const pack = detail?.availablePacks.find((item) => item.id === packId) ?? detail?.appliedPacks.find((item) => item.packId === packId)
+    return {
+      packId,
+      packName: pack && 'name' in pack ? pack.name : pack?.packName ?? packId,
+      agentId,
+      agentName: detail?.id === agentId ? detail.displayName : agentId,
+      mode,
+      preview,
+    }
+  }
+
+  const applyPack = async (packId: string, agentId: string): Promise<boolean> => {
     setBusy(true)
     setNotice(null)
     state.setError(null)
+    let keepBusyUntilReturn = false
     try {
       const mode = state.settings?.defaultDistributeMode || 'link'
       const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode)
       if (preview.blockers.length > 0) {
-        state.setError(preview.blockers.map((b) => `${b.skillId}: ${b.reason}`).join('\n'))
-        return
+        setBusy(false)
+        keepBusyUntilReturn = true
+        return openPackApplyConflict(packApplyDialogInfo(packId, agentId, preview, mode))
       }
       await state.loadAgentDetail(agentId, true)
       void state.loadOverview(true)
       state.setError(null)
       setNotice('技能包已应用')
+      return true
     } catch (e) {
       state.setError(String(e))
+      return false
     } finally {
-      setBusy(false)
+      if (!keepBusyUntilReturn) setBusy(false)
+    }
+  }
+
+  const executePackApplyConflict = async (decisions: DistributionBlockerDecision[]) => {
+    if (!packApplyConflict) return
+    setPackApplyBusy(true)
+    try {
+      const result = await skillApiV2.executeApplyPack(
+        packApplyConflict.packId,
+        [packApplyConflict.agentId],
+        packApplyConflict.mode,
+        decisions,
+      )
+      if (result.blockers.length > 0) {
+        setPackApplyConflict((current) => current ? { ...current, preview: result } : current)
+        return
+      }
+      await state.loadAgentDetail(packApplyConflict.agentId, true)
+      void state.loadOverview(true)
+      state.setError(null)
+      setNotice('技能包已应用')
+      resolvePackApplyConflict(true)
+    } finally {
+      setPackApplyBusy(false)
     }
   }
 
@@ -344,6 +409,14 @@ export function AgentManagementPage() {
           }}
         />
       )}
+      {packApplyConflict && (
+        <PackApplyConflictDialog
+          dialog={packApplyConflict}
+          busy={packApplyBusy}
+          onCancel={() => resolvePackApplyConflict(false)}
+          onExecute={executePackApplyConflict}
+        />
+      )}
     </div>
   )
 }
@@ -458,7 +531,7 @@ function AgentDetailView({
   agentOutput: string[]
   onAdopt: (agentId: string, unmanagedId: string) => void
   onRevoke: (packId: string, agentId: string) => void
-  onApplyPack: (packId: string, agentId: string) => void | Promise<void>
+  onApplyPack: (packId: string, agentId: string) => boolean | Promise<boolean>
   onScan: (agentId: string) => void
   onUpdate: (agentId: string) => void
   onInstall: (agentId: string) => void
@@ -590,7 +663,7 @@ function OverviewTab({
   detail: AgentDetail
   busy: boolean
   onRevoke: (packId: string, agentId: string) => void
-  onApplyPack: (packId: string, agentId: string) => void | Promise<void>
+  onApplyPack: (packId: string, agentId: string) => boolean | Promise<boolean>
 }) {
   const appliedIds = new Set(detail.appliedPacks.map((p) => p.packId))
   const available = detail.availablePacks.filter((p) => !appliedIds.has(p.id))
@@ -663,7 +736,7 @@ function SkillsTab({
   adoptingUnmanagedId: string | null
   onAdopt: (agentId: string, unmanagedId: string) => void
   onRevoke: (packId: string, agentId: string) => void
-  onApplyPack: (packId: string, agentId: string) => void | Promise<void>
+  onApplyPack: (packId: string, agentId: string) => boolean | Promise<boolean>
   onScan: (agentId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
@@ -822,7 +895,7 @@ function SkillsTab({
   }
   const applyPackFromRail = async (packId: string, agentId: string) => {
     const pack = detail.availablePacks.find((item) => item.id === packId)
-    if (!pack) return
+    if (!pack) return false
     setConfirmingPackApply(true)
     setPackApplyProgress({
       packName: pack.name,
@@ -833,7 +906,11 @@ function SkillsTab({
     })
     state.setError(null)
     try {
-      await Promise.resolve(onApplyPack(pack.id, agentId))
+      const applied = await Promise.resolve(onApplyPack(pack.id, agentId))
+      if (!applied) {
+        setPackApplyProgress(null)
+        return false
+      }
       setPackApplyProgress({
         packName: pack.name,
         agentName: detail.displayName,
@@ -841,6 +918,7 @@ function SkillsTab({
         percent: 100,
         detail: '已完成',
       })
+      return true
     } finally {
       setConfirmingPackApply(false)
     }
@@ -1062,6 +1140,126 @@ function PackApplyProgressToast({ progress }: { progress: PackApplyProgress }) {
   )
 }
 
+function PackApplyConflictDialog({
+  dialog,
+  busy,
+  onCancel,
+  onExecute,
+}: {
+  dialog: PackApplyConflictDialogState
+  busy: boolean
+  onCancel: () => void
+  onExecute: (decisions: DistributionBlockerDecision[]) => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const [blockerDecisions, setBlockerDecisions] = useState<Record<string, PackBlockerDecision>>({})
+  const [error, setError] = useState<string | null>(null)
+  const unresolvedBlockers = dialog.preview.blockers.filter((blocker) => !blockerDecisions[installBlockerKey(blocker)]).length
+
+  const execute = async () => {
+    const payload = dialog.preview.blockers
+      .map((blocker) => {
+        const action = blockerDecisions[installBlockerKey(blocker)]
+        return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
+      })
+      .filter((item): item is DistributionBlockerDecision => Boolean(item))
+    try {
+      await onExecute(payload)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  return (
+    <PreviewDialog
+      title={`应用「${dialog.packName}」`}
+      confirmLabel={dialog.preview.blockers.length > 0 ? '按选择执行' : '执行应用'}
+      cancelLabel="取消"
+      busy={busy}
+      disabled={unresolvedBlockers > 0}
+      modalClassName="sm2__modal--agent-install sm2__modal--light-surface"
+      onCancel={onCancel}
+      onConfirm={execute}
+    >
+      <div className="sm2-agent-install">
+        <div className="sm2-agent-install__target">
+          <span>目标：</span>
+          <strong>{dialog.agentName}</strong>
+          <em>{dialog.preview.skillIds.length} 个 Skill · {skillModeLabel(t, dialog.mode)}</em>
+        </div>
+        <div className="sm2-agent-install__preview-list">
+          {dialog.preview.changes.map((change) => (
+            <div key={`${change.skillId}-${change.agentId}`} className="sm2-agent-install__preview-row">
+              <span className="sm2__tag sm2__tag--ok">
+                {change.action === 'create' ? '新增' : change.action === 'reinstall' ? '重装' : change.action === 'convert' ? '转换' : change.action}
+              </span>
+              <div>
+                <strong>{change.skillId}</strong>
+                <code>{change.targetPath}</code>
+              </div>
+            </div>
+          ))}
+          {dialog.preview.blockers.map((blocker) => {
+            const key = installBlockerKey(blocker)
+            const decision = blockerDecisions[key]
+            const managedCopyBlocker = isManagedCopyBlocker(blocker)
+            return (
+              <div key={key} className="sm2-agent-install__preview-row sm2-agent-install__preview-row--blocked">
+                <span className="sm2__tag sm2__tag--conflict">阻止</span>
+                <div>
+                  <strong>{blocker.skillId}</strong>
+                  <span>{blocker.reason}</span>
+                  {blocker.existingPath && (
+                    <div className="sm2-distribute__path-row" style={{ marginTop: 8 }}>
+                      <code>{blocker.existingPath}</code>
+                      <button type="button" className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(blocker.existingPath!)}>
+                        打开
+                      </button>
+                    </div>
+                  )}
+                  <div className="sm2-agent-install__decision-row">
+                    {blocker.existingPath && (
+                      <button
+                        type="button"
+                        className={`sm2__btn${decision === 'overwrite' ? ' sm2__btn--active' : ''}`}
+                        onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'overwrite' }))}
+                      >
+                        {managedCopyBlocker ? '以中心库为准' : '覆盖安装'}
+                      </button>
+                    )}
+                    {managedCopyBlocker && (
+                      <button
+                        type="button"
+                        className={`sm2__btn${decision === 'agent_over_center' ? ' sm2__btn--active' : ''}`}
+                        onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'agent_over_center' }))}
+                      >
+                        以 Agent 为准
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={`sm2__btn${decision === 'skip' ? ' sm2__btn--active' : ''}`}
+                      onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'skip' }))}
+                    >
+                      忽略此目标
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        {dialog.preview.blockers.length > 0 && (
+          <p className="sm2-distribute__blocked-note">
+            请选择每个阻止项的处理方式。覆盖安装会用中心库版本替换当前 Agent 中同名未管理 Skill。
+          </p>
+        )}
+        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      </div>
+    </PreviewDialog>
+  )
+}
+
 function AgentPackToggleRail({
   detail,
   busy,
@@ -1070,7 +1268,7 @@ function AgentPackToggleRail({
 }: {
   detail: AgentDetail
   busy: boolean
-  onApplyPack: (packId: string, agentId: string) => void | Promise<void>
+  onApplyPack: (packId: string, agentId: string) => boolean | Promise<boolean>
   onRevoke: (packId: string, agentId: string) => void
 }) {
   const appliedById = new Map(detail.appliedPacks.map((pack) => [pack.packId, pack]))
@@ -1714,6 +1912,10 @@ function skillInstalledOnAgent(skill: SkillSummary, agentId: string) {
 
 function installBlockerKey(blocker: ConflictBlocker) {
   return `${blocker.skillId}\u0000${blocker.agentId}`
+}
+
+function isManagedCopyBlocker(blocker: ConflictBlocker) {
+  return blocker.reason.startsWith('Managed copy ')
 }
 
 function defaultAgentDetailAdoptMode(item: UnmanagedItemDto) {
