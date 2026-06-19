@@ -25,7 +25,25 @@
     <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-f5b84b" />
     <img alt="Built with Tauri" src="https://img.shields.io/badge/Tauri-React%20%2B%20Rust-0c6b63" />
   </p>
+
+  <p>
+    <strong>Claude Code / Codex / Gemini CLI / Cursor / Copilot / Kimi / Qoder / OpenCode 等 AI 编程 Agent 的本地控制台。</strong>
+  </p>
 </div>
+
+<img src="docs/assets/screenshots/island-expanded.png" alt="AgentBro 灵动岛展开视图" width="100%" />
+
+## 快速开始
+
+```bash
+brew tap shirenchuang/tap && brew install --cask agentbro
+```
+
+- 下载：[`GitHub Releases`](https://github.com/shirenchuang/agentbro/releases) 或 [国内最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)。
+- 接入：打开 **Island -> Integration**，运行 **Hook Doctor**，再安装你正在使用的 Agent Hook。
+- 贡献：看 [`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) 或 [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)。
+
+如果 AgentBro 帮你减少了在终端、编辑器和权限弹窗之间来回切换的时间，欢迎点一个 Star，帮助更多 AI 编程 Agent 用户发现它。
 
 ## AgentBro 是什么？
 
@@ -261,6 +279,8 @@ pnpm tauri:build:windows # 构建 Windows NSIS/MSI 安装包
 - 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - AI Agent 协作指南：[AGENTS.md](AGENTS.md)
 - Claude Code 项目配置：[.claude/CLAUDE.md](.claude/CLAUDE.md)
+- 社区讨论：[GitHub Discussions](https://github.com/shirenchuang/agentbro/discussions)
+- 新手任务：[`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) / [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)
 
 PR 请提到 `dev` 分支，提交前跑一遍 `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml`。
 
