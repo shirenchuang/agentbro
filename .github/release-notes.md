@@ -2,12 +2,13 @@
 
 ## English
 
-This hotfix restores reliable notch placement and click-through behavior on external displays, especially Retina/high-DPI setups.
+This hotfix improves external-display pet behavior and tightens native host resizing for the Dynamic Island.
 
 ### Fixes
 
-- **Fix notch placement on external displays** - Monitor matching now compares cursor and display bounds in the same logical coordinate space, so the notch can appear on the correct screen instead of falling back to the main display.
-- **Restore collapsed click-through behavior** - The notch again toggles cursor-event ignoring dynamically: collapsed state lets clicks pass through, while hover and expanded states capture interaction.
+- **Fix pet dragging across displays** - Pet windows now use native Tauri dragging when available, preserving the final position after dragging across monitors.
+- **Keep pet clicks reliable on external displays** - External-display pet windows remain interactive, avoiding click-through loss after moving the pet off the primary screen.
+- **Shrink the native host on hover** - The Dynamic Island native host now resizes promptly when leaving the stable collapsed canvas, reducing accidental occlusion.
 
 ### Contributors
 
@@ -35,12 +36,13 @@ This hotfix restores reliable notch placement and click-through behavior on exte
 
 ## 中文
 
-这是一次热修复，恢复外接显示器上的灵动岛定位与点击穿透行为，尤其是 Retina / 高 DPI 屏幕场景。
+这是一次热修复，改善外接显示器上的宠物窗口拖动与点击，并收紧灵动岛 native host 的尺寸切换。
 
 ### 修复
 
-- **修复外接显示器上的灵动岛定位** - 显示器匹配现在会在同一套逻辑坐标空间中比较光标和屏幕边界，避免灵动岛错误回落到主屏。
-- **恢复 collapsed 状态点击穿透** - 灵动岛重新动态切换 cursor-event ignore：collapsed 状态允许点击穿透，hover 和 expanded 状态捕获交互。
+- **修复跨屏拖动宠物窗口** - 可用时改用 Tauri 原生拖动，跨显示器拖动后能保留最终窗口位置。
+- **保持外接屏宠物可点击** - 宠物移动到非主屏后仍保持交互，避免点击穿透失控。
+- **hover 时及时收缩 native host** - 灵动岛离开 collapsed 稳定画布后会及时调整 native host 尺寸，减少遮挡。
 
 ### 贡献者
 
