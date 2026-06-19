@@ -82,6 +82,7 @@ export interface FileTreeNode {
 }
 
 export interface SkillDetail extends SkillSummary {
+  centerResolvedPath?: string | null
   frontmatter: Record<string, string>
   files: FileTreeNode | null
   targets: SkillTargetDetail[]
@@ -243,6 +244,7 @@ export interface AddCenterSkillInput {
   importedFromAgent?: string | null
   importedFromPath?: string | null
   multi?: boolean
+  importMode?: 'copy' | 'link'
 }
 
 export interface AddCenterSkillCandidate {
@@ -298,6 +300,16 @@ export interface DeleteSkillPackPreview {
   affectedTargets: AffectedTarget[]
   removable: boolean
   warnings: string[]
+}
+
+export interface DeleteSkillTargetDistributionFailure {
+  targetId: string
+  error: string
+}
+
+export interface DeleteSkillTargetDistributionsResult {
+  deleted: number
+  failures: DeleteSkillTargetDistributionFailure[]
 }
 
 export interface RemovePackFromAgentPreview {
@@ -630,6 +642,10 @@ export const skillApiV2 = {
     isTauri ? invoke<CopySyncPreview>('execute_sync_copy_target', { targetId, action }) : Promise.resolve(null as unknown as CopySyncPreview),
   deleteSkillTargetDistribution: (targetId: string) =>
     isTauri ? invoke<void>('delete_skill_target_distribution', { targetId }) : Promise.resolve(),
+  deleteSkillTargetDistributions: (targetIds: string[]) =>
+    isTauri
+      ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds })
+      : Promise.resolve({ deleted: targetIds.length, failures: [] }),
 
   listPacks: () => (isTauri ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
   getPackDetail: (packId: string) =>

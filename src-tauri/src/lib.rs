@@ -5439,6 +5439,7 @@ pub fn run() {
             skills::v2::commands::preview_copy_target_diff,
             skills::v2::commands::execute_sync_copy_target,
             skills::v2::commands::delete_skill_target_distribution,
+            skills::v2::commands::delete_skill_target_distributions,
             skills::v2::commands::list_skill_packs_v2,
             skills::v2::commands::get_skill_pack_detail,
             skills::v2::commands::execute_upsert_skill_pack,

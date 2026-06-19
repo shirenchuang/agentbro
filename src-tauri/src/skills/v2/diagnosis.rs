@@ -20,6 +20,7 @@ pub fn run(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
     // DiagnosisPage exposes an explicit "run diagnosis" button that rescans.
     issues.extend(unmanaged_center_dirs(svc)?);
     issues.extend(unmanaged_agent_skills(svc)?);
+    issues.extend(managed_shared_agent_skills(svc)?);
     issues.extend(broken_or_missing_targets(svc)?);
     issues.extend(copy_divergence_issues(svc)?);
     issues.extend(pack_member_missing(svc)?);
@@ -158,6 +159,73 @@ fn unmanaged_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> 
             format!("{} — reason: {}", it.path, it.reason),
             "target",
             Some(it.id),
+        ));
+    }
+    Ok(out)
+}
+
+fn managed_shared_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> {
+    let rows: Vec<(String, String, String, String, String, String)> = svc.db().with_conn(|c| {
+        let mut stmt = c
+            .prepare(
+                "SELECT t.id, t.skill_id, t.target_path, t.actual_mode, t.source_hash, s.center_path
+                 FROM skill_targets t
+                 JOIN skills s ON s.id = t.skill_id
+                 WHERE t.agent_id = 'agents'
+                 ORDER BY t.target_path",
+            )
+            .map_err(|e| e.to_string())?;
+        let rs = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut v = Vec::new();
+        for r in rs {
+            v.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(v)
+    })?;
+
+    let shared_dir = svc.home.join(".agents").join("skills");
+    let mut out = Vec::new();
+    for (id, skill_id, target_path, mode, source_hash, center_path) in rows {
+        let target = Path::new(&target_path);
+        if target
+            .parent()
+            .map(|parent| fsutil::normalized_path(parent) != fsutil::normalized_path(&shared_dir))
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        if fsutil::normalized_path(target) == fsutil::normalized_path(Path::new(&center_path)) {
+            continue;
+        }
+        match inspect_path(target) {
+            PathKind::Missing | PathKind::BrokenSymlink => continue,
+            _ => {}
+        }
+        if mode == "copy" && target.is_dir() && fsutil::hash_dir(target) != source_hash {
+            continue;
+        }
+        out.push(auto(
+            &format!("agents-managed-duplicate-{id}"),
+            "agents_managed_duplicate",
+            "Managed skill still exists in shared .agents",
+            format!(
+                "Shared .agents skill '{}' is already managed from the center library as '{}' ({}). Remove the shared copy to avoid implicit Agent loading.",
+                target_path, skill_id, mode
+            ),
+            "target",
+            Some(id),
+            "Remove .agents copy",
         ));
     }
     Ok(out)
@@ -506,6 +574,10 @@ pub fn execute_fix(svc: &Service, issue_type: &str, entity_id: &str) -> Result<(
                 )
                 .map_err(|e| e.to_string())
             })?;
+            Ok(())
+        }
+        "agents_managed_duplicate" => {
+            svc.delete_skill_target_distribution(entity_id)?;
             Ok(())
         }
         "snapshot_stale" => {

@@ -244,7 +244,7 @@ function groupIssues(issues: DiagnosisIssue[]): Record<IssueGroupId, DiagnosisIs
 function groupForIssue(issue: DiagnosisIssue): IssueGroupId {
   if (issue.issueType === 'agent_unmanaged') return 'unmanaged'
   if (issue.fixKind === 'confirm') return 'confirm'
-  if (['broken_link', 'target_missing', 'orphan_claim', 'snapshot_stale'].includes(issue.issueType)) return 'sync'
+  if (['broken_link', 'target_missing', 'orphan_claim', 'snapshot_stale', 'agents_managed_duplicate'].includes(issue.issueType)) return 'sync'
   return 'library'
 }
 
@@ -258,6 +258,8 @@ function friendlyTitle(issue: DiagnosisIssue): string {
       return '发现断开的 Skill 链接'
     case 'target_missing':
       return '发现失效的安装记录'
+    case 'agents_managed_duplicate':
+      return '.agents 里有已管理的重复 Skill'
     case 'orphan_claim':
       return '发现失效的 Skill 包占用记录'
     case 'copy_diverged':
@@ -289,6 +291,9 @@ function friendlyDetail(issue: DiagnosisIssue): string {
   }
   if (issue.issueType === 'target_missing') {
     return `${quotedPath(issue.detail)} 已不在磁盘上，可以移除这条过期记录。`
+  }
+  if (issue.issueType === 'agents_managed_duplicate') {
+    return `${quotedPath(issue.detail)} 已由中心库管理。建议删除 .agents/skills 里的这份重复目标，避免多个 Agent 隐式加载旧副本。`
   }
   if (issue.issueType === 'orphan_claim') {
     return '某个 Skill 包还占用着已不存在的安装目标，可以安全移除这条占用记录。'
@@ -334,6 +339,8 @@ function friendlyActionLabel(issue: DiagnosisIssue): string {
       return '清理断开链接'
     case 'target_missing':
       return '移除失效记录'
+    case 'agents_managed_duplicate':
+      return '删除 .agents 重复项'
     case 'orphan_claim':
       return '移除占用记录'
     case 'copy_modified':

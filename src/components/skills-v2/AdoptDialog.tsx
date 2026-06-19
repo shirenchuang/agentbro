@@ -145,6 +145,14 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         badge: '副本',
         impact: '会删除当前 Agent 目录中的 Skill 文件夹，再从中心库复制回 Agent。',
       }
+    case 'import_cleanup':
+      return {
+        title: '导入中心库，并清理 .agents 原目录',
+        shortLabel: '清理 .agents 原目录',
+        description: '先复制到中心库，成功后删除 .agents/skills 中的原 Skill，避免共享目录隐式生效。',
+        badge: '推荐',
+        impact: '会删除 .agents/skills 里的原 Skill 文件夹；中心库会保留可管理副本。',
+      }
     case 'center_over_agent':
       return {
         title: '使用中心库版本接管',
@@ -190,6 +198,7 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
 
 function preferredAdoptOption(options: Array<{ value: string }>) {
   return options.find((option) => option.value === 'center_over_agent')?.value
+    || options.find((option) => option.value === 'import_cleanup')?.value
     || options.find((option) => option.value === 'import_link')?.value
     || options[0]?.value
     || 'import_keep'

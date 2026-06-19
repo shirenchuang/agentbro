@@ -8,7 +8,7 @@ import { agentApi, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
-import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, SkillPackDetail } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, SkillPackDetail, SkillDetail, SkillTargetDetail } from '../services/skillApiV2'
 
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
@@ -31,6 +31,25 @@ function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
       { agentId: 'claude-code', displayName: 'Claude Code', iconKey: 'claude-code', mode: 'link', status: 'ok' },
       { agentId: 'codex', displayName: 'Codex', iconKey: 'codex', mode: 'copy', status: 'ok' },
     ],
+    ...overrides,
+  }
+}
+
+function makeTarget(overrides: Partial<SkillTargetDetail> = {}): SkillTargetDetail {
+  return {
+    id: 'target-claude',
+    skillId: 'release-checklist',
+    agentId: 'claude-code',
+    targetPath: '/Users/me/.claude/skills/release-checklist',
+    resolvedTargetPath: null,
+    installMode: 'link',
+    actualMode: 'link',
+    sourceHash: 'hash1',
+    currentHash: 'hash1',
+    status: 'ok',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    claims: [],
     ...overrides,
   }
 }
@@ -93,6 +112,7 @@ describe('Skill library view mode (no Agent matrix)', () => {
           unmanagedSkillCount: 0,
         },
       ],
+      packs: [],
       loading: false,
       error: null,
       initialized: true,
@@ -140,6 +160,39 @@ describe('Skill library view mode (no Agent matrix)', () => {
     expect(screen.getByText('Release Checklist')).toBeInTheDocument()
     fireEvent.click(screen.getByText('卡片'))
     expect(useSkillStoreV2.getState().viewMode).toBe('cards')
+  })
+
+  it('filters center skills by skill pack membership', async () => {
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
+      id: 'writing-pack',
+      name: '写作包',
+      description: 'Writing workflow',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    })
+    useSkillStoreV2.setState({
+      packs: [
+        { id: 'default', name: '中心库全量', description: '', tags: [], memberCount: 2, appliedAgentCount: 0, healthy: true },
+        { id: 'writing-pack', name: '写作包', description: 'Writing workflow', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+      ],
+    })
+
+    const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
+    render(<SkillLibraryPage />)
+
+    await waitFor(() => {
+      expect(skillApiV2.getPackDetail).toHaveBeenCalledWith('writing-pack')
+    })
+    fireEvent.click(screen.getByRole('button', { name: /技能包/ }))
+    fireEvent.click(screen.getByRole('option', { name: /写作包/ }))
+
+    expect(screen.getByText('Release Checklist')).toBeInTheDocument()
+    expect(screen.queryByText('Database Debugging')).not.toBeInTheDocument()
   })
 
   it('does not render an Agent column matrix', async () => {
@@ -251,6 +304,56 @@ describe('Skill library view mode (no Agent matrix)', () => {
     expect(document.body.querySelector('.sm2-delete-skill__warnings')).toBeNull()
     expect(document.body.querySelector('.sm2-delete-skill__inline-action')).toBeNull()
   })
+
+  it('can delete multiple agent distributions from the skill detail agent tab', async () => {
+    const initialDetail: SkillDetail = {
+      ...makeSkill(),
+      frontmatter: {},
+      files: null,
+      targets: [
+        makeTarget(),
+        makeTarget({
+          id: 'target-codex',
+          agentId: 'codex',
+          targetPath: '/Users/me/.codex/skills/release-checklist',
+          installMode: 'copy',
+          actualMode: 'copy',
+        }),
+      ],
+      source: null,
+    }
+    const refreshedDetail: SkillDetail = {
+      ...initialDetail,
+      targets: [],
+      installedAgents: [],
+    }
+    vi.spyOn(skillApiV2, 'getSkillDetail')
+      .mockResolvedValueOnce(initialDetail)
+      .mockResolvedValueOnce(refreshedDetail)
+    const deleteDistribution = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(
+      <SkillDetailSlider
+        skillId="release-checklist"
+        open
+        onClose={() => {}}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除分发' }))
+    fireEvent.click(screen.getByLabelText('选择 Claude Code 的 Skill 分发'))
+    fireEvent.click(screen.getByLabelText('选择 Codex 的 Skill 分发'))
+    fireEvent.click(screen.getByRole('button', { name: '删除 2 个分发' }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => {
+      expect(deleteDistribution).toHaveBeenCalledWith('target-claude')
+      expect(deleteDistribution).toHaveBeenCalledWith('target-codex')
+    })
+    expect(deleteDistribution).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('market install state', () => {
@@ -328,6 +431,98 @@ describe('Git install skill preview view modes', () => {
     fireEvent.click(screen.getByText('列表'))
     expect(container.querySelector('.sm2__git-skill-list')).not.toBeNull()
     expect(container.querySelector('.sm2__git-skill-grid')).toBeNull()
+  })
+})
+
+describe('Local skill import', () => {
+  beforeEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('passes link import mode when importing a local source folder as a symlink', async () => {
+    const previewAdd = vi.spyOn(skillApiV2, 'previewAddCenterSkill').mockResolvedValue({
+      centerPath: '/Users/me/.agentbro/skills',
+      candidates: [
+        {
+          skillId: 'live-review',
+          proposedSkillId: 'live-review',
+          name: 'live-review',
+          description: 'Local development skill',
+          sourceDir: '/Users/me/code/szskills/live-review',
+          hash: 'hash-link',
+          action: 'create',
+          existingSourceType: null,
+          reason: null,
+        },
+      ],
+      blockers: [],
+    })
+    const executeAdd = vi.spyOn(skillApiV2, 'executeAddCenterSkill').mockResolvedValue({
+      skillIds: ['live-review'],
+      updated: [],
+      skipped: [],
+    })
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+
+    const { LocalPanel } = await import('../components/skills-v2/InstallView')
+    render(<LocalPanel onDone={() => {}} />)
+
+    expect(screen.getByText(/常见使用场景：本地已有 Skill/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('选择或粘贴包含 SKILL.md 的目录 / .zip'), {
+      target: { value: '/Users/me/code/szskills/live-review' },
+    })
+    fireEvent.click(screen.getByLabelText('软链导入，本地目录作为源'))
+    fireEvent.click(screen.getByRole('button', { name: '预览导入' }))
+
+    await waitFor(() => {
+      expect(previewAdd).toHaveBeenCalledWith({
+        sourcePath: '/Users/me/code/szskills/live-review',
+        sourceType: 'local_folder',
+        sourceUri: '/Users/me/code/szskills/live-review',
+        importMode: 'link',
+      })
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: '执行导入' }))
+    await waitFor(() => {
+      expect(executeAdd).toHaveBeenCalledWith({
+        sourcePath: '/Users/me/code/szskills/live-review',
+        sourceType: 'local_folder',
+        sourceUri: '/Users/me/code/szskills/live-review',
+        importMode: 'link',
+      }, [])
+    })
+  })
+
+  it('hides symlink import choices for zip archives', async () => {
+    const previewAdd = vi.spyOn(skillApiV2, 'previewAddCenterSkill').mockResolvedValue({
+      centerPath: '/Users/me/.agentbro/skills',
+      candidates: [],
+      blockers: [],
+    })
+
+    const { LocalPanel } = await import('../components/skills-v2/InstallView')
+    render(<LocalPanel onDone={() => {}} />)
+
+    fireEvent.change(screen.getByPlaceholderText('选择或粘贴包含 SKILL.md 的目录 / .zip'), {
+      target: { value: '/Users/me/Downloads/skills.zip' },
+    })
+
+    expect(screen.queryByLabelText('软链导入，本地目录作为源')).not.toBeInTheDocument()
+    expect(screen.queryByText('批量导入（该目录包含多个 Skill）')).not.toBeInTheDocument()
+    expect(screen.getByText('压缩包会解压后复制导入中心库，不支持软链导入。')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '预览导入' }))
+    await waitFor(() => {
+      expect(previewAdd).toHaveBeenCalledWith({
+        sourcePath: '/Users/me/Downloads/skills.zip',
+        sourceType: 'archive',
+        sourceUri: undefined,
+        importMode: 'copy',
+      })
+    })
   })
 })
 
@@ -905,7 +1100,7 @@ describe('Agent sync local agent chips', () => {
     finishFirstAdopt()
   })
 
-  it('batch adopts shared .agents skills as center symlinks', async () => {
+  it('lists shared .agents skills separately and batch adopts them as center symlinks', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const inventory: AgentSkillInventoryAgent[] = [
       {
@@ -942,13 +1137,80 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    expect(await screen.findByLabelText('选择 Agent')).toHaveTextContent('.agents · 1 可接管')
+    expect(await screen.findByText('本地 .agents Skills')).toBeInTheDocument()
+    expect(screen.getByLabelText('选择 Agent')).not.toHaveTextContent('.agents · 1 可接管')
     fireEvent.click(screen.getByText('选择当前可接管'))
     fireEvent.click(screen.getByText('接管到中心库'))
 
     await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith('agents', 'shared-local-alpha', 'import_link')
+      expect(execute).toHaveBeenCalledWith('agents', 'shared-local-alpha', 'import_cleanup')
     })
+  })
+
+  it('cleans managed shared .agents skills from the shared source card', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const before: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'agents',
+        displayName: '.agents',
+        iconKey: 'agents',
+        skillsDir: '/Users/me/.agents/skills',
+        installed: true,
+        managedCount: 2,
+        unmanagedCount: 0,
+        importableCount: 0,
+        items: [
+          {
+            id: 'target-alpha',
+            agentId: 'agents',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.agents/skills/alpha',
+            managed: true,
+            canImport: false,
+            status: 'ok',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-alpha',
+            actualMode: 'link',
+            hash: null,
+          },
+          {
+            id: 'target-beta',
+            agentId: 'agents',
+            skillId: 'beta',
+            name: 'beta',
+            path: '/Users/me/.agents/skills/beta',
+            managed: true,
+            canImport: false,
+            status: 'ok',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-beta',
+            actualMode: 'copy',
+            hash: 'hash-beta',
+          },
+        ],
+      },
+    ]
+    const after: AgentSkillInventoryAgent[] = [
+      { ...before[0], managedCount: 0, items: [] },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory')
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after)
+    const cleanup = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 2, failures: [] })
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    expect(await screen.findByText('本地 .agents Skills')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '清理已管理 .agents Skills' }))
+
+    await waitFor(() => {
+      expect(cleanup).toHaveBeenCalledWith(['target-alpha', 'target-beta'])
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent('已清理 2 个 .agents 已管理 Skill')
   })
 
   it('previews one-click organize and defaults to center symlinks', async () => {
@@ -1554,6 +1816,54 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('2 个文件')).toBeInTheDocument()
   })
 
+  it('labels linked center skills with their real source directory', async () => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
+      ...makeSkill({
+        id: 'live-review',
+        name: 'live-review',
+        sourceType: 'local_folder',
+        sourceUri: null,
+        centerPath: '/Users/me/.agentbro/skills/live-review',
+        installedAgents: [],
+      }),
+      centerResolvedPath: '/Users/me/code/szskills/live-review',
+      frontmatter: { description: 'Linked local skill' },
+      files: {
+        name: 'live-review',
+        nodeType: 'dir',
+        path: '/Users/me/.agentbro/skills/live-review',
+        children: [
+          {
+            name: 'SKILL.md',
+            nodeType: 'file',
+            path: '/Users/me/.agentbro/skills/live-review/SKILL.md',
+            children: null,
+          },
+        ],
+      },
+      targets: [],
+      source: {
+        sourceType: 'local_folder',
+        sourceUri: null,
+        sourceRef: null,
+        importedFromAgent: null,
+        importedFromPath: null,
+        installedVia: 'agentbro',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValue('# live-review\n\nLinked local skill.')
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="live-review" open onClose={() => {}} />)
+
+    expect(await screen.findByText('软链中心目录')).toBeInTheDocument()
+    expect(screen.getByText('/Users/me/code/szskills/live-review')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '来源' }))
+    expect(screen.getByText('真实源目录')).toBeInTheDocument()
+  })
+
   it('does not repeat the agent id under the agent display name', async () => {
     vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
       ...makeSkill({
@@ -1949,8 +2259,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
   it('shows immediate deleting feedback for a managed skill card', async () => {
     let finishDelete: (() => void) | null = null
-    vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockImplementationOnce(() => new Promise<void>((resolve) => {
-      finishDelete = resolve
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockImplementationOnce((targetIds) => new Promise((resolve) => {
+      finishDelete = () => resolve({ deleted: targetIds.length, failures: [] })
     }))
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
@@ -1968,8 +2278,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
   })
 
   it('deletes managed skills directly from the agent skill cards and in batches', async () => {
-    const deleteTarget = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
-    deleteTarget.mockClear()
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    deleteTargets.mockClear()
     const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
@@ -1977,24 +2287,24 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Skills (2)'))
 
     fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
-    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-1'))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-1']))
 
     fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
     fireEvent.click(screen.getByLabelText('选择 release-checklist'))
     fireEvent.click(screen.getByRole('button', { name: '批量删除 1 个' }))
     expect(screen.getByRole('heading', { name: '确认批量删除 Skill？' })).toBeInTheDocument()
     expect(screen.getByText('1个SKILL 将从当前Agent直接删除，您后续仍旧可以从中心库安装')).toBeInTheDocument()
-    expect(deleteTarget).toHaveBeenCalledTimes(1)
+    expect(deleteTargets).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
-    await waitFor(() => expect(deleteTarget).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledTimes(2))
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
   it('cancels managed skill batch deletion from the confirmation dialog', async () => {
-    const deleteTarget = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
-    deleteTarget.mockClear()
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    deleteTargets.mockClear()
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (2)'))
@@ -2005,7 +2315,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
 
     expect(screen.queryByRole('heading', { name: '确认批量删除 Skill？' })).not.toBeInTheDocument()
-    expect(deleteTarget).not.toHaveBeenCalled()
+    expect(deleteTargets).not.toHaveBeenCalled()
     expect(screen.getByLabelText('选择 release-checklist')).toBeChecked()
   })
 
@@ -2747,6 +3057,72 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '复制' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '移除' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {
+    const appliedPack = { packId: 'default', packName: '全量技能包', memberCount: 1, agentId: 'claude-code', displayName: 'Claude Code' }
+    const defaultPack: SkillPackDetail = {
+      id: 'default',
+      name: '全量技能包',
+      description: '中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [appliedPack],
+      createdAt: '',
+      updatedAt: '',
+    }
+    const refreshedPack = { ...defaultPack, appliedAgents: [] }
+    const refreshedAgent = {
+      ...agentDetail,
+      appliedPacks: [],
+      availablePacks: [
+        { id: 'default', name: '全量技能包', description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+      ],
+    }
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    vi.spyOn(skillApiV2, 'previewRemovePackFromAgent').mockResolvedValue({
+      packId: 'default',
+      packName: '全量技能包',
+      agentId: 'claude-code',
+      displayName: 'Claude Code',
+      affectedTargets: [],
+      willRemoveTargets: 1,
+      willPreserveTargets: 0,
+    })
+    vi.spyOn(skillApiV2, 'removePackFromAgent').mockResolvedValue({
+      packId: 'default',
+      agentId: 'claude-code',
+      removedClaims: 1,
+      removedTargets: 1,
+      preservedTargets: 0,
+    })
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(refreshedPack)
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockImplementation(async () => {
+      useSkillStoreV2.setState({ selectedAgentDetail: refreshedAgent })
+    })
+    useSkillStoreV2.setState({
+      packs: [
+        { id: 'default', name: '全量技能包', description: defaultPack.description, tags: [], memberCount: 1, appliedAgentCount: 1, healthy: true },
+      ],
+      selectedPackId: 'default',
+      selectedPackDetail: defaultPack,
+      selectedAgentId: 'claude-code',
+      selectedAgentDetail: {
+        ...agentDetail,
+        appliedPacks: [appliedPack],
+      },
+    })
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    fireEvent.click(await screen.findByRole('button', { name: '撤销技能包' }))
+
+    await waitFor(() => expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true))
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.appliedPacks).toEqual([])
   })
 
   it('shows pack toggles in the Agent Skills tab', async () => {

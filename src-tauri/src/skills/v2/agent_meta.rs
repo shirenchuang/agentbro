@@ -51,6 +51,15 @@ pub fn managed_agent_ids() -> Vec<&'static str> {
     ]
 }
 
+/// Real coding agents shown in Agent management views. The shared `.agents`
+/// skill directory is scanned as an import source, but is not an agent.
+pub fn visible_agent_ids() -> Vec<&'static str> {
+    managed_agent_ids()
+        .into_iter()
+        .filter(|id| *id != "agents")
+        .collect()
+}
+
 fn table() -> &'static [AgentMeta] {
     &[
         AgentMeta {

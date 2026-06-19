@@ -67,6 +67,9 @@ export function SkillDetailSlider({
   const [diffLoadingTarget, setDiffLoadingTarget] = useState<string | null>(null)
   const [diffError, setDiffError] = useState<string | null>(null)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
+  const [batchDeleteMode, setBatchDeleteMode] = useState(false)
+  const [selectedDeleteTargetIds, setSelectedDeleteTargetIds] = useState<Set<string>>(new Set())
+  const [batchDeleteTargetIds, setBatchDeleteTargetIds] = useState<string[] | null>(null)
   const [deletingTarget, setDeletingTarget] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('overview')
@@ -87,6 +90,9 @@ export function SkillDetailSlider({
     setDiffPreview(null)
     setDiffError(null)
     setDeleteTargetId(null)
+    setBatchDeleteMode(false)
+    setSelectedDeleteTargetIds(new Set())
+    setBatchDeleteTargetIds(null)
     skillApiV2
       .getSkillDetail(skillId)
       .then((d) => {
@@ -198,6 +204,66 @@ export function SkillDetailSlider({
     }
   }
 
+  const toggleBatchDeleteTarget = (targetId: string) => {
+    setSelectedDeleteTargetIds((current) => {
+      const next = new Set(current)
+      if (next.has(targetId)) {
+        next.delete(targetId)
+      } else {
+        next.add(targetId)
+      }
+      return next
+    })
+  }
+
+  const setAllBatchDeleteTargets = (checked: boolean) => {
+    setSelectedDeleteTargetIds(checked ? new Set(detail?.targets.map((target) => target.id) ?? []) : new Set())
+  }
+
+  const cancelBatchDelete = () => {
+    setBatchDeleteMode(false)
+    setSelectedDeleteTargetIds(new Set())
+  }
+
+  const confirmBatchDeleteTargets = async () => {
+    const targetIds = batchDeleteTargetIds ?? []
+    if (targetIds.length === 0) return
+    setDeletingTarget(true)
+    try {
+      const failed: string[] = []
+      const failedIds: string[] = []
+      for (const targetId of targetIds) {
+        const target = detail?.targets.find((item) => item.id === targetId)
+        try {
+          await skillApiV2.deleteSkillTargetDistribution(targetId)
+        } catch (e) {
+          failedIds.push(targetId)
+          failed.push(`${target?.targetPath.split('/').pop() || targetId}: ${String(e)}`)
+        }
+      }
+      if (skillId) {
+        const d = await skillApiV2.getSkillDetail(skillId)
+        setDetail(d)
+      }
+      if (diffPreview && targetIds.includes(diffPreview.targetId)) {
+        setDiffPreview(null)
+      }
+      if (failed.length > 0) {
+        setError(failed.slice(0, 3).join('\n'))
+        setSelectedDeleteTargetIds(new Set(failedIds))
+      } else {
+        setError(null)
+        setSelectedDeleteTargetIds(new Set())
+        setBatchDeleteMode(false)
+      }
+      setBatchDeleteTargetIds(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setDeletingTarget(false)
+    }
+  }
+
   const summary: SkillSummary | null = detail
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
@@ -208,6 +274,8 @@ export function SkillDetailSlider({
 
   const deleteTarget = detail?.targets.find((target) => target.id === deleteTargetId) ?? null
   const deleteAgent = deleteTarget ? detail?.installedAgents.find((agent) => agent.agentId === deleteTarget.agentId) : null
+  const selectedBatchDeleteTargets = detail?.targets.filter((target) => selectedDeleteTargetIds.has(target.id)) ?? []
+  const batchDeleteTargets = detail?.targets.filter((target) => batchDeleteTargetIds?.includes(target.id)) ?? []
 
   return (
     <>
@@ -246,6 +314,7 @@ export function SkillDetailSlider({
               {STATUS_LABEL[detail.status] || detail.status}
             </span>
             <span className="sm2__tag">{skillSourceTypeLabel(t, detail.sourceType)}</span>
+            {isLinkedCenterSkill(detail) && <span className="sm2__tag sm2__tag--info">中心软链</span>}
             <span className="sm2__tag">{detail.skillType}</span>
             {detail.installedAgents.length > 0 && (
               <span className="sm2__agents">
@@ -292,6 +361,16 @@ export function SkillDetailSlider({
               onSync={doSync}
               onOpenDiff={openDiff}
               onDeleteTarget={setDeleteTargetId}
+              batchDeleteMode={batchDeleteMode}
+              selectedTargetIds={selectedDeleteTargetIds}
+              onEnterBatchDelete={() => {
+                setDeleteTargetId(null)
+                setBatchDeleteMode(true)
+              }}
+              onCancelBatchDelete={cancelBatchDelete}
+              onToggleBatchDeleteTarget={toggleBatchDeleteTarget}
+              onToggleAllBatchDeleteTargets={setAllBatchDeleteTargets}
+              onConfirmBatchDelete={() => setBatchDeleteTargetIds(selectedBatchDeleteTargets.map((target) => target.id))}
             />
           )}
           {tab === 'source' && <SourceTab detail={detail} />}
@@ -319,6 +398,34 @@ export function SkillDetailSlider({
         </div>
       </PreviewDialog>
     )}
+    {batchDeleteTargetIds && (
+      <PreviewDialog
+        title="确认批量删除 Agent 分发"
+        confirmLabel="确认删除"
+        busyLabel="删除中…"
+        destructive
+        busy={deletingTarget}
+        disabled={batchDeleteTargets.length === 0}
+        onCancel={() => setBatchDeleteTargetIds(null)}
+        onConfirm={confirmBatchDeleteTargets}
+      >
+        <div className="sm2__delete-target-preview">
+          <p>
+            将从 <strong>{batchDeleteTargets.length}</strong> 个 Agent 移除这个 Skill 分发，并删除对应的本地目标。
+          </p>
+          <div className="sm2__delete-target-list">
+            {batchDeleteTargets.map((target) => {
+              const agent = detail?.installedAgents.find((item) => item.agentId === target.agentId)
+              return (
+                <code key={target.id}>
+                  {(agent?.displayName || target.agentId)} · {target.targetPath}
+                </code>
+              )
+            })}
+          </div>
+        </div>
+      </PreviewDialog>
+    )}
     </>
   )
 }
@@ -338,6 +445,7 @@ function OverviewTab({
   const frontmatter = Object.entries(detail.frontmatter || {})
   const sourceLabel = skillSourceTypeLabel(t, detail.source?.sourceType || detail.sourceType)
   const sourceValue = detail.source?.sourceUri || detail.sourceUri || sourceLabel
+  const linkedCenter = isLinkedCenterSkill(detail)
   return (
     <div className="sm2__detail-overview sm2__detail-overview--reader">
       <section className="sm2__skill-doc">
@@ -397,7 +505,10 @@ function OverviewTab({
           </div>
           <div className="sm2__compact-info">
             <CompactInfo label="来源" value={sourceValue} />
-            <CompactInfo label="中心目录" value={detail.centerPath} mono />
+            <CompactInfo label={linkedCenter ? '软链中心目录' : '中心目录'} value={detail.centerPath} mono />
+            {linkedCenter && detail.centerResolvedPath && (
+              <CompactInfo label="真实源目录" value={detail.centerResolvedPath} mono />
+            )}
             <CompactInfo label="Hash" value={detail.currentHash} mono short />
           </div>
         </section>
@@ -515,6 +626,13 @@ function AgentsTab({
   onSync,
   onOpenDiff,
   onDeleteTarget,
+  batchDeleteMode,
+  selectedTargetIds,
+  onEnterBatchDelete,
+  onCancelBatchDelete,
+  onToggleBatchDeleteTarget,
+  onToggleAllBatchDeleteTargets,
+  onConfirmBatchDelete,
 }: {
   detail: SkillDetail
   syncing: string | null
@@ -523,13 +641,51 @@ function AgentsTab({
   onSync: (targetId: string, action: string) => void
   onOpenDiff: (targetId: string) => void
   onDeleteTarget: (targetId: string) => void
+  batchDeleteMode: boolean
+  selectedTargetIds: Set<string>
+  onEnterBatchDelete: () => void
+  onCancelBatchDelete: () => void
+  onToggleBatchDeleteTarget: (targetId: string) => void
+  onToggleAllBatchDeleteTargets: (checked: boolean) => void
+  onConfirmBatchDelete: () => void
 }) {
   const { t } = useTranslation()
   if (detail.targets.length === 0) {
     return <div className="sm2__empty sm2__empty--compact">尚未分发到任何 Agent</div>
   }
+  const allSelected = detail.targets.length > 0 && selectedTargetIds.size === detail.targets.length
   return (
     <section className="sm2__panel sm2__agent-targets">
+      <div className="sm2__agent-target-toolbar">
+        {batchDeleteMode ? (
+          <>
+            <label className="sm2__agent-target-select-all">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={(event) => onToggleAllBatchDeleteTargets(event.currentTarget.checked)}
+              />
+              <span>全选</span>
+            </label>
+            <span>{selectedTargetIds.size} / {detail.targets.length} 已选择</span>
+            <div className="sm2__agent-target-toolbar-actions">
+              <button className="sm2__btn sm2__btn--ghost" onClick={onCancelBatchDelete}>
+                取消
+              </button>
+              <button className="sm2__btn sm2__btn--danger" disabled={selectedTargetIds.size === 0} onClick={onConfirmBatchDelete}>
+                删除 {selectedTargetIds.size} 个分发
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <span>管理已分发到 Agent 的本地目标</span>
+            <button className="sm2__btn sm2__btn--danger-ghost" onClick={onEnterBatchDelete}>
+              批量删除分发
+            </button>
+          </>
+        )}
+      </div>
       <div className="sm2__agent-target-grid">
         {detail.targets.map((target) => {
           const agent = detail.installedAgents.find((item) => item.agentId === target.agentId)
@@ -537,10 +693,21 @@ function AgentsTab({
           const statusLabel = STATUS_LABEL[target.status] || target.status
           const modeLabel = skillModeLabel(t, target.actualMode)
           const hasCopyDiff = target.actualMode === 'copy' && isCopyDiffStatus(target.status)
+          const selected = selectedTargetIds.has(target.id)
           return (
-            <article key={target.id} className={`sm2__agent-target-card sm2__agent-target-card--${target.actualMode}${hasCopyDiff ? ' sm2__agent-target-card--copy-diff' : ''}`}>
+            <article key={target.id} className={`sm2__agent-target-card sm2__agent-target-card--${target.actualMode}${hasCopyDiff ? ' sm2__agent-target-card--copy-diff' : ''}${selected ? ' sm2__agent-target-card--selected' : ''}`}>
               <div className="sm2__agent-target-head">
                 <div className="sm2__agent-target-title">
+                  {batchDeleteMode && (
+                    <label className="sm2__agent-target-check">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        aria-label={`选择 ${agentName} 的 Skill 分发`}
+                        onChange={() => onToggleBatchDeleteTarget(target.id)}
+                      />
+                    </label>
+                  )}
                   <AgentIconBadge iconKey={agent?.iconKey || target.agentId} mode={target.actualMode} size={38} />
                   <div>
                     <strong>{agentName}</strong>
@@ -614,7 +781,7 @@ function AgentsTab({
                   <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(target.targetPath)}>
                     {t('skills.actions.open', { defaultValue: 'Open' })}
                   </button>
-                  <button className="sm2__btn sm2__btn--danger-ghost" onClick={() => onDeleteTarget(target.id)}>
+                  <button className="sm2__btn sm2__btn--danger-ghost" disabled={batchDeleteMode} onClick={() => onDeleteTarget(target.id)}>
                     删除分发
                   </button>
                 </div>
@@ -995,13 +1162,16 @@ function SourceTab({ detail }: { detail: SkillDetail }) {
   const { t } = useTranslation()
   const sourceType = detail.source?.sourceType || detail.sourceType
   const sourceUri = detail.source?.sourceUri || detail.sourceUri
+  const linkedCenter = isLinkedCenterSkill(detail)
   const summaryCards = [
     { label: '类型', value: skillSourceTypeLabel(t, sourceType) },
+    { label: '中心类型', value: linkedCenter ? '软链中心目录' : null },
     { label: '导入 Agent', value: detail.source?.importedFromAgent },
     { label: '安装方式', value: detail.source?.installedVia },
     { label: '来源 Ref', value: detail.source?.sourceRef },
   ].filter(hasSourceValue)
   const pathCards = [
+    { label: '真实源目录', value: linkedCenter ? detail.centerResolvedPath : null },
     { label: '导入路径', value: detail.source?.importedFromPath },
     { label: '中心目录', value: detail.centerPath },
     { label: '来源 URI', value: sourceUri },
@@ -1035,6 +1205,10 @@ function SourceTab({ detail }: { detail: SkillDetail }) {
 
 function hasSourceValue(item: { label: string; value?: string | null }): item is { label: string; value: string } {
   return typeof item.value === 'string' && item.value.length > 0
+}
+
+function isLinkedCenterSkill(detail: SkillDetail): boolean {
+  return Boolean(detail.centerResolvedPath && detail.centerResolvedPath !== detail.centerPath)
 }
 
 function CompactInfo({

@@ -109,6 +109,7 @@ pub struct InstalledAgentRef {
 pub struct SkillDetail {
     #[serde(flatten)]
     pub summary: SkillSummary,
+    pub center_resolved_path: Option<String>,
     pub frontmatter: std::collections::BTreeMap<String, String>,
     pub files: Option<FileTreeNode>,
     pub targets: Vec<SkillTargetDetail>,
@@ -329,6 +330,9 @@ pub struct AddCenterSkillInput {
     pub imported_from_path: Option<String>,
     /// when importing a directory holding many skills
     pub multi: Option<bool>,
+    /// "copy" | "link"; defaults to "copy" when omitted.
+    #[serde(default)]
+    pub import_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

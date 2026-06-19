@@ -6,7 +6,9 @@
 #![allow(clippy::needless_question_mark)]
 
 use crate::skills::v2::models::*;
-use crate::skills::v2::service::{ClaimOrigin, Service, UpsertPackInput};
+use crate::skills::v2::service::{
+    ClaimOrigin, DeleteSkillTargetDistributionsResult, Service, UpsertPackInput,
+};
 use crate::skills::v2::{diagnosis, snapshot};
 use std::sync::Arc;
 
@@ -161,6 +163,13 @@ pub fn execute_sync_copy_target(
 #[tauri::command]
 pub fn delete_skill_target_distribution(target_id: String) -> Result<(), String> {
     svc()?.delete_skill_target_distribution(&target_id)
+}
+
+#[tauri::command]
+pub fn delete_skill_target_distributions(
+    target_ids: Vec<String>,
+) -> Result<DeleteSkillTargetDistributionsResult, String> {
+    svc()?.delete_skill_target_distributions(target_ids)
 }
 
 #[tauri::command]

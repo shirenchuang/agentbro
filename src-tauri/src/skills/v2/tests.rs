@@ -5,6 +5,7 @@
 use crate::skills::v2::fsutil;
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::{ClaimOrigin, Service, UpsertPackInput};
+use rusqlite::params;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -128,6 +129,7 @@ fn add_center_skill_creates_and_updates() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         })
         .unwrap();
     assert_eq!(preview.candidates.len(), 1);
@@ -143,6 +145,7 @@ fn add_center_skill_creates_and_updates() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -163,6 +166,7 @@ fn add_center_skill_creates_and_updates() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -170,6 +174,81 @@ fn add_center_skill_creates_and_updates() {
     assert!(result2.skill_ids.is_empty());
     assert_eq!(result2.updated, vec!["github-code-review".to_string()]);
     assert_eq!(svc.list_center_skills().unwrap().len(), 1);
+}
+
+#[test]
+fn add_center_skill_can_link_to_local_source() {
+    let (_home, svc, _lock) = fresh_service("add-link");
+    let src = write_skill(
+        &svc.home.join("dev-skills"),
+        "live-review",
+        "live-review",
+        Some("v1"),
+    );
+
+    let result = svc
+        .execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: Some(src.display().to_string()),
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: Some("link".to_string()),
+            },
+            vec![],
+        )
+        .unwrap();
+
+    assert_eq!(result.skill_ids, vec!["live-review".to_string()]);
+    let center_skill = fsutil::default_center_path().join("live-review");
+    assert!(center_skill.is_symlink());
+    assert_eq!(fs::read_link(&center_skill).unwrap(), src);
+
+    fs::write(
+        src.join("SKILL.md"),
+        "---\nname: live-review\ndescription: linked source\n---\n# updated\n",
+    )
+    .unwrap();
+    let center_doc = fs::read_to_string(center_skill.join("SKILL.md")).unwrap();
+    assert!(center_doc.contains("# updated"));
+}
+
+#[test]
+fn linked_center_skill_file_tree_expands_source_directory() {
+    let (_home, svc, _lock) = fresh_service("add-link-tree");
+    let src = write_skill(
+        &svc.home.join("dev-skills"),
+        "live-tree",
+        "live-tree",
+        Some("reference"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(src.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+    let center_skill = fsutil::default_center_path().join("live-tree");
+
+    let tree = fsutil::build_file_tree(&center_skill, 4).unwrap();
+
+    assert_eq!(tree.node_type, "dir");
+    let children = tree.children.unwrap();
+    assert!(children
+        .iter()
+        .any(|child| child.node_type == "file" && child.name == "SKILL.md"));
+    assert!(children
+        .iter()
+        .any(|child| child.node_type == "file" && child.name == "reference.md"));
 }
 
 #[test]
@@ -184,6 +263,7 @@ fn same_name_different_source_is_blocked() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -199,6 +279,7 @@ fn same_name_different_source_is_blocked() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         })
         .unwrap();
     assert_eq!(preview.blockers.len(), 1);
@@ -213,6 +294,7 @@ fn same_name_different_source_is_blocked() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     );
@@ -231,6 +313,7 @@ fn same_name_different_source_is_blocked() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![AddCenterSkillDecision {
                 skill_id: "shared".to_string(),
@@ -263,6 +346,7 @@ fn invalid_skill_dir_rejected() {
         imported_from_agent: None,
         imported_from_path: None,
         multi: None,
+        import_mode: None,
     });
     assert!(err.is_err());
 }
@@ -281,6 +365,7 @@ fn distribute_link_and_copy_record_actual_mode() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -335,6 +420,7 @@ fn distribute_rejects_shared_agents_directory_as_target() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -367,6 +453,7 @@ fn reuse_target_appends_claim_without_dup_files() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -406,6 +493,7 @@ fn redistributing_modified_copy_requires_source_decision() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -459,6 +547,7 @@ fn distributing_existing_managed_target_with_different_mode_converts_it() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -512,6 +601,7 @@ fn converting_modified_copy_to_link_requires_source_decision() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -585,6 +675,7 @@ fn distribute_blocker_can_be_skipped_or_overwritten() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -675,6 +766,7 @@ fn distribute_overwrite_can_replace_unmanaged_symlink_target() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -764,6 +856,7 @@ fn distribute_multiple_skills_to_multiple_agents_is_isolated_and_idempotent() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -865,6 +958,7 @@ fn distribution_execution_rejects_preview_paths_outside_agent_skill_dir() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -938,6 +1032,7 @@ fn revoke_pack_keeps_file_when_other_claim_remains() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1018,6 +1113,7 @@ fn apply_pack_is_idempotent() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1056,6 +1152,7 @@ fn apply_pack_accepts_blocker_decisions_for_unmanaged_targets() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1120,6 +1217,7 @@ fn default_pack_is_virtual_and_always_contains_all_center_skills() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -1169,6 +1267,7 @@ fn revoking_default_pack_preserves_direct_claims() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -1224,6 +1323,7 @@ fn revoking_default_pack_keeps_agent_detail_and_overview_readable() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )
@@ -1262,6 +1362,7 @@ fn remove_skill_from_applied_pack_can_keep_standalone() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1323,6 +1424,7 @@ fn copy_sync_detects_outdated_modified_diverged() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1385,6 +1487,7 @@ fn copy_target_diff_lists_changed_files_against_center() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1444,6 +1547,7 @@ fn list_center_skills_refreshes_live_copy_status() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1489,6 +1593,7 @@ fn refresh_overview_returns_fresh_copy_status_without_second_live_list_refresh()
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1537,6 +1642,7 @@ fn delete_skill_target_distribution_removes_copy_and_db_target() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1562,6 +1668,67 @@ fn delete_skill_target_distribution_removes_copy_and_db_target() {
     assert!(detail.summary.installed_agents.is_empty());
 }
 
+#[test]
+fn delete_skill_target_distributions_removes_multiple_targets() {
+    let (_home, svc, _lock) = fresh_service("delete-target-distributions");
+    let src_one = write_skill(
+        &svc.home.join("s1"),
+        "rev",
+        "release-checklist",
+        Some("one"),
+    );
+    let src_two = write_skill(&svc.home.join("s2"), "rev", "deploy-guide", Some("two"));
+    for source_path in [src_one, src_two] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: source_path.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string(), "deploy-guide".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let first = svc.get_skill_detail("release-checklist").unwrap().targets[0].clone();
+    let second = svc.get_skill_detail("deploy-guide").unwrap().targets[0].clone();
+    let first_path = Path::new(&first.target_path);
+    let second_path = Path::new(&second.target_path);
+    assert!(first_path.exists());
+    assert!(second_path.exists());
+
+    let result = svc
+        .delete_skill_target_distributions(vec![first.id.clone(), second.id.clone()])
+        .unwrap();
+
+    assert_eq!(result.deleted, 2);
+    assert!(result.failures.is_empty());
+    assert!(!first_path.exists());
+    assert!(!second_path.exists());
+    assert!(svc
+        .get_skill_detail("release-checklist")
+        .unwrap()
+        .targets
+        .is_empty());
+    assert!(svc
+        .get_skill_detail("deploy-guide")
+        .unwrap()
+        .targets
+        .is_empty());
+}
+
 // ── Delete center skill preview ──────────────────────────────────
 
 #[test]
@@ -1576,6 +1743,7 @@ fn delete_center_skill_preview_lists_targets() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1628,6 +1796,7 @@ fn delete_center_skill_can_remove_agent_installs() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1697,6 +1866,107 @@ fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
 }
 
 #[test]
+fn adopt_shared_agents_skill_copies_to_center_and_removes_source() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-cleanup");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared-alpha",
+        "shared-alpha",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    let preview = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+    assert!(preview.options.iter().any(|o| o.value == "import_cleanup"));
+
+    let adopted = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap();
+
+    assert_eq!(adopted, "shared-alpha");
+    assert!(!shared.exists());
+    let center_skill = fsutil::default_center_path().join("shared-alpha");
+    assert!(center_skill.is_dir());
+    assert!(fs::read_to_string(center_skill.join("SKILL.md"))
+        .unwrap()
+        .contains("# shared-alpha"));
+    let detail = svc.get_skill_detail("shared-alpha").unwrap();
+    assert!(detail.targets.is_empty());
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn diagnosis_recommends_cleaning_managed_shared_agents_skill() {
+    let (_home, svc, _lock) = fresh_service("diag-managed-shared");
+    let src = write_skill(&svc.home.join("s"), "shared", "shared-skill", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let shared = svc.home.join(".agents/skills/shared-skill");
+    let center = svc.center_path().unwrap().join("shared-skill");
+    fsutil::copy_dir_recursive(&center, &shared).unwrap();
+    let source_hash = fsutil::hash_dir(&center);
+    svc.db()
+        .with_conn(|c| {
+            c.execute(
+                "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'agents', ?3, 'copy', 'copy', ?4, ?5, 'ok', ?6, ?6)",
+                params![
+                    "tgt-shared-dup",
+                    "shared-skill",
+                    shared.display().to_string(),
+                    source_hash,
+                    fsutil::hash_dir(&shared),
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+    let issues = crate::skills::v2::diagnosis::run(&svc).unwrap();
+    let issue = issues
+        .iter()
+        .find(|issue| issue.issue_type == "agents_managed_duplicate")
+        .expect("managed .agents duplicate should be diagnosed");
+    assert_eq!(issue.fix_kind, "auto");
+    assert_eq!(issue.entity_id.as_deref(), Some("tgt-shared-dup"));
+
+    let fixed = crate::skills::v2::diagnosis::execute_safe_fixes(&svc).unwrap();
+    assert!(fixed >= 1);
+    assert!(
+        !shared.exists(),
+        "safe fix removes the managed shared .agents copy"
+    );
+    let detail = svc.get_skill_detail("shared-skill").unwrap();
+    assert!(detail.targets.is_empty());
+    assert!(center.is_dir(), "center library skill is preserved");
+}
+
+#[test]
 #[cfg(unix)]
 fn adopt_conflict_can_use_center_as_source_of_truth() {
     let (_home, svc, _lock) = fresh_service("adopt-center-over-agent");
@@ -1714,6 +1984,7 @@ fn adopt_conflict_can_use_center_as_source_of_truth() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -1868,6 +2139,7 @@ fn diagnosis_flags_broken_link_and_unmanaged() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -2144,6 +2416,23 @@ fn shared_agents_skills_dir_is_scanned_as_own_target() {
     );
 }
 
+#[test]
+fn shared_agents_skills_dir_is_not_listed_as_a_managed_agent() {
+    let (_home, svc, _lock) = fresh_service("shared-agents-not-agent");
+    write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared",
+        "shared-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+
+    let agents = svc.list_managed_agents().unwrap();
+
+    assert!(!agents.iter().any(|agent| agent.id == "agents"));
+    assert!(agents.iter().any(|agent| agent.id == "claude-code"));
+}
+
 // ── Snapshot ─────────────────────────────────────────────────────
 
 #[test]
@@ -2158,6 +2447,7 @@ fn snapshot_written_and_read() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -2181,6 +2471,7 @@ fn writes_refresh_snapshot_best_effort() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         },
         vec![],
     )
@@ -2298,6 +2589,7 @@ fn add_center_skill_from_zip() {
             imported_from_agent: None,
             imported_from_path: None,
             multi: None,
+            import_mode: None,
         })
         .unwrap();
     assert_eq!(preview.candidates.len(), 1);
@@ -2311,6 +2603,7 @@ fn add_center_skill_from_zip() {
                 imported_from_agent: None,
                 imported_from_path: None,
                 multi: None,
+                import_mode: None,
             },
             vec![],
         )

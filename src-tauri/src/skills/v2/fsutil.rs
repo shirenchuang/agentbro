@@ -397,6 +397,7 @@ pub fn inspect_path(path: &Path) -> PathKind {
             } else {
                 path.parent().unwrap_or(Path::new("")).join(target)
             };
+            let resolved = resolve_symlink_chain(resolved);
             if resolved.exists() {
                 return PathKind::Symlink(resolved);
             }
@@ -445,10 +446,10 @@ pub fn build_file_tree(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let Ok(meta) = fs::symlink_metadata(path) else {
+        if fs::symlink_metadata(path).is_err() {
             return None;
-        };
-        let is_dir = meta.is_dir() && !meta.file_type().is_symlink();
+        }
+        let is_dir = path.is_dir();
         if is_dir {
             let mut children = Vec::new();
             if let Ok(rd) = fs::read_dir(path) {
@@ -480,4 +481,21 @@ pub fn build_file_tree(
         }
     }
     build(root, root, 0, max_depth)
+}
+
+fn resolve_symlink_chain(mut path: PathBuf) -> PathBuf {
+    for _ in 0..8 {
+        if !path.is_symlink() {
+            break;
+        }
+        let Ok(target) = fs::read_link(&path) else {
+            break;
+        };
+        path = if target.is_absolute() {
+            target
+        } else {
+            path.parent().unwrap_or(Path::new("")).join(target)
+        };
+    }
+    path
 }

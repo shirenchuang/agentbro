@@ -268,9 +268,13 @@ export function SkillPackPage() {
             try {
               await skillApiV2.removePackFromAgent(revokePreview.packId, revokePreview.agentId)
               const packId = revokePreview.packId
+              const agentId = revokePreview.agentId
               setRevokePreview(null)
               await state.selectPack(packId)
               await state.loadOverview(true)
+              if (useSkillStoreV2.getState().selectedAgentId === agentId) {
+                await state.loadAgentDetail(agentId, true)
+              }
             } catch (e) {
               state.setError(String(e))
             } finally {

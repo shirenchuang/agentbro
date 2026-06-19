@@ -825,20 +825,13 @@ function SkillsTab({
     setLocalNotice(`正在删除 ${targets.length} 个 Skill 分发...`)
     state.setError(null)
     try {
-      let ok = 0
-      const failed: string[] = []
-      for (const target of targets) {
-        try {
-          await skillApiV2.deleteSkillTargetDistribution(target.id)
-          ok += 1
-        } catch (e) {
-          failed.push(`${target.targetPath.split('/').pop() || target.skillId}: ${String(e)}`)
-        }
-      }
+      const targetNames = new Map(targets.map((target) => [target.id, target.targetPath.split('/').pop() || target.skillId]))
+      const result = await skillApiV2.deleteSkillTargetDistributions(ids)
+      const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
       await refreshAgentSkills()
       setSelectedManagedIds(new Set())
       setManagedSelectionMode(false)
-      setLocalNotice(`已删除 ${ok} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
+      setLocalNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
     } catch (e) {

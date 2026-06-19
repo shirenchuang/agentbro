@@ -8,7 +8,7 @@ import { DistributeDialog } from './DistributeDialog'
 type Tab = 'official' | 'agent' | 'local' | 'git'
 
 const TABS: Array<{ id: Tab; icon: string; label: string }> = [
-  { id: 'official', icon: '★', label: '官方源' },
+  { id: 'official', icon: '★', label: '市场' },
   { id: 'agent', icon: '◌', label: 'Agent 同步' },
   { id: 'local', icon: '📁', label: '本地导入' },
   { id: 'git', icon: '⑂', label: 'Git 安装' },

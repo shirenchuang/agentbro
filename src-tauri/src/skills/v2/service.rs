@@ -28,6 +28,20 @@ pub struct Service {
     pub home: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSkillTargetDistributionFailure {
+    pub target_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSkillTargetDistributionsResult {
+    pub deleted: usize,
+    pub failures: Vec<DeleteSkillTargetDistributionFailure>,
+}
+
 impl Service {
     pub fn new(sqlite_path: &Path, home: PathBuf) -> Result<Self, String> {
         let db = Arc::new(Db::open(sqlite_path)?);
@@ -899,6 +913,7 @@ impl Service {
 
         Ok(SkillDetail {
             summary,
+            center_resolved_path: resolved_target_path(&row.center_path),
             frontmatter,
             files,
             targets: target_details,
@@ -1017,8 +1032,19 @@ impl Service {
     }
 
     pub fn list_managed_agents(&self) -> Result<Vec<AgentSummary>, String> {
+        self.agent_summaries_for_ids(agent_meta::visible_agent_ids())
+    }
+
+    fn list_inventory_agents(&self) -> Result<Vec<AgentSummary>, String> {
+        self.agent_summaries_for_ids(agent_meta::managed_agent_ids())
+    }
+
+    fn agent_summaries_for_ids(
+        &self,
+        agent_ids: Vec<&'static str>,
+    ) -> Result<Vec<AgentSummary>, String> {
         let mut out = Vec::new();
-        for id in agent_meta::managed_agent_ids() {
+        for id in agent_ids {
             self.ensure_agent_row(id)?;
             let (enabled, skills_dir, version, latest) = self.db.with_conn(|c| {
                 c.query_row(
@@ -1107,7 +1133,7 @@ impl Service {
     }
 
     pub fn list_agent_skill_inventory(&self) -> Result<Vec<AgentSkillInventoryAgent>, String> {
-        let agents = self.list_managed_agents()?;
+        let agents = self.list_inventory_agents()?;
         let center_hashes = self.center_skill_hashes()?;
         let mut items_by_agent: HashMap<String, Vec<AgentSkillInventoryItem>> = HashMap::new();
 
@@ -1469,10 +1495,10 @@ impl Service {
         let dest = center.join(&cand.skill_id);
         let src = Path::new(&cand.source_dir);
         // overwrite if exists
-        if dest.exists() {
+        if dest.exists() || dest.is_symlink() {
             fsutil::remove_path(&dest)?;
         }
-        fsutil::copy_dir_recursive(src, &dest)?;
+        self.write_center_directory(src, &dest, &input)?;
         self.record_source_after_write(&cand.skill_id, &dest, input)?;
         Ok(())
     }
@@ -1486,12 +1512,39 @@ impl Service {
     ) -> Result<(), String> {
         let dest = center.join(new_id);
         let src = Path::new(&cand.source_dir);
-        if dest.exists() {
+        if dest.exists() || dest.is_symlink() {
             fsutil::remove_path(&dest)?;
         }
-        fsutil::copy_dir_recursive(src, &dest)?;
+        self.write_center_directory(src, &dest, &input)?;
         self.record_source_after_write(new_id, &dest, input)?;
         Ok(())
+    }
+
+    fn write_center_directory(
+        &self,
+        src: &Path,
+        dest: &Path,
+        input: &AddCenterSkillInput,
+    ) -> Result<(), String> {
+        match input.import_mode.as_deref().unwrap_or("copy") {
+            "copy" => fsutil::copy_dir_recursive(src, dest),
+            "link" => {
+                if !is_local_folder_import(input) {
+                    return Err(
+                        "Link import is only available when importing a local folder.".to_string(),
+                    );
+                }
+                if fsutil::try_symlink(src, dest)? {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Could not create center symlink at {}.",
+                        dest.display()
+                    ))
+                }
+            }
+            other => Err(format!("Unknown center import mode: {other}")),
+        }
     }
 
     fn record_source_after_write(
@@ -1683,6 +1736,49 @@ impl Service {
         self.scan_one_agent_into_db(&agent_id)?;
         self.refresh_snapshot_best_effort();
         Ok(())
+    }
+
+    pub fn delete_skill_target_distributions(
+        &self,
+        target_ids: Vec<String>,
+    ) -> Result<DeleteSkillTargetDistributionsResult, String> {
+        let mut deleted = 0usize;
+        let mut failures = Vec::new();
+        let mut affected_agents = BTreeSet::new();
+
+        for target_id in target_ids {
+            let agent_id = self.db.with_conn(|c| {
+                c.query_row(
+                    "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                    params![target_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })?;
+            let Some(agent_id) = agent_id else {
+                failures.push(DeleteSkillTargetDistributionFailure {
+                    target_id,
+                    error: "Target not found".to_string(),
+                });
+                continue;
+            };
+            match self.remove_target_completely(&target_id) {
+                Ok(()) => {
+                    deleted += 1;
+                    affected_agents.insert(agent_id);
+                }
+                Err(error) => {
+                    failures.push(DeleteSkillTargetDistributionFailure { target_id, error })
+                }
+            }
+        }
+
+        for agent_id in affected_agents {
+            self.scan_one_agent_into_db(&agent_id)?;
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(DeleteSkillTargetDistributionsResult { deleted, failures })
     }
 
     /// Remove a target's file/link AND all its DB rows (claims cascade).
@@ -2317,6 +2413,30 @@ impl Service {
             Some(row) => row.current_hash == item.hash.clone().unwrap_or_default(),
             None => true,
         };
+        let mut quick_options = vec![
+            AdoptOption {
+                value: "import_keep".into(),
+                label: "Import to center, keep agent file as-is".into(),
+                destructive: false,
+            },
+            AdoptOption {
+                value: "import_link".into(),
+                label: "Import to center and replace agent file with link".into(),
+                destructive: true,
+            },
+            AdoptOption {
+                value: "import_copy".into(),
+                label: "Import to center and replace agent file with copy".into(),
+                destructive: true,
+            },
+        ];
+        if agent_id == SHARED_SKILLS_AGENT_ID {
+            quick_options = vec![AdoptOption {
+                value: "import_cleanup".into(),
+                label: "Import to center and remove the shared .agents copy".into(),
+                destructive: true,
+            }];
+        }
         Ok(AdoptPreview {
             agent_id: agent_id.to_string(),
             unmanaged_id: unmanaged_id.to_string(),
@@ -2326,23 +2446,7 @@ impl Service {
             center_has_same_id: center_existing.is_some(),
             can_quick_adopt: can_quick,
             options: if can_quick {
-                vec![
-                    AdoptOption {
-                        value: "import_keep".into(),
-                        label: "Import to center, keep agent file as-is".into(),
-                        destructive: false,
-                    },
-                    AdoptOption {
-                        value: "import_link".into(),
-                        label: "Import to center and replace agent file with link".into(),
-                        destructive: true,
-                    },
-                    AdoptOption {
-                        value: "import_copy".into(),
-                        label: "Import to center and replace agent file with copy".into(),
-                        destructive: true,
-                    },
-                ]
+                quick_options
             } else {
                 vec![
                     AdoptOption {
@@ -2491,6 +2595,14 @@ impl Service {
                 fsutil::remove_path(src)?;
                 fsutil::copy_dir_recursive(&dest, src)?;
                 self.upsert_target_managed(agent_id, &target_skill_id, src, "copy", "copy")?;
+            }
+            "import_cleanup" => {
+                if agent_id != SHARED_SKILLS_AGENT_ID {
+                    return Err(
+                        "Cleanup import is only available for shared .agents skills.".into(),
+                    );
+                }
+                fsutil::remove_path(src)?;
             }
             _ => {}
         }
@@ -3847,6 +3959,10 @@ fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {
         || input.source_path.starts_with("github:")
         || input.source_path.starts_with("https://github.com/")
         || input.source_path.starts_with("http://github.com/")
+}
+
+fn is_local_folder_import(input: &AddCenterSkillInput) -> bool {
+    input.source_type == "local_folder" && !is_remote_skill_source(input)
 }
 
 // transactional helpers

@@ -17,6 +17,8 @@ const STATUS_LABEL: Record<string, string> = {
   updateAvailable: '可更新',
 }
 
+const DEFAULT_SKILL_PACK_ID = 'default'
+
 type FilterSelectOption = {
   value: string
   label: string
@@ -25,7 +27,8 @@ type FilterSelectOption = {
 export function SkillLibraryPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const skills = filteredSkills(state)
+  const setStoreError = state.setError
+  const baseSkills = filteredSkills(state)
   const overview = state.overview
   const startupScanInFlight = state.startupScanInFlight
   const [distributeFor, setDistributeFor] = useState<SkillSummary[] | null>(null)
@@ -33,11 +36,24 @@ export function SkillLibraryPage() {
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
   const [sliderSkillId, setSliderSkillId] = useState<string | null>(null)
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
+  const [packFilter, setPackFilter] = useState('')
+  const [packMembersById, setPackMembersById] = useState<Record<string, string[]>>({})
   const [busy, setBusy] = useState(false)
   const sources = useMemo(
     () => Array.from(new Set(state.skills.map((s) => s.sourceType).filter(Boolean))).sort(),
     [state.skills],
   )
+  const filterablePacks = useMemo(
+    () => state.packs.filter((pack) => pack.id !== DEFAULT_SKILL_PACK_ID),
+    [state.packs],
+  )
+  const skills = useMemo(() => {
+    if (!packFilter) return baseSkills
+    const memberIds = packMembersById[packFilter]
+    if (!memberIds) return []
+    const memberSet = new Set(memberIds)
+    return baseSkills.filter((skill) => memberSet.has(skill.id))
+  }, [baseSkills, packFilter, packMembersById])
   const selectedSkills = useMemo(
     () => state.skills.filter((skill) => selectedSkillIds.has(skill.id)),
     [selectedSkillIds, state.skills],
@@ -56,11 +72,54 @@ export function SkillLibraryPage() {
     { value: '', label: '全部来源' },
     ...sources.map((source) => ({ value: source, label: skillSourceTypeLabel(t, source) })),
   ], [sources, t])
+  const packOptions = useMemo<FilterSelectOption[]>(() => [
+    { value: '', label: '全部技能包' },
+    ...filterablePacks.map((pack) => ({ value: pack.id, label: pack.name })),
+  ], [filterablePacks])
 
   useEffect(() => {
     state.init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (filterablePacks.length === 0) {
+      setPackMembersById({})
+      return
+    }
+
+    void (async () => {
+      try {
+        const details = await Promise.all(
+          filterablePacks.map(async (pack) => ({
+            packId: pack.id,
+            detail: await skillApiV2.getPackDetail(pack.id),
+          })),
+        )
+        if (cancelled) return
+        const next: Record<string, string[]> = {}
+        for (const { packId, detail } of details) {
+          next[packId] = detail.members
+            .filter((member) => !member.missing)
+            .map((member) => member.skillId)
+        }
+        setPackMembersById(next)
+      } catch (e) {
+        if (!cancelled) setStoreError(String(e))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [filterablePacks, setStoreError])
+
+  useEffect(() => {
+    if (packFilter && !filterablePacks.some((pack) => pack.id === packFilter)) {
+      setPackFilter('')
+    }
+  }, [filterablePacks, packFilter])
 
   useEffect(() => {
     setSelectedSkillIds((prev) => {
@@ -169,6 +228,14 @@ export function SkillLibraryPage() {
           />
         </div>
         <div className="sm2__filter-controls">
+          <FilterSelect
+            label="技能包"
+            value={packFilter}
+            options={packOptions}
+            onChange={setPackFilter}
+            disabled={filterablePacks.length === 0}
+            wide
+          />
           <FilterSelect
             label="状态"
             value={state.filters.status}
@@ -390,12 +457,14 @@ function FilterSelect({
   value,
   options,
   onChange,
+  disabled = false,
   wide = false,
 }: {
   label: string
   value: string
   options: FilterSelectOption[]
   onChange: (value: string) => void
+  disabled?: boolean
   wide?: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -419,12 +488,13 @@ function FilterSelect({
   }, [open])
 
   return (
-    <div ref={rootRef} className={`sm2__filter-select${wide ? ' sm2__filter-select--wide' : ''}${open ? ' sm2__filter-select--open' : ''}`}>
+    <div ref={rootRef} className={`sm2__filter-select${wide ? ' sm2__filter-select--wide' : ''}${open ? ' sm2__filter-select--open' : ''}${disabled ? ' sm2__filter-select--disabled' : ''}`}>
       <button
         type="button"
         className="sm2__filter-select-button"
         aria-haspopup="listbox"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
         <span className="sm2__filter-select-label">{label}</span>

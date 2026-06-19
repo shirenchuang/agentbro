@@ -116,6 +116,7 @@ function SkillAvatar({ source, name }: { source: string | null; name: string }) 
 type MarketViewMode = 'list' | 'cards'
 type LocalPreviewViewMode = 'list' | 'cards'
 type FileViewMode = 'preview' | 'source'
+type LocalImportMode = 'copy' | 'link'
 
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
   const [items, setItems] = useState<MarketplaceSkill[]>([])
@@ -962,7 +963,8 @@ type AgentSyncRow = { agent: AgentSkillInventoryAgent; item: AgentSkillInventory
 type AgentSyncViewMode = 'list' | 'cards'
 type AgentSkillDetailTab = 'overview' | 'files' | 'source'
 type AgentSyncImportProgress = { current: number; total: number; currentName: string }
-type OneClickOrganizeMode = 'import_link' | 'import_copy' | 'import_keep'
+type OneClickOrganizeMode = 'import_link' | 'import_copy' | 'import_keep' | 'import_cleanup'
+const SHARED_SKILLS_AGENT_ID = 'agents'
 const AGENT_STATUS_TABS = [
   { id: 'all', label: '全部' },
   { id: 'importable', label: '可接管' },
@@ -982,7 +984,7 @@ function canOpenAdopt(item: AgentSkillInventoryItem) {
 
 function installedAgentInventory(agents: AgentSkillInventoryAgent[]) {
   return agents
-    .filter((agent) => agent.installed)
+    .filter((agent) => agent.installed && agent.agentId !== SHARED_SKILLS_AGENT_ID)
     .sort((a, b) => {
       const skillCountDiff = localSkillCount(b) - localSkillCount(a)
       if (skillCountDiff !== 0) return skillCountDiff
@@ -990,6 +992,10 @@ function installedAgentInventory(agents: AgentSkillInventoryAgent[]) {
       if (importableDiff !== 0) return importableDiff
       return a.displayName.localeCompare(b.displayName)
     })
+}
+
+function sharedAgentInventory(agents: AgentSkillInventoryAgent[]) {
+  return agents.find((agent) => agent.installed && agent.agentId === SHARED_SKILLS_AGENT_ID) ?? null
 }
 
 function localSkillCount(agent: AgentSkillInventoryAgent) {
@@ -1018,17 +1024,18 @@ function agentConflictCount(agent: AgentSkillInventoryAgent) {
   return agent.items.filter((item) => !item.managed && item.status === 'conflict').length
 }
 
-function shouldLinkOnBatchAdopt(item: AgentSkillInventoryItem) {
+function shouldCleanupOnBatchAdopt(item: AgentSkillInventoryItem) {
   return item.agentId === 'agents' || item.path.includes('/.agents/skills/')
 }
 
 function defaultBatchAdoptMode(item: AgentSkillInventoryItem): OneClickOrganizeMode {
-  return shouldLinkOnBatchAdopt(item) ? 'import_link' : 'import_keep'
+  return shouldCleanupOnBatchAdopt(item) ? 'import_cleanup' : 'import_keep'
 }
 
 export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const { t } = useTranslation()
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
+  const [sharedAgent, setSharedAgent] = useState<AgentSkillInventoryAgent | null>(null)
   const [selectedAgent, setSelectedAgent] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
@@ -1046,19 +1053,24 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [adoptPreview, setAdoptPreview] = useState<AdoptPreview | null>(null)
   const [adoptOpeningId, setAdoptOpeningId] = useState<string | null>(null)
   const [oneClickOpen, setOneClickOpen] = useState(false)
+  const [cleaningShared, setCleaningShared] = useState(false)
 
   const load = async () => {
     setLoading(true)
     setError(null)
     try {
-      const next = installedAgentInventory(await skillApiV2.listAgentSkillInventory())
+      const inventory = await skillApiV2.listAgentSkillInventory()
+      const next = installedAgentInventory(inventory)
+      const nextShared = sharedAgentInventory(inventory)
       setAgents(next)
+      setSharedAgent(nextShared)
       setSelectedAgent((current) => {
         if (current === 'all') return current
         return next.some((agent) => agent.agentId === current) ? current : 'all'
       })
       setSelectedIds((current) => {
-        const valid = new Set(next.flatMap((agent) => agent.items.filter((item) => item.canImport).map((item) => importKey(item))))
+        const sources = nextShared ? [...next, nextShared] : next
+        const valid = new Set(sources.flatMap((agent) => agent.items.filter((item) => item.canImport).map((item) => importKey(item))))
         return new Set(Array.from(current).filter((id) => valid.has(id)))
       })
     } catch (e) {
@@ -1110,9 +1122,14 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     [selectedAgent, sortedAgents],
   )
 
+  const visibleSources = useMemo(
+    () => selectedAgent === 'all' && sharedAgent ? [...visibleAgents, sharedAgent] : visibleAgents,
+    [selectedAgent, sharedAgent, visibleAgents],
+  )
+
   const allRows = useMemo(
-    () => visibleAgents.flatMap((agent) => agent.items.map((item) => ({ agent, item }))),
-    [visibleAgents],
+    () => visibleSources.flatMap((agent) => agent.items.map((item) => ({ agent, item }))),
+    [visibleSources],
   )
 
   const q = query.trim().toLowerCase()
@@ -1163,14 +1180,15 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const oneClickConflicts = oneClickItems.filter((item) => !item.managed && item.status === 'conflict')
   const scopedImportableCount = oneClickImportable.length
   const scopedConflictCount = oneClickConflicts.length
-  const noInstalledAgents = !loading && agents.length === 0
-  const totalManaged = agents.reduce((sum, agent) => sum + agent.managedCount, 0)
-  const totalImportable = agents.reduce((sum, agent) => sum + agent.importableCount, 0)
-  const totalConflicts = agents.reduce(
+  const allSources = sharedAgent ? [...agents, sharedAgent] : agents
+  const noInstalledAgents = !loading && allSources.length === 0
+  const totalManaged = allSources.reduce((sum, agent) => sum + agent.managedCount, 0)
+  const totalImportable = allSources.reduce((sum, agent) => sum + agent.importableCount, 0)
+  const totalConflicts = allSources.reduce(
     (sum, agent) => sum + agent.items.filter((item) => !item.managed && item.status === 'conflict').length,
     0,
   )
-  const pendingCount = agents.reduce(
+  const pendingCount = allSources.reduce(
     (sum, agent) => sum + agent.items.filter((item) => !item.managed || item.status === 'conflict').length,
     0,
   )
@@ -1183,7 +1201,9 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
         : '本机 Agent Skills 已完成整理'
   const summaryRecommendation = noInstalledAgents
     ? '没有找到可同步的 Agent Skills 目录。可以点击「重新扫描」再试。'
-    : scopedImportableCount > 0
+    : sharedAgent && selectedAgent === 'all' && sharedAgent.importableCount > 0
+      ? '建议先接管 .agents Skills 到中心库，并清理共享目录，避免未安装的 Agent 隐式生效。'
+      : scopedImportableCount > 0
       ? '建议使用「软连接」一键整理：中心库作为唯一来源，Agent 目录指向中心库，后续同步最省心。'
       : scopedConflictCount > 0
         ? '建议先进入冲突项确认保留哪一份，再继续接管到中心库。'
@@ -1271,6 +1291,29 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     setNotice('已接管 1 个 Skill')
   }
 
+  const cleanupManagedSharedSkills = async () => {
+    if (!sharedAgent || cleaningShared || importing || scanning) return
+    const targetIds = sharedAgent.items
+      .filter((item) => item.managed && item.targetId)
+      .map((item) => item.targetId as string)
+    if (targetIds.length === 0) return
+    setCleaningShared(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await skillApiV2.deleteSkillTargetDistributions(targetIds)
+      await load()
+      await onDone()
+      const failed = result.failures.map((failure) => `${failure.targetId}: ${failure.error}`)
+      setNotice(`已清理 ${result.deleted} 个 .agents 已管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
+      if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setCleaningShared(false)
+    }
+  }
+
   const openOneClickOrganize = () => {
     if (oneClickImportable.length === 0) {
       setNotice(null)
@@ -1338,8 +1381,9 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           <span>{summaryRecommendation}</span>
           <div className="sm2__agent-sync-summary-chips" aria-label="同步摘要">
             <em>{agents.length} Agent</em>
+            {sharedAgent && <em>.agents Skills {localSkillCount(sharedAgent)}</em>}
             <em>{totalManaged} 已管理，默认隐藏</em>
-            <em>{totalImportable > 0 ? '软连接推荐' : `${pendingCount} 待处理`}</em>
+            <em>{sharedAgent && sharedAgent.importableCount > 0 ? '.agents 清理推荐' : totalImportable > 0 ? '软连接推荐' : `${pendingCount} 待处理`}</em>
           </div>
         </div>
         <div className="sm2__agent-sync-summary-actions">
@@ -1392,6 +1436,26 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           )
         })}
       </div>
+
+      {sharedAgent && (
+        <div className="sm2__agent-sync-shared-source">
+          <AgentIconBadge iconKey={sharedAgent.iconKey} size={28} title={sharedAgent.displayName} />
+          <div>
+            <strong>本地 .agents Skills</strong>
+            <span>{sharedAgent.skillsDir || '~/.agents/skills'} · {sharedAgent.importableCount} 可接管，{sharedAgent.unmanagedCount} 未管理</span>
+          </div>
+          {sharedAgent.managedCount > 0 && (
+            <button
+              type="button"
+              className="sm2__btn sm2__btn--small sm2__btn--danger"
+              disabled={cleaningShared || importing || scanning}
+              onClick={() => void cleanupManagedSharedSkills()}
+            >
+              {cleaningShared ? '清理中…' : '清理已管理 .agents Skills'}
+            </button>
+          )}
+        </div>
+      )}
 
       <section className="sm2__agent-sync-inbox" aria-labelledby="agent-sync-inbox-title">
         <div className="sm2__agent-sync-inbox-head">
@@ -1643,6 +1707,8 @@ function modeNoticeSuffix(mode: OneClickOrganizeMode) {
       return ' 为中心库副本'
     case 'import_keep':
       return ' 并保留现有文件'
+    case 'import_cleanup':
+      return ' 并清理 .agents 原目录'
   }
 }
 
@@ -2272,7 +2338,7 @@ function importKey(item: AgentSkillInventoryItem) {
 
 export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [sourcePath, setSourcePath] = useState('')
-  const [multi, setMulti] = useState(false)
+  const [importMode, setImportMode] = useState<LocalImportMode>('copy')
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
   const [localViewMode, setLocalViewMode] = useState<LocalPreviewViewMode>('cards')
   const [renames, setRenames] = useState<Record<string, string>>({})
@@ -2289,6 +2355,9 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   }
 
   const sourceType = sourcePath.trim().toLowerCase().endsWith('.zip') ? 'archive' : 'local_folder'
+  const effectiveImportMode: LocalImportMode = sourceType === 'archive' ? 'copy' : importMode
+  const sourceUri = sourceType === 'local_folder' ? sourcePath : undefined
+  const addInput = { sourcePath, sourceType, sourceUri, importMode: effectiveImportMode }
 
   const runPreview = async () => {
     if (!sourcePath) {
@@ -2298,7 +2367,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
     setBusy(true)
     setError(null)
     try {
-      const p = await skillApiV2.previewAddCenterSkill({ sourcePath, sourceType, multi })
+      const p = await skillApiV2.previewAddCenterSkill(addInput)
       setPreview(p)
     } catch (e) {
       setError(String(e))
@@ -2318,7 +2387,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           ? { skillId: b.skillId, proposedSkillId: renamed, resolution: 'create' }
           : { skillId: b.skillId, resolution: 'skip' }
       })
-      const r = await skillApiV2.executeAddCenterSkill({ sourcePath, sourceType, multi }, decisions)
+      const r = await skillApiV2.executeAddCenterSkill(addInput, decisions)
       alert(`导入完成：新增 ${r.skillIds.length}，更新 ${r.updated.length}，跳过 ${r.skipped.length}`)
       onDone()
     } catch (e) {
@@ -2336,7 +2405,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           <div>
             <h3 className="sm2__install-h">确认导入预览</h3>
             <p className="sm2__install-sub">
-              将导入到中心库：{preview.centerPath || '中心 Skill 库'}
+              将导入到中心库：{preview.centerPath || '中心 Skill 库'} · {effectiveImportMode === 'link' ? '软链到本地源目录' : '复制到中心库'}
             </p>
           </div>
           <div className="sm2__local-preview-actions">
@@ -2395,7 +2464,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   return (
     <div className="sm2__install-form">
       <h3 className="sm2__install-h">从本地导入</h3>
-      <p className="sm2__install-sub">支持文件夹、压缩包,以及批量导入一个含多个 Skill 的目录。</p>
+      <p className="sm2__install-sub">支持文件夹、压缩包；选择包含多个 Skill 的目录时会自动批量预览。</p>
 
       <div className="sm2__install-options">
         <button className="sm2__install-option" onClick={chooseFolder}>
@@ -2409,13 +2478,48 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
       </div>
 
       <div className="sm2__field">
-        <label>来源路径</label>
-        <input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="选择或粘贴包含 SKILL.md 的目录 / .zip" />
+        <label htmlFor="local-skill-source-path">来源路径</label>
+        <input id="local-skill-source-path" value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="选择或粘贴包含 SKILL.md 的目录 / .zip" />
       </div>
-      <label className="sm2__checkbox-row">
-        <input type="checkbox" checked={multi} onChange={(e) => setMulti(e.target.checked)} />
-        批量导入（该目录包含多个 Skill）
-      </label>
+
+      {sourceType === 'local_folder' && (
+        <div className="sm2__local-import-mode" role="radiogroup" aria-label="导入方式">
+          <label className={`sm2__local-import-option${effectiveImportMode === 'copy' ? ' sm2__local-import-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="local-import-mode"
+              aria-label="复制导入"
+              checked={effectiveImportMode === 'copy'}
+              onChange={() => setImportMode('copy')}
+            />
+            <span>
+              <strong>复制导入</strong>
+              <em>把当前文件复制到中心库。适合稳定 Skill；之后修改原始目录不会自动同步。</em>
+            </span>
+          </label>
+          <label className={`sm2__local-import-option${effectiveImportMode === 'link' ? ' sm2__local-import-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="local-import-mode"
+              aria-label="软链导入，本地目录作为源"
+              checked={effectiveImportMode === 'link'}
+              onChange={() => setImportMode('link')}
+            />
+            <span>
+              <strong>软链导入，本地目录作为源</strong>
+              <em>中心库链接到这个目录。以后改本地 Skill 会立即影响中心库；分发给 Agent 时也选择软连接，Agent 才会实时读到同一份源目录。</em>
+              <small>常见使用场景：本地已有 Skill，并且需要持续自己修改、调试、立即生效时，选择这个方式更合适。</small>
+            </span>
+          </label>
+        </div>
+      )}
+      <div className="sm2__local-import-note">
+        {sourceType === 'archive'
+          ? '压缩包会解压后复制导入中心库，不支持软链导入。'
+          : effectiveImportMode === 'link'
+            ? '请保留这个本地源目录的位置。移动或删除源目录后，中心库和已软链分发的 Agent 都会变成坏链接。'
+            : '复制导入会保留一份中心库副本；后续要同步本地修改，需要重新导入或覆盖中心库。'}
+      </div>
 
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
       <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
