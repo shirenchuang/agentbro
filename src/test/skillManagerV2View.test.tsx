@@ -786,7 +786,8 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     const { container } = render(<AgentSyncPanel onDone={() => {}} />)
 
-    expect(await screen.findByLabelText('选择 Agent')).toHaveTextContent('Claude Code · 1 可接管')
+    const select = await screen.findByLabelText('选择 Agent') as HTMLSelectElement
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual(['全部 Agent', 'Claude Code · 1 可接管'])
     expect(container.querySelector('.sm2__agent-sync-agent-strip')).toHaveTextContent('Claude Code')
     expect(screen.queryByText('DeepSeek')).not.toBeInTheDocument()
     expect(container.querySelector('.sm2__agent-sync-summary')).toHaveTextContent('1 Agent')
