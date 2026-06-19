@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +77,80 @@ pub struct SkillManagerOverview {
     pub packs: Vec<SkillPackSummary>,
     pub issues: Vec<DiagnosisIssue>,
     pub settings: SkillManagerSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_scanned_at: Option<String>,
+    pub detected_agent_count: usize,
+    pub skill_count: usize,
+    pub mcp_count: usize,
+    pub plugin_count: usize,
+    pub instruction_count: usize,
+    pub issue_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDetail {
+    #[serde(flatten)]
+    pub summary: ProjectSummary,
+    pub agents: Vec<ProjectAgentDetail>,
+    pub instructions: Vec<ProjectInstructionFile>,
+    pub health: Vec<ProjectHealthIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAgentDetail {
+    pub agent_id: String,
+    pub display_name: String,
+    pub icon_key: String,
+    pub skills_dirs: Vec<String>,
+    pub config_paths: Vec<String>,
+    pub mcp_config_paths: Vec<String>,
+    pub plugin_config_paths: Vec<String>,
+    pub skills: Vec<ProjectSkillItem>,
+    pub mcp_servers: Vec<McpServerStatus>,
+    pub plugins: Vec<PluginStatus>,
+    pub health: Vec<ProjectHealthIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillItem {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub agent_id: String,
+    pub path: String,
+    pub hash: String,
+    pub status: String,
+    pub importable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInstructionFile {
+    pub agent_id: String,
+    pub path: String,
+    pub exists: bool,
+    pub bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectHealthIssue {
+    pub agent_id: Option<String>,
+    pub kind: String,
+    pub message: String,
+    pub severity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,6 +582,7 @@ pub struct Snapshot {
     pub targets: Vec<serde_json::Value>,
     pub claims: Vec<serde_json::Value>,
     pub packs: Vec<serde_json::Value>,
+    pub projects: Vec<serde_json::Value>,
     pub diagnosis_summary: serde_json::Value,
 }
 

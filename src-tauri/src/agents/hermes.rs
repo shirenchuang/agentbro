@@ -10,16 +10,12 @@ pub struct HermesAdapter {
 
 impl HermesAdapter {
     pub fn new() -> Self {
-        let status = if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        };
+        let status = Self::detect_status();
         Self { status }
     }
 
-    fn is_installed() -> bool {
-        super::executable::command_exists("hermes")
+    fn detect_status() -> AdapterStatus {
+        super::programs::detected_status_for_agent_program("hermes")
     }
 
     fn plugin_path(&self) -> PathBuf {
@@ -55,11 +51,7 @@ impl AgentAdapter for HermesAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        }
+        Self::detect_status()
     }
 
     fn parse_event(

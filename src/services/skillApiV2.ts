@@ -204,6 +204,66 @@ export interface SkillManagerOverview {
   settings: SkillManagerSettings
 }
 
+export interface ProjectSummary {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: string
+  updatedAt: string
+  lastScannedAt: string | null
+  detectedAgentCount: number
+  skillCount: number
+  mcpCount: number
+  pluginCount: number
+  instructionCount: number
+  issueCount: number
+}
+
+export interface ProjectSkillItem {
+  id: string
+  name: string
+  description: string
+  agentId: string
+  path: string
+  hash: string
+  status: 'projectOnly' | 'centerSynced' | 'centerDiff' | string
+  importable: boolean
+}
+
+export interface ProjectInstructionFile {
+  agentId: string
+  path: string
+  exists: boolean
+  bytes: number | null
+}
+
+export interface ProjectHealthIssue {
+  agentId: string | null
+  kind: string
+  message: string
+  severity: 'info' | 'warning' | 'error' | string
+}
+
+export interface ProjectAgentDetail {
+  agentId: string
+  displayName: string
+  iconKey: string
+  skillsDirs: string[]
+  configPaths: string[]
+  mcpConfigPaths: string[]
+  pluginConfigPaths: string[]
+  skills: ProjectSkillItem[]
+  mcpServers: McpServerStatus[]
+  plugins: PluginStatus[]
+  health: ProjectHealthIssue[]
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  agents: ProjectAgentDetail[]
+  instructions: ProjectInstructionFile[]
+  health: ProjectHealthIssue[]
+}
+
 export interface ConflictBlocker {
   skillId: string
   agentId: string
@@ -675,6 +735,24 @@ export const skillApiV2 = {
   listUnmanaged: () => (isTauri ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
   listAgentSkillInventory: () =>
     isTauri ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),
+  listProjects: () =>
+    isTauri ? invoke<ProjectSummary[]>('list_skill_projects_v2') : Promise.resolve(demoProjectSummaries()),
+  addProject: (rootPath: string) =>
+    isTauri ? invoke<ProjectDetail>('add_skill_project_v2', { rootPath }) : Promise.resolve(demoProjectDetail(rootPath)),
+  removeProject: (projectId: string) =>
+    isTauri ? invoke<void>('remove_skill_project_v2', { projectId }) : Promise.resolve(),
+  getProjectDetail: (projectId: string) =>
+    isTauri ? invoke<ProjectDetail>('get_skill_project_detail_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
+  scanProject: (projectId: string) =>
+    isTauri ? invoke<ProjectDetail>('scan_skill_project_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
+  installCenterSkillsToProject: (projectId: string, agentId: string, skillIds: string[], requestedMode: 'link' | 'copy') =>
+    isTauri
+      ? invoke<ProjectDetail>('install_center_skills_to_project_v2', { projectId, agentId, skillIds, requestedMode })
+      : Promise.resolve(demoProjectDetail(projectId)),
+  installSkillPackToProject: (projectId: string, agentId: string, packId: string, requestedMode: 'link' | 'copy') =>
+    isTauri
+      ? invoke<ProjectDetail>('install_skill_pack_to_project_v2', { projectId, agentId, packId, requestedMode })
+      : Promise.resolve(demoProjectDetail(projectId)),
 
   runDiagnosis: () => (isTauri ? invoke<DiagnosisIssue[]>('run_skill_manager_diagnosis') : Promise.resolve([])),
   listDiagnosisIssues: () => (isTauri ? invoke<DiagnosisIssue[]>('list_diagnosis_issues') : Promise.resolve([])),
@@ -876,6 +954,113 @@ function demoAgentInventory(): AgentSkillInventoryAgent[] {
       ],
     },
   ]
+}
+
+function demoProjectSummaries(): ProjectSummary[] {
+  const detail = demoProjectDetail('/Users/me/project')
+  return [{
+    id: detail.id,
+    name: detail.name,
+    rootPath: detail.rootPath,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    lastScannedAt: detail.lastScannedAt,
+    detectedAgentCount: detail.detectedAgentCount,
+    skillCount: detail.skillCount,
+    mcpCount: detail.mcpCount,
+    pluginCount: detail.pluginCount,
+    instructionCount: detail.instructionCount,
+    issueCount: detail.issueCount,
+  }]
+}
+
+function demoProjectDetail(rootPath: string): ProjectDetail {
+  const now = new Date().toISOString()
+  return {
+    id: 'project-demo',
+    name: rootPath.split('/').filter(Boolean).pop() || 'project',
+    rootPath,
+    createdAt: now,
+    updatedAt: now,
+    lastScannedAt: now,
+    detectedAgentCount: 2,
+    skillCount: 3,
+    mcpCount: 2,
+    pluginCount: 1,
+    instructionCount: 2,
+    issueCount: 1,
+    agents: [
+      {
+        agentId: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDirs: [`${rootPath}/.agents/skills`],
+        configPaths: [`${rootPath}/.codex/config.toml`],
+        mcpConfigPaths: [`${rootPath}/.codex/config.toml`],
+        pluginConfigPaths: [`${rootPath}/.codex/config.toml`],
+        skills: [
+          {
+            id: 'release-review',
+            name: 'release-review',
+            description: 'Project-only release review workflow',
+            agentId: 'codex',
+            path: `${rootPath}/.agents/skills/release-review`,
+            hash: 'demo-project-hash',
+            status: 'projectOnly',
+            importable: true,
+          },
+          {
+            id: 'frontend-design',
+            name: 'frontend-design',
+            description: 'Design workflow synced with center library',
+            agentId: 'codex',
+            path: `${rootPath}/.agents/skills/frontend-design`,
+            hash: 'demo-center-hash',
+            status: 'centerSynced',
+            importable: true,
+          },
+        ],
+        mcpServers: [
+          { name: 'context7', command: 'npx', args: ['-y', '@upstash/context7-mcp'], valid: true, message: 'configured' },
+        ],
+        plugins: [
+          { id: 'documents@openai-primary-runtime', name: 'documents@openai-primary-runtime', version: null, enabled: true, source: 'project-config' },
+        ],
+        health: [],
+      },
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDirs: [`${rootPath}/.claude/skills`],
+        configPaths: [`${rootPath}/.claude/settings.json`],
+        mcpConfigPaths: [`${rootPath}/.mcp.json`],
+        pluginConfigPaths: [`${rootPath}/.claude/settings.json`],
+        skills: [
+          {
+            id: 'docs-editor',
+            name: 'docs-editor',
+            description: 'Project documentation workflow differs from center',
+            agentId: 'claude-code',
+            path: `${rootPath}/.claude/skills/docs-editor`,
+            hash: 'demo-diff-hash',
+            status: 'centerDiff',
+            importable: true,
+          },
+        ],
+        mcpServers: [
+          { name: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'], valid: true, message: 'configured' },
+        ],
+        plugins: [],
+        health: [{ agentId: 'claude-code', kind: 'center_diff', message: 'docs-editor differs from center library', severity: 'warning' }],
+      },
+    ],
+    instructions: [
+      { agentId: 'codex', path: `${rootPath}/AGENTS.md`, exists: true, bytes: 2400 },
+      { agentId: 'claude-code', path: `${rootPath}/.claude/CLAUDE.md`, exists: true, bytes: 3200 },
+    ],
+    health: [],
+  }
 }
 
 function demoOverview(): SkillManagerOverview {

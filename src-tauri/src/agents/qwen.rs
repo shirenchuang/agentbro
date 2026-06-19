@@ -12,22 +12,15 @@ impl QwenAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".qwen");
-        let status = if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        };
+        let status = Self::detect_status();
         Self {
             config_root,
             status,
         }
     }
 
-    fn is_installed() -> bool {
-        // Check for qwen-coder or qwen CLI
-        ["qwen-coder", "qwen"]
-            .iter()
-            .any(|cmd| super::executable::command_exists(cmd))
+    fn detect_status() -> AdapterStatus {
+        super::programs::detected_status_for_agent_program("qwen")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -63,11 +56,7 @@ impl AgentAdapter for QwenAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        }
+        Self::detect_status()
     }
 
     fn parse_event(

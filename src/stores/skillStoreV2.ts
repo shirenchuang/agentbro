@@ -11,10 +11,12 @@ import type {
   DiagnosisIssue,
   UnmanagedItemDto,
   DistributionPreview,
+  ProjectSummary,
+  ProjectDetail,
 } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
-export type SkillManagerTab = 'library' | 'install' | 'packs' | 'agents' | 'diagnostics' | 'settings'
+export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
 export type SkillViewMode = 'cards' | 'list'
 
 const OVERVIEW_CACHE_TTL_MS = 60_000
@@ -38,8 +40,11 @@ interface SkillV2State {
   selectedPackDetail: SkillPackDetail | null
   selectedAgentId: string | null
   selectedAgentDetail: AgentDetail | null
+  selectedProjectId: string | null
+  selectedProjectDetail: ProjectDetail | null
   agents: AgentSummary[]
   packs: SkillPackSummary[]
+  projects: ProjectSummary[]
   issues: DiagnosisIssue[]
   unmanaged: UnmanagedItemDto[]
   filters: SkillFilters
@@ -49,6 +54,7 @@ interface SkillV2State {
   lastPreview: DistributionPreview | null
   initialized: boolean
   agentDetailLoading: boolean
+  projectDetailLoading: boolean
   startupScanInFlight: boolean
   lastOverviewLoadedAt: number
 }
@@ -64,6 +70,11 @@ interface SkillV2Actions {
   selectPack: (id: string | null) => Promise<void>
   selectAgent: (id: string | null) => Promise<void>
   loadAgentDetail: (agentId: string, force?: boolean) => Promise<void>
+  loadProjects: (force?: boolean) => Promise<void>
+  addProject: (rootPath: string) => Promise<void>
+  removeProject: (projectId: string) => Promise<void>
+  selectProject: (id: string | null) => Promise<void>
+  scanProject: (projectId: string) => Promise<void>
   loadDiagnosisIssues: () => Promise<void>
   runDiagnosis: () => Promise<void>
   updateSettings: (patch: Partial<SkillManagerSettings>) => Promise<void>
@@ -84,8 +95,11 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   selectedPackDetail: null,
   selectedAgentId: null,
   selectedAgentDetail: null,
+  selectedProjectId: null,
+  selectedProjectDetail: null,
   agents: [],
   packs: [],
+  projects: [],
   issues: [],
   unmanaged: [],
   filters: { query: '', source: '', status: '', type: '' },
@@ -95,6 +109,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   lastPreview: null,
   initialized: false,
   agentDetailLoading: false,
+  projectDetailLoading: false,
   startupScanInFlight: false,
   lastOverviewLoadedAt: 0,
 
@@ -110,6 +125,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     try {
       await skillApiV2.bootstrap()
       await get().loadOverview(true)
+      await get().loadProjects(true)
       set({ initialized: true })
 
       if (get().settings?.startupScan && !get().startupScanInFlight) {
@@ -147,6 +163,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         settings: overview.settings,
         lastOverviewLoadedAt: Date.now(),
       })
+      await get().loadProjects(true)
       set({ initialized: true })
     } catch (e) {
       set({ error: String(e) })
@@ -171,6 +188,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         lastOverviewLoadedAt: Date.now(),
         initialized: true,
       })
+      void get().loadProjects()
     } catch (e) {
       set({ error: String(e) })
     }
@@ -219,6 +237,81 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       set({ error: String(e) })
     } finally {
       set({ agentDetailLoading: false })
+    }
+  },
+  loadProjects: async () => {
+    try {
+      const projects = await skillApiV2.listProjects()
+      set({ projects })
+      const selectedProjectId = get().selectedProjectId
+      if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
+        set({ selectedProjectId: null, selectedProjectDetail: null })
+      }
+    } catch (e) {
+      set({ error: String(e) })
+    }
+  },
+  addProject: async (rootPath) => {
+    set({ projectDetailLoading: true, error: null })
+    try {
+      const detail = await skillApiV2.addProject(rootPath)
+      const projects = await skillApiV2.listProjects()
+      set({
+        projects,
+        selectedProjectId: detail.id,
+        selectedProjectDetail: detail,
+      })
+    } catch (e) {
+      set({ error: String(e) })
+    } finally {
+      set({ projectDetailLoading: false })
+    }
+  },
+  removeProject: async (projectId) => {
+    try {
+      await skillApiV2.removeProject(projectId)
+      const projects = await skillApiV2.listProjects()
+      set((s) => ({
+        projects,
+        selectedProjectId: s.selectedProjectId === projectId ? null : s.selectedProjectId,
+        selectedProjectDetail: s.selectedProjectId === projectId ? null : s.selectedProjectDetail,
+      }))
+    } catch (e) {
+      set({ error: String(e) })
+    }
+  },
+  selectProject: async (id) => {
+    if (id && get().selectedProjectId === id && get().selectedProjectDetail && !get().projectDetailLoading) {
+      return
+    }
+    set({ selectedProjectId: id, selectedProjectDetail: null, projectDetailLoading: !!id })
+    if (!id) {
+      set({ selectedProjectDetail: null, projectDetailLoading: false })
+      return
+    }
+    try {
+      const detail = await skillApiV2.getProjectDetail(id)
+      set({ selectedProjectDetail: detail })
+    } catch (e) {
+      set({ error: String(e) })
+    } finally {
+      set({ projectDetailLoading: false })
+    }
+  },
+  scanProject: async (projectId) => {
+    set({ projectDetailLoading: true, error: null })
+    try {
+      const detail = await skillApiV2.scanProject(projectId)
+      const projects = await skillApiV2.listProjects()
+      set({
+        projects,
+        selectedProjectId: detail.id,
+        selectedProjectDetail: detail,
+      })
+    } catch (e) {
+      set({ error: String(e) })
+    } finally {
+      set({ projectDetailLoading: false })
     }
   },
   loadDiagnosisIssues: async () => {

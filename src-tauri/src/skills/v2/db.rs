@@ -136,9 +136,20 @@ pub const MIGRATIONS: &[&str] = &[
       completed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_scanned_at TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE INDEX IF NOT EXISTS idx_skill_targets_agent ON skill_targets(agent_id);
     CREATE INDEX IF NOT EXISTS idx_claims_pack ON skill_target_claims(pack_id);
     CREATE INDEX IF NOT EXISTS idx_issues_type ON diagnosis_issues(issue_type, resolved_at);
+    CREATE INDEX IF NOT EXISTS idx_projects_root_path ON projects(root_path);
     "#,
 ];
 
@@ -296,6 +307,7 @@ pub fn export_snapshot(conn: &Connection, center_path: &str) -> Result<Snapshot,
         targets: table_rows("skill_targets")?,
         claims: table_rows("skill_target_claims")?,
         packs: table_rows("skill_packs")?,
+        projects: table_rows("projects")?,
         diagnosis_summary: serde_json::json!({}),
     })
 }

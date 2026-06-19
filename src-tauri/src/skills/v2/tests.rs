@@ -2452,11 +2452,15 @@ fn snapshot_written_and_read() {
         vec![],
     )
     .unwrap();
+    let project_root = svc.home.join("workspace/snapshot-project");
+    fs::create_dir_all(&project_root).unwrap();
+    svc.add_project(project_root.display().to_string()).unwrap();
     let path = crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
     assert!(Path::new(&path).exists());
     let snap = crate::skills::v2::snapshot::export(&svc).unwrap();
-    assert_eq!(snap.schema_version, 2);
+    assert_eq!(snap.schema_version, 3);
     assert_eq!(snap.skills.len(), 1);
+    assert_eq!(snap.projects.len(), 1);
 }
 
 #[test]
@@ -2478,6 +2482,132 @@ fn writes_refresh_snapshot_best_effort() {
     .unwrap();
     let path = crate::skills::v2::snapshot::snapshot_path(&svc).unwrap();
     assert!(path.exists(), "mutating writes refresh the JSON snapshot");
+}
+
+// ── Project inventory ────────────────────────────────────────────
+
+#[test]
+fn project_inventory_scans_codex_and_claude_resources() {
+    let (_home, svc, _lock) = fresh_service("project-inventory");
+    let root = svc.home.join("workspace/repo");
+    write_skill(
+        &root.join(".agents/skills"),
+        "codex-review",
+        "codex-review",
+        Some("codex"),
+    );
+    write_skill(
+        &root.join(".claude/skills"),
+        "claude-docs",
+        "claude-docs",
+        Some("claude"),
+    );
+    fs::create_dir_all(root.join(".codex")).unwrap();
+    fs::write(
+        root.join(".codex/config.toml"),
+        r#"[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join(".mcp.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(root.join("AGENTS.md"), "# Repo instructions").unwrap();
+    fs::write(root.join(".claude/CLAUDE.md"), "# Claude instructions").unwrap();
+
+    let detail = svc.add_project(root.display().to_string()).unwrap();
+    assert_eq!(detail.summary.detected_agent_count, 2);
+    assert_eq!(detail.summary.skill_count, 2);
+    assert_eq!(detail.summary.mcp_count, 2);
+    assert_eq!(detail.summary.plugin_count, 1);
+    assert_eq!(detail.summary.instruction_count, 2);
+
+    let codex = detail
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "codex")
+        .expect("codex project agent");
+    assert!(codex.skills.iter().any(|skill| skill.id == "codex-review"));
+    assert!(codex
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "context7" && server.command == "npx"));
+    assert!(codex
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "documents@openai-primary-runtime" && plugin.enabled));
+
+    let claude = detail
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "claude-code")
+        .expect("claude project agent");
+    assert!(claude.skills.iter().any(|skill| skill.id == "claude-docs"));
+    assert!(claude
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "filesystem"));
+}
+
+#[test]
+fn installs_center_skill_to_project_and_rescans() {
+    let (_home, svc, _lock) = fresh_service("project-install");
+    let source = write_skill(
+        &svc.home.join("incoming"),
+        "center-alpha",
+        "center-alpha",
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let root = svc.home.join("workspace/install-target");
+    fs::create_dir_all(&root).unwrap();
+    let project = svc.add_project(root.display().to_string()).unwrap();
+    let detail = svc
+        .install_center_skills_to_project(
+            &project.summary.id,
+            "codex",
+            vec!["center-alpha".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+
+    let target = root.join(".agents/skills/center-alpha");
+    assert!(target.join("SKILL.md").is_file());
+    let codex = detail
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "codex")
+        .expect("codex project agent");
+    let skill = codex
+        .skills
+        .iter()
+        .find(|skill| skill.id == "center-alpha")
+        .expect("installed skill");
+    assert_eq!(skill.status, "centerSynced");
 }
 
 // ── Settings ─────────────────────────────────────────────────────

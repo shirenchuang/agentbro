@@ -278,6 +278,51 @@ pub fn list_agent_skill_inventory_v2() -> Result<Vec<AgentSkillInventoryAgent>, 
 }
 
 #[tauri::command]
+pub fn list_skill_projects_v2() -> Result<Vec<ProjectSummary>, String> {
+    svc()?.list_projects()
+}
+
+#[tauri::command]
+pub fn add_skill_project_v2(root_path: String) -> Result<ProjectDetail, String> {
+    svc()?.add_project(root_path)
+}
+
+#[tauri::command]
+pub fn remove_skill_project_v2(project_id: String) -> Result<(), String> {
+    svc()?.remove_project(&project_id)
+}
+
+#[tauri::command]
+pub fn get_skill_project_detail_v2(project_id: String) -> Result<ProjectDetail, String> {
+    svc()?.get_project_detail(&project_id)
+}
+
+#[tauri::command]
+pub fn scan_skill_project_v2(project_id: String) -> Result<ProjectDetail, String> {
+    svc()?.scan_project(&project_id)
+}
+
+#[tauri::command]
+pub fn install_center_skills_to_project_v2(
+    project_id: String,
+    agent_id: String,
+    skill_ids: Vec<String>,
+    requested_mode: String,
+) -> Result<ProjectDetail, String> {
+    svc()?.install_center_skills_to_project(&project_id, &agent_id, skill_ids, requested_mode)
+}
+
+#[tauri::command]
+pub fn install_skill_pack_to_project_v2(
+    project_id: String,
+    agent_id: String,
+    pack_id: String,
+    requested_mode: String,
+) -> Result<ProjectDetail, String> {
+    svc()?.install_skill_pack_to_project(&project_id, &agent_id, &pack_id, requested_mode)
+}
+
+#[tauri::command]
 pub fn run_skill_manager_diagnosis() -> Result<Vec<DiagnosisIssue>, String> {
     let svc = svc()?;
     svc.refresh()?;

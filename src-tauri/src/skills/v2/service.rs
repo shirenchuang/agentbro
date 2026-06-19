@@ -13,6 +13,7 @@ use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
 use crate::skills::v2::models::*;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1276,6 +1277,368 @@ impl Service {
             }
             Ok(out)
         })
+    }
+
+    // ── Project inventory ────────────────────────────────────────
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectSummary>, String> {
+        let rows = self.project_rows()?;
+        rows.into_iter()
+            .map(|row| self.project_summary_for_row(&row))
+            .collect()
+    }
+
+    pub fn add_project(&self, root_path: String) -> Result<ProjectDetail, String> {
+        let root = normalize_project_root(&root_path)?;
+        let id = project_id_for_path(&root);
+        let name = project_name_for_path(&root);
+        let root_path = root.display().to_string();
+        let now = db::now_iso();
+        self.db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO projects(id, name, root_path, created_at, updated_at, last_scanned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?4)
+                 ON CONFLICT(root_path) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at, last_scanned_at = excluded.last_scanned_at",
+                params![id, name, root_path, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        self.get_project_detail(&id)
+    }
+
+    pub fn remove_project(&self, project_id: &str) -> Result<(), String> {
+        self.db.with_conn(|c| {
+            c.execute("DELETE FROM projects WHERE id = ?1", params![project_id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn get_project_detail(&self, project_id: &str) -> Result<ProjectDetail, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        self.project_detail_for_row(&row)
+    }
+
+    pub fn scan_project(&self, project_id: &str) -> Result<ProjectDetail, String> {
+        let now = db::now_iso();
+        self.db.with_conn(|c| {
+            c.execute(
+                "UPDATE projects SET last_scanned_at = ?2, updated_at = ?2 WHERE id = ?1",
+                params![project_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        self.get_project_detail(project_id)
+    }
+
+    pub fn install_center_skills_to_project(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+        skill_ids: Vec<String>,
+        requested_mode: String,
+    ) -> Result<ProjectDetail, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        let root = PathBuf::from(&row.root_path);
+        let skills_dir = project_agent_skills_dir(&root, agent_id)?;
+        std::fs::create_dir_all(&skills_dir)
+            .map_err(|e| format!("mkdir {}: {}", skills_dir.display(), e))?;
+        for skill_id in skill_ids {
+            self.install_one_center_skill_to_project(&skill_id, &skills_dir, &requested_mode)?;
+        }
+        self.scan_project(project_id)
+    }
+
+    pub fn install_skill_pack_to_project(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+        pack_id: &str,
+        requested_mode: String,
+    ) -> Result<ProjectDetail, String> {
+        let skill_ids = self
+            .get_skill_pack_detail(pack_id)?
+            .members
+            .into_iter()
+            .filter(|member| !member.missing)
+            .map(|member| member.skill_id)
+            .collect();
+        self.install_center_skills_to_project(project_id, agent_id, skill_ids, requested_mode)
+    }
+
+    fn project_rows(&self) -> Result<Vec<ProjectRow>, String> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, name, root_path, created_at, updated_at, last_scanned_at
+                     FROM projects ORDER BY pinned DESC, updated_at DESC, name COLLATE NOCASE",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(ProjectRow {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        root_path: r.get(2)?,
+                        created_at: r.get(3)?,
+                        updated_at: r.get(4)?,
+                        last_scanned_at: r.get(5)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| e.to_string())?);
+            }
+            Ok(out)
+        })
+    }
+
+    fn project_row(&self, project_id: &str) -> Result<Option<ProjectRow>, String> {
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT id, name, root_path, created_at, updated_at, last_scanned_at
+                 FROM projects WHERE id = ?1",
+                params![project_id],
+                |r| {
+                    Ok(ProjectRow {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        root_path: r.get(2)?,
+                        created_at: r.get(3)?,
+                        updated_at: r.get(4)?,
+                        last_scanned_at: r.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn project_summary_for_row(&self, row: &ProjectRow) -> Result<ProjectSummary, String> {
+        let root = PathBuf::from(&row.root_path);
+        let agents = self.scan_project_agents(&root)?;
+        let instructions = project_instruction_files(&root);
+        let mut issue_count = 0;
+        let mut skill_count = 0;
+        let mut mcp_count = 0;
+        let mut plugin_count = 0;
+        for agent in &agents {
+            issue_count += agent.health.len();
+            skill_count += agent.skills.len();
+            mcp_count += agent.mcp_servers.len();
+            plugin_count += agent.plugins.len();
+        }
+        if !root.is_dir() {
+            issue_count += 1;
+        }
+        Ok(ProjectSummary {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            root_path: row.root_path.clone(),
+            created_at: row.created_at.clone(),
+            updated_at: row.updated_at.clone(),
+            last_scanned_at: row.last_scanned_at.clone(),
+            detected_agent_count: agents.len(),
+            skill_count,
+            mcp_count,
+            plugin_count,
+            instruction_count: instructions.len(),
+            issue_count,
+        })
+    }
+
+    fn project_detail_for_row(&self, row: &ProjectRow) -> Result<ProjectDetail, String> {
+        let root = PathBuf::from(&row.root_path);
+        let agents = self.scan_project_agents(&root)?;
+        let instructions = project_instruction_files(&root);
+        let mut health = Vec::new();
+        if !root.is_dir() {
+            health.push(ProjectHealthIssue {
+                agent_id: None,
+                kind: "project_missing".to_string(),
+                message: format!("Project path does not exist: {}", root.display()),
+                severity: "error".to_string(),
+            });
+        } else if agents.is_empty() && instructions.is_empty() {
+            health.push(ProjectHealthIssue {
+                agent_id: None,
+                kind: "project_no_agent_config".to_string(),
+                message: "No project-level Agent skills, MCP, plugin config, or instruction files were detected.".to_string(),
+                severity: "info".to_string(),
+            });
+        }
+        let summary = self.project_summary_for_row(row)?;
+        Ok(ProjectDetail {
+            summary,
+            agents,
+            instructions,
+            health,
+        })
+    }
+
+    fn scan_project_agents(&self, root: &Path) -> Result<Vec<ProjectAgentDetail>, String> {
+        if !root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let center_hashes = self.center_skill_hashes()?;
+        let mut agents = Vec::new();
+        if let Some(agent) = self.scan_claude_project(root, &center_hashes)? {
+            agents.push(agent);
+        }
+        if let Some(agent) = self.scan_codex_project(root, &center_hashes)? {
+            agents.push(agent);
+        }
+        Ok(agents)
+    }
+
+    fn install_one_center_skill_to_project(
+        &self,
+        skill_id: &str,
+        skills_dir: &Path,
+        requested_mode: &str,
+    ) -> Result<(), String> {
+        let row = self
+            .skill_row(skill_id)?
+            .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+        let center = Path::new(&row.center_path);
+        let target = skills_dir.join(skill_id);
+        let source_hash = fsutil::hash_dir(center);
+        if target.exists() || target.is_symlink() {
+            let target_hash = if let Some(resolved) = fsutil::resolved_symlink_target(&target) {
+                fsutil::hash_dir(&resolved)
+            } else if target.is_dir() {
+                fsutil::hash_dir(&target)
+            } else {
+                String::new()
+            };
+            if target_hash == source_hash {
+                return Ok(());
+            }
+            return Err(format!(
+                "Project skill already exists and differs: {}",
+                target.display()
+            ));
+        }
+        match requested_mode {
+            "link" => {
+                let linked = fsutil::try_symlink(center, &target)?;
+                if !linked {
+                    let policy = self.settings()?.link_fail_policy;
+                    if policy == "copy" {
+                        fsutil::copy_dir_recursive(center, &target)?;
+                    } else {
+                        return Err(format!(
+                            "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
+                            target.display()
+                        ));
+                    }
+                }
+            }
+            "copy" => fsutil::copy_dir_recursive(center, &target)?,
+            other => return Err(format!("Unknown mode: {other}")),
+        }
+        Ok(())
+    }
+
+    fn scan_claude_project(
+        &self,
+        root: &Path,
+        center_hashes: &HashMap<String, String>,
+    ) -> Result<Option<ProjectAgentDetail>, String> {
+        let agent_id = "claude-code";
+        let skills_dir = root.join(".claude").join("skills");
+        let settings = root.join(".claude").join("settings.json");
+        let local_settings = root.join(".claude").join("settings.local.json");
+        let mcp_json = root.join(".mcp.json");
+        let skills = scan_project_skills(agent_id, &skills_dir, center_hashes)?;
+        let mut config_paths = existing_paths(&[settings.clone(), local_settings.clone()]);
+        let mcp_config_paths = existing_paths(&[mcp_json.clone(), settings.clone()]);
+        let plugin_config_paths = existing_paths(&[settings.clone(), local_settings.clone()]);
+        let mut mcp_servers = read_json_mcp_servers_path(&mcp_json);
+        mcp_servers.extend(read_json_mcp_servers_path(&settings));
+        let mut plugins = read_claude_project_plugins_path(&settings);
+        plugins.extend(read_claude_project_plugins_path(&local_settings));
+        let mut health = Vec::new();
+        if skills_dir.exists() && skills.is_empty() {
+            health.push(project_agent_issue(agent_id, "empty_skills_dir", &skills_dir));
+        }
+        if settings.exists() && !settings.is_file() {
+            health.push(project_agent_issue(agent_id, "invalid_settings_path", &settings));
+            config_paths.retain(|path| path != &settings.display().to_string());
+        }
+        let detected = !skills.is_empty()
+            || !mcp_servers.is_empty()
+            || !plugins.is_empty()
+            || !config_paths.is_empty()
+            || root.join(".claude").join("CLAUDE.md").is_file()
+            || root.join("CLAUDE.md").is_file();
+        if !detected {
+            return Ok(None);
+        }
+        Ok(Some(ProjectAgentDetail {
+            agent_id: agent_id.to_string(),
+            display_name: agent_meta::display_name(agent_id),
+            icon_key: agent_meta::icon_key(agent_id),
+            skills_dirs: existing_paths(&[skills_dir]),
+            config_paths,
+            mcp_config_paths,
+            plugin_config_paths,
+            skills,
+            mcp_servers,
+            plugins,
+            health,
+        }))
+    }
+
+    fn scan_codex_project(
+        &self,
+        root: &Path,
+        center_hashes: &HashMap<String, String>,
+    ) -> Result<Option<ProjectAgentDetail>, String> {
+        let agent_id = "codex";
+        let skills_dir = root.join(".agents").join("skills");
+        let config = root.join(".codex").join("config.toml");
+        let hooks = root.join(".codex").join("hooks.json");
+        let skills = scan_project_skills(agent_id, &skills_dir, center_hashes)?;
+        let config_paths = existing_paths(&[config.clone(), hooks]);
+        let mcp_config_paths = existing_paths(&[config.clone()]);
+        let plugin_config_paths = existing_paths(&[config.clone()]);
+        let mcp_servers = read_toml_mcp_servers_path(&config);
+        let plugins = read_codex_project_plugins_path(&config);
+        let mut health = Vec::new();
+        if skills_dir.exists() && skills.is_empty() {
+            health.push(project_agent_issue(agent_id, "empty_skills_dir", &skills_dir));
+        }
+        let detected = !skills.is_empty()
+            || !mcp_servers.is_empty()
+            || !plugins.is_empty()
+            || !config_paths.is_empty()
+            || root.join("AGENTS.md").is_file()
+            || root.join("AGENTS.override.md").is_file();
+        if !detected {
+            return Ok(None);
+        }
+        Ok(Some(ProjectAgentDetail {
+            agent_id: agent_id.to_string(),
+            display_name: agent_meta::display_name(agent_id),
+            icon_key: agent_meta::icon_key(agent_id),
+            skills_dirs: existing_paths(&[skills_dir]),
+            config_paths,
+            mcp_config_paths,
+            plugin_config_paths,
+            skills,
+            mcp_servers,
+            plugins,
+            health,
+        }))
     }
 
     // ── Add to center library ─────────────────────────────────────
@@ -3817,6 +4180,16 @@ struct TargetRow {
     updated_at: String,
 }
 
+#[derive(Debug, Clone)]
+struct ProjectRow {
+    id: String,
+    name: String,
+    root_path: String,
+    created_at: String,
+    updated_at: String,
+    last_scanned_at: Option<String>,
+}
+
 fn resolved_target_path(path: &str) -> Option<String> {
     fsutil::resolved_symlink_target(Path::new(path)).map(|p| p.display().to_string())
 }
@@ -3948,6 +4321,327 @@ fn infer_name_from_path(path: &str) -> String {
         .map(fsutil::sanitize_id)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "skill".to_string())
+}
+
+fn normalize_project_root(input: &str) -> Result<PathBuf, String> {
+    let expanded = fsutil::expand_tilde(input);
+    let normalized = fsutil::normalized_path(&expanded);
+    if !normalized.is_dir() {
+        return Err(format!("Project path is not a directory: {}", normalized.display()));
+    }
+    Ok(normalized)
+}
+
+fn project_id_for_path(path: &Path) -> String {
+    let normalized = fsutil::normalized_path(path);
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.to_string_lossy().as_bytes());
+    let digest = fsutil::hex_encode(&hasher.finalize());
+    format!("project-{}", &digest[..16])
+}
+
+fn project_name_for_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn scan_project_skills(
+    agent_id: &str,
+    skills_dir: &Path,
+    center_hashes: &HashMap<String, String>,
+) -> Result<Vec<ProjectSkillItem>, String> {
+    if !skills_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(skills_dir)
+        .map_err(|e| format!("read project skills {}: {}", skills_dir.display(), e))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() || !fsutil::is_skill_dir(&path) {
+            continue;
+        }
+        let id = fsutil::infer_skill_id(&path);
+        let fm = fsutil::read_frontmatter(&path);
+        let hash = fsutil::hash_dir(&path);
+        let status = match center_hashes.get(&id) {
+            Some(center_hash) if center_hash == &hash => "centerSynced",
+            Some(_) => "centerDiff",
+            None => "projectOnly",
+        };
+        out.push(ProjectSkillItem {
+            id: id.clone(),
+            name: fm
+                .name()
+                .map(str::to_string)
+                .unwrap_or_else(|| id.clone()),
+            description: fm.description().to_string(),
+            agent_id: agent_id.to_string(),
+            path: path.display().to_string(),
+            hash,
+            status: status.to_string(),
+            importable: true,
+        });
+    }
+    out.sort_by(|a, b| {
+        a.status
+            .cmp(&b.status)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
+fn existing_paths(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .collect()
+}
+
+fn project_instruction_files(root: &Path) -> Vec<ProjectInstructionFile> {
+    let candidates = [
+        ("codex", root.join("AGENTS.override.md")),
+        ("codex", root.join("AGENTS.md")),
+        ("claude-code", root.join(".claude").join("CLAUDE.md")),
+        ("claude-code", root.join("CLAUDE.md")),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(agent_id, path)| {
+            if !path.is_file() {
+                return None;
+            }
+            let bytes = std::fs::metadata(&path).ok().map(|m| m.len());
+            Some(ProjectInstructionFile {
+                agent_id: agent_id.to_string(),
+                path: path.display().to_string(),
+                exists: true,
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn project_agent_issue(agent_id: &str, kind: &str, path: &Path) -> ProjectHealthIssue {
+    ProjectHealthIssue {
+        agent_id: Some(agent_id.to_string()),
+        kind: kind.to_string(),
+        message: format!("{}: {}", kind.replace('_', " "), path.display()),
+        severity: "warning".to_string(),
+    }
+}
+
+fn project_agent_skills_dir(root: &Path, agent_id: &str) -> Result<PathBuf, String> {
+    match agent_id {
+        "claude-code" => Ok(root.join(".claude").join("skills")),
+        "codex" => Ok(root.join(".agents").join("skills")),
+        other => Err(format!("Project-level skills are not supported for {other} yet.")),
+    }
+}
+
+fn read_json_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(servers) = json
+        .get("mcpServers")
+        .or_else(|| json.get("mcp_servers"))
+        .and_then(|value| value.as_object())
+    else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .map(|(name, cfg)| {
+            let command = cfg
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = cfg
+                .get("args")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let valid = !command.is_empty();
+            McpServerStatus {
+                name: name.clone(),
+                command,
+                args,
+                valid,
+                message: if valid {
+                    "configured".to_string()
+                } else {
+                    "missing command".to_string()
+                },
+            }
+        })
+        .collect()
+}
+
+fn read_toml_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    #[derive(Default)]
+    struct PendingMcp {
+        name: String,
+        command: String,
+        args: Vec<String>,
+    }
+    fn push(out: &mut Vec<McpServerStatus>, pending: Option<PendingMcp>) {
+        if let Some(server) = pending {
+            let valid = !server.command.is_empty();
+            out.push(McpServerStatus {
+                name: server.name,
+                command: server.command,
+                args: server.args,
+                valid,
+                message: if valid {
+                    "configured".to_string()
+                } else {
+                    "missing command".to_string()
+                },
+            });
+        }
+    }
+    let mut out = Vec::new();
+    let mut pending: Option<PendingMcp> = None;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            push(&mut out, pending.take());
+            pending = parse_toml_header(line, "mcp_servers.").map(|name| PendingMcp {
+                name,
+                ..PendingMcp::default()
+            });
+            continue;
+        }
+        let Some(server) = pending.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "command" => server.command = strip_toml_quotes(value.trim()).to_string(),
+            "args" => {
+                server.args = value
+                    .trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .filter_map(|part| {
+                        let arg = strip_toml_quotes(part.trim());
+                        (!arg.is_empty()).then(|| arg.to_string())
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    push(&mut out, pending);
+    out
+}
+
+fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(plugins) = json.get("enabledPlugins").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+    plugins
+        .iter()
+        .filter_map(|(id, enabled)| {
+            enabled.as_bool().map(|enabled| PluginStatus {
+                id: id.clone(),
+                name: id.clone(),
+                version: None,
+                enabled,
+                source: Some("project-settings".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn read_codex_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PluginStatus> = Vec::new();
+    let mut current_plugin: Option<String> = None;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            current_plugin = parse_toml_header(line, "plugins.")
+                .filter(|name| !name.contains(".mcp_servers"))
+                .filter(|name| !name.contains(".tools"));
+            if let Some(id) = current_plugin.as_ref() {
+                if !out.iter().any(|plugin| plugin.id == *id) {
+                    out.push(PluginStatus {
+                        id: id.clone(),
+                        name: id.clone(),
+                        version: None,
+                        enabled: true,
+                        source: Some("project-config".to_string()),
+                    });
+                }
+            }
+            continue;
+        }
+        let Some(id) = current_plugin.as_ref() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "enabled" {
+            if let Some(plugin) = out.iter_mut().find(|plugin| plugin.id == *id) {
+                plugin.enabled = value.trim() != "false";
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+fn parse_toml_header(line: &str, prefix: &str) -> Option<String> {
+    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
+    let rest = inner.strip_prefix(prefix)?.trim();
+    Some(strip_toml_quotes(rest).to_string())
+}
+
+fn strip_toml_quotes(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 fn sources_match(a_type: &str, a_uri: Option<&str>, b_type: &str, b_uri: Option<&str>) -> bool {

@@ -1,7 +1,7 @@
 // QoderAdapter — Agent adapter for Qoder AI coding assistant
 
 use super::{profiles, AdapterStatus, AgentAdapter, AgentEvent};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct QoderAdapter {
     config_root: PathBuf,
@@ -12,19 +12,15 @@ impl QoderAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let config_root = home.join(".qoder");
-        let status = if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        };
+        let status = Self::detect_status();
         Self {
             config_root,
             status,
         }
     }
 
-    fn is_installed() -> bool {
-        command_exists("qoder") || Path::new("/Applications/Qoder.app").exists()
+    fn detect_status() -> AdapterStatus {
+        super::programs::detected_status_for_agent_program("qoder")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -60,11 +56,7 @@ impl AgentAdapter for QoderAdapter {
     }
 
     fn detect_status_now(&self) -> AdapterStatus {
-        if Self::is_installed() {
-            AdapterStatus::Available
-        } else {
-            AdapterStatus::Unavailable
-        }
+        Self::detect_status()
     }
 
     fn parse_event(
@@ -204,10 +196,6 @@ impl AgentAdapter for QoderAdapter {
     fn hook_config_paths(&self) -> Vec<PathBuf> {
         vec![self.settings_path()]
     }
-}
-
-fn command_exists(name: &str) -> bool {
-    super::executable::command_exists(name)
 }
 
 fn string_field<'a>(raw: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {

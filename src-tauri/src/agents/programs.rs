@@ -2,7 +2,7 @@ use crate::agents::{executable, AdapterStatus, AgentAdapter};
 use crate::commands::AppState;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -83,6 +83,25 @@ struct AgentProgramSeed {
     hooks_installed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePlatform {
+    Macos,
+    Windows,
+    Linux,
+}
+
+impl RuntimePlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Macos
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn agent_list(state: State<'_, AppState>) -> Result<Vec<AgentProgramInfo>, String> {
     Ok(build_agent_list(&state.adapters, false).await)
@@ -136,15 +155,18 @@ pub async fn agent_open_download(
 pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Result<(), String> {
     let _ = state;
     let meta = metadata_for(&agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
-    let path = installed_app_path(&meta).ok_or_else(|| {
-        let paths = app_path_candidates(&meta).join(", ");
-        if paths.is_empty() {
-            format!("No app path for {agent_id}")
-        } else {
-            format!("App is not installed at any known path: {paths}")
-        }
-    })?;
-    open_target(&path)
+    if let Some(path) = installed_app_path(&agent_id, &meta) {
+        return open_target(&path);
+    }
+    if let Some(binary) = find_agent_binary(&agent_id, &meta) {
+        return launch_binary(&binary);
+    }
+    let paths = app_path_candidates(&agent_id, &meta).join(", ");
+    if paths.is_empty() {
+        Err(format!("No app path or launcher binary for {agent_id}"))
+    } else {
+        Err(format!("App is not installed at any known path: {paths}"))
+    }
 }
 
 #[tauri::command]
@@ -238,9 +260,15 @@ async fn build_agent_list(
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
-    let binary_path = meta.binary.and_then(which);
-    let app_path = installed_app_path(&meta);
-    let installed = binary_path.is_some() || app_path.is_some() || seed.adapter_installed;
+    let binary_path = which_agent_binary(&id, &meta);
+    let app_path = installed_app_path(&id, &meta);
+    let display_app_path = app_path
+        .clone()
+        .or_else(|| default_app_path_for_display(&id, &meta));
+    let installed = binary_path.is_some()
+        || app_path.is_some()
+        || config_dir_exists(&meta)
+        || seed.adapter_installed;
     let skills_dir = agent_paths::paths_for_agent(&id)
         .skill_dirs
         .first()
@@ -273,7 +301,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         latest_version,
         binary_path,
         config_dir: meta.config_dir.map(expand_home),
-        app_path: app_path.or_else(|| meta.app_path.map(ToString::to_string)),
+        app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
         update_command: meta.update_command.map(ToString::to_string),
@@ -570,8 +598,56 @@ fn open_target(target: &str) -> Result<(), String> {
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+fn launch_binary(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        return open_target(&path.display().to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn which(binary: &str) -> Option<String> {
     executable::find_binary(binary).map(|path| path.display().to_string())
+}
+
+fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
+    binary_candidates_for_agent(agent_id, meta)
+        .into_iter()
+        .find_map(executable::find_binary)
+}
+
+fn which_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
+    find_agent_binary(agent_id, meta).map(|path| path.display().to_string())
+}
+
+fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'static str> {
+    let mut candidates = match agent_id {
+        "antigravity" => vec!["ag", "antigravity"],
+        "cline" => vec!["code", "cursor"],
+        "codebuddycn" | "codybuddycn" => vec!["codybuddycn", "codebuddy"],
+        "cursor-cli" => vec!["cursor-agent"],
+        "droid" | "factory-droid" => vec!["factory", "droid"],
+        "kiro" => vec!["kiro", "kiro-cli"],
+        "qoder-cli" => vec!["qodercli", "qoder"],
+        "qwen" => vec!["qwen-coder", "qwen"],
+        _ => Vec::new(),
+    };
+    if let Some(binary) = meta.binary {
+        candidates.push(binary);
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter(|binary| seen.insert(binary.to_ascii_lowercase()))
+        .collect()
 }
 
 fn command_name(binary: &str) -> String {
@@ -587,27 +663,231 @@ fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
-fn app_path_candidates(meta: &ProgramMetadata) -> Vec<&'static str> {
-    let mut paths = Vec::new();
-    if let Some(path) = meta.app_path {
-        paths.push(path);
-    }
+fn config_dir_exists(meta: &ProgramMetadata) -> bool {
+    meta.config_dir
+        .map(expand_home)
+        .is_some_and(|path| Path::new(&path).exists())
+}
 
+fn app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    app_path_candidates_for_platform(agent_id, meta, RuntimePlatform::current())
+}
+
+fn app_path_candidates_for_platform(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    platform: RuntimePlatform,
+) -> Vec<String> {
+    let mut paths = match platform {
+        RuntimePlatform::Macos => macos_app_path_candidates(meta),
+        RuntimePlatform::Windows => windows_app_path_candidates(agent_id, meta),
+        RuntimePlatform::Linux => linux_app_path_candidates(agent_id, meta),
+    };
     paths.sort_unstable();
     paths.dedup();
-    if let Some(primary) = meta.app_path {
-        if let Some(index) = paths.iter().position(|path| *path == primary) {
-            paths.swap(0, index);
+    paths
+}
+
+fn default_app_path_for_display(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
+    match RuntimePlatform::current() {
+        RuntimePlatform::Linux => None,
+        platform => app_path_candidates_for_platform(agent_id, meta, platform)
+            .into_iter()
+            .next(),
+    }
+}
+
+fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
+    app_path_candidates(agent_id, meta)
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+}
+
+pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus {
+    let Some(meta) = metadata_for(agent_id) else {
+        return AdapterStatus::Unavailable;
+    };
+    if find_agent_binary(agent_id, &meta).is_some() || installed_app_path(agent_id, &meta).is_some()
+    {
+        AdapterStatus::Available
+    } else if config_dir_exists(&meta) {
+        AdapterStatus::Installed
+    } else {
+        AdapterStatus::Unavailable
+    }
+}
+
+fn macos_app_path_candidates(meta: &ProgramMetadata) -> Vec<String> {
+    let mut paths = Vec::new();
+    let Some(app_path) = meta.app_path else {
+        return paths;
+    };
+    paths.push(app_path.to_string());
+    if let Some(bundle_name) = app_path.rsplit('/').next() {
+        if let Some(home) = dirs::home_dir() {
+            paths.push(
+                home.join("Applications")
+                    .join(bundle_name)
+                    .display()
+                    .to_string(),
+            );
         }
     }
     paths
 }
 
-fn installed_app_path(meta: &ProgramMetadata) -> Option<String> {
-    app_path_candidates(meta)
+fn linux_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    let mut paths = Vec::new();
+    let binaries = binary_candidates_for_agent(agent_id, meta);
+    for binary in binaries {
+        paths.push(format!("/usr/bin/{binary}"));
+        paths.push(format!("/usr/local/bin/{binary}"));
+        paths.push(format!("/opt/{}/{binary}", linux_dir_name(agent_id)));
+        if let Some(home) = dirs::home_dir() {
+            paths.push(
+                home.join(".local")
+                    .join("bin")
+                    .join(binary)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(
+            home.join(".local")
+                .join("share")
+                .join("applications")
+                .join(format!("{}.desktop", linux_desktop_id(agent_id)))
+                .display()
+                .to_string(),
+        );
+    }
+    paths.push(format!(
+        "/usr/share/applications/{}.desktop",
+        linux_desktop_id(agent_id)
+    ));
+    paths
+}
+
+fn linux_dir_name(agent_id: &str) -> String {
+    display_name_for_agent(agent_id)
+        .to_ascii_lowercase()
+        .replace(' ', "-")
+}
+
+fn linux_desktop_id(agent_id: &str) -> String {
+    match agent_id {
+        "cline" => "code".to_string(),
+        "droid" | "factory-droid" => "factory".to_string(),
+        "codebuddycn" | "codybuddycn" => "codybuddycn".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn windows_app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    let mut paths = Vec::new();
+    let dirs = windows_app_directory_names(agent_id, meta);
+    let exe_names = windows_executable_names(agent_id, meta);
+
+    if let Some(local_app_data) = windows_local_app_data_dir() {
+        for dir in &dirs {
+            for exe in &exe_names {
+                paths.push(windows_join(&local_app_data, &["Programs", dir, exe]));
+                paths.push(windows_join(&local_app_data, &[dir, exe]));
+            }
+        }
+    }
+
+    for env_key in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        let Some(root) = std::env::var(env_key).ok().filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        for dir in &dirs {
+            for exe in &exe_names {
+                paths.push(windows_join(&root, &[dir, exe]));
+            }
+        }
+    }
+
+    paths
+}
+
+fn windows_local_app_data_dir() -> Option<String> {
+    std::env::var("LOCALAPPDATA")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            dirs::home_dir()
+                .map(|home| windows_join(&home.display().to_string(), &["AppData", "Local"]))
+        })
+}
+
+fn windows_join(root: &str, parts: &[&str]) -> String {
+    let mut path = root.trim_end_matches(['\\', '/']).to_string();
+    for part in parts {
+        let trimmed = part.trim_matches(['\\', '/']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        path.push('\\');
+        path.push_str(trimmed);
+    }
+    path
+}
+
+fn windows_app_directory_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    let mut names = Vec::new();
+    match agent_id {
+        "cline" => names.extend(["Microsoft VS Code", "Visual Studio Code", "VSCode"]),
+        "droid" | "factory-droid" => names.extend(["Factory", "Droid"]),
+        "codebuddycn" | "codybuddycn" => names.extend(["CodyBuddyCN", "CodeBuddy CN", "CodeBuddy"]),
+        "qwen" => names.extend(["Qwen Code", "Qwen"]),
+        _ => {}
+    }
+    names.push(display_name_for_agent(agent_id));
+    for binary in binary_candidates_for_agent(agent_id, meta) {
+        names.push(binary);
+    }
+    dedupe_owned(names.into_iter().map(ToString::to_string).collect())
+}
+
+fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    let mut names = Vec::new();
+    match agent_id {
+        "cline" => names.extend(["Code.exe", "Visual Studio Code.exe"]),
+        "droid" | "factory-droid" => names.extend(["Factory.exe", "Droid.exe"]),
+        "codebuddycn" | "codybuddycn" => {
+            names.extend(["CodyBuddyCN.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"])
+        }
+        "qwen" => names.extend(["Qwen Code.exe", "Qwen.exe"]),
+        _ => {}
+    }
+    names.push(display_name_for_agent(agent_id));
+    for binary in binary_candidates_for_agent(agent_id, meta) {
+        names.push(binary);
+    }
+    dedupe_owned(
+        names
+            .into_iter()
+            .flat_map(|name| {
+                if name.to_ascii_lowercase().ends_with(".exe") {
+                    vec![name.to_string()]
+                } else {
+                    vec![format!("{name}.exe")]
+                }
+            })
+            .collect(),
+    )
+}
+
+fn dedupe_owned(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    values
         .into_iter()
-        .find(|path| Path::new(path).exists())
-        .map(ToString::to_string)
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.to_ascii_lowercase()))
+        .collect()
 }
 
 fn default_metadata() -> ProgramMetadata {
@@ -1015,6 +1295,44 @@ mod tests {
         assert_eq!(
             codex.update_command,
             Some("npm install -g @openai/codex@latest"),
+        );
+    }
+
+    #[test]
+    fn linux_app_candidates_do_not_use_macos_bundles() {
+        let cursor = metadata_for("cursor").expect("cursor metadata");
+        let paths = app_path_candidates_for_platform("cursor", &cursor, RuntimePlatform::Linux);
+
+        assert!(paths.iter().all(|path| !path.contains("/Applications/")));
+        assert!(paths.iter().any(|path| path == "/usr/bin/cursor"));
+        assert!(paths
+            .iter()
+            .any(|path| path.ends_with("/.local/share/applications/cursor.desktop")));
+    }
+
+    #[test]
+    fn windows_app_candidates_use_exe_locations() {
+        let cursor = metadata_for("cursor").expect("cursor metadata");
+        let paths = app_path_candidates_for_platform("cursor", &cursor, RuntimePlatform::Windows);
+
+        assert!(paths.iter().all(|path| !path.contains("/Applications/")));
+        assert!(paths
+            .iter()
+            .any(|path| path.ends_with("\\Programs\\Cursor\\Cursor.exe")));
+    }
+
+    #[test]
+    fn binary_candidates_include_cross_platform_aliases() {
+        let qwen = metadata_for("qwen").expect("qwen metadata");
+        assert_eq!(
+            binary_candidates_for_agent("qwen", &qwen),
+            vec!["qwen-coder", "qwen"]
+        );
+
+        let cursor_cli = metadata_for("cursor-cli").expect("cursor-cli metadata");
+        assert_eq!(
+            binary_candidates_for_agent("cursor-cli", &cursor_cli),
+            vec!["cursor-agent"]
         );
     }
 }
