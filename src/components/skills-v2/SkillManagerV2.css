@@ -9367,6 +9367,150 @@
   cursor: not-allowed;
 }
 
+.sm2__tag--pack {
+  background: rgba(108, 92, 255, 0.10);
+  color: #5b4be8;
+}
+
+.sm2__modal.sm2__modal--market-pack-install {
+  width: min(620px, calc(100vw - 28px));
+}
+
+.sm2__market-pack-install {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sm2__market-pack-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(40, 51, 77, 0.10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sm2__market-pack-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sm2__market-pack-summary strong,
+.sm2__market-pack-summary span,
+.sm2__market-pack-summary code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm2__market-pack-summary strong {
+  color: var(--text-primary, #1b1f2a);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.sm2__market-pack-summary span,
+.sm2__market-pack-summary code {
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+}
+
+.sm2__market-pack-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sm2__market-pack-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(40, 51, 77, 0.11);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.62);
+  cursor: pointer;
+}
+
+.sm2__market-pack-option--active {
+  border-color: rgba(108, 92, 255, 0.45);
+  background: rgba(108, 92, 255, 0.08);
+}
+
+.sm2__market-pack-option--disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.sm2__market-pack-option input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-top: 2px;
+  accent-color: #6c5cff;
+}
+
+.sm2__market-pack-option span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sm2__market-pack-option strong {
+  color: var(--text-primary, #1b1f2a);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sm2__market-pack-option small {
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sm2__market-pack-picker,
+.sm2__market-pack-form {
+  display: grid;
+  gap: 10px;
+  padding: 0 0 2px 28px;
+}
+
+.sm2__market-pack-picker select,
+.sm2__market-pack-form input,
+.sm2__market-pack-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(40, 51, 77, 0.14);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-primary, #1b1f2a);
+  font: inherit;
+}
+
+.sm2__market-pack-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.sm2__market-pack-form textarea {
+  resize: vertical;
+}
+
+@media (max-width: 620px) {
+  .sm2__market-pack-picker,
+  .sm2__market-pack-form {
+    padding-left: 0;
+  }
+}
+
 /* ── Market skill detail panel ─────────────────────────── */
 
 .sm2__slideover.sm2__slideover--market-detail {
