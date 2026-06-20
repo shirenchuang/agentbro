@@ -1190,11 +1190,25 @@ function BatchAdoptPackDialog({
   const [error, setError] = useState<string | null>(null)
   const visibleItems = items.slice(0, 6)
   const remaining = Math.max(0, items.length - visibleItems.length)
+  const syncEnabled = mode !== 'none'
   const disabled = mode === 'existing'
     ? !packId
     : mode === 'new'
       ? !newPackName.trim()
       : false
+
+  const setSyncEnabled = (enabled: boolean) => {
+    if (!enabled) {
+      setMode('none')
+      return
+    }
+    if (packOptions.length > 0) {
+      setMode('existing')
+      if (!packId) setPackId(packOptions[0]?.id ?? '')
+      return
+    }
+    setMode('new')
+  }
 
   const execute = async () => {
     const selection: BatchAdoptPackSelection = mode === 'existing'
@@ -1239,87 +1253,74 @@ function BatchAdoptPackDialog({
 
         <section className="sm2-adopt__section">
           <div className="sm2-adopt__section-head">
-            <h4>{t('skills.batchAdoptPack.syncTitle')}</h4>
+            <h4>{t('skills.batchAdoptPack.syncQuestion')}</h4>
             <span>{t('skills.batchAdoptPack.syncHint')}</span>
           </div>
-          <div className="sm2-adopt__options" role="radiogroup" aria-label={t('skills.batchAdoptPack.syncTitle')}>
-            <button
-              type="button"
-              className={`sm2-adopt__option${mode === 'none' ? ' sm2-adopt__option--active' : ''}`}
-              role="radio"
-              aria-checked={mode === 'none'}
-              onClick={() => setMode('none')}
-            >
-              <span className="sm2-adopt__radio" />
-              <span className="sm2-adopt__option-main">
-                <strong>{t('skills.batchAdoptPack.skipTitle')}</strong>
-                <span>{t('skills.batchAdoptPack.skipDescription')}</span>
-              </span>
-              <em>{t('skills.batchAdoptPack.skipBadge')}</em>
-            </button>
-            <button
-              type="button"
-              className={`sm2-adopt__option${mode === 'existing' ? ' sm2-adopt__option--active' : ''}`}
-              role="radio"
-              aria-checked={mode === 'existing'}
-              disabled={packOptions.length === 0}
-              onClick={() => {
-                setMode('existing')
-                if (!packId) setPackId(packOptions[0]?.id ?? '')
-              }}
-            >
-              <span className="sm2-adopt__radio" />
-              <span className="sm2-adopt__option-main">
-                <strong>{t('skills.batchAdoptPack.existingTitle')}</strong>
-                <span>{packOptions.length > 0 ? t('skills.batchAdoptPack.existingDescription') : t('skills.batchAdoptPack.noExistingPacks')}</span>
-              </span>
-              <em>{t('skills.batchAdoptPack.existingBadge')}</em>
-            </button>
-            <button
-              type="button"
-              className={`sm2-adopt__option${mode === 'new' ? ' sm2-adopt__option--active' : ''}`}
-              role="radio"
-              aria-checked={mode === 'new'}
-              onClick={() => setMode('new')}
-            >
-              <span className="sm2-adopt__radio" />
-              <span className="sm2-adopt__option-main">
-                <strong>{t('skills.batchAdoptPack.newTitle')}</strong>
-                <span>{t('skills.batchAdoptPack.newDescription')}</span>
-              </span>
-              <em>{t('skills.batchAdoptPack.newBadge')}</em>
-            </button>
-          </div>
+          <label className="sm2-batch-adopt-pack__toggle">
+            <input
+              type="checkbox"
+              checked={syncEnabled}
+              onChange={(event) => setSyncEnabled(event.currentTarget.checked)}
+            />
+            <span aria-hidden="true" />
+            <div>
+              <strong>{t('skills.batchAdoptPack.syncToggle')}</strong>
+              <small>{syncEnabled ? t('skills.batchAdoptPack.syncEnabledHelp') : t('skills.batchAdoptPack.syncDisabledHelp')}</small>
+            </div>
+          </label>
         </section>
 
-        {mode === 'existing' && (
-          <div className="sm2-adopt__rename">
-            <label htmlFor="sm2-batch-adopt-pack-existing">{t('skills.batchAdoptPack.targetPack')}</label>
-            <select
-              id="sm2-batch-adopt-pack-existing"
-              value={packId}
-              onChange={(event) => setPackId(event.target.value)}
-            >
-              {packOptions.map((pack) => (
-                <option key={pack.id} value={pack.id}>
-                  {pack.name} ({pack.memberCount})
-                </option>
-              ))}
-            </select>
-            <span>{t('skills.batchAdoptPack.existingImpact')}</span>
-          </div>
-        )}
-
-        {mode === 'new' && (
-          <div className="sm2-adopt__rename">
-            <label htmlFor="sm2-batch-adopt-pack-new">{t('skills.batchAdoptPack.newPackName')}</label>
-            <input
-              id="sm2-batch-adopt-pack-new"
-              value={newPackName}
-              onChange={(event) => setNewPackName(event.target.value)}
-              placeholder={t('skills.batchAdoptPack.newPackPlaceholder')}
-            />
-            <span>{t('skills.batchAdoptPack.newImpact')}</span>
+        {syncEnabled && (
+          <div className="sm2-adopt__rename sm2-batch-adopt-pack__target">
+            <div className="sm2__view-toggle sm2__view-toggle--soft" aria-label={t('skills.batchAdoptPack.targetMode')}>
+              <button
+                type="button"
+                className={mode === 'existing' ? 'active' : ''}
+                disabled={packOptions.length === 0}
+                onClick={() => {
+                  setMode('existing')
+                  if (!packId) setPackId(packOptions[0]?.id ?? '')
+                }}
+              >
+                {t('skills.batchAdoptPack.existingTitle')}
+              </button>
+              <button
+                type="button"
+                className={mode === 'new' ? 'active' : ''}
+                onClick={() => setMode('new')}
+              >
+                {t('skills.batchAdoptPack.newTitle')}
+              </button>
+            </div>
+            {mode === 'existing' && (
+              <>
+                <label htmlFor="sm2-batch-adopt-pack-existing">{t('skills.batchAdoptPack.targetPack')}</label>
+                <select
+                  id="sm2-batch-adopt-pack-existing"
+                  value={packId}
+                  onChange={(event) => setPackId(event.target.value)}
+                >
+                  {packOptions.map((pack) => (
+                    <option key={pack.id} value={pack.id}>
+                      {pack.name} ({pack.memberCount})
+                    </option>
+                  ))}
+                </select>
+                <span>{packOptions.length > 0 ? t('skills.batchAdoptPack.existingImpact') : t('skills.batchAdoptPack.noExistingPacks')}</span>
+              </>
+            )}
+            {mode === 'new' && (
+              <>
+                <label htmlFor="sm2-batch-adopt-pack-new">{t('skills.batchAdoptPack.newPackName')}</label>
+                <input
+                  id="sm2-batch-adopt-pack-new"
+                  value={newPackName}
+                  onChange={(event) => setNewPackName(event.target.value)}
+                  placeholder={t('skills.batchAdoptPack.newPackPlaceholder')}
+                />
+                <span>{t('skills.batchAdoptPack.newImpact')}</span>
+              </>
+            )}
           </div>
         )}
 

@@ -2567,7 +2567,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
 
     expect(screen.getByRole('heading', { name: '批量接管 1 个 Skill' })).toBeInTheDocument()
-    expect(screen.getByText('只接管到中心库')).toBeInTheDocument()
+    expect(screen.getByText('是否将接管的 Skill 同步到技能包？')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /同时同步到技能包/ })).not.toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
     await waitFor(() => {
@@ -2621,7 +2622,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
     fireEvent.click(screen.getByText('选择当前可接管'))
     fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
-    fireEvent.click(screen.getByText('同步到已有技能包'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时同步到技能包/ }))
+    fireEvent.click(screen.getByRole('button', { name: '同步到已有技能包' }))
     fireEvent.change(screen.getByLabelText('目标技能包'), { target: { value: 'agent-tools' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
@@ -2657,7 +2659,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
     fireEvent.click(screen.getByText('选择当前可接管'))
     fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
-    fireEvent.click(screen.getByText('新建技能包并同步'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时同步到技能包/ }))
+    fireEvent.click(screen.getByRole('button', { name: '新建技能包并同步' }))
     fireEvent.change(screen.getByLabelText('新技能包名称'), { target: { value: 'Manual Pack' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
