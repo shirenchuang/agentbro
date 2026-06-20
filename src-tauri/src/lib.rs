@@ -5447,6 +5447,7 @@ pub fn run() {
             skills::v2::commands::execute_delete_skill_pack,
             skills::v2::commands::preview_apply_skill_pack,
             skills::v2::commands::execute_apply_skill_pack,
+            skills::v2::commands::execute_sync_skill_pack_to_agents,
             skills::v2::commands::preview_remove_skill_pack_from_agent,
             skills::v2::commands::execute_remove_skill_pack_from_agent,
             skills::v2::commands::preview_remove_skill_from_pack,

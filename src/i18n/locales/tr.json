@@ -636,7 +636,12 @@
       "targetDirectChild": "Hedef yol '{{targetPath}}', {{skillsDir}} dizininin doğrudan alt öğesi olmalıdır.",
       "targetNoParent": "Hedef yol '{{targetPath}}' için üst dizin yok.",
       "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor."
-    }
+    },
+    "packAutoSyncTitle": "Skill paketi eşitleme",
+    "packAutoSyncLabel": "Skill paketi güncellemelerini uygulanmış Agentlara otomatik eşitle",
+    "packAutoSyncHelp": "Kapalıyken paket sayfaları eşitlenmemiş değişiklikleri gösterir ve elle eşitleme düğmesi sunar.",
+    "packSyncFailedNotice": "{{count}} Agent eşitlenemedi. Durumu kontrol edip tekrar deneyebilirsiniz.",
+    "packSyncDoneNotice": "{{count}} Agent eşitlendi."
   },
   "update": {
     "availableTitle": "Güncelleme Mevcut",

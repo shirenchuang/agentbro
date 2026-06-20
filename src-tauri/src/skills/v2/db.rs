@@ -87,6 +87,10 @@ pub const MIGRATIONS: &[&str] = &[
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       tags_json TEXT NOT NULL DEFAULT '[]',
+      revision INTEGER NOT NULL DEFAULT 1,
+      last_sync_status TEXT NOT NULL DEFAULT 'synced',
+      last_sync_error TEXT,
+      last_synced_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -97,6 +101,16 @@ pub const MIGRATIONS: &[&str] = &[
       sort_order INTEGER NOT NULL DEFAULT 0,
       required INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY(pack_id, skill_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS skill_pack_agent_syncs (
+      pack_id TEXT NOT NULL REFERENCES skill_packs(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      synced_revision INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'synced',
+      error TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(pack_id, agent_id)
     );
 
     CREATE TABLE IF NOT EXISTS unmanaged_items (
@@ -148,6 +162,7 @@ pub const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_skill_targets_agent ON skill_targets(agent_id);
     CREATE INDEX IF NOT EXISTS idx_claims_pack ON skill_target_claims(pack_id);
+    CREATE INDEX IF NOT EXISTS idx_pack_agent_syncs_status ON skill_pack_agent_syncs(pack_id, status);
     CREATE INDEX IF NOT EXISTS idx_issues_type ON diagnosis_issues(issue_type, resolved_at);
     CREATE INDEX IF NOT EXISTS idx_projects_root_path ON projects(root_path);
     "#,
@@ -187,6 +202,7 @@ impl Db {
             conn.execute_batch(sql)
                 .map_err(|e| format!("migration: {}", e))?;
         }
+        ensure_skill_pack_sync_schema(&conn)?;
         // record applied version (idempotent)
         let now = now_iso();
         conn.execute(
@@ -228,6 +244,70 @@ impl Db {
             .map_err(|e| e.to_string())
         })
     }
+}
+
+fn ensure_skill_pack_sync_schema(conn: &Connection) -> Result<(), String> {
+    ensure_column(
+        conn,
+        "skill_packs",
+        "revision",
+        "ALTER TABLE skill_packs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(
+        conn,
+        "skill_packs",
+        "last_sync_status",
+        "ALTER TABLE skill_packs ADD COLUMN last_sync_status TEXT NOT NULL DEFAULT 'synced'",
+    )?;
+    ensure_column(
+        conn,
+        "skill_packs",
+        "last_sync_error",
+        "ALTER TABLE skill_packs ADD COLUMN last_sync_error TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "skill_packs",
+        "last_synced_at",
+        "ALTER TABLE skill_packs ADD COLUMN last_synced_at TEXT",
+    )?;
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS skill_pack_agent_syncs (
+          pack_id TEXT NOT NULL REFERENCES skill_packs(id) ON DELETE CASCADE,
+          agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+          synced_revision INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'synced',
+          error TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(pack_id, agent_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pack_agent_syncs_status ON skill_pack_agent_syncs(pack_id, status);
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        if row.map_err(|e| e.to_string())? == column {
+            return Ok(());
+        }
+    }
+    conn.execute(alter_sql, []).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ── Settings (key/value in DB, with JSON file mirror) ─────────────

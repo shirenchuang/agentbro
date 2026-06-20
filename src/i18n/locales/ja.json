@@ -819,7 +819,12 @@
     "fileEmpty": "This file is empty",
     "fileLarge": "Large file ({{size}}) — source view only",
     "frontmatter": "Frontmatter",
-    "frontmatterAdditional": "{{count}} additional fields"
+    "frontmatterAdditional": "{{count}} additional fields",
+    "packAutoSyncTitle": "スキルパック同期",
+    "packAutoSyncLabel": "スキルパック更新後、適用済み Agent に自動同期する",
+    "packAutoSyncHelp": "無効にすると、パックページに未同期の変更が表示され、手動同期ボタンが使えます。",
+    "packSyncFailedNotice": "{{count}} 件の Agent の同期に失敗しました。状態を確認して再試行できます。",
+    "packSyncDoneNotice": "{{count}} 件の Agent を同期しました。"
   },
   "update": {
     "availableTitle": "アップデートがあります",

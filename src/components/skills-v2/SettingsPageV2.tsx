@@ -127,6 +127,21 @@ export function SettingsPageV2() {
         </div>
 
         <div className="sm2__issue">
+          <h4 className="sm2__settings-label">{t('skills.packAutoSyncTitle', { defaultValue: '技能包同步' })}</h4>
+          <label className="sm2__checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.autoSyncSkillPacks !== false}
+              onChange={(e) => update({ autoSyncSkillPacks: e.target.checked })}
+            />
+            {t('skills.packAutoSyncLabel', { defaultValue: '技能包更新后自动同步到已应用的 Agent' })}
+          </label>
+          <p className="sm2__settings-help">
+            {t('skills.packAutoSyncHelp', { defaultValue: '关闭后，技能包页面会显示有变更未同步，并提供手动同步按钮。' })}
+          </p>
+        </div>
+
+        <div className="sm2__issue">
           <h4 className="sm2__settings-label">SQLite / JSON 快照</h4>
           <div className="sm2__detail-meta">
             <div>SQLite：{settings.sqlitePath}</div>

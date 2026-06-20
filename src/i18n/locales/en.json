@@ -818,7 +818,12 @@
     "fileEmpty": "This file is empty",
     "fileLarge": "Large file ({{size}}) — source view only",
     "frontmatter": "Frontmatter",
-    "frontmatterAdditional": "{{count}} additional fields"
+    "frontmatterAdditional": "{{count}} additional fields",
+    "packAutoSyncTitle": "Skill pack sync",
+    "packAutoSyncLabel": "Automatically sync skill pack updates to applied Agents",
+    "packAutoSyncHelp": "When disabled, pack pages show unsynced changes and provide a manual sync button.",
+    "packSyncFailedNotice": "{{count}} Agent(s) failed to sync. Check the status and retry.",
+    "packSyncDoneNotice": "Synced {{count}} Agent(s)."
   },
   "update": {
     "availableTitle": "Update Available",
