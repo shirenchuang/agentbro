@@ -4448,7 +4448,8 @@
   font-weight: 780;
 }
 
-.sm2-adopt__rename input {
+.sm2-adopt__rename input,
+.sm2-adopt__rename select {
   min-height: 36px;
   padding: 8px 10px;
   border: 1px solid rgba(40, 51, 77, 0.14);
@@ -4460,6 +4461,7 @@
 }
 
 .sm2-adopt__rename input:focus-visible,
+.sm2-adopt__rename select:focus-visible,
 .sm2-adopt__option:focus-visible {
   outline: 2px solid var(--accent, #007aff);
   outline-offset: 2px;
