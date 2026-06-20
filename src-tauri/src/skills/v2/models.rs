@@ -467,6 +467,7 @@ pub struct AddCenterSkillResult {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteCenterSkillPreview {
     pub skill_id: String,
+    pub skill_ids: Vec<String>,
     pub affected_targets: Vec<AffectedTarget>,
     pub removable: bool,
     pub warnings: Vec<String>,

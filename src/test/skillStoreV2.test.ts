@@ -263,6 +263,11 @@ describe('skillStoreV2 tab navigation', () => {
     useSkillStoreV2.getState().setTab('diagnostics')
     expect(useSkillStoreV2.getState().activeTab).toBe('diagnostics')
   })
+
+  it('switches the install subtab', () => {
+    useSkillStoreV2.getState().setInstallTab('agent')
+    expect(useSkillStoreV2.getState().activeInstallTab).toBe('agent')
+  })
 })
 
 describe('skillStoreV2 overview shape', () => {

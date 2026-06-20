@@ -361,6 +361,7 @@ export interface AffectedTarget {
 
 export interface DeleteCenterSkillPreview {
   skillId: string
+  skillIds?: string[]
   affectedTargets: AffectedTarget[]
   removable: boolean
   warnings: string[]
@@ -701,10 +702,18 @@ export const skillApiV2 = {
   previewDeleteCenterSkill: (skillId: string) =>
     isTauri
       ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skill', { skillId })
-      : Promise.resolve({ skillId, affectedTargets: [], removable: true, warnings: [] }),
+      : Promise.resolve({ skillId, skillIds: [skillId], affectedTargets: [], removable: true, warnings: [] }),
   executeDeleteCenterSkill: (skillId: string, removeLinked: boolean) =>
     isTauri
       ? invoke<void>('execute_delete_center_skill', { skillId, removeLinked })
+      : Promise.resolve(),
+  previewDeleteCenterSkills: (skillIds: string[]) =>
+    isTauri
+      ? invoke<DeleteCenterSkillPreview>('preview_delete_center_skills', { skillIds })
+      : Promise.resolve({ skillId: skillIds[0] ?? '', skillIds, affectedTargets: [], removable: true, warnings: [] }),
+  executeDeleteCenterSkills: (skillIds: string[], removeLinked: boolean) =>
+    isTauri
+      ? invoke<void>('execute_delete_center_skills', { skillIds, removeLinked })
       : Promise.resolve(),
 
   previewDistribute: (skillIds: string[], targetAgents: string[], requestedMode: 'link' | 'copy') =>

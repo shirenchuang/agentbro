@@ -719,8 +719,8 @@
       "referenceCount": "{{count}} 件の参照",
       "noTargets": "この削除では Agent ディレクトリには触れません。",
       "linkWarning": "メモ: {{agent}} はシンボリックリンクです。残す場合は先に独立したコピーへ変換します。",
-      "removeAgentInstalls": "Agent インストールを削除",
-      "preserveCopies": "Agent コピーを残す",
+      "removeAgentInstalls": "削除して Agent インストールも削除",
+      "preserveCopies": "削除して Agent コピーは残す",
       "deleteCenterOnly": "中央を削除",
       "processing": "処理中..."
     },

@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import type { SkillInstallTab } from '../../stores/skillStoreV2'
 import type { SkillSummary } from '../../services/skillApiV2'
 import { AgentSyncPanel, LocalPanel, GitPanel } from './InstallView'
 import { OfficialSourcesPanel } from './OfficialSourcesPanel'
 import { DistributeDialog } from './DistributeDialog'
 
-type Tab = 'official' | 'agent' | 'local' | 'git'
-
-const TABS: Array<{ id: Tab; icon: string; label: string }> = [
+const TABS: Array<{ id: SkillInstallTab; icon: string; label: string }> = [
   { id: 'official', icon: '★', label: '市场' },
   { id: 'agent', icon: '◌', label: 'Agent 同步' },
   { id: 'local', icon: '📁', label: '本地导入' },
@@ -16,7 +15,8 @@ const TABS: Array<{ id: Tab; icon: string; label: string }> = [
 
 export function InstallPage() {
   const state = useSkillStoreV2()
-  const [tab, setTab] = useState<Tab>('official')
+  const tab = state.activeInstallTab
+  const setTab = state.setInstallTab
   const [gitUrl, setGitUrl] = useState('')
   const [justInstalled, setJustInstalled] = useState<SkillSummary | null>(null)
 

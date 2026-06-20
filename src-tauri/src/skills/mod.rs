@@ -1,4 +1,5 @@
 pub mod agent_paths;
+pub mod codex_config;
 pub mod explanation;
 pub mod frontmatter;
 pub mod installer;

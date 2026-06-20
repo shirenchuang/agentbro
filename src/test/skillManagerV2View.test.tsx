@@ -76,6 +76,7 @@ describe('Skill library view mode (no Agent matrix)', () => {
     vi.restoreAllMocks()
     useSkillStoreV2.setState({
       activeTab: 'library',
+      activeInstallTab: 'official',
       viewMode: 'cards',
       filters: { query: '', source: '', status: '', type: '' },
       skills: [
@@ -119,6 +120,27 @@ describe('Skill library view mode (no Agent matrix)', () => {
       selectedSkillId: null,
       selectedSkillDetail: null,
     })
+  })
+
+  it('opens Agent sync from the unmanaged metric', async () => {
+    const overview = useSkillStoreV2.getState().overview!
+    useSkillStoreV2.setState({
+      overview: {
+        ...overview,
+        metrics: { ...overview.metrics, unmanagedCount: 1 },
+      },
+    })
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue([])
+
+    const { SkillManagerShell } = await import('../components/skills-v2/SkillManagerShell')
+    render(<SkillManagerShell />)
+
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    expect(useSkillStoreV2.getState().activeTab).toBe('install')
+    expect(useSkillStoreV2.getState().activeInstallTab).toBe('agent')
+    expect(screen.getByRole('button', { name: /Agent 同步/ })).toHaveClass('sm2__install-page-tab--active')
+    expect(await screen.findByText('待处理收纳箱')).toBeInTheDocument()
   })
 
   it('renders both skills as cards by default', async () => {
@@ -239,7 +261,7 @@ describe('Skill library view mode (no Agent matrix)', () => {
     const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
     render(<SkillLibraryPage />)
 
-    fireEvent.click(screen.getByRole('button', { name: '批量分发' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
     fireEvent.click(screen.getByLabelText('选择 Release Checklist'))
     fireEvent.click(screen.getByLabelText('选择 Database Debugging'))
     fireEvent.click(screen.getByRole('button', { name: /^分发 2 个 Skill$/ }))
@@ -290,8 +312,8 @@ describe('Skill library view mode (no Agent matrix)', () => {
     fireEvent.click(screen.getByText('Release Checklist'))
     fireEvent.click(await screen.findByRole('button', { name: '删除' }))
 
-    const preserve = await screen.findByRole('button', { name: '保留 Agent 副本' })
-    const removeAll = screen.getByRole('button', { name: '移除 Agent 安装' })
+    const preserve = await screen.findByRole('button', { name: '删除但保留Agent副本' })
+    const removeAll = screen.getByRole('button', { name: '删除并且移除Agent安装' })
     const actions = preserve.closest('.sm2__modal-actions')
 
     expect(actions).not.toBeNull()
@@ -303,6 +325,42 @@ describe('Skill library view mode (no Agent matrix)', () => {
     expect(document.body.querySelector('.sm2-delete-skill__note')).not.toBeNull()
     expect(document.body.querySelector('.sm2-delete-skill__warnings')).toBeNull()
     expect(document.body.querySelector('.sm2-delete-skill__inline-action')).toBeNull()
+  })
+
+  it('deletes multiple selected center skills from the library', async () => {
+    const previewDelete = vi.spyOn(skillApiV2, 'previewDeleteCenterSkills').mockResolvedValue({
+      skillId: 'release-checklist',
+      skillIds: ['release-checklist', 'db-debug'],
+      affectedTargets: [
+        {
+          targetId: 'target-claude',
+          agentId: 'claude-code',
+          displayName: 'Claude Code',
+          targetPath: '/Users/me/.claude/skills/release-checklist',
+          mode: 'link',
+          claimCount: 1,
+        },
+      ],
+      removable: false,
+      warnings: [],
+    })
+    const executeDelete = vi.spyOn(skillApiV2, 'executeDeleteCenterSkills').mockResolvedValue(undefined)
+
+    const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
+    render(<SkillLibraryPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByLabelText('选择 Release Checklist'))
+    fireEvent.click(screen.getByLabelText('选择 Database Debugging'))
+    fireEvent.click(screen.getByRole('button', { name: /^删除 2 个 Skill$/ }))
+
+    expect(await screen.findByRole('heading', { name: '批量删除 2 个 Skill' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '删除但保留Agent副本' }))
+
+    await waitFor(() => {
+      expect(previewDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'])
+      expect(executeDelete).toHaveBeenCalledWith(['release-checklist', 'db-debug'], false)
+    })
   })
 
   it('can delete multiple agent distributions from the skill detail agent tab', async () => {
@@ -493,6 +551,66 @@ describe('Local skill import', () => {
         sourceUri: '/Users/me/code/szskills/live-review',
         importMode: 'link',
       }, [])
+    })
+  })
+
+  it('can bulk overwrite conflicting local imports', async () => {
+    vi.spyOn(skillApiV2, 'previewAddCenterSkill').mockResolvedValue({
+      centerPath: '/Users/me/.agentbro/skills',
+      candidates: [],
+      blockers: [
+        {
+          skillId: 'sz-news-video',
+          proposedSkillId: 'sz-news-video',
+          name: 'sz-news-video',
+          description: 'Video skill',
+          sourceDir: '/Users/me/code/szskills/sz-news-video',
+          hash: 'hash-video',
+          action: 'blocked_same_name_diff_source',
+          existingSourceType: 'local_folder',
+          reason: "A different skill already uses id 'sz-news-video'. Choose overwrite, rename, or skip.",
+        },
+        {
+          skillId: 'sz-x-feed',
+          proposedSkillId: 'sz-x-feed',
+          name: 'sz-x-feed',
+          description: 'Feed skill',
+          sourceDir: '/Users/me/code/szskills/sz-x-feed',
+          hash: 'hash-feed',
+          action: 'blocked_same_name_diff_source',
+          existingSourceType: 'local_folder',
+          reason: "A different skill already uses id 'sz-x-feed'. Choose overwrite, rename, or skip.",
+        },
+      ],
+    })
+    const executeAdd = vi.spyOn(skillApiV2, 'executeAddCenterSkill').mockResolvedValue({
+      skillIds: [],
+      updated: ['sz-news-video', 'sz-x-feed'],
+      skipped: [],
+    })
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+
+    const { LocalPanel } = await import('../components/skills-v2/InstallView')
+    render(<LocalPanel onDone={() => {}} />)
+
+    fireEvent.change(screen.getByPlaceholderText('选择或粘贴包含 SKILL.md 的目录 / .zip'), {
+      target: { value: '/Users/me/code/szskills' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '预览导入' }))
+
+    fireEvent.click(await screen.findByLabelText('覆盖冲突项'))
+    fireEvent.click(screen.getByRole('button', { name: '执行导入' }))
+
+    await waitFor(() => {
+      expect(executeAdd).toHaveBeenCalledWith({
+        sourcePath: '/Users/me/code/szskills',
+        sourceType: 'local_folder',
+        sourceUri: '/Users/me/code/szskills',
+        importMode: 'copy',
+      }, [
+        { skillId: 'sz-news-video', resolution: 'update' },
+        { skillId: 'sz-x-feed', resolution: 'update' },
+      ])
     })
   })
 
@@ -1249,7 +1367,7 @@ describe('Agent sync local agent chips', () => {
             name: 'bird',
             path: '/Users/me/.claude/skills/bird',
             managed: false,
-            canImport: false,
+            canImport: true,
             status: 'conflict',
             statusLabel: '未管理 · 同名冲突',
             reason: 'same_name_as_center_skill',
@@ -1330,6 +1448,51 @@ describe('Agent sync local agent chips', () => {
 
     await waitFor(() => {
       expect(execute).toHaveBeenCalledWith('claude-code', 'local-alpha', 'import_keep', null)
+    })
+  })
+
+  it('uses cleanup mode for shared .agents skills during one-click organize', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'agents',
+        displayName: '本地 .agents Skills',
+        iconKey: 'agents',
+        skillsDir: '/Users/me/.agents/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'shared-alpha',
+            agentId: 'agents',
+            skillId: 'alpha',
+            name: 'alpha',
+            path: '/Users/me/.agents/skills/alpha',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-alpha',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('alpha')
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /一键整理 1 个/ }))
+    fireEvent.click(screen.getByText('开始整理'))
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('agents', 'shared-alpha', 'import_cleanup', null)
     })
   })
 
@@ -1518,6 +1681,71 @@ describe('Agent sync local agent chips', () => {
     fireEvent.click(screen.getByText('确认接管'))
 
     await waitFor(() => expect(execute).toHaveBeenCalledWith('codex', 'codex-bird', 'center_over_agent', null))
+  })
+
+  it('batch adds conflicting agent skills with generated rename ids', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 2,
+        importableCount: 0,
+        items: [
+          {
+            id: 'codex-bird',
+            agentId: 'codex',
+            skillId: 'bird',
+            name: 'bird',
+            path: '/Users/me/.codex/skills/bird',
+            managed: false,
+            canImport: false,
+            status: 'conflict',
+            statusLabel: '未管理 · 同名冲突',
+            reason: 'same_name_as_center_skill',
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-codex-bird',
+          },
+          {
+            id: 'codex-flight',
+            agentId: 'codex',
+            skillId: 'flight.plan',
+            name: 'flight.plan',
+            path: '/Users/me/.codex/skills/flight.plan',
+            managed: false,
+            canImport: false,
+            status: 'conflict',
+            statusLabel: '未管理 · 同名冲突',
+            reason: 'same_name_as_center_skill',
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-codex-flight',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('ok')
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '批量处理冲突' }))
+    expect(await screen.findByRole('heading', { name: '批量处理冲突' })).toBeInTheDocument()
+    expect(screen.getByLabelText('中心库为准（推荐）')).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByLabelText('重命名新增'))
+    fireEvent.click(screen.getByRole('button', { name: '批量新增' }))
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('codex', 'codex-bird', 'rename', 'bird-codex')
+      expect(execute).toHaveBeenCalledWith('codex', 'codex-flight', 'rename', 'flight-plan-codex')
+    })
   })
 
   it('opens local agent skills in the skill-library detail layout', async () => {
@@ -1860,6 +2088,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<SkillDetailSlider skillId="live-review" open onClose={() => {}} />)
 
     expect(await screen.findByText('软链中心目录')).toBeInTheDocument()
+    expect(screen.getByTitle('本地文件夹导入的 Skill，真实地址是：/Users/me/code/szskills/live-review')).toHaveTextContent('本地软链')
     expect(screen.getByText('/Users/me/code/szskills/live-review')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '来源' }))
     expect(screen.getByText('真实源目录')).toBeInTheDocument()
@@ -3025,6 +3254,34 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除 Release Checklist' }))
     expect(screen.getByRole('button', { name: '选择 Release Checklist' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('status', { name: '已选择 Skill 数量' })).toHaveTextContent('0')
+  })
+
+  it('filters pack builder skill choices by source', async () => {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill(),
+        makeSkill({
+          id: 'repo-helper',
+          name: 'Repo Helper',
+          description: 'GitHub imported helper',
+          sourceType: 'github',
+          sourceUri: 'github:owner/repo/repo-helper',
+          installedAgents: [],
+        }),
+      ],
+    })
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    const { container } = render(<SkillPackPage />)
+
+    fireEvent.click(container.querySelector('.sm2__header .sm2__btn--primary')!)
+    fireEvent.click(screen.getByRole('button', { name: 'GitHub 1' }))
+
+    expect(screen.getByRole('button', { name: '选择 Repo Helper' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '选择 Release Checklist' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '全选当前' }))
+    expect(screen.getByRole('status', { name: '已选择 Skill 数量' })).toHaveTextContent('1')
+    expect(screen.getByRole('button', { name: '移除 Repo Helper' })).toBeInTheDocument()
   })
 
   it('treats the built-in full pack as read-only in the pack workspace', async () => {

@@ -3,7 +3,7 @@ use super::{
     AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ObsidianVault, ScannedSkill,
     SkillSource, SkillType,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -712,7 +712,7 @@ fn plugin_enabled(agent: &str, plugin_key: &str, plugin_id: &str) -> bool {
         return true;
     };
     if settings_path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-        let enabled_plugins = toml_plugin_enabled_config(&content);
+        let enabled_plugins = crate::skills::codex_config::parse_plugin_enabled_config(&content);
         return enabled_plugins
             .get(plugin_key)
             .or_else(|| enabled_plugins.get(plugin_id))
@@ -727,50 +727,6 @@ fn plugin_enabled(agent: &str, plugin_key: &str, plugin_id: &str) -> bool {
         .and_then(|plugins| plugins.get(plugin_key).or_else(|| plugins.get(plugin_id)))
         .and_then(|value| value.as_bool())
         .unwrap_or(true)
-}
-
-fn toml_plugin_enabled_config(content: &str) -> HashMap<String, bool> {
-    let mut out = HashMap::new();
-    let mut current_plugin: Option<String> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            current_plugin = toml_plugin_header(line);
-            if let Some(plugin) = current_plugin.as_ref() {
-                out.entry(plugin.clone()).or_insert(true);
-            }
-            continue;
-        }
-        let Some(plugin) = current_plugin.as_ref() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() == "enabled" {
-            match value.trim() {
-                "true" => {
-                    out.insert(plugin.clone(), true);
-                }
-                "false" => {
-                    out.insert(plugin.clone(), false);
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
-fn toml_plugin_header(line: &str) -> Option<String> {
-    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
-    let key = inner.strip_prefix("plugins.")?.trim();
-    Some(
-        key.strip_prefix('"')
-            .and_then(|rest| rest.strip_suffix('"'))
-            .unwrap_or(key)
-            .to_string(),
-    )
 }
 
 fn symlink_target(path: &Path) -> Option<String> {

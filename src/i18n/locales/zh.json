@@ -759,8 +759,8 @@
       "referenceCount": "{{count}} 个引用",
       "noTargets": "这次删除不会触碰任何 Agent 目录。",
       "linkWarning": "提示：{{agent}} 是软连接。选择保留时，会先转成独立副本。",
-      "removeAgentInstalls": "移除 Agent 安装",
-      "preserveCopies": "保留 Agent 副本",
+      "removeAgentInstalls": "删除并且移除Agent安装",
+      "preserveCopies": "删除但保留Agent副本",
       "deleteCenterOnly": "删除中心库",
       "processing": "处理中…"
     },

@@ -719,8 +719,8 @@
       "referenceCount": "{{count}}개 참조",
       "noTargets": "이번 삭제는 Agent 디렉터리를 건드리지 않습니다.",
       "linkWarning": "참고: {{agent}}는 심볼릭 링크입니다. 유지하면 먼저 독립 복사본으로 바꿉니다.",
-      "removeAgentInstalls": "Agent 설치 제거",
-      "preserveCopies": "Agent 복사본 유지",
+      "removeAgentInstalls": "삭제하고 Agent 설치 제거",
+      "preserveCopies": "삭제하되 Agent 복사본 유지",
       "deleteCenterOnly": "중앙 삭제",
       "processing": "처리 중..."
     },

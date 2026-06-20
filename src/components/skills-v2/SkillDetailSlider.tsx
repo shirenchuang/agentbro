@@ -314,7 +314,11 @@ export function SkillDetailSlider({
               {STATUS_LABEL[detail.status] || detail.status}
             </span>
             <span className="sm2__tag">{skillSourceTypeLabel(t, detail.sourceType)}</span>
-            {isLinkedCenterSkill(detail) && <span className="sm2__tag sm2__tag--info">中心软链</span>}
+            {isLinkedCenterSkill(detail) && (
+              <span className="sm2__tag sm2__tag--center-link" title={linkedCenterSkillTitle(detail)}>
+                本地软链
+              </span>
+            )}
             <span className="sm2__tag">{detail.skillType}</span>
             {detail.installedAgents.length > 0 && (
               <span className="sm2__agents">
@@ -1209,6 +1213,11 @@ function hasSourceValue(item: { label: string; value?: string | null }): item is
 
 function isLinkedCenterSkill(detail: SkillDetail): boolean {
   return Boolean(detail.centerResolvedPath && detail.centerResolvedPath !== detail.centerPath)
+}
+
+function linkedCenterSkillTitle(detail: SkillDetail): string {
+  const realPath = detail.centerResolvedPath || detail.source?.sourceUri || detail.sourceUri || detail.centerPath
+  return `本地文件夹导入的 Skill，真实地址是：${realPath}`
 }
 
 function CompactInfo({

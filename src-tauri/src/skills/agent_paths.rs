@@ -27,7 +27,6 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             skill_dirs: vec![
                 h.join(".codex").join("skills"),
                 h.join(".agents").join("skills"),
-                h.join(".codex").join("agents"),
             ],
             mcp_config: Some(h.join(".codex").join("config.toml")),
             settings_file: Some(h.join(".codex").join("config.toml")),
@@ -87,7 +86,11 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "ob1" => basic_skill_paths(&h, ".ob1/skills"),
         "amp" => basic_skill_paths(&h, ".amp/skills"),
         "aider" => basic_skill_paths(&h, ".aider/skills"),
-        "openclaw" => basic_skill_paths(&h, ".openclaw/skills"),
+        "openclaw" => SkillPaths {
+            skill_dirs: openclaw_skill_dirs(&h),
+            mcp_config: None,
+            settings_file: Some(h.join(".openclaw").join("openclaw.json")),
+        },
         "qclaw" => basic_skill_paths(&h, ".qclaw/skills"),
         "easyclaw" => basic_skill_paths(&h, ".easyclaw/skills"),
         "easyclaw-v2" => basic_skill_paths(&h, ".easyclaw-20260322-01/skills"),
@@ -111,6 +114,74 @@ fn basic_skill_paths(home: &Path, relative: &str) -> SkillPaths {
         mcp_config: None,
         settings_file: None,
     }
+}
+
+fn openclaw_skill_dirs(home: &Path) -> Vec<PathBuf> {
+    let workspace = openclaw_workspace_dir(home);
+    let mut dirs = vec![
+        workspace.join("skills"),
+        workspace.join(".agents").join("skills"),
+        home.join(".agents").join("skills"),
+        home.join(".openclaw").join("skills"),
+        home.join(".openclaw").join("plugin-skills"),
+    ];
+    dirs.extend(openclaw_bundled_skill_dirs());
+    dedupe_paths(dirs)
+}
+
+fn openclaw_workspace_dir(home: &Path) -> PathBuf {
+    let config_path = home.join(".openclaw").join("openclaw.json");
+    let workspace = std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|json| {
+            json.pointer("/agents/defaults/workspace")
+                .and_then(|value| value.as_str())
+                .map(|value| expand_home_with_base(home, value))
+        });
+    workspace.unwrap_or_else(|| home.join(".openclaw").join("workspace"))
+}
+
+fn openclaw_bundled_skill_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(exe) = find_in_path("openclaw") {
+        if let Ok(real) = exe.canonicalize() {
+            if let Some(parent) = real.parent() {
+                dirs.push(parent.join("skills"));
+            }
+        }
+    }
+    dirs.push(PathBuf::from(
+        "/opt/homebrew/lib/node_modules/openclaw/skills",
+    ));
+    dirs.push(PathBuf::from("/usr/local/lib/node_modules/openclaw/skills"));
+    dirs
+}
+
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
+}
+
+fn expand_home_with_base(home: &Path, value: &str) -> PathBuf {
+    if let Some(rest) = value.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(value)
+    }
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::BTreeSet::new();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let key = path.display().to_string();
+            seen.insert(key)
+        })
+        .collect()
 }
 
 pub fn known_agent_ids() -> &'static [&'static str] {

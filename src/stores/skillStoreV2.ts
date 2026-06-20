@@ -17,6 +17,7 @@ import type {
 import { skillApiV2 } from '../services/skillApiV2'
 
 export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
+export type SkillInstallTab = 'official' | 'agent' | 'local' | 'git'
 export type SkillViewMode = 'cards' | 'list'
 
 const OVERVIEW_CACHE_TTL_MS = 60_000
@@ -30,6 +31,7 @@ export interface SkillFilters {
 
 interface SkillV2State {
   activeTab: SkillManagerTab
+  activeInstallTab: SkillInstallTab
   viewMode: SkillViewMode
   overview: SkillManagerOverview | null
   settings: SkillManagerSettings | null
@@ -64,6 +66,7 @@ interface SkillV2Actions {
   refresh: () => Promise<void>
   loadOverview: (force?: boolean) => Promise<void>
   setTab: (tab: SkillManagerTab) => void
+  setInstallTab: (tab: SkillInstallTab) => void
   setViewMode: (mode: SkillViewMode) => void
   setFilter: <K extends keyof SkillFilters>(key: K, value: SkillFilters[K]) => void
   selectSkill: (id: string | null) => Promise<void>
@@ -85,6 +88,7 @@ interface SkillV2Actions {
 
 export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) => ({
   activeTab: 'library',
+  activeInstallTab: 'official',
   viewMode: 'cards',
   overview: null,
   settings: null,
@@ -194,6 +198,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   setTab: (tab) => set({ activeTab: tab }),
+  setInstallTab: (tab) => set({ activeInstallTab: tab }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setFilter: (key, value) =>
     set((s) => ({ filters: { ...s.filters, [key]: value } })),

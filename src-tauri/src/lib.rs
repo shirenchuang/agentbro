@@ -5430,6 +5430,8 @@ pub fn run() {
             skills::v2::commands::execute_add_center_skill,
             skills::v2::commands::preview_delete_center_skill,
             skills::v2::commands::execute_delete_center_skill,
+            skills::v2::commands::preview_delete_center_skills,
+            skills::v2::commands::execute_delete_center_skills,
             skills::v2::commands::preview_distribute_skill,
             skills::v2::commands::execute_distribute_skill,
             skills::v2::commands::scan_agent_inventory,

@@ -579,22 +579,35 @@ function PackBuilderPanel({
   const { t } = useTranslation()
   const [name, setName] = useState(mode === 'duplicate' && existing ? `${existing.name} Copy` : existing?.name || '')
   const [query, setQuery] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set(existing?.members.map((member) => member.skillId) || []))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const existingMemberIds = useMemo(() => new Set(existing?.members.map((member) => member.skillId) || []), [existing])
   const existingApplied = mode === 'edit' && (existing?.appliedAgents.length || 0) > 0
+  const sourceOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    skills.forEach((skill) => counts.set(skill.sourceType, (counts.get(skill.sourceType) || 0) + 1))
+    return Array.from(counts.entries())
+      .map(([value, count]) => ({
+        value,
+        count,
+        label: skillSourceTypeLabel(t, value),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [skills, t])
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return skills
     return skills.filter((skill) =>
-      [skill.name, skill.id, skill.description, skill.sourceType, skillSourceTypeLabel(t, skill.sourceType)]
-        .join(' ')
-        .toLowerCase()
-        .includes(q),
+      (!sourceFilter || skill.sourceType === sourceFilter) &&
+      (!q ||
+        [skill.name, skill.id, skill.description, skill.sourceType, skillSourceTypeLabel(t, skill.sourceType)]
+          .join(' ')
+          .toLowerCase()
+          .includes(q)),
     )
-  }, [query, skills, t])
+  }, [query, skills, sourceFilter, t])
   const selectedSkills = skills.filter((skill) => selected.has(skill.id))
   const selectedVisibleCount = filtered.filter((skill) => selected.has(skill.id)).length
 
@@ -712,6 +725,28 @@ function PackBuilderPanel({
             <button className="sm2__btn sm2__btn--ghost" onClick={selectVisible} disabled={filtered.length === 0 || selectedVisibleCount === filtered.length}>
               全选当前
             </button>
+          </div>
+          <div className="sm2__pack-source-filter" aria-label="来源过滤">
+            <span>来源过滤</span>
+            <button
+              type="button"
+              className={!sourceFilter ? 'sm2__pack-source-filter-chip sm2__pack-source-filter-chip--active' : 'sm2__pack-source-filter-chip'}
+              aria-pressed={!sourceFilter}
+              onClick={() => setSourceFilter('')}
+            >
+              全部 <em>{skills.length}</em>
+            </button>
+            {sourceOptions.map((source) => (
+              <button
+                key={source.value}
+                type="button"
+                className={sourceFilter === source.value ? 'sm2__pack-source-filter-chip sm2__pack-source-filter-chip--active' : 'sm2__pack-source-filter-chip'}
+                aria-pressed={sourceFilter === source.value}
+                onClick={() => setSourceFilter(source.value)}
+              >
+                {source.label} <em>{source.count}</em>
+              </button>
+            ))}
           </div>
           <div className="sm2__skill-picker2">
             {filtered.length === 0 ? (
@@ -981,35 +1016,45 @@ function ApplyPackDialog({
       <PreviewDialog
         title={`应用「${pack.name}」`}
         confirmLabel="预览影响"
+        modalClassName="sm2__modal--pack-apply"
         busy={busy}
         disabled={selected.size === 0}
         onConfirm={runPreview}
         onCancel={onClose}
       >
-        <div className="sm2__apply-grid">
-          <div className="sm2__field">
-            <label>分发方式</label>
-            <select value={mode} onChange={(e) => setMode(e.target.value as 'link' | 'copy')}>
-              <option value="link">{skillModeLabel(t, 'link')}</option>
-              <option value="copy">{skillModeLabel(t, 'copy')}</option>
-            </select>
+        <div className="sm2__pack-apply-form">
+          <div className="sm2__apply-grid">
+            <div className="sm2__field sm2__field--select">
+              <label htmlFor="sm2-pack-apply-mode">分发方式</label>
+              <select id="sm2-pack-apply-mode" value={mode} onChange={(e) => setMode(e.target.value as 'link' | 'copy')}>
+                <option value="link">{skillModeLabel(t, 'link')}</option>
+                <option value="copy">{skillModeLabel(t, 'copy')}</option>
+              </select>
+            </div>
+            <div className="sm2__field sm2__field--readonly">
+              <label htmlFor="sm2-pack-apply-members">成员数量</label>
+              <input id="sm2-pack-apply-members" value={`${pack.members.length} Skills`} readOnly />
+            </div>
           </div>
-          <div className="sm2__field">
-            <label>成员数量</label>
-            <input value={`${pack.members.length} Skills`} readOnly />
+          <div className="sm2__pack-apply-section">
+            <div className="sm2__pack-apply-label">目标 Agent</div>
+            <div className="sm2__agent-choice-grid">
+              {installedAgents.map((agent) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={`sm2__agent-choice${selected.has(agent.id) ? ' sm2__agent-choice--active' : ''}`}
+                  onClick={() => toggle(agent.id)}
+                >
+                  <AgentIconBadge iconKey={agent.iconKey} title={agent.displayName} size={30} />
+                  <span>{agent.displayName}</span>
+                </button>
+              ))}
+            </div>
           </div>
+          {installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
+          {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         </div>
-        <label style={{ fontSize: 12, fontWeight: 700 }}>目标 Agent</label>
-        <div className="sm2__agent-choice-grid">
-          {installedAgents.map((agent) => (
-            <button key={agent.id} className={`sm2__agent-choice${selected.has(agent.id) ? ' sm2__agent-choice--active' : ''}`} onClick={() => toggle(agent.id)}>
-              <AgentIconBadge iconKey={agent.iconKey} title={agent.displayName} size={30} />
-              <span>{agent.displayName}</span>
-            </button>
-          ))}
-        </div>
-        {installedAgents.length === 0 && <div className="sm2__empty sm2__empty--compact">没有可用 Agent</div>}
-        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
       </PreviewDialog>
     )
   }

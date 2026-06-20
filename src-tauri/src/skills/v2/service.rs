@@ -343,20 +343,25 @@ impl Service {
 
     pub fn scan_one_agent_into_db(&self, agent_id: &str) -> Result<AgentScanResult, String> {
         self.ensure_agent_row(agent_id)?;
-        let skills_dir = match agent_meta::agent_skills_dir(&self.home, agent_id) {
-            Some(d) => d,
-            None => {
-                return Ok(AgentScanResult {
-                    managed: 0,
-                    unmanaged: 0,
-                });
-            }
-        };
+        let skill_dirs = agent_meta::agent_skill_dirs(&self.home, agent_id);
+        let primary_skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id);
+        if skill_dirs.is_empty() {
+            return Ok(AgentScanResult {
+                managed: 0,
+                unmanaged: 0,
+            });
+        }
         let now = db::now_iso();
         self.db.with_conn(|c| {
             c.execute(
                 "UPDATE agents SET skills_dir = ?1, last_scanned_at = ?2 WHERE id = ?3",
-                params![skills_dir.display().to_string(), now, agent_id],
+                params![
+                    primary_skills_dir
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    now,
+                    agent_id
+                ],
             )
             .map_err(|e| e.to_string())
         })?;
@@ -372,18 +377,17 @@ impl Service {
 
         let mut managed = 0usize;
         let mut unmanaged = 0usize;
-        if skills_dir.is_dir() {
-            let entries = std::fs::read_dir(&skills_dir).map_err(|e| e.to_string())?;
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
-                    continue;
-                }
-                let path = entry.path();
-                if !path.is_dir() || !fsutil::is_skill_dir(&path) {
-                    continue;
-                }
+        let mut seen_skill_ids = BTreeSet::new();
+        for skills_dir in skill_dirs {
+            if !skills_dir.is_dir() {
+                continue;
+            }
+            let skill_paths = discover_agent_skill_paths(&skills_dir, agent_id == "openclaw")?;
+            for path in skill_paths {
                 let inferred = fsutil::infer_skill_id(&path);
+                if !seen_skill_ids.insert(inferred.clone()) {
+                    continue;
+                }
                 // is there a managed target for this agent+path?
                 let target = self.find_target_by_path(agent_id, &path)?;
                 match target {
@@ -1991,25 +1995,40 @@ impl Service {
         &self,
         skill_id: &str,
     ) -> Result<DeleteCenterSkillPreview, String> {
-        let _row = self
-            .skill_row(skill_id)?
-            .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
-        let targets = self.targets_for_skill(skill_id)?;
+        self.preview_delete_center_skills(vec![skill_id.to_string()])
+    }
+
+    pub fn preview_delete_center_skills(
+        &self,
+        skill_ids: Vec<String>,
+    ) -> Result<DeleteCenterSkillPreview, String> {
+        let skill_ids = unique_skill_ids(skill_ids);
+        if skill_ids.is_empty() {
+            return Err("No skills selected".to_string());
+        }
         let mut affected = Vec::new();
-        for t in &targets {
-            let claim_count = self.count_claims(&t.id)?;
-            affected.push(AffectedTarget {
-                target_id: t.id.clone(),
-                agent_id: t.agent_id.clone(),
-                display_name: agent_meta::display_name(&t.agent_id),
-                target_path: t.target_path.clone(),
-                mode: t.actual_mode.clone(),
-                claim_count,
-            });
+        for skill_id in &skill_ids {
+            let _row = self
+                .skill_row(skill_id)?
+                .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+            let targets = self.targets_for_skill(skill_id)?;
+            for t in &targets {
+                let claim_count = self.count_claims(&t.id)?;
+                affected.push(AffectedTarget {
+                    target_id: t.id.clone(),
+                    agent_id: t.agent_id.clone(),
+                    display_name: agent_meta::display_name(&t.agent_id),
+                    target_path: t.target_path.clone(),
+                    mode: t.actual_mode.clone(),
+                    claim_count,
+                });
+            }
         }
         let removable = affected.is_empty();
+        let skill_id = skill_ids.first().cloned().unwrap_or_default();
         Ok(DeleteCenterSkillPreview {
-            skill_id: skill_id.to_string(),
+            skill_id,
+            skill_ids,
             affected_targets: affected,
             removable,
             warnings: Vec::new(),
@@ -2021,6 +2040,39 @@ impl Service {
         skill_id: &str,
         remove_linked: bool,
     ) -> Result<(), String> {
+        let agents = self.execute_delete_center_skill_inner(skill_id, remove_linked)?;
+        if !remove_linked {
+            self.scan_agents(agents)?;
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    pub fn execute_delete_center_skills(
+        &self,
+        skill_ids: Vec<String>,
+        remove_linked: bool,
+    ) -> Result<(), String> {
+        let skill_ids = unique_skill_ids(skill_ids);
+        if skill_ids.is_empty() {
+            return Err("No skills selected".to_string());
+        }
+        let mut agents = Vec::new();
+        for skill_id in skill_ids {
+            agents.extend(self.execute_delete_center_skill_inner(&skill_id, remove_linked)?);
+        }
+        if !remove_linked {
+            self.scan_agents(agents)?;
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    fn execute_delete_center_skill_inner(
+        &self,
+        skill_id: &str,
+        remove_linked: bool,
+    ) -> Result<Vec<String>, String> {
         let preview = self.preview_delete_center_skill(skill_id)?;
         let row = self
             .skill_row(skill_id)?
@@ -2046,19 +2098,19 @@ impl Service {
             c.execute("DELETE FROM skills WHERE id = ?1", params![skill_id])
                 .map_err(|e| e.to_string())
         })?;
-        if !remove_linked {
-            let mut agents = preview
-                .affected_targets
-                .iter()
-                .map(|t| t.agent_id.clone())
-                .collect::<Vec<_>>();
-            agents.sort();
-            agents.dedup();
-            for agent in agents {
-                self.scan_one_agent_into_db(&agent)?;
-            }
+        Ok(preview
+            .affected_targets
+            .iter()
+            .map(|t| t.agent_id.clone())
+            .collect())
+    }
+
+    fn scan_agents(&self, mut agents: Vec<String>) -> Result<(), String> {
+        agents.sort();
+        agents.dedup();
+        for agent in agents {
+            self.scan_one_agent_into_db(&agent)?;
         }
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -4733,6 +4785,20 @@ fn normalize_project_root(input: &str) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
+fn unique_skill_ids(skill_ids: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for skill_id in skill_ids {
+        if skill_id.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(skill_id.clone()) {
+            unique.push(skill_id);
+        }
+    }
+    unique
+}
+
 fn project_id_for_path(path: &Path) -> String {
     let normalized = fsutil::normalized_path(path);
     let mut hasher = Sha256::new();
@@ -4896,19 +4962,11 @@ fn read_json_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
 }
 
 fn read_toml_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    #[derive(Default)]
-    struct PendingMcp {
-        name: String,
-        command: String,
-        args: Vec<String>,
-    }
-    fn push(out: &mut Vec<McpServerStatus>, pending: Option<PendingMcp>) {
-        if let Some(server) = pending {
+    crate::skills::codex_config::read_mcp_servers_path(path)
+        .into_iter()
+        .map(|server| {
             let valid = !server.command.is_empty();
-            out.push(McpServerStatus {
+            McpServerStatus {
                 name: server.name,
                 command: server.command,
                 args: server.args,
@@ -4918,49 +4976,9 @@ fn read_toml_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
                 } else {
                     "missing command".to_string()
                 },
-            });
-        }
-    }
-    let mut out = Vec::new();
-    let mut pending: Option<PendingMcp> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            push(&mut out, pending.take());
-            pending = parse_toml_header(line, "mcp_servers.").map(|name| PendingMcp {
-                name,
-                ..PendingMcp::default()
-            });
-            continue;
-        }
-        let Some(server) = pending.as_mut() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        match key.trim() {
-            "command" => server.command = strip_toml_quotes(value.trim()).to_string(),
-            "args" => {
-                server.args = value
-                    .trim()
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .split(',')
-                    .filter_map(|part| {
-                        let arg = strip_toml_quotes(part.trim());
-                        (!arg.is_empty()).then(|| arg.to_string())
-                    })
-                    .collect();
             }
-            _ => {}
-        }
-    }
-    push(&mut out, pending);
-    out
+        })
+        .collect()
 }
 
 fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
@@ -4991,60 +5009,16 @@ fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
 }
 
 fn read_codex_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PluginStatus> = Vec::new();
-    let mut current_plugin: Option<String> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            current_plugin = parse_toml_header(line, "plugins.")
-                .filter(|name| !name.contains(".mcp_servers"))
-                .filter(|name| !name.contains(".tools"));
-            if let Some(id) = current_plugin.as_ref() {
-                if !out.iter().any(|plugin| plugin.id == *id) {
-                    out.push(PluginStatus {
-                        id: id.clone(),
-                        name: id.clone(),
-                        version: None,
-                        enabled: true,
-                        source: Some("project-config".to_string()),
-                    });
-                }
-            }
-            continue;
-        }
-        let Some(id) = current_plugin.as_ref() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() == "enabled" {
-            if let Some(plugin) = out.iter_mut().find(|plugin| plugin.id == *id) {
-                plugin.enabled = value.trim() != "false";
-            }
-        }
-    }
-    out.sort_by_key(|plugin| plugin.name.to_lowercase());
-    out
-}
-
-fn parse_toml_header(line: &str, prefix: &str) -> Option<String> {
-    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
-    let rest = inner.strip_prefix(prefix)?.trim();
-    Some(strip_toml_quotes(rest).to_string())
-}
-
-fn strip_toml_quotes(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(value)
+    crate::skills::codex_config::read_project_plugins_path(path)
+        .into_iter()
+        .map(|plugin| PluginStatus {
+            id: plugin.id.clone(),
+            name: plugin.id,
+            version: None,
+            enabled: plugin.enabled,
+            source: Some("project-config".to_string()),
+        })
+        .collect()
 }
 
 fn sources_match(a_type: &str, a_uri: Option<&str>, b_type: &str, b_uri: Option<&str>) -> bool {
@@ -5140,6 +5114,42 @@ fn upsert_source(
 }
 
 // silence unused import warning when not needed
+
+fn discover_agent_skill_paths(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    discover_agent_skill_paths_inner(root, recursive, 0, &mut out)?;
+    Ok(out)
+}
+
+fn discover_agent_skill_paths_inner(
+    dir: &Path,
+    recursive: bool,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    if depth > 8 {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if fsutil::is_skill_dir(&path) {
+            out.push(path);
+            continue;
+        }
+        if recursive {
+            discover_agent_skill_paths_inner(&path, recursive, depth + 1, out)?;
+        }
+    }
+    Ok(())
+}
 
 // ── ZIP extraction for local archive import ──────────────────────
 

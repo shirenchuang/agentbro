@@ -566,8 +566,8 @@
       "referenceCount": "{{count}} referans",
       "noTargets": "Bu silme işlemi hiçbir Agent dizinine dokunmaz.",
       "linkWarning": "Not: {{agent}} bir sembolik bağlantı. Korursanız önce bağımsız kopyaya çevrilir.",
-      "removeAgentInstalls": "Agent kurulumlarını kaldır",
-      "preserveCopies": "Agent kopyalarını koru",
+      "removeAgentInstalls": "Sil ve Agent kurulumlarını kaldır",
+      "preserveCopies": "Sil ama Agent kopyalarını koru",
       "deleteCenterOnly": "Merkezi sil",
       "processing": "İşleniyor..."
     },

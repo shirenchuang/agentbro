@@ -718,8 +718,8 @@
       "referenceCount": "{{count}} reference(s)",
       "noTargets": "This deletion will not touch any Agent directory.",
       "linkWarning": "Note: {{agent}} is a symlink. Keeping Agent installs turns it into a standalone copy first.",
-      "removeAgentInstalls": "Remove Agent installs",
-      "preserveCopies": "Keep Agent copies",
+      "removeAgentInstalls": "Delete and remove Agent installs",
+      "preserveCopies": "Delete but keep Agent copies",
       "deleteCenterOnly": "Delete center",
       "processing": "Processing..."
     },
