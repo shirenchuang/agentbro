@@ -16,6 +16,7 @@ export interface SkillManagerSettings {
   linkFailPolicy: 'ask' | 'copy'
   startupScan: boolean
   showUnmanaged: boolean
+  autoSyncSkillPacks?: boolean
 }
 
 export interface InstalledAgentRef {
@@ -125,6 +126,10 @@ export interface SkillPackSummary {
   memberCount: number
   appliedAgentCount: number
   healthy: boolean
+  revision?: number
+  syncStatus?: 'synced' | 'pending' | 'syncing' | 'failed' | 'partial' | string
+  pendingSyncCount?: number
+  failedSyncCount?: number
 }
 
 export interface PackMember {
@@ -142,6 +147,10 @@ export interface AppliedPackSummary {
   agentId?: string | null
   displayName?: string | null
   iconKey?: string | null
+  packRevision?: number
+  syncedRevision?: number
+  syncStatus?: 'synced' | 'pending' | 'syncing' | 'failed' | 'partial' | string
+  syncError?: string | null
 }
 
 export interface SkillPackDetail {
@@ -151,6 +160,10 @@ export interface SkillPackDetail {
   tags: string[]
   members: PackMember[]
   appliedAgents: AppliedPackSummary[]
+  revision?: number
+  syncStatus?: 'synced' | 'pending' | 'syncing' | 'failed' | 'partial' | string
+  pendingSyncCount?: number
+  failedSyncCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -391,6 +404,21 @@ export interface RemoveSkillFromPackPreview {
   appliedAgentCount: number
   canKeepStandalone: boolean
   canRemoveTargets: boolean
+}
+
+export interface SkillPackSyncAgentResult {
+  agentId: string
+  displayName: string
+  status: 'synced' | 'failed' | string
+  error: string | null
+}
+
+export interface SkillPackSyncResult {
+  packId: string
+  packName: string
+  revision: number
+  status: 'synced' | 'pending' | 'failed' | 'partial' | string
+  agents: SkillPackSyncAgentResult[]
 }
 
 export interface UnmanagedItemDto {
@@ -720,6 +748,8 @@ export const skillApiV2 = {
     isTauri ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
   executeApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy', blockerDecisions: DistributionBlockerDecision[] = []) =>
     isTauri ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
+  syncPackToAgents: (packId: string, targetAgents: string[] = []) =>
+    isTauri ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
   previewRemovePackFromAgent: (packId: string, agentId: string) =>
     isTauri ? invoke<RemovePackFromAgentPreview>('preview_remove_skill_pack_from_agent', { packId, agentId }) : Promise.resolve({ packId, packName: packId, agentId, displayName: agentId, affectedTargets: [], willRemoveTargets: 0, willPreserveTargets: 0 }),
   removePackFromAgent: (packId: string, agentId: string) =>
@@ -1077,6 +1107,7 @@ function demoOverview(): SkillManagerOverview {
       linkFailPolicy: 'ask',
       startupScan: true,
       showUnmanaged: true,
+      autoSyncSkillPacks: true,
     },
   }
 }

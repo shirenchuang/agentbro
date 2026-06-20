@@ -32,6 +32,7 @@ function isManagedCopyBlocker(blocker: ConflictBlocker) {
 }
 
 export function SkillPackPage() {
+  const { t } = useTranslation()
   const state = useSkillStoreV2()
   const [packQuery, setPackQuery] = useState('')
   const [builderMode, setBuilderMode] = useState<BuilderMode | null>(null)
@@ -40,6 +41,7 @@ export function SkillPackPage() {
   const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
   const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
   const [busy, setBusy] = useState(false)
+  const [syncNotice, setSyncNotice] = useState<string | null>(null)
 
   useEffect(() => {
     state.loadOverview()
@@ -68,6 +70,7 @@ export function SkillPackPage() {
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
   const totalApplied = state.packs.reduce((sum, pack) => sum + pack.appliedAgentCount, 0)
   const unhealthyPacks = state.packs.filter((pack) => !pack.healthy).length
+  const syncIssueCount = state.packs.reduce((sum, pack) => sum + (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0), 0)
 
   const startCreate = () => {
     state.selectPack(null)
@@ -110,6 +113,26 @@ export function SkillPackPage() {
     }
   }
 
+  const syncPack = async (packId: string, agentIds: string[] = []) => {
+    setBusy(true)
+    setSyncNotice(null)
+    try {
+      const result = await skillApiV2.syncPackToAgents(packId, agentIds)
+      const failed = result.agents.filter((agent) => agent.status === 'failed').length
+      setSyncNotice(
+        failed > 0
+          ? t('skills.packSyncFailedNotice', { count: failed, defaultValue: '{{count}} 个 Agent 同步失败，可查看状态后重试。' })
+          : t('skills.packSyncDoneNotice', { count: result.agents.length, defaultValue: '已同步 {{count}} 个 Agent。' }),
+      )
+      await state.loadOverview(true)
+      await state.selectPack(packId)
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="sm2 sm2--packs sm2--packs-redesign">
       <div className="sm2__header sm2__header--stacked">
@@ -126,12 +149,13 @@ export function SkillPackPage() {
       </div>
 
       {state.error && <div className="sm2__error">{state.error}</div>}
+      {syncNotice && <div className="sm2__notice sm2__notice--ok">{syncNotice}</div>}
 
       <div className="sm2__pack-dashboard">
         <PackMetric label="技能包" value={state.packs.length} />
         <PackMetric label="成员引用" value={totalMembers} />
         <PackMetric label="Agent 应用" value={totalApplied} />
-        <PackMetric label="需要处理" value={unhealthyPacks + missingCount} tone={unhealthyPacks + missingCount > 0 ? 'warn' : 'ok'} />
+        <PackMetric label="需要处理" value={unhealthyPacks + missingCount + syncIssueCount} tone={unhealthyPacks + missingCount + syncIssueCount > 0 ? 'warn' : 'ok'} />
       </div>
 
       <div className="sm2__pack-layout">
@@ -185,6 +209,7 @@ export function SkillPackPage() {
               onDelete={() => openDelete(detail.id)}
               onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
               onRevoke={(agentId) => openRevoke(detail.id, agentId)}
+              onSync={(agentIds) => syncPack(detail.id, agentIds)}
             />
           )}
         </main>
@@ -337,18 +362,21 @@ function PackListItem({
   onClick: () => void
 }) {
   const isDefault = pack.id === DEFAULT_SKILL_PACK_ID
+  const syncStatus = pack.syncStatus || 'synced'
+  const hasSyncIssue = (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0) > 0
   return (
     <button className={`sm2__pack-list-item${active ? ' sm2__pack-list-item--active' : ''}${isDefault ? ' sm2__pack-list-item--default' : ''}`} onClick={onClick}>
       <span className="sm2__pack-list-top">
         <strong>{pack.name}</strong>
-        <span className={`sm2__pack-health ${pack.healthy ? 'sm2__pack-health--ok' : 'sm2__pack-health--warn'}`}>
-          {isDefault ? '系统' : pack.healthy ? 'OK' : '缺失'}
+        <span className={`sm2__pack-health ${pack.healthy && !hasSyncIssue ? 'sm2__pack-health--ok' : 'sm2__pack-health--warn'}`}>
+          {isDefault ? '系统' : hasSyncIssue ? packSyncStatusLabel(syncStatus) : pack.healthy ? 'OK' : '缺失'}
         </span>
       </span>
       <span className="sm2__pack-list-desc">{pack.description || '自定义 Skill 组合'}</span>
       <span className="sm2__pack-list-meta">
         <span>{pack.memberCount} Skills</span>
         <span>{pack.appliedAgentCount} Agents</span>
+        {hasSyncIssue && <span>{(pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0)} 待同步</span>}
       </span>
     </button>
   )
@@ -374,6 +402,7 @@ function PackDetail({
   onDelete,
   onRemoveSkill,
   onRevoke,
+  onSync,
 }: {
   detail: SkillPackDetail
   busy: boolean
@@ -383,9 +412,12 @@ function PackDetail({
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
   onRevoke: (agentId: string) => void
+  onSync: (agentIds?: string[]) => void
 }) {
   const missing = detail.members.filter((member) => member.missing)
   const isDefault = detail.id === DEFAULT_SKILL_PACK_ID
+  const syncStatus = detail.syncStatus || 'synced'
+  const needsSync = packNeedsSync(detail)
   return (
     <div className="sm2__pack-workbench">
       <header className="sm2__pack-detail-hero">
@@ -409,6 +441,11 @@ function PackDetail({
             应用
           </button>
           {!isDefault && <button className="sm2__btn" onClick={onEdit} disabled={busy}>编辑</button>}
+          {!isDefault && needsSync && (
+            <button className="sm2__btn sm2__btn--primary" onClick={() => onSync()} disabled={busy}>
+              {busy ? '同步中…' : '同步到 Agent'}
+            </button>
+          )}
           {!isDefault && <button className="sm2__btn" onClick={onDuplicate} disabled={busy}>复制</button>}
           {!isDefault && <button className="sm2__btn sm2__btn--danger" onClick={onDelete} disabled={busy}>删除</button>}
         </div>
@@ -426,10 +463,17 @@ function PackDetail({
         </div>
       )}
 
+      {!isDefault && needsSync && (
+        <div className={`sm2__notice ${syncStatus === 'failed' || syncStatus === 'partial' ? 'sm2__notice--warn' : 'sm2__notice--ok'}`}>
+          {packSyncStatusLabel(syncStatus)}：{detail.pendingSyncCount || 0} 个待同步，{detail.failedSyncCount || 0} 个失败。
+        </div>
+      )}
+
       <div className="sm2__pack-summary-grid">
         <PackMetric label="成员 Skills" value={detail.members.length} />
         <PackMetric label="已应用 Agent" value={detail.appliedAgents.length} />
         <PackMetric label="缺失成员" value={missing.length} tone={missing.length > 0 ? 'warn' : 'ok'} />
+        <PackMetric label="同步状态" value={(detail.pendingSyncCount || 0) + (detail.failedSyncCount || 0)} tone={needsSync ? 'warn' : 'ok'} />
       </div>
 
       <div className="sm2__pack-sections">
@@ -485,8 +529,14 @@ function PackDetail({
                   <AgentIconBadge iconKey={agent.iconKey || agent.agentId || agent.packName} title={agent.displayName || agent.agentId || agent.packName} size={30} />
                   <div>
                     <strong>{agent.displayName || agent.agentId || agent.packName}</strong>
-                    <span>{agent.memberCount} member claims</span>
+                    <span>{agent.memberCount} member claims · {packSyncStatusLabel(agent.syncStatus || 'synced')}</span>
+                    {agent.syncError && <span>{agent.syncError}</span>}
                   </div>
+                  {agent.agentId && agent.syncStatus && agent.syncStatus !== 'synced' && (
+                    <button className="sm2__btn" disabled={busy} onClick={() => onSync([agent.agentId!])}>
+                      同步
+                    </button>
+                  )}
                   {agent.agentId && (
                     <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onRevoke(agent.agentId!)}>
                       撤销
@@ -500,6 +550,18 @@ function PackDetail({
       </div>
     </div>
   )
+}
+
+function packNeedsSync(pack: Pick<SkillPackDetail, 'pendingSyncCount' | 'failedSyncCount' | 'syncStatus'>) {
+  return (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0) > 0 || ['pending', 'failed', 'partial', 'syncing'].includes(pack.syncStatus || '')
+}
+
+function packSyncStatusLabel(status: string) {
+  if (status === 'pending') return '有变更未同步'
+  if (status === 'syncing') return '同步中'
+  if (status === 'failed') return '同步失败'
+  if (status === 'partial') return '部分同步'
+  return '已同步'
 }
 
 function PackBuilderPanel({

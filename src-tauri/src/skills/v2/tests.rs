@@ -1136,6 +1136,128 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
+fn updating_applied_pack_auto_syncs_new_members_by_default() {
+    let (_home, svc, _lock) = fresh_service("pack-auto-sync");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-sync".to_string(),
+        name: "Sync".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-sync", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let updated = svc
+        .upsert_skill_pack(UpsertPackInput {
+            id: "p-sync".to_string(),
+            name: "Sync".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+        })
+        .unwrap();
+
+    assert_eq!(updated.sync_status, "synced");
+    assert_eq!(updated.pending_sync_count, 0);
+    let second_detail = svc.get_skill_detail("skill-two").unwrap();
+    assert!(second_detail.targets.iter().any(|target| {
+        target.agent_id == "codex"
+            && target
+                .claims
+                .iter()
+                .any(|claim| claim.pack_id.as_deref() == Some("p-sync"))
+    }));
+}
+
+#[test]
+fn updating_applied_pack_can_defer_and_manually_sync() {
+    let (_home, svc, _lock) = fresh_service("pack-manual-sync");
+    svc.update_settings(SettingsUpdate {
+        center_path: None,
+        sqlite_path: None,
+        default_distribute_mode: None,
+        link_fail_policy: None,
+        startup_scan: None,
+        show_unmanaged: None,
+        auto_sync_skill_packs: Some(false),
+    })
+    .unwrap();
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-manual".to_string(),
+        name: "Manual".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-manual", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let pending = svc
+        .upsert_skill_pack(UpsertPackInput {
+            id: "p-manual".to_string(),
+            name: "Manual".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+        })
+        .unwrap();
+
+    assert_eq!(pending.sync_status, "pending");
+    assert_eq!(pending.pending_sync_count, 1);
+    assert!(svc
+        .get_skill_detail("skill-two")
+        .unwrap()
+        .targets
+        .is_empty());
+
+    let result = svc
+        .sync_skill_pack_to_agents("p-manual", vec!["codex".to_string()])
+        .unwrap();
+    assert_eq!(result.status, "synced");
+    let synced = svc.get_skill_pack_detail("p-manual").unwrap();
+    assert_eq!(synced.sync_status, "synced");
+    assert_eq!(synced.pending_sync_count, 0);
+    assert_eq!(svc.get_skill_detail("skill-two").unwrap().targets.len(), 1);
+}
+
+#[test]
 fn apply_pack_accepts_blocker_decisions_for_unmanaged_targets() {
     let (_home, svc, _lock) = fresh_service("pack-blocker-decisions");
     let src = write_skill(
@@ -2628,6 +2750,7 @@ fn settings_round_trip() {
             link_fail_policy: Some("copy".to_string()),
             startup_scan: Some(false),
             show_unmanaged: None,
+            auto_sync_skill_packs: None,
         })
         .unwrap();
     assert_eq!(updated.default_distribute_mode, "copy");
@@ -2642,6 +2765,7 @@ fn settings_round_trip() {
             link_fail_policy: None,
             startup_scan: None,
             show_unmanaged: None,
+            auto_sync_skill_packs: None,
         })
         .unwrap();
     assert!(migrated.center_path.ends_with(".agentbro/skills"));

@@ -859,7 +859,12 @@
     "fileEmpty": "文件为空",
     "fileLarge": "大文件 ({{size}}) — 仅显示源码",
     "frontmatter": "元数据",
-    "frontmatterAdditional": "{{count}} 个附加字段"
+    "frontmatterAdditional": "{{count}} 个附加字段",
+    "packAutoSyncTitle": "技能包同步",
+    "packAutoSyncLabel": "技能包更新后自动同步到已应用的 Agent",
+    "packAutoSyncHelp": "关闭后，技能包页面会显示有变更未同步，并提供手动同步按钮。",
+    "packSyncFailedNotice": "{{count}} 个 Agent 同步失败，可查看状态后重试。",
+    "packSyncDoneNotice": "已同步 {{count}} 个 Agent。"
   },
   "update": {
     "availableTitle": "发现新版本",

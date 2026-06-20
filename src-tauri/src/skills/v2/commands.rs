@@ -225,6 +225,14 @@ pub fn execute_apply_skill_pack(
 }
 
 #[tauri::command]
+pub fn execute_sync_skill_pack_to_agents(
+    pack_id: String,
+    target_agents: Option<Vec<String>>,
+) -> Result<SkillPackSyncResult, String> {
+    svc()?.sync_skill_pack_to_agents(&pack_id, target_agents.unwrap_or_default())
+}
+
+#[tauri::command]
 pub fn preview_remove_skill_pack_from_agent(
     pack_id: String,
     agent_id: String,
