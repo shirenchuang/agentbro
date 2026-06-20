@@ -2566,10 +2566,113 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('选择当前可接管'))
     fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
 
+    expect(screen.getByRole('heading', { name: '批量接管 1 个 Skill' })).toBeInTheDocument()
+    expect(screen.getByText('是否将接管的 Skill 同步到技能包？')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /同时同步到技能包/ })).not.toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
     await waitFor(() => {
       expect(execute).toHaveBeenCalledWith('claude-code', 'unmanaged-1', 'import_keep', null)
     })
     expect(listUnmanaged).toHaveBeenCalled()
+  })
+
+  it('syncs successfully batch-adopted unmanaged skills into an existing skill pack', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        availablePacks: [
+          { id: 'agent-tools', name: 'Agent Tools', description: 'Daily agent tools', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+        ],
+      },
+      packs: [
+        { id: 'agent-tools', name: 'Agent Tools', description: 'Daily agent tools', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+      ],
+    })
+    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
+      id: 'agent-tools',
+      name: 'Agent Tools',
+      description: 'Daily agent tools',
+      tags: [],
+      members: [{ skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false }],
+      appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    } as SkillPackDetail)
+    const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      id: 'agent-tools',
+      name: 'Agent Tools',
+      description: 'Daily agent tools',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+        { skillId: 'manual-skill', skillName: 'manual-skill', required: true, sortOrder: 1, missing: false },
+      ],
+      appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    } as SkillPackDetail)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时同步到技能包/ }))
+    fireEvent.click(screen.getByRole('button', { name: '同步到已有技能包' }))
+    fireEvent.change(screen.getByLabelText('目标技能包'), { target: { value: 'agent-tools' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    await waitFor(() => {
+      expect(upsertPack).toHaveBeenCalledWith({
+        id: 'agent-tools',
+        name: 'Agent Tools',
+        description: 'Daily agent tools',
+        tags: [],
+        skillIds: ['release-checklist', 'manual-skill'],
+      })
+    })
+  })
+
+  it('creates a skill pack from successfully batch-adopted unmanaged skills', async () => {
+    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      id: 'pack-manual',
+      name: 'Manual Pack',
+      description: '',
+      tags: [],
+      members: [{ skillId: 'manual-skill', skillName: 'manual-skill', required: true, sortOrder: 0, missing: false }],
+      appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    } as SkillPackDetail)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时同步到技能包/ }))
+    fireEvent.click(screen.getByRole('button', { name: '新建技能包并同步' }))
+    fireEvent.change(screen.getByLabelText('新技能包名称'), { target: { value: 'Manual Pack' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    await waitFor(() => {
+      expect(upsertPack).toHaveBeenCalledWith({
+        id: '',
+        name: 'Manual Pack',
+        description: '',
+        tags: [],
+        skillIds: ['manual-skill'],
+      })
+    })
   })
 
   it('localizes managed mode, direct claim, and unmanaged reason labels on the agent page', async () => {
