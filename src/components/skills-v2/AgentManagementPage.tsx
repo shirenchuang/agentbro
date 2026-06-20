@@ -33,6 +33,16 @@ type PackApplyConflictDialogState = {
   mode: 'link' | 'copy'
   preview: DistributionPreview
 }
+type BatchAdoptPackSelection =
+  | { kind: 'none' }
+  | { kind: 'existing'; packId: string }
+  | { kind: 'new'; name: string }
+type BatchAdoptPackOption = {
+  id: string
+  name: string
+  description: string
+  memberCount: number
+}
 
 const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
@@ -754,6 +764,7 @@ function SkillsTab({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set())
   const [adoptingIds, setAdoptingIds] = useState<Set<string>>(() => new Set())
   const [batchDeleteTargets, setBatchDeleteTargets] = useState<AgentDetail['skills'] | null>(null)
+  const [batchAdoptItems, setBatchAdoptItems] = useState<UnmanagedItemDto[] | null>(null)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
@@ -818,6 +829,36 @@ function SkillsTab({
     await state.loadOverview(true)
   }
 
+  const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[]) => {
+    const uniqueSkillIds = uniqueValues(skillIds)
+    if (selection.kind === 'none' || uniqueSkillIds.length === 0) return null
+    if (selection.kind === 'new') {
+      const saved = await skillApiV2.upsertPack({
+        id: '',
+        name: selection.name.trim(),
+        description: '',
+        tags: [],
+        skillIds: uniqueSkillIds,
+      })
+      return { packName: saved.name, added: saved.members.length }
+    }
+
+    const existing = await skillApiV2.getPackDetail(selection.packId)
+    const existingIds = existing.members.map((member) => member.skillId)
+    const merged = uniqueValues([...existingIds, ...uniqueSkillIds])
+    if (merged.length === existingIds.length) {
+      return { packName: existing.name, added: 0 }
+    }
+    const saved = await skillApiV2.upsertPack({
+      id: existing.id,
+      name: existing.name,
+      description: existing.description,
+      tags: existing.tags,
+      skillIds: merged,
+    })
+    return { packName: saved.name, added: merged.length - existingIds.length }
+  }
+
   const deleteManaged = async (targets: AgentDetail['skills']) => {
     if (targets.length === 0) return
     const ids = targets.map((target) => target.id)
@@ -841,7 +882,7 @@ function SkillsTab({
     }
   }
 
-  const adoptUnmanaged = async (items: UnmanagedItemDto[]) => {
+  const adoptUnmanaged = async (items: UnmanagedItemDto[], packSelection: BatchAdoptPackSelection = { kind: 'none' }) => {
     if (items.length === 0) return
     const ids = items.map((item) => item.id)
     setAdoptingIds(new Set(ids))
@@ -849,19 +890,30 @@ function SkillsTab({
     state.setError(null)
     try {
       let ok = 0
+      let packResult: { packName: string; added: number } | null = null
+      const adoptedSkillIds: string[] = []
       const failed: string[] = []
       for (const item of items) {
         try {
-          await skillApiV2.executeAdopt(detail.id, item.id, defaultAgentDetailAdoptMode(item), null)
+          const skillId = await skillApiV2.executeAdopt(detail.id, item.id, defaultAgentDetailAdoptMode(item), null)
+          adoptedSkillIds.push(skillId)
           ok += 1
         } catch (e) {
           failed.push(`${item.inferredSkillId || item.path.split('/').pop() || item.id}: ${String(e)}`)
         }
       }
+      try {
+        packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds)
+      } catch (e) {
+        failed.push(`技能包同步失败: ${String(e)}`)
+      }
       await refreshAgentSkills()
       setSelectedUnmanagedIds(new Set())
       setUnmanagedSelectionMode(false)
-      setLocalNotice(`已接管 ${ok} 个 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
+      const packNotice = packResult
+        ? `，已同步 ${packResult.added} 个到「${packResult.packName}」`
+        : ''
+      setLocalNotice(`已接管 ${ok} 个 Skill${packNotice}${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
     } catch (e) {
@@ -994,7 +1046,7 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedUnmanagedIds.size === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set())}>
                   清空
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel="接管中" onClick={() => adoptUnmanaged(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel="接管中" onClick={() => setBatchAdoptItems(selectedUnmanaged)}>
                   接管到中心库
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
@@ -1088,6 +1140,20 @@ function SkillsTab({
           <p>{batchDeleteTargets.length}个SKILL 将从当前Agent直接删除，您后续仍旧可以从中心库安装</p>
         </PreviewDialog>
       )}
+      {batchAdoptItems && (
+        <BatchAdoptPackDialog
+          items={batchAdoptItems}
+          agentName={detail.displayName}
+          packOptions={packOptionsForBatchAdopt(detail, state.packs)}
+          busy={unmanagedAdopting}
+          onCancel={() => setBatchAdoptItems(null)}
+          onConfirm={async (selection) => {
+            const items = batchAdoptItems
+            setBatchAdoptItems(null)
+            await adoptUnmanaged(items, selection)
+          }}
+        />
+      )}
       {installDialogOpen && (
         <AgentSkillInstallDialog
           agent={detail}
@@ -1099,6 +1165,167 @@ function SkillsTab({
       )}
       {packApplyProgress && <PackApplyProgressToast progress={packApplyProgress} />}
     </div>
+  )
+}
+
+function BatchAdoptPackDialog({
+  items,
+  agentName,
+  packOptions,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  items: UnmanagedItemDto[]
+  agentName: string
+  packOptions: BatchAdoptPackOption[]
+  busy: boolean
+  onCancel: () => void
+  onConfirm: (selection: BatchAdoptPackSelection) => Promise<void> | void
+}) {
+  const { t } = useTranslation()
+  const [mode, setMode] = useState<BatchAdoptPackSelection['kind']>('none')
+  const [packId, setPackId] = useState(packOptions[0]?.id ?? '')
+  const [newPackName, setNewPackName] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const visibleItems = items.slice(0, 6)
+  const remaining = Math.max(0, items.length - visibleItems.length)
+  const disabled = mode === 'existing'
+    ? !packId
+    : mode === 'new'
+      ? !newPackName.trim()
+      : false
+
+  const execute = async () => {
+    const selection: BatchAdoptPackSelection = mode === 'existing'
+      ? { kind: 'existing', packId }
+      : mode === 'new'
+        ? { kind: 'new', name: newPackName.trim() }
+        : { kind: 'none' }
+    setError(null)
+    try {
+      await Promise.resolve(onConfirm(selection))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  return (
+    <PreviewDialog
+      title={t('skills.batchAdoptPack.title', { count: items.length })}
+      confirmLabel={t('skills.batchAdoptPack.confirm')}
+      cancelLabel={t('skills.cancel')}
+      busy={busy}
+      disabled={disabled}
+      modalClassName="sm2__modal--adopt sm2__modal--batch-adopt-pack"
+      onCancel={onCancel}
+      onConfirm={execute}
+    >
+      <div className="sm2-adopt sm2-batch-adopt-pack">
+        <div className="sm2-adopt__summary">
+          <div>
+            <span>{t('skills.batchAdoptPack.agent')}</span>
+            <strong>{agentName}</strong>
+          </div>
+          <div>
+            <span>{t('skills.batchAdoptPack.skillCount')}</span>
+            <strong>{items.length}</strong>
+          </div>
+          <div className="sm2-adopt__summary-path">
+            <span>{t('skills.batchAdoptPack.summary')}</span>
+            <code>{visibleItems.map((item) => item.inferredSkillId || item.path.split('/').pop() || item.id).join(', ')}{remaining > 0 ? ` +${remaining}` : ''}</code>
+          </div>
+        </div>
+
+        <section className="sm2-adopt__section">
+          <div className="sm2-adopt__section-head">
+            <h4>{t('skills.batchAdoptPack.syncTitle')}</h4>
+            <span>{t('skills.batchAdoptPack.syncHint')}</span>
+          </div>
+          <div className="sm2-adopt__options" role="radiogroup" aria-label={t('skills.batchAdoptPack.syncTitle')}>
+            <button
+              type="button"
+              className={`sm2-adopt__option${mode === 'none' ? ' sm2-adopt__option--active' : ''}`}
+              role="radio"
+              aria-checked={mode === 'none'}
+              onClick={() => setMode('none')}
+            >
+              <span className="sm2-adopt__radio" />
+              <span className="sm2-adopt__option-main">
+                <strong>{t('skills.batchAdoptPack.skipTitle')}</strong>
+                <span>{t('skills.batchAdoptPack.skipDescription')}</span>
+              </span>
+              <em>{t('skills.batchAdoptPack.skipBadge')}</em>
+            </button>
+            <button
+              type="button"
+              className={`sm2-adopt__option${mode === 'existing' ? ' sm2-adopt__option--active' : ''}`}
+              role="radio"
+              aria-checked={mode === 'existing'}
+              disabled={packOptions.length === 0}
+              onClick={() => {
+                setMode('existing')
+                if (!packId) setPackId(packOptions[0]?.id ?? '')
+              }}
+            >
+              <span className="sm2-adopt__radio" />
+              <span className="sm2-adopt__option-main">
+                <strong>{t('skills.batchAdoptPack.existingTitle')}</strong>
+                <span>{packOptions.length > 0 ? t('skills.batchAdoptPack.existingDescription') : t('skills.batchAdoptPack.noExistingPacks')}</span>
+              </span>
+              <em>{t('skills.batchAdoptPack.existingBadge')}</em>
+            </button>
+            <button
+              type="button"
+              className={`sm2-adopt__option${mode === 'new' ? ' sm2-adopt__option--active' : ''}`}
+              role="radio"
+              aria-checked={mode === 'new'}
+              onClick={() => setMode('new')}
+            >
+              <span className="sm2-adopt__radio" />
+              <span className="sm2-adopt__option-main">
+                <strong>{t('skills.batchAdoptPack.newTitle')}</strong>
+                <span>{t('skills.batchAdoptPack.newDescription')}</span>
+              </span>
+              <em>{t('skills.batchAdoptPack.newBadge')}</em>
+            </button>
+          </div>
+        </section>
+
+        {mode === 'existing' && (
+          <div className="sm2-adopt__rename">
+            <label htmlFor="sm2-batch-adopt-pack-existing">{t('skills.batchAdoptPack.targetPack')}</label>
+            <select
+              id="sm2-batch-adopt-pack-existing"
+              value={packId}
+              onChange={(event) => setPackId(event.target.value)}
+            >
+              {packOptions.map((pack) => (
+                <option key={pack.id} value={pack.id}>
+                  {pack.name} ({pack.memberCount})
+                </option>
+              ))}
+            </select>
+            <span>{t('skills.batchAdoptPack.existingImpact')}</span>
+          </div>
+        )}
+
+        {mode === 'new' && (
+          <div className="sm2-adopt__rename">
+            <label htmlFor="sm2-batch-adopt-pack-new">{t('skills.batchAdoptPack.newPackName')}</label>
+            <input
+              id="sm2-batch-adopt-pack-new"
+              value={newPackName}
+              onChange={(event) => setNewPackName(event.target.value)}
+              placeholder={t('skills.batchAdoptPack.newPackPlaceholder')}
+            />
+            <span>{t('skills.batchAdoptPack.newImpact')}</span>
+          </div>
+        )}
+
+        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      </div>
+    </PreviewDialog>
   )
 }
 
@@ -1897,6 +2124,29 @@ function toggleSetValue(current: Set<string>, value: string) {
   if (next.has(value)) next.delete(value)
   else next.add(value)
   return next
+}
+
+function uniqueValues(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function packOptionsForBatchAdopt(detail: AgentDetail, packs: BatchAdoptPackOption[]) {
+  const byId = new Map<string, BatchAdoptPackOption>()
+  const add = (pack: BatchAdoptPackOption) => {
+    if (!pack.id || pack.id === 'default' || byId.has(pack.id)) return
+    byId.set(pack.id, pack)
+  }
+  for (const pack of packs) add(pack)
+  for (const pack of detail.availablePacks) add(pack)
+  for (const pack of detail.appliedPacks) {
+    add({
+      id: pack.packId,
+      name: pack.packName,
+      description: '',
+      memberCount: pack.memberCount,
+    })
+  }
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 function skillInstalledOnAgent(skill: SkillSummary, agentId: string) {
