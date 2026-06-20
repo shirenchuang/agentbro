@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode } from '../../services/skillApiV2'
+import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
 import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -70,6 +70,7 @@ export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: In
 
 const MARKET_PAGE_SIZE = 24
 const DEFAULT_RECOMMENDED_SOURCE_COUNT = 4
+const DEFAULT_SKILL_PACK_ID = 'default'
 const RECOMMENDED_PUBLISHERS = [
   { id: 'anthropics', label: 'Anthropic' },
   { id: 'microsoft', label: 'Microsoft' },
@@ -118,8 +119,23 @@ type LocalPreviewViewMode = 'list' | 'cards'
 type FileViewMode = 'preview' | 'source'
 type LocalImportMode = 'copy' | 'link'
 type LocalConflictResolution = 'overwrite' | 'rename' | 'skip'
+type MarketPackChoiceMode = 'center' | 'existing' | 'new'
+
+interface MarketInstallPackChoice {
+  mode: MarketPackChoiceMode
+  packId?: string
+  newPackName?: string
+  newPackDescription?: string
+}
+
+interface MarketPackAttachResult {
+  packId: string
+  packName: string
+  alreadyMember: boolean
+}
 
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
+  const { t } = useTranslation()
   const [items, setItems] = useState<MarketplaceSkill[]>([])
   const [sourceItemsBySource, setSourceItemsBySource] = useState<Record<string, MarketplaceSkill[]>>({})
   const [board, setBoard] = useState<MarketBoard>('alltime')
@@ -136,9 +152,13 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   const [status, setStatus] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
+  const [packDialogSkill, setPackDialogSkill] = useState<MarketplaceSkill | null>(null)
+  const [preferredPackBySource, setPreferredPackBySource] = useState<Record<string, string>>({})
+  const [packMembershipBySkillId, setPackMembershipBySkillId] = useState<Record<string, string[]>>({})
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
   const centerSkills = useSkillStoreV2((s) => s.skills)
+  const packs = useSkillStoreV2((s) => s.packs)
   const registryId = 'skills-sh'
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
@@ -405,7 +425,11 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
-  const install = async (it: MarketplaceSkill) => {
+  const packNamesForSkill = useCallback((it: MarketplaceSkill) => {
+    return packMembershipBySkillId[marketSkillId(it)] || []
+  }, [packMembershipBySkillId])
+
+  const install = async (it: MarketplaceSkill, packChoice: MarketInstallPackChoice = { mode: 'center' }) => {
     if (installing.has(it.id)) return
     setInstalling((prev) => new Set(prev).add(it.id))
     setError(null)
@@ -418,13 +442,47 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
       multi: false,
     }
     try {
-      // execute_add_center_skill previews internally; calling it directly
-      // avoids a second remote download. A same-name/different-source
-      // conflict surfaces as an error, which we redirect to the Git tab.
-      const result = await skillApiV2.executeAddCenterSkill(input, [])
-      const installedSkillId = result.skillIds[0] || result.updated[0] || marketSkillId(it)
+      const existingCenterSkill = findMarketCenterSkill(it, useSkillStoreV2.getState().skills)
+      let installedSkillId = existingCenterSkill?.id || ''
+      const wasAlreadyInstalled = Boolean(installedSkillId)
+      if (!installedSkillId) {
+        // execute_add_center_skill previews internally; calling it directly
+        // avoids a second remote download. A same-name/different-source
+        // conflict surfaces as an error, which we redirect to the Git tab.
+        const result = await skillApiV2.executeAddCenterSkill(input, [])
+        installedSkillId = result.skillIds[0] || result.updated[0] || marketSkillId(it)
+      }
+      let packResult: MarketPackAttachResult | null = null
+      if (packChoice.mode !== 'center') {
+        packResult = await attachMarketSkillToPack(it, installedSkillId, packChoice, packs)
+        const attachedPack = packResult
+        const source = marketSkillSource(it)
+        if (source) {
+          setPreferredPackBySource((prev) => ({ ...prev, [source]: attachedPack.packId }))
+        }
+        setPackMembershipBySkillId((prev) => ({
+          ...prev,
+          ...marketPackMembershipPatch(prev, installedSkillId, marketSkillId(it), attachedPack.packName),
+        }))
+      }
       setInstalledIds((prev) => new Set([...prev, it.id]))
-      setStatus(`已安装「${it.name}」到中心 Skill 库`)
+      if (packResult) {
+        setStatus(t(
+          packResult.alreadyMember
+            ? 'skills.marketInstall.alreadyInPackStatus'
+            : wasAlreadyInstalled
+              ? 'skills.marketInstall.addedInstalledToPackStatus'
+              : 'skills.marketInstall.installedWithPackStatus',
+          { name: it.name, pack: packResult.packName },
+        ))
+      } else {
+        setStatus(
+          wasAlreadyInstalled
+            ? t('skills.marketInstall.alreadyInstalledStatus', { name: it.name })
+            : t('skills.marketInstall.installedStatus', { name: it.name }),
+        )
+      }
+      await useSkillStoreV2.getState().loadOverview(true)
       await onDone(installedSkillId)
     } catch (e) {
       const msg = String(e)
@@ -441,6 +499,12 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         return next
       })
     }
+  }
+
+  const openInstallDialog = (it: MarketplaceSkill) => {
+    setError(null)
+    setStatus(null)
+    setPackDialogSkill(it)
   }
 
   return (
@@ -625,14 +689,17 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                           <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
                         )}
                         {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                        {packNamesForSkill(it).map((packName) => (
+                          <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                        ))}
                       </div>
                       {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                     </div>
                     <button
                       className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                      title={done ? '已在中心库' : '安装到中心库'}
-                      disabled={isCurrentInstalling || done}
-                      onClick={(e) => { e.stopPropagation(); install(it) }}
+                      title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                      disabled={isCurrentInstalling}
+                      onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
                     >
                       {isCurrentInstalling ? '…' : done ? '✓' : '+'}
                     </button>
@@ -656,9 +723,9 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                       )}
                       <button
                         className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                        title={done ? '已在中心库' : '安装到中心库'}
-                        disabled={isCurrentInstalling || done}
-                        onClick={(e) => { e.stopPropagation(); install(it) }}
+                        title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                        disabled={isCurrentInstalling}
+                        onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
                       >
                         {isCurrentInstalling ? '…' : done ? '✓' : '+'}
                       </button>
@@ -675,6 +742,9 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                         <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
                       )}
                       {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                      {packNamesForSkill(it).map((packName) => (
+                        <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                      ))}
                     </div>
                     {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                   </div>
@@ -722,19 +792,200 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         onClose={() => setDetailSkill(null)}
         installing={detailSkill ? installing.has(detailSkill.id) : false}
         installed={detailSkill ? installedIds.has(detailSkill.id) || isMarketItemInstalled(detailSkill, centerSkills) : false}
-        onInstall={(it) => { setDetailSkill(null); install(it) }}
+        packNames={detailSkill ? packNamesForSkill(detailSkill) : []}
+        onInstall={(it) => { setDetailSkill(null); openInstallDialog(it) }}
       />
+      {packDialogSkill && (
+        <MarketInstallPackDialog
+          key={packDialogSkill.id}
+          skill={packDialogSkill}
+          packs={packs}
+          preferredPackId={preferredPackBySource[marketSkillSource(packDialogSkill)]}
+          installed={isMarketItemInstalled(packDialogSkill, useSkillStoreV2.getState().skills)}
+          busy={installing.has(packDialogSkill.id)}
+          onClose={() => setPackDialogSkill(null)}
+          onConfirm={(choice) => {
+            const skill = packDialogSkill
+            setPackDialogSkill(null)
+            void install(skill, choice)
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }: {
+function MarketInstallPackDialog({
+  skill,
+  packs,
+  preferredPackId,
+  installed,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  skill: MarketplaceSkill
+  packs: SkillPackSummary[]
+  preferredPackId?: string
+  installed: boolean
+  busy: boolean
+  onClose: () => void
+  onConfirm: (choice: MarketInstallPackChoice) => void
+}) {
+  const { t } = useTranslation()
+  const source = skill ? marketSkillSource(skill) : ''
+  const editablePacks = useMemo(
+    () => packs.filter((pack) => pack.id !== DEFAULT_SKILL_PACK_ID),
+    [packs],
+  )
+  const recommendedPack = useMemo(
+    () => recommendedMarketPack(editablePacks, source, preferredPackId),
+    [editablePacks, preferredPackId, source],
+  )
+  const [mode, setMode] = useState<MarketPackChoiceMode>(() => recommendedPack ? 'existing' : source ? 'new' : 'center')
+  const [packQuery, setPackQuery] = useState('')
+  const [packId, setPackId] = useState(() => recommendedPack?.id || editablePacks[0]?.id || '')
+  const [newPackName, setNewPackName] = useState(() => source || skill.name)
+  const [newPackDescription, setNewPackDescription] = useState(() =>
+    t('skills.marketInstall.defaultPackDescription', { source: source || skill.name }),
+  )
+
+  const filteredPacks = useMemo(() => {
+    const q = packQuery.trim().toLowerCase()
+    if (!q) return editablePacks
+    return editablePacks.filter((pack) =>
+      [pack.name, pack.description, pack.tags.join(' ')]
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [editablePacks, packQuery])
+
+  const sourceLabel = source || skill.registryId || 'skills.sh'
+  const disabled =
+    busy ||
+    (installed && mode === 'center') ||
+    (mode === 'existing' && !packId) ||
+    (mode === 'new' && !newPackName.trim())
+
+  return (
+    <PreviewDialog
+      title={t('skills.marketInstall.dialogTitle', { name: skill.name })}
+      confirmLabel={installed ? t('skills.marketInstall.confirmPackOnly') : t('skills.marketInstall.confirmInstall')}
+      busyLabel={t('skills.marketInstall.busy')}
+      modalClassName="sm2__modal--market-pack-install"
+      busy={busy}
+      disabled={disabled}
+      onCancel={onClose}
+      onConfirm={() => onConfirm({
+        mode,
+        packId,
+        newPackName: newPackName.trim(),
+        newPackDescription: newPackDescription.trim(),
+      })}
+    >
+      <div className="sm2__market-pack-install">
+        <div className="sm2__market-pack-summary">
+          <SkillAvatar source={skill.source} name={skill.name} />
+          <div>
+            <strong>{skill.name}</strong>
+            <span>{sourceLabel}</span>
+            <code>{skill.downloadUrl}</code>
+          </div>
+        </div>
+
+        {installed && (
+          <div className="sm2__notice sm2__notice--ok">
+            {t('skills.marketInstall.installedHint')}
+          </div>
+        )}
+
+        <div className="sm2__market-pack-options" role="radiogroup" aria-label={t('skills.marketInstall.packChoiceLabel')}>
+          <label className={`sm2__market-pack-option${mode === 'center' ? ' sm2__market-pack-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'center'}
+              onChange={() => setMode('center')}
+            />
+            <span>
+              <strong>{t('skills.marketInstall.centerOnlyTitle')}</strong>
+              <small>{t('skills.marketInstall.centerOnlyDesc')}</small>
+            </span>
+          </label>
+
+          <label className={`sm2__market-pack-option${mode === 'existing' ? ' sm2__market-pack-option--active' : ''}${editablePacks.length === 0 ? ' sm2__market-pack-option--disabled' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'existing'}
+              disabled={editablePacks.length === 0}
+              onChange={() => setMode('existing')}
+            />
+            <span>
+              <strong>{recommendedPack ? t('skills.marketInstall.existingRecommendedTitle', { pack: recommendedPack.name }) : t('skills.marketInstall.existingTitle')}</strong>
+            <small>{editablePacks.length === 0 ? t('skills.marketInstall.noPacksHint') : t('skills.marketInstall.existingDesc')}</small>
+          </span>
+        </label>
+
+          {mode === 'existing' && editablePacks.length > 0 && (
+            <div className="sm2__market-pack-picker">
+              <input
+                className="sm2__search sm2__search--full"
+                value={packQuery}
+                onChange={(e) => setPackQuery(e.target.value)}
+                placeholder={t('skills.marketInstall.searchPackPlaceholder')}
+              />
+              <select value={packId} onChange={(e) => setPackId(e.target.value)}>
+                {filteredPacks.map((pack) => (
+                  <option key={pack.id} value={pack.id}>
+                    {pack.name} · {pack.memberCount} Skills
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <label className={`sm2__market-pack-option${mode === 'new' ? ' sm2__market-pack-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'new'}
+              onChange={() => setMode('new')}
+            />
+            <span>
+              <strong>{t('skills.marketInstall.newTitle')}</strong>
+              <small>{t('skills.marketInstall.newDesc', { source: sourceLabel })}</small>
+            </span>
+          </label>
+
+          {mode === 'new' && (
+            <div className="sm2__market-pack-form">
+              <label>
+                <span>{t('skills.marketInstall.packName')}</span>
+                <input value={newPackName} onChange={(e) => setNewPackName(e.target.value)} />
+              </label>
+              <label>
+                <span>{t('skills.marketInstall.packDescription')}</span>
+                <textarea value={newPackDescription} onChange={(e) => setNewPackDescription(e.target.value)} rows={3} />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+    </PreviewDialog>
+  )
+}
+
+function MarketSkillDetail({ skill, onClose, installing, installed, packNames, onInstall }: {
   skill: MarketplaceSkill | null
   onClose: () => void
   installing: boolean
   installed: boolean
+  packNames: string[]
   onInstall: (it: MarketplaceSkill) => void
 }) {
+  const { t } = useTranslation()
   const [remoteDetailState, setRemoteDetailState] = useState<{ key: string; detail: MarketplaceSkillDetail | null } | null>(null)
   const source = skill?.source || skill?.registryId || ''
   const skillId = skill ? marketSkillId(skill) : ''
@@ -789,6 +1040,9 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
                   <span className="sm2__install-count">↓ {formatInstallCount(skill.installCount)}</span>
                 )}
                 {(skill.isInstalled || installed) && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                {packNames.map((packName) => (
+                  <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                ))}
               </div>
             </div>
           </div>
@@ -860,10 +1114,10 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
           <div className="sm2__btn-row" style={{ marginTop: 20 }}>
             <button
               className="sm2__btn sm2__btn--primary"
-              disabled={installing || skill.isInstalled || installed}
+              disabled={installing}
               onClick={() => onInstall(skill)}
             >
-              {installing ? '安装中…' : skill.isInstalled || installed ? '已安装' : '安装到中心库'}
+              {installing ? '安装中…' : skill.isInstalled || installed ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
             </button>
             {sourceUrl && (
               <button className="sm2__btn" onClick={() => openExternal(sourceUrl)}>
@@ -885,6 +1139,111 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
       )}
     </SlideOver>
   )
+}
+
+async function attachMarketSkillToPack(
+  skill: MarketplaceSkill,
+  skillId: string,
+  choice: MarketInstallPackChoice,
+  packs: SkillPackSummary[],
+): Promise<MarketPackAttachResult> {
+  if (choice.mode === 'existing') {
+    const packId = choice.packId || ''
+    if (!packId) throw new Error('Skill pack is required.')
+    const detail = await skillApiV2.getPackDetail(packId)
+    const existingIds = detail.members.map((member) => member.skillId)
+    const alreadyMember = existingIds.includes(skillId)
+    const saved = await skillApiV2.upsertPack({
+      id: detail.id,
+      name: detail.name,
+      description: detail.description,
+      tags: detail.tags,
+      skillIds: alreadyMember ? existingIds : [...existingIds, skillId],
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember }
+  }
+
+  if (choice.mode === 'new') {
+    const source = marketSkillSource(skill)
+    const name = choice.newPackName?.trim() || source || skill.name
+    const description = choice.newPackDescription?.trim() || `Skills from ${source || skill.name}.`
+    const saved = await skillApiV2.upsertPack({
+      id: '',
+      name,
+      description,
+      tags: uniqStrings(['market', source].filter(Boolean)),
+      skillIds: [skillId],
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember: false }
+  }
+
+  const fallback = packs.find((pack) => pack.id === choice.packId)
+  return { packId: fallback?.id || '', packName: fallback?.name || '', alreadyMember: false }
+}
+
+function recommendedMarketPack(packs: SkillPackSummary[], source: string, preferredPackId?: string) {
+  const preferred = preferredPackId ? packs.find((pack) => pack.id === preferredPackId) : null
+  if (preferred) return preferred
+  const normalizedSource = source.trim().toLowerCase()
+  if (!normalizedSource) return null
+  return packs.find((pack) =>
+    pack.name.trim().toLowerCase() === normalizedSource ||
+    pack.tags.some((tag) => tag.trim().toLowerCase() === normalizedSource),
+  ) || null
+}
+
+function findMarketCenterSkill(skill: MarketplaceSkill, centerSkills: SkillSummary[]) {
+  const skillId = marketSkillId(skill)
+  const sourceUris = marketSourceUriCandidates(skill)
+  return centerSkills.find((centerSkill) => {
+    if (centerSkill.id === skillId) return true
+    const sourceUri = centerSkill.sourceUri?.trim()
+    return Boolean(sourceUri && sourceUris.has(sourceUri))
+  }) || null
+}
+
+function marketSourceUriCandidates(skill: MarketplaceSkill) {
+  const candidates = new Set<string>()
+  const downloadUrl = skill.downloadUrl.trim()
+  if (downloadUrl) candidates.add(downloadUrl)
+
+  const source = skill.source?.trim()
+  const skillId = marketSkillId(skill)
+  if (source && skillId) {
+    candidates.add(`skillssh:${source}/${skillId}`)
+    candidates.add(`github:${source}/${skillId}`)
+  }
+
+  if (downloadUrl.startsWith('skillssh:')) {
+    candidates.add(`github:${downloadUrl.slice('skillssh:'.length)}`)
+  } else if (downloadUrl.startsWith('github:')) {
+    candidates.add(`skillssh:${downloadUrl.slice('github:'.length)}`)
+  }
+
+  return candidates
+}
+
+function marketPackMembershipPatch(
+  current: Record<string, string[]>,
+  installedSkillId: string,
+  marketId: string,
+  packName: string,
+) {
+  const patch: Record<string, string[]> = {
+    [installedSkillId]: uniqStrings([...(current[installedSkillId] || []), packName]),
+  }
+  if (marketId && marketId !== installedSkillId) {
+    patch[marketId] = uniqStrings([...(current[marketId] || []), packName])
+  }
+  return patch
+}
+
+function marketSkillSource(skill: MarketplaceSkill) {
+  return skill.source || skill.registryId || ''
+}
+
+function uniqStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
 }
 
 function marketSkillPathParts(skill: MarketplaceSkill) {
