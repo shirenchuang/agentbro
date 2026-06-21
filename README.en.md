@@ -25,7 +25,25 @@
     <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-f5b84b" />
     <img alt="Built with Tauri" src="https://img.shields.io/badge/Tauri-React%20%2B%20Rust-0c6b63" />
   </p>
+
+  <p>
+    <strong>A local control center for AI coding agents: Claude Code, Codex, Gemini CLI, Cursor, Copilot, Kimi, Qoder, OpenCode, and more.</strong>
+  </p>
 </div>
+
+<img src="docs/assets/screenshots/island-expanded.png" alt="AgentBro expanded Dynamic Island" width="100%" />
+
+## Quick Start
+
+```bash
+brew tap shirenchuang/tap && brew install --cask agentbro
+```
+
+- Download: [`GitHub Releases`](https://github.com/shirenchuang/agentbro/releases) or the [latest China mirror DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg).
+- Connect an agent: open **Island -> Integration**, run **Hook Doctor**, then install the hook for the agent you use.
+- Contribute: start with [`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) or [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22).
+
+If AgentBro saves you from bouncing between terminals, editors, and approval prompts, a star helps more AI coding agent users discover it.
 
 ## What Is AgentBro?
 
@@ -259,6 +277,8 @@ Issues and pull requests are welcome!
 - Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - AI agent collaboration guide: [AGENTS.md](AGENTS.md)
 - Claude Code project config: [.claude/CLAUDE.md](.claude/CLAUDE.md)
+- Community discussions: [GitHub Discussions](https://github.com/shirenchuang/agentbro/discussions)
+- Starter tasks: [`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) / [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)
 
 Please target the `dev` branch. Run `pnpm lint && pnpm test:run && pnpm build && cargo check --manifest-path src-tauri/Cargo.toml` before submitting.
 

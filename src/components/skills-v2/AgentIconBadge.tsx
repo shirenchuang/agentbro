@@ -11,6 +11,10 @@ import hermesIcon from '../../assets/cli-icons/hermes.png'
 import codebuddyIcon from '../../assets/cli-icons/codebuddy.png'
 import qoderIcon from '../../assets/cli-icons/qoder.png'
 import piIcon from '../../assets/cli-icons/pi.png'
+import openclawIcon from '../../assets/openclaw.png'
+import qclawIcon from '../../assets/qclaw.png'
+import easyclawIcon from '../../assets/easyclaw.png'
+import autoclawIcon from '../../assets/autoclaw.png'
 
 const agentIcons: Record<string, string> = {
   'claude-code': claudeIcon,
@@ -20,6 +24,10 @@ const agentIcons: Record<string, string> = {
   cursor: cursorIcon,
   'cursor-cli': cursorIcon,
   opencode: opencodeIcon,
+  openclaw: openclawIcon,
+  qclaw: qclawIcon,
+  easyclaw: easyclawIcon,
+  autoclaw: autoclawIcon,
   copilot: copilotIcon,
   qwen: qwenIcon,
   kimi: kimiIcon,
@@ -38,6 +46,10 @@ const agentColors: Record<string, string> = {
   gemini: '#6366F1',
   cursor: '#3B82F6',
   opencode: '#8B5CF6',
+  openclaw: '#30B0C7',
+  qclaw: '#30B0C7',
+  easyclaw: '#30B0C7',
+  autoclaw: '#30B0C7',
   copilot: '#6B7280',
   qwen: '#9333EA',
   kimi: '#0EA5E9',
@@ -58,6 +70,10 @@ const agentLabels: Record<string, string> = {
   gemini: 'G',
   cursor: 'Cu',
   opencode: 'O',
+  openclaw: 'OC',
+  qclaw: 'QC',
+  easyclaw: 'EC',
+  autoclaw: 'AC',
   copilot: 'Co',
   qwen: 'Q',
   kimi: 'K',

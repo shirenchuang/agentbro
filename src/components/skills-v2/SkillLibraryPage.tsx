@@ -62,6 +62,9 @@ export function SkillLibraryPage() {
     () => deletePreview?.affectedTargets.filter((target) => target.mode === 'link') ?? [],
     [deletePreview],
   )
+  const deleteSkillIds = useMemo(() => deletePreviewSkillIds(deletePreview), [deletePreview])
+  const deleteSkillCount = deleteSkillIds.length
+  const isBatchDelete = deleteSkillCount > 1
   const statusOptions = useMemo<FilterSelectOption[]>(() => [
     { value: '', label: '全部状态' },
     { value: 'ok', label: '正常' },
@@ -134,6 +137,15 @@ export function SkillLibraryPage() {
     await state.loadOverview(true)
   }
 
+  const openAgentSync = () => {
+    state.setInstallTab('agent')
+    state.setTab('install')
+  }
+
+  const openDiagnostics = () => {
+    state.setTab('diagnostics')
+  }
+
   const toggleBatchMode = () => {
     setBatchMode((prev) => {
       if (prev) setSelectedSkillIds(new Set())
@@ -163,6 +175,19 @@ export function SkillLibraryPage() {
     setDistributeFor(selectedSkills)
   }
 
+  const openBatchDelete = async () => {
+    if (selectedSkills.length === 0) return
+    setBusy(true)
+    try {
+      const p = await skillApiV2.previewDeleteCenterSkills(selectedSkills.map((skill) => skill.id))
+      setDeletePreview(p)
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const openDelete = async (skillId: string) => {
     setBusy(true)
     try {
@@ -177,11 +202,17 @@ export function SkillLibraryPage() {
 
   const confirmDelete = async (removeLinked: boolean) => {
     if (!deletePreview) return
+    const skillIds = deletePreviewSkillIds(deletePreview)
     setBusy(true)
     try {
-      await skillApiV2.executeDeleteCenterSkill(deletePreview.skillId, removeLinked)
+      if (skillIds.length > 1) {
+        await skillApiV2.executeDeleteCenterSkills(skillIds, removeLinked)
+      } else {
+        await skillApiV2.executeDeleteCenterSkill(skillIds[0] ?? deletePreview.skillId, removeLinked)
+      }
       setDeletePreview(null)
       setSliderSkillId(null)
+      setSelectedSkillIds(new Set())
       await state.loadOverview(true)
     } catch (e) {
       state.setError(String(e))
@@ -200,7 +231,7 @@ export function SkillLibraryPage() {
         <div className="sm2__tabs">
           <button className="sm2__btn sm2__btn--primary" onClick={() => state.setTab('install')}>安装 Skill</button>
           <button className={`sm2__btn${batchMode ? ' sm2__btn--active' : ''}`} onClick={toggleBatchMode}>
-            {batchMode ? '完成选择' : '批量分发'}
+            {batchMode ? '完成选择' : '批量管理'}
           </button>
           <button className="sm2__btn" onClick={refresh} disabled={state.loading || startupScanInFlight}>
             {state.loading ? '刷新中…' : startupScanInFlight ? '后台同步中…' : '刷新'}
@@ -212,8 +243,8 @@ export function SkillLibraryPage() {
         <div className="sm2__metrics sm2__library-metrics">
           <Metric value={overview.metrics.centerSkillCount} label="中心库 Skill" />
           <Metric value={overview.metrics.targetCount} label="Agent 安装" />
-          <Metric value={overview.metrics.unmanagedCount} label="未管理" />
-          <Metric value={overview.metrics.issueCount} label="诊断问题" />
+          <Metric value={overview.metrics.unmanagedCount} label="未管理" onClick={openAgentSync} />
+          <Metric value={overview.metrics.issueCount} label="诊断问题" onClick={openDiagnostics} />
         </div>
       )}
 
@@ -260,7 +291,7 @@ export function SkillLibraryPage() {
         <div className="sm2__batch-distribute-bar">
           <div className="sm2__batch-distribute-copy">
             <strong>已选择 {selectedSkillIds.size} 个 Skill</strong>
-            <span>把多个 Skill 一次分发到同一组 Agent</span>
+            <span>批量分发到同一组 Agent，或从中心库删除多个 Skill</span>
           </div>
           <div className="sm2__batch-distribute-actions">
             <button className="sm2__btn sm2__btn--ghost" onClick={selectVisibleSkills} disabled={skills.length === 0}>
@@ -271,6 +302,9 @@ export function SkillLibraryPage() {
             </button>
             <button className="sm2__btn sm2__btn--primary" onClick={openBatchDistribute} disabled={selectedSkillIds.size === 0}>
               分发 {selectedSkillIds.size} 个 Skill
+            </button>
+            <button className="sm2__btn sm2__btn--danger" onClick={openBatchDelete} disabled={selectedSkillIds.size === 0 || busy}>
+              删除 {selectedSkillIds.size} 个 Skill
             </button>
           </div>
         </div>
@@ -359,7 +393,11 @@ export function SkillLibraryPage() {
       )}
       {deletePreview && (
         <PreviewDialog
-          title={t('skills.deleteCenterSkill.title', { skillId: deletePreview.skillId })}
+          title={
+            isBatchDelete
+              ? `批量删除 ${deleteSkillCount} 个 Skill`
+              : t('skills.deleteCenterSkill.title', { skillId: deletePreview.skillId })
+          }
           confirmLabel={
             deletePreview.affectedTargets.length > 0
               ? t('skills.deleteCenterSkill.preserveCopies')
@@ -404,13 +442,19 @@ export function SkillLibraryPage() {
             <div className="sm2-delete-skill__hero">
               <div className="sm2-delete-skill__mark" aria-hidden="true">!</div>
               <div className="sm2-delete-skill__hero-copy">
-                <strong>{t('skills.deleteCenterSkill.confirmTitle')}</strong>
+                <strong>{isBatchDelete ? '确认批量删除中心库 Skill' : t('skills.deleteCenterSkill.confirmTitle')}</strong>
                 <span>
                   {deletePreview.affectedTargets.length > 0
                     ? t('skills.deleteCenterSkill.impactWithTargets')
                     : t('skills.deleteCenterSkill.impactNoTargets')}
                 </span>
               </div>
+              {isBatchDelete && (
+                <div className="sm2-delete-skill__impact">
+                  <strong>{deleteSkillCount}</strong>
+                  <span>中心库 Skill</span>
+                </div>
+              )}
               <div className="sm2-delete-skill__impact">
                 <strong>{deletePreview.affectedTargets.length}</strong>
                 <span>{t('skills.deleteCenterSkill.agentInstalls')}</span>
@@ -525,13 +569,27 @@ function FilterSelect({
   )
 }
 
-function Metric({ value, label }: { value: number; label: string }) {
-  return (
-    <div className="sm2__metric">
+function deletePreviewSkillIds(preview: DeleteCenterSkillPreview | null): string[] {
+  if (!preview) return []
+  if (preview.skillIds && preview.skillIds.length > 0) return preview.skillIds
+  return preview.skillId ? [preview.skillId] : []
+}
+
+function Metric({ value, label, onClick }: { value: number; label: string; onClick?: () => void }) {
+  const content = (
+    <>
       <div className="sm2__metric-value">{value}</div>
       <div className="sm2__metric-label">{label}</div>
-    </div>
+    </>
   )
+  if (onClick) {
+    return (
+      <button type="button" className="sm2__metric sm2__metric--button" aria-label={`${label} ${value}`} onClick={onClick}>
+        {content}
+      </button>
+    )
+  }
+  return <div className="sm2__metric">{content}</div>
 }
 
 function AgentBadges({ skill }: { skill: SkillSummary }) {

@@ -1136,6 +1136,128 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
+fn updating_applied_pack_auto_syncs_new_members_by_default() {
+    let (_home, svc, _lock) = fresh_service("pack-auto-sync");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-sync".to_string(),
+        name: "Sync".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-sync", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let updated = svc
+        .upsert_skill_pack(UpsertPackInput {
+            id: "p-sync".to_string(),
+            name: "Sync".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+        })
+        .unwrap();
+
+    assert_eq!(updated.sync_status, "synced");
+    assert_eq!(updated.pending_sync_count, 0);
+    let second_detail = svc.get_skill_detail("skill-two").unwrap();
+    assert!(second_detail.targets.iter().any(|target| {
+        target.agent_id == "codex"
+            && target
+                .claims
+                .iter()
+                .any(|claim| claim.pack_id.as_deref() == Some("p-sync"))
+    }));
+}
+
+#[test]
+fn updating_applied_pack_can_defer_and_manually_sync() {
+    let (_home, svc, _lock) = fresh_service("pack-manual-sync");
+    svc.update_settings(SettingsUpdate {
+        center_path: None,
+        sqlite_path: None,
+        default_distribute_mode: None,
+        link_fail_policy: None,
+        startup_scan: None,
+        show_unmanaged: None,
+        auto_sync_skill_packs: Some(false),
+    })
+    .unwrap();
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-manual".to_string(),
+        name: "Manual".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-manual", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let pending = svc
+        .upsert_skill_pack(UpsertPackInput {
+            id: "p-manual".to_string(),
+            name: "Manual".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+        })
+        .unwrap();
+
+    assert_eq!(pending.sync_status, "pending");
+    assert_eq!(pending.pending_sync_count, 1);
+    assert!(svc
+        .get_skill_detail("skill-two")
+        .unwrap()
+        .targets
+        .is_empty());
+
+    let result = svc
+        .sync_skill_pack_to_agents("p-manual", vec!["codex".to_string()])
+        .unwrap();
+    assert_eq!(result.status, "synced");
+    let synced = svc.get_skill_pack_detail("p-manual").unwrap();
+    assert_eq!(synced.sync_status, "synced");
+    assert_eq!(synced.pending_sync_count, 0);
+    assert_eq!(svc.get_skill_detail("skill-two").unwrap().targets.len(), 1);
+}
+
+#[test]
 fn apply_pack_accepts_blocker_decisions_for_unmanaged_targets() {
     let (_home, svc, _lock) = fresh_service("pack-blocker-decisions");
     let src = write_skill(
@@ -1823,6 +1945,69 @@ fn delete_center_skill_can_remove_agent_installs() {
     assert!(!target_path.exists());
 }
 
+#[test]
+fn delete_center_skills_batch_preserves_agent_installs_once() {
+    let (_home, svc, _lock) = fresh_service("delete-batch");
+    for skill_id in ["release-checklist", "deploy-guide"] {
+        let src = write_skill(
+            &svc.home.join("s").join(skill_id),
+            "rev",
+            skill_id,
+            Some("v1"),
+        );
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    let p = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string(), "deploy-guide".to_string()],
+            vec!["claude-code".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(p, ClaimOrigin::Direct)
+        .unwrap();
+
+    let preview = svc
+        .preview_delete_center_skills(vec![
+            "release-checklist".to_string(),
+            "deploy-guide".to_string(),
+        ])
+        .unwrap();
+    assert_eq!(preview.skill_ids.len(), 2);
+    assert_eq!(preview.affected_targets.len(), 2);
+    let target_paths = preview
+        .affected_targets
+        .iter()
+        .map(|target| PathBuf::from(&target.target_path))
+        .collect::<Vec<_>>();
+
+    svc.execute_delete_center_skills(
+        vec!["release-checklist".to_string(), "deploy-guide".to_string()],
+        false,
+    )
+    .unwrap();
+
+    assert!(svc.get_skill_detail("release-checklist").is_err());
+    assert!(svc.get_skill_detail("deploy-guide").is_err());
+    for target_path in target_paths {
+        assert!(target_path.is_dir());
+        assert!(!target_path.is_symlink());
+        assert!(target_path.join("SKILL.md").exists());
+    }
+}
+
 // ── Adopt unmanaged agent skill ─────────────────────────────────
 
 #[test]
@@ -2433,6 +2618,75 @@ fn shared_agents_skills_dir_is_not_listed_as_a_managed_agent() {
     assert!(agents.iter().any(|agent| agent.id == "claude-code"));
 }
 
+#[test]
+fn openclaw_scans_configured_workspace_skills() {
+    let (_home, svc, _lock) = fresh_service("openclaw-workspace-skills");
+    let openclaw_config_dir = svc.home.join(".openclaw");
+    fs::create_dir_all(&openclaw_config_dir).unwrap();
+    fs::write(
+        openclaw_config_dir.join("openclaw.json"),
+        r#"{"agents":{"defaults":{"workspace":"~/custom-openclaw-workspace"}}}"#,
+    )
+    .unwrap();
+    let workspace_skills = svc.home.join("custom-openclaw-workspace/skills");
+    write_skill(
+        &workspace_skills,
+        "workspace-one",
+        "workspace-one",
+        Some("v1"),
+    );
+    write_skill(
+        &workspace_skills.join("content"),
+        "nested-one",
+        "nested-one",
+        Some("v1"),
+    );
+    write_skill(
+        &svc.home.join(".openclaw/skills"),
+        "managed-one",
+        "managed-one",
+        Some("v1"),
+    );
+
+    svc.refresh().unwrap();
+
+    let inventory = svc.list_agent_skill_inventory().unwrap();
+    let openclaw = inventory
+        .into_iter()
+        .find(|agent| agent.agent_id == "openclaw")
+        .expect("OpenClaw inventory");
+    let paths = openclaw
+        .items
+        .iter()
+        .map(|item| item.path.clone())
+        .collect::<Vec<_>>();
+    let workspace_skill_path = svc
+        .home
+        .join("custom-openclaw-workspace/skills/workspace-one")
+        .display()
+        .to_string();
+    let managed_skill_path = svc
+        .home
+        .join(".openclaw/skills/managed-one")
+        .display()
+        .to_string();
+    let nested_skill_path = svc
+        .home
+        .join("custom-openclaw-workspace/skills/content/nested-one")
+        .display()
+        .to_string();
+
+    assert!(openclaw.installed);
+    assert_eq!(
+        openclaw.skills_dir,
+        Some(workspace_skills.display().to_string())
+    );
+    assert!(openclaw.unmanaged_count >= 3);
+    assert!(paths.contains(&workspace_skill_path));
+    assert!(paths.contains(&managed_skill_path));
+    assert!(paths.contains(&nested_skill_path));
+}
+
 // ── Snapshot ─────────────────────────────────────────────────────
 
 #[test]
@@ -2628,6 +2882,7 @@ fn settings_round_trip() {
             link_fail_policy: Some("copy".to_string()),
             startup_scan: Some(false),
             show_unmanaged: None,
+            auto_sync_skill_packs: None,
         })
         .unwrap();
     assert_eq!(updated.default_distribute_mode, "copy");
@@ -2642,6 +2897,7 @@ fn settings_round_trip() {
             link_fail_policy: None,
             startup_scan: None,
             show_unmanaged: None,
+            auto_sync_skill_packs: None,
         })
         .unwrap();
     assert!(migrated.center_path.ends_with(".agentbro/skills"));

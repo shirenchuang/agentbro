@@ -94,6 +94,21 @@ pub fn execute_delete_center_skill(skill_id: String, remove_linked: bool) -> Res
 }
 
 #[tauri::command]
+pub fn preview_delete_center_skills(
+    skill_ids: Vec<String>,
+) -> Result<DeleteCenterSkillPreview, String> {
+    Ok(svc()?.preview_delete_center_skills(skill_ids)?)
+}
+
+#[tauri::command]
+pub fn execute_delete_center_skills(
+    skill_ids: Vec<String>,
+    remove_linked: bool,
+) -> Result<(), String> {
+    svc()?.execute_delete_center_skills(skill_ids, remove_linked)
+}
+
+#[tauri::command]
 pub fn preview_distribute_skill(
     skill_ids: Vec<String>,
     target_agents: Vec<String>,
@@ -222,6 +237,14 @@ pub fn execute_apply_skill_pack(
         requested_mode,
         blocker_decisions.unwrap_or_default(),
     )
+}
+
+#[tauri::command]
+pub fn execute_sync_skill_pack_to_agents(
+    pack_id: String,
+    target_agents: Option<Vec<String>>,
+) -> Result<SkillPackSyncResult, String> {
+    svc()?.sync_skill_pack_to_agents(&pack_id, target_agents.unwrap_or_default())
 }
 
 #[tauri::command]

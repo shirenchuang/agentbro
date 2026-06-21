@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +24,8 @@ pub struct SkillManagerSettings {
     pub startup_scan: bool,
     #[serde(default = "default_true")]
     pub show_unmanaged: bool,
+    #[serde(default = "default_true")]
+    pub auto_sync_skill_packs: bool,
 }
 
 fn default_center_path() -> String {
@@ -55,6 +57,7 @@ impl Default for SkillManagerSettings {
             link_fail_policy: default_link_fail(),
             startup_scan: true,
             show_unmanaged: true,
+            auto_sync_skill_packs: true,
         }
     }
 }
@@ -275,6 +278,10 @@ pub struct AppliedPackSummary {
     pub agent_id: Option<String>,
     pub display_name: Option<String>,
     pub icon_key: Option<String>,
+    pub pack_revision: i64,
+    pub synced_revision: i64,
+    pub sync_status: String,
+    pub sync_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +294,10 @@ pub struct SkillPackSummary {
     pub member_count: usize,
     pub applied_agent_count: usize,
     pub healthy: bool,
+    pub revision: i64,
+    pub sync_status: String,
+    pub pending_sync_count: usize,
+    pub failed_sync_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +309,10 @@ pub struct SkillPackDetail {
     pub tags: Vec<String>,
     pub members: Vec<PackMember>,
     pub applied_agents: Vec<AppliedPackSummary>,
+    pub revision: i64,
+    pub sync_status: String,
+    pub pending_sync_count: usize,
+    pub failed_sync_count: usize,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -452,6 +467,7 @@ pub struct AddCenterSkillResult {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteCenterSkillPreview {
     pub skill_id: String,
+    pub skill_ids: Vec<String>,
     pub affected_targets: Vec<AffectedTarget>,
     pub removable: bool,
     pub warnings: Vec<String>,
@@ -502,6 +518,25 @@ pub struct RemoveSkillFromPackPreview {
     pub applied_agent_count: usize,
     pub can_keep_standalone: bool,
     pub can_remove_targets: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackSyncAgentResult {
+    pub agent_id: String,
+    pub display_name: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackSyncResult {
+    pub pack_id: String,
+    pub pack_name: String,
+    pub revision: i64,
+    pub status: String,
+    pub agents: Vec<SkillPackSyncAgentResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,4 +632,5 @@ pub struct SettingsUpdate {
     pub link_fail_policy: Option<String>,
     pub startup_scan: Option<bool>,
     pub show_unmanaged: Option<bool>,
+    pub auto_sync_skill_packs: Option<bool>,
 }

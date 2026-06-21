@@ -108,6 +108,9 @@ impl Service {
             if let Some(v) = update.show_unmanaged {
                 current.show_unmanaged = v;
             }
+            if let Some(v) = update.auto_sync_skill_packs {
+                current.auto_sync_skill_packs = v;
+            }
             normalize_shared_agents_center_path(&self.home, &mut current);
             let val = serde_json::to_value(&current).map_err(|e| e.to_string())?;
             db::save_settings_json(c, &val)?;
@@ -340,20 +343,25 @@ impl Service {
 
     pub fn scan_one_agent_into_db(&self, agent_id: &str) -> Result<AgentScanResult, String> {
         self.ensure_agent_row(agent_id)?;
-        let skills_dir = match agent_meta::agent_skills_dir(&self.home, agent_id) {
-            Some(d) => d,
-            None => {
-                return Ok(AgentScanResult {
-                    managed: 0,
-                    unmanaged: 0,
-                });
-            }
-        };
+        let skill_dirs = agent_meta::agent_skill_dirs(&self.home, agent_id);
+        let primary_skills_dir = agent_meta::agent_skills_dir(&self.home, agent_id);
+        if skill_dirs.is_empty() {
+            return Ok(AgentScanResult {
+                managed: 0,
+                unmanaged: 0,
+            });
+        }
         let now = db::now_iso();
         self.db.with_conn(|c| {
             c.execute(
                 "UPDATE agents SET skills_dir = ?1, last_scanned_at = ?2 WHERE id = ?3",
-                params![skills_dir.display().to_string(), now, agent_id],
+                params![
+                    primary_skills_dir
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    now,
+                    agent_id
+                ],
             )
             .map_err(|e| e.to_string())
         })?;
@@ -369,18 +377,17 @@ impl Service {
 
         let mut managed = 0usize;
         let mut unmanaged = 0usize;
-        if skills_dir.is_dir() {
-            let entries = std::fs::read_dir(&skills_dir).map_err(|e| e.to_string())?;
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
-                    continue;
-                }
-                let path = entry.path();
-                if !path.is_dir() || !fsutil::is_skill_dir(&path) {
-                    continue;
-                }
+        let mut seen_skill_ids = BTreeSet::new();
+        for skills_dir in skill_dirs {
+            if !skills_dir.is_dir() {
+                continue;
+            }
+            let skill_paths = discover_agent_skill_paths(&skills_dir, agent_id == "openclaw")?;
+            for path in skill_paths {
                 let inferred = fsutil::infer_skill_id(&path);
+                if !seen_skill_ids.insert(inferred.clone()) {
+                    continue;
+                }
                 // is there a managed target for this agent+path?
                 let target = self.find_target_by_path(agent_id, &path)?;
                 match target {
@@ -1988,25 +1995,40 @@ impl Service {
         &self,
         skill_id: &str,
     ) -> Result<DeleteCenterSkillPreview, String> {
-        let _row = self
-            .skill_row(skill_id)?
-            .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
-        let targets = self.targets_for_skill(skill_id)?;
+        self.preview_delete_center_skills(vec![skill_id.to_string()])
+    }
+
+    pub fn preview_delete_center_skills(
+        &self,
+        skill_ids: Vec<String>,
+    ) -> Result<DeleteCenterSkillPreview, String> {
+        let skill_ids = unique_skill_ids(skill_ids);
+        if skill_ids.is_empty() {
+            return Err("No skills selected".to_string());
+        }
         let mut affected = Vec::new();
-        for t in &targets {
-            let claim_count = self.count_claims(&t.id)?;
-            affected.push(AffectedTarget {
-                target_id: t.id.clone(),
-                agent_id: t.agent_id.clone(),
-                display_name: agent_meta::display_name(&t.agent_id),
-                target_path: t.target_path.clone(),
-                mode: t.actual_mode.clone(),
-                claim_count,
-            });
+        for skill_id in &skill_ids {
+            let _row = self
+                .skill_row(skill_id)?
+                .ok_or_else(|| format!("Skill not found: {skill_id}"))?;
+            let targets = self.targets_for_skill(skill_id)?;
+            for t in &targets {
+                let claim_count = self.count_claims(&t.id)?;
+                affected.push(AffectedTarget {
+                    target_id: t.id.clone(),
+                    agent_id: t.agent_id.clone(),
+                    display_name: agent_meta::display_name(&t.agent_id),
+                    target_path: t.target_path.clone(),
+                    mode: t.actual_mode.clone(),
+                    claim_count,
+                });
+            }
         }
         let removable = affected.is_empty();
+        let skill_id = skill_ids.first().cloned().unwrap_or_default();
         Ok(DeleteCenterSkillPreview {
-            skill_id: skill_id.to_string(),
+            skill_id,
+            skill_ids,
             affected_targets: affected,
             removable,
             warnings: Vec::new(),
@@ -2018,6 +2040,39 @@ impl Service {
         skill_id: &str,
         remove_linked: bool,
     ) -> Result<(), String> {
+        let agents = self.execute_delete_center_skill_inner(skill_id, remove_linked)?;
+        if !remove_linked {
+            self.scan_agents(agents)?;
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    pub fn execute_delete_center_skills(
+        &self,
+        skill_ids: Vec<String>,
+        remove_linked: bool,
+    ) -> Result<(), String> {
+        let skill_ids = unique_skill_ids(skill_ids);
+        if skill_ids.is_empty() {
+            return Err("No skills selected".to_string());
+        }
+        let mut agents = Vec::new();
+        for skill_id in skill_ids {
+            agents.extend(self.execute_delete_center_skill_inner(&skill_id, remove_linked)?);
+        }
+        if !remove_linked {
+            self.scan_agents(agents)?;
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    fn execute_delete_center_skill_inner(
+        &self,
+        skill_id: &str,
+        remove_linked: bool,
+    ) -> Result<Vec<String>, String> {
         let preview = self.preview_delete_center_skill(skill_id)?;
         let row = self
             .skill_row(skill_id)?
@@ -2043,19 +2098,19 @@ impl Service {
             c.execute("DELETE FROM skills WHERE id = ?1", params![skill_id])
                 .map_err(|e| e.to_string())
         })?;
-        if !remove_linked {
-            let mut agents = preview
-                .affected_targets
-                .iter()
-                .map(|t| t.agent_id.clone())
-                .collect::<Vec<_>>();
-            agents.sort();
-            agents.dedup();
-            for agent in agents {
-                self.scan_one_agent_into_db(&agent)?;
-            }
+        Ok(preview
+            .affected_targets
+            .iter()
+            .map(|t| t.agent_id.clone())
+            .collect())
+    }
+
+    fn scan_agents(&self, mut agents: Vec<String>) -> Result<(), String> {
+        agents.sort();
+        agents.dedup();
+        for agent in agents {
+            self.scan_one_agent_into_db(&agent)?;
         }
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -3279,7 +3334,7 @@ impl Service {
     pub fn list_skill_packs(&self) -> Result<Vec<SkillPackSummary>, String> {
         let packs = self.db.with_conn(|c| {
             let mut stmt = c
-                .prepare("SELECT id, name, description, tags_json FROM skill_packs WHERE id <> ?1 ORDER BY name COLLATE NOCASE")
+                .prepare("SELECT id, name, description, tags_json, revision FROM skill_packs WHERE id <> ?1 ORDER BY name COLLATE NOCASE")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([DEFAULT_SKILL_PACK_ID], |r| {
@@ -3288,6 +3343,7 @@ impl Service {
                         name: r.get(1)?,
                         description: r.get(2)?,
                         tags_json: r.get(3)?,
+                        revision: r.get(4)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -3302,6 +3358,7 @@ impl Service {
             let member_count = self.pack_member_count(&p.id)?;
             let applied_agent_count = self.pack_applied_agent_count(&p.id)?;
             let healthy = self.pack_members_healthy(&p.id)?;
+            let sync = self.pack_sync_rollup(&p.id, p.revision)?;
             let tags: Vec<String> = serde_json::from_str(&p.tags_json).unwrap_or_default();
             out.push(SkillPackSummary {
                 id: p.id,
@@ -3311,6 +3368,10 @@ impl Service {
                 member_count,
                 applied_agent_count,
                 healthy,
+                revision: p.revision,
+                sync_status: sync.status,
+                pending_sync_count: sync.pending_count,
+                failed_sync_count: sync.failed_count,
             });
         }
         Ok(out)
@@ -3325,6 +3386,10 @@ impl Service {
             member_count: self.center_skill_count()?,
             applied_agent_count: self.pack_applied_agent_count(DEFAULT_SKILL_PACK_ID)?,
             healthy: true,
+            revision: 1,
+            sync_status: "synced".to_string(),
+            pending_sync_count: 0,
+            failed_sync_count: 0,
         })
     }
 
@@ -3390,21 +3455,26 @@ impl Service {
                 tags: Vec::new(),
                 members: self.pack_members(DEFAULT_SKILL_PACK_ID)?,
                 applied_agents: self.pack_applied_agents(DEFAULT_SKILL_PACK_ID)?,
+                revision: 1,
+                sync_status: "synced".to_string(),
+                pending_sync_count: 0,
+                failed_sync_count: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
             });
         }
         let row = self.db.with_conn(|c| {
             c.query_row(
-                "SELECT id, name, description, tags_json, created_at, updated_at FROM skill_packs WHERE id = ?1",
+                "SELECT id, name, description, tags_json, revision, created_at, updated_at FROM skill_packs WHERE id = ?1",
                 params![pack_id],
                 |r| Ok(PackDetailRow {
                     id: r.get(0)?,
                     name: r.get(1)?,
                     description: r.get(2)?,
                     tags_json: r.get(3)?,
-                    created_at: r.get(4)?,
-                    updated_at: r.get(5)?,
+                    revision: r.get(4)?,
+                    created_at: r.get(5)?,
+                    updated_at: r.get(6)?,
                 }),
             )
             .optional()
@@ -3414,6 +3484,7 @@ impl Service {
 
         let members = self.pack_members(&row.id)?;
         let applied = self.pack_applied_agents(&row.id)?;
+        let sync = self.pack_sync_rollup(&row.id, row.revision)?;
         let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
         Ok(SkillPackDetail {
             id: row.id,
@@ -3422,6 +3493,10 @@ impl Service {
             tags,
             members,
             applied_agents: applied,
+            revision: row.revision,
+            sync_status: sync.status,
+            pending_sync_count: sync.pending_count,
+            failed_sync_count: sync.failed_count,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -3503,17 +3578,124 @@ impl Service {
         let pack_name = self
             .pack_name(pack_id)
             .unwrap_or_else(|_| pack_id.to_string());
+        let pack_revision = self.pack_revision(pack_id).unwrap_or(1);
         Ok(agents
             .into_iter()
-            .map(|agent_id| AppliedPackSummary {
-                pack_id: pack_id.to_string(),
-                pack_name: pack_name.clone(),
-                member_count,
-                agent_id: Some(agent_id.clone()),
-                display_name: Some(agent_meta::display_name(&agent_id)),
-                icon_key: Some(agent_meta::icon_key(&agent_id)),
+            .map(|agent_id| {
+                let state = self
+                    .pack_agent_sync_state(pack_id, &agent_id, pack_revision)
+                    .unwrap_or_else(|_| PackAgentSyncState {
+                        synced_revision: pack_revision,
+                        status: "synced".to_string(),
+                        error: None,
+                    });
+                AppliedPackSummary {
+                    pack_id: pack_id.to_string(),
+                    pack_name: pack_name.clone(),
+                    member_count,
+                    agent_id: Some(agent_id.clone()),
+                    display_name: Some(agent_meta::display_name(&agent_id)),
+                    icon_key: Some(agent_meta::icon_key(&agent_id)),
+                    pack_revision,
+                    synced_revision: state.synced_revision,
+                    sync_status: state.status,
+                    sync_error: state.error,
+                }
             })
             .collect())
+    }
+
+    fn pack_revision(&self, pack_id: &str) -> Result<i64, String> {
+        if pack_id == DEFAULT_SKILL_PACK_ID {
+            return Ok(1);
+        }
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT revision FROM skill_packs WHERE id = ?1",
+                params![pack_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn pack_sync_rollup(&self, pack_id: &str, revision: i64) -> Result<PackSyncRollup, String> {
+        let agents = self.pack_applied_agent_ids(pack_id)?;
+        let mut pending_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut synced_count = 0usize;
+        for agent_id in &agents {
+            let state = self.pack_agent_sync_state(pack_id, agent_id, revision)?;
+            match state.status.as_str() {
+                "failed" => failed_count += 1,
+                "synced" if state.synced_revision >= revision => synced_count += 1,
+                _ => pending_count += 1,
+            }
+        }
+        let status = if agents.is_empty() || synced_count == agents.len() {
+            "synced"
+        } else if failed_count > 0 && synced_count > 0 {
+            "partial"
+        } else if failed_count > 0 {
+            "failed"
+        } else {
+            "pending"
+        }
+        .to_string();
+        Ok(PackSyncRollup {
+            status,
+            pending_count,
+            failed_count,
+        })
+    }
+
+    fn pack_agent_sync_state(
+        &self,
+        pack_id: &str,
+        agent_id: &str,
+        revision: i64,
+    ) -> Result<PackAgentSyncState, String> {
+        let row = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT synced_revision, status, error FROM skill_pack_agent_syncs
+                 WHERE pack_id = ?1 AND agent_id = ?2",
+                params![pack_id, agent_id],
+                |r| {
+                    Ok(PackAgentSyncState {
+                        synced_revision: r.get(0)?,
+                        status: r.get(1)?,
+                        error: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })?;
+        Ok(row.unwrap_or_else(|| PackAgentSyncState {
+            synced_revision: revision,
+            status: "synced".to_string(),
+            error: None,
+        }))
+    }
+
+    fn pack_applied_agent_ids(&self, pack_id: &str) -> Result<Vec<String>, String> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT DISTINCT t.agent_id FROM skill_target_claims c
+                     JOIN skill_targets t ON t.id = c.target_id WHERE c.pack_id = ?1
+                     ORDER BY t.agent_id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([pack_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut agents = Vec::new();
+            for row in rows {
+                agents.push(row.map_err(|e| e.to_string())?);
+            }
+            Ok(agents)
+        })
     }
 
     fn pack_name(&self, pack_id: &str) -> Result<String, String> {
@@ -3737,19 +3919,49 @@ impl Service {
                 return Err(format!("Pack member '{}' is not in the center library.", m));
             }
         }
+        let existing = if pack.id.is_empty() {
+            None
+        } else {
+            self.db.with_conn(|c| {
+                c.query_row(
+                    "SELECT revision FROM skill_packs WHERE id = ?1",
+                    params![pack.id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })?
+        };
+        let old_revision = existing.unwrap_or(0);
+        let old_members = if existing.is_some() {
+            self.pack_member_skill_ids(&pack.id)?
+        } else {
+            Vec::new()
+        };
+        let member_changed = existing.is_some() && old_members != pack.skill_ids;
+        let applied_agents = if member_changed {
+            self.pack_applied_agent_ids(&pack.id)?
+        } else {
+            Vec::new()
+        };
         let id = if pack.id.is_empty() {
             format!("pack-{}", uuid_short())
         } else {
             pack.id.clone()
         };
+        let next_revision = if member_changed {
+            old_revision + 1
+        } else {
+            existing.unwrap_or(1).max(1)
+        };
         let now = db::now_iso();
         let tags_json = serde_json::to_string(&pack.tags).map_err(|e| e.to_string())?;
         self.db.transaction(|tx| {
             tx.execute(
-                "INSERT INTO skill_packs(id, name, description, tags_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, tags_json = excluded.tags_json, updated_at = excluded.updated_at",
-                params![id, pack.name, pack.description, tags_json, now],
+                "INSERT INTO skill_packs(id, name, description, tags_json, revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, tags_json = excluded.tags_json, revision = excluded.revision, updated_at = excluded.updated_at",
+                params![id, pack.name, pack.description, tags_json, next_revision, now],
             )
             .map_err(|e| e.to_string())?;
             tx.execute(
@@ -3767,6 +3979,14 @@ impl Service {
             }
             Ok(())
         })?;
+        if member_changed && !applied_agents.is_empty() {
+            self.mark_pack_agents_pending(&id, &applied_agents, old_revision)?;
+            if self.settings()?.auto_sync_skill_packs {
+                let _ = self.sync_skill_pack_to_agents(&id, applied_agents);
+            } else {
+                self.update_pack_rollup_status(&id, next_revision)?;
+            }
+        }
         let detail = self.get_skill_pack_detail(&id)?;
         self.refresh_snapshot_best_effort();
         Ok(detail)
@@ -3790,6 +4010,194 @@ impl Service {
         })?;
         self.refresh_snapshot_best_effort();
         Ok(())
+    }
+
+    pub fn sync_skill_pack_to_agents(
+        &self,
+        pack_id: &str,
+        target_agents: Vec<String>,
+    ) -> Result<SkillPackSyncResult, String> {
+        let pack_name = self.pack_name(pack_id)?;
+        let revision = self.pack_revision(pack_id)?;
+        let agents = if target_agents.is_empty() {
+            self.pack_applied_agent_ids(pack_id)?
+        } else {
+            target_agents
+        };
+        let mut results = Vec::new();
+        for agent_id in agents {
+            self.mark_pack_agent_status(pack_id, &agent_id, revision, "syncing", None)?;
+            match self.sync_skill_pack_to_agent(pack_id, &agent_id) {
+                Ok(()) => {
+                    self.mark_pack_agent_status(pack_id, &agent_id, revision, "synced", None)?;
+                    results.push(SkillPackSyncAgentResult {
+                        agent_id: agent_id.clone(),
+                        display_name: agent_meta::display_name(&agent_id),
+                        status: "synced".to_string(),
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    self.mark_pack_agent_status(
+                        pack_id,
+                        &agent_id,
+                        revision.saturating_sub(1),
+                        "failed",
+                        Some(&error),
+                    )?;
+                    results.push(SkillPackSyncAgentResult {
+                        agent_id: agent_id.clone(),
+                        display_name: agent_meta::display_name(&agent_id),
+                        status: "failed".to_string(),
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+        let status = self.update_pack_rollup_status(pack_id, revision)?;
+        self.refresh_snapshot_best_effort();
+        Ok(SkillPackSyncResult {
+            pack_id: pack_id.to_string(),
+            pack_name,
+            revision,
+            status,
+            agents: results,
+        })
+    }
+
+    fn sync_skill_pack_to_agent(&self, pack_id: &str, agent_id: &str) -> Result<(), String> {
+        let member_ids = self.pack_member_skill_ids(pack_id)?;
+        let member_set: BTreeSet<String> = member_ids.iter().cloned().collect();
+        let stale_targets: Vec<(String, String)> = self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT DISTINCT t.id, t.skill_id FROM skill_target_claims c
+                     JOIN skill_targets t ON t.id = c.target_id
+                     WHERE c.pack_id = ?1 AND t.agent_id = ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![pack_id, agent_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (target_id, skill_id) = row.map_err(|e| e.to_string())?;
+                if !member_set.contains(&skill_id) {
+                    out.push((target_id, skill_id));
+                }
+            }
+            Ok(out)
+        })?;
+
+        for (target_id, _) in stale_targets {
+            self.db.with_conn(|c| {
+                c.execute(
+                    "DELETE FROM skill_target_claims WHERE target_id = ?1 AND pack_id = ?2",
+                    params![target_id, pack_id],
+                )
+                .map_err(|e| e.to_string())
+            })?;
+            if self.count_claims(&target_id)? == 0 {
+                self.remove_target_completely(&target_id)?;
+            }
+        }
+
+        if member_ids.is_empty() {
+            self.scan_one_agent_into_db(agent_id)?;
+            return Ok(());
+        }
+
+        let result = self.apply_skill_pack_with_decisions(
+            pack_id,
+            vec![agent_id.to_string()],
+            self.settings()?.default_distribute_mode,
+            Vec::new(),
+        )?;
+        if !result.blockers.is_empty() {
+            return Err(format!(
+                "{} blocker(s) need manual resolution before syncing.",
+                result.blockers.len()
+            ));
+        }
+        Ok(())
+    }
+
+    fn mark_pack_agents_pending(
+        &self,
+        pack_id: &str,
+        agent_ids: &[String],
+        synced_revision: i64,
+    ) -> Result<(), String> {
+        for agent_id in agent_ids {
+            self.mark_pack_agent_status(pack_id, agent_id, synced_revision, "pending", None)?;
+        }
+        Ok(())
+    }
+
+    fn mark_pack_agents_synced(
+        &self,
+        pack_id: &str,
+        agent_ids: &[String],
+        synced_revision: i64,
+    ) -> Result<(), String> {
+        for agent_id in agent_ids {
+            self.mark_pack_agent_status(pack_id, agent_id, synced_revision, "synced", None)?;
+        }
+        Ok(())
+    }
+
+    fn mark_pack_agent_status(
+        &self,
+        pack_id: &str,
+        agent_id: &str,
+        synced_revision: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let now = db::now_iso();
+        self.db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO skill_pack_agent_syncs(pack_id, agent_id, synced_revision, status, error, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(pack_id, agent_id) DO UPDATE SET
+                   synced_revision = excluded.synced_revision,
+                   status = excluded.status,
+                   error = excluded.error,
+                   updated_at = excluded.updated_at",
+                params![pack_id, agent_id, synced_revision, status, error, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    fn update_pack_rollup_status(&self, pack_id: &str, revision: i64) -> Result<String, String> {
+        let rollup = self.pack_sync_rollup(pack_id, revision)?;
+        let now = db::now_iso();
+        let error = if rollup.failed_count > 0 {
+            Some(format!("{} agent(s) failed to sync.", rollup.failed_count))
+        } else {
+            None
+        };
+        self.db.with_conn(|c| {
+            c.execute(
+                "UPDATE skill_packs SET last_sync_status = ?1, last_sync_error = ?2, last_synced_at = ?3 WHERE id = ?4",
+                params![rollup.status, error, now, pack_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        Ok(rollup.status)
+    }
+
+    fn pack_member_skill_ids(&self, pack_id: &str) -> Result<Vec<String>, String> {
+        Ok(self
+            .pack_members(pack_id)?
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect())
     }
 
     pub fn apply_skill_pack(
@@ -3816,7 +4224,14 @@ impl Service {
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
-        self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))
+        let result =
+            self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))?;
+        if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
+            let revision = self.pack_revision(pack_id)?;
+            self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)?;
+            self.update_pack_rollup_status(pack_id, revision)?;
+        }
+        Ok(result)
     }
 
     /// Revoke a pack from an agent: remove only the pack's claims; delete the
@@ -4056,6 +4471,14 @@ impl Service {
         for pid in pack_ids {
             let name = self.pack_name(&pid).unwrap_or_else(|_| pid.clone());
             let member_count = self.pack_member_count(&pid).unwrap_or(0);
+            let pack_revision = self.pack_revision(&pid).unwrap_or(1);
+            let state = self
+                .pack_agent_sync_state(&pid, agent_id, pack_revision)
+                .unwrap_or_else(|_| PackAgentSyncState {
+                    synced_revision: pack_revision,
+                    status: "synced".to_string(),
+                    error: None,
+                });
             out.push(AppliedPackSummary {
                 pack_id: pid,
                 pack_name: name,
@@ -4063,6 +4486,10 @@ impl Service {
                 agent_id: None,
                 display_name: None,
                 icon_key: None,
+                pack_revision,
+                synced_revision: state.synced_revision,
+                sync_status: state.status,
+                sync_error: state.error,
             });
         }
         Ok(out)
@@ -4297,14 +4724,28 @@ struct PackRow {
     name: String,
     description: String,
     tags_json: String,
+    revision: i64,
 }
 struct PackDetailRow {
     id: String,
     name: String,
     description: String,
     tags_json: String,
+    revision: i64,
     created_at: String,
     updated_at: String,
+}
+
+struct PackSyncRollup {
+    status: String,
+    pending_count: usize,
+    failed_count: usize,
+}
+
+struct PackAgentSyncState {
+    synced_revision: i64,
+    status: String,
+    error: Option<String>,
 }
 
 // I had a bug: TargetRow query in get_agent_detail selects skill_id at col 1
@@ -4342,6 +4783,20 @@ fn normalize_project_root(input: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(normalized)
+}
+
+fn unique_skill_ids(skill_ids: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for skill_id in skill_ids {
+        if skill_id.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(skill_id.clone()) {
+            unique.push(skill_id);
+        }
+    }
+    unique
 }
 
 fn project_id_for_path(path: &Path) -> String {
@@ -4507,19 +4962,11 @@ fn read_json_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
 }
 
 fn read_toml_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    #[derive(Default)]
-    struct PendingMcp {
-        name: String,
-        command: String,
-        args: Vec<String>,
-    }
-    fn push(out: &mut Vec<McpServerStatus>, pending: Option<PendingMcp>) {
-        if let Some(server) = pending {
+    crate::skills::codex_config::read_mcp_servers_path(path)
+        .into_iter()
+        .map(|server| {
             let valid = !server.command.is_empty();
-            out.push(McpServerStatus {
+            McpServerStatus {
                 name: server.name,
                 command: server.command,
                 args: server.args,
@@ -4529,49 +4976,9 @@ fn read_toml_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
                 } else {
                     "missing command".to_string()
                 },
-            });
-        }
-    }
-    let mut out = Vec::new();
-    let mut pending: Option<PendingMcp> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            push(&mut out, pending.take());
-            pending = parse_toml_header(line, "mcp_servers.").map(|name| PendingMcp {
-                name,
-                ..PendingMcp::default()
-            });
-            continue;
-        }
-        let Some(server) = pending.as_mut() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        match key.trim() {
-            "command" => server.command = strip_toml_quotes(value.trim()).to_string(),
-            "args" => {
-                server.args = value
-                    .trim()
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .split(',')
-                    .filter_map(|part| {
-                        let arg = strip_toml_quotes(part.trim());
-                        (!arg.is_empty()).then(|| arg.to_string())
-                    })
-                    .collect();
             }
-            _ => {}
-        }
-    }
-    push(&mut out, pending);
-    out
+        })
+        .collect()
 }
 
 fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
@@ -4602,60 +5009,16 @@ fn read_claude_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
 }
 
 fn read_codex_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PluginStatus> = Vec::new();
-    let mut current_plugin: Option<String> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            current_plugin = parse_toml_header(line, "plugins.")
-                .filter(|name| !name.contains(".mcp_servers"))
-                .filter(|name| !name.contains(".tools"));
-            if let Some(id) = current_plugin.as_ref() {
-                if !out.iter().any(|plugin| plugin.id == *id) {
-                    out.push(PluginStatus {
-                        id: id.clone(),
-                        name: id.clone(),
-                        version: None,
-                        enabled: true,
-                        source: Some("project-config".to_string()),
-                    });
-                }
-            }
-            continue;
-        }
-        let Some(id) = current_plugin.as_ref() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() == "enabled" {
-            if let Some(plugin) = out.iter_mut().find(|plugin| plugin.id == *id) {
-                plugin.enabled = value.trim() != "false";
-            }
-        }
-    }
-    out.sort_by_key(|plugin| plugin.name.to_lowercase());
-    out
-}
-
-fn parse_toml_header(line: &str, prefix: &str) -> Option<String> {
-    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
-    let rest = inner.strip_prefix(prefix)?.trim();
-    Some(strip_toml_quotes(rest).to_string())
-}
-
-fn strip_toml_quotes(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(value)
+    crate::skills::codex_config::read_project_plugins_path(path)
+        .into_iter()
+        .map(|plugin| PluginStatus {
+            id: plugin.id.clone(),
+            name: plugin.id,
+            version: None,
+            enabled: plugin.enabled,
+            source: Some("project-config".to_string()),
+        })
+        .collect()
 }
 
 fn sources_match(a_type: &str, a_uri: Option<&str>, b_type: &str, b_uri: Option<&str>) -> bool {
@@ -4751,6 +5114,42 @@ fn upsert_source(
 }
 
 // silence unused import warning when not needed
+
+fn discover_agent_skill_paths(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    discover_agent_skill_paths_inner(root, recursive, 0, &mut out)?;
+    Ok(out)
+}
+
+fn discover_agent_skill_paths_inner(
+    dir: &Path,
+    recursive: bool,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    if depth > 8 {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if fsutil::is_skill_dir(&path) {
+            out.push(path);
+            continue;
+        }
+        if recursive {
+            discover_agent_skill_paths_inner(&path, recursive, depth + 1, out)?;
+        }
+    }
+    Ok(())
+}
 
 // ── ZIP extraction for local archive import ──────────────────────
 

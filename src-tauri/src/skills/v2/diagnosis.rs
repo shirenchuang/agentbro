@@ -616,7 +616,23 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
         return vec![];
     };
     if config.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-        return read_toml_mcp_servers(&content);
+        return crate::skills::codex_config::parse_mcp_servers(&content)
+            .into_iter()
+            .map(|server| {
+                let valid = !server.command.is_empty();
+                McpServerStatus {
+                    name: server.name,
+                    command: server.command,
+                    args: server.args,
+                    valid,
+                    message: if valid {
+                        "configured".to_string()
+                    } else {
+                        "missing command".to_string()
+                    },
+                }
+            })
+            .collect();
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
         return vec![];
@@ -656,73 +672,6 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
             });
         }
     }
-    out
-}
-
-fn read_toml_mcp_servers(content: &str) -> Vec<McpServerStatus> {
-    #[derive(Default)]
-    struct Pending {
-        name: String,
-        command: String,
-        args: Vec<String>,
-    }
-
-    fn push_pending(out: &mut Vec<McpServerStatus>, pending: Option<Pending>) {
-        if let Some(server) = pending {
-            let valid = !server.command.is_empty();
-            out.push(McpServerStatus {
-                name: server.name,
-                command: server.command,
-                args: server.args,
-                valid,
-                message: if valid {
-                    "configured".to_string()
-                } else {
-                    "missing command".to_string()
-                },
-            });
-        }
-    }
-
-    let mut out = Vec::new();
-    let mut pending: Option<Pending> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(name) = line
-            .strip_prefix("[mcp_servers.")
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            push_pending(&mut out, pending.take());
-            pending = Some(Pending {
-                name: name.trim_matches('"').to_string(),
-                ..Pending::default()
-            });
-            continue;
-        }
-        let Some(server) = pending.as_mut() else {
-            continue;
-        };
-        if let Some(value) = line.strip_prefix("command").and_then(|v| v.split_once('=')) {
-            server.command = value.1.trim().trim_matches('"').to_string();
-        } else if let Some(value) = line.strip_prefix("args").and_then(|v| v.split_once('=')) {
-            let args = value
-                .1
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .filter_map(|part| {
-                    let arg = part.trim().trim_matches('"');
-                    (!arg.is_empty()).then(|| arg.to_string())
-                })
-                .collect();
-            server.args = args;
-        }
-    }
-    push_pending(&mut out, pending);
     out
 }
 
@@ -837,7 +786,7 @@ fn read_plugin_enabled_config(path: &Path) -> HashMap<String, bool> {
         return HashMap::new();
     };
     if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-        return read_toml_plugin_enabled_config(&content);
+        return crate::skills::codex_config::parse_plugin_enabled_config(&content);
     }
     serde_json::from_str::<serde_json::Value>(&content)
         .ok()
@@ -853,52 +802,6 @@ fn read_plugin_enabled_config(path: &Path) -> HashMap<String, bool> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn read_toml_plugin_enabled_config(content: &str) -> HashMap<String, bool> {
-    let mut out = HashMap::new();
-    let mut current_plugin: Option<String> = None;
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            current_plugin = parse_toml_plugin_header(line);
-            if let Some(plugin) = current_plugin.as_ref() {
-                out.entry(plugin.clone()).or_insert(true);
-            }
-            continue;
-        }
-        let Some(plugin) = current_plugin.as_ref() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() == "enabled" {
-            match value.trim() {
-                "true" => {
-                    out.insert(plugin.clone(), true);
-                }
-                "false" => {
-                    out.insert(plugin.clone(), false);
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
-fn parse_toml_plugin_header(line: &str) -> Option<String> {
-    let inner = line.trim_start_matches('[').trim_end_matches(']').trim();
-    let key = inner.strip_prefix("plugins.")?.trim();
-    Some(strip_toml_quotes(key).to_string())
-}
-
-fn strip_toml_quotes(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(value)
 }
 
 pub fn agent_health(svc: &Service, agent_id: &str) -> Vec<AgentHealthIssue> {

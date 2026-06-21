@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode } from '../../services/skillApiV2'
+import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
 import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -70,6 +70,7 @@ export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: In
 
 const MARKET_PAGE_SIZE = 24
 const DEFAULT_RECOMMENDED_SOURCE_COUNT = 4
+const DEFAULT_SKILL_PACK_ID = 'default'
 const RECOMMENDED_PUBLISHERS = [
   { id: 'anthropics', label: 'Anthropic' },
   { id: 'microsoft', label: 'Microsoft' },
@@ -117,8 +118,24 @@ type MarketViewMode = 'list' | 'cards'
 type LocalPreviewViewMode = 'list' | 'cards'
 type FileViewMode = 'preview' | 'source'
 type LocalImportMode = 'copy' | 'link'
+type LocalConflictResolution = 'overwrite' | 'rename' | 'skip'
+type MarketPackChoiceMode = 'center' | 'existing' | 'new'
+
+interface MarketInstallPackChoice {
+  mode: MarketPackChoiceMode
+  packId?: string
+  newPackName?: string
+  newPackDescription?: string
+}
+
+interface MarketPackAttachResult {
+  packId: string
+  packName: string
+  alreadyMember: boolean
+}
 
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
+  const { t } = useTranslation()
   const [items, setItems] = useState<MarketplaceSkill[]>([])
   const [sourceItemsBySource, setSourceItemsBySource] = useState<Record<string, MarketplaceSkill[]>>({})
   const [board, setBoard] = useState<MarketBoard>('alltime')
@@ -135,9 +152,13 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   const [status, setStatus] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
+  const [packDialogSkill, setPackDialogSkill] = useState<MarketplaceSkill | null>(null)
+  const [preferredPackBySource, setPreferredPackBySource] = useState<Record<string, string>>({})
+  const [packMembershipBySkillId, setPackMembershipBySkillId] = useState<Record<string, string[]>>({})
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
   const centerSkills = useSkillStoreV2((s) => s.skills)
+  const packs = useSkillStoreV2((s) => s.packs)
   const registryId = 'skills-sh'
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
@@ -404,7 +425,11 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
-  const install = async (it: MarketplaceSkill) => {
+  const packNamesForSkill = useCallback((it: MarketplaceSkill) => {
+    return packMembershipBySkillId[marketSkillId(it)] || []
+  }, [packMembershipBySkillId])
+
+  const install = async (it: MarketplaceSkill, packChoice: MarketInstallPackChoice = { mode: 'center' }) => {
     if (installing.has(it.id)) return
     setInstalling((prev) => new Set(prev).add(it.id))
     setError(null)
@@ -417,13 +442,47 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
       multi: false,
     }
     try {
-      // execute_add_center_skill previews internally; calling it directly
-      // avoids a second remote download. A same-name/different-source
-      // conflict surfaces as an error, which we redirect to the Git tab.
-      const result = await skillApiV2.executeAddCenterSkill(input, [])
-      const installedSkillId = result.skillIds[0] || result.updated[0] || marketSkillId(it)
+      const existingCenterSkill = findMarketCenterSkill(it, useSkillStoreV2.getState().skills)
+      let installedSkillId = existingCenterSkill?.id || ''
+      const wasAlreadyInstalled = Boolean(installedSkillId)
+      if (!installedSkillId) {
+        // execute_add_center_skill previews internally; calling it directly
+        // avoids a second remote download. A same-name/different-source
+        // conflict surfaces as an error, which we redirect to the Git tab.
+        const result = await skillApiV2.executeAddCenterSkill(input, [])
+        installedSkillId = result.skillIds[0] || result.updated[0] || marketSkillId(it)
+      }
+      let packResult: MarketPackAttachResult | null = null
+      if (packChoice.mode !== 'center') {
+        packResult = await attachMarketSkillToPack(it, installedSkillId, packChoice, packs)
+        const attachedPack = packResult
+        const source = marketSkillSource(it)
+        if (source) {
+          setPreferredPackBySource((prev) => ({ ...prev, [source]: attachedPack.packId }))
+        }
+        setPackMembershipBySkillId((prev) => ({
+          ...prev,
+          ...marketPackMembershipPatch(prev, installedSkillId, marketSkillId(it), attachedPack.packName),
+        }))
+      }
       setInstalledIds((prev) => new Set([...prev, it.id]))
-      setStatus(`已安装「${it.name}」到中心 Skill 库`)
+      if (packResult) {
+        setStatus(t(
+          packResult.alreadyMember
+            ? 'skills.marketInstall.alreadyInPackStatus'
+            : wasAlreadyInstalled
+              ? 'skills.marketInstall.addedInstalledToPackStatus'
+              : 'skills.marketInstall.installedWithPackStatus',
+          { name: it.name, pack: packResult.packName },
+        ))
+      } else {
+        setStatus(
+          wasAlreadyInstalled
+            ? t('skills.marketInstall.alreadyInstalledStatus', { name: it.name })
+            : t('skills.marketInstall.installedStatus', { name: it.name }),
+        )
+      }
+      await useSkillStoreV2.getState().loadOverview(true)
       await onDone(installedSkillId)
     } catch (e) {
       const msg = String(e)
@@ -440,6 +499,12 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         return next
       })
     }
+  }
+
+  const openInstallDialog = (it: MarketplaceSkill) => {
+    setError(null)
+    setStatus(null)
+    setPackDialogSkill(it)
   }
 
   return (
@@ -624,14 +689,17 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                           <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
                         )}
                         {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                        {packNamesForSkill(it).map((packName) => (
+                          <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                        ))}
                       </div>
                       {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                     </div>
                     <button
                       className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                      title={done ? '已在中心库' : '安装到中心库'}
-                      disabled={isCurrentInstalling || done}
-                      onClick={(e) => { e.stopPropagation(); install(it) }}
+                      title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                      disabled={isCurrentInstalling}
+                      onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
                     >
                       {isCurrentInstalling ? '…' : done ? '✓' : '+'}
                     </button>
@@ -655,9 +723,9 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                       )}
                       <button
                         className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                        title={done ? '已在中心库' : '安装到中心库'}
-                        disabled={isCurrentInstalling || done}
-                        onClick={(e) => { e.stopPropagation(); install(it) }}
+                        title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                        disabled={isCurrentInstalling}
+                        onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
                       >
                         {isCurrentInstalling ? '…' : done ? '✓' : '+'}
                       </button>
@@ -674,6 +742,9 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                         <span className="sm2__install-count">↓ {formatInstallCount(it.installCount)}</span>
                       )}
                       {done && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                      {packNamesForSkill(it).map((packName) => (
+                        <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                      ))}
                     </div>
                     {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                   </div>
@@ -721,19 +792,200 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         onClose={() => setDetailSkill(null)}
         installing={detailSkill ? installing.has(detailSkill.id) : false}
         installed={detailSkill ? installedIds.has(detailSkill.id) || isMarketItemInstalled(detailSkill, centerSkills) : false}
-        onInstall={(it) => { setDetailSkill(null); install(it) }}
+        packNames={detailSkill ? packNamesForSkill(detailSkill) : []}
+        onInstall={(it) => { setDetailSkill(null); openInstallDialog(it) }}
       />
+      {packDialogSkill && (
+        <MarketInstallPackDialog
+          key={packDialogSkill.id}
+          skill={packDialogSkill}
+          packs={packs}
+          preferredPackId={preferredPackBySource[marketSkillSource(packDialogSkill)]}
+          installed={isMarketItemInstalled(packDialogSkill, useSkillStoreV2.getState().skills)}
+          busy={installing.has(packDialogSkill.id)}
+          onClose={() => setPackDialogSkill(null)}
+          onConfirm={(choice) => {
+            const skill = packDialogSkill
+            setPackDialogSkill(null)
+            void install(skill, choice)
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }: {
+function MarketInstallPackDialog({
+  skill,
+  packs,
+  preferredPackId,
+  installed,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  skill: MarketplaceSkill
+  packs: SkillPackSummary[]
+  preferredPackId?: string
+  installed: boolean
+  busy: boolean
+  onClose: () => void
+  onConfirm: (choice: MarketInstallPackChoice) => void
+}) {
+  const { t } = useTranslation()
+  const source = skill ? marketSkillSource(skill) : ''
+  const editablePacks = useMemo(
+    () => packs.filter((pack) => pack.id !== DEFAULT_SKILL_PACK_ID),
+    [packs],
+  )
+  const recommendedPack = useMemo(
+    () => recommendedMarketPack(editablePacks, source, preferredPackId),
+    [editablePacks, preferredPackId, source],
+  )
+  const [mode, setMode] = useState<MarketPackChoiceMode>(() => recommendedPack ? 'existing' : source ? 'new' : 'center')
+  const [packQuery, setPackQuery] = useState('')
+  const [packId, setPackId] = useState(() => recommendedPack?.id || editablePacks[0]?.id || '')
+  const [newPackName, setNewPackName] = useState(() => source || skill.name)
+  const [newPackDescription, setNewPackDescription] = useState(() =>
+    t('skills.marketInstall.defaultPackDescription', { source: source || skill.name }),
+  )
+
+  const filteredPacks = useMemo(() => {
+    const q = packQuery.trim().toLowerCase()
+    if (!q) return editablePacks
+    return editablePacks.filter((pack) =>
+      [pack.name, pack.description, pack.tags.join(' ')]
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [editablePacks, packQuery])
+
+  const sourceLabel = source || skill.registryId || 'skills.sh'
+  const disabled =
+    busy ||
+    (installed && mode === 'center') ||
+    (mode === 'existing' && !packId) ||
+    (mode === 'new' && !newPackName.trim())
+
+  return (
+    <PreviewDialog
+      title={t('skills.marketInstall.dialogTitle', { name: skill.name })}
+      confirmLabel={installed ? t('skills.marketInstall.confirmPackOnly') : t('skills.marketInstall.confirmInstall')}
+      busyLabel={t('skills.marketInstall.busy')}
+      modalClassName="sm2__modal--market-pack-install"
+      busy={busy}
+      disabled={disabled}
+      onCancel={onClose}
+      onConfirm={() => onConfirm({
+        mode,
+        packId,
+        newPackName: newPackName.trim(),
+        newPackDescription: newPackDescription.trim(),
+      })}
+    >
+      <div className="sm2__market-pack-install">
+        <div className="sm2__market-pack-summary">
+          <SkillAvatar source={skill.source} name={skill.name} />
+          <div>
+            <strong>{skill.name}</strong>
+            <span>{sourceLabel}</span>
+            <code>{skill.downloadUrl}</code>
+          </div>
+        </div>
+
+        {installed && (
+          <div className="sm2__notice sm2__notice--ok">
+            {t('skills.marketInstall.installedHint')}
+          </div>
+        )}
+
+        <div className="sm2__market-pack-options" role="radiogroup" aria-label={t('skills.marketInstall.packChoiceLabel')}>
+          <label className={`sm2__market-pack-option${mode === 'center' ? ' sm2__market-pack-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'center'}
+              onChange={() => setMode('center')}
+            />
+            <span>
+              <strong>{t('skills.marketInstall.centerOnlyTitle')}</strong>
+              <small>{t('skills.marketInstall.centerOnlyDesc')}</small>
+            </span>
+          </label>
+
+          <label className={`sm2__market-pack-option${mode === 'existing' ? ' sm2__market-pack-option--active' : ''}${editablePacks.length === 0 ? ' sm2__market-pack-option--disabled' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'existing'}
+              disabled={editablePacks.length === 0}
+              onChange={() => setMode('existing')}
+            />
+            <span>
+              <strong>{recommendedPack ? t('skills.marketInstall.existingRecommendedTitle', { pack: recommendedPack.name }) : t('skills.marketInstall.existingTitle')}</strong>
+            <small>{editablePacks.length === 0 ? t('skills.marketInstall.noPacksHint') : t('skills.marketInstall.existingDesc')}</small>
+          </span>
+        </label>
+
+          {mode === 'existing' && editablePacks.length > 0 && (
+            <div className="sm2__market-pack-picker">
+              <input
+                className="sm2__search sm2__search--full"
+                value={packQuery}
+                onChange={(e) => setPackQuery(e.target.value)}
+                placeholder={t('skills.marketInstall.searchPackPlaceholder')}
+              />
+              <select value={packId} onChange={(e) => setPackId(e.target.value)}>
+                {filteredPacks.map((pack) => (
+                  <option key={pack.id} value={pack.id}>
+                    {pack.name} · {pack.memberCount} Skills
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <label className={`sm2__market-pack-option${mode === 'new' ? ' sm2__market-pack-option--active' : ''}`}>
+            <input
+              type="radio"
+              name="market-pack-mode"
+              checked={mode === 'new'}
+              onChange={() => setMode('new')}
+            />
+            <span>
+              <strong>{t('skills.marketInstall.newTitle')}</strong>
+              <small>{t('skills.marketInstall.newDesc', { source: sourceLabel })}</small>
+            </span>
+          </label>
+
+          {mode === 'new' && (
+            <div className="sm2__market-pack-form">
+              <label>
+                <span>{t('skills.marketInstall.packName')}</span>
+                <input value={newPackName} onChange={(e) => setNewPackName(e.target.value)} />
+              </label>
+              <label>
+                <span>{t('skills.marketInstall.packDescription')}</span>
+                <textarea value={newPackDescription} onChange={(e) => setNewPackDescription(e.target.value)} rows={3} />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+    </PreviewDialog>
+  )
+}
+
+function MarketSkillDetail({ skill, onClose, installing, installed, packNames, onInstall }: {
   skill: MarketplaceSkill | null
   onClose: () => void
   installing: boolean
   installed: boolean
+  packNames: string[]
   onInstall: (it: MarketplaceSkill) => void
 }) {
+  const { t } = useTranslation()
   const [remoteDetailState, setRemoteDetailState] = useState<{ key: string; detail: MarketplaceSkillDetail | null } | null>(null)
   const source = skill?.source || skill?.registryId || ''
   const skillId = skill ? marketSkillId(skill) : ''
@@ -788,6 +1040,9 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
                   <span className="sm2__install-count">↓ {formatInstallCount(skill.installCount)}</span>
                 )}
                 {(skill.isInstalled || installed) && <span className="sm2__tag sm2__tag--ok">✓ 已安装</span>}
+                {packNames.map((packName) => (
+                  <span key={packName} className="sm2__tag sm2__tag--pack">{t('skills.claim.packNamed', { name: packName })}</span>
+                ))}
               </div>
             </div>
           </div>
@@ -859,10 +1114,10 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
           <div className="sm2__btn-row" style={{ marginTop: 20 }}>
             <button
               className="sm2__btn sm2__btn--primary"
-              disabled={installing || skill.isInstalled || installed}
+              disabled={installing}
               onClick={() => onInstall(skill)}
             >
-              {installing ? '安装中…' : skill.isInstalled || installed ? '已安装' : '安装到中心库'}
+              {installing ? '安装中…' : skill.isInstalled || installed ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
             </button>
             {sourceUrl && (
               <button className="sm2__btn" onClick={() => openExternal(sourceUrl)}>
@@ -884,6 +1139,111 @@ function MarketSkillDetail({ skill, onClose, installing, installed, onInstall }:
       )}
     </SlideOver>
   )
+}
+
+async function attachMarketSkillToPack(
+  skill: MarketplaceSkill,
+  skillId: string,
+  choice: MarketInstallPackChoice,
+  packs: SkillPackSummary[],
+): Promise<MarketPackAttachResult> {
+  if (choice.mode === 'existing') {
+    const packId = choice.packId || ''
+    if (!packId) throw new Error('Skill pack is required.')
+    const detail = await skillApiV2.getPackDetail(packId)
+    const existingIds = detail.members.map((member) => member.skillId)
+    const alreadyMember = existingIds.includes(skillId)
+    const saved = await skillApiV2.upsertPack({
+      id: detail.id,
+      name: detail.name,
+      description: detail.description,
+      tags: detail.tags,
+      skillIds: alreadyMember ? existingIds : [...existingIds, skillId],
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember }
+  }
+
+  if (choice.mode === 'new') {
+    const source = marketSkillSource(skill)
+    const name = choice.newPackName?.trim() || source || skill.name
+    const description = choice.newPackDescription?.trim() || `Skills from ${source || skill.name}.`
+    const saved = await skillApiV2.upsertPack({
+      id: '',
+      name,
+      description,
+      tags: uniqStrings(['market', source].filter(Boolean)),
+      skillIds: [skillId],
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember: false }
+  }
+
+  const fallback = packs.find((pack) => pack.id === choice.packId)
+  return { packId: fallback?.id || '', packName: fallback?.name || '', alreadyMember: false }
+}
+
+function recommendedMarketPack(packs: SkillPackSummary[], source: string, preferredPackId?: string) {
+  const preferred = preferredPackId ? packs.find((pack) => pack.id === preferredPackId) : null
+  if (preferred) return preferred
+  const normalizedSource = source.trim().toLowerCase()
+  if (!normalizedSource) return null
+  return packs.find((pack) =>
+    pack.name.trim().toLowerCase() === normalizedSource ||
+    pack.tags.some((tag) => tag.trim().toLowerCase() === normalizedSource),
+  ) || null
+}
+
+function findMarketCenterSkill(skill: MarketplaceSkill, centerSkills: SkillSummary[]) {
+  const skillId = marketSkillId(skill)
+  const sourceUris = marketSourceUriCandidates(skill)
+  return centerSkills.find((centerSkill) => {
+    if (centerSkill.id === skillId) return true
+    const sourceUri = centerSkill.sourceUri?.trim()
+    return Boolean(sourceUri && sourceUris.has(sourceUri))
+  }) || null
+}
+
+function marketSourceUriCandidates(skill: MarketplaceSkill) {
+  const candidates = new Set<string>()
+  const downloadUrl = skill.downloadUrl.trim()
+  if (downloadUrl) candidates.add(downloadUrl)
+
+  const source = skill.source?.trim()
+  const skillId = marketSkillId(skill)
+  if (source && skillId) {
+    candidates.add(`skillssh:${source}/${skillId}`)
+    candidates.add(`github:${source}/${skillId}`)
+  }
+
+  if (downloadUrl.startsWith('skillssh:')) {
+    candidates.add(`github:${downloadUrl.slice('skillssh:'.length)}`)
+  } else if (downloadUrl.startsWith('github:')) {
+    candidates.add(`skillssh:${downloadUrl.slice('github:'.length)}`)
+  }
+
+  return candidates
+}
+
+function marketPackMembershipPatch(
+  current: Record<string, string[]>,
+  installedSkillId: string,
+  marketId: string,
+  packName: string,
+) {
+  const patch: Record<string, string[]> = {
+    [installedSkillId]: uniqStrings([...(current[installedSkillId] || []), packName]),
+  }
+  if (marketId && marketId !== installedSkillId) {
+    patch[marketId] = uniqStrings([...(current[marketId] || []), packName])
+  }
+  return patch
+}
+
+function marketSkillSource(skill: MarketplaceSkill) {
+  return skill.source || skill.registryId || ''
+}
+
+function uniqStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
 }
 
 function marketSkillPathParts(skill: MarketplaceSkill) {
@@ -964,6 +1324,8 @@ type AgentSyncViewMode = 'list' | 'cards'
 type AgentSkillDetailTab = 'overview' | 'files' | 'source'
 type AgentSyncImportProgress = { current: number; total: number; currentName: string }
 type OneClickOrganizeMode = 'import_link' | 'import_copy' | 'import_keep' | 'import_cleanup'
+type BatchConflictMode = 'rename' | 'center_over_agent' | 'overwrite_center' | 'skip'
+type BatchConflictScope = 'scoped' | 'visible'
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const AGENT_STATUS_TABS = [
   { id: 'all', label: '全部' },
@@ -1028,8 +1390,16 @@ function shouldCleanupOnBatchAdopt(item: AgentSkillInventoryItem) {
   return item.agentId === 'agents' || item.path.includes('/.agents/skills/')
 }
 
+function canBatchAdopt(item: AgentSkillInventoryItem) {
+  return item.canImport && item.status !== 'conflict'
+}
+
 function defaultBatchAdoptMode(item: AgentSkillInventoryItem): OneClickOrganizeMode {
   return shouldCleanupOnBatchAdopt(item) ? 'import_cleanup' : 'import_keep'
+}
+
+function oneClickAdoptMode(item: AgentSkillInventoryItem, mode: OneClickOrganizeMode): OneClickOrganizeMode {
+  return shouldCleanupOnBatchAdopt(item) ? 'import_cleanup' : mode
 }
 
 export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
@@ -1053,6 +1423,8 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [adoptPreview, setAdoptPreview] = useState<AdoptPreview | null>(null)
   const [adoptOpeningId, setAdoptOpeningId] = useState<string | null>(null)
   const [oneClickOpen, setOneClickOpen] = useState(false)
+  const [batchConflictOpen, setBatchConflictOpen] = useState(false)
+  const [batchConflictScope, setBatchConflictScope] = useState<BatchConflictScope>('scoped')
   const [cleaningShared, setCleaningShared] = useState(false)
 
   const load = async () => {
@@ -1070,7 +1442,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       })
       setSelectedIds((current) => {
         const sources = nextShared ? [...next, nextShared] : next
-        const valid = new Set(sources.flatMap((agent) => agent.items.filter((item) => item.canImport).map((item) => importKey(item))))
+        const valid = new Set(sources.flatMap((agent) => agent.items.filter(canBatchAdopt).map((item) => importKey(item))))
         return new Set(Array.from(current).filter((id) => valid.has(id)))
       })
     } catch (e) {
@@ -1150,7 +1522,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     return baseRows
       .filter(({ item }) => {
         if (statusFilter === 'managed' && !item.managed) return false
-        if (statusFilter === 'importable' && !item.canImport) return false
+        if (statusFilter === 'importable' && !canBatchAdopt(item)) return false
         if (statusFilter === 'unmanaged' && item.managed) return false
         if (statusFilter === 'conflict' && item.status !== 'conflict') return false
         return true
@@ -1172,12 +1544,21 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   }, [showManaged, statusFilter])
 
   const importableRows = useMemo(
-    () => rows.filter(({ item }) => item.canImport),
+    () => rows.filter(({ item }) => canBatchAdopt(item)),
     [rows],
   )
+  const visibleConflictRows = useMemo(
+    () => rows.filter(({ item }) => !item.managed && item.status === 'conflict'),
+    [rows],
+  )
+  const oneClickConflictRows = useMemo(
+    () => pendingRows.filter(({ item }) => !item.managed && item.status === 'conflict'),
+    [pendingRows],
+  )
   const oneClickItems = pendingRows.map(({ item }) => item)
-  const oneClickImportable = oneClickItems.filter((item) => item.canImport)
-  const oneClickConflicts = oneClickItems.filter((item) => !item.managed && item.status === 'conflict')
+  const oneClickImportable = oneClickItems.filter(canBatchAdopt)
+  const oneClickConflicts = oneClickConflictRows.map(({ item }) => item)
+  const batchConflictRows = batchConflictScope === 'visible' ? visibleConflictRows : oneClickConflictRows
   const scopedImportableCount = oneClickImportable.length
   const scopedConflictCount = oneClickConflicts.length
   const allSources = sharedAgent ? [...agents, sharedAgent] : agents
@@ -1222,7 +1603,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const scanDisabled = scanning || importing
 
   const toggle = (item: AgentSkillInventoryItem) => {
-    if (!item.canImport) return
+    if (!canBatchAdopt(item)) return
     setSelectedIds((current) => {
       const next = new Set(current)
       const key = importKey(item)
@@ -1341,6 +1722,15 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
     }
   }
 
+  const openBatchConflicts = (scope: BatchConflictScope) => {
+    const count = scope === 'visible' ? visibleConflictRows.length : oneClickConflictRows.length
+    if (count === 0) return
+    setError(null)
+    setNotice(null)
+    setBatchConflictScope(scope)
+    setBatchConflictOpen(true)
+  }
+
   const executeOneClickOrganize = async (mode: OneClickOrganizeMode) => {
     const importable = oneClickImportable
     const conflicts = oneClickConflicts
@@ -1355,7 +1745,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       for (const [index, item] of importable.entries()) {
         setImportProgress({ current: index + 1, total: importable.length, currentName: item.name })
         try {
-          await skillApiV2.executeAdopt(item.agentId, item.id, mode, null)
+          await skillApiV2.executeAdopt(item.agentId, item.id, oneClickAdoptMode(item, mode), null)
           ok += 1
         } catch (e) {
           failed.push(`${item.name}: ${String(e)}`)
@@ -1366,6 +1756,43 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       setSelectedIds(new Set())
       setDetailRow(null)
       setNotice(`已整理 ${ok} 个 Skill${modeNoticeSuffix(mode)}${conflicts.length ? `，${conflicts.length} 个需要处理冲突` : ''}${failed.length ? `，${failed.length} 个失败` : ''}`)
+      if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
+    } finally {
+      setImporting(false)
+      setImportProgress(null)
+    }
+  }
+
+  const executeBatchConflicts = async (mode: BatchConflictMode) => {
+    const conflicts = batchConflictRows
+    if (conflicts.length === 0) return
+    setBatchConflictOpen(false)
+    setImporting(true)
+    setImportProgress({ current: 0, total: conflicts.length, currentName: conflicts[0]?.item.name ?? '' })
+    setError(null)
+    setNotice(null)
+    try {
+      let ok = 0
+      const failed: string[] = []
+      for (const [index, { item }] of conflicts.entries()) {
+        setImportProgress({ current: index + 1, total: conflicts.length, currentName: item.name })
+        try {
+          await skillApiV2.executeAdopt(
+            item.agentId,
+            item.id,
+            mode,
+            mode === 'rename' ? batchConflictRenameId(item) : null,
+          )
+          ok += 1
+        } catch (e) {
+          failed.push(`${item.name}: ${String(e)}`)
+        }
+      }
+      await load()
+      await onDone()
+      setSelectedIds(new Set())
+      setDetailRow(null)
+      setNotice(`${batchConflictDoneVerb(mode)} ${ok} 个冲突 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
     } finally {
       setImporting(false)
@@ -1496,6 +1923,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
             </div>
             <div className="sm2__agent-sync-batch-actions">
               <button className="sm2__btn" onClick={selectAllVisible} disabled={importableRows.length === 0 || importing}>选择当前可接管</button>
+              <button className="sm2__btn" onClick={() => openBatchConflicts('visible')} disabled={visibleConflictRows.length === 0 || importing}>批量处理冲突</button>
               <button className="sm2__btn" onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0 || importing}>清空</button>
               <button className="sm2__btn sm2__btn--primary" onClick={importSelected} disabled={selectedIds.size === 0 || importing}>
                 {importing ? '接管中…' : '接管到中心库'}
@@ -1572,13 +2000,13 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                       className="sm2__agent-sync-checkbox"
                       aria-label={`选择 ${item.name}`}
                       checked={checked}
-                      disabled={!item.canImport || importing}
+                      disabled={!canBatchAdopt(item) || importing}
                       onClick={(e) => e.stopPropagation()}
                       onChange={() => toggle(item)}
                     />
                     <AgentIconBadge iconKey={agent.iconKey} size={34} title={agent.displayName} />
                     <div className="sm2__agent-sync-card-title">{item.name}</div>
-                    {item.canImport && (
+                    {canBatchAdopt(item) && (
                       <button
                         className="sm2__icon-btn sm2__icon-btn--add"
                         title="接管到中心库"
@@ -1589,7 +2017,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                         +
                       </button>
                     )}
-                    {!item.canImport && item.status === 'conflict' && (
+                    {!canBatchAdopt(item) && item.status === 'conflict' && (
                       <button
                         className="sm2__btn sm2__btn--small"
                         title="处理同名冲突"
@@ -1628,7 +2056,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                     className="sm2__agent-sync-checkbox"
                     aria-label={`选择 ${item.name}`}
                     checked={checked}
-                    disabled={!item.canImport || importing}
+                    disabled={!canBatchAdopt(item) || importing}
                     onClick={(e) => e.stopPropagation()}
                     onChange={() => toggle(item)}
                   />
@@ -1644,7 +2072,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                       <code className="sm2__agent-sync-item-path">{item.path}</code>
                     </div>
                   </div>
-                  {item.canImport && (
+                  {canBatchAdopt(item) && (
                     <button
                       className="sm2__icon-btn sm2__icon-btn--add"
                       title="接管到中心库"
@@ -1655,7 +2083,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
                       +
                     </button>
                   )}
-                  {!item.canImport && item.status === 'conflict' && (
+                  {!canBatchAdopt(item) && item.status === 'conflict' && (
                     <button
                       className="sm2__btn sm2__btn--small"
                       disabled={importing || adoptOpeningId === key}
@@ -1695,8 +2123,41 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           onConfirm={(mode) => void executeOneClickOrganize(mode)}
         />
       )}
+      {batchConflictOpen && (
+        <BatchConflictDialog
+          conflictCount={batchConflictRows.length}
+          visibleOnly={batchConflictScope === 'visible'}
+          busy={importing}
+          onClose={() => setBatchConflictOpen(false)}
+          onConfirm={(mode) => void executeBatchConflicts(mode)}
+        />
+      )}
     </div>
   )
+}
+
+function batchConflictRenameId(item: AgentSkillInventoryItem) {
+  const raw = `${item.skillId || item.name || item.id}-${item.agentId || 'agent'}`
+  const normalized = raw
+    .trim()
+    .replace(/[\s./\\]+/g, '-')
+    .replace(/[^A-Za-z0-9_-]+/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return normalized || `${item.id}-import`
+}
+
+function batchConflictDoneVerb(mode: BatchConflictMode) {
+  switch (mode) {
+    case 'rename':
+      return '已新增'
+    case 'center_over_agent':
+      return '已用中心库版本接管'
+    case 'overwrite_center':
+      return '已覆盖中心库并接管'
+    case 'skip':
+      return '已跳过'
+  }
 }
 
 function modeNoticeSuffix(mode: OneClickOrganizeMode) {
@@ -1772,6 +2233,104 @@ function OneClickOrganizeDialog({
     </PreviewDialog>
   )
 }
+
+function BatchConflictDialog({
+  conflictCount,
+  visibleOnly,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  conflictCount: number
+  visibleOnly: boolean
+  busy: boolean
+  onClose: () => void
+  onConfirm: (mode: BatchConflictMode) => void
+}) {
+  const [mode, setMode] = useState<BatchConflictMode>('center_over_agent')
+  const selected = BATCH_CONFLICT_OPTIONS.find((option) => option.value === mode)
+
+  return (
+    <PreviewDialog
+      title="批量处理冲突"
+      confirmLabel={mode === 'rename' ? '批量新增' : '开始处理'}
+      modalClassName="sm2__modal--adopt sm2__modal--one-click sm2__modal--batch-conflict"
+      destructive={selected?.destructive}
+      busy={busy}
+      onConfirm={() => onConfirm(mode)}
+      onCancel={onClose}
+    >
+      <div className="sm2-oneclick">
+        <div className="sm2-oneclick__summary sm2-oneclick__summary--conflict">
+          <strong>将处理 {conflictCount} 个同名冲突 Skill</strong>
+          <span>{visibleOnly ? '范围为当前筛选结果中的冲突项。' : '范围为当前 Agent 范围内的全部冲突项。'}</span>
+          <em>默认“中心库为准”会保留中心库已有版本，并把 Agent 目录替换为指向中心库的链接。</em>
+        </div>
+
+        <div className="sm2-oneclick__options" role="radiogroup" aria-label="批量冲突处理方式">
+          {BATCH_CONFLICT_OPTIONS.map((option) => {
+            const active = mode === option.value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`sm2-oneclick__option${active ? ' sm2-oneclick__option--active' : ''}${option.destructive ? ' sm2-oneclick__option--warn' : ''}`}
+                role="radio"
+                aria-checked={active}
+                aria-label={option.label}
+                onClick={() => setMode(option.value)}
+              >
+                <span className="sm2-oneclick__radio" />
+                <span className="sm2-oneclick__option-main">
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </span>
+                <em>{option.badge}</em>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </PreviewDialog>
+  )
+}
+
+const BATCH_CONFLICT_OPTIONS: Array<{
+  value: BatchConflictMode
+  label: string
+  description: string
+  badge: string
+  destructive: boolean
+}> = [
+  {
+    value: 'center_over_agent',
+    label: '中心库为准（推荐）',
+    description: '保留中心库已有版本，并把 Agent 目录替换为指向中心库的链接。',
+    badge: '推荐',
+    destructive: true,
+  },
+  {
+    value: 'rename',
+    label: '重命名新增',
+    description: '按 skill-agent 形式生成新 ID 导入中心库，中心库原同名 Skill 不会被覆盖。',
+    badge: '新增',
+    destructive: false,
+  },
+  {
+    value: 'overwrite_center',
+    label: '覆盖中心库',
+    description: '用当前 Agent 文件覆盖中心库里的同名 Skill，再把它纳入管理。',
+    badge: '覆盖',
+    destructive: true,
+  },
+  {
+    value: 'skip',
+    label: '跳过',
+    description: '不改动中心库和 Agent 目录，这些冲突项仍保持未管理。',
+    badge: '跳过',
+    destructive: false,
+  },
+]
 
 const ONE_CLICK_ORGANIZE_OPTIONS: Array<{
   value: OneClickOrganizeMode
@@ -1875,7 +2434,7 @@ function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
               disabled={!canOpenAdopt(item) || importing || opening}
               onClick={() => onAdopt(item)}
             >
-              {importing || opening ? '准备中…' : item.canImport ? '接管到中心库' : item.status === 'conflict' ? '处理冲突' : item.managed ? '已被管理' : '无法接管'}
+              {importing || opening ? '准备中…' : canBatchAdopt(item) ? '接管到中心库' : item.status === 'conflict' ? '处理冲突' : item.managed ? '已被管理' : '无法接管'}
             </button>
             <button className="sm2__btn sm2__btn--ghost" disabled={revealBusy} onClick={() => void revealInFinder()}>
               {revealBusy ? '打开中…' : '打开目录 ↗'}
@@ -2071,7 +2630,7 @@ function AgentSkillDetailBody({ agent, item }: { agent: AgentSkillInventoryAgent
             </div>
             <div className="sm2__skill-source-card">
               <span>接管</span>
-              <strong>{item.canImport ? '可接管' : '不可接管'}</strong>
+              <strong>{canBatchAdopt(item) ? '可接管' : '不可接管'}</strong>
             </div>
             <div className="sm2__skill-source-card">
               <span>状态</span>
@@ -2342,6 +2901,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
   const [localViewMode, setLocalViewMode] = useState<LocalPreviewViewMode>('cards')
   const [renames, setRenames] = useState<Record<string, string>>({})
+  const [conflictResolutions, setConflictResolutions] = useState<Record<string, LocalConflictResolution>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -2369,6 +2929,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
     try {
       const p = await skillApiV2.previewAddCenterSkill(addInput)
       setPreview(p)
+      setConflictResolutions(Object.fromEntries(p.blockers.map((b) => [b.skillId, 'rename'])))
+      setRenames({})
     } catch (e) {
       setError(String(e))
     } finally {
@@ -2382,6 +2944,9 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
     setError(null)
     try {
       const decisions: AddCenterSkillDecision[] = preview.blockers.map((b) => {
+        const resolution = conflictResolutions[b.skillId] || 'rename'
+        if (resolution === 'overwrite') return { skillId: b.skillId, resolution: 'update' }
+        if (resolution === 'skip') return { skillId: b.skillId, resolution: 'skip' }
         const renamed = renames[b.skillId]?.trim()
         return renamed
           ? { skillId: b.skillId, proposedSkillId: renamed, resolution: 'create' }
@@ -2399,6 +2964,18 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
   if (preview) {
     const totalChanges = preview.candidates.length + preview.blockers.length
+    const blockerCount = preview.blockers.length
+    const overwriteAll = blockerCount > 0 && preview.blockers.every((b) => (conflictResolutions[b.skillId] || 'rename') === 'overwrite')
+    const setConflictResolution = (skillId: string, resolution: LocalConflictResolution) => {
+      setConflictResolutions((current) => ({ ...current, [skillId]: resolution }))
+    }
+    const setAllConflictResolutions = (resolution: LocalConflictResolution) => {
+      setConflictResolutions((current) => {
+        const next = { ...current }
+        for (const blocker of preview.blockers) next[blocker.skillId] = resolution
+        return next
+      })
+    }
     return (
       <div className="sm2__local-preview">
         <div className="sm2__local-preview-head">
@@ -2413,6 +2990,16 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
               <span><strong>{preview.candidates.length}</strong> 可导入</span>
               <span><strong>{preview.blockers.length}</strong> 需处理</span>
             </div>
+            {blockerCount > 0 && (
+              <label className="sm2__local-overwrite-toggle">
+                <input
+                  type="checkbox"
+                  checked={overwriteAll}
+                  onChange={(e) => setAllConflictResolutions(e.target.checked ? 'overwrite' : 'rename')}
+                />
+                <span>覆盖冲突项</span>
+              </label>
+            )}
             <div className="sm2__view-toggle sm2__view-toggle--soft">
               <button className={localViewMode === 'list' ? 'active' : ''} onClick={() => setLocalViewMode('list')}>列表</button>
               <button className={localViewMode === 'cards' ? 'active' : ''} onClick={() => setLocalViewMode('cards')}>卡片</button>
@@ -2433,6 +3020,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
                 blocker={b}
                 value={renames[b.skillId] || ''}
                 onChange={(value) => setRenames((current) => ({ ...current, [b.skillId]: value }))}
+                resolution={conflictResolutions[b.skillId] || 'rename'}
+                onResolutionChange={(resolution) => setConflictResolution(b.skillId, resolution)}
               />
             ))}
           </div>
@@ -2447,6 +3036,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
                 blocker={b}
                 value={renames[b.skillId] || ''}
                 onChange={(value) => setRenames((current) => ({ ...current, [b.skillId]: value }))}
+                resolution={conflictResolutions[b.skillId] || 'rename'}
+                onResolutionChange={(resolution) => setConflictResolution(b.skillId, resolution)}
               />
             ))}
           </div>
@@ -2454,7 +3045,7 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         <div className="sm2__btn-row sm2__local-preview-footer">
-          <button className="sm2__btn" onClick={() => setPreview(null)} disabled={busy}>返回</button>
+          <button className="sm2__btn" onClick={() => { setPreview(null); setConflictResolutions({}) }} disabled={busy}>返回</button>
           <button className="sm2__btn sm2__btn--primary" onClick={execute} disabled={busy}>{busy ? '处理中…' : '执行导入'}</button>
         </div>
       </div>
@@ -2573,10 +3164,14 @@ function LocalBlockerCard({
   blocker,
   value,
   onChange,
+  resolution,
+  onResolutionChange,
 }: {
   blocker: AddCenterSkillPreview['blockers'][number]
   value: string
   onChange: (value: string) => void
+  resolution: LocalConflictResolution
+  onResolutionChange: (resolution: LocalConflictResolution) => void
 }) {
   return (
     <div className="sm2__local-skill-card sm2__local-skill-card--conflict">
@@ -2589,10 +3184,13 @@ function LocalBlockerCard({
         <span className="sm2__tag sm2__tag--conflict">需处理</span>
       </div>
       <p className="sm2__local-skill-desc">{blocker.reason || '同名 Skill 需要选择处理方式。'}</p>
-      <label className="sm2__local-rename-field">
-        <span>重命名为</span>
-        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={`${blocker.skillId}-rename`} />
-      </label>
+      <LocalConflictControls
+        blocker={blocker}
+        value={value}
+        onChange={onChange}
+        resolution={resolution}
+        onResolutionChange={onResolutionChange}
+      />
     </div>
   )
 }
@@ -2601,10 +3199,14 @@ function LocalBlockerRow({
   blocker,
   value,
   onChange,
+  resolution,
+  onResolutionChange,
 }: {
   blocker: AddCenterSkillPreview['blockers'][number]
   value: string
   onChange: (value: string) => void
+  resolution: LocalConflictResolution
+  onResolutionChange: (resolution: LocalConflictResolution) => void
 }) {
   return (
     <div className="sm2__local-skill-row sm2__local-skill-row--conflict">
@@ -2614,12 +3216,66 @@ function LocalBlockerRow({
           <strong>{blocker.name || blocker.skillId}</strong>
           <span>{blocker.reason || '同名 Skill 需要选择处理方式。'}</span>
         </div>
-        <label className="sm2__local-rename-field sm2__local-rename-field--inline">
+        <LocalConflictControls
+          blocker={blocker}
+          value={value}
+          onChange={onChange}
+          resolution={resolution}
+          onResolutionChange={onResolutionChange}
+          inline
+        />
+      </div>
+      <span className="sm2__tag sm2__tag--conflict">需处理</span>
+    </div>
+  )
+}
+
+function LocalConflictControls({
+  blocker,
+  value,
+  onChange,
+  resolution,
+  onResolutionChange,
+  inline,
+}: {
+  blocker: AddCenterSkillPreview['blockers'][number]
+  value: string
+  onChange: (value: string) => void
+  resolution: LocalConflictResolution
+  onResolutionChange: (resolution: LocalConflictResolution) => void
+  inline?: boolean
+}) {
+  return (
+    <div className={`sm2__local-conflict-controls${inline ? ' sm2__local-conflict-controls--inline' : ''}`}>
+      <div className="sm2__local-conflict-modes" role="radiogroup" aria-label={`${blocker.skillId} 处理方式`}>
+        <button
+          type="button"
+          className={resolution === 'overwrite' ? 'active' : ''}
+          onClick={() => onResolutionChange('overwrite')}
+        >
+          覆盖
+        </button>
+        <button
+          type="button"
+          className={resolution === 'rename' ? 'active' : ''}
+          onClick={() => onResolutionChange('rename')}
+        >
+          重命名
+        </button>
+        <button
+          type="button"
+          className={resolution === 'skip' ? 'active' : ''}
+          onClick={() => onResolutionChange('skip')}
+        >
+          跳过
+        </button>
+      </div>
+      {resolution === 'rename' && (
+        <label className={`sm2__local-rename-field${inline ? ' sm2__local-rename-field--inline' : ''}`}>
           <span>重命名为</span>
           <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={`${blocker.skillId}-rename`} />
         </label>
-      </div>
-      <span className="sm2__tag sm2__tag--conflict">需处理</span>
+      )}
     </div>
   )
 }
