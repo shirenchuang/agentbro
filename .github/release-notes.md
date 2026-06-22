@@ -2,26 +2,24 @@
 
 ## English
 
-AgentBro v{{VERSION}} expands the app from a runtime Dynamic Island into a local-first Agent Management workspace. This release focuses on managing AI coding agents, skills, hooks, MCP servers, plugins, and project-level configuration from one desktop control panel.
+AgentBro v{{VERSION}} polishes the Skill Center and Agent Management workspace introduced in v2.1.0. This release focuses on making skill packs easier to install from the market, keeping batch-adopted skills synchronized with packs, and improving Codex project inspection.
 
 ### Highlights
 
-- **Agent Management workspace** - Scan local CLIs and desktop agents, then review install state, versions, executable paths, config directories, official install pages, hooks, skills, MCP servers, plugins, and health state in one place.
-- **Skill Center library** - Discover skills scattered across agent folders, adopt unmanaged skills into the center library, and distribute them to selected agents by symlink or copy.
-- **Skill packs** - Group reusable skills into packs, apply or revoke them from agent detail pages, and handle conflicts with overwrite, skip, or keep-agent-copy choices.
-- **Project management** - Import repositories, inspect project-level Claude Code and Codex instructions/config, scan project skills, MCP servers, and plugins, and install center skills into projects.
-- **Per-agent hook management** - Install or remove hooks for each supported agent, inspect bridge commands and config paths, and toggle event groups such as approvals, notifications, lifecycle, and activity.
-- **Diagnostics and recovery** - Surface broken links, changed copies, missing paths, unmanaged skills, and other local configuration issues so they can be fixed from the workspace.
+- **Market skill pack selection** - Browse marketplace sources by publisher, open source-level skill lists, select multiple skills, and install them into a chosen pack from the same flow.
+- **Batch adoption into packs** - When adopting unmanaged skills in bulk, AgentBro can now attach the adopted skills to an existing or newly created pack and keep that pack membership synchronized.
+- **Skill pack clarity** - Pack management now explains when adopted skills are synced to packs, refreshes applied agent state after pack updates, and keeps the active pack and agent views aligned.
+- **Codex project inspection** - Project management now reads Codex MCP servers and plugin settings so project-level configuration is easier to audit from AgentBro.
+- **Agent workspace polish** - Agent detail, install, library, and pack views received layout, icon, state, and copy refinements for smoother daily use.
+- **Reliability fixes** - The release includes stronger tests for skill manager views and store behavior, plus Rust updates for current clippy checks.
 
 ### Documentation
 
-- README and README.en now explain the Agent Management workflow, Skill Center, supported agent scopes, screenshots, and updated onboarding steps.
+- README and README.en now include clearer community onboarding and updated social preview assets.
 - Release assets continue to include macOS universal DMGs, updater files, and early Windows installer artifacts.
 
 ### Contributors
 
-- @guijilvren
-- @nicobeyond
 - @shirenchuang
 
 ### Install And Update
@@ -45,26 +43,24 @@ AgentBro v{{VERSION}} expands the app from a runtime Dynamic Island into a local
 
 ## 中文
 
-AgentBro v{{VERSION}} 从运行时灵动岛，进一步扩展成一个本地优先的 Agent 管理工作台。这个版本重点更新 AI 编程 Agent 的管理能力，把 Agent 安装、版本、Hook、Skills、MCP、插件和项目级配置收进同一个桌面控制面板。
+AgentBro v{{VERSION}} 继续打磨 v2.1.0 引入的 Skill 中心和 Agent 管理工作台。这个版本重点优化市场技能包安装、批量接管后的技能包同步，以及 Codex 项目配置检查。
 
 ### 重点更新
 
-- **Agent 管理工作台** - 自动扫描本机 CLI 和桌面 Agent，统一查看安装状态、版本、可执行文件路径、配置目录、官方下载入口、Hook、Skills、MCP、插件和健康状态。
-- **Skill 中心库** - 扫描散落在不同 Agent 目录里的 Skills，把未管理的 Skill 接管到中心库，再按软链接或拷贝分发到指定 Agent。
-- **技能包** - 把常用 Skills 组合成可复用包，在 Agent 详情页一键应用或撤销；遇到冲突时可选择覆盖、跳过或保留 Agent 现有副本。
-- **项目管理** - 导入本地仓库，检查项目级 Claude Code / Codex 指令和配置，扫描项目 Skills、MCP、插件，并把中心库 Skills 安装到项目里。
-- **按 Agent 管理 Hook** - 为每个支持的 Agent 安装或移除 Hook，查看 Bridge 命令和配置路径，并按审批、通知、生命周期、活动等事件组开关。
-- **诊断与修复** - 暴露坏链接、副本变更、路径缺失、未接管 Skills 等本地配置问题，方便从工作台统一处理。
+- **市场技能包选择** - 按发布者浏览市场源，进入单个来源查看技能列表，批量选择技能，并在同一流程里安装到指定技能包。
+- **批量接管写入技能包** - 批量接管未管理 Skills 时，现在可以把接管后的技能同步加入已有或新建技能包，并保持包成员关系一致。
+- **技能包体验更清晰** - 技能包管理会说明接管后的同步行为，包更新后刷新已应用 Agent 状态，并保持当前包和 Agent 视图一致。
+- **Codex 项目配置检查** - 项目管理现在可以读取 Codex MCP servers 和插件配置，更方便从 AgentBro 审计项目级配置。
+- **Agent 工作台打磨** - Agent 详情、安装、库和技能包页面更新了布局、图标、状态和文案，日常使用更顺手。
+- **可靠性修复** - 增加 Skill Manager 视图和 store 行为测试，并更新 Rust 代码以通过当前 clippy 检查。
 
 ### 文档
 
-- README 和 README.en 已更新 Agent 管理流程、Skill 中心库、支持范围、截图和接入步骤。
+- README 和 README.en 更新了社区加入说明，并补充新的社交预览素材。
 - 发布产物继续包含 macOS 通用 DMG、自动更新文件，以及早期 Windows 安装包。
 
 ### 贡献者
 
-- @guijilvren
-- @nicobeyond
 - @shirenchuang
 
 ### 安装与更新
