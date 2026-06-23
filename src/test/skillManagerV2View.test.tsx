@@ -441,6 +441,142 @@ describe('market install state', () => {
   })
 })
 
+describe('Marketplace install flow', () => {
+  beforeEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    useSkillStoreV2.setState({
+      skills: [],
+      packs: [
+        {
+          id: 'anthropics-skills',
+          name: 'anthropics/skills',
+          description: 'Anthropic skills',
+          tags: ['anthropics/skills'],
+          memberCount: 8,
+          appliedAgentCount: 0,
+          healthy: true,
+        },
+      ],
+      agents: [],
+      overview: null,
+      settings: null,
+      lastOverviewLoadedAt: Date.now(),
+      loadOverview: vi.fn().mockResolvedValue(undefined),
+      loadProjects: vi.fn().mockResolvedValue(undefined),
+    } as Partial<ReturnType<typeof useSkillStoreV2.getState>>)
+  })
+
+  function marketSkill(overrides: Partial<Awaited<ReturnType<typeof skillApiV2.searchMarketplaceSkills>>[number]> = {}) {
+    return {
+      id: 'skillssh:anthropics@skills@brand-guidelines',
+      registryId: 'skills-sh',
+      name: 'brand-guidelines',
+      description: 'Brand skill',
+      source: 'anthropics/skills',
+      installCount: 100,
+      downloadUrl: 'skillssh:anthropics/skills/brand-guidelines',
+      webUrl: 'https://skills.sh/anthropics/skills/brand-guidelines',
+      isInstalled: false,
+      syncedAt: '2026-01-01T00:00:00Z',
+      cacheUpdatedAt: null,
+      ...overrides,
+    }
+  }
+
+  it('installs an outer marketplace card directly without opening the pack dialog', async () => {
+    vi.spyOn(skillApiV2, 'searchMarketplaceSkills').mockResolvedValue([marketSkill()])
+    const executeAdd = vi.spyOn(skillApiV2, 'executeAddCenterSkill').mockResolvedValue({
+      skillIds: ['brand-guidelines'],
+      updated: [],
+      skipped: [],
+    })
+    const onDone = vi.fn()
+
+    const { MarketPanel } = await import('../components/skills-v2/InstallView')
+    render(<MarketPanel onInstall={() => {}} onDone={onDone} />)
+
+    const addButton = await screen.findByTitle('安装')
+    fireEvent.click(addButton)
+
+    await waitFor(() => expect(executeAdd).toHaveBeenCalled())
+    expect(screen.queryByText('安装「brand-guidelines」')).not.toBeInTheDocument()
+    expect(onDone).toHaveBeenCalledWith('brand-guidelines')
+  })
+
+  it('labels an installed outer marketplace card action as distribution', async () => {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill({
+          id: 'brand-guidelines',
+          name: 'brand-guidelines',
+          sourceType: 'skillssh',
+          sourceUri: 'skillssh:anthropics/skills/brand-guidelines',
+          installedAgents: [],
+        }),
+      ],
+    })
+    vi.spyOn(skillApiV2, 'searchMarketplaceSkills').mockResolvedValue([marketSkill()])
+
+    const { MarketPanel } = await import('../components/skills-v2/InstallView')
+    render(<MarketPanel onInstall={() => {}} onDone={() => {}} />)
+
+    const distributeButton = await screen.findByTitle('分发到 Agent')
+    expect(distributeButton).toHaveTextContent('分发')
+  })
+
+  it('opens the pack dialog only after entering a source market and completes without distribution handoff', async () => {
+    vi.spyOn(skillApiV2, 'searchMarketplaceSkills').mockResolvedValue([marketSkill()])
+    vi.spyOn(skillApiV2, 'executeAddCenterSkill').mockResolvedValue({
+      skillIds: ['brand-guidelines'],
+      updated: [],
+      skipped: [],
+    })
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
+      id: 'anthropics-skills',
+      name: 'anthropics/skills',
+      description: 'Anthropic skills',
+      tags: ['anthropics/skills'],
+      appliedAgents: [],
+      members: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    })
+    vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      id: 'anthropics-skills',
+      name: 'anthropics/skills',
+      description: 'Anthropic skills',
+      tags: ['anthropics/skills'],
+      members: [
+        {
+          skillId: 'brand-guidelines',
+          skillName: 'brand-guidelines',
+          required: true,
+          sortOrder: 0,
+          missing: false,
+        },
+      ],
+      appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    })
+    const onDone = vi.fn()
+
+    const { MarketPanel } = await import('../components/skills-v2/InstallView')
+    render(<MarketPanel onInstall={() => {}} onDone={onDone} />)
+
+    fireEvent.click(await screen.findByTitle('查看这个创建者的所有市场'))
+    fireEvent.click(await screen.findByText('anthropics/skills'))
+    fireEvent.click(await screen.findByTitle('安装选项'))
+
+    expect(await screen.findByText('安装「brand-guidelines」')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '安装' }))
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith())
+    expect(onDone).not.toHaveBeenCalledWith('brand-guidelines')
+  })
+})
+
 describe('Git install skill preview view modes', () => {
   beforeEach(() => {
     cleanup()

@@ -725,6 +725,9 @@
       "processing": "처리 중..."
     },
     "marketInstall": {
+      "installTitle": "설치",
+      "distributeTitle": "Agent에 배포",
+      "distributeShort": "배포",
       "installOptionsTitle": "설치 옵션",
       "addToPackTitle": "Skill 팩에 추가",
       "dialogTitle": "\"{{name}}\" 설치",
