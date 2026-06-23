@@ -27,6 +27,7 @@ const HOOK_EVENTS: &[(&str, &str, u64)] = &[
         CODEX_PERMISSION_TIMEOUT_SECONDS,
     ),
     ("PermissionDenied", "permission_denied", 5),
+    ("Notification", "notification", 5),
     ("Stop", "stop", 5),
     ("SessionEnd", "session_end", 5),
 ];
@@ -1193,6 +1194,7 @@ mod tests {
         assert!(settings["hooks"]["SessionEnd"].is_array());
         assert!(settings["hooks"]["PostToolUseFailure"].is_array());
         assert!(settings["hooks"]["PermissionDenied"].is_array());
+        assert!(settings["hooks"]["Notification"].is_array());
         assert!(settings["hooks"].get("StopFailure").is_none());
     }
 
@@ -1405,6 +1407,29 @@ trust_level = "trusted"
         match event {
             AgentEvent::AssistantResponseComplete { text, .. } => {
                 assert_eq!(text, "Fixed the layout.");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_notification_message() {
+        let event = adapter()
+            .parse_event(&serde_json::json!({
+                "agent": "codex",
+                "event": "Notification",
+                "session_id": "s1",
+                "message": "Waiting for input",
+                "status": "waiting_for_input"
+            }))
+            .unwrap();
+
+        match event {
+            AgentEvent::Notification {
+                message, status, ..
+            } => {
+                assert_eq!(message, "Waiting for input");
+                assert_eq!(status.as_deref(), Some("waiting_for_input"));
             }
             other => panic!("unexpected event: {other:?}"),
         }

@@ -246,12 +246,16 @@ pub fn bridge_binary_path() -> PathBuf {
 
 pub fn bridge_binary_is_current() -> bool {
     let dest = raw_bridge_binary_path();
+    bridge_binary_is_current_at(&dest, find_source_bridge().as_deref())
+}
+
+fn bridge_binary_is_current_at(dest: &Path, source: Option<&Path>) -> bool {
     if !dest.exists() {
         return false;
     }
 
-    let Some(source) = find_source_bridge() else {
-        return false;
+    let Some(source) = source else {
+        return bridge_candidate_can_run(dest);
     };
 
     match (std::fs::read(dest), std::fs::read(source)) {
@@ -497,6 +501,31 @@ mod tests {
 
         #[cfg(debug_assertions)]
         assert!(!bridge_is_newer_than_source(&bridge, &source));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn current_bridge_accepts_runnable_dest_when_source_is_unavailable() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentbro-bridge-current-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        #[cfg(target_os = "windows")]
+        let bridge = {
+            let path = dir.join("agentbro-bridge.cmd");
+            std::fs::write(&path, "@echo off\r\nexit /b 0\r\n").expect("write bridge script");
+            path
+        };
+        #[cfg(not(target_os = "windows"))]
+        let bridge = {
+            let path = dir.join("agentbro-bridge");
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write bridge script");
+            path
+        };
+
+        assert!(bridge_binary_is_current_at(&bridge, None));
 
         let _ = std::fs::remove_dir_all(dir);
     }

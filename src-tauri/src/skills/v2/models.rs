@@ -39,10 +39,20 @@ fn default_sqlite_path() -> String {
         .to_string()
 }
 fn default_mode() -> String {
-    "link".to_string()
+    if cfg!(target_os = "windows") {
+        "copy"
+    } else {
+        "link"
+    }
+    .to_string()
 }
 fn default_link_fail() -> String {
-    "ask".to_string()
+    if cfg!(target_os = "windows") {
+        "copy"
+    } else {
+        "ask"
+    }
+    .to_string()
 }
 fn default_true() -> bool {
     true

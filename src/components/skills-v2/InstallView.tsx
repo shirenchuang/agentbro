@@ -1411,7 +1411,12 @@ function agentConflictCount(agent: AgentSkillInventoryAgent) {
 }
 
 function shouldCleanupOnBatchAdopt(item: AgentSkillInventoryItem) {
-  return item.agentId === 'agents' || item.path.includes('/.agents/skills/')
+  return item.agentId === 'agents' || isSharedAgentsSkillsPath(item.path)
+}
+
+function isSharedAgentsSkillsPath(path: string) {
+  const parts = path.split(/[\\/]+/)
+  return parts.some((part, index) => part === '.agents' && parts[index + 1] === 'skills')
 }
 
 function canBatchAdopt(item: AgentSkillInventoryItem) {

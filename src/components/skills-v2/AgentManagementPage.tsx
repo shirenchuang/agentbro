@@ -2166,7 +2166,12 @@ function isManagedCopyBlocker(blocker: ConflictBlocker) {
 }
 
 function defaultAgentDetailAdoptMode(item: UnmanagedItemDto) {
-  return item.agentId === 'agents' || item.path.includes('/.agents/skills/') ? 'import_link' : 'import_keep'
+  return item.agentId === 'agents' || isSharedAgentsSkillsPath(item.path) ? 'import_link' : 'import_keep'
+}
+
+function isSharedAgentsSkillsPath(path: string) {
+  const parts = path.split(/[\\/]+/)
+  return parts.some((part, index) => part === '.agents' && parts[index + 1] === 'skills')
 }
 
 function openUnmanagedSkill(

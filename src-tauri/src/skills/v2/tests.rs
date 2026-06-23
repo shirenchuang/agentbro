@@ -216,6 +216,38 @@ fn add_center_skill_can_link_to_local_source() {
 }
 
 #[test]
+#[cfg(target_os = "windows")]
+fn windows_center_link_import_falls_back_to_copy() {
+    let (_home, svc, _lock) = fresh_service("add-link-windows-copy");
+    let src = write_skill(
+        &svc.home.join("dev-skills"),
+        "live-review",
+        "live-review",
+        Some("v1"),
+    );
+
+    let result = svc
+        .execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: Some(src.display().to_string()),
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: Some("link".to_string()),
+            },
+            vec![],
+        )
+        .unwrap();
+
+    assert_eq!(result.skill_ids, vec!["live-review".to_string()]);
+    let center_skill = fsutil::default_center_path().join("live-review");
+    assert!(center_skill.join("SKILL.md").is_file());
+    assert!(!center_skill.is_symlink());
+}
+
+#[test]
 fn linked_center_skill_file_tree_expands_source_directory() {
     let (_home, svc, _lock) = fresh_service("add-link-tree");
     let src = write_skill(
@@ -406,6 +438,61 @@ fn distribute_link_and_copy_record_actual_mode() {
     assert_eq!(preview2.changes[0].actual_mode.as_deref(), Some("copy"));
     let detail = svc.get_skill_detail("release-checklist").unwrap();
     assert_eq!(detail.targets.len(), 2);
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_link_distribution_falls_back_to_copy_even_with_ask_policy() {
+    let (_home, svc, _lock) = fresh_service("windows-link-fallback");
+    svc.update_settings(SettingsUpdate {
+        center_path: None,
+        sqlite_path: None,
+        default_distribute_mode: Some("link".to_string()),
+        link_fail_policy: Some("ask".to_string()),
+        startup_scan: None,
+        show_unmanaged: None,
+        auto_sync_skill_packs: None,
+    })
+    .unwrap();
+    let src = write_skill(
+        &svc.home.join("s"),
+        "windows-copy",
+        "windows-copy",
+        Some("v1"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["windows-copy".to_string()],
+            vec!["claude-code".to_string()],
+            "link".to_string(),
+        )
+        .unwrap();
+    assert!(preview.blockers.is_empty());
+    assert_eq!(preview.changes[0].actual_mode.as_deref(), Some("copy"));
+
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("windows-copy").unwrap();
+    assert_eq!(detail.targets.len(), 1);
+    assert_eq!(detail.targets[0].install_mode, "link");
+    assert_eq!(detail.targets[0].actual_mode, "copy");
+    assert!(Path::new(&detail.targets[0].target_path)
+        .join("SKILL.md")
+        .is_file());
 }
 
 #[test]

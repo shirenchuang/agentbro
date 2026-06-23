@@ -1538,7 +1538,7 @@ impl Service {
             "link" => {
                 let linked = fsutil::try_symlink(center, &target)?;
                 if !linked {
-                    let policy = self.settings()?.link_fail_policy;
+                    let policy = self.effective_link_fail_policy()?;
                     if policy == "copy" {
                         fsutil::copy_dir_recursive(center, &target)?;
                     } else {
@@ -1918,6 +1918,8 @@ impl Service {
                 }
                 if fsutil::try_symlink(src, dest)? {
                     Ok(())
+                } else if self.effective_link_fail_policy()? == "copy" {
+                    fsutil::copy_dir_recursive(src, dest)
                 } else {
                     Err(format!(
                         "Could not create center symlink at {}.",
@@ -2414,7 +2416,7 @@ impl Service {
         // On non-unix or when link unsupported, fall back per policy.
         let can_link = cfg!(unix) && agent_meta::agent_skills_dir(&self.home, agent).is_some();
         if requested == "link" && !can_link {
-            let policy = self.settings()?.link_fail_policy;
+            let policy = self.effective_link_fail_policy()?;
             match policy.as_str() {
                 "copy" => return Ok("copy".to_string()),
                 _ => return Err(
@@ -2424,6 +2426,14 @@ impl Service {
             }
         }
         Ok(requested.to_string())
+    }
+
+    fn effective_link_fail_policy(&self) -> Result<String, String> {
+        if cfg!(target_os = "windows") {
+            Ok("copy".to_string())
+        } else {
+            Ok(self.settings()?.link_fail_policy)
+        }
     }
 
     pub fn execute_distribute_skill(
@@ -2626,7 +2636,7 @@ impl Service {
                 if linked {
                     "link".to_string()
                 } else {
-                    let policy = self.settings()?.link_fail_policy;
+                    let policy = self.effective_link_fail_policy()?;
                     if policy == "copy" {
                         fsutil::copy_dir_recursive(center, target)?;
                         "copy".to_string()
@@ -2706,7 +2716,7 @@ impl Service {
                 if linked {
                     "link".to_string()
                 } else {
-                    let policy = self.settings()?.link_fail_policy;
+                    let policy = self.effective_link_fail_policy()?;
                     if policy == "copy" {
                         fsutil::copy_dir_recursive(center, target)?;
                         "copy".to_string()
@@ -3010,13 +3020,33 @@ impl Service {
             }
             "import_link" => {
                 fsutil::remove_path(src)?;
-                fsutil::try_symlink(&dest, src)?;
-                self.upsert_target_managed(agent_id, &target_skill_id, src, "link", "link")?;
+                let actual_mode = if fsutil::try_symlink(&dest, src)? {
+                    "link"
+                } else if self.effective_link_fail_policy()? == "copy" {
+                    fsutil::copy_dir_recursive(&dest, src)?;
+                    "copy"
+                } else {
+                    return Err(format!(
+                        "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
+                        src.display()
+                    ));
+                };
+                self.upsert_target_managed(agent_id, &target_skill_id, src, "link", actual_mode)?;
             }
             "center_over_agent" => {
                 fsutil::remove_path(src)?;
-                fsutil::try_symlink(&dest, src)?;
-                self.upsert_target_managed(agent_id, &target_skill_id, src, "link", "link")?;
+                let actual_mode = if fsutil::try_symlink(&dest, src)? {
+                    "link"
+                } else if self.effective_link_fail_policy()? == "copy" {
+                    fsutil::copy_dir_recursive(&dest, src)?;
+                    "copy"
+                } else {
+                    return Err(format!(
+                        "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
+                        src.display()
+                    ));
+                };
+                self.upsert_target_managed(agent_id, &target_skill_id, src, "link", actual_mode)?;
             }
             "import_copy" => {
                 fsutil::remove_path(src)?;

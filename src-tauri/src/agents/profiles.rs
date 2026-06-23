@@ -342,6 +342,11 @@ pub const CODEX_EVENTS: &[HookEventDescriptor] = &[
         timeout: Some(5),
     },
     HookEventDescriptor {
+        name: "Notification",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(5),
+    },
+    HookEventDescriptor {
         name: "Stop",
         template: HookEntryTemplate::Plain,
         timeout: Some(5),
