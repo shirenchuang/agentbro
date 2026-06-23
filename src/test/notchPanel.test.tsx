@@ -911,6 +911,52 @@ describe('NotchPanel island shell', () => {
     })
   })
 
+  it('opens the island when backend snapshots introduce a permission request', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    useSessionStore.setState({
+      sessions: {},
+      sessionList: [],
+      activeSessionId: null,
+      panelState: 'collapsed',
+      activeOverlay: null,
+      overlayQueue: [],
+      rateLimits: undefined,
+      hookNotification: null,
+      wakeSilencedUntil: 0,
+      focusedTerminal: null,
+    })
+
+    render(<NotchPanel />)
+
+    act(() => {
+      useSessionStore.getState().replaceAllSessions([
+        session({
+          id: 'backend-permission',
+          phase: 'waiting_approval',
+          pendingPermission: {
+            toolName: 'Bash',
+            toolInput: '{"command":"echo smoke"}',
+          },
+        }),
+      ])
+    })
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().activeOverlay?.type).toBe('permission')
+    })
+    await waitFor(() => {
+      expect(useSessionStore.getState().panelState).toBe('hover')
+    })
+    await waitFor(() => {
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        expect.anything(),
+      )
+    })
+  })
+
   it('ignores legacy single-letter permission shortcuts', () => {
     mountIsland({
       id: 'permission-s1',

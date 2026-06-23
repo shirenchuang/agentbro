@@ -4,12 +4,14 @@ import { getCurrentAppVersion, isHomebrewInstall, isTauri, restartApp } from '..
 import { useConfigStore } from '../stores/configStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { blockingBackgroundSessionCount } from '../utils/energyPolicy'
+import { isWindowsPlatform } from '../utils/platform'
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
 export type UpdateInstallChannel = 'direct' | 'homebrew'
 
 const RELEASE_API_URL = 'https://api.github.com/repos/shirenchuang/agentbro/releases/latest'
 const LATEST_DMG_URL = 'https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg'
+const LATEST_WINDOWS_SETUP_URL = 'https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64-setup.exe'
 const UPDATE_CHECK_TIMEOUT_MS = 8_000
 const SETTINGS_AUTO_CHECK_DELAY_MS = 5_000
 const BACKGROUND_AUTO_CHECK_DELAY_MS = 60_000
@@ -140,11 +142,11 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      console.error('[updater] check failed:', message)
 
       try {
         const fallback = await checkGitHubLatestRelease()
         if (fallback.available) {
+          console.warn('[updater] direct check failed; using GitHub release fallback:', message)
           updateRef.current = null
           manualDownloadUrlRef.current = fallback.downloadUrl
           installChannelRef.current = 'direct'
@@ -172,6 +174,7 @@ export function useUpdater(options: UseUpdaterOptions = {}) {
         setState(createEmptyState('up-to-date', 'direct'))
       } catch (fallbackError) {
         const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+        console.error('[updater] check failed:', message)
         console.error('[updater] fallback check failed:', fallbackMessage)
         setState(createEmptyState('error', 'direct'))
       }
@@ -380,6 +383,8 @@ interface GitHubRelease {
   }>
 }
 
+type UpdateDownloadPlatform = 'macos' | 'windows'
+
 async function checkGitHubLatestRelease(): Promise<{
   available: boolean
   version: string | null
@@ -408,16 +413,39 @@ async function checkGitHubLatestRelease(): Promise<{
   const release = await response.json() as GitHubRelease
   const latestVersion = release.tag_name.replace(/^v/, '')
   const currentVersion = await getCurrentAppVersion()
-  const downloadAsset = release.assets.find((asset) => asset.name === 'AgentBro_latest_universal.dmg')
-    ?? release.assets.find((asset) => asset.name.endsWith('_universal.dmg'))
+  const downloadPlatform = getUpdateDownloadPlatform()
+  const downloadAsset = selectReleaseDownloadAsset(release.assets, downloadPlatform)
 
   return {
     available: compareVersions(latestVersion, currentVersion) > 0,
     version: latestVersion,
     notes: release.body,
     date: release.published_at,
-    downloadUrl: downloadAsset?.browser_download_url ?? LATEST_DMG_URL,
+    downloadUrl: downloadAsset?.browser_download_url ?? fallbackDownloadUrl(downloadPlatform),
   }
+}
+
+function getUpdateDownloadPlatform(): UpdateDownloadPlatform {
+  return isWindowsPlatform() ? 'windows' : 'macos'
+}
+
+export function selectReleaseDownloadAsset(
+  assets: GitHubRelease['assets'],
+  platform: UpdateDownloadPlatform,
+): GitHubRelease['assets'][number] | undefined {
+  if (platform === 'windows') {
+    return assets.find((asset) => asset.name === 'AgentBro_latest_x64-setup.exe')
+      ?? assets.find((asset) => asset.name === 'AgentBro_latest_x64.msi')
+      ?? assets.find((asset) => asset.name.endsWith('_x64-setup.exe'))
+      ?? assets.find((asset) => asset.name.endsWith('_x64.msi'))
+  }
+
+  return assets.find((asset) => asset.name === 'AgentBro_latest_universal.dmg')
+    ?? assets.find((asset) => asset.name.endsWith('_universal.dmg'))
+}
+
+function fallbackDownloadUrl(platform: UpdateDownloadPlatform): string {
+  return platform === 'windows' ? LATEST_WINDOWS_SETUP_URL : LATEST_DMG_URL
 }
 
 function compareVersions(left: string, right: string): number {

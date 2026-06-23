@@ -347,10 +347,13 @@ fn find_source_bridge() -> Option<PathBuf> {
 }
 
 fn bridge_candidate_is_usable(bridge: &Path) -> bool {
-    bridge.exists() && bridge_candidate_is_fresh(bridge)
+    bridge.exists() && bridge_candidate_is_fresh(bridge) && bridge_candidate_can_run(bridge)
 }
 
 fn bridge_candidate_is_fresh(bridge: &Path) -> bool {
+    #[cfg(not(debug_assertions))]
+    let _ = bridge;
+
     #[cfg(debug_assertions)]
     {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -359,6 +362,26 @@ fn bridge_candidate_is_fresh(bridge: &Path) -> bool {
         }
     }
     true
+}
+
+fn bridge_candidate_can_run(bridge: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return std::process::Command::new(bridge)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = bridge;
+        true
+    }
 }
 
 #[cfg(debug_assertions)]

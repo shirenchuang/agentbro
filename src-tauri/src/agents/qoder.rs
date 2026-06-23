@@ -72,7 +72,7 @@ impl AgentAdapter for QoderAdapter {
         )
         .unwrap_or("");
         let cwd = string_field(raw, &["cwd"]).unwrap_or("").to_string();
-        let project = cwd.rsplit('/').next().unwrap_or("").to_string();
+        let project = super::project_name_from_path(&cwd);
         let terminal = string_field(raw, &["tty"]).unwrap_or("").to_string();
         let tool_name = string_field(raw, &["tool", "tool_name", "toolName"])
             .unwrap_or("Tool")

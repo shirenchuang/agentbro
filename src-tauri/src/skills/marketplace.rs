@@ -535,7 +535,7 @@ fn fetch_skills_sh_search(query: &str, limit: usize) -> Result<Vec<SkillsShSkill
         query
     };
     let limit = limit.clamp(1, 300).to_string();
-    let output = Command::new("curl")
+    let output = Command::new(crate::agents::executable::command_path("curl"))
         .args([
             "-L",
             "--fail",
@@ -932,7 +932,7 @@ fn read_manifest(url: &str) -> Result<String, String> {
         return fs::read_to_string(expanded).map_err(|e| e.to_string());
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        let output = Command::new("curl")
+        let output = Command::new(crate::agents::executable::command_path("curl"))
             .args(["-L", "--fail", url])
             .output()
             .map_err(|e| format!("Failed to run curl: {e}"))?;
@@ -1079,6 +1079,12 @@ fn market_item(
 
 fn expand_user_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }

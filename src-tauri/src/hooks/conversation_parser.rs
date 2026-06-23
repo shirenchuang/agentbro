@@ -2170,7 +2170,7 @@ fn parse_session_header(file_path: &std::path::Path) -> Option<DiscoveredSession
 
     let sid = session_id.or(filename_id)?;
     let cwd_str = cwd.unwrap_or_default();
-    let project = cwd_str.rsplit('/').next().unwrap_or(&cwd_str).to_string();
+    let project = crate::agents::project_name_from_path(&cwd_str);
 
     Some(DiscoveredSession {
         session_id: sid,

@@ -2712,7 +2712,7 @@ function LocalFilesTab({
 }) {
   const canPreview = Boolean(activeFile && isMarkdownPath(activeFile))
   const effectiveMode = canPreview ? viewMode : 'source'
-  const activeName = activeFile ? activeFile.split('/').pop() || activeFile : '未选择文件'
+  const activeName = activeFile ? pathBasename(activeFile) || activeFile : '未选择文件'
   const activeDisplayPath = activeFile ? relativeFilePath(activeFile, rootPath) : '选择左侧文件查看内容'
   const fileCount = countFiles(files)
   return (
@@ -2877,11 +2877,17 @@ function countFiles(node: FileTreeNode | null): number {
   return node.children?.reduce((sum, child) => sum + countFiles(child), 0) || 0
 }
 
+function pathBasename(path: string): string {
+  return path.split(/[\\/]+/).filter(Boolean).pop() || ''
+}
+
 function relativeFilePath(path: string, root: string): string {
-  if (path === root) return path.split('/').pop() || path
-  const prefix = root.endsWith('/') ? root : `${root}/`
-  if (path.startsWith(prefix)) return path.slice(prefix.length)
-  return path
+  const normalizedPath = path.replace(/\\/g, '/')
+  const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (normalizedPath === normalizedRoot) return pathBasename(path) || path
+  const prefix = `${normalizedRoot}/`
+  if (normalizedPath.startsWith(prefix)) return normalizedPath.slice(prefix.length)
+  return normalizedPath
 }
 
 function isMarkdownPath(path: string | null): boolean {
@@ -2899,7 +2905,7 @@ function nodeContainsPath(node: FileTreeNode, path: string): boolean {
 
 function localSkillFallbackTree(skillPath: string): FileTreeNode {
   return {
-    name: skillPath.split('/').filter(Boolean).pop() || 'skill',
+    name: pathBasename(skillPath) || 'skill',
     nodeType: 'dir',
     path: skillPath,
     children: [

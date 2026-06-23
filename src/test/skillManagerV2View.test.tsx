@@ -3423,6 +3423,88 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(install).toHaveBeenCalledWith('codex'))
   })
 
+  it('opens the download page when an uninstalled app has no install command', async () => {
+    const cursorDetail: AgentDetail = {
+      ...agentDetail,
+      id: 'cursor',
+      displayName: 'Cursor',
+      iconKey: 'cursor',
+      version: null,
+      latestVersion: null,
+      skillsDir: '/cursor',
+      skills: [],
+    }
+    useSkillStoreV2.setState({
+      selectedAgentId: 'cursor',
+      selectedAgentDetail: cursorDetail,
+      agents: [
+        { id: 'cursor', displayName: 'Cursor', iconKey: 'cursor', enabled: true, skillsDir: '/cursor', version: null, latestVersion: null, installed: false, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+      unmanaged: [],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([
+      makeProgram({
+        id: 'cursor',
+        displayName: 'Cursor',
+        icon: 'cursor',
+        kind: 'app',
+        status: 'notInstalled',
+        installCommand: null,
+        downloadUrl: 'https://cursor.com',
+      }),
+    ])
+    const openDownload = vi.spyOn(agentApi, 'openDownload').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(cursorDetail)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+
+    const primaryButton = await waitFor(() => {
+      const button = container.querySelector<HTMLButtonElement>('.sm2__agent-hero .sm2__btn--primary')
+      expect(button).toBeTruthy()
+      expect(button).toBeEnabled()
+      return button!
+    })
+    fireEvent.click(primaryButton)
+
+    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('cursor'))
+  })
+
+  it('keeps an agent uninstalled when program metadata is missing', async () => {
+    const cursorDetail: AgentDetail = {
+      ...agentDetail,
+      id: 'cursor',
+      displayName: 'Cursor',
+      iconKey: 'cursor',
+      version: null,
+      latestVersion: null,
+      skillsDir: '/cursor',
+      skills: [],
+    }
+    useSkillStoreV2.setState({
+      selectedAgentId: 'cursor',
+      selectedAgentDetail: cursorDetail,
+      agents: [
+        { id: 'cursor', displayName: 'Cursor', iconKey: 'cursor', enabled: true, skillsDir: '/cursor', version: null, latestVersion: null, installed: false, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+      unmanaged: [],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([])
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(cursorDetail)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+
+    await waitFor(() => {
+      expect(container.querySelector('.sm2__agent-version-pill')).toHaveTextContent('未安装')
+    })
+    const primaryButton = container.querySelector<HTMLButtonElement>('.sm2__agent-hero .sm2__btn--primary')
+    expect(primaryButton).toHaveTextContent('打开安装页')
+    expect(primaryButton).toBeDisabled()
+  })
+
   it('uses the update action when a newer agent version is available', async () => {
     const claudeDetail: AgentDetail = {
       ...agentDetail,

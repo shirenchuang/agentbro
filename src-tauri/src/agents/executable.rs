@@ -1,8 +1,23 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub fn command_exists(binary: &str) -> bool {
     find_binary(binary).is_some()
+}
+
+pub fn command_path(binary: &str) -> PathBuf {
+    find_binary(binary).unwrap_or_else(|| PathBuf::from(binary))
+}
+
+#[cfg(target_os = "windows")]
+pub fn augmented_path_env() -> Option<OsString> {
+    let mut dirs = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    dirs.extend(candidate_dirs());
+    std::env::join_paths(dedupe_paths(dirs)).ok()
 }
 
 pub fn find_binary(binary: &str) -> Option<PathBuf> {
@@ -372,13 +387,28 @@ fn candidate_dirs() -> Vec<PathBuf> {
             dirs.insert(PathBuf::from(app_data).join("npm"));
         }
         if let Ok(program_files) = std::env::var("ProgramFiles") {
-            dirs.insert(PathBuf::from(program_files).join("nodejs"));
+            let root = PathBuf::from(program_files);
+            dirs.insert(root.join("nodejs"));
+            dirs.insert(root.join("Git").join("cmd"));
+            dirs.insert(root.join("Git").join("bin"));
+        }
+        if let Ok(program_w6432) = std::env::var("ProgramW6432") {
+            let root = PathBuf::from(program_w6432);
+            dirs.insert(root.join("Git").join("cmd"));
+            dirs.insert(root.join("Git").join("bin"));
         }
         if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
-            dirs.insert(PathBuf::from(program_files_x86).join("nodejs"));
+            let root = PathBuf::from(program_files_x86);
+            dirs.insert(root.join("nodejs"));
+            dirs.insert(root.join("Git").join("cmd"));
+            dirs.insert(root.join("Git").join("bin"));
         }
         if let Ok(system_root) = std::env::var("SystemRoot") {
-            dirs.insert(PathBuf::from(system_root).join("System32"));
+            let root = PathBuf::from(system_root);
+            dirs.insert(root.clone());
+            dirs.insert(root.join("System32"));
+            dirs.insert(root.join("System32").join("OpenSSH"));
+            dirs.insert(root.join("System32").join("WindowsPowerShell").join("v1.0"));
         }
     }
 
@@ -452,5 +482,52 @@ mod tests {
         assert!(!super::is_windows_app_execution_path(std::path::Path::new(
             r"C:\Users\me\AppData\Local\OpenAI\Codex\bin\123\codex.exe"
         )));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finds_standard_git_install_dir() {
+        let dirs = super::candidate_dirs();
+        assert!(
+            dirs.iter()
+                .any(|dir| dir.to_string_lossy().ends_with(r"Git\cmd")),
+            "candidate dirs should include Git for Windows cmd directory"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finds_standard_system_command_dirs() {
+        let Some(system_root) = std::env::var_os("SystemRoot").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let dirs = super::candidate_dirs();
+        assert!(dirs.contains(&system_root));
+        assert!(dirs.contains(&system_root.join("System32")));
+        assert!(dirs.contains(&system_root.join("System32").join("OpenSSH")));
+        assert!(dirs.contains(
+            &system_root
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_augmented_path_includes_common_tool_dirs() {
+        let path = super::augmented_path_env().expect("augmented PATH");
+        let dirs = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        if let Some(home) = dirs::home_dir() {
+            assert!(dirs.contains(&home.join("AppData").join("Roaming").join("npm")));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            assert!(dirs.contains(
+                &std::path::PathBuf::from(program_files)
+                    .join("Git")
+                    .join("cmd")
+            ));
+        }
     }
 }

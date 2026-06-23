@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+#[cfg(not(target_os = "windows"))]
 use crate::platform::display::find_cursor_monitor;
 
 /// Emitted to the frontend on the Tauri event bus when the cursor crosses
@@ -17,6 +18,10 @@ pub const CURSOR_MONITOR_CHANGED_EVENT: &str = "cursor-monitor-changed";
 /// Polling interval. 250 ms keeps the latency below the visual threshold
 /// the notch's previous 500 ms cadence already established, while the
 /// change-detection short-circuit means we only do real work on transitions.
+#[cfg(target_os = "windows")]
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(not(target_os = "windows"))]
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +52,7 @@ fn state() -> &'static Mutex<TrackerState> {
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 fn monitor_identity(monitor: &tauri::Monitor) -> String {
     monitor
         .name()
@@ -101,14 +107,37 @@ fn poll_for_change(app: &AppHandle) -> Option<CursorMonitorChange> {
 }
 
 fn check_for_change(app: &AppHandle) -> Option<CursorMonitorChange> {
-    let monitor = find_cursor_monitor(app)?;
-    let id = monitor_identity(&monitor);
+    let id = current_monitor_id(app)?;
     let mut guard = state().lock().ok()?;
     if guard.last_monitor_id.as_deref() == Some(id.as_str()) {
         return None;
     }
     guard.last_monitor_id = Some(id.clone());
     Some(CursorMonitorChange { monitor_id: id })
+}
+
+#[cfg(target_os = "windows")]
+fn current_monitor_id(_app: &AppHandle) -> Option<String> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return None;
+    }
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_null() {
+        None
+    } else {
+        Some(format!("windows-monitor-{:x}", monitor as usize))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_monitor_id(app: &AppHandle) -> Option<String> {
+    let monitor = find_cursor_monitor(app)?;
+    Some(monitor_identity(&monitor))
 }
 
 fn dispatch_listeners(app: &AppHandle, change: CursorMonitorChange) {

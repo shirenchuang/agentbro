@@ -242,7 +242,20 @@ fn cursor_position() -> Option<(f64, f64)> {
     Some((x, y))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn cursor_position() -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT { x: 0, y: 0 };
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok == 0 {
+        return None;
+    }
+    Some((point.x as f64, point.y as f64))
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn cursor_position() -> Option<(f64, f64)> {
     None
 }

@@ -12,7 +12,7 @@ impl ClineAdapter {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         let hooks_dir = home.join("Documents").join("Cline").join("Hooks");
-        let status = if Self::is_installed(&hooks_dir) {
+        let status = if Self::hooks_supported_on_platform() && Self::is_installed(&hooks_dir) {
             AdapterStatus::Installed
         } else {
             AdapterStatus::Unavailable
@@ -20,7 +20,14 @@ impl ClineAdapter {
         Self { hooks_dir, status }
     }
 
+    fn hooks_supported_on_platform() -> bool {
+        !cfg!(target_os = "windows")
+    }
+
     fn is_installed(hooks_dir: &Path) -> bool {
+        if !Self::hooks_supported_on_platform() {
+            return false;
+        }
         hooks_dir.exists()
             || dirs::home_dir()
                 .map(|home| {
@@ -46,10 +53,19 @@ impl AgentAdapter for ClineAdapter {
     }
 
     fn install_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if !Self::hooks_supported_on_platform() {
+            return Err(
+                "Cline Hooks are not available on Windows yet; Cline currently supports hooks on macOS/Linux only."
+                    .into(),
+            );
+        }
         profiles::install_at(&profiles::cline_profile(), &self.hooks_dir)
     }
 
     fn remove_hooks(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if !Self::hooks_supported_on_platform() {
+            return Ok(());
+        }
         profiles::uninstall_at(&profiles::cline_profile(), &self.hooks_dir)
     }
 
@@ -78,7 +94,7 @@ impl AgentAdapter for ClineAdapter {
             .or_else(|| first_string_array_field(raw, "workspaceRoots"))
             .unwrap_or("")
             .to_string();
-        let project = cwd.rsplit('/').next().unwrap_or("").to_string();
+        let project = super::project_name_from_path(&cwd);
         let tool_name =
             string_field_with_payload(raw, event_payload, &["tool", "tool_name", "toolName"])
                 .unwrap_or("Tool")
@@ -162,6 +178,9 @@ impl AgentAdapter for ClineAdapter {
     }
 
     fn hooks_installed(&self) -> bool {
+        if !Self::hooks_supported_on_platform() {
+            return false;
+        }
         profiles::install_health(&profiles::cline_profile(), &self.hooks_dir).is_present()
     }
 }
@@ -222,6 +241,15 @@ mod tests {
             hooks_dir: PathBuf::new(),
             status: AdapterStatus::Unavailable,
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reports_hooks_unavailable() {
+        let adapter = adapter();
+        assert_eq!(adapter.detect_status_now(), AdapterStatus::Unavailable);
+        assert!(!adapter.hooks_installed());
+        assert!(adapter.install_hooks().is_err());
     }
 
     #[test]

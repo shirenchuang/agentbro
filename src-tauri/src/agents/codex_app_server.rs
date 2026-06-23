@@ -29,14 +29,20 @@ pub async fn spawn_and_connect_app_server(
     binary: &Path,
     startup_timeout: Duration,
 ) -> Result<CodexAppServerConnection, String> {
-    let mut child = TokioCommand::new(binary)
+    let mut command = TokioCommand::new(binary);
+    command
         .arg("app-server")
         .arg("--listen")
         .arg("ws://127.0.0.1:0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    if let Some(path) = crate::agents::executable::augmented_path_env() {
+        command.env("PATH", path);
+    }
+    let mut child = command
         .spawn()
         .map_err(|err| format!("Failed to start codex app-server: {err}"))?;
 

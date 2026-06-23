@@ -322,6 +322,13 @@ pub fn start_codex_app_server_background_sync(
                 continue;
             }
 
+            #[cfg(target_os = "windows")]
+            if !has_codex_sessions(&session_store) {
+                bridge.detach().await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+
             match run_codex_app_server_monitor_once(
                 config_store.clone(),
                 session_store.clone(),
@@ -348,6 +355,21 @@ pub fn start_codex_app_server_background_sync(
             }
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+fn has_codex_sessions(store: &SessionStore) -> bool {
+    store.get_all_sessions().iter().any(|session| {
+        session.agent_type == "codex"
+            && matches!(
+                session.phase,
+                SessionPhase::Ready
+                    | SessionPhase::Processing
+                    | SessionPhase::WaitingApproval
+                    | SessionPhase::WaitingInput
+                    | SessionPhase::Compacting
+            )
+    })
 }
 
 fn codex_app_server_refresh_interval_seconds(
@@ -731,6 +753,10 @@ fn expand_home_path(path: &str) -> Option<PathBuf> {
         return dirs::home_dir();
     }
     if let Some(rest) = path.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(rest));
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
         return dirs::home_dir().map(|home| home.join(rest));
     }
     Some(PathBuf::from(path))
@@ -2454,46 +2480,48 @@ pub async fn send_message(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     if is_codex_desktop_session(&session) {
+        // Prefer the persistent app-server WebSocket bridge when it's attached.
+        // This is the only free-form reply path available on Windows, and it
+        // also avoids clipboard/activation round-trips on macOS.
+        let codex_thread_id = session
+            .codex_app_server_thread_id
+            .as_deref()
+            .unwrap_or(session_id.as_str());
+        let app_server_error = match state
+            .codex_app_server
+            .send_user_turn(codex_thread_id, &message)
+            .await
+        {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                log::debug!(
+                    "Codex app-server bridge not attached for session {} thread {}",
+                    session_id,
+                    codex_thread_id
+                );
+                None
+            }
+            Err(err) => {
+                log::warn!(
+                    "Codex app-server turn/steer failed for session {} thread {}: {}",
+                    session_id,
+                    codex_thread_id,
+                    err
+                );
+                Some(err)
+            }
+        };
+
         #[cfg(target_os = "windows")]
         {
             let _ = activate_before_send;
-            let _ = message;
-            return Err(codex_desktop_windows_message_error(None));
+            return Err(codex_desktop_windows_message_error(
+                app_server_error.as_deref(),
+            ));
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            // When the persistent app-server bridge is live we can route the
-            // user turn straight through JSON-RPC, no clipboard/AppleScript
-            // round-trip, no app activation. macOS can still fall back to
-            // AppleScript when the bridge is unavailable.
-            let codex_thread_id = session
-                .codex_app_server_thread_id
-                .as_deref()
-                .unwrap_or(session_id.as_str());
-            match state
-                .codex_app_server
-                .send_user_turn(codex_thread_id, &message)
-                .await
-            {
-                Ok(true) => return Ok(()),
-                Ok(false) => {
-                    log::debug!(
-                        "Codex app-server bridge not attached for session {} thread {}",
-                        session_id,
-                        codex_thread_id
-                    );
-                }
-                Err(err) => {
-                    log::warn!(
-                        "Codex app-server turn/steer failed for session {} thread {}: {}",
-                        session_id,
-                        codex_thread_id,
-                        err
-                    );
-                }
-            }
-
             #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
             {
                 let _ = activate_before_send;
@@ -2550,7 +2578,7 @@ fn codex_desktop_windows_message_error(app_server_error: Option<&str>) -> String
         .map(|error| format!(" Last app-server error: {error}"))
         .unwrap_or_default();
     format!(
-        "Codex Desktop free-form replies are not supported on Windows yet. Codex Desktop keeps its app-server bridge private to the desktop app, so AgentBro cannot safely inject a new user turn. Open Codex Desktop and reply there for now.{detail}"
+        "Codex Desktop replies on Windows require the Codex app-server bridge. Install a spawnable Codex CLI, enable background app-server sync in AgentBro, wait for the thread to sync, then try again.{detail}"
     )
 }
 
@@ -2859,8 +2887,16 @@ fn open_codex_desktop_session_macos(session: &SessionState) -> Result<(), String
 }
 
 #[cfg(target_os = "windows")]
-fn open_codex_desktop_session_windows(_session: &SessionState) -> Result<(), String> {
+fn open_codex_desktop_session_windows(session: &SessionState) -> Result<(), String> {
     let mut errors = Vec::new();
+
+    if is_uuid_like(&session.id) {
+        let target = format!("codex://threads/{}", session.id);
+        match open_windows_shell_target(&target) {
+            Ok(()) => return Ok(()),
+            Err(err) => errors.push(format!("{target}: {err}")),
+        }
+    }
 
     for app_id in crate::agents::executable::codex_desktop_app_user_model_ids() {
         match open_windows_app_user_model_id(&app_id) {
@@ -2935,7 +2971,7 @@ fn clean_windows_app_user_model_id(value: &str) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn run_windows_powershell(script: &str) -> Result<(), String> {
-    let output = std::process::Command::new("powershell.exe")
+    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -2969,7 +3005,7 @@ fn powershell_string_literal(value: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn open_windows_explorer_target(target: &str) -> Result<(), String> {
-    let output = std::process::Command::new("explorer.exe")
+    let output = std::process::Command::new(crate::agents::executable::command_path("explorer"))
         .arg(target)
         .output()
         .map_err(|err| format!("Failed to open {target}: {err}"))?;
@@ -2991,8 +3027,27 @@ fn open_windows_explorer_target(target: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_windows_shell_target(target: &str) -> Result<(), String> {
-    let output = std::process::Command::new("cmd")
-        .args(["/C", "start", "", target])
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("Target is empty".to_string());
+    }
+
+    let path = Path::new(target);
+    let mut command = if is_windows_protocol_target(target) {
+        let mut command =
+            std::process::Command::new(crate::agents::executable::command_path("rundll32"));
+        command.args(["url.dll,FileProtocolHandler", target]);
+        command
+    } else if path.exists() && path.is_file() {
+        std::process::Command::new(path)
+    } else {
+        let mut command =
+            std::process::Command::new(crate::agents::executable::command_path("explorer"));
+        command.arg(target);
+        command
+    };
+
+    let output = command
         .output()
         .map_err(|err| format!("Failed to open {target}: {err}"))?;
 
@@ -3006,9 +3061,26 @@ fn open_windows_shell_target(target: &str) -> Result<(), String> {
         } else if !stdout.is_empty() {
             stdout
         } else {
-            format!("cmd start exited with status {}", output.status)
+            format!("open target exited with status {}", output.status)
         })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_protocol_target(target: &str) -> bool {
+    if target.starts_with("\\\\") {
+        return false;
+    }
+    let Some((scheme, rest)) = target.split_once(':') else {
+        return false;
+    };
+    if scheme.len() == 1 && (rest.starts_with('\\') || rest.starts_with('/')) {
+        return false;
+    }
+    !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 #[cfg(target_os = "macos")]
@@ -3377,7 +3449,7 @@ end tell"#
     )
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn is_uuid_like(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 36 {
@@ -4340,6 +4412,20 @@ fn terminal_hint_for_fallback(session: &SessionState) -> String {
 }
 
 fn jump_to_terminal_fallback(terminal: &str, cwd: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        match open_terminal_at_cwd(terminal, cwd) {
+            Ok(()) => return Ok(()),
+            Err(cwd_err) => {
+                log::warn!(
+                    "Windows terminal cwd fallback failed for {:?}: {}. Trying app activation.",
+                    terminal,
+                    cwd_err
+                );
+            }
+        }
+    }
+
     match jump_to_terminal_app_fallback(terminal) {
         Ok(()) => Ok(()),
         Err(app_err) => {
@@ -4413,8 +4499,133 @@ fn open_terminal_at_cwd(terminal: &str, cwd: &str) -> Result<(), String> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        Err("Opening a terminal at the session cwd is only supported on macOS".to_string())
+        #[cfg(target_os = "windows")]
+        {
+            open_terminal_at_cwd_windows(terminal, cwd)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("Opening a terminal at the session cwd is only supported on macOS".to_string())
+        }
     }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsTerminalLauncher {
+    WindowsTerminal,
+    Cmd,
+    PowerShell,
+    Pwsh,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_terminal_launch_order(terminal: &str) -> Vec<WindowsTerminalLauncher> {
+    let lower = terminal.to_ascii_lowercase();
+    if lower.contains("pwsh") {
+        return vec![
+            WindowsTerminalLauncher::Pwsh,
+            WindowsTerminalLauncher::PowerShell,
+            WindowsTerminalLauncher::WindowsTerminal,
+            WindowsTerminalLauncher::Cmd,
+        ];
+    }
+    if lower.contains("powershell") {
+        return vec![
+            WindowsTerminalLauncher::PowerShell,
+            WindowsTerminalLauncher::Pwsh,
+            WindowsTerminalLauncher::WindowsTerminal,
+            WindowsTerminalLauncher::Cmd,
+        ];
+    }
+    if lower.contains("cmd") || lower.contains("command prompt") {
+        return vec![
+            WindowsTerminalLauncher::Cmd,
+            WindowsTerminalLauncher::WindowsTerminal,
+            WindowsTerminalLauncher::PowerShell,
+            WindowsTerminalLauncher::Pwsh,
+        ];
+    }
+    vec![
+        WindowsTerminalLauncher::WindowsTerminal,
+        WindowsTerminalLauncher::Cmd,
+        WindowsTerminalLauncher::PowerShell,
+        WindowsTerminalLauncher::Pwsh,
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn open_terminal_at_cwd_windows(terminal: &str, cwd: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for launcher in windows_terminal_launch_order(terminal) {
+        match spawn_windows_terminal_launcher(launcher, cwd) {
+            Ok(()) => return Ok(()),
+            Err(err) => errors.push(err),
+        }
+    }
+    Err(format!(
+        "Failed to open Windows terminal at {:?}: {}",
+        cwd,
+        errors.join("; ")
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_windows_terminal_launcher(
+    launcher: WindowsTerminalLauncher,
+    cwd: &str,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+
+    let mut command = match launcher {
+        WindowsTerminalLauncher::WindowsTerminal => {
+            let mut command =
+                std::process::Command::new(crate::agents::executable::command_path("wt"));
+            command.args(["-d", cwd]);
+            command
+        }
+        WindowsTerminalLauncher::Cmd => {
+            let mut command =
+                std::process::Command::new(crate::agents::executable::command_path("cmd"));
+            command.arg("/K");
+            command.current_dir(cwd);
+            command.creation_flags(CREATE_NEW_CONSOLE);
+            command
+        }
+        WindowsTerminalLauncher::PowerShell => {
+            let mut command =
+                std::process::Command::new(crate::agents::executable::command_path("powershell"));
+            command.args([
+                "-NoExit",
+                "-Command",
+                &format!(
+                    "Set-Location -LiteralPath {}",
+                    powershell_string_literal(cwd)
+                ),
+            ]);
+            command
+        }
+        WindowsTerminalLauncher::Pwsh => {
+            let mut command =
+                std::process::Command::new(crate::agents::executable::command_path("pwsh"));
+            command.args([
+                "-NoExit",
+                "-Command",
+                &format!(
+                    "Set-Location -LiteralPath {}",
+                    powershell_string_literal(cwd)
+                ),
+            ]);
+            command
+        }
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("{launcher:?}: {err}"))
 }
 
 fn fallback_terminal_app_name(terminal: &str) -> &'static str {
@@ -4534,19 +4745,35 @@ end tell"#,
 
 #[cfg(target_os = "windows")]
 fn launch_in_windows_terminal(cwd: &str, command: &str) -> Result<(), String> {
-    if std::process::Command::new("wt.exe")
-        .args(["-d", cwd, "cmd", "/K", command])
+    if std::process::Command::new(crate::agents::executable::command_path("wt"))
+        .args(windows_terminal_command_args(cwd, command))
         .spawn()
         .is_ok()
     {
         return Ok(());
     }
 
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", "/D", cwd, "cmd", "/K", command])
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+
+    std::process::Command::new(crate::agents::executable::command_path("cmd"))
+        .args(["/K", command])
+        .current_dir(cwd)
+        .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to open Windows terminal: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_terminal_command_args(cwd: &str, command: &str) -> Vec<String> {
+    vec![
+        "-d".to_string(),
+        cwd.to_string(),
+        "cmd.exe".to_string(),
+        "/K".to_string(),
+        command.to_string(),
+    ]
 }
 
 #[cfg(target_os = "windows")]
@@ -5050,7 +5277,7 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
         let exe = std::env::current_exe()
             .map_err(|err| format!("Unable to resolve current executable: {err}"))?;
         let command = format!("\"{}\"", exe.display());
-        let output = std::process::Command::new("reg")
+        let output = std::process::Command::new(crate::agents::executable::command_path("reg"))
             .args([
                 "add",
                 WINDOWS_RUN_KEY,
@@ -5067,7 +5294,7 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
         return reg_output_result(output, "Failed to enable Windows launch at login");
     }
 
-    let output = std::process::Command::new("reg")
+    let output = std::process::Command::new(crate::agents::executable::command_path("reg"))
         .args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"])
         .output()
         .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
@@ -5108,7 +5335,7 @@ fn get_launch_at_login_state() -> bool {
 
 #[cfg(target_os = "windows")]
 fn get_launch_at_login_state() -> bool {
-    std::process::Command::new("reg")
+    std::process::Command::new(crate::agents::executable::command_path("reg"))
         .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
         .output()
         .map(|output| output.status.success())
@@ -5272,6 +5499,13 @@ pub async fn install_hooks(state: State<'_, AppState>, agent: String) -> Result<
         adapter.detect_status_now(),
         crate::agents::AdapterStatus::Unavailable
     ) {
+        #[cfg(target_os = "windows")]
+        if agent == "cline" {
+            return Err(
+                "Cline Hooks are not available on Windows yet; Cline currently supports hooks on macOS/Linux only."
+                    .to_string(),
+            );
+        }
         return Err(format!(
             "{} CLI not found. Searched process PATH, login shell PATH, \
              and common directories (homebrew, nvm, volta, mise, cargo). \
@@ -6630,7 +6864,11 @@ mod tests {
         terminal_hint_for_fallback, CodexAppServerPendingKind, CodexAppServerPendingRequest,
     };
     #[cfg(target_os = "windows")]
-    use super::{clean_windows_app_user_model_id, powershell_string_literal};
+    use super::{
+        clean_windows_app_user_model_id, codex_desktop_windows_message_error,
+        is_windows_protocol_target, powershell_string_literal, windows_terminal_command_args,
+        windows_terminal_launch_order, WindowsTerminalLauncher,
+    };
     use crate::energy::EnergyMode;
     use crate::hooks::conversation_parser::{ChatRole, MessageBlock};
     use crate::hooks::server::RawHookEvent;
@@ -7082,6 +7320,52 @@ mod tests {
         assert_eq!(powershell_string_literal("A'B"), "'A''B'");
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_shell_target_detects_protocols_without_treating_paths_as_urls() {
+        assert!(is_windows_protocol_target(
+            "codex://threads/123e4567-e89b-12d3-a456-426614174000"
+        ));
+        assert!(is_windows_protocol_target(
+            "https://github.com/shirenchuang/agentbro"
+        ));
+        assert!(is_windows_protocol_target("ccswitch://provider"));
+        assert!(!is_windows_protocol_target(
+            r"C:\Users\admin\Documents\agentbro"
+        ));
+        assert!(!is_windows_protocol_target(r"\\server\share\agentbro"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_terminal_launch_order_prefers_requested_shell() {
+        assert_eq!(
+            windows_terminal_launch_order("PowerShell").first().copied(),
+            Some(WindowsTerminalLauncher::PowerShell)
+        );
+        assert_eq!(
+            windows_terminal_launch_order("pwsh.exe").first().copied(),
+            Some(WindowsTerminalLauncher::Pwsh)
+        );
+        assert_eq!(
+            windows_terminal_launch_order("cmd.exe").first().copied(),
+            Some(WindowsTerminalLauncher::Cmd)
+        );
+        assert_eq!(
+            windows_terminal_launch_order("").first().copied(),
+            Some(WindowsTerminalLauncher::WindowsTerminal)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_authorization_terminal_uses_direct_wt_command() {
+        assert_eq!(
+            windows_terminal_command_args(r"C:\work\agentbro", "echo ok"),
+            vec!["-d", r"C:\work\agentbro", "cmd.exe", "/K", "echo ok"]
+        );
+    }
+
     #[test]
     fn codex_session_meta_reads_originator_and_source() {
         let nonce = uuid::Uuid::new_v4();
@@ -7449,5 +7733,14 @@ mod tests {
         let text = "第一行\n第二行\n🚀 emoji";
         let payload = codex_turn_steer_payload(1, "t-1", text);
         assert_eq!(payload["params"]["input"][0]["text"], text);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_codex_desktop_message_error_points_to_app_server_bridge() {
+        let message = codex_desktop_windows_message_error(Some("bridge not attached"));
+        assert!(message.contains("Codex app-server bridge"));
+        assert!(message.contains("bridge not attached"));
+        assert!(!message.contains("not supported on Windows yet"));
     }
 }

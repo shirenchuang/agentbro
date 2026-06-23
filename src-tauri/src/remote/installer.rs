@@ -1890,7 +1890,7 @@ async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResu
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        tokio::process::Command::new("ssh")
+        tokio::process::Command::new(crate::agents::executable::command_path("ssh"))
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

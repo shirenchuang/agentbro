@@ -82,6 +82,7 @@ impl TerminalType {
 }
 
 /// Build a snapshot of the process tree using `ps`
+#[cfg(not(target_os = "windows"))]
 pub fn build_tree() -> HashMap<u32, ProcessInfo> {
     let mut tree = HashMap::new();
 
@@ -126,6 +127,63 @@ pub fn build_tree() -> HashMap<u32, ProcessInfo> {
     }
 
     tree
+}
+
+/// Build a snapshot of the process tree using the Windows ToolHelp API.
+#[cfg(target_os = "windows")]
+pub fn build_tree() -> HashMap<u32, ProcessInfo> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let mut tree = HashMap::new();
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return tree;
+        }
+
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let pid = entry.th32ProcessID;
+                tree.insert(
+                    pid,
+                    ProcessInfo {
+                        pid,
+                        ppid: entry.th32ParentProcessID,
+                        command: process_entry_name(&entry),
+                        tty: None,
+                    },
+                );
+
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+
+        let _ = CloseHandle(snapshot);
+    }
+
+    tree
+}
+
+#[cfg(target_os = "windows")]
+fn process_entry_name(
+    entry: &windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W,
+) -> String {
+    let len = entry
+        .szExeFile
+        .iter()
+        .position(|ch| *ch == 0)
+        .unwrap_or(entry.szExeFile.len());
+    String::from_utf16_lossy(&entry.szExeFile[..len])
 }
 
 /// Read a single environment variable for a process using kern.procargs2 (macOS).
@@ -526,8 +584,19 @@ pub fn get_tty(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_terminal_app_name, ProcessInfo};
+    use super::{build_tree, find_terminal_app_name, ProcessInfo};
     use std::collections::HashMap;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_build_tree_contains_current_process() {
+        let tree = build_tree();
+        let current = tree
+            .get(&std::process::id())
+            .expect("current process should be present in Windows process snapshot");
+        assert_eq!(current.pid, std::process::id());
+        assert!(!current.command.is_empty());
+    }
 
     #[test]
     fn find_terminal_app_name_skips_codefuse_claude_path() {

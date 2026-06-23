@@ -164,6 +164,10 @@ pub async fn install_claude_wrapper() -> Result<ClaudeWrapperStatus, String> {
     }
     fs::write(&path, claude_wrapper_script())
         .map_err(|e| format!("Failed to write Claude wrapper: {e}"))?;
+    if let Some((aux_path, aux_script)) = claude_wrapper_auxiliary_script()? {
+        fs::write(&aux_path, aux_script)
+            .map_err(|e| format!("Failed to write Claude wrapper helper: {e}"))?;
+    }
     #[cfg(unix)]
     {
         let mut perms = fs::metadata(&path)
@@ -183,32 +187,64 @@ pub async fn remove_claude_wrapper() -> Result<ClaudeWrapperStatus, String> {
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("Failed to remove Claude wrapper: {e}"))?;
     }
+    if let Some(aux_path) = claude_wrapper_auxiliary_path() {
+        if aux_path.exists() {
+            fs::remove_file(&aux_path)
+                .map_err(|e| format!("Failed to remove Claude wrapper helper: {e}"))?;
+        }
+    }
     remove_shell_path_hook()?;
     Ok(claude_wrapper_status())
 }
 
+#[cfg(not(target_os = "windows"))]
 const WRAPPER_PATH_HOOK_START: &str = "# >>> AgentBro Claude Inspector >>>";
+#[cfg(not(target_os = "windows"))]
 const WRAPPER_PATH_HOOK_END: &str = "# <<< AgentBro Claude Inspector <<<";
 
 fn claude_wrapper_status() -> ClaudeWrapperStatus {
     let shim_path = claude_wrapper_path().unwrap_or_else(|_| PathBuf::from(""));
     let shell_config_path = shell_config_path();
-    let shell_content = fs::read_to_string(&shell_config_path).unwrap_or_default();
+    let path_hint_installed = shell_path_hint_installed(&shell_config_path);
+    let installed = shim_path.exists()
+        && claude_wrapper_auxiliary_path()
+            .map(|path| path.exists())
+            .unwrap_or(true);
     ClaudeWrapperStatus {
-        installed: shim_path.exists(),
+        installed,
         shim_path: shim_path.display().to_string(),
-        path_hint_installed: shell_content.contains(WRAPPER_PATH_HOOK_START),
+        path_hint_installed,
         shell_config_path: shell_config_path.display().to_string(),
     }
 }
 
 fn claude_wrapper_path() -> Result<PathBuf, String> {
     dirs::home_dir()
-        .map(|home| home.join(".agentbro").join("bin").join("claude"))
+        .map(|home| {
+            let file_name = if cfg!(target_os = "windows") {
+                "claude.cmd"
+            } else {
+                "claude"
+            };
+            home.join(".agentbro").join("bin").join(file_name)
+        })
         .ok_or_else(|| "Unable to resolve home directory".to_string())
 }
 
+fn claude_wrapper_auxiliary_path() -> Option<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    claude_wrapper_path().ok().and_then(|path| {
+        path.parent()
+            .map(|dir| dir.join("agentbro-claude-wrapper.ps1"))
+    })
+}
+
 fn shell_config_path() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        return PathBuf::from("User PATH");
+    }
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
     let shell = std::env::var("SHELL").unwrap_or_default();
     if shell.contains("bash") {
@@ -224,59 +260,203 @@ fn shell_config_path() -> PathBuf {
 }
 
 fn ensure_shell_path_hook() -> Result<(), String> {
-    let config_path = shell_config_path();
-    let mut content = fs::read_to_string(&config_path).unwrap_or_default();
-    if content.contains(WRAPPER_PATH_HOOK_START) {
-        return Ok(());
+    #[cfg(target_os = "windows")]
+    {
+        ensure_windows_user_path_hook()
     }
-    if !content.ends_with('\n') {
-        content.push('\n');
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let config_path = shell_config_path();
+        let mut content = fs::read_to_string(&config_path).unwrap_or_default();
+        if content.contains(WRAPPER_PATH_HOOK_START) {
+            return Ok(());
+        }
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&format!(
+            "\n{WRAPPER_PATH_HOOK_START}\nexport PATH=\"$HOME/.agentbro/bin:$PATH\"\n{WRAPPER_PATH_HOOK_END}\n"
+        ));
+        fs::write(&config_path, content).map_err(|e| {
+            format!(
+                "Failed to update shell config {}: {e}",
+                config_path.display()
+            )
+        })
     }
-    content.push_str(&format!(
-        "\n{WRAPPER_PATH_HOOK_START}\nexport PATH=\"$HOME/.agentbro/bin:$PATH\"\n{WRAPPER_PATH_HOOK_END}\n"
-    ));
-    fs::write(&config_path, content).map_err(|e| {
-        format!(
-            "Failed to update shell config {}: {e}",
-            config_path.display()
-        )
-    })
 }
 
 fn remove_shell_path_hook() -> Result<(), String> {
-    let config_path = shell_config_path();
-    let content = match fs::read_to_string(&config_path) {
-        Ok(content) => content,
-        Err(_) => return Ok(()),
-    };
-    if !content.contains(WRAPPER_PATH_HOOK_START) {
-        return Ok(());
+    #[cfg(target_os = "windows")]
+    {
+        remove_windows_user_path_hook()
     }
-    let mut next = String::new();
-    let mut skipping = false;
-    for line in content.lines() {
-        if line == WRAPPER_PATH_HOOK_START {
-            skipping = true;
-            continue;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let config_path = shell_config_path();
+        let content = match fs::read_to_string(&config_path) {
+            Ok(content) => content,
+            Err(_) => return Ok(()),
+        };
+        if !content.contains(WRAPPER_PATH_HOOK_START) {
+            return Ok(());
         }
-        if line == WRAPPER_PATH_HOOK_END {
-            skipping = false;
-            continue;
+        let mut next = String::new();
+        let mut skipping = false;
+        for line in content.lines() {
+            if line == WRAPPER_PATH_HOOK_START {
+                skipping = true;
+                continue;
+            }
+            if line == WRAPPER_PATH_HOOK_END {
+                skipping = false;
+                continue;
+            }
+            if !skipping {
+                next.push_str(line);
+                next.push('\n');
+            }
         }
-        if !skipping {
-            next.push_str(line);
-            next.push('\n');
-        }
+        fs::write(&config_path, next).map_err(|e| {
+            format!(
+                "Failed to update shell config {}: {e}",
+                config_path.display()
+            )
+        })
     }
-    fs::write(&config_path, next).map_err(|e| {
-        format!(
-            "Failed to update shell config {}: {e}",
-            config_path.display()
-        )
-    })
 }
 
-fn claude_wrapper_script() -> &'static str {
+fn shell_path_hint_installed(shell_config_path: &PathBuf) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = shell_config_path;
+        windows_user_path_has_wrapper()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::read_to_string(shell_config_path)
+            .map(|content| content.contains(WRAPPER_PATH_HOOK_START))
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_user_path_hook() -> Result<(), String> {
+    let wrapper_dir = claude_wrapper_path()?
+        .parent()
+        .map(|path| path.display().to_string())
+        .ok_or_else(|| "Claude wrapper path has no parent".to_string())?;
+    let current = read_windows_user_path().unwrap_or_default();
+    if windows_path_contains(&current, &wrapper_dir) {
+        return Ok(());
+    }
+    let next = if current.trim().is_empty() {
+        wrapper_dir
+    } else {
+        format!("{};{}", current.trim_end_matches(';'), wrapper_dir)
+    };
+    write_windows_user_path(&next)
+}
+
+#[cfg(target_os = "windows")]
+fn remove_windows_user_path_hook() -> Result<(), String> {
+    let wrapper_dir = claude_wrapper_path()?
+        .parent()
+        .map(|path| path.display().to_string())
+        .ok_or_else(|| "Claude wrapper path has no parent".to_string())?;
+    let current = read_windows_user_path().unwrap_or_default();
+    let parts = current
+        .split(';')
+        .filter(|part| !windows_path_eq(part, &wrapper_dir))
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>();
+    write_windows_user_path(&parts.join(";"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_user_path_has_wrapper() -> bool {
+    let Ok(wrapper) = claude_wrapper_path() else {
+        return false;
+    };
+    let Some(wrapper_dir) = wrapper.parent().map(|path| path.display().to_string()) else {
+        return false;
+    };
+    let user_path = read_windows_user_path().unwrap_or_default();
+    windows_path_contains(&user_path, &wrapper_dir)
+        || std::env::var_os("PATH")
+            .map(|path| windows_path_contains(&path.to_string_lossy(), &wrapper_dir))
+            .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_path_contains(path_list: &str, needle: &str) -> bool {
+    path_list
+        .split(';')
+        .any(|part| windows_path_eq(part, needle))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_path_eq(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_user_path() -> Result<String, String> {
+    let script = "[Environment]::GetEnvironmentVariable('Path', 'User')";
+    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| format!("Failed to read user PATH: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches(['\r', '\n'])
+        .to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn write_windows_user_path(value: &str) -> Result<(), String> {
+    let script = format!(
+        "[Environment]::SetEnvironmentVariable('Path', {}, 'User')",
+        powershell_literal(value)
+    );
+    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to update user PATH: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn claude_wrapper_script() -> String {
+    if cfg!(target_os = "windows") {
+        return r#"@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0agentbro-claude-wrapper.ps1" %*
+exit /b %ERRORLEVEL%
+"#
+        .to_string();
+    }
+
     r#"#!/bin/sh
 # AgentBro Claude Inspector shim. Generated by AgentBro.
 
@@ -370,6 +550,120 @@ if [ -n "$AGENTBRO_ROUTE_BASE_URL" ]; then
 fi
 
 exec "$REAL_CLAUDE" "$@"
+"#
+    .to_string()
+}
+
+fn claude_wrapper_auxiliary_script() -> Result<Option<(PathBuf, String)>, String> {
+    let Some(path) = claude_wrapper_auxiliary_path() else {
+        return Ok(None);
+    };
+    Ok(Some((path, claude_wrapper_powershell_script().to_string())))
+}
+
+fn claude_wrapper_powershell_script() -> &'static str {
+    r#"# AgentBro Claude Inspector shim helper. Generated by AgentBro.
+param(
+  [Parameter(ValueFromRemainingArguments = $true)]
+  [string[]] $ClaudeArgs
+)
+
+$ErrorActionPreference = 'SilentlyContinue'
+$selfPath = $MyInvocation.MyCommand.Path
+$shimDir = Split-Path -Parent $selfPath
+$shimCmd = Join-Path $shimDir 'claude.cmd'
+$homeDir = [Environment]::GetFolderPath('UserProfile')
+
+function Same-Path([string] $Left, [string] $Right) {
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+  try {
+    return ([IO.Path]::GetFullPath($Left).TrimEnd('\') -ieq [IO.Path]::GetFullPath($Right).TrimEnd('\'))
+  } catch {
+    return ($Left.Trim().Trim('"') -ieq $Right.Trim().Trim('"'))
+  }
+}
+
+function Find-RealClaude {
+  $candidates = @(
+    (Join-Path $homeDir '.claude\local\claude.cmd'),
+    (Join-Path $homeDir '.claude\local\claude.exe'),
+    (Join-Path $env:APPDATA 'npm\claude.cmd'),
+    (Join-Path $env:APPDATA 'npm\claude.exe'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\claude.cmd'),
+    (Join-Path $env:LOCALAPPDATA 'pnpm\claude.exe')
+  )
+  foreach ($cmd in (Get-Command claude -All -ErrorAction SilentlyContinue)) {
+    if ($cmd.Source) { $candidates += $cmd.Source }
+    if ($cmd.Path) { $candidates += $cmd.Path }
+  }
+  foreach ($candidate in $candidates | Where-Object { $_ } | Select-Object -Unique) {
+    if ((Test-Path $candidate) -and -not (Same-Path $candidate $shimCmd) -and -not (Same-Path $candidate $selfPath)) {
+      return $candidate
+    }
+  }
+  return $null
+}
+
+function Read-JsonFile([string] $Path) {
+  try {
+    if (Test-Path $Path) {
+      return Get-Content -Raw -Path $Path | ConvertFrom-Json
+    }
+  } catch {}
+  return $null
+}
+
+function Is-AgentBroUrl([string] $Url) {
+  return $Url -and $Url.Contains('/__agentbro_route/')
+}
+
+function Base64Url([string] $Value) {
+  return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+$realClaude = Find-RealClaude
+if (-not $realClaude) {
+  Write-Error 'AgentBro: real claude executable not found'
+  exit 127
+}
+
+$statePath = Join-Path $homeDir '.agentbro\network\monitor-state.json'
+$legacyStatePath = Join-Path $homeDir '.agentbro\network-monitor.json'
+$state = Read-JsonFile $statePath
+if (-not $state) { $state = Read-JsonFile $legacyStatePath }
+
+$proxy = $null
+if ($state -and $state.enabled -and $state.proxyUrl) { $proxy = [string]$state.proxyUrl }
+
+if ($proxy) {
+  try {
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri (($proxy.TrimEnd('/')) + '/__agentbro_health') | Out-Null
+  } catch {
+    $proxy = $null
+  }
+}
+
+if ($proxy) {
+  $upstream = $env:ANTHROPIC_BASE_URL
+  if (-not $upstream -or (Is-AgentBroUrl $upstream)) {
+    foreach ($settingsPath in @(
+      (Join-Path (Get-Location) '.claude\settings.local.json'),
+      (Join-Path (Get-Location) '.claude\settings.json'),
+      (Join-Path $homeDir '.claude\settings.json')
+    )) {
+      $settings = Read-JsonFile $settingsPath
+      if ($settings -and $settings.env -and $settings.env.ANTHROPIC_BASE_URL -and -not (Is-AgentBroUrl ([string]$settings.env.ANTHROPIC_BASE_URL))) {
+        $upstream = [string]$settings.env.ANTHROPIC_BASE_URL
+        break
+      }
+    }
+  }
+  if (-not $upstream -or (Is-AgentBroUrl $upstream)) { $upstream = 'https://api.anthropic.com' }
+  $env:ANTHROPIC_BASE_URL = ($proxy.TrimEnd('/') + '/__agentbro_route/' + (Base64Url $upstream.TrimEnd('/')))
+}
+
+& $realClaude @ClaudeArgs
+exit $LASTEXITCODE
 "#
 }
 
@@ -657,8 +951,9 @@ fn seconds_to_ms(seconds: i64) -> u64 {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
-    fn claude_wrapper_preserves_hooks_by_avoiding_settings_override() {
+    fn unix_claude_wrapper_preserves_hooks_by_avoiding_settings_override() {
         let script = claude_wrapper_script();
 
         assert!(
@@ -668,6 +963,37 @@ mod tests {
         assert!(script.contains("AGENTBRO_ROUTE_BASE_URL"));
         assert!(script.contains(
             "ANTHROPIC_BASE_URL=\"$AGENTBRO_ROUTE_BASE_URL\" exec \"$REAL_CLAUDE\" \"$@\""
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_claude_wrapper_uses_cmd_and_powershell_helper() {
+        let script = claude_wrapper_script();
+        assert!(script.contains("agentbro-claude-wrapper.ps1"));
+        assert!(script.contains("%*"));
+
+        let helper = claude_wrapper_powershell_script();
+        assert!(!helper.contains("--settings"));
+        assert!(helper.contains("ANTHROPIC_BASE_URL"));
+        assert!(helper.contains("/__agentbro_route/"));
+        assert!(helper.contains("Get-Command claude -All"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_path_matching_normalizes_slashes_quotes_and_case() {
+        assert!(windows_path_eq(
+            r#""C:/Users/Admin/.agentbro/bin/""#,
+            r#"c:\users\admin\.agentbro\bin"#
+        ));
+        assert!(windows_path_contains(
+            r#"C:\Windows;C:/Users/Admin/.agentbro/bin/;C:\Tools"#,
+            r#"c:\users\admin\.agentbro\bin"#
+        ));
+        assert!(!windows_path_contains(
+            r#"C:\Windows;C:\Tools"#,
+            r#"c:\users\admin\.agentbro\bin"#
         ));
     }
 }

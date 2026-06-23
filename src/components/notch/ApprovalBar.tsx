@@ -6,7 +6,6 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
-import { isWindowsPlatform } from '../../utils/platform'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -299,7 +298,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   // Default: text input
   const capability = getComposerCapability(session, {
     codexAppServerLive,
-    codexDesktopRepliesSupported: !isWindowsPlatform(),
+    codexDesktopRepliesSupported: true,
   })
   if (capability.kind === 'locked') {
     return (

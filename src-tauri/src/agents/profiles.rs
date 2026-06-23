@@ -1954,6 +1954,11 @@ fn write_executable_hook_files(
     profile: &AgentIntegrationProfile,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(target_os = "windows") {
+        return Err(
+            "Executable hook files are not supported on Windows for this integration.".into(),
+        );
+    }
     std::fs::create_dir_all(path)?;
     let effective = effective_events(profile);
     let effective_names = effective
@@ -3312,6 +3317,22 @@ name = "also keep"
             &profile, &dir, &effective
         ));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executable_hook_files_are_rejected_on_windows() {
+        let profile = cline_profile();
+        let dir = std::env::temp_dir().join(format!(
+            "agentbro-executable-windows-{}",
+            std::process::id()
+        ));
+
+        let err = write_executable_hook_files(&profile, &dir)
+            .expect_err("Windows should not write Unix-style executable hooks")
+            .to_string();
+        assert!(err.contains("not supported on Windows"));
+        assert!(!dir.exists());
     }
 
     #[test]

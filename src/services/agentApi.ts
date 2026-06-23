@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+import { isTauri as isTauriRuntime } from './tauriApi'
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'
@@ -206,47 +205,47 @@ export function seedAgentPrograms() {
 }
 
 export const agentApi = {
-  list: () => isTauri
+  list: () => isTauriRuntime()
     ? invoke<AgentProgramInfo[]>('agent_list')
     : Promise.resolve(seedAgentPrograms()),
 
-  refresh: () => isTauri
+  refresh: () => isTauriRuntime()
     ? invoke<AgentProgramInfo[]>('agent_refresh')
     : Promise.resolve(seedAgentPrograms()),
 
-  install: (agentId: string) => isTauri
+  install: (agentId: string) => isTauriRuntime()
     ? invoke('agent_install', { agentId })
     : Promise.resolve(),
 
-  update: (agentId: string) => isTauri
+  update: (agentId: string) => isTauriRuntime()
     ? invoke('agent_update', { agentId })
     : Promise.resolve(),
 
-  uninstall: (agentId: string) => isTauri
+  uninstall: (agentId: string) => isTauriRuntime()
     ? invoke('agent_uninstall', { agentId })
     : Promise.resolve(),
 
-  openDownload: (agentId: string) => isTauri
+  openDownload: (agentId: string) => isTauriRuntime()
     ? invoke('agent_open_download', { agentId })
     : Promise.resolve(),
 
-  openApp: (agentId: string) => isTauri
+  openApp: (agentId: string) => isTauriRuntime()
     ? invoke('agent_open_app', { agentId })
     : Promise.resolve(),
 
-  installHook: (agentId: string) => isTauri
+  installHook: (agentId: string) => isTauriRuntime()
     ? invoke('install_agent_hook', { toolName: agentId })
     : Promise.resolve(),
 
-  uninstallHook: (agentId: string) => isTauri
+  uninstallHook: (agentId: string) => isTauriRuntime()
     ? invoke('uninstall_agent_hook', { toolName: agentId })
     : Promise.resolve(),
 
-  openPath: (path: string) => isTauri
+  openPath: (path: string) => isTauriRuntime()
     ? invoke('open_system_path', { path })
     : Promise.resolve(),
 
-  addCustom: (config: CustomAgentConfig) => isTauri
+  addCustom: (config: CustomAgentConfig) => isTauriRuntime()
     ? invoke<AgentProgramInfo>('add_custom_agent', { config })
     : Promise.resolve({
       id: config.id || `custom-${config.displayName.toLowerCase().replace(/\s+/g, '-')}`,
@@ -270,7 +269,7 @@ export const agentApi = {
       isCustom: true,
     }),
 
-  updateCustom: (agentId: string, config: UpdateCustomAgentConfig) => isTauri
+  updateCustom: (agentId: string, config: UpdateCustomAgentConfig) => isTauriRuntime()
     ? invoke<AgentProgramInfo>('update_custom_agent', { agentId, config })
     : Promise.resolve({
       id: agentId,
@@ -294,12 +293,12 @@ export const agentApi = {
       isCustom: true,
     }),
 
-  removeCustom: (agentId: string) => isTauri
+  removeCustom: (agentId: string) => isTauriRuntime()
     ? invoke('remove_custom_agent', { agentId })
     : Promise.resolve(),
 
   onOutput: async (handler: (event: AgentOutputEvent) => void): Promise<UnlistenFn> => {
-    if (!isTauri) return () => {}
+    if (!isTauriRuntime()) return () => {}
     return listen<AgentOutputEvent>('agent-output', (event) => handler(event.payload))
   },
 }

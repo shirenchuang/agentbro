@@ -30,6 +30,11 @@ impl TmuxTarget {
 
 /// Find the path to tmux binary
 fn find_tmux_path() -> Option<String> {
+    let tmux = crate::agents::executable::command_path("tmux");
+    if crate::agents::executable::command_exists("tmux") {
+        return Some(tmux.display().to_string());
+    }
+
     // Check common paths
     for path in &[
         "/opt/homebrew/bin/tmux",
@@ -38,19 +43,6 @@ fn find_tmux_path() -> Option<String> {
     ] {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
-        }
-    }
-
-    // Fall back to which
-    let output = std::process::Command::new("which")
-        .arg("tmux")
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            return Some(path);
         }
     }
 

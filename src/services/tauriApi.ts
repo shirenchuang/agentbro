@@ -11,11 +11,29 @@ declare const __APP_VERSION__: string
 
 /** Returns true when running inside a Tauri webview. */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  if (typeof window === 'undefined') return false
+  const tauriWindow = window as Window & {
+    isTauri?: boolean | (() => boolean)
+    __TAURI_INTERNALS__?: unknown
+    __TAURI__?: unknown
+  }
+  if (typeof tauriWindow.isTauri === 'function') return tauriWindow.isTauri()
+  if (typeof tauriWindow.isTauri === 'boolean') return tauriWindow.isTauri
+  if (window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost') {
+    return true
+  }
+  if (window.navigator.userAgent.includes('IsWebView2/True')) return true
+  return '__TAURI_INTERNALS__' in tauriWindow || '__TAURI__' in tauriWindow
 }
 
 /** Lazy invoke — dynamically imports to avoid crash in browser dev mode. */
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const globalInvoke = (window as Window & {
+    __TAURI__?: { core?: { invoke?: <R>(command: string, args?: Record<string, unknown>) => Promise<R> } }
+  }).__TAURI__?.core?.invoke
+  if (typeof globalInvoke === 'function') {
+    return globalInvoke<T>(cmd, args)
+  }
   const { invoke: tauriInvoke } = await import('@tauri-apps/api/core')
   return tauriInvoke<T>(cmd, args)
 }
@@ -867,7 +885,7 @@ export async function importCustomSound(filePath: string): Promise<{ id: string;
     const normalized = filePath.replace(/\\/g, '/')
     return {
       id: `${Date.now()}`,
-      name: normalized.split('/').pop() || 'Custom sound',
+      name: normalized.split(/[\\/]+/).pop() || 'Custom sound',
       path: filePath,
     }
   }
@@ -1086,6 +1104,7 @@ export function isLocalImageSource(src: string): boolean {
   const trimmed = src.trim()
   return trimmed.startsWith('/')
     || trimmed.startsWith('~/')
+    || trimmed.startsWith('~\\')
     || trimmed.startsWith('file://')
 }
 
@@ -1157,7 +1176,7 @@ export async function isTerminalFocused(sessionId: string): Promise<boolean> {
   return invoke<boolean>('is_terminal_focused', { sessionId })
 }
 
-/** Get current cursor screen coordinates (macOS only). */
+/** Get current cursor screen coordinates. */
 export async function getCursorPosition(): Promise<[number, number]> {
   if (!isTauri()) return [0, 0]
   return invoke<[number, number]>('get_cursor_position')

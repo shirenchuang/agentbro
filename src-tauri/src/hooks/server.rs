@@ -903,13 +903,6 @@ impl HookServer {
         // Parse the raw JSON
         let raw: serde_json::Value = serde_json::from_str(line)?;
 
-        log::debug!(
-            "Received hook event: {}",
-            raw.get("event")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
         if Self::should_silence_event(&config_store, &raw, event.as_ref()) {
@@ -2183,10 +2176,10 @@ impl HookServer {
         let cwd = raw.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
 
         // Extract project name from cwd
-        let project = cwd.rsplit('/').next().unwrap_or(cwd);
+        let project = crate::agents::project_name_from_path(cwd);
 
         // Ensure session exists
-        store.get_or_create_session(session_id, "claude-code", project, cwd, "");
+        store.get_or_create_session(session_id, "claude-code", &project, cwd, "");
         Self::update_session_metadata_from_raw(store, raw);
 
         // Extract session title from UserPromptSubmit if no title yet
@@ -2460,11 +2453,11 @@ impl HookServer {
             .get("cwd")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let project = cwd
-            .rsplit('/')
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or("Unknown");
+        let project = if cwd.trim().is_empty() {
+            "Unknown".to_string()
+        } else {
+            crate::agents::project_name_from_path(cwd)
+        };
         let terminal = raw
             .get("tty")
             .or_else(|| raw.get("terminal"))
@@ -2478,7 +2471,7 @@ impl HookServer {
                 .unwrap_or("claude-code"),
         };
 
-        store.get_or_create_session(session_id, agent_type, project, cwd, terminal);
+        store.get_or_create_session(session_id, agent_type, &project, cwd, terminal);
     }
 
     fn schedule_done_session_cleanup(store: &SessionStore, session_id: &str, delay_secs: u64) {
@@ -3188,6 +3181,29 @@ mod tests {
     }
 
     #[test]
+    fn ensure_session_uses_basename_for_windows_cwd() {
+        let store = Arc::new(SessionStore::new());
+        let raw = serde_json::json!({
+            "agent": "codex",
+            "session_id": "codex-windows-session",
+            "cwd": r"C:\Users\admin\Documents\github\agentbro",
+            "tty": ""
+        });
+        let event = AgentEvent::Processing {
+            session_id: "codex-windows-session".to_string(),
+            description: "Processing user input".to_string(),
+        };
+
+        HookServer::ensure_session_for_event(&store, &event, &raw);
+
+        let session = store
+            .get_session("codex-windows-session")
+            .expect("session should be created");
+        assert_eq!(session.project, "agentbro");
+        assert_eq!(session.cwd, r"C:\Users\admin\Documents\github\agentbro");
+    }
+
+    #[test]
     fn canonical_agent_id_maps_codex_aliases() {
         assert_eq!(canonical_agent_id("openai.codex"), "codex");
         assert_eq!(canonical_agent_id("codex"), "codex");
@@ -3374,6 +3390,65 @@ mod tests {
             .as_deref(),
             Some("call-date-1")
         );
+    }
+
+    #[tokio::test]
+    async fn handle_connection_sets_pending_permission_for_windows_hook_event() {
+        let store = Arc::new(SessionStore::new());
+        let adapters: Vec<Arc<dyn AgentAdapter>> = vec![Arc::new(
+            crate::agents::claude_code::ClaudeCodeAdapter::new(),
+        )];
+        let context = HookConnectionContext {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(adapters),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            let _ = HookServer::handle_connection(server, context).await;
+        });
+
+        client
+            .write_all(
+                br#"{"agent":"claude-code","event":"PermissionRequest","session_id":"win-hook","cwd":"C:\\Users\\admin\\Documents\\github\\agentbro","tool_name":"Bash","tool_input":{"command":"echo AgentBro Windows smoke"}}"#,
+            )
+            .await
+            .unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.flush().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if store
+                    .get_session("win-hook")
+                    .and_then(|session| session.pending_permission)
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pending permission should be set");
+
+        let session = store.get_session("win-hook").expect("session should exist");
+        assert_eq!(session.project, "agentbro");
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        let pending = session
+            .pending_permission
+            .expect("permission should stay pending while hook waits");
+        assert_eq!(pending.tool_name, "Bash");
+        assert!(pending.tool_input.contains("AgentBro Windows smoke"));
+
+        task.abort();
     }
 
     #[test]

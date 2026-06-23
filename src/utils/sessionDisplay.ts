@@ -115,7 +115,7 @@ function normalizeTerminalLabel(value: string | null | undefined): string | null
   const raw = (value || '').trim()
   if (!raw || isTtyLabel(raw)) return null
 
-  const lastPathPart = raw.split('/').filter(Boolean).pop() || raw
+  const lastPathPart = raw.split(/[\\/]+/).filter(Boolean).pop() || raw
   const withoutExtension = lastPathPart.replace(/\.app$/i, '')
   const normalized = withoutExtension.toLowerCase().replace(/[^a-z0-9]+/g, '')
   const matched = TERMINAL_NAME_LABELS.find(([needle]) => normalized.includes(needle))

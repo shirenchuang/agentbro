@@ -7,7 +7,6 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { sendMessage, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
 import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
-import { isWindowsPlatform } from '../../utils/platform'
 import { formatDurationShort } from '../../utils/time'
 import { MascotRouter } from '../notch/mascots/MascotRouter'
 import './OverlayFeedbackPanel.css'
@@ -80,7 +79,7 @@ export function OverlayFeedbackPanel({
   const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
   const capability = getComposerCapability(session, {
     codexAppServerLive,
-    codexDesktopRepliesSupported: !isWindowsPlatform(),
+    codexDesktopRepliesSupported: true,
   })
 
   useEffect(() => {

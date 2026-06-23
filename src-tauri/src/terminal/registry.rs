@@ -15,6 +15,23 @@ const TERMINAL_APP_NAMES: &[&str] = &[
     "waveterm",
     "WezTerm",
     "Tabby",
+    "Windows Terminal",
+    "WindowsTerminal",
+    "WindowsTerminal.exe",
+    "OpenConsole",
+    "OpenConsole.exe",
+    "conhost",
+    "conhost.exe",
+    "wt",
+    "wt.exe",
+    "Command Prompt",
+    "cmd",
+    "cmd.exe",
+    "PowerShell",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
     "Rio",
     "Contour",
     "foot",
@@ -127,6 +144,18 @@ mod tests {
         assert!(is_terminal("/Applications/Wave.app/Contents/MacOS/Wave"));
         assert!(is_terminal("iTerm·tmux"));
         assert!(is_terminal("Apple_Terminal"));
+    }
+
+    #[test]
+    fn detects_windows_terminal_app_names() {
+        assert!(is_terminal("Windows Terminal"));
+        assert!(is_terminal("WindowsTerminal.exe"));
+        assert!(is_terminal("OpenConsole.exe"));
+        assert!(is_terminal("conhost.exe"));
+        assert!(is_terminal("wt.exe"));
+        assert!(is_terminal("cmd.exe"));
+        assert!(is_terminal("PowerShell"));
+        assert!(is_terminal("pwsh.exe"));
     }
 
     #[test]

@@ -168,6 +168,11 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
 fn expand_home_with_base(home: &Path, value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
         home.join(rest)
+    } else if cfg!(target_os = "windows") {
+        value
+            .strip_prefix("~\\")
+            .map(|rest| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(value))
     } else {
         PathBuf::from(value)
     }
@@ -283,5 +288,34 @@ fn expand_home(path: &str) -> PathBuf {
             return home.join(rest);
         }
     }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expands_windows_home_paths_with_base() {
+        let home = PathBuf::from(r"C:\Users\agentbro");
+        assert_eq!(
+            expand_home_with_base(&home, r"~\.openclaw\workspace"),
+            home.join(r".openclaw\workspace")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expands_custom_agent_windows_home_paths() {
+        let expanded = expand_home(r"~\.agentbro\custom-skills");
+        assert!(expanded.ends_with(r".agentbro\custom-skills"));
+        assert!(!expanded.display().to_string().starts_with('~'));
+    }
 }

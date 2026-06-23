@@ -603,7 +603,7 @@ impl Service {
     // ── Overview & reads ──────────────────────────────────────────
 
     pub fn overview(&self) -> Result<SkillManagerOverview, String> {
-        self.overview_with_target_refresh(true)
+        self.overview_with_target_refresh(false)
     }
 
     fn overview_with_target_refresh(

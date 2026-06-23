@@ -79,7 +79,7 @@ impl AgentAdapter for QwenAdapter {
         match event {
             "session_start" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                project: super::project_name_from_path(&cwd),
                 cwd,
                 terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "qwen".to_string(),

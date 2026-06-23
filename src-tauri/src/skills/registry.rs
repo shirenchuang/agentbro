@@ -447,6 +447,10 @@ fn normalize_path(path: &str) -> String {
     if trimmed.starts_with("~/") {
         return expand_home(trimmed).display().to_string();
     }
+    #[cfg(target_os = "windows")]
+    if trimmed.starts_with("~\\") {
+        return expand_home(trimmed).display().to_string();
+    }
     trimmed.to_string()
 }
 
@@ -476,5 +480,41 @@ fn expand_home(path: &str) -> PathBuf {
             return home.join(rest);
         }
     }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
     Path::new(path).to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_path_expands_posix_home_prefix() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        assert_eq!(
+            normalize_path("~/AgentBro/skills"),
+            home.join("AgentBro/skills").display().to_string()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_path_expands_windows_home_prefix() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        assert_eq!(
+            normalize_path(r"~\AgentBro\skills"),
+            home.join(r"AgentBro\skills").display().to_string()
+        );
+    }
 }

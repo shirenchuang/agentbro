@@ -46,6 +46,7 @@ import { OverlayCompletionCard } from '../overlay/OverlayCompletionCard'
 import { OverlayCompactingCard } from '../overlay/OverlayCompactingCard'
 import { usePetSummon } from './usePetSummon'
 import { buildTips, shuffleTips } from './tips'
+import { isWindowsPlatform } from '../../utils/platform'
 import {
   DEFAULT_PET_STAGE_ANCHOR,
   PET_STAGE_WIDTH,
@@ -378,7 +379,9 @@ export function PetSurface({ sessions, scale, hidden }: PetSurfaceProps) {
       }
     }
 
-    const id = window.setInterval(tick, 250)
+    const hasInteractivePanel = hudOpen || showActionToast || showBlockingOverlay || showMessageToast
+    const probeIntervalMs = isWindowsPlatform() && !hasInteractivePanel ? 1000 : 250
+    const id = window.setInterval(tick, probeIntervalMs)
     void tick()
     return () => {
       cancelled = true

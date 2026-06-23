@@ -3,6 +3,8 @@
 //           Terminal.app (TTY matching), Kitty (kitten @), WezTerm (wezterm cli),
 //           tmux (select-window + select-pane), and generic app activation
 
+#![cfg_attr(target_os = "windows", allow(dead_code))]
+
 use super::{process_tree, registry, tmux};
 
 /// Result of a jump operation
@@ -62,193 +64,213 @@ pub struct JumpContext {
 pub fn jump_to_terminal(pid: u32) -> JumpResult {
     let tree = process_tree::build_tree();
 
-    // Check if the agent is in tmux first
-    if process_tree::is_in_tmux(pid, &tree) {
-        return jump_via_tmux_pid(pid);
+    #[cfg(target_os = "windows")]
+    {
+        let ctx = JumpContext {
+            pid,
+            ..Default::default()
+        };
+        jump_to_terminal_windows(&ctx, &tree)
     }
 
-    // Find the terminal app in the process tree
-    if let Some(terminal_app) = process_tree::find_terminal_app_name(pid, &tree) {
-        let lower = terminal_app.to_lowercase();
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Check if the agent is in tmux first
+        if process_tree::is_in_tmux(pid, &tree) {
+            return jump_via_tmux_pid(pid);
+        }
 
-        // iTerm2: read iTerm session ID from process env for precise tab jump
-        if lower.contains("iterm") {
-            if let Some(session_id) = process_tree::read_env_var(pid, "ITERM_SESSION_ID") {
-                return jump_iterm_by_session(&session_id);
+        // Find the terminal app in the process tree
+        if let Some(terminal_app) = process_tree::find_terminal_app_name(pid, &tree) {
+            let lower = terminal_app.to_lowercase();
+
+            // iTerm2: read iTerm session ID from process env for precise tab jump
+            if lower.contains("iterm") {
+                if let Some(session_id) = process_tree::read_env_var(pid, "ITERM_SESSION_ID") {
+                    return jump_iterm_by_session(&session_id);
+                }
             }
-        }
 
-        // Try AppleScript for supported terminals (iTerm2, Terminal.app)
-        if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
-            return jump_via_applescript(app_name);
-        }
-        // Generic activation: use `open -a` for the terminal app
-        return jump_via_app_activation(&terminal_app);
-    }
-
-    // Fallback: use TTY device to find which terminal app owns this session
-    log::warn!(
-        "Process tree walk failed for PID {}. Trying TTY fallback.",
-        pid
-    );
-    if let Some(tty) = process_tree::get_tty(pid, &tree) {
-        if let Some(terminal_app) = find_terminal_app_for_tty(&tty) {
-            log::info!("TTY fallback found terminal app: {}", terminal_app);
+            // Try AppleScript for supported terminals (iTerm2, Terminal.app)
             if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
                 return jump_via_applescript(app_name);
             }
+            // Generic activation: use `open -a` for the terminal app
             return jump_via_app_activation(&terminal_app);
         }
-    }
 
-    // Last resort: find any terminal app that shares the same TTY
-    if let Some(tty) = process_tree::get_tty(pid, &tree) {
-        log::warn!("Trying shared-TTY scan for {}", tty);
-        for info in tree.values() {
-            if info.tty.as_deref() == Some(&tty) && registry::is_terminal(&info.command) {
-                log::info!("Shared-TTY scan found: {}", info.command);
-                if let Some(app_name) = registry::applescript_app_name(&info.command) {
+        // Fallback: use TTY device to find which terminal app owns this session
+        log::warn!(
+            "Process tree walk failed for PID {}. Trying TTY fallback.",
+            pid
+        );
+        if let Some(tty) = process_tree::get_tty(pid, &tree) {
+            if let Some(terminal_app) = find_terminal_app_for_tty(&tty) {
+                log::info!("TTY fallback found terminal app: {}", terminal_app);
+                if let Some(app_name) = registry::applescript_app_name(&terminal_app) {
                     return jump_via_applescript(app_name);
                 }
-                return jump_via_app_activation(&info.command);
+                return jump_via_app_activation(&terminal_app);
             }
         }
-    }
 
-    JumpResult::TerminalNotFound
+        // Last resort: find any terminal app that shares the same TTY
+        if let Some(tty) = process_tree::get_tty(pid, &tree) {
+            log::warn!("Trying shared-TTY scan for {}", tty);
+            for info in tree.values() {
+                if info.tty.as_deref() == Some(&tty) && registry::is_terminal(&info.command) {
+                    log::info!("Shared-TTY scan found: {}", info.command);
+                    if let Some(app_name) = registry::applescript_app_name(&info.command) {
+                        return jump_via_applescript(app_name);
+                    }
+                    return jump_via_app_activation(&info.command);
+                }
+            }
+        }
+
+        JumpResult::TerminalNotFound
+    }
 }
 
 /// Precise tab-level jump using full session context (iTerm2 session ID, Kitty window ID, etc.)
 pub fn jump_to_terminal_with_context(ctx: &JumpContext) -> JumpResult {
     let tree = process_tree::build_tree();
 
-    if ctx
-        .cmux_surface_id
-        .as_deref()
-        .is_some_and(|v| !v.is_empty())
+    #[cfg(target_os = "windows")]
     {
-        return jump_cmux(
-            ctx.cmux_surface_id.as_deref(),
-            ctx.cmux_workspace_id.as_deref(),
-        );
+        jump_to_terminal_windows(ctx, &tree)
     }
 
-    if ctx.zellij_pane_id.as_deref().is_some_and(|v| !v.is_empty()) {
-        let res = jump_zellij(
-            ctx.zellij_pane_id.as_deref(),
-            ctx.zellij_session_name.as_deref(),
-        );
-        if let Some(term) = outer_terminal_app(ctx, &tree) {
-            let _ = activate_app(&term);
+    #[cfg(not(target_os = "windows"))]
+    {
+        if ctx
+            .cmux_surface_id
+            .as_deref()
+            .is_some_and(|v| !v.is_empty())
+        {
+            return jump_cmux(
+                ctx.cmux_surface_id.as_deref(),
+                ctx.cmux_workspace_id.as_deref(),
+            );
         }
-        return res;
-    }
 
-    // ── tmux: switch pane first ──────────────────────────────────────────────
-    if let Some(pane) = &ctx.tmux_pane {
-        if !pane.is_empty() {
-            let res = jump_via_tmux_pane(pane, ctx.tmux_env.as_deref());
-            // Also activate the outer terminal app hosting tmux
+        if ctx.zellij_pane_id.as_deref().is_some_and(|v| !v.is_empty()) {
+            let res = jump_zellij(
+                ctx.zellij_pane_id.as_deref(),
+                ctx.zellij_session_name.as_deref(),
+            );
             if let Some(term) = outer_terminal_app(ctx, &tree) {
                 let _ = activate_app(&term);
             }
             return res;
         }
-    }
 
-    if process_tree::is_in_tmux(ctx.pid, &tree) {
-        let res = jump_via_tmux_pid(ctx.pid);
-        if let Some(term) = outer_terminal_app(ctx, &tree) {
-            let _ = activate_app(&term);
-        }
-        return res;
-    }
-
-    let terminal_app = outer_terminal_app(ctx, &tree);
-
-    let Some(term_app) = terminal_app else {
-        if let Some(bundle_id) = native_bundle_for_context(ctx) {
-            if activate_bundle(bundle_id).is_ok() {
-                return JumpResult::Success;
+        // ── tmux: switch pane first ──────────────────────────────────────────────
+        if let Some(pane) = &ctx.tmux_pane {
+            if !pane.is_empty() {
+                let res = jump_via_tmux_pane(pane, ctx.tmux_env.as_deref());
+                // Also activate the outer terminal app hosting tmux
+                if let Some(term) = outer_terminal_app(ctx, &tree) {
+                    let _ = activate_app(&term);
+                }
+                return res;
             }
         }
-        return JumpResult::TerminalNotFound;
-    };
 
-    if let Some(bundle_id) = ctx.term_bundle_id.as_deref() {
-        if is_ide_host_bundle(bundle_id) && !native_bundle_matches_context(ctx, bundle_id) {
-            return jump_to_ide_window(bundle_id, ctx.cwd.as_deref());
+        if process_tree::is_in_tmux(ctx.pid, &tree) {
+            let res = jump_via_tmux_pid(ctx.pid);
+            if let Some(term) = outer_terminal_app(ctx, &tree) {
+                let _ = activate_app(&term);
+            }
+            return res;
         }
-    }
 
-    let lower = term_app.to_lowercase();
+        let terminal_app = outer_terminal_app(ctx, &tree);
 
-    // ── iTerm2: precise session ID targeting ─────────────────────────────────
-    if lower.contains("iterm") {
-        if let Some(session_id) = &ctx.iterm_session_id {
-            if !session_id.is_empty() {
-                return jump_iterm_by_session(session_id);
+        let Some(term_app) = terminal_app else {
+            if let Some(bundle_id) = native_bundle_for_context(ctx) {
+                if activate_bundle(bundle_id).is_ok() {
+                    return JumpResult::Success;
+                }
+            }
+            return JumpResult::TerminalNotFound;
+        };
+
+        if let Some(bundle_id) = ctx.term_bundle_id.as_deref() {
+            if is_ide_host_bundle(bundle_id) && !native_bundle_matches_context(ctx, bundle_id) {
+                return jump_to_ide_window(bundle_id, ctx.cwd.as_deref());
             }
         }
-        return jump_iterm_by_tty_or_cwd(ctx.tty_path.as_deref(), ctx.cwd.as_deref());
-    }
 
-    // ── Ghostty: AppleScript CWD/title matching ──────────────────────────────
-    if lower.contains("ghostty") {
-        return jump_ghostty(
-            ctx.cwd.as_deref(),
-            ctx.tty_path.as_deref(),
-            None,
-            ctx.agent_type.as_deref(),
-        );
-    }
+        let lower = term_app.to_lowercase();
 
-    // ── Terminal.app: TTY tab matching ───────────────────────────────────────
-    if lower.contains("terminal") || lower.contains("apple_terminal") {
-        return jump_terminal_app(ctx.tty_path.as_deref(), ctx.cwd.as_deref());
-    }
+        // ── iTerm2: precise session ID targeting ─────────────────────────────────
+        if lower.contains("iterm") {
+            if let Some(session_id) = &ctx.iterm_session_id {
+                if !session_id.is_empty() {
+                    return jump_iterm_by_session(session_id);
+                }
+            }
+            return jump_iterm_by_tty_or_cwd(ctx.tty_path.as_deref(), ctx.cwd.as_deref());
+        }
 
-    // ── WezTerm: CLI tab targeting ───────────────────────────────────────────
-    if lower.contains("wezterm") || lower.contains("wez") {
-        return jump_wezterm(
-            ctx.wezterm_pane.as_deref(),
-            ctx.tty_path.as_deref(),
-            ctx.cwd.as_deref(),
-        );
-    }
+        // ── Ghostty: AppleScript CWD/title matching ──────────────────────────────
+        if lower.contains("ghostty") {
+            return jump_ghostty(
+                ctx.cwd.as_deref(),
+                ctx.tty_path.as_deref(),
+                None,
+                ctx.agent_type.as_deref(),
+            );
+        }
 
-    // ── Wave: focus the owning block through Wave's native RPC ───────────────
-    if lower.contains("wave") {
-        return jump_wave(
-            ctx.waveterm_block_id.as_deref(),
-            ctx.waveterm_tab_id.as_deref(),
-            ctx.waveterm_jwt.as_deref(),
-        );
-    }
+        // ── Terminal.app: TTY tab matching ───────────────────────────────────────
+        if lower.contains("terminal") || lower.contains("apple_terminal") {
+            return jump_terminal_app(ctx.tty_path.as_deref(), ctx.cwd.as_deref());
+        }
 
-    // ── Kitty: kitten @ focus-window ────────────────────────────────────────
-    if lower.contains("kitty") {
-        return jump_kitty(ctx.kitty_window_id.as_deref(), ctx.cwd.as_deref());
-    }
+        // ── WezTerm: CLI tab targeting ───────────────────────────────────────────
+        if lower.contains("wezterm") || lower.contains("wez") {
+            return jump_wezterm(
+                ctx.wezterm_pane.as_deref(),
+                ctx.tty_path.as_deref(),
+                ctx.cwd.as_deref(),
+            );
+        }
 
-    // ── Kaku: CLI pane targeting ─────────────────────────────────────────────
-    if lower.contains("kaku") {
-        return jump_kaku(
-            ctx.wezterm_pane.as_deref(),
-            ctx.tty_path.as_deref(),
-            ctx.cwd.as_deref(),
-        );
-    }
+        // ── Wave: focus the owning block through Wave's native RPC ───────────────
+        if lower.contains("wave") {
+            return jump_wave(
+                ctx.waveterm_block_id.as_deref(),
+                ctx.waveterm_tab_id.as_deref(),
+                ctx.waveterm_jwt.as_deref(),
+            );
+        }
 
-    // ── Warp: activate first, then best-effort DB/CLI targeting when possible.
-    if lower.contains("warp") {
-        return jump_warp(ctx.cwd.as_deref());
-    }
+        // ── Kitty: kitten @ focus-window ────────────────────────────────────────
+        if lower.contains("kitty") {
+            return jump_kitty(ctx.kitty_window_id.as_deref(), ctx.cwd.as_deref());
+        }
 
-    // Generic fallback
-    match activate_app(&term_app) {
-        Ok(()) => JumpResult::Success,
-        Err(e) => JumpResult::Failed(e),
+        // ── Kaku: CLI pane targeting ─────────────────────────────────────────────
+        if lower.contains("kaku") {
+            return jump_kaku(
+                ctx.wezterm_pane.as_deref(),
+                ctx.tty_path.as_deref(),
+                ctx.cwd.as_deref(),
+            );
+        }
+
+        // ── Warp: activate first, then best-effort DB/CLI targeting when possible.
+        if lower.contains("warp") {
+            return jump_warp(ctx.cwd.as_deref());
+        }
+
+        // Generic fallback
+        match activate_app(&term_app) {
+            Ok(()) => JumpResult::Success,
+            Err(e) => JumpResult::Failed(e),
+        }
     }
 }
 
@@ -260,12 +282,20 @@ pub fn jump_to_terminal_app(terminal_name: &str) -> JumpResult {
         return JumpResult::TerminalNotFound;
     }
 
-    let normalized = normalized_app_name(trimmed);
-    if let Some(app_name) = registry::applescript_app_name(normalized) {
-        return jump_via_applescript(app_name);
+    #[cfg(target_os = "windows")]
+    {
+        jump_to_terminal_app_windows(trimmed, None)
     }
 
-    jump_via_app_activation(normalized)
+    #[cfg(not(target_os = "windows"))]
+    {
+        let normalized = normalized_app_name(trimmed);
+        if let Some(app_name) = registry::applescript_app_name(normalized) {
+            return jump_via_applescript(app_name);
+        }
+
+        jump_via_app_activation(normalized)
+    }
 }
 
 /// Best-effort focus for IDE integrated terminals. We cannot reliably select an
@@ -1081,6 +1111,142 @@ fn jump_via_app_activation(terminal_command: &str) -> JumpResult {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Debug, Eq, PartialEq)]
+struct WindowsTerminalCommand {
+    program: String,
+    args: Vec<String>,
+    current_dir: Option<String>,
+    new_console: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn jump_to_terminal_windows(
+    ctx: &JumpContext,
+    tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
+) -> JumpResult {
+    if let Some(terminal) = outer_terminal_app(ctx, tree).or_else(|| ctx.terminal_app.clone()) {
+        return jump_to_terminal_app_windows(&terminal, ctx.cwd.as_deref());
+    }
+
+    if ctx.cwd.as_deref().is_some_and(|cwd| !cwd.trim().is_empty()) {
+        return jump_to_terminal_app_windows("", ctx.cwd.as_deref());
+    }
+
+    JumpResult::TerminalNotFound
+}
+
+#[cfg(target_os = "windows")]
+fn jump_to_terminal_app_windows(terminal_name: &str, cwd: Option<&str>) -> JumpResult {
+    let mut errors = Vec::new();
+    for spec in windows_terminal_command_candidates(terminal_name, cwd) {
+        match spawn_windows_terminal_command(&spec) {
+            Ok(()) => return JumpResult::Success,
+            Err(err) => errors.push(format!("{}: {err}", spec.program)),
+        }
+    }
+
+    if errors.is_empty() {
+        JumpResult::TerminalNotFound
+    } else {
+        JumpResult::Failed(errors.join("; "))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_terminal_command_candidates(
+    terminal_name: &str,
+    cwd: Option<&str>,
+) -> Vec<WindowsTerminalCommand> {
+    let lower = terminal_name.to_ascii_lowercase();
+    let mut kinds = if lower.contains("pwsh") {
+        vec!["pwsh", "powershell", "wt", "cmd"]
+    } else if lower.contains("powershell") {
+        vec!["powershell", "pwsh", "wt", "cmd"]
+    } else if lower.contains("cmd") || lower.contains("command prompt") {
+        vec!["cmd", "wt", "powershell", "pwsh"]
+    } else if lower.contains("windows terminal") || lower == "wt" || lower == "wt.exe" {
+        vec!["wt", "cmd", "powershell", "pwsh"]
+    } else {
+        vec!["wt", "cmd", "powershell", "pwsh"]
+    };
+
+    kinds.dedup();
+    kinds
+        .into_iter()
+        .map(|kind| windows_terminal_command(kind, cwd))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_terminal_command(kind: &str, cwd: Option<&str>) -> WindowsTerminalCommand {
+    let cwd = cwd.map(str::trim).filter(|value| !value.is_empty());
+    match kind {
+        "cmd" => WindowsTerminalCommand {
+            program: crate::agents::executable::command_path("cmd")
+                .display()
+                .to_string(),
+            args: vec!["/K".to_string()],
+            current_dir: cwd.map(ToString::to_string),
+            new_console: true,
+        },
+        "powershell" | "pwsh" => {
+            let mut args = vec!["-NoExit".to_string()];
+            if let Some(cwd) = cwd {
+                args.push("-Command".to_string());
+                args.push(format!(
+                    "Set-Location -LiteralPath {}",
+                    windows_powershell_string_literal(cwd)
+                ));
+            }
+            WindowsTerminalCommand {
+                program: crate::agents::executable::command_path(kind)
+                    .display()
+                    .to_string(),
+                args,
+                current_dir: None,
+                new_console: false,
+            }
+        }
+        _ => {
+            let mut args = Vec::new();
+            if let Some(cwd) = cwd {
+                args.extend(["-d".to_string(), cwd.to_string()]);
+            }
+            WindowsTerminalCommand {
+                program: crate::agents::executable::command_path("wt")
+                    .display()
+                    .to_string(),
+                args,
+                current_dir: None,
+                new_console: false,
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_windows_terminal_command(spec: &WindowsTerminalCommand) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+
+    let mut command = std::process::Command::new(&spec.program);
+    command.args(&spec.args);
+    if let Some(cwd) = &spec.current_dir {
+        command.current_dir(cwd);
+    }
+    if spec.new_console {
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    command.spawn().map(|_| ()).map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_powershell_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn activate_app(app_name: &str) -> Result<(), String> {
     let name = app_name
         .rsplit('/')
@@ -1164,11 +1330,11 @@ fn applescript_escape(value: &str) -> String {
 }
 
 fn cwd_folder_name(cwd: &str) -> Option<&str> {
-    let trimmed = cwd.trim().trim_end_matches('/');
+    let trimmed = cwd.trim().trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return None;
     }
-    trimmed.rsplit('/').find(|part| !part.is_empty())
+    trimmed.rsplit(['/', '\\']).find(|part| !part.is_empty())
 }
 
 fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
@@ -1588,6 +1754,8 @@ mod tests {
         normalized_app_name, outer_terminal_app, sqlite_file_uri, terminal_app_from_bundle_id,
         terminal_app_from_term_program, terminal_app_script, JumpContext,
     };
+    #[cfg(target_os = "windows")]
+    use super::{windows_powershell_string_literal, windows_terminal_command_candidates};
     use std::collections::HashMap;
 
     #[test]
@@ -1653,6 +1821,27 @@ mod tests {
         };
 
         assert_eq!(outer_terminal_app(&ctx, &HashMap::new()), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_terminal_jump_uses_native_launchers() {
+        let specs = windows_terminal_command_candidates("cmd.exe", Some(r"C:\work\agentbro"));
+        assert_eq!(specs[0].args, vec!["/K"]);
+        assert_eq!(specs[0].current_dir.as_deref(), Some(r"C:\work\agentbro"));
+        assert!(specs[0].program.to_ascii_lowercase().ends_with("cmd.exe"));
+
+        let specs = windows_terminal_command_candidates("PowerShell", Some(r"C:\work\Bob's app"));
+        assert!(specs[0]
+            .args
+            .iter()
+            .any(|arg| arg.contains("'C:\\work\\Bob''s app'")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_powershell_literals_escape_single_quotes() {
+        assert_eq!(windows_powershell_string_literal("A'B"), "'A''B'");
     }
 
     #[test]

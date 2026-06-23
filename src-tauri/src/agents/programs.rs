@@ -562,6 +562,9 @@ fn command_shell(command: &str) -> Command {
     {
         let mut shell = Command::new(command_name("cmd"));
         shell.args(["/C", command]);
+        if let Some(path) = executable::augmented_path_env() {
+            shell.env("PATH", path);
+        }
         shell
     }
 
@@ -582,11 +585,9 @@ fn open_target(target: &str) -> Result<(), String> {
     };
 
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", target]);
-        c
-    };
+    {
+        return open_target_windows(target);
+    }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let mut command = {
@@ -595,7 +596,55 @@ fn open_target(target: &str) -> Result<(), String> {
         c
     };
 
+    #[cfg(not(target_os = "windows"))]
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_target_windows(target: &str) -> Result<(), String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("Open target is empty".to_string());
+    }
+
+    let mut command = if is_url(target) {
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.args(["url.dll,FileProtocolHandler", target]);
+        c
+    } else {
+        let path = Path::new(target);
+        if path.exists() && is_windows_executable_path(path) {
+            std::process::Command::new(path)
+        } else {
+            let mut c = std::process::Command::new("explorer.exe");
+            c.arg(target);
+            c
+        }
+    };
+
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_executable_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "exe" | "cmd" | "bat" | "com"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn is_url(target: &str) -> bool {
+    target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("mailto:")
+        || target.starts_with("agentbro:")
+        || target.starts_with("ccswitch:")
 }
 
 fn launch_binary(path: &Path) -> Result<(), String> {
@@ -656,6 +705,12 @@ fn command_name(binary: &str) -> String {
 
 fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).display().to_string();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest).display().to_string();
         }
@@ -1282,6 +1337,25 @@ fn app(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::v2::agent_meta;
+
+    #[test]
+    fn visible_skill_agents_have_program_metadata() {
+        for agent_id in agent_meta::visible_agent_ids() {
+            assert!(
+                agent_paths::known_agent_ids().contains(&agent_id),
+                "{agent_id} is shown in Agent management but missing from known agent paths"
+            );
+
+            let meta = metadata_for(agent_id).unwrap_or_else(|| {
+                panic!("{agent_id} is shown in Agent management but missing program metadata")
+            });
+            assert!(
+                meta.install_command.is_some() || meta.download_url.is_some(),
+                "{agent_id} program metadata must expose an install command or download URL"
+            );
+        }
+    }
 
     #[test]
     fn npm_agent_updates_install_latest_package_directly() {
@@ -1334,5 +1408,36 @@ mod tests {
             binary_candidates_for_agent("cursor-cli", &cursor_cli),
             vec!["cursor-agent"]
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_open_target_recognizes_urls() {
+        assert!(is_url("https://github.com/shirenchuang/agentbro"));
+        assert!(is_url("agentbro://settings"));
+        assert!(is_url("ccswitch://provider"));
+        assert!(!is_url(
+            r"C:\Users\admin\AppData\Local\Programs\AgentBro\AgentBro.exe"
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_executable_detection_includes_common_launcher_extensions() {
+        assert!(is_windows_executable_path(Path::new(r"C:\Tools\agent.exe")));
+        assert!(is_windows_executable_path(Path::new(r"C:\Tools\agent.CMD")));
+        assert!(is_windows_executable_path(Path::new(r"C:\Tools\agent.bat")));
+        assert!(!is_windows_executable_path(Path::new(
+            r"C:\Tools\agent.txt"
+        )));
+        assert!(!is_windows_executable_path(Path::new(r"C:\Tools\agent")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_program_paths_expand_backslash_home_prefix() {
+        let expanded = expand_home(r"~\.cursor");
+        assert!(expanded.ends_with(r"\.cursor"));
+        assert!(!expanded.starts_with('~'));
     }
 }

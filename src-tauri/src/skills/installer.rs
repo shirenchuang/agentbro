@@ -261,7 +261,7 @@ fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), S
     fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
     let dest = skill_dir.join("SKILL.md");
 
-    let output = Command::new("curl")
+    let output = Command::new(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args())
         .arg("-L")
         .arg("--fail")
@@ -677,7 +677,7 @@ fn curl_text(url: &str) -> Result<String, String> {
 }
 
 fn curl_text_with_timeout(url: &str, max_time_secs: u64) -> Result<String, String> {
-    let output = Command::new("curl")
+    let output = Command::new(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args())
         .arg("-L")
         .arg("--fail")
@@ -751,7 +751,7 @@ fn clone_repo(
     let repo_dir = root.join("repo");
     let mut last_error = String::new();
     for clone_url in github_clone_urls(repo_url) {
-        let mut attempt = Command::new("git");
+        let mut attempt = Command::new(crate::agents::executable::command_path("git"));
         attempt.arg("clone").arg("--depth").arg("1");
         if let Some(branch) = branch {
             attempt.arg("--branch").arg(branch);
@@ -790,7 +790,7 @@ fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
     let extract_dir = root.join("unzipped");
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
-    let output = Command::new("curl")
+    let output = Command::new(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args())
         .arg("-L")
         .arg("--fail")

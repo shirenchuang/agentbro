@@ -192,15 +192,17 @@ function responseEvents(responseBody: string | null | undefined) {
 
 function shortPath(path?: string | null) {
   if (!path) return '-'
-  const parts = path.split('/').filter(Boolean)
+  const separator = path.includes('\\') ? '\\' : '/'
+  const parts = path.split(/[\\/]+/).filter(Boolean)
   if (parts.length <= 3) return path
+  if (separator === '\\') return `...${parts.slice(-3).join(separator)}`
   return `…/${parts.slice(-3).join('/')}`
 }
 
 function parentPath(path?: string | null) {
   if (!path) return null
-  const normalized = path.replace(/\/+$/, '')
-  const index = normalized.lastIndexOf('/')
+  const normalized = path.replace(/[\\/]+$/, '')
+  const index = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
   if (index <= 0) return null
   return normalized.slice(0, index)
 }
