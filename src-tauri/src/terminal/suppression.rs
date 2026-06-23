@@ -121,6 +121,26 @@ pub fn is_terminal_focused_with_session(
 // ─── Frontmost checks ─────────────────────────────────────────────────────────
 
 fn is_terminal_frontmost() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Some(frontmost_pid) = foreground_process_id() else {
+            return false;
+        };
+        let tree = process_tree::build_tree();
+        return tree
+            .get(&frontmost_pid)
+            .map(|info| registry::is_terminal(&info.command))
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_terminal_frontmost_macos()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_terminal_frontmost_macos() -> bool {
     let output = match std::process::Command::new("osascript")
         .args([
             "-e",
@@ -137,6 +157,20 @@ fn is_terminal_frontmost() -> bool {
 }
 
 fn is_bundle_frontmost(expected_bundle_id: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = expected_bundle_id;
+        return false;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_bundle_frontmost_macos(expected_bundle_id)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_bundle_frontmost_macos(expected_bundle_id: &str) -> bool {
     let output = match std::process::Command::new("osascript")
         .args([
             "-e",
@@ -160,6 +194,22 @@ fn is_agent_terminal_frontmost(
         None => return false,
     };
 
+    #[cfg(target_os = "windows")]
+    {
+        let Some(frontmost_pid) = foreground_process_id() else {
+            return false;
+        };
+        return terminal_pid_matches_frontmost(terminal_pid, frontmost_pid, tree);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_agent_terminal_frontmost_macos(terminal_pid)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_agent_terminal_frontmost_macos(terminal_pid: u32) -> bool {
     let output = match std::process::Command::new("osascript")
         .args([
             "-e",
@@ -177,6 +227,55 @@ fn is_agent_terminal_frontmost(
     };
 
     terminal_pid == frontmost_pid
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_process_id() -> Option<u32> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(window, &mut pid);
+        (pid != 0).then_some(pid)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_pid_matches_frontmost(
+    terminal_pid: u32,
+    frontmost_pid: u32,
+    tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
+) -> bool {
+    terminal_pid == frontmost_pid
+        || process_is_descendant_of(terminal_pid, frontmost_pid, tree)
+        || process_is_descendant_of(frontmost_pid, terminal_pid, tree)
+}
+
+#[cfg(target_os = "windows")]
+fn process_is_descendant_of(
+    mut pid: u32,
+    ancestor_pid: u32,
+    tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
+) -> bool {
+    for _ in 0..20 {
+        let Some(info) = tree.get(&pid) else {
+            return false;
+        };
+        if info.ppid == ancestor_pid {
+            return true;
+        }
+        if info.ppid <= 1 || info.ppid == pid {
+            return false;
+        }
+        pid = info.ppid;
+    }
+    false
 }
 
 // ─── iTerm2 session check ─────────────────────────────────────────────────────
@@ -428,6 +527,19 @@ fn flatten_zellij_panes(json: &serde_json::Value) -> Vec<&serde_json::Value> {
 
 /// Check if any terminal window is visible (less strict than frontmost check)
 pub fn is_any_terminal_visible() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return is_terminal_frontmost();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_any_terminal_visible_macos()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_any_terminal_visible_macos() -> bool {
     let script = r#"
 tell application "System Events"
     set visibleApps to name of every application process whose visible is true
@@ -445,4 +557,51 @@ return visibleApps as text
 
     let apps = String::from_utf8_lossy(&output.stdout).to_lowercase();
     registry::is_terminal(&apps)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    use super::process_is_descendant_of;
+    #[cfg(target_os = "windows")]
+    use crate::terminal::process_tree::ProcessInfo;
+    #[cfg(target_os = "windows")]
+    use std::collections::HashMap;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_process_descendant_matching_walks_ancestor_chain() {
+        let mut tree = HashMap::new();
+        tree.insert(
+            10,
+            ProcessInfo {
+                pid: 10,
+                ppid: 1,
+                command: "WindowsTerminal.exe".to_string(),
+                tty: None,
+            },
+        );
+        tree.insert(
+            20,
+            ProcessInfo {
+                pid: 20,
+                ppid: 10,
+                command: "cmd.exe".to_string(),
+                tty: None,
+            },
+        );
+        tree.insert(
+            30,
+            ProcessInfo {
+                pid: 30,
+                ppid: 20,
+                command: "opencode.exe".to_string(),
+                tty: None,
+            },
+        );
+
+        assert!(process_is_descendant_of(30, 10, &tree));
+        assert!(process_is_descendant_of(20, 10, &tree));
+        assert!(!process_is_descendant_of(10, 30, &tree));
+    }
 }

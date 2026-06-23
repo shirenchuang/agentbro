@@ -95,7 +95,7 @@ pub struct AppConfig {
     pub show_token_usage: bool,
     #[serde(default = "default_true")]
     pub usage_query_enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_codex_app_server_sync_enabled")]
     pub codex_app_server_sync_enabled: bool,
     #[serde(default = "default_codex_app_server_sync_interval_seconds")]
     pub codex_app_server_sync_interval_seconds: u32,
@@ -308,6 +308,10 @@ fn default_island_pet_scale() -> u32 {
 const DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS: u32 = 30;
 const LEGACY_CHIME_SOUND_CHOICE: &str = concat!("builtin:", "p", "i", "n", "g");
 
+fn default_codex_app_server_sync_enabled() -> bool {
+    !cfg!(target_os = "windows")
+}
+
 fn default_codex_app_server_sync_interval_seconds() -> u32 {
     DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS
 }
@@ -323,7 +327,7 @@ impl Default for AppConfig {
             completion_timeout: 5,
             show_token_usage: true,
             usage_query_enabled: true,
-            codex_app_server_sync_enabled: true,
+            codex_app_server_sync_enabled: default_codex_app_server_sync_enabled(),
             codex_app_server_sync_interval_seconds: DEFAULT_CODEX_APP_SERVER_SYNC_INTERVAL_SECONDS,
             theme: "midnight".to_string(),
             language: default_language(),
@@ -570,7 +574,7 @@ impl Default for ConfigStore {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{default_codex_app_server_sync_enabled, AppConfig};
 
     #[test]
     fn defaults_match_agentbro_island_behavior() {
@@ -634,14 +638,17 @@ mod tests {
     }
 
     #[test]
-    fn codex_app_server_sync_defaults_true_when_field_is_missing() {
+    fn codex_app_server_sync_uses_platform_default_when_field_is_missing() {
         let mut value = serde_json::to_value(AppConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
         object.remove("codexAppServerSyncEnabled");
 
         let config: AppConfig = serde_json::from_value(value).expect("deserialize fresh config");
 
-        assert!(config.codex_app_server_sync_enabled);
+        assert_eq!(
+            config.codex_app_server_sync_enabled,
+            default_codex_app_server_sync_enabled()
+        );
     }
 
     #[test]

@@ -786,6 +786,12 @@ fn expand_user_path(path: &str) -> PathBuf {
             return home.join(rest);
         }
     }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
     PathBuf::from(path)
 }
 

@@ -72,12 +72,9 @@ impl AgentAdapter for CodeBuddyAdapter {
         match event {
             "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: raw
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_string(),
+                project: super::project_name_from_path(
+                    raw.get("cwd").and_then(|v| v.as_str()).unwrap_or(""),
+                ),
                 cwd: raw
                     .get("cwd")
                     .and_then(|v| v.as_str())

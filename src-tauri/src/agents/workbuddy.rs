@@ -76,9 +76,8 @@ impl AgentAdapter for WorkBuddyAdapter {
                 project: raw
                     .get("cwd")
                     .and_then(|v| v.as_str())
-                    .and_then(|p| p.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map(super::project_name_from_path)
+                    .unwrap_or_default(),
                 cwd: raw
                     .get("cwd")
                     .and_then(|v| v.as_str())

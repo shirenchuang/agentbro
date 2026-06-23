@@ -96,7 +96,7 @@ impl AgentAdapter for CopilotAdapter {
         match event {
             "session_start" | "sessionStart" | "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                project: super::project_name_from_path(&cwd),
                 cwd,
                 terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "copilot".to_string(),

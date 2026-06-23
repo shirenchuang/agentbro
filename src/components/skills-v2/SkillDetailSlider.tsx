@@ -238,7 +238,7 @@ export function SkillDetailSlider({
           await skillApiV2.deleteSkillTargetDistribution(targetId)
         } catch (e) {
           failedIds.push(targetId)
-          failed.push(`${target?.targetPath.split('/').pop() || targetId}: ${String(e)}`)
+          failed.push(`${target ? pathBasename(target.targetPath) || targetId : targetId}: ${String(e)}`)
         }
       }
       if (skillId) {
@@ -455,7 +455,7 @@ function OverviewTab({
       <section className="sm2__skill-doc">
         <div className="sm2__skill-doc-head">
           <div>
-            <span>{docPath ? docPath.split('/').pop() : 'SKILL.md'}</span>
+            <span>{docPath ? pathBasename(docPath) : 'SKILL.md'}</span>
             <strong>说明文档</strong>
           </div>
           <small>{STATUS_LABEL[detail.status] || detail.status}</small>
@@ -554,7 +554,7 @@ function FilesTab({
 }) {
   const canPreview = Boolean(activeFile && isMarkdownPath(activeFile))
   const effectiveMode = canPreview ? viewMode : 'source'
-  const activeName = activeFile ? activeFile.split('/').pop() || activeFile : '未选择文件'
+  const activeName = activeFile ? pathBasename(activeFile) || activeFile : '未选择文件'
   const activeDisplayPath = activeFile ? relativeFilePath(activeFile, detail.centerPath) : '选择左侧文件查看内容'
   const fileCount = countFiles(detail.files)
   return (
@@ -969,7 +969,7 @@ type SplitDiffRow = {
 function buildDiffTree(files: CopyDiffFile[]): DiffTreeNode {
   const root: DiffTreeNode = { name: '', path: '', children: [] }
   for (const file of files) {
-    const parts = file.path.split('/').filter(Boolean)
+    const parts = file.path.split(/[\\/]+/).filter(Boolean)
     let node = root
     parts.forEach((part, index) => {
       const path = parts.slice(0, index + 1).join('/')
@@ -1283,11 +1283,17 @@ function countFiles(node: FileTreeNode | null): number {
   return node.children?.reduce((sum, child) => sum + countFiles(child), 0) || 0
 }
 
+function pathBasename(path: string): string {
+  return path.split(/[\\/]+/).filter(Boolean).pop() || ''
+}
+
 function relativeFilePath(path: string, root: string): string {
-  if (path === root) return path.split('/').pop() || path
-  const prefix = root.endsWith('/') ? root : `${root}/`
-  if (path.startsWith(prefix)) return path.slice(prefix.length)
-  return path
+  const normalizedPath = path.replace(/\\/g, '/')
+  const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (normalizedPath === normalizedRoot) return pathBasename(path) || path
+  const prefix = `${normalizedRoot}/`
+  if (normalizedPath.startsWith(prefix)) return normalizedPath.slice(prefix.length)
+  return normalizedPath
 }
 
 function isMarkdownPath(path: string | null): boolean {

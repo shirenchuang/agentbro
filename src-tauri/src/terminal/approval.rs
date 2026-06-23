@@ -41,6 +41,11 @@ pub fn reject(tmux_target: &str, message: Option<&str>) -> Result<(), Box<dyn st
 
 /// Find the tmux path (reuse logic from tmux module)
 fn find_tmux_path() -> Option<String> {
+    let tmux = crate::agents::executable::command_path("tmux");
+    if crate::agents::executable::command_exists("tmux") {
+        return Some(tmux.display().to_string());
+    }
+
     for path in &[
         "/opt/homebrew/bin/tmux",
         "/usr/local/bin/tmux",
@@ -48,16 +53,6 @@ fn find_tmux_path() -> Option<String> {
     ] {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
-        }
-    }
-    let output = std::process::Command::new("which")
-        .arg("tmux")
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
-            return Some(path);
         }
     }
     None

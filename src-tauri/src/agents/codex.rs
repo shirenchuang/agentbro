@@ -504,7 +504,7 @@ impl AgentAdapter for CodexAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let project = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
+        let project = super::project_name_from_path(&cwd);
         let terminal = raw
             .get("tty")
             .or_else(|| raw.get("terminal"))

@@ -381,6 +381,7 @@ fn ask_user_question_updated_input(
     updated_input
 }
 
+#[cfg(unix)]
 fn ps_tty_and_ppid(pid: u32) -> Option<(Option<String>, Option<u32>)> {
     if let Ok(output) = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "tty=,ppid="])
@@ -394,6 +395,11 @@ fn ps_tty_and_ppid(pid: u32) -> Option<(Option<String>, Option<u32>)> {
             return Some((tty, ppid));
         }
     }
+    None
+}
+
+#[cfg(not(unix))]
+fn ps_tty_and_ppid(_pid: u32) -> Option<(Option<String>, Option<u32>)> {
     None
 }
 
@@ -430,7 +436,42 @@ fn parent_process_id() -> u32 {
     {
         std::os::unix::process::parent_id()
     }
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), target_os = "windows"))]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return 0;
+            }
+
+            let current_pid = std::process::id();
+            let mut entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut parent_pid = 0;
+
+            if Process32FirstW(snapshot, &mut entry) != 0 {
+                loop {
+                    if entry.th32ProcessID == current_pid {
+                        parent_pid = entry.th32ParentProcessID;
+                        break;
+                    }
+                    if Process32NextW(snapshot, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+
+            let _ = CloseHandle(snapshot);
+            parent_pid
+        }
+    }
+    #[cfg(all(not(unix), not(target_os = "windows")))]
     {
         0
     }

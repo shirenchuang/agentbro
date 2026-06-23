@@ -207,7 +207,11 @@ fn image_source_path(src: &str) -> Result<PathBuf, String> {
         let rest = rest.strip_prefix("localhost").unwrap_or(rest);
         return Ok(PathBuf::from(percent_decode_path(rest)?));
     }
-    if trimmed.starts_with('/') || trimmed.starts_with("~/") {
+    if Path::new(trimmed).is_absolute() || trimmed.starts_with("~/") {
+        return Ok(PathBuf::from(expand_tilde_target(trimmed)));
+    }
+    #[cfg(target_os = "windows")]
+    if trimmed.starts_with("~\\") {
         return Ok(PathBuf::from(expand_tilde_target(trimmed)));
     }
     Err("Image source is not a local file path".to_string())
@@ -290,6 +294,30 @@ mod image_preview_tests {
         assert_eq!(path, PathBuf::from("/tmp/agentbro preview/image.png"));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_image_source_accepts_absolute_paths() {
+        let path = image_source_path(r"C:\Users\admin\Pictures\preview.png").unwrap();
+        assert_eq!(path, PathBuf::from(r"C:\Users\admin\Pictures\preview.png"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_tilde_backslash_paths_expand_to_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        assert_eq!(
+            expand_tilde_target(r"~\AgentBro\hooks"),
+            home.join(r"AgentBro\hooks").display().to_string()
+        );
+        assert_eq!(
+            image_source_path(r"~\Pictures\preview.png").unwrap(),
+            home.join(r"Pictures\preview.png")
+        );
+    }
+
     #[test]
     fn image_media_type_uses_magic_bytes_without_extension() {
         let bytes = b"\x89PNG\r\n\x1a\nrest";
@@ -297,6 +325,15 @@ mod image_preview_tests {
             infer_image_media_type(Path::new("/tmp/preview"), bytes),
             Some("image/png")
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_system_open_recognizes_urls_without_matching_paths() {
+        assert!(is_system_url("https://github.com/shirenchuang/agentbro"));
+        assert!(is_system_url("ccswitch://provider"));
+        assert!(!is_system_url(r"C:\Users\admin\Pictures\preview.png"));
+        assert!(!is_system_url(r"\\server\share\preview.png"));
     }
 }
 
@@ -340,7 +377,7 @@ fn image_extension(media_type: &str) -> &'static str {
 }
 
 fn open_system_target(target: &str) -> Result<(), String> {
-    let target = expand_tilde_target(target);
+    let target = expand_tilde_target(target.trim());
 
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -350,16 +387,37 @@ fn open_system_target(target: &str) -> Result<(), String> {
     };
 
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", "", &target]);
-        command
-    };
+    {
+        return open_system_target_windows(&target);
+    }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
         command.arg(&target);
+        command
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open path: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn open_system_target_windows(target: &str) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("Failed to open path: target is empty".to_string());
+    }
+
+    let mut command = if is_system_url(target) {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", target]);
+        command
+    } else {
+        let mut command = std::process::Command::new("explorer.exe");
+        command.arg(target);
         command
     };
 
@@ -369,8 +427,23 @@ fn open_system_target(target: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to open path: {}", e))
 }
 
+#[cfg(target_os = "windows")]
+fn is_system_url(target: &str) -> bool {
+    target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("mailto:")
+        || target.starts_with("agentbro:")
+        || target.starts_with("ccswitch:")
+}
+
 fn expand_tilde_target(target: &str) -> String {
     if let Some(rest) = target.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).display().to_string();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = target.strip_prefix("~\\") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest).display().to_string();
         }
@@ -1465,9 +1538,13 @@ async fn get_cursor_position() -> Result<(f64, f64), String> {
             Err("Failed to parse cursor position".to_string())
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("Cursor position not supported on this platform".to_string())
+        get_cursor_position_sync()
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        get_cursor_position_sync()
     }
 }
 
@@ -1505,7 +1582,7 @@ async fn is_cursor_in_window_zones(
         return Ok(false);
     };
     drain_pool(|| {
-        let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+        let (cursor_x, cursor_y) = app_cursor_position(&app)?;
         let position = window.outer_position().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
 
@@ -1525,8 +1602,8 @@ async fn is_cursor_in_window_zones(
             })
             .unwrap_or((0.0, 0.0));
 
-        let cx_logical = cursor.x / scale - monitor_origin_logical.0;
-        let cy_logical = cursor.y / scale - monitor_origin_logical.1;
+        let cx_logical = cursor_x / scale - monitor_origin_logical.0;
+        let cy_logical = cursor_y / scale - monitor_origin_logical.1;
         let win_left_logical = position.x as f64 / scale - monitor_origin_logical.0;
         let win_top_logical = position.y as f64 / scale - monitor_origin_logical.1;
 
@@ -1553,7 +1630,7 @@ async fn is_cursor_over_notch(
     };
 
     drain_pool(|| {
-        let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+        let (cursor_x, cursor_y) = app_cursor_position(&app)?;
         let position = window.outer_position().map_err(|e| e.to_string())?;
         let size = window.outer_size().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
@@ -1571,8 +1648,8 @@ async fn is_cursor_over_notch(
         let window_width_logical = size.width as f64 / scale;
         let window_height_logical = size.height as f64 / scale;
 
-        let cursor_x_logical = cursor.x / scale - monitor_origin_logical.0;
-        let cursor_y_logical = cursor.y / scale - monitor_origin_logical.1;
+        let cursor_x_logical = cursor_x / scale - monitor_origin_logical.0;
+        let cursor_y_logical = cursor_y / scale - monitor_origin_logical.1;
 
         let hit_width = width
             .filter(|value| *value > 0.0)
@@ -1603,9 +1680,39 @@ fn get_cursor_position_sync() -> Result<(f64, f64), String> {
     Ok((point.x, point.y))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn get_cursor_position_sync() -> Result<(f64, f64), String> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT { x: 0, y: 0 };
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok == 0 {
+        return Err("Failed to read Windows cursor position".to_string());
+    }
+    Ok((point.x as f64, point.y as f64))
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn get_cursor_position_sync() -> Result<(f64, f64), String> {
     Err("Cursor position not supported on this platform".to_string())
+}
+
+fn app_cursor_position(app: &tauri::AppHandle) -> Result<(f64, f64), String> {
+    match app.cursor_position() {
+        Ok(cursor) => Ok((cursor.x, cursor.y)),
+        Err(error) => {
+            #[cfg(target_os = "windows")]
+            {
+                get_cursor_position_sync()
+                    .map_err(|fallback| format!("{}; Windows fallback failed: {}", error, fallback))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(error.to_string())
+            }
+        }
+    }
 }
 
 // ── Path Validation Command ─────────────────────────────────────
@@ -2141,14 +2248,19 @@ fn attach_settings_close_handler(app: &tauri::AppHandle, window: &tauri::Webview
         if let tauri::WindowEvent::CloseRequested { .. } = event {
             #[cfg(target_os = "macos")]
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            if let Some(notch) = app_handle.get_webview_window("notch") {
-                let _ = notch.show();
-            }
+            restore_island_surface_after_settings_close(&app_handle);
             // Don't `prevent_close()`: let Tauri tear the webview down. The
             // next `show_settings_window` call will rebuild it via
             // `build_settings_window`.
         }
     });
+}
+
+fn restore_island_surface_after_settings_close(app: &tauri::AppHandle) {
+    let config = app.state::<AppState>().config_store.get();
+    let is_pet_mode = config.island_surface_mode == "pet";
+    let saved_origin = config.island_pet_window_origin.clone();
+    sync_pet_window_visibility_inner(app, is_pet_mode, saved_origin.as_ref());
 }
 
 #[tauri::command]
@@ -3420,7 +3532,8 @@ unsafe extern "C" fn display_reconfig_callback(
 
 // ── Opacity helpers ─────────────────────────────────────────────
 // macOS breaks transparent window compositing after a hide()/show() cycle,
-// so we manage visibility via opacity instead.
+// so it keeps true alpha. Windows falls back to hide/show to avoid leaving a
+// disabled invisible island as a topmost transparent hit target.
 
 /// Set the alpha value on a WebviewWindow using the native NSWindow API.
 #[cfg(target_os = "macos")]
@@ -3434,7 +3547,16 @@ fn set_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn set_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
+    if alpha <= 0.0 {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+    }
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn set_window_alpha(_window: &tauri::WebviewWindow, _alpha: f64) {}
 
 #[cfg(target_os = "macos")]
@@ -3471,7 +3593,12 @@ fn apply_notch_window_for_spaces(window: &tauri::WebviewWindow) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn apply_notch_window_for_spaces(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(true);
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn apply_notch_window_for_spaces(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "macos")]
@@ -3509,7 +3636,12 @@ fn apply_pet_window_for_spaces(window: &tauri::WebviewWindow) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn apply_pet_window_for_spaces(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(true);
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn apply_pet_window_for_spaces(_window: &tauri::WebviewWindow) {}
 
 fn configure_notch_window_for_spaces(app: &tauri::AppHandle) {
@@ -4435,7 +4567,7 @@ async fn start_pet_drag(
     let Some(window) = app.get_webview_window("pet") else {
         return Ok(false);
     };
-    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let (cursor_x, cursor_y) = app_cursor_position(&app)?;
     let position = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let window_scale = window.scale_factor().unwrap_or(1.0);
@@ -4478,8 +4610,8 @@ async fn start_pet_drag(
             .lock()
             .map_err(|e| format!("Pet drag lock error: {}", e))?;
         *drag = Some(PetDragState {
-            start_cursor_x: cursor.x,
-            start_cursor_y: cursor.y,
+            start_cursor_x: cursor_x,
+            start_cursor_y: cursor_y,
             start_window_x: position.x as f64,
             start_window_y: position.y as f64,
             current_x: position.x as f64,
@@ -4524,7 +4656,7 @@ fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("pet") else {
         return Ok(false);
     };
-    let cursor = app.cursor_position().map_err(|e| e.to_string())?;
+    let (cursor_x, cursor_y) = app_cursor_position(app)?;
     let next_origin = {
         let drag = pet_drag_state()
             .lock()
@@ -4533,8 +4665,8 @@ fn update_pet_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
             return Ok(false);
         };
         config::WindowOrigin {
-            x: (state.start_window_x + cursor.x - state.start_cursor_x).round(),
-            y: (state.start_window_y + cursor.y - state.start_cursor_y).round(),
+            x: (state.start_window_x + cursor_x - state.start_cursor_x).round(),
+            y: (state.start_window_y + cursor_y - state.start_cursor_y).round(),
         }
     };
 

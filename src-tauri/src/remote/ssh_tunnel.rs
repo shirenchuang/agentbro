@@ -37,7 +37,7 @@ impl SshTunnel {
         self.disconnect_inner();
 
         let args = build_ssh_args(host, local_socket_path);
-        let mut cmd = Command::new("ssh");
+        let mut cmd = Command::new(crate::agents::executable::command_path("ssh"));
         cmd.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -132,12 +132,29 @@ fn build_ssh_args(host: &super::manager::RemoteHost, local_socket_path: &str) ->
         }
     }
 
-    // Reverse forward: remote socket -> local socket
+    // Reverse forward: remote socket -> local hook endpoint.
     args.push("-R".to_string());
-    args.push(format!("{}:{}", host.remote_socket_path, local_socket_path));
+    args.push(format!(
+        "{}:{}",
+        host.remote_socket_path,
+        local_forward_target(local_socket_path)
+    ));
     args.push(host.ssh_target.clone());
 
     args
+}
+
+fn local_forward_target(local_socket_path: &str) -> String {
+    #[cfg(unix)]
+    {
+        local_socket_path.to_string()
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = local_socket_path;
+        crate::hook_endpoint::current().tcp_addr()
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +180,49 @@ mod tests {
 
         assert!(args[identity_index + 1].ends_with("/.ssh/id_ed25519"));
         assert!(!args[identity_index + 1].starts_with('~'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reverse_tunnel_targets_local_unix_socket_on_unix() {
+        let host = RemoteHost {
+            id: "h1".to_string(),
+            name: "Dev".to_string(),
+            ssh_target: "dev.example.com".to_string(),
+            port: None,
+            identity_file: None,
+            auth_socket: None,
+            remote_socket_path: "/tmp/agentbro.sock".to_string(),
+            auto_connect: false,
+        };
+
+        let args = build_ssh_args(&host, "/tmp/local.sock");
+        let forward = args
+            .iter()
+            .find(|arg| arg.starts_with("/tmp/agentbro.sock:"))
+            .expect("reverse forward arg");
+        assert_eq!(forward, "/tmp/agentbro.sock:/tmp/local.sock");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn reverse_tunnel_targets_local_tcp_hook_endpoint_on_windows() {
+        let host = RemoteHost {
+            id: "h1".to_string(),
+            name: "Dev".to_string(),
+            ssh_target: "dev.example.com".to_string(),
+            port: None,
+            identity_file: None,
+            auth_socket: None,
+            remote_socket_path: "/tmp/agentbro.sock".to_string(),
+            auto_connect: false,
+        };
+
+        let args = build_ssh_args(&host, r"C:\Users\me\AppData\Local\Temp\agentbro.sock");
+        let forward = args
+            .iter()
+            .find(|arg| arg.starts_with("/tmp/agentbro.sock:"))
+            .expect("reverse forward arg");
+        assert_eq!(forward, "/tmp/agentbro.sock:127.0.0.1:17894");
     }
 }

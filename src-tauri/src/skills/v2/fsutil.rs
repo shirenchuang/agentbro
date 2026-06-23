@@ -132,25 +132,24 @@ fn ensure_destination_not_inside_source(src: &Path, dst: &Path) -> Result<(), St
 
 /// Open a path or URL in the OS-default app. Best-effort.
 pub fn open_path(target: &str) -> Result<(), String> {
-    let target = expand_tilde(target);
+    let target = target.trim();
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");
-        c.arg(&target);
+        c.arg(expand_tilde(target));
         c
     };
     #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", &target.display().to_string()]);
-        c
-    };
+    {
+        return open_path_windows(target);
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = {
         let mut c = std::process::Command::new("xdg-open");
-        c.arg(&target);
+        c.arg(expand_tilde(target));
         c
     };
+    #[cfg(not(target_os = "windows"))]
     cmd.spawn().map(|_| ()).map_err(|e| format!("open: {}", e))
 }
 
@@ -166,10 +165,61 @@ pub fn reveal_path(target: &str) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| format!("reveal: {}", e))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        reveal_path_windows(&target)
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         open_path(&target.display().to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_windows(target: &str) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("open: target path is empty".to_string());
+    }
+
+    if is_url(target) {
+        return std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", target])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open: {}", e));
+    }
+
+    let path = expand_tilde(target);
+    std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("open: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_windows(target: &Path) -> Result<(), String> {
+    let target = normalized_path(target);
+    let explorer_arg = if target.is_file() {
+        format!("/select,{}", target.display())
+    } else {
+        target.display().to_string()
+    };
+
+    std::process::Command::new("explorer.exe")
+        .arg(explorer_arg)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("reveal: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn is_url(target: &str) -> bool {
+    target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("mailto:")
+        || target.starts_with("agentbro:")
+        || target.starts_with("ccswitch:")
 }
 
 /// Stable hash over a directory's files: relative paths + contents, sorted,
@@ -364,6 +414,7 @@ pub fn try_symlink(target: &Path, link: &Path) -> Result<bool, String> {
     #[cfg(windows)]
     {
         // Windows directory symlink requires privileges; treat as unavailable.
+        let _ = target;
         Ok(false)
     }
     #[cfg(not(any(unix, windows)))]
@@ -498,4 +549,17 @@ fn resolve_symlink_chain(mut path: PathBuf) -> PathBuf {
         };
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_open_path_recognizes_urls_without_treating_paths_as_urls() {
+        assert!(super::is_url("https://github.com/shirenchuang/agentbro"));
+        assert!(super::is_url("mailto:hello@example.com"));
+        assert!(super::is_url("agentbro://settings"));
+        assert!(!super::is_url(r"C:\Users\admin\Documents\github\agentbro"));
+        assert!(!super::is_url(r"\\server\share\agentbro"));
+    }
 }

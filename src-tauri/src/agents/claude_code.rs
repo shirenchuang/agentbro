@@ -264,7 +264,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             .to_string();
 
         // Extract project name from cwd
-        let project = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
+        let project = super::project_name_from_path(&cwd);
 
         match event {
             "SessionStart" => Ok(AgentEvent::SessionStart {
@@ -984,6 +984,14 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         home.join(rest)
     } else if path == "~" {
         dirs::home_dir().unwrap_or_else(std::env::temp_dir)
+    } else if cfg!(target_os = "windows") {
+        path.strip_prefix("~\\")
+            .map(|rest| {
+                dirs::home_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join(rest)
+            })
+            .unwrap_or_else(|| PathBuf::from(path))
     } else {
         PathBuf::from(path)
     }

@@ -253,7 +253,53 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
         }
     }
     // fall back to the agent's config dir presence
-    matches!(agent_paths::paths_for_agent(agent).skill_dirs.first(), Some(d) if d.exists())
+    if matches!(agent_paths::paths_for_agent(agent).skill_dirs.first(), Some(d) if d.exists()) {
+        return true;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Keep the Skill Manager list cheap on Windows. Program probing walks
+        // PATH and can block the settings window while every agent is listed.
+        false
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_runtime_home(home) && agent_program_installed(agent)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn agent_program_installed(agent: &str) -> bool {
+    use crate::agents::AdapterStatus;
+
+    matches!(
+        crate::agents::programs::detected_status_for_agent_program(agent),
+        AdapterStatus::Active | AdapterStatus::Installed | AdapterStatus::Available
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_runtime_home(home: &Path) -> bool {
+    let Some(runtime_home) = dirs::home_dir() else {
+        return false;
+    };
+    same_path(home, &runtime_home)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn same_path(a: &Path, b: &Path) -> bool {
+    let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    a == b
+}
+
+#[cfg(all(target_os = "windows", test))]
+fn same_path(a: &Path, b: &Path) -> bool {
+    let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    a.to_string_lossy().to_ascii_lowercase() == b.to_string_lossy().to_ascii_lowercase()
 }
 
 fn openclaw_workspace_dir(home: &Path) -> PathBuf {
@@ -295,6 +341,11 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
 fn expand_home(home: &Path, value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
         home.join(rest)
+    } else if cfg!(target_os = "windows") {
+        value
+            .strip_prefix("~\\")
+            .map(|rest| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(value))
     } else {
         PathBuf::from(value)
     }
@@ -309,4 +360,18 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
             seen.insert(key)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_same_path_is_case_insensitive() {
+        assert!(same_path(
+            Path::new(r"C:\Users\AgentBro"),
+            Path::new(r"c:\users\agentbro")
+        ));
+    }
 }

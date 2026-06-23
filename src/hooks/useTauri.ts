@@ -478,6 +478,7 @@ function refreshUsageRateLimits(force = false) {
 }
 
 const APP_SERVER_LIVE_POLL_MS = 10_000
+const SESSION_REFRESH_FALLBACK_MS = 2_000
 
 function refreshAppServerLiveFlag() {
   getAppStateFlags()
@@ -493,40 +494,54 @@ export function useSessionEvents() {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    let lastSessionSnapshot = ''
     const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
     const appServerLiveTimer = window.setInterval(refreshAppServerLiveFlag, APP_SERVER_LIVE_POLL_MS)
+    const snapshotSessions = (sessions: BackendSession[], suppressed: boolean) => JSON.stringify({
+      suppressed,
+      sessions: [...sessions].sort((a, b) => a.id.localeCompare(b.id)),
+    })
+    const applyBackendSessions = (
+      sessions: BackendSession[],
+      options: { suppressed?: boolean; force?: boolean } = {},
+    ) => {
+      const suppressed = options.suppressed === true
+      const snapshot = snapshotSessions(sessions, suppressed)
+      if (!options.force && snapshot === lastSessionSnapshot) return
+      lastSessionSnapshot = snapshot
 
-    // Load initial sessions
-    getSessions().then(sessions => {
       const transformed = sessions.map(transformSession)
       const store = useSessionStore.getState()
-      store.replaceAllSessions(transformed)
+      store.replaceAllSessions(transformed, { suppressed })
       const usageSnapshots = sessionUsageSnapshots(transformed)
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
-      refreshUsageRateLimits(true)
-    }).catch(e => console.error('[tauri] getSessions:', e))
+      refreshUsageRateLimits(options.force === true)
+      if (suppressed) {
+        const current = useSessionStore.getState().panelState
+        if (current === 'expanded') {
+          store.setPanelState('collapsed')
+        }
+      }
+    }
+
+    // Load initial sessions
+    getSessions()
+      .then(sessions => applyBackendSessions(sessions, { force: true }))
+      .catch(e => console.error('[tauri] getSessions:', e))
 
     refreshAppServerLiveFlag()
+    const sessionRefreshTimer = window.setInterval(() => {
+      getSessions()
+        .then(sessions => applyBackendSessions(sessions))
+        .catch(e => console.error('[tauri] poll getSessions:', e))
+    }, SESSION_REFRESH_FALLBACK_MS)
 
     // Listen for live updates (dynamic import to avoid crash in browser dev mode)
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<{ sessions: BackendSession[]; suppressed?: boolean }>('session-update', (event) => {
-        const store = useSessionStore.getState()
-        const sessions = event.payload.sessions.map(transformSession)
-        store.replaceAllSessions(sessions, { suppressed: event.payload.suppressed === true })
-        const usageSnapshots = sessionUsageSnapshots(sessions)
-        if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
-        refreshUsageRateLimits()
+        applyBackendSessions(event.payload.sessions, { suppressed: event.payload.suppressed === true })
         // When suppressed, the backend signals that the user is looking at
         // the terminal — do NOT auto-expand the panel.
-        if (event.payload.suppressed) {
-          // Revert any auto-expand that replaceAllSessions may have triggered
-          // by forcing the panel back to collapsed if it was just expanded
-          const current = useSessionStore.getState().panelState
-          if (current === 'expanded') {
-            store.setPanelState('collapsed')
-          }
-        }
       }).then(fn => { unlisten = fn })
         .catch(e => console.error('[tauri] listen session-update:', e))
     }).catch(e => console.error('[tauri] import event:', e))
@@ -534,6 +549,7 @@ export function useSessionEvents() {
     return () => {
       window.clearInterval(usageRateLimitTimer)
       window.clearInterval(appServerLiveTimer)
+      window.clearInterval(sessionRefreshTimer)
       unlisten?.()
     }
   }, [])

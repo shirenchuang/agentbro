@@ -1,10 +1,10 @@
 // Webhook forwarder — DingTalk (HmacSHA256) and Feishu (timestamp+secret) signing + delivery
 //
-// HTTP delivery uses `curl` (available on all macOS systems) to avoid needing reqwest.
-// HMAC-SHA256 signing uses python3's built-in hmac module.
-// No external crate dependencies required.
+// HTTP delivery uses `curl` to avoid needing reqwest.
 
 use super::templates::{self, NotificationEvent};
+use base64::{engine::general_purpose, Engine as _};
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Webhook platform type
@@ -128,7 +128,7 @@ fn build_dingtalk_url(base_url: &str, secret: Option<&str>) -> String {
 
     let timestamp = now_millis();
     let sign_string = format!("{}\n{}", timestamp, secret);
-    let signature = hmac_sha256_base64_via_python(secret, &sign_string);
+    let signature = hmac_sha256_base64(secret, &sign_string);
     let encoded = url_percent_encode(&signature);
 
     if base_url.contains('?') {
@@ -154,7 +154,7 @@ fn send_feishu(
         if !secret.is_empty() {
             // Feishu signs: timestamp + "\n" + secret as the HMAC key, data = ""
             let sign_input = format!("{}\n{}", timestamp, secret);
-            let signature = hmac_sha256_base64_via_python(&sign_input, "");
+            let signature = hmac_sha256_base64(&sign_input, "");
             body["timestamp"] = serde_json::Value::String(timestamp.to_string());
             body["sign"] = serde_json::Value::String(signature);
         }
@@ -171,11 +171,11 @@ fn post_json_curl(url: &str, body: &serde_json::Value) -> WebhookResult {
         Err(e) => return WebhookResult::Failed(format!("JSON serialization failed: {}", e)),
     };
 
-    let output = std::process::Command::new("curl")
+    let output = std::process::Command::new(crate::agents::executable::command_path("curl"))
         .args([
             "-s",
             "-o",
-            "/dev/null",
+            curl_discard_target(),
             "-w",
             "%{http_code}",
             "-X",
@@ -209,29 +209,43 @@ fn post_json_curl(url: &str, body: &serde_json::Value) -> WebhookResult {
     }
 }
 
-// ─── HMAC-SHA256 via python3 ──────────────────────────────────────────────────
+// ─── HMAC-SHA256 ──────────────────────────────────────────────────────────────
 
-fn hmac_sha256_base64_via_python(key: &str, data: &str) -> String {
-    // Use python3's built-in hmac + base64 — always available on macOS
-    let script = format!(
-        r#"import hmac, hashlib, base64, sys
-key = {key:?}.encode()
-msg = {data:?}.encode()
-sig = hmac.new(key, msg, hashlib.sha256).digest()
-print(base64.b64encode(sig).decode(), end='')
-"#,
-        key = key,
-        data = data
-    );
-
-    let output = std::process::Command::new("python3")
-        .args(["-c", &script])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => String::new(),
+fn curl_discard_target() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "NUL"
+    } else {
+        "/dev/null"
     }
+}
+
+fn hmac_sha256_base64(key: &str, data: &str) -> String {
+    // HMAC-SHA256 using Rust primitives keeps webhook signing platform neutral.
+    const BLOCK_SIZE: usize = 64;
+
+    let mut key_bytes = key.as_bytes().to_vec();
+    if key_bytes.len() > BLOCK_SIZE {
+        key_bytes = Sha256::digest(&key_bytes).to_vec();
+    }
+    key_bytes.resize(BLOCK_SIZE, 0);
+
+    let mut inner_pad = [0x36_u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5c_u8; BLOCK_SIZE];
+    for (index, key_byte) in key_bytes.iter().enumerate() {
+        inner_pad[index] ^= key_byte;
+        outer_pad[index] ^= key_byte;
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(data.as_bytes());
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_hash);
+
+    general_purpose::STANDARD.encode(outer.finalize())
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -265,4 +279,29 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_sha256_base64_matches_standard_vector() {
+        assert_eq!(
+            hmac_sha256_base64("Jefe", "what do ya want for nothing?"),
+            "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM="
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn curl_discard_target_uses_windows_null_device() {
+        assert_eq!(curl_discard_target(), "NUL");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn curl_discard_target_uses_unix_null_device() {
+        assert_eq!(curl_discard_target(), "/dev/null");
+    }
 }

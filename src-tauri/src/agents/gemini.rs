@@ -87,7 +87,7 @@ impl AgentAdapter for GeminiAdapter {
         match event {
             "SessionStart" | "session_start" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                project: super::project_name_from_path(&cwd),
                 cwd,
                 terminal: string_field(raw, &["tty"]).unwrap_or("").to_string(),
                 agent_type: "gemini".to_string(),

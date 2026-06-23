@@ -15,7 +15,29 @@ fn user_idle_nanoseconds() -> Option<u64> {
     parse_hid_idle_time_ns(&text)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn user_idle_nanoseconds() -> Option<u64> {
+    user_idle_millis_windows().map(|value| value.saturating_mul(1_000_000))
+}
+
+#[cfg(target_os = "windows")]
+fn user_idle_millis_windows() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    let ok = unsafe { GetLastInputInfo(&mut info) };
+    if ok == 0 {
+        return None;
+    }
+    let now = unsafe { GetTickCount() };
+    Some(now.wrapping_sub(info.dwTime) as u64)
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn user_idle_nanoseconds() -> Option<u64> {
     None
 }
@@ -55,5 +77,11 @@ mod tests {
     fn parses_hex_hid_idle_time() {
         let text = r#"    | |   "HIDIdleTime" = 0x3b9aca00"#;
         assert_eq!(parse_hid_idle_time_ns(text), Some(1_000_000_000));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_idle_time_is_available() {
+        assert!(super::user_idle_seconds().is_some());
     }
 }

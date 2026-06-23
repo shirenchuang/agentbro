@@ -1748,6 +1748,55 @@ fn refresh_overview_returns_fresh_copy_status_without_second_live_list_refresh()
 }
 
 #[test]
+fn overview_uses_cached_target_status_without_live_filesystem_refresh() {
+    let (_home, svc, _lock) = fresh_service("overview-cached-copy-status");
+    let src = write_skill(
+        &svc.home.join("s"),
+        "rev",
+        "release-checklist",
+        Some("original"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["release-checklist".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let detail = svc.get_skill_detail("release-checklist").unwrap();
+    fs::write(
+        Path::new(&detail.targets[0].target_path).join("reference.md"),
+        "edited in agent",
+    )
+    .unwrap();
+
+    let overview = svc.overview().unwrap();
+    let summary = overview
+        .skills
+        .into_iter()
+        .find(|skill| skill.id == "release-checklist")
+        .unwrap();
+
+    assert_eq!(summary.status, "ok");
+    assert_eq!(summary.installed_agents[0].status, "ok");
+}
+
+#[test]
 fn delete_skill_target_distribution_removes_copy_and_db_target() {
     let (_home, svc, _lock) = fresh_service("delete-target-distribution");
     let src = write_skill(

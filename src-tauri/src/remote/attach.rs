@@ -29,7 +29,8 @@ impl RemoteAttach {
 
         let remote_command = RemoteInstaller::remote_agent_attach_command(host);
         let args = build_ssh_attach_args(host, &remote_command);
-        let mut command = tokio::process::Command::new("ssh");
+        let mut command =
+            tokio::process::Command::new(crate::agents::executable::command_path("ssh"));
         command
             .args(&args)
             .stdin(Stdio::piped())

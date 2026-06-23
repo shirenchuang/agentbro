@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,6 +14,26 @@ const profile = release ? 'release' : 'debug'
 const binaryName = process.platform === 'win32' ? 'agentbro-bridge.exe' : 'agentbro-bridge'
 const binaryPath = join(targetDir, profile, binaryName)
 
+function cargoCommand() {
+  if (process.env.CARGO) {
+    return process.env.CARGO
+  }
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      process.env.CARGO_HOME ? join(process.env.CARGO_HOME, 'bin', 'cargo.exe') : null,
+      process.env.USERPROFILE ? join(process.env.USERPROFILE, '.cargo', 'bin', 'cargo.exe') : null,
+    ].filter(Boolean)
+
+    const cargo = candidates.find((candidate) => existsSync(candidate))
+    if (cargo) {
+      return cargo
+    }
+  }
+
+  return 'cargo'
+}
+
 mkdirSync(resourceDir, { recursive: true })
 writeFileSync(resourcePath, '')
 
@@ -22,10 +42,15 @@ if (release) {
   args.push('--release')
 }
 
-const result = spawnSync('cargo', args, {
+const cargo = cargoCommand()
+const result = spawnSync(cargo, args, {
   cwd: rootDir,
   stdio: 'inherit',
 })
+
+if (result.error) {
+  console.error(`Failed to run ${cargo}: ${result.error.message}`)
+}
 
 if (result.status !== 0) {
   process.exit(result.status ?? 1)

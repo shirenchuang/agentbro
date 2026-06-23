@@ -15,9 +15,10 @@ export function parseToolInput(value: unknown): Record<string, unknown> {
 }
 
 export function shortenPath(filePath: string, maxSegments = 3): string {
-  const segments = filePath.split('/')
+  const separator = filePath.includes('\\') ? '\\' : '/'
+  const segments = filePath.split(/[\\/]+/)
   if (segments.length <= maxSegments) return filePath
-  return `.../${segments.slice(-maxSegments).join('/')}`
+  return `...${separator}${segments.slice(-maxSegments).join(separator)}`
 }
 
 export function getStringField(input: Record<string, unknown>, keys: string[]): string {

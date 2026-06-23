@@ -91,7 +91,7 @@ impl AgentAdapter for KimiAdapter {
         match event {
             "SessionStart" => Ok(AgentEvent::SessionStart {
                 session_id,
-                project: cwd.rsplit('/').next().unwrap_or("").to_string(),
+                project: super::project_name_from_path(&cwd),
                 cwd,
                 terminal: String::new(),
                 agent_type: "kimi".to_string(),

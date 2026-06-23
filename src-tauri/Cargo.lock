@@ -57,6 +57,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 2.4.2",
 ]
 

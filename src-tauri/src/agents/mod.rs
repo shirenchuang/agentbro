@@ -34,6 +34,15 @@ pub use traits::AgentAdapter;
 
 use serde::{Deserialize, Serialize};
 
+pub fn project_name_from_path(path: &str) -> String {
+    path.trim()
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AdapterStatus {
     Active,
@@ -274,3 +283,30 @@ impl_default_adapter!(
     stepfun::StepFunAdapter,
     workbuddy::WorkBuddyAdapter,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::project_name_from_path;
+
+    #[test]
+    fn project_name_from_path_handles_unix_and_windows_separators() {
+        assert_eq!(
+            project_name_from_path("/Users/me/code/agentbro"),
+            "agentbro"
+        );
+        assert_eq!(
+            project_name_from_path(r"C:\Users\me\code\agentbro"),
+            "agentbro"
+        );
+        assert_eq!(
+            project_name_from_path("/Users/me/code/agentbro/"),
+            "agentbro"
+        );
+        assert_eq!(
+            project_name_from_path(r"C:\Users\me\code\agentbro\"),
+            "agentbro"
+        );
+        assert_eq!(project_name_from_path("agentbro"), "agentbro");
+        assert_eq!(project_name_from_path(""), "");
+    }
+}

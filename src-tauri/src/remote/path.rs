@@ -14,6 +14,14 @@ pub fn expand_tilde(path: &str) -> String {
             .display()
             .to_string();
     }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = path.strip_prefix("~\\") {
+        return dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(rest)
+            .display()
+            .to_string();
+    }
     PathBuf::from(path).display().to_string()
 }
 
@@ -30,6 +38,14 @@ mod tests {
     fn expands_home_relative_paths() {
         let expanded = expand_tilde("~/.ssh/id_ed25519");
         assert!(expanded.ends_with("/.ssh/id_ed25519"));
+        assert!(!expanded.starts_with('~'));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expands_windows_home_relative_paths() {
+        let expanded = expand_tilde("~\\.ssh\\id_ed25519");
+        assert!(expanded.ends_with("\\.ssh\\id_ed25519"));
         assert!(!expanded.starts_with('~'));
     }
 }

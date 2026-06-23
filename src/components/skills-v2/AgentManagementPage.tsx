@@ -381,6 +381,7 @@ export function AgentManagementPage() {
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
+            agentInstalled={agents.find((agent) => agent.id === detail.id)?.installed ?? Boolean(detail.version || detail.skillsDir)}
             programLoading={programLoading}
             agentOutput={agentOutput}
             onAdopt={openAdopt}
@@ -516,6 +517,7 @@ function AgentDetailView({
   opening,
   adoptingUnmanagedId,
   program,
+  agentInstalled,
   programLoading,
   agentOutput,
   onAdopt,
@@ -537,6 +539,7 @@ function AgentDetailView({
   opening: boolean
   adoptingUnmanagedId: string | null
   program: AgentProgramInfo | null
+  agentInstalled: boolean
   programLoading: boolean
   agentOutput: string[]
   onAdopt: (agentId: string, unmanagedId: string) => void
@@ -550,7 +553,7 @@ function AgentDetailView({
 }) {
   const showUnmanaged = useSkillStoreV2((s) => s.settings?.showUnmanaged ?? true)
   const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => showUnmanaged && u.agentId === detail.id)
-  const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : true
+  const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const installedVersion = program?.installedVersion ?? detail.version
@@ -866,7 +869,7 @@ function SkillsTab({
     setLocalNotice(`正在删除 ${targets.length} 个 Skill 分发...`)
     state.setError(null)
     try {
-      const targetNames = new Map(targets.map((target) => [target.id, target.targetPath.split('/').pop() || target.skillId]))
+      const targetNames = new Map(targets.map((target) => [target.id, pathBasename(target.targetPath) || target.skillId]))
       const result = await skillApiV2.deleteSkillTargetDistributions(ids)
       const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
       await refreshAgentSkills()
@@ -899,7 +902,7 @@ function SkillsTab({
           adoptedSkillIds.push(skillId)
           ok += 1
         } catch (e) {
-          failed.push(`${item.inferredSkillId || item.path.split('/').pop() || item.id}: ${String(e)}`)
+          failed.push(`${item.inferredSkillId || pathBasename(item.path) || item.id}: ${String(e)}`)
         }
       }
       try {
@@ -1247,7 +1250,7 @@ function BatchAdoptPackDialog({
           </div>
           <div className="sm2-adopt__summary-path">
             <span>{t('skills.batchAdoptPack.summary')}</span>
-            <code>{visibleItems.map((item) => item.inferredSkillId || item.path.split('/').pop() || item.id).join(', ')}{remaining > 0 ? ` +${remaining}` : ''}</code>
+            <code>{visibleItems.map((item) => item.inferredSkillId || pathBasename(item.path) || item.id).join(', ')}{remaining > 0 ? ` +${remaining}` : ''}</code>
           </div>
         </div>
 
@@ -1915,7 +1918,7 @@ function ManagedSkillCard({
   onOpenSkillDetail: (skillId: string) => void
 }) {
   const { t } = useTranslation()
-  const name = skill.targetPath.split('/').pop() || skill.id
+  const name = pathBasename(skill.targetPath) || skill.id
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   return (
     <article
@@ -1983,7 +1986,7 @@ function ManagedSkillListRow({
 }) {
   const { t } = useTranslation()
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
-  const name = skill.targetPath.split('/').pop() || skill.id
+  const name = pathBasename(skill.targetPath) || skill.id
   return (
     <div className={`sm2__object-row sm2__object-row--path sm2__object-row--clickable${selected ? ' sm2__object-row--selected' : ''}${deleting ? ' sm2__object-row--deleting' : ''}`} aria-busy={deleting || undefined} onClick={() => onOpenSkillDetail(skill.skillId)}>
       {selectable && (
@@ -2051,7 +2054,7 @@ function UnmanagedSkillCollection({
               <input
                 type="checkbox"
                 className="sm2__agent-skill-select"
-                aria-label={`选择 ${u.inferredSkillId || u.path.split('/').pop() || u.id}`}
+                aria-label={`选择 ${u.inferredSkillId || pathBasename(u.path) || u.id}`}
                 checked={selectedIds.has(u.id)}
                 disabled={busy}
                 onClick={(e) => e.stopPropagation()}
@@ -2059,7 +2062,7 @@ function UnmanagedSkillCollection({
               />
             )}
             <div>
-              <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
+              <strong>{u.inferredSkillId || pathBasename(u.path)}</strong>
               <span>{unmanagedReasonLabel(t, u.reason)}</span>
               <code>{u.path}</code>
             </div>
@@ -2093,16 +2096,16 @@ function UnmanagedSkillCollection({
               <input
                 type="checkbox"
                 className="sm2__agent-skill-select"
-                aria-label={`选择 ${u.inferredSkillId || u.path.split('/').pop() || u.id}`}
+                aria-label={`选择 ${u.inferredSkillId || pathBasename(u.path) || u.id}`}
                 checked={selectedIds.has(u.id)}
                 disabled={busy}
                 onClick={(e) => e.stopPropagation()}
                 onChange={() => onToggle(u.id)}
               />
             )}
-            <div className="sm2__agent-skill-icon">{initials(u.inferredSkillId || u.path.split('/').pop() || 'SK')}</div>
+            <div className="sm2__agent-skill-icon">{initials(u.inferredSkillId || pathBasename(u.path) || 'SK')}</div>
             <div className="sm2__agent-skill-card-titleline">
-              <strong>{u.inferredSkillId || u.path.split('/').pop()}</strong>
+              <strong>{u.inferredSkillId || pathBasename(u.path)}</strong>
               <span>{unmanagedReasonLabel(t, u.reason)}</span>
             </div>
             <span className="sm2__tag sm2__tag--unmanaged">未管理</span>
@@ -2171,7 +2174,7 @@ function openUnmanagedSkill(
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void,
   reasonLabel?: string,
 ) {
-  const name = item.inferredSkillId || item.path.split('/').pop() || item.id
+  const name = item.inferredSkillId || pathBasename(item.path) || item.id
   onOpenSkillDetail(name, {
     id: name,
     name,
@@ -2180,6 +2183,10 @@ function openUnmanagedSkill(
     sourceType: 'unmanaged_agent',
     sourceUri: item.path,
   })
+}
+
+function pathBasename(path: string) {
+  return path.split(/[\\/]+/).filter(Boolean).pop() || ''
 }
 
 function initials(value: string) {
