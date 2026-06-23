@@ -724,6 +724,9 @@
       "processing": "Processing..."
     },
     "marketInstall": {
+      "installTitle": "Install",
+      "distributeTitle": "Distribute to Agent",
+      "distributeShort": "Distribute",
       "installOptionsTitle": "Install options",
       "addToPackTitle": "Add to skill pack",
       "dialogTitle": "Install \"{{name}}\"",

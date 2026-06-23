@@ -429,7 +429,11 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     return packMembershipBySkillId[marketSkillId(it)] || []
   }, [packMembershipBySkillId])
 
-  const install = async (it: MarketplaceSkill, packChoice: MarketInstallPackChoice = { mode: 'center' }) => {
+  const install = async (
+    it: MarketplaceSkill,
+    packChoice: MarketInstallPackChoice = { mode: 'center' },
+    distributeAfterInstall = true,
+  ) => {
     if (installing.has(it.id)) return
     setInstalling((prev) => new Set(prev).add(it.id))
     setError(null)
@@ -483,7 +487,8 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         )
       }
       await useSkillStoreV2.getState().loadOverview(true)
-      await onDone(installedSkillId)
+      if (distributeAfterInstall) await onDone(installedSkillId)
+      else await onDone()
     } catch (e) {
       const msg = String(e)
       if (/Blocked skill|requires an explicit decision|冲突/.test(msg)) {
@@ -505,6 +510,25 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     setError(null)
     setStatus(null)
     setPackDialogSkill(it)
+  }
+
+  const marketActionTitle = (done: boolean) => {
+    if (done) return sourceFilter ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.distributeTitle')
+    return sourceFilter ? t('skills.marketInstall.installOptionsTitle') : t('skills.marketInstall.installTitle')
+  }
+
+  const marketActionLabel = (installing: boolean, done: boolean) => {
+    if (installing) return '…'
+    if (done) return sourceFilter ? '✓' : t('skills.marketInstall.distributeShort')
+    return '+'
+  }
+
+  const installFromCurrentMarketScope = (it: MarketplaceSkill) => {
+    if (sourceFilter) {
+      openInstallDialog(it)
+      return
+    }
+    void install(it)
   }
 
   return (
@@ -696,12 +720,12 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                       {isCurrentInstalling && <div className="sm2__install-progress"><div className="sm2__install-progress-bar" /></div>}
                     </div>
                     <button
-                      className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                      title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                      className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}${done && !sourceFilter ? ' sm2__icon-btn--distribute' : ''}`}
+                      title={marketActionTitle(done)}
                       disabled={isCurrentInstalling}
-                      onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
+                      onClick={(e) => { e.stopPropagation(); installFromCurrentMarketScope(it) }}
                     >
-                      {isCurrentInstalling ? '…' : done ? '✓' : '+'}
+                      {marketActionLabel(isCurrentInstalling, done)}
                     </button>
                   </div>
                 )
@@ -722,12 +746,12 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                         <button className="sm2__icon-btn sm2__icon-btn--sm" title="在市场查看" onClick={(e) => { e.stopPropagation(); openExternal(it.webUrl!) }}>↗</button>
                       )}
                       <button
-                        className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}`}
-                        title={done ? t('skills.marketInstall.addToPackTitle') : t('skills.marketInstall.installOptionsTitle')}
+                        className={`sm2__icon-btn sm2__icon-btn--add${done ? ' sm2__icon-btn--installed' : ''}${done && !sourceFilter ? ' sm2__icon-btn--distribute' : ''}`}
+                        title={marketActionTitle(done)}
                         disabled={isCurrentInstalling}
-                        onClick={(e) => { e.stopPropagation(); openInstallDialog(it) }}
+                        onClick={(e) => { e.stopPropagation(); installFromCurrentMarketScope(it) }}
                       >
-                        {isCurrentInstalling ? '…' : done ? '✓' : '+'}
+                        {marketActionLabel(isCurrentInstalling, done)}
                       </button>
                     </div>
                     <div className="sm2__install-card-meta">
@@ -793,7 +817,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         installing={detailSkill ? installing.has(detailSkill.id) : false}
         installed={detailSkill ? installedIds.has(detailSkill.id) || isMarketItemInstalled(detailSkill, centerSkills) : false}
         packNames={detailSkill ? packNamesForSkill(detailSkill) : []}
-        onInstall={(it) => { setDetailSkill(null); openInstallDialog(it) }}
+        onInstall={(it) => { setDetailSkill(null); installFromCurrentMarketScope(it) }}
       />
       {packDialogSkill && (
         <MarketInstallPackDialog
@@ -807,7 +831,7 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
           onConfirm={(choice) => {
             const skill = packDialogSkill
             setPackDialogSkill(null)
-            void install(skill, choice)
+            void install(skill, choice, false)
           }}
         />
       )}

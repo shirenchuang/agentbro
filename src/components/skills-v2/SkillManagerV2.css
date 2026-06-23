@@ -8051,6 +8051,21 @@
   background: #5847f2;
 }
 
+.sm2__install-page .sm2__icon-btn--distribute {
+  width: 58px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.sm2__install-page .sm2__icon-btn--distribute:hover:not(:disabled) {
+  background: #4f46e5;
+  box-shadow: 0 12px 24px rgba(79, 70, 229, 0.28);
+}
+
 .sm2__install-page .sm2__market-list {
   overflow: hidden;
   border: 1px solid var(--sm2-install-border);
@@ -9489,6 +9504,33 @@
 
 .sm2__modal.sm2__modal--market-pack-install {
   width: min(620px, calc(100vw - 28px));
+  overflow: hidden;
+  background: linear-gradient(180deg, #fff7e8 0%, #fffaf1 42%, #fff 100%);
+  border: 1px solid rgba(185, 129, 56, 0.22);
+  box-shadow: 0 24px 70px rgba(23, 28, 43, 0.28);
+}
+
+.sm2__modal--market-pack-install .sm2__modal-head {
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid rgba(185, 129, 56, 0.22);
+  background: rgba(255, 248, 236, 0.72);
+}
+
+.sm2__modal--market-pack-install .sm2__modal-head h3 {
+  margin: 0;
+  color: #171b26;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.sm2__modal--market-pack-install .sm2__modal-body {
+  padding: 18px 22px 20px;
+}
+
+.sm2__modal--market-pack-install .sm2__modal-actions {
+  padding: 14px 22px 18px;
+  border-top: 1px solid rgba(185, 129, 56, 0.18);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .sm2__market-pack-install {
@@ -9501,10 +9543,11 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid rgba(40, 51, 77, 0.10);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 8px 24px rgba(23, 28, 43, 0.05);
 }
 
 .sm2__market-pack-summary > div {
@@ -9536,24 +9579,32 @@
 .sm2__market-pack-options {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .sm2__market-pack-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  padding: 12px;
-  border: 1px solid rgba(40, 51, 77, 0.11);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.62);
+  padding: 14px;
+  border: 1px solid rgba(40, 51, 77, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
   cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.sm2__market-pack-option:hover {
+  border-color: rgba(108, 92, 255, 0.32);
+  box-shadow: 0 10px 26px rgba(23, 28, 43, 0.06);
 }
 
 .sm2__market-pack-option--active {
-  border-color: rgba(108, 92, 255, 0.45);
-  background: rgba(108, 92, 255, 0.08);
+  border-color: rgba(108, 92, 255, 0.58);
+  background: linear-gradient(180deg, rgba(108, 92, 255, 0.10), rgba(255, 255, 255, 0.90));
+  box-shadow: 0 0 0 1px rgba(108, 92, 255, 0.10), 0 10px 28px rgba(108, 92, 255, 0.08);
 }
 
 .sm2__market-pack-option--disabled {
@@ -9562,10 +9613,9 @@
 }
 
 .sm2__market-pack-option input {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
   accent-color: #6c5cff;
 }
 
@@ -9591,20 +9641,61 @@
 .sm2__market-pack-form {
   display: grid;
   gap: 10px;
-  padding: 0 0 2px 28px;
+  padding: 0 2px 2px 30px;
 }
 
+.sm2__market-pack-picker {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sm2__market-pack-picker .sm2__search,
 .sm2__market-pack-picker select,
 .sm2__market-pack-form input,
 .sm2__market-pack-form textarea {
   width: 100%;
   min-width: 0;
-  border: 1px solid rgba(40, 51, 77, 0.14);
-  border-radius: 8px;
-  padding: 9px 10px;
-  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(40, 51, 77, 0.16);
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.94);
   color: var(--text-primary, #1b1f2a);
   font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.sm2__market-pack-picker .sm2__search,
+.sm2__market-pack-picker select,
+.sm2__market-pack-form input {
+  height: 40px;
+  padding: 0 12px;
+}
+
+.sm2__market-pack-picker select {
+  appearance: none;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #687181 50%),
+    linear-gradient(135deg, #687181 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 17px,
+    calc(100% - 12px) 17px;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.sm2__market-pack-form textarea {
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+
+.sm2__market-pack-picker .sm2__search:focus-visible,
+.sm2__market-pack-picker select:focus-visible,
+.sm2__market-pack-form input:focus-visible,
+.sm2__market-pack-form textarea:focus-visible {
+  border-color: rgba(108, 92, 255, 0.56);
+  background-color: #fff;
+  box-shadow: 0 0 0 3px rgba(108, 92, 255, 0.12);
 }
 
 .sm2__market-pack-form label {

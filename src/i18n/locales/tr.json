@@ -572,6 +572,9 @@
       "processing": "İşleniyor..."
     },
     "marketInstall": {
+      "installTitle": "Kur",
+      "distributeTitle": "Agent'a dağıt",
+      "distributeShort": "Dağıt",
       "installOptionsTitle": "Kurulum seçenekleri",
       "addToPackTitle": "Skill paketine ekle",
       "dialogTitle": "\"{{name}}\" kur",

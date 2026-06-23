@@ -765,6 +765,9 @@
       "processing": "处理中…"
     },
     "marketInstall": {
+      "installTitle": "安装",
+      "distributeTitle": "分发到 Agent",
+      "distributeShort": "分发",
       "installOptionsTitle": "安装选项",
       "addToPackTitle": "加入技能包",
       "dialogTitle": "安装「{{name}}」",
