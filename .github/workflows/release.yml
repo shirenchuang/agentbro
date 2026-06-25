@@ -138,6 +138,7 @@ jobs:
           {
             echo "RELEASE_NOTES<<AGENTBRO_RELEASE_NOTES"
             cat dist/release-notes.md
+            echo
             echo "AGENTBRO_RELEASE_NOTES"
           } >> "$GITHUB_ENV"
           if [ "$IS_PRERELEASE" = "1" ]; then

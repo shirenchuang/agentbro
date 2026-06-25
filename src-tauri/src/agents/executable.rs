@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+#[cfg(target_os = "windows")]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

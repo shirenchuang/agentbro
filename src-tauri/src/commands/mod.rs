@@ -2487,7 +2487,7 @@ pub async fn send_message(
             .codex_app_server_thread_id
             .as_deref()
             .unwrap_or(session_id.as_str());
-        let app_server_error = match state
+        let _app_server_error = match state
             .codex_app_server
             .send_user_turn(codex_thread_id, &message)
             .await
@@ -2516,7 +2516,7 @@ pub async fn send_message(
         {
             let _ = activate_before_send;
             return Err(codex_desktop_windows_message_error(
-                app_server_error.as_deref(),
+                _app_server_error.as_deref(),
             ));
         }
 

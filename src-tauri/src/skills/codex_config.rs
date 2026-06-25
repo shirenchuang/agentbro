@@ -167,10 +167,9 @@ fn table_path(line: &str) -> Option<Vec<String>> {
 fn split_dotted_path(value: &str) -> Option<Vec<String>> {
     let mut parts = Vec::new();
     let mut current = String::new();
-    let mut chars = value.chars().peekable();
     let mut in_string = false;
     let mut escaped = false;
-    while let Some(ch) = chars.next() {
+    for ch in value.chars() {
         if in_string {
             if escaped {
                 current.push(match ch {

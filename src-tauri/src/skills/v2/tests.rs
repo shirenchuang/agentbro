@@ -2848,7 +2848,7 @@ fn snapshot_written_and_read() {
     let path = crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
     assert!(Path::new(&path).exists());
     let snap = crate::skills::v2::snapshot::export(&svc).unwrap();
-    assert_eq!(snap.schema_version, 3);
+    assert_eq!(snap.schema_version, SCHEMA_VERSION);
     assert_eq!(snap.skills.len(), 1);
     assert_eq!(snap.projects.len(), 1);
 }
