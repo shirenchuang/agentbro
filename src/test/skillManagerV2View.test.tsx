@@ -2286,6 +2286,37 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(filePreview).toHaveClass('selectable')
   })
 
+  it('marks source paths and hashes as selectable for drag copy', async () => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce({
+      ...makeSkill({
+        centerPath: '/Users/me/.agentbro/skills/release-checklist',
+        currentHash: 'abcdef1234567890',
+      }),
+      frontmatter: {},
+      files: null,
+      targets: [],
+      source: {
+        sourceType: 'agent_import',
+        sourceUri: null,
+        sourceRef: null,
+        importedFromAgent: 'claude-code',
+        importedFromPath: '/Users/me/.claude/skills/release-checklist',
+        installedVia: 'agentbro',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open={true} onClose={() => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '来源' }))
+
+    expect(screen.getByText('/Users/me/.claude/skills/release-checklist')).toHaveClass('selectable')
+    expect(screen.getByText('/Users/me/.agentbro/skills/release-checklist')).toHaveClass('selectable')
+    expect(screen.getByText('abcdef1234567890')).toHaveClass('selectable')
+  })
+
   it('opens a center-to-copy diff from a changed copy target', async () => {
     const centerLines = Array.from({ length: 275 }, (_, index) => `line ${index + 1}`)
     const copyLines = [...centerLines]

@@ -1198,7 +1198,7 @@ function SourceTab({ detail }: { detail: SkillDetail }) {
           {pathCards.map((item) => (
             <div key={item.label} className="sm2__skill-source-card sm2__skill-source-card--wide">
               <span>{item.label}</span>
-              <code title={item.value}>{item.value}</code>
+              <code className="selectable" title={item.value}>{item.value}</code>
             </div>
           ))}
         </div>
@@ -1235,7 +1235,7 @@ function CompactInfo({
   return (
     <div className="sm2__compact-row">
       <span>{label}</span>
-      {mono ? <code title={value}>{display}</code> : <strong title={value}>{display}</strong>}
+      {mono ? <code className="selectable" title={value}>{display}</code> : <strong title={value}>{display}</strong>}
     </div>
   )
 }

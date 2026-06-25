@@ -3593,6 +3593,12 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.sm2__compact-row code.selectable {
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .sm2__metadata-disclosure {
   padding: 0;
 }
@@ -9355,6 +9361,12 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+.sm2__slideover--skill-detail .sm2__skill-source-card code.selectable {
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .sm2__slideover--skill-detail .sm2__skill-source-card--wide {
