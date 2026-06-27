@@ -1735,9 +1735,9 @@ impl Service {
                     // same source?
                     let src_row = self.source_for_skill(&proposed)?;
                     let same_source = match &src_row {
-                        Some(s) => sources_match(
-                            &input.source_type,
-                            input.source_uri.as_deref(),
+                        Some(s) => sources_match_for_candidate(
+                            &input,
+                            &dir,
                             &s.source_type,
                             s.source_uri.as_deref(),
                         ),
@@ -1878,7 +1878,7 @@ impl Service {
             fsutil::remove_path(&dest)?;
         }
         self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(&cand.skill_id, &dest, input)?;
+        self.record_source_after_write(&cand.skill_id, &dest, src, input)?;
         Ok(())
     }
 
@@ -1895,7 +1895,7 @@ impl Service {
             fsutil::remove_path(&dest)?;
         }
         self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(new_id, &dest, input)?;
+        self.record_source_after_write(new_id, &dest, src, input)?;
         Ok(())
     }
 
@@ -1932,11 +1932,13 @@ impl Service {
         &self,
         skill_id: &str,
         dest: &Path,
+        source_dir: &Path,
         input: AddCenterSkillInput,
     ) -> Result<(), String> {
         let fm = fsutil::read_frontmatter(dest);
         let hash = fsutil::hash_dir(dest);
         let now = db::now_iso();
+        let source_uri = source_uri_for_candidate(&input, source_dir);
         self.db.transaction(|tx| {
             upsert_skill_full(
                 tx,
@@ -1953,7 +1955,7 @@ impl Service {
                 tx,
                 skill_id,
                 &input.source_type,
-                input.source_uri.as_deref(),
+                source_uri.as_deref(),
                 None,
                 input.imported_from_agent.as_deref(),
                 input.imported_from_path.as_deref(),
@@ -5048,8 +5050,49 @@ fn read_codex_project_plugins_path(path: &Path) -> Vec<PluginStatus> {
         .collect()
 }
 
-fn sources_match(a_type: &str, a_uri: Option<&str>, b_type: &str, b_uri: Option<&str>) -> bool {
-    a_type == b_type && a_uri == b_uri
+fn sources_match_for_candidate(
+    input: &AddCenterSkillInput,
+    candidate_dir: &Path,
+    existing_type: &str,
+    existing_uri: Option<&str>,
+) -> bool {
+    if input.source_type != existing_type {
+        return false;
+    }
+    let candidate_uri = source_uri_for_candidate(input, candidate_dir);
+    if candidate_uri.as_deref() == existing_uri {
+        return true;
+    }
+    if input.source_type != "local_folder" {
+        return false;
+    }
+    let Some(existing_uri) = existing_uri else {
+        return false;
+    };
+    paths_refer_to_same_local_source(candidate_dir, existing_uri)
+}
+
+fn source_uri_for_candidate(input: &AddCenterSkillInput, candidate_dir: &Path) -> Option<String> {
+    if input.source_type == "local_folder" && !is_remote_skill_source(input) {
+        Some(candidate_dir.display().to_string())
+    } else {
+        input.source_uri.clone()
+    }
+}
+
+fn paths_refer_to_same_local_source(candidate_dir: &Path, existing_uri: &str) -> bool {
+    let existing = Path::new(existing_uri.strip_prefix("file://").unwrap_or(existing_uri));
+    paths_equal(candidate_dir, existing)
+        || existing.starts_with(candidate_dir)
+        || candidate_dir.starts_with(existing)
+}
+
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    canonical_or_original(a) == canonical_or_original(b)
+}
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {

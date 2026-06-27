@@ -216,6 +216,78 @@ fn add_center_skill_can_link_to_local_source() {
 }
 
 #[test]
+fn local_parent_import_matches_existing_child_source() {
+    let (_home, svc, _lock) = fresh_service("parent-child-source");
+    let root = svc.home.join("dev-skills");
+    let alpha = write_skill(&root, "alpha-review", "alpha-review", Some("v1"));
+    let beta = write_skill(&root, "beta-review", "beta-review", Some("v1"));
+
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: alpha.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(alpha.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let preview = svc
+        .preview_add_center_skill(AddCenterSkillInput {
+            source_path: root.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(root.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: Some(true),
+            import_mode: Some("link".to_string()),
+        })
+        .unwrap();
+
+    assert!(
+        preview.blockers.is_empty(),
+        "parent folder import should not conflict with the same child source"
+    );
+    let alpha_preview = preview
+        .candidates
+        .iter()
+        .find(|candidate| candidate.skill_id == "alpha-review")
+        .unwrap();
+    assert_eq!(alpha_preview.action, "update");
+
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: root.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(root.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: Some(true),
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+
+    let stored_beta_uri: String = svc
+        .db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT source_uri FROM skill_sources WHERE skill_id = 'beta-review'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+    assert_eq!(stored_beta_uri, beta.display().to_string());
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn windows_center_link_import_falls_back_to_copy() {
     let (_home, svc, _lock) = fresh_service("add-link-windows-copy");
