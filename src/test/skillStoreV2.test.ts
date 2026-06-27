@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSkillStoreV2, filteredSkills } from '../stores/skillStoreV2'
-import type { SkillSummary, SkillManagerOverview } from '../services/skillApiV2'
+import type { SkillSummary, SkillManagerOverview, UnmanagedItemDto } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
@@ -238,7 +238,7 @@ describe('skillStoreV2 refresh', () => {
     })
   })
 
-  it('loads the refreshed overview in one backend call', async () => {
+  it('loads the refreshed overview and unmanaged list without running a second overview', async () => {
     const overview = makeOverview({
       metrics: { centerSkillCount: 1, targetCount: 0, unmanagedCount: 0, issueCount: 0 },
       skills: [makeSkill({ id: 'fast-refresh', name: 'Fast Refresh' })],
@@ -246,13 +246,34 @@ describe('skillStoreV2 refresh', () => {
     const refreshOverview = vi.spyOn(skillApiV2, 'refreshOverview').mockResolvedValue(overview)
     const refresh = vi.spyOn(skillApiV2, 'refresh').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
 
     await useSkillStoreV2.getState().refresh()
 
     expect(refreshOverview).toHaveBeenCalledTimes(1)
     expect(refresh).not.toHaveBeenCalled()
     expect(loadOverview).not.toHaveBeenCalled()
+    expect(listUnmanaged).toHaveBeenCalledTimes(1)
     expect(useSkillStoreV2.getState().skills.map((skill) => skill.id)).toEqual(['fast-refresh'])
+  })
+
+  it('clears stale unmanaged rows when loading overview after Agent sync', async () => {
+    const staleUnmanaged: UnmanagedItemDto = {
+      id: 'unm-cursor-alpha',
+      itemType: 'agent_skill',
+      agentId: 'cursor',
+      path: '/Users/me/.cursor/skills/alpha',
+      inferredSkillId: 'alpha',
+      hash: 'hash-alpha',
+      reason: 'not_in_center_library',
+    }
+    useSkillStoreV2.setState({ unmanaged: [staleUnmanaged], lastOverviewLoadedAt: 0 })
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+
+    await useSkillStoreV2.getState().loadOverview(true)
+
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([])
   })
 })
 

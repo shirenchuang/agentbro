@@ -59,6 +59,14 @@ pub struct CustomAgentEntry {
     pub global_skills_dir: String,
     pub icon_name: Option<String>,
     pub is_enabled: bool,
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    #[serde(default)]
+    pub settings_file: Option<String>,
+    #[serde(default)]
+    pub mcp_config: Option<String>,
+    #[serde(default)]
+    pub plugin_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +76,16 @@ pub struct CustomAgentConfig {
     pub display_name: String,
     pub category: Option<String>,
     pub global_skills_dir: String,
+    #[serde(default)]
+    pub icon_name: Option<String>,
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    #[serde(default)]
+    pub settings_file: Option<String>,
+    #[serde(default)]
+    pub mcp_config: Option<String>,
+    #[serde(default)]
+    pub plugin_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +94,16 @@ pub struct UpdateCustomAgentConfig {
     pub display_name: String,
     pub category: Option<String>,
     pub global_skills_dir: String,
+    #[serde(default)]
+    pub icon_name: Option<String>,
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    #[serde(default)]
+    pub settings_file: Option<String>,
+    #[serde(default)]
+    pub mcp_config: Option<String>,
+    #[serde(default)]
+    pub plugin_dir: Option<String>,
 }
 
 pub fn load() -> Metadata {
@@ -385,8 +413,12 @@ pub fn add_custom_agent(config: CustomAgentConfig) -> Result<CustomAgentEntry, S
         display_name: config.display_name.trim().to_string(),
         category: config.category.unwrap_or_else(|| "custom".to_string()),
         global_skills_dir: normalize_path(&config.global_skills_dir),
-        icon_name: None,
+        icon_name: config.icon_name.filter(|value| !value.trim().is_empty()),
         is_enabled: true,
+        config_dir: config.config_dir.map(|value| normalize_path(&value)),
+        settings_file: config.settings_file.map(|value| normalize_path(&value)),
+        mcp_config: config.mcp_config.map(|value| normalize_path(&value)),
+        plugin_dir: config.plugin_dir.map(|value| normalize_path(&value)),
     };
     meta.custom_agents.push(entry.clone());
     save(&meta)?;
@@ -414,6 +446,11 @@ pub fn update_custom_agent(
     entry.display_name = config.display_name.trim().to_string();
     entry.category = config.category.unwrap_or_else(|| "custom".to_string());
     entry.global_skills_dir = normalize_path(&config.global_skills_dir);
+    entry.icon_name = config.icon_name.filter(|value| !value.trim().is_empty());
+    entry.config_dir = config.config_dir.map(|value| normalize_path(&value));
+    entry.settings_file = config.settings_file.map(|value| normalize_path(&value));
+    entry.mcp_config = config.mcp_config.map(|value| normalize_path(&value));
+    entry.plugin_dir = config.plugin_dir.map(|value| normalize_path(&value));
     let updated = entry.clone();
     save(&meta)?;
     Ok(updated)

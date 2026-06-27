@@ -4307,7 +4307,43 @@
 }
 
 .sm2__modal--adopt .sm2__modal-actions {
+  align-items: center;
   padding: 14px 26px 22px;
+}
+
+.sm2__modal--adopt .sm2__modal-actions .sm2__btn {
+  min-width: 72px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 9px;
+  color: var(--text-primary, #0f172a);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.sm2__modal--adopt .sm2__modal-actions .sm2__btn--primary {
+  min-width: 116px;
+  color: #fff;
+  font-weight: 820;
+  box-shadow: 0 10px 22px rgba(10, 132, 255, 0.22);
+}
+
+.sm2__modal--adopt .sm2__modal-actions .sm2__btn--primary.sm2__btn--danger {
+  background: #b42318;
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 10px 22px rgba(180, 35, 24, 0.24);
+}
+
+.sm2__modal--adopt .sm2__modal-actions .sm2__btn--primary.sm2__btn--danger:hover:not(:disabled) {
+  background: #c43224;
+  color: #fff;
+  filter: none;
+}
+
+.sm2__modal--adopt .sm2__modal-actions .sm2__btn:focus-visible {
+  outline: 3px solid rgba(10, 132, 255, 0.28);
+  outline-offset: 2px;
 }
 
 .sm2-adopt {

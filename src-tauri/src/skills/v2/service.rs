@@ -336,7 +336,7 @@ impl Service {
     /// Scan all managed agents; record unmanaged items + update target statuses.
     pub fn scan_all_agents_into_db(&self) -> Result<(), String> {
         for agent_id in agent_meta::managed_agent_ids() {
-            self.scan_one_agent_into_db(agent_id)?;
+            self.scan_one_agent_into_db(&agent_id)?;
         }
         Ok(())
     }
@@ -1047,12 +1047,9 @@ impl Service {
         self.agent_summaries_for_ids(agent_meta::managed_agent_ids())
     }
 
-    fn agent_summaries_for_ids(
-        &self,
-        agent_ids: Vec<&'static str>,
-    ) -> Result<Vec<AgentSummary>, String> {
+    fn agent_summaries_for_ids(&self, agent_ids: Vec<String>) -> Result<Vec<AgentSummary>, String> {
         let mut out = Vec::new();
-        for id in agent_ids {
+        for id in &agent_ids {
             self.ensure_agent_row(id)?;
             let (enabled, skills_dir, version, latest) = self.db.with_conn(|c| {
                 c.query_row(
@@ -1073,7 +1070,7 @@ impl Service {
             let managed_skill_count = self.count_agent_targets(id)?;
             let unmanaged_skill_count = self.count_agent_unmanaged(id)?;
             out.push(AgentSummary {
-                id: id.to_string(),
+                id: id.clone(),
                 display_name: agent_meta::display_name(id),
                 icon_key: agent_meta::icon_key(id),
                 enabled,

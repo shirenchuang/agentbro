@@ -2755,6 +2755,67 @@ fn shared_agents_skills_dir_is_not_listed_as_a_managed_agent() {
 }
 
 #[test]
+fn custom_agent_metadata_is_listed_and_uses_declared_paths() {
+    let (_home, svc, _lock) = fresh_service("custom-agent-metadata");
+    let root = svc.home.join(".codefuse/engine/cc");
+    let skills_dir = root.join("skills");
+    let settings_file = root.join("settings.json");
+    let plugin_dir = root.join("plugins/cache");
+    write_skill(
+        &skills_dir,
+        "internal-review",
+        "internal-review",
+        Some("v1"),
+    );
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(&settings_file, r#"{"mcpServers":{}}"#).unwrap();
+    fs::create_dir_all(svc.home.join(".agentbro")).unwrap();
+    fs::write(
+        svc.home.join(".agentbro/metadata.json"),
+        serde_json::json!({
+            "customAgents": [{
+                "id": "antcc",
+                "displayName": "AntCC",
+                "category": "claude-compatible",
+                "globalSkillsDir": skills_dir.display().to_string(),
+                "iconName": "claude-code",
+                "isEnabled": true,
+                "configDir": root.display().to_string(),
+                "settingsFile": settings_file.display().to_string(),
+                "mcpConfig": settings_file.display().to_string(),
+                "pluginDir": plugin_dir.display().to_string()
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    svc.refresh().unwrap();
+    let agents = svc.list_managed_agents().unwrap();
+    let custom = agents
+        .iter()
+        .find(|agent| agent.id == "antcc")
+        .expect("custom agent is listed");
+
+    assert_eq!(custom.display_name, "AntCC");
+    assert_eq!(custom.icon_key, "claude-code");
+    assert!(custom.installed);
+    assert_eq!(custom.skills_dir, Some(skills_dir.display().to_string()));
+    assert_eq!(custom.unmanaged_skill_count, 1);
+
+    let detail = svc.get_agent_detail("antcc").unwrap();
+    assert_eq!(
+        detail.config_path,
+        Some(settings_file.display().to_string())
+    );
+    assert_eq!(
+        detail.mcp_config_path,
+        Some(settings_file.display().to_string())
+    );
+    assert_eq!(detail.plugin_dir, Some(plugin_dir.display().to_string()));
+}
+
+#[test]
 fn openclaw_scans_configured_workspace_skills() {
     let (_home, svc, _lock) = fresh_service("openclaw-workspace-skills");
     let openclaw_config_dir = svc.home.join(".openclaw");

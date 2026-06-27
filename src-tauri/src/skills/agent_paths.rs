@@ -100,11 +100,11 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: None,
             settings_file: None,
         },
-        _ => SkillPaths {
-            skill_dirs: custom_agent_skill_dir(agent).into_iter().collect(),
+        _ => custom_agent_paths(agent).unwrap_or_else(|| SkillPaths {
+            skill_dirs: Vec::new(),
             mcp_config: None,
             settings_file: None,
-        },
+        }),
     }
 }
 
@@ -249,7 +249,7 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
     match agent {
         "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
-        _ => None,
+        _ => custom_agent_plugin_dir(agent),
     }
 }
 
@@ -261,7 +261,31 @@ pub fn agentbro_metadata_path() -> PathBuf {
     home().join(".agentbro").join("metadata.json")
 }
 
-fn custom_agent_skill_dir(agent: &str) -> Option<PathBuf> {
+fn custom_agent_paths(agent: &str) -> Option<SkillPaths> {
+    let entry = custom_agent_entry(agent)?;
+    let skill_dir = custom_agent_path(&entry, &["globalSkillsDir", "global_skills_dir"])?;
+    let config_dir = custom_agent_path(&entry, &["configDir", "config_dir"]);
+    let settings_file = custom_agent_path(&entry, &["settingsFile", "settings_file"])
+        .or_else(|| config_dir.as_ref().map(|dir| dir.join("settings.json")));
+    let mcp_config =
+        custom_agent_path(&entry, &["mcpConfig", "mcp_config"]).or_else(|| settings_file.clone());
+
+    Some(SkillPaths {
+        skill_dirs: vec![skill_dir],
+        mcp_config,
+        settings_file,
+    })
+}
+
+fn custom_agent_plugin_dir(agent: &str) -> Option<PathBuf> {
+    let entry = custom_agent_entry(agent)?;
+    custom_agent_path(&entry, &["pluginDir", "plugin_dir"]).or_else(|| {
+        custom_agent_path(&entry, &["configDir", "config_dir"])
+            .map(|dir| dir.join("plugins").join("cache"))
+    })
+}
+
+fn custom_agent_entry(agent: &str) -> Option<serde_json::Value> {
     let content = std::fs::read_to_string(agentbro_metadata_path()).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     let custom_agents = json
@@ -274,12 +298,15 @@ fn custom_agent_skill_dir(agent: &str) -> Option<PathBuf> {
         if id != agent {
             return None;
         }
-        let path = entry
-            .get("globalSkillsDir")
-            .or_else(|| entry.get("global_skills_dir"))?
-            .as_str()?;
-        Some(expand_home(path))
+        Some(entry.clone())
     })
+}
+
+fn custom_agent_path(entry: &serde_json::Value, keys: &[&str]) -> Option<PathBuf> {
+    keys.iter()
+        .find_map(|key| entry.get(*key)?.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(expand_home)
 }
 
 fn expand_home(path: &str) -> PathBuf {

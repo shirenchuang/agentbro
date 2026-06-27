@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, type AgentOutputEvent, type AgentProgramInfo } from '../../services/agentApi'
+import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -71,6 +71,7 @@ export function AgentManagementPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
+  const [customDialogOpen, setCustomDialogOpen] = useState(false)
   const selectedAgentIdRef = useRef<string | null>(null)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || openingAgentId !== null
@@ -340,6 +341,22 @@ export function AgentManagementPage() {
     setDetailFallback(fallback || null)
   }
 
+  const addCustomAgent = async (config: CustomAgentConfig) => {
+    setBusy(true)
+    setNotice(null)
+    state.setError(null)
+    try {
+      await agentApi.addCustom(config)
+      await Promise.all([state.loadOverview(true), loadPrograms()])
+      setCustomDialogOpen(false)
+      setNotice('自定义 Agent 已添加')
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="sm2 sm2--agents">
       <div className="sm2__header sm2__header--stacked">
@@ -348,6 +365,9 @@ export function AgentManagementPage() {
           <p className="sm2__header-subtitle">查看每个 Agent 的 Skills、技能包、MCP、插件与 Hook 状态。</p>
         </div>
         <div className="sm2__tabs">
+          <ActionButton className="sm2__btn sm2__btn--primary" onClick={() => setCustomDialogOpen(true)} disabled={busy}>
+            添加自定义 Agent
+          </ActionButton>
           <ActionButton className="sm2__btn" onClick={refreshOverview} disabled={state.loading || actionBusy} busy={refreshingOverview} busyLabel="刷新中">
             刷新总览
           </ActionButton>
@@ -428,8 +448,180 @@ export function AgentManagementPage() {
           onExecute={executePackApplyConflict}
         />
       )}
+      {customDialogOpen && (
+        <CustomAgentDialog
+          busy={busy}
+          onClose={() => setCustomDialogOpen(false)}
+          onSubmit={addCustomAgent}
+        />
+      )}
     </div>
   )
+}
+
+function CustomAgentDialog({
+  busy,
+  onClose,
+  onSubmit,
+}: {
+  busy: boolean
+  onClose: () => void
+  onSubmit: (config: CustomAgentConfig) => Promise<void>
+}) {
+  const [engine, setEngine] = useState('claude-compatible')
+  const [displayName, setDisplayName] = useState('')
+  const [configRoot, setConfigRoot] = useState('')
+  const [skillsDir, setSkillsDir] = useState('')
+  const [settingsFile, setSettingsFile] = useState('')
+  const [mcpConfig, setMcpConfig] = useState('')
+  const [pluginDir, setPluginDir] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const applyRoot = (root: string) => {
+    setConfigRoot(root)
+    const paths = deriveCustomAgentPaths(root)
+    setSkillsDir(paths.skillsDir)
+    setSettingsFile(paths.settingsFile)
+    setMcpConfig(paths.mcpConfig)
+    setPluginDir(paths.pluginDir)
+  }
+
+  const submit = async () => {
+    const name = displayName.trim()
+    const root = configRoot.trim()
+    const skillPath = skillsDir.trim()
+    if (!name) {
+      setError('请填写显示名称')
+      return
+    }
+    if (!root) {
+      setError('请填写配置根目录')
+      return
+    }
+    if (!skillPath) {
+      setError('请填写 Skills 目录')
+      return
+    }
+    setError(null)
+    await onSubmit({
+      id: null,
+      displayName: name,
+      category: engine,
+      globalSkillsDir: skillPath,
+      iconName: engine === 'claude-compatible' ? 'claude-code' : 'custom',
+      configDir: root,
+      settingsFile: settingsFile.trim() || null,
+      mcpConfig: mcpConfig.trim() || null,
+      pluginDir: pluginDir.trim() || null,
+    })
+  }
+
+  return (
+    <div className="skills-dialog-overlay" onClick={onClose}>
+      <div
+        aria-labelledby="custom-agent-dialog-title"
+        className="skills-dialog custom-agent-dialog"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+      >
+        <div className="skills-dialog__header">
+          <div className="skills-dialog__title" id="custom-agent-dialog-title">添加自定义 Agent</div>
+        </div>
+        <div className="skills-dialog__body">
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-engine">兼容引擎</label>
+            <select
+              className="install-form-input"
+              id="custom-agent-engine"
+              value={engine}
+              onChange={(e) => setEngine(e.target.value)}
+            >
+              <option value="claude-compatible">Claude Code 兼容</option>
+              <option value="custom">通用 Agent</option>
+            </select>
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-name">显示名称</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-name"
+              placeholder="例如 AntCC"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-root">配置根目录</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-root"
+              placeholder="例如 /Users/me/.codefuse/engine/cc"
+              value={configRoot}
+              onChange={(e) => applyRoot(e.target.value)}
+            />
+            <div className="custom-agent-hint">填写根目录后会自动推导 Skills、settings、MCP 和插件缓存路径。</div>
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-skills">Skills 目录</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-skills"
+              value={skillsDir}
+              onChange={(e) => setSkillsDir(e.target.value)}
+            />
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-settings">Settings 文件</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-settings"
+              value={settingsFile}
+              onChange={(e) => setSettingsFile(e.target.value)}
+            />
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-mcp">MCP 配置</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-mcp"
+              value={mcpConfig}
+              onChange={(e) => setMcpConfig(e.target.value)}
+            />
+          </div>
+          <div className="install-form-row">
+            <label className="install-form-label" htmlFor="custom-agent-plugin">Plugin 目录</label>
+            <input
+              className="install-form-input"
+              id="custom-agent-plugin"
+              value={pluginDir}
+              onChange={(e) => setPluginDir(e.target.value)}
+            />
+          </div>
+          {error && <div className="custom-agent-error">{error}</div>}
+        </div>
+        <div className="skills-dialog__footer">
+          <button className="skills-btn" disabled={busy} onClick={onClose} type="button">取消</button>
+          <ActionButton className="skills-btn skills-btn--primary" busy={busy} busyLabel="保存中" onClick={submit}>
+            保存 Agent
+          </ActionButton>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function deriveCustomAgentPaths(root: string) {
+  const normalized = root.trim().replace(/\/+$/, '')
+  if (!normalized) {
+    return { skillsDir: '', settingsFile: '', mcpConfig: '', pluginDir: '' }
+  }
+  const settingsFile = `${normalized}/settings.json`
+  return {
+    skillsDir: `${normalized}/skills`,
+    settingsFile,
+    mcpConfig: settingsFile,
+    pluginDir: `${normalized}/plugins/cache`,
+  }
 }
 
 function formatAgentOutput(event: AgentOutputEvent) {
@@ -651,7 +843,7 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginsTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab agentId={detail.id} />}
+        {tab === 'hooks' && <HooksTab detail={detail} program={program} />}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -2242,7 +2434,8 @@ function PluginsTab({ detail }: { detail: AgentDetail }) {
   )
 }
 
-function HooksTab({ agentId }: { agentId: string }) {
+function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
+  const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -2252,7 +2445,7 @@ function HooksTab({ agentId }: { agentId: string }) {
     setLoading(true)
     try {
       const all = await getAllHookStatus()
-      const found = all.find((h) => h.adapterId === agentId || h.toolId === agentId)
+      const found = all.find((h) => hookMatchesAgent(h, detail, program))
       setHook(found || null)
     } catch (e) {
       setError(String(e))
@@ -2270,7 +2463,7 @@ function HooksTab({ agentId }: { agentId: string }) {
     setBusy(true)
     setError(null)
     try {
-      await installAgentHook(agentId)
+      await installAgentHook(hook?.toolId || agentId)
       await load()
     } catch (e) {
       setError(String(e))
@@ -2287,7 +2480,7 @@ function HooksTab({ agentId }: { agentId: string }) {
       const next = hook.events
         .filter((event) => (event.name === eventName ? enabled : event.enabled))
         .map((event) => event.name)
-      await configureAgentHookEvents(agentId, next)
+      await configureAgentHookEvents(hook.toolId || agentId, next)
       await load()
     } catch (e) {
       setError(String(e))
@@ -2301,7 +2494,7 @@ function HooksTab({ agentId }: { agentId: string }) {
     setBusy(true)
     setError(null)
     try {
-      await uninstallAgentHook(agentId)
+      await uninstallAgentHook(hook?.toolId || agentId)
       await load()
     } catch (e) {
       setError(String(e))
@@ -2394,6 +2587,36 @@ function HooksTab({ agentId }: { agentId: string }) {
       )}
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
     </div>
+  )
+}
+
+function hookMatchesAgent(hook: HookStatus, detail: AgentDetail, program: AgentProgramInfo | null) {
+  const agentId = detail.id
+  if (hook.adapterId === agentId || hook.toolId === agentId || hook.name === agentId) return true
+  const displayName = detail.displayName.toLowerCase()
+  if (hook.isCustom && hook.displayName.toLowerCase() === displayName) return true
+  const hookValues = [
+    hook.displayName,
+    hook.name,
+    hook.toolId,
+    hook.adapterId,
+    hook.profileId,
+    hook.configPath,
+    hook.configDir,
+    hook.bridgeCommand,
+  ].map((value) => String(value || '').toLowerCase())
+  const targetValues = [
+    agentId,
+    detail.displayName,
+    detail.configPath,
+    detail.mcpConfigPath,
+    detail.pluginDir,
+    detail.skillsDir,
+    program?.configDir,
+    program?.skillsDir,
+  ].map((value) => String(value || '').toLowerCase()).filter(Boolean)
+  return hookValues.some((hookValue) =>
+    targetValues.some((target) => hookValue === target || hookValue.includes(target)),
   )
 }
 

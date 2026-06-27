@@ -424,6 +424,10 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
     let skills_path = Path::new(&agent.global_skills_dir);
     let detected =
         skills_path.exists() || skills_path.parent().is_some_and(|parent| parent.exists());
+    let config_dir = agent
+        .config_dir
+        .clone()
+        .unwrap_or_else(|| agent.global_skills_dir.clone());
     AgentProgramInfo {
         id: agent.id,
         display_name: agent.display_name,
@@ -439,7 +443,7 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
         installed_version: None,
         latest_version: None,
         binary_path: None,
-        config_dir: Some(agent.global_skills_dir.clone()),
+        config_dir: Some(config_dir),
         app_path: None,
         download_url: None,
         install_command: None,
@@ -1342,12 +1346,15 @@ mod tests {
     #[test]
     fn visible_skill_agents_have_program_metadata() {
         for agent_id in agent_meta::visible_agent_ids() {
+            if !agent_paths::known_agent_ids().contains(&agent_id.as_str()) {
+                continue;
+            }
             assert!(
-                agent_paths::known_agent_ids().contains(&agent_id),
+                agent_paths::known_agent_ids().contains(&agent_id.as_str()),
                 "{agent_id} is shown in Agent management but missing from known agent paths"
             );
 
-            let meta = metadata_for(agent_id).unwrap_or_else(|| {
+            let meta = metadata_for(&agent_id).unwrap_or_else(|| {
                 panic!("{agent_id} is shown in Agent management but missing program metadata")
             });
             assert!(

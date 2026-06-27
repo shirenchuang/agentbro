@@ -32,12 +32,22 @@ export interface CustomAgentConfig {
   displayName: string
   category?: string | null
   globalSkillsDir: string
+  iconName?: string | null
+  configDir?: string | null
+  settingsFile?: string | null
+  mcpConfig?: string | null
+  pluginDir?: string | null
 }
 
 export interface UpdateCustomAgentConfig {
   displayName: string
   category?: string | null
   globalSkillsDir: string
+  iconName?: string | null
+  configDir?: string | null
+  settingsFile?: string | null
+  mcpConfig?: string | null
+  pluginDir?: string | null
 }
 
 export interface AgentOutputEvent {
@@ -250,7 +260,7 @@ export const agentApi = {
     : Promise.resolve({
       id: config.id || `custom-${config.displayName.toLowerCase().replace(/\s+/g, '-')}`,
       displayName: config.displayName,
-      icon: 'custom',
+      icon: config.iconName || 'custom',
       kind: 'cli' as const,
       status: 'installed' as const,
       packageManager: 'custom',
@@ -258,7 +268,7 @@ export const agentApi = {
       installedVersion: null,
       latestVersion: null,
       binaryPath: null,
-      configDir: config.globalSkillsDir,
+      configDir: config.configDir || config.globalSkillsDir,
       appPath: null,
       downloadUrl: null,
       installCommand: null,
@@ -274,7 +284,7 @@ export const agentApi = {
     : Promise.resolve({
       id: agentId,
       displayName: config.displayName,
-      icon: 'custom',
+      icon: config.iconName || 'custom',
       kind: 'cli' as const,
       status: 'installed' as const,
       packageManager: 'custom',
@@ -282,7 +292,7 @@ export const agentApi = {
       installedVersion: null,
       latestVersion: null,
       binaryPath: null,
-      configDir: config.globalSkillsDir,
+      configDir: config.configDir || config.globalSkillsDir,
       appPath: null,
       downloadUrl: null,
       installCommand: null,

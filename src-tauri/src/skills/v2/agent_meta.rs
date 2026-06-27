@@ -3,7 +3,7 @@
 //! Reuses the existing `agent_paths` resolver for on-disk locations and layers
 //! a stable display-name + icon-key mapping on top.
 
-use crate::skills::agent_paths;
+use crate::skills::{agent_paths, registry};
 use std::path::{Path, PathBuf};
 
 pub struct AgentMeta {
@@ -17,6 +17,12 @@ pub fn display_name(id: &str) -> String {
         .iter()
         .find(|m| m.id == id)
         .map(|m| m.display_name.to_string())
+        .or_else(|| {
+            registry::list_custom_agents()
+                .into_iter()
+                .find(|agent| agent.id == id && agent.is_enabled)
+                .map(|agent| agent.display_name)
+        })
         .unwrap_or_else(|| humanize(id))
 }
 
@@ -25,12 +31,18 @@ pub fn icon_key(id: &str) -> String {
         .iter()
         .find(|m| m.id == id)
         .map(|m| m.icon_key.to_string())
+        .or_else(|| {
+            registry::list_custom_agents()
+                .into_iter()
+                .find(|agent| agent.id == id && agent.is_enabled)
+                .and_then(|agent| agent.icon_name)
+        })
         .unwrap_or_else(|| id.to_string())
 }
 
 /// Agents that can be managed targets, in canonical display order.
-pub fn managed_agent_ids() -> Vec<&'static str> {
-    vec![
+pub fn managed_agent_ids() -> Vec<String> {
+    let mut ids = vec![
         "agents",
         "claude-code",
         "codex",
@@ -54,14 +66,25 @@ pub fn managed_agent_ids() -> Vec<&'static str> {
         "kiro",
         "hermes",
     ]
+    .into_iter()
+    .map(ToString::to_string)
+    .collect::<Vec<_>>();
+
+    for agent in registry::list_custom_agents() {
+        if agent.is_enabled && !ids.iter().any(|id| id == &agent.id) {
+            ids.push(agent.id);
+        }
+    }
+
+    ids
 }
 
 /// Real coding agents shown in Agent management views. The shared `.agents`
 /// skill directory is scanned as an import source, but is not an agent.
-pub fn visible_agent_ids() -> Vec<&'static str> {
+pub fn visible_agent_ids() -> Vec<String> {
     managed_agent_ids()
         .into_iter()
-        .filter(|id| *id != "agents")
+        .filter(|id| id != "agents")
         .collect()
 }
 
@@ -221,7 +244,12 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "amp" => ".amp/skills",
         "kiro" => ".kiro/skills",
         "hermes" => ".hermes/skills",
-        _ => return None,
+        _ => {
+            return agent_paths::paths_for_agent(agent)
+                .skill_dirs
+                .first()
+                .cloned()
+        }
     };
     Some(home.join(rel))
 }
@@ -230,6 +258,9 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
 /// ordered from highest precedence to lowest.
 pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     if agent != "openclaw" {
+        if table().iter().all(|m| m.id != agent) {
+            return agent_paths::paths_for_agent(agent).skill_dirs;
+        }
         return agent_skills_dir(home, agent).into_iter().collect();
     }
     let workspace = openclaw_workspace_dir(home);

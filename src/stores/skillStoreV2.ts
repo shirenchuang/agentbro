@@ -158,12 +158,14 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     set({ loading: true, error: null })
     try {
       const overview = await skillApiV2.refreshOverview()
+      const unmanaged = await skillApiV2.listUnmanaged()
       set({
         overview,
         skills: overview.skills,
         agents: overview.agents,
         packs: overview.packs,
         issues: overview.issues,
+        unmanaged,
         settings: overview.settings,
         lastOverviewLoadedAt: Date.now(),
       })
@@ -182,12 +184,14 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
     try {
       const overview = await skillApiV2.overview()
+      const unmanaged = await skillApiV2.listUnmanaged()
       set({
         overview,
         skills: overview.skills,
         agents: overview.agents,
         packs: overview.packs,
         issues: overview.issues,
+        unmanaged,
         settings: overview.settings,
         lastOverviewLoadedAt: Date.now(),
         initialized: true,

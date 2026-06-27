@@ -2487,6 +2487,42 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
   })
 
+  it('adds a custom Claude-compatible agent from manual paths', async () => {
+    const addCustom = vi.spyOn(agentApi, 'addCustom').mockResolvedValue(makeProgram({
+      id: 'custom-antcc',
+      displayName: 'AntCC',
+      icon: 'claude-code',
+      packageManager: 'custom',
+      packageName: null,
+      configDir: '/Users/me/.codefuse/engine/cc',
+      skillsDir: '/Users/me/.codefuse/engine/cc/skills',
+      isCustom: true,
+    }))
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '添加自定义 Agent' }))
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'AntCC' } })
+    fireEvent.change(screen.getByLabelText('配置根目录'), { target: { value: '/Users/me/.codefuse/engine/cc' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 Agent' }))
+
+    await waitFor(() => expect(addCustom).toHaveBeenCalledWith({
+      id: null,
+      displayName: 'AntCC',
+      category: 'claude-compatible',
+      globalSkillsDir: '/Users/me/.codefuse/engine/cc/skills',
+      iconName: 'claude-code',
+      configDir: '/Users/me/.codefuse/engine/cc',
+      settingsFile: '/Users/me/.codefuse/engine/cc/settings.json',
+      mcpConfig: '/Users/me/.codefuse/engine/cc/settings.json',
+      pluginDir: '/Users/me/.codefuse/engine/cc/plugins/cache',
+    }))
+    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(screen.queryByRole('dialog', { name: '添加自定义 Agent' })).not.toBeInTheDocument()
+  })
+
   it('does not treat the shared .agents directory as an agent in management views', async () => {
     const sharedDetail: AgentDetail = {
       ...agentDetail,
