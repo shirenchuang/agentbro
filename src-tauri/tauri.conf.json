@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "productName": "AgentBro",
   "identifier": "com.agentbro.desktop",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1423",
