@@ -919,6 +919,69 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByText('managed-alpha')).toBeInTheDocument()
   })
 
+  it('deletes a managed skill distribution from the agent sync detail', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const before: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'claude-code',
+        displayName: 'Claude Code',
+        iconKey: 'claude-code',
+        skillsDir: '/Users/me/.claude/skills',
+        installed: true,
+        managedCount: 1,
+        unmanagedCount: 0,
+        importableCount: 0,
+        items: [
+          {
+            id: 'managed-alpha',
+            agentId: 'claude-code',
+            skillId: 'managed-alpha',
+            name: 'managed-alpha',
+            path: '/Users/me/.claude/skills/managed-alpha',
+            managed: true,
+            canImport: false,
+            status: 'managed',
+            statusLabel: '已管理',
+            reason: null,
+            targetId: 'target-managed-alpha',
+            actualMode: 'link',
+            hash: 'hash-managed-alpha',
+          },
+        ],
+      },
+    ]
+    const after: AgentSkillInventoryAgent[] = [
+      { ...before[0], managedCount: 0, items: [] },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory')
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after)
+    vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValueOnce({
+      name: 'managed-alpha',
+      nodeType: 'dir',
+      path: '/Users/me/.claude/skills/managed-alpha',
+      children: [],
+    })
+    vi.spyOn(skillApiV2, 'readFileContent').mockResolvedValueOnce('# Managed Alpha')
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const onDone = vi.fn()
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={onDone} />)
+
+    expect(await screen.findByText('1 已管理，默认隐藏')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '高级查看' }))
+    fireEvent.click(screen.getByLabelText('显示已管理 Skills'))
+    fireEvent.click(screen.getByText('managed-alpha'))
+    fireEvent.click(await screen.findByRole('button', { name: '删除分发' }))
+    expect(screen.getByRole('dialog', { name: '删除 Agent 分发「managed-alpha」' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-managed-alpha']))
+    expect(onDone).toHaveBeenCalled()
+    expect(await screen.findByText('本机 Agent Skills 已完成整理')).toBeInTheDocument()
+  })
+
   it('keeps list and card views on the same pending dataset', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const inventory: AgentSkillInventoryAgent[] = [
@@ -1353,6 +1416,54 @@ describe('Agent sync local agent chips', () => {
     fireEvent.click(screen.getByText('beta'))
     expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('beta')
     finishFirstAdopt()
+  })
+
+  it('localizes stale unmanaged adoption errors instead of showing database text', async () => {
+    await i18n.changeLanguage('zh')
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const inventory: AgentSkillInventoryAgent[] = [
+      {
+        agentId: 'openclaw',
+        displayName: 'OpenClaw',
+        iconKey: 'openclaw',
+        skillsDir: '/Users/me/.agents/skills',
+        installed: true,
+        managedCount: 0,
+        unmanagedCount: 1,
+        importableCount: 1,
+        items: [
+          {
+            id: 'unm-openclaw-stale',
+            agentId: 'openclaw',
+            skillId: 'skill-yuque-doc-polisher',
+            name: 'skill-yuque-doc-polisher',
+            path: '/Users/me/.agents/skills/skill-yuque-doc-polisher',
+            managed: false,
+            canImport: true,
+            status: 'unmanaged',
+            statusLabel: '未管理',
+            reason: null,
+            targetId: null,
+            actualMode: null,
+            hash: 'hash-yuque',
+          },
+        ],
+      },
+    ]
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory')
+      .mockResolvedValueOnce(inventory)
+      .mockResolvedValueOnce([])
+    vi.spyOn(skillApiV2, 'executeAdopt').mockRejectedValueOnce(new Error('SKILL_UNMANAGED_STALE:unm-openclaw-stale'))
+
+    const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
+    render(<AgentSyncPanel onDone={() => {}} />)
+
+    fireEvent.click(await screen.findByLabelText('选择 skill-yuque-doc-polisher'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+
+    expect(await screen.findByText(/该 Skill 已不在待处理列表中，请重新扫描后重试。/)).toBeInTheDocument()
+    expect(screen.queryByText(/SKILL_UNMANAGED_STALE/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Query returned no rows/)).not.toBeInTheDocument()
   })
 
   it('lists shared .agents skills separately and batch adopts them as center symlinks', async () => {
@@ -2521,6 +2632,53 @@ describe('Skill detail slider + agent page render without crashing', () => {
     }))
     expect(loadOverview).toHaveBeenCalledWith(true)
     expect(screen.queryByRole('dialog', { name: '添加自定义 Agent' })).not.toBeInTheDocument()
+  })
+
+  it('deletes a custom agent from the agent detail header', async () => {
+    const customDetail: AgentDetail = {
+      ...agentDetail,
+      id: 'custom-antcc',
+      displayName: 'AntCC',
+      iconKey: 'claude-code',
+      skillsDir: '/Users/me/.codefuse/engine/cc/skills',
+      configPath: '/Users/me/.codefuse/engine/cc/settings.json',
+      mcpConfigPath: '/Users/me/.codefuse/engine/cc/settings.json',
+      pluginDir: '/Users/me/.codefuse/engine/cc/plugins/cache',
+      skills: [],
+    }
+    useSkillStoreV2.setState({
+      selectedAgentId: 'custom-antcc',
+      selectedAgentDetail: customDetail,
+      agents: [
+        { id: 'custom-antcc', displayName: 'AntCC', iconKey: 'claude-code', enabled: true, skillsDir: '/Users/me/.codefuse/engine/cc/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+      unmanaged: [],
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([
+      makeProgram({
+        id: 'custom-antcc',
+        displayName: 'AntCC',
+        icon: 'claude-code',
+        packageManager: 'custom',
+        packageName: null,
+        configDir: '/Users/me/.codefuse/engine/cc',
+        skillsDir: '/Users/me/.codefuse/engine/cc/skills',
+        isCustom: true,
+      }),
+    ])
+    const removeCustom = vi.spyOn(agentApi, 'removeCustom').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '删除此 Agent' }))
+    expect(screen.getByRole('dialog', { name: '删除 Agent「AntCC」' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(removeCustom).toHaveBeenCalledWith('custom-antcc'))
+    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(useSkillStoreV2.getState().selectedAgentId).toBeNull()
   })
 
   it('does not treat the shared .agents directory as an agent in management views', async () => {
@@ -3703,6 +3861,103 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '复制' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '移除' })).not.toBeInTheDocument()
+  })
+
+  it('opens a blocker resolution dialog when pack sync hits an unmanaged same-name skill', async () => {
+    const pack: SkillPackDetail = {
+      id: 'pack-ant',
+      name: '蚂蚁Skill',
+      description: '',
+      tags: [],
+      members: [
+        { skillId: 'antcode-skill', skillName: 'antcode-skill', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [
+        {
+          packId: 'pack-ant',
+          packName: '蚂蚁Skill',
+          memberCount: 1,
+          agentId: 'codex',
+          displayName: 'Codex',
+          syncStatus: 'failed',
+          syncError: '1 blocker(s) need manual resolution before syncing.',
+        },
+      ],
+      pendingSyncCount: 0,
+      failedSyncCount: 1,
+      syncStatus: 'failed',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }
+    const overview = {
+      ...makeOverview(),
+      packs: [
+        { id: 'pack-ant', name: '蚂蚁Skill', description: '', tags: [], memberCount: 1, appliedAgentCount: 1, healthy: true, pendingSyncCount: 0, failedSyncCount: 1, syncStatus: 'failed' },
+      ],
+      agents: [
+        { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/Users/me/.codex/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 1 } as AgentSummary,
+      ],
+    }
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(pack)
+    useSkillStoreV2.setState({
+      overview,
+      packs: [
+        { id: 'pack-ant', name: '蚂蚁Skill', description: '', tags: [], memberCount: 1, appliedAgentCount: 1, healthy: true, pendingSyncCount: 0, failedSyncCount: 1, syncStatus: 'failed' },
+      ],
+      selectedPackId: 'pack-ant',
+      selectedPackDetail: pack,
+      agents: [
+        { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/Users/me/.codex/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 1 } as AgentSummary,
+      ],
+      settings: {
+        centerPath: '~/.agentbro/skills',
+        sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link',
+        linkFailPolicy: 'ask',
+        startupScan: true,
+        showUnmanaged: true,
+      },
+      lastOverviewLoadedAt: Date.now(),
+    })
+    vi.spyOn(skillApiV2, 'syncPackToAgents').mockResolvedValue({
+      packId: 'pack-ant',
+      packName: '蚂蚁Skill',
+      revision: 2,
+      status: 'failed',
+      agents: [
+        { agentId: 'codex', displayName: 'Codex', status: 'failed', error: '1 blocker(s) need manual resolution before syncing.' },
+      ],
+    })
+    vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue({
+      skillIds: ['antcode-skill'],
+      targetAgents: ['codex'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [
+        {
+          skillId: 'antcode-skill',
+          agentId: 'codex',
+          reason: "An unmanaged 'antcode-skill' already exists at the target path. Adopt/overwrite/rename it first.",
+          existingPath: '/Users/me/.codex/skills/antcode-skill',
+          existingPathKind: 'directory',
+          resolvedExistingPath: null,
+        },
+      ],
+      blockerDecisions: [],
+    })
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '同步' }))
+
+    expect(await screen.findByText('确认同步冲突')).toBeInTheDocument()
+    expect(screen.getAllByText(/未接管的同名 Skill/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/antcode-skill\/codex/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '覆盖安装' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '忽略此目标' })).toBeInTheDocument()
   })
 
   it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {

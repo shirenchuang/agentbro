@@ -858,7 +858,8 @@
     "errors": {
       "targetDirectChild": "目标路径 '{{targetPath}}' 必须直接位于 {{skillsDir}} 下。",
       "targetNoParent": "目标路径 '{{targetPath}}' 没有父目录。",
-      "targetNameMismatch": "目标路径 '{{targetPath}}' 与 Skill '{{skillId}}' 不匹配。"
+      "targetNameMismatch": "目标路径 '{{targetPath}}' 与 Skill '{{skillId}}' 不匹配。",
+      "unmanagedStale": "该 Skill 已不在待处理列表中，请重新扫描后重试。"
     },
     "installing": "安装中...",
     "sync": "同步",

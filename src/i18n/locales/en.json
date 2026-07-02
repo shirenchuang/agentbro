@@ -817,7 +817,8 @@
     "errors": {
       "targetDirectChild": "Target path '{{targetPath}}' must be a direct child of {{skillsDir}}.",
       "targetNoParent": "Target path '{{targetPath}}' has no parent directory.",
-      "targetNameMismatch": "Target path '{{targetPath}}' does not match Skill '{{skillId}}'."
+      "targetNameMismatch": "Target path '{{targetPath}}' does not match Skill '{{skillId}}'.",
+      "unmanagedStale": "This Skill is no longer in the pending list. Rescan and try again."
     },
     "installing": "Installing...",
     "sync": "Sync",

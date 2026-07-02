@@ -3146,7 +3146,9 @@ impl Service {
                     })
                 },
             )
-            .map_err(|e| e.to_string())
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("SKILL_UNMANAGED_STALE:{unmanaged_id}"))
         })
     }
 

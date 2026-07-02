@@ -10,7 +10,7 @@ import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
-import { skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
+import { skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
@@ -50,6 +50,7 @@ const NOTICE_DISMISS_MS = 3200
 const PACK_PROGRESS_DONE_DISMISS_MS = 2400
 
 export function AgentManagementPage() {
+  const { t } = useTranslation()
   const state = useSkillStoreV2()
   const agents = useMemo(() => state.agents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID), [state.agents])
   const detail = state.selectedAgentDetail?.id === SHARED_SKILLS_AGENT_ID ? null : state.selectedAgentDetail
@@ -72,9 +73,11 @@ export function AgentManagementPage() {
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
   const [customDialogOpen, setCustomDialogOpen] = useState(false)
+  const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentDetail | null>(null)
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
   const selectedAgentIdRef = useRef<string | null>(null)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
-  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || openingAgentId !== null
+  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
 
   const loadPrograms = useCallback(async () => {
     setProgramLoading(true)
@@ -82,11 +85,11 @@ export function AgentManagementPage() {
       const next = await agentApi.refresh()
       setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
     } catch (e) {
-      state.setError(String(e))
+      state.setError(skillErrorMessage(t, e))
     } finally {
       setProgramLoading(false)
     }
-  }, [state])
+  }, [state, t])
 
   useEffect(() => {
     state.loadOverview()
@@ -357,6 +360,26 @@ export function AgentManagementPage() {
     }
   }
 
+  const deleteCustomAgent = async (agent: AgentDetail) => {
+    setDeletingAgentId(agent.id)
+    setNotice(null)
+    state.setError(null)
+    try {
+      await agentApi.removeCustom(agent.id)
+      useSkillStoreV2.setState((current) => ({
+        agents: current.agents.filter((item) => item.id !== agent.id),
+      }))
+      setDeleteAgentTarget(null)
+      await state.selectAgent(null)
+      await Promise.all([state.loadOverview(true), loadPrograms()])
+      setNotice(`已删除自定义 Agent「${agent.displayName}」`)
+    } catch (e) {
+      state.setError(String(e))
+    } finally {
+      setDeletingAgentId(null)
+    }
+  }
+
   return (
     <div className="sm2 sm2--agents">
       <div className="sm2__header sm2__header--stacked">
@@ -412,6 +435,8 @@ export function AgentManagementPage() {
             onInstall={installAgent}
             onOpenDownload={openAgentDownload}
             onOpenSkillDetail={openSkillDetail}
+            deleting={deletingAgentId === detail.id}
+            onRequestDelete={setDeleteAgentTarget}
           />
         )}
       </div>
@@ -454,6 +479,19 @@ export function AgentManagementPage() {
           onClose={() => setCustomDialogOpen(false)}
           onSubmit={addCustomAgent}
         />
+      )}
+      {deleteAgentTarget && (
+        <PreviewDialog
+          title={`删除 Agent「${deleteAgentTarget.displayName}」`}
+          confirmLabel="确认删除"
+          busyLabel="删除中"
+          destructive
+          busy={deletingAgentId === deleteAgentTarget.id}
+          onCancel={() => setDeleteAgentTarget(null)}
+          onConfirm={() => deleteCustomAgent(deleteAgentTarget)}
+        >
+          <p>这只会移除 AgentBro 中的自定义 Agent 注册，不会删除你的 Agent 配置目录或 Skills 文件。</p>
+        </PreviewDialog>
       )}
     </div>
   )
@@ -720,6 +758,8 @@ function AgentDetailView({
   onInstall,
   onOpenDownload,
   onOpenSkillDetail,
+  deleting,
+  onRequestDelete,
 }: {
   detail: AgentDetail
   tab: DetailTab
@@ -742,12 +782,15 @@ function AgentDetailView({
   onInstall: (agentId: string) => void
   onOpenDownload: (agentId: string) => void
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
+  deleting: boolean
+  onRequestDelete: (agent: AgentDetail) => void
 }) {
   const showUnmanaged = useSkillStoreV2((s) => s.settings?.showUnmanaged ?? true)
   const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => showUnmanaged && u.agentId === detail.id)
   const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
+  const canDeleteCustom = program?.isCustom === true
   const installedVersion = program?.installedVersion ?? detail.version
   const latestVersion = program?.latestVersion ?? detail.latestVersion
   const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
@@ -797,6 +840,11 @@ function AgentDetailView({
           <ActionButton className="sm2__btn" disabled={busy || scanning || updating || installing || !installed} onClick={() => onScan(detail.id)} busy={scanning} busyLabel="正在扫描">
             {scanning ? '正在扫描' : '重新扫描此 Agent'}
           </ActionButton>
+          {canDeleteCustom && (
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} onClick={() => onRequestDelete(detail)} busy={deleting} busyLabel="删除中">
+              删除此 Agent
+            </ActionButton>
+          )}
         </div>
       </div>
 
@@ -1094,13 +1142,13 @@ function SkillsTab({
           adoptedSkillIds.push(skillId)
           ok += 1
         } catch (e) {
-          failed.push(`${item.inferredSkillId || pathBasename(item.path) || item.id}: ${String(e)}`)
+          failed.push(`${item.inferredSkillId || pathBasename(item.path) || item.id}: ${skillErrorMessage(t, e)}`)
         }
       }
       try {
         packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds)
       } catch (e) {
-        failed.push(`技能包同步失败: ${String(e)}`)
+        failed.push(`技能包同步失败: ${skillErrorMessage(t, e)}`)
       }
       await refreshAgentSkills()
       setSelectedUnmanagedIds(new Set())
@@ -1112,7 +1160,7 @@ function SkillsTab({
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
     } catch (e) {
-      state.setError(String(e))
+      state.setError(skillErrorMessage(t, e))
     } finally {
       setAdoptingIds(new Set())
     }

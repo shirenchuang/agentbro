@@ -2219,6 +2219,24 @@ fn delete_center_skills_batch_preserves_agent_installs_once() {
 // ── Adopt unmanaged agent skill ─────────────────────────────────
 
 #[test]
+fn missing_unmanaged_adopt_record_returns_stable_error_code() {
+    let (_home, svc, _lock) = fresh_service("adopt-missing-unmanaged");
+
+    let err = svc
+        .preview_adopt_agent_skill("claude-code", "unm-stale-record")
+        .unwrap_err();
+
+    assert!(
+        err.starts_with("SKILL_UNMANAGED_STALE:"),
+        "expected stable stale unmanaged error, got {err}"
+    );
+    assert!(
+        !err.contains("Query returned no rows"),
+        "database no-row error should not leak to callers"
+    );
+}
+
+#[test]
 fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
     let (_home, svc, _lock) = fresh_service("adopt-keep");
     let rogue = write_skill(
