@@ -7399,12 +7399,20 @@
 .sm2-sidebar__subgroup-label em,
 .sm2-sidebar__fold-toggle em { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: rgba(40,51,77,0.06); color: var(--settings-text-secondary, #7a8291); font-size: 10px; font-style: normal; font-weight: 760; letter-spacing: 0; }
 .sm2-sidebar__subgroup-empty { font-size: 12px; color: var(--settings-text-tertiary, #a9afbd); padding: 4px 10px; }
+.sm2-sidebar__subitem-row { display: flex; align-items: center; gap: 4px; }
+.sm2-sidebar__subitem-row .sm2-sidebar__subitem { min-width: 0; flex: 1; }
 .sm2-sidebar__subitem { display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: transparent; color: var(--settings-text-primary, #17191f); padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .sm2-sidebar__subitem:hover { background: var(--settings-sidebar-hover, rgba(12,24,48,0.055)); }
 .sm2-sidebar__subitem--active { background: var(--settings-accent-soft, rgba(10,132,255,0.12)); color: var(--settings-accent, #0a84ff); }
 .sm2-sidebar__subitem--muted { color: var(--settings-text-secondary, #7a8291); }
 .sm2-sidebar__subitem-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm2-sidebar__subitem-dot { width: 7px; height: 7px; border-radius: 50%; background: #34c759; }
+.sm2-sidebar__reorder { display: inline-flex; gap: 2px; opacity: 0; pointer-events: none; transition: opacity 0.14s ease; }
+.sm2-sidebar__subitem-row:hover .sm2-sidebar__reorder,
+.sm2-sidebar__subitem-row:focus-within .sm2-sidebar__reorder { opacity: 1; pointer-events: auto; }
+.sm2-sidebar__reorder-btn { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: rgba(40,51,77,0.06); color: var(--settings-text-secondary, #7a8291); cursor: pointer; font: inherit; font-size: 11px; font-weight: 760; line-height: 1; }
+.sm2-sidebar__reorder-btn:hover:not(:disabled) { background: var(--settings-accent-soft, rgba(10,132,255,0.12)); color: var(--settings-accent, #0a84ff); }
+.sm2-sidebar__reorder-btn:disabled { opacity: 0.35; cursor: default; }
 .sm2-sidebar__subgroup-section { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(33,43,66,0.07); }
 .sm2-sidebar__fold-toggle { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 30px; padding: 5px 10px; border: none; border-radius: 8px; background: rgba(40,51,77,0.04); color: var(--settings-text-secondary, #7a8291); cursor: pointer; font: inherit; font-size: 12px; font-weight: 680; text-align: left; }
 .sm2-sidebar__fold-toggle:hover { background: var(--settings-sidebar-hover, rgba(12,24,48,0.055)); color: var(--settings-text-primary, #17191f); }
@@ -11097,6 +11105,24 @@
   align-self: flex-end;
   padding: 0 10px;
   font-size: 12px;
+}
+
+.sm2--agents .sm2__agent-skill-card-actions,
+.sm2--agents .sm2__object-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sm2--agents .sm2__agent-skill-card-actions {
+  align-self: flex-end;
+  flex-wrap: wrap;
+}
+
+.sm2--agents .sm2__agent-skill-card-actions .sm2__btn {
+  align-self: auto;
 }
 
 .sm2--agents .sm2__tag {

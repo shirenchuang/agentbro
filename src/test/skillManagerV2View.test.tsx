@@ -3,12 +3,14 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
+import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
 import { agentApi, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
 import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, SkillPackDetail, SkillDetail, SkillTargetDetail } from '../services/skillApiV2'
+import type { AgentType, SessionState } from '../types/agent'
 
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
@@ -50,6 +52,39 @@ function makeTarget(overrides: Partial<SkillTargetDetail> = {}): SkillTargetDeta
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     claims: [],
+    ...overrides,
+  }
+}
+
+function makeSidebarAgent(id: string, displayName: string, counts: { managed?: number; unmanaged?: number } = {}): AgentSummary {
+  return {
+    id,
+    displayName,
+    iconKey: id,
+    enabled: true,
+    skillsDir: `/${id}`,
+    version: null,
+    latestVersion: null,
+    installed: true,
+    managedSkillCount: counts.managed ?? 0,
+    unmanagedSkillCount: counts.unmanaged ?? 0,
+  }
+}
+
+function makeSidebarSession(agentType: AgentType, overrides: Partial<SessionState> = {}): SessionState {
+  const now = Date.now()
+  return {
+    id: `${agentType}-session`,
+    agentType,
+    project: 'Project',
+    terminal: 'Terminal',
+    phase: 'processing',
+    startedAt: now,
+    duration: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
+    chatHistory: [],
+    subagents: [],
+    activeTools: [],
     ...overrides,
   }
 }
@@ -2727,6 +2762,49 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText('.agents')).not.toBeInTheDocument()
   })
 
+  it('sorts installed sidebar agents by active usage and supports manual reorder', async () => {
+    window.localStorage.removeItem('agentbro.agentManagement.agentOrder.v1')
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      selectedAgentId: null,
+      selectedAgentDetail: null,
+      agents: [
+        makeSidebarAgent('claude-code', 'Claude Code', { managed: 8 }),
+        makeSidebarAgent('codex', 'Codex', { managed: 1 }),
+        makeSidebarAgent('workbuddy', 'WorkBuddy', { managed: 0 }),
+      ],
+    })
+    const workbuddySession = makeSidebarSession('workbuddy', { id: 'workbuddy-active', lastActivityAt: Date.now() })
+    useSessionStore.setState({
+      sessions: { [workbuddySession.id]: workbuddySession },
+      sessionList: [workbuddySession],
+      activeSessionId: workbuddySession.id,
+    })
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { container } = render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    const labels = () => Array.from(container.querySelectorAll('.sm2-sidebar__subitem-label')).map((item) => item.textContent)
+    expect(labels().slice(0, 3)).toEqual(['WorkBuddy', 'Claude Code', 'Codex'])
+
+    fireEvent.click(screen.getByRole('button', { name: '下移 WorkBuddy' }))
+    expect(labels().slice(0, 3)).toEqual(['Claude Code', 'WorkBuddy', 'Codex'])
+    expect(JSON.parse(window.localStorage.getItem('agentbro.agentManagement.agentOrder.v1') || '[]')).toEqual(['claude-code', 'workbuddy', 'codex'])
+    window.localStorage.removeItem('agentbro.agentManagement.agentOrder.v1')
+    useSessionStore.setState({ sessions: {}, sessionList: [], activeSessionId: null })
+  })
+
   it('Agent skills default to cards and can switch to list view', async () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
@@ -2908,6 +2986,27 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('heading', { name: '确认批量删除 Skill？' })).not.toBeInTheDocument()
     expect(deleteTargets).not.toHaveBeenCalled()
     expect(screen.getByLabelText('选择 release-checklist')).toBeChecked()
+  })
+
+  it('deletes an unmanaged agent skill from the skill card after confirmation', async () => {
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 manual-skill' }))
+    const dialog = screen.getByRole('dialog', { name: '删除 Skill「manual-skill」？' })
+    expect(dialog).toBeInTheDocument()
+    expect(dialog).toHaveTextContent('/c/skills/manual-skill')
+    fireEvent.click(screen.getByRole('button', { name: '直接删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', 'unmanaged-1'))
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {

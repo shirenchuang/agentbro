@@ -344,6 +344,13 @@ function isActivityPhase(phase: SessionState['phase']): boolean {
     || phase === 'waiting_approval'
 }
 
+function sessionActivityAnchor(session: SessionState, now: number): number {
+  return timestampToMs(session.lastActivityAt)
+    ?? timestampToMs(session.lastMainAgentAt)
+    ?? timestampToMs(session.startedAt)
+    ?? now
+}
+
 function didBackendActivityChange(incoming: SessionState, existing?: SessionState): boolean {
   if (!existing) return true
   const passivePhaseRefresh = (incoming.phase === 'ready' && existing.phase === 'idle')
@@ -849,10 +856,16 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           lastUserMessageAt: incoming.lastUserMessageAt
             ?? (lastUserMessageChanged ? now : existing?.lastUserMessageAt),
           idleSince: phase === 'idle'
-            ? incoming.idleSince ?? existing?.idleSince ?? (enteredIdle || enteredEffectiveIdle ? now : undefined)
+            ? incoming.idleSince
+              ?? existing?.idleSince
+              ?? (enteredIdle || enteredEffectiveIdle
+                ? (existing ? now : sessionActivityAnchor(incoming, now))
+                : undefined)
             : incoming.idleSince,
           taskCompletedAt: incoming.phase === 'done'
-            ? incoming.taskCompletedAt ?? existing?.taskCompletedAt ?? (enteredDone ? now : undefined)
+            ? incoming.taskCompletedAt
+              ?? existing?.taskCompletedAt
+              ?? (enteredDone ? (existing ? now : sessionActivityAnchor(incoming, now)) : undefined)
             : incoming.taskCompletedAt,
           lastActivityAt: incoming.lastActivityAt ?? (activityChanged ? now : existing?.lastActivityAt),
         }
@@ -935,7 +948,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
         }
 
-        const hideNonBlockingOverlays = isInternalCodexPromptSession(s) || isCodexTitleMetadataOnlySession(s) || isProbeSession(s)
+        const hideNonBlockingOverlays = !isDisplayableSession(s, now)
+          || isInternalCodexPromptSession(s)
+          || isCodexTitleMetadataOnlySession(s)
+          || isProbeSession(s)
 
         // Detect context compaction starting from backend session snapshots.
         if (!hideNonBlockingOverlays && s.phase === 'compacting' && prev?.phase !== 'compacting') {

@@ -676,6 +676,10 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
 }
 
 pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
+    if agent_id == "workbuddy" {
+        return read_workbuddy_plugins(svc);
+    }
+
     let (cache, marker_dir, source_label, config_path) = match agent_id {
         "claude-code" => (
             svc.home.join(".claude/plugins/cache"),
@@ -744,6 +748,110 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
     }
     out.sort_by_key(|plugin| plugin.name.to_lowercase());
     out
+}
+
+#[derive(Debug, Clone)]
+struct PluginManifestInfo {
+    id: String,
+    name: String,
+    version: Option<String>,
+    source: Option<String>,
+}
+
+fn read_workbuddy_plugins(svc: &Service) -> Vec<PluginStatus> {
+    let enabled_plugins = read_plugin_enabled_config(&svc.home.join(".workbuddy/settings.json"));
+    if enabled_plugins.is_empty() {
+        return Vec::new();
+    }
+
+    let marketplace_root = svc.home.join(".workbuddy/plugins/marketplaces");
+    let manifests = plugin_manifests(&marketplace_root, ".codebuddy-plugin")
+        .into_iter()
+        .filter_map(|manifest| read_plugin_manifest_info(&marketplace_root, &manifest))
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::new();
+    for (config_key, enabled) in enabled_plugins {
+        let (plugin_id, source_from_key) = split_plugin_config_key(&config_key);
+        let manifest = manifests.iter().find(|manifest| {
+            workbuddy_manifest_matches(manifest, &config_key, &plugin_id, &source_from_key)
+        });
+        let source = manifest
+            .and_then(|manifest| manifest.source.clone())
+            .or(source_from_key)
+            .map(|source| format!("workbuddy-plugin:{source}"))
+            .or_else(|| Some("workbuddy-plugin:settings".to_string()));
+
+        out.push(PluginStatus {
+            id: config_key,
+            name: manifest
+                .map(|manifest| manifest.name.clone())
+                .unwrap_or(plugin_id),
+            version: manifest.and_then(|manifest| manifest.version.clone()),
+            enabled,
+            source,
+        });
+    }
+
+    out.sort_by_key(|plugin| plugin.name.to_lowercase());
+    out
+}
+
+fn read_plugin_manifest_info(cache: &Path, manifest: &Path) -> Option<PluginManifestInfo> {
+    let content = std::fs::read_to_string(manifest).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let id = value
+        .get("name")
+        .and_then(|name| name.as_str())?
+        .to_string();
+    if id.is_empty() {
+        return None;
+    }
+
+    Some(PluginManifestInfo {
+        name: value
+            .pointer("/interface/displayName")
+            .and_then(|name| name.as_str())
+            .or_else(|| value.get("displayName").and_then(|name| name.as_str()))
+            .or_else(|| value.get("name").and_then(|name| name.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        version: value
+            .get("version")
+            .and_then(|version| version.as_str())
+            .map(String::from),
+        source: plugin_cache_source(cache, manifest),
+        id,
+    })
+}
+
+fn split_plugin_config_key(config_key: &str) -> (String, Option<String>) {
+    config_key
+        .split_once('@')
+        .map(|(id, source)| (id.to_string(), Some(source.to_string())))
+        .unwrap_or_else(|| (config_key.to_string(), None))
+}
+
+fn workbuddy_manifest_matches(
+    manifest: &PluginManifestInfo,
+    config_key: &str,
+    plugin_id: &str,
+    source_from_key: &Option<String>,
+) -> bool {
+    if manifest
+        .source
+        .as_deref()
+        .map(|source| format!("{}@{}", manifest.id, source) == config_key)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    manifest.id == plugin_id
+        && source_from_key
+            .as_deref()
+            .map(|source| manifest.source.as_deref() == Some(source))
+            .unwrap_or(true)
 }
 
 fn plugin_manifests(cache: &Path, marker_dir: &str) -> Vec<PathBuf> {

@@ -1,9 +1,11 @@
 import { useTranslation } from 'react-i18next'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useSessionStore } from '../../stores/sessionStore'
 import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
+import { buildAgentUsageScores, moveAgentInOrder, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
 
 interface SidebarItem {
   id: string
@@ -62,10 +64,29 @@ export function SettingsSidebar({
   const skillAgents = useSkillStoreV2((s) => s.agents)
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
+  const sessionList = useSessionStore((s) => s.sessionList)
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const [showUninstalledSkillAgents, setShowUninstalledSkillAgents] = useState(false)
+  const [manualAgentOrder, setManualAgentOrder] = useState<string[]>(() => readStoredAgentOrder())
+  const agentUsageScores = useMemo(() => buildAgentUsageScores(sessionList, activeSessionId), [sessionList, activeSessionId])
   const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID), [skillAgents])
-  const installedSkillAgents = useMemo(() => visibleSkillAgents.filter((agent) => agent.installed), [visibleSkillAgents])
-  const uninstalledSkillAgents = useMemo(() => visibleSkillAgents.filter((agent) => !agent.installed), [visibleSkillAgents])
+  const installedSkillAgents = useMemo(
+    () => sortAgentSummaries(
+      visibleSkillAgents.filter((agent) => agent.installed),
+      { manualOrder: manualAgentOrder, usageScores: agentUsageScores },
+    ),
+    [agentUsageScores, manualAgentOrder, visibleSkillAgents],
+  )
+  const uninstalledSkillAgents = useMemo(
+    () => sortAgentSummaries(visibleSkillAgents.filter((agent) => !agent.installed), { usageScores: agentUsageScores }),
+    [agentUsageScores, visibleSkillAgents],
+  )
+  const moveInstalledAgent = useCallback((agentId: string, direction: 'up' | 'down') => {
+    const displayedAgentIds = installedSkillAgents.map((agent) => agent.id)
+    const next = moveAgentInOrder(manualAgentOrder, displayedAgentIds, agentId, direction)
+    setManualAgentOrder(next)
+    writeStoredAgentOrder(next)
+  }, [installedSkillAgents, manualAgentOrder])
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -231,17 +252,40 @@ export function SettingsSidebar({
                   {installedSkillAgents.length === 0 ? (
                     <div className="sm2-sidebar__subgroup-empty">暂无已安装 Agent</div>
                   ) : (
-                    installedSkillAgents.map((a) => (
-                      <button
-                        key={a.id}
-                        type="button"
-                        className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
-                        onClick={() => selectAgent(a.id)}
-                      >
-                        <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
-                        <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
-                        <span className="sm2-sidebar__subitem-dot" />
-                      </button>
+                    installedSkillAgents.map((a, index) => (
+                      <div key={a.id} className="sm2-sidebar__subitem-row">
+                        <button
+                          type="button"
+                          className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
+                          onClick={() => selectAgent(a.id)}
+                        >
+                          <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
+                          <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
+                          <span className="sm2-sidebar__subitem-dot" />
+                        </button>
+                        <span className="sm2-sidebar__reorder" aria-label={`调整 ${a.displayName} 顺序`}>
+                          <button
+                            type="button"
+                            className="sm2-sidebar__reorder-btn"
+                            disabled={index === 0}
+                            aria-label={`上移 ${a.displayName}`}
+                            title={`上移 ${a.displayName}`}
+                            onClick={() => moveInstalledAgent(a.id, 'up')}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="sm2-sidebar__reorder-btn"
+                            disabled={index === installedSkillAgents.length - 1}
+                            aria-label={`下移 ${a.displayName}`}
+                            title={`下移 ${a.displayName}`}
+                            onClick={() => moveInstalledAgent(a.id, 'down')}
+                          >
+                            ↓
+                          </button>
+                        </span>
+                      </div>
                     ))
                   )}
                   {uninstalledSkillAgents.length > 0 && (

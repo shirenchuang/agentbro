@@ -398,6 +398,10 @@ impl HookServer {
         raw.get("tool_use_id")
             .or_else(|| raw.get("toolUseId"))
             .or_else(|| raw.get("toolUseID"))
+            .or_else(|| raw.get("toolCallId"))
+            .or_else(|| raw.get("tool_call_id"))
+            .or_else(|| raw.get("callId"))
+            .or_else(|| raw.get("call_id"))
             .and_then(|value| value.as_str())
             .filter(|value| !value.trim().is_empty())
             .map(|value| value.to_string())
@@ -423,6 +427,35 @@ impl HookServer {
         }
 
         Self::canonical_json_for_signature(input)
+    }
+
+    fn clear_pending_permission_after_tool_resolution(
+        store: &SessionStore,
+        session_id: &str,
+        raw: &serde_json::Value,
+    ) {
+        let Some(session) = store.get_session(session_id) else {
+            return;
+        };
+        let Some(pending) = session.pending_permission else {
+            return;
+        };
+
+        let raw_tool_use_id = Self::raw_tool_use_id(raw);
+        let same_tool_use_id = raw_tool_use_id
+            .as_deref()
+            .is_some_and(|id| pending.tool_use_id.as_deref() == Some(id));
+        if same_tool_use_id || Self::is_permission_resolution_event(raw) {
+            store.set_pending_permission(session_id, None);
+        }
+    }
+
+    fn is_permission_resolution_event(raw: &serde_json::Value) -> bool {
+        let event = Self::raw_event_name(raw).to_ascii_lowercase();
+        event == "permissiondenied"
+            || event.ends_with(".approved")
+            || event.ends_with(".denied")
+            || event.ends_with(".rejected")
     }
 
     fn canonical_json_for_signature(value: &serde_json::Value) -> String {
@@ -520,12 +553,73 @@ impl HookServer {
             .unwrap_or_else(|| "agent".to_string())
     }
 
+    fn permission_input_value_from_raw(raw: &serde_json::Value) -> Option<serde_json::Value> {
+        if let Some(input) = raw.get("tool_input").or_else(|| raw.get("toolInput")) {
+            return Some(input.clone());
+        }
+
+        let mut input = serde_json::Map::new();
+        if let Some(command) = raw
+            .get("commandPreview")
+            .or_else(|| raw.pointer("/messageParams/command"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            input.insert(
+                "command".to_string(),
+                serde_json::Value::String(command.to_string()),
+            );
+        }
+        if let Some(paths) = raw.pointer("/messageParams/paths").cloned() {
+            input.insert("paths".to_string(), paths);
+        }
+        if let Some(message) = raw
+            .get("message")
+            .or_else(|| raw.get("messageKey"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            input.insert(
+                "message".to_string(),
+                serde_json::Value::String(message.to_string()),
+            );
+        }
+        if let Some(category) = raw.get("category").and_then(|value| value.as_str()) {
+            input.insert(
+                "category".to_string(),
+                serde_json::Value::String(category.to_string()),
+            );
+        }
+        if let Some(event_type) = raw.get("eventType").and_then(|value| value.as_str()) {
+            input.insert(
+                "eventType".to_string(),
+                serde_json::Value::String(event_type.to_string()),
+            );
+        }
+
+        (!input.is_empty()).then(|| serde_json::Value::Object(input))
+    }
+
+    fn normalized_permission_input_from_raw(raw: &serde_json::Value) -> Option<serde_json::Value> {
+        let input = Self::permission_input_value_from_raw(raw)?;
+        if let Some(text) = input.as_str() {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
+                return Some(parsed);
+            }
+        }
+        Some(input)
+    }
+
+    fn permission_tool_input_from_raw(raw: &serde_json::Value) -> String {
+        Self::permission_input_value_from_raw(raw)
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    }
+
     fn approval_detail_for_webhook(tool_name: &str, raw: &serde_json::Value) -> Option<String> {
-        let input = raw.get("tool_input").or_else(|| raw.get("toolInput"))?;
-        let parsed_input = input
-            .as_str()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-            .unwrap_or_else(|| input.clone());
+        let parsed_input = Self::normalized_permission_input_from_raw(raw)?;
 
         let mut lines = vec![format!("> {}", tool_name)];
         let command = parsed_input
@@ -961,10 +1055,7 @@ impl HookServer {
                     Some(PendingPermission {
                         tool_use_id: Some(resolved_tool_use_id.clone()),
                         tool_name: tool_name.clone(),
-                        tool_input: raw
-                            .get("tool_input")
-                            .map(|v| v.to_string())
-                            .unwrap_or_default(),
+                        tool_input: Self::permission_tool_input_from_raw(&raw),
                         diff: diff.clone(),
                         options: options.clone(),
                     }),
@@ -1302,6 +1393,7 @@ impl HookServer {
             .get("event")
             .or_else(|| raw.get("hook_event_name"))
             .or_else(|| raw.get("hookEventName"))
+            .or_else(|| raw.get("eventType"))
             .or_else(|| raw.get("type"))
             .and_then(|value| value.as_str())
             .unwrap_or_else(|| Self::event_kind_label(event))
@@ -1404,6 +1496,7 @@ impl HookServer {
         raw.get("event")
             .or_else(|| raw.get("hook_event_name"))
             .or_else(|| raw.get("hookEventName"))
+            .or_else(|| raw.get("eventType"))
             .or_else(|| raw.get("type"))
             .and_then(|value| value.as_str())
             .unwrap_or("unknown")
@@ -1749,6 +1842,9 @@ impl HookServer {
                         }
                         _ => {}
                     }
+                }
+                if status != "running" {
+                    Self::clear_pending_permission_after_tool_resolution(store, session_id, _raw);
                 }
 
                 if Self::is_subagent_tool(tool_name)
@@ -3449,6 +3545,130 @@ mod tests {
         assert!(pending.tool_input.contains("AgentBro Windows smoke"));
 
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn handle_connection_sets_pending_permission_for_workbuddy_safety_event() {
+        let store = Arc::new(SessionStore::new());
+        let adapters: Vec<Arc<dyn AgentAdapter>> =
+            vec![Arc::new(crate::agents::workbuddy::WorkBuddyAdapter::new())];
+        let context = HookConnectionContext {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(adapters),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            let _ = HookServer::handle_connection(server, context).await;
+        });
+
+        client
+            .write_all(
+                br#"{"agent":"workbuddy","sessionId":"workbuddy-safety","cwd":"/Users/me/project","toolCallId":"toolu_1","category":"file-safety","eventType":"file-safety.needs-approval","decision":"info","messageKey":"securityCenter.audit.fileSafety.needsApproval.write","messageParams":{"paths":"/Users/me/Desktop/out"}}"#,
+            )
+            .await
+            .unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.flush().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if store
+                    .get_session("workbuddy-safety")
+                    .and_then(|session| session.pending_permission)
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("workbuddy safety approval should be set");
+
+        let session = store
+            .get_session("workbuddy-safety")
+            .expect("session should exist");
+        assert_eq!(session.agent_type, "workbuddy");
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        let pending = session
+            .pending_permission
+            .expect("permission should stay pending while hook waits");
+        assert_eq!(pending.tool_name, "File Safety");
+        assert_eq!(pending.tool_use_id.as_deref(), Some("toolu_1"));
+        assert!(pending.tool_input.contains("/Users/me/Desktop/out"));
+
+        task.abort();
+    }
+
+    #[test]
+    fn permission_tool_input_synthesizes_workbuddy_audit_context() {
+        let raw = serde_json::json!({
+            "agent": "workbuddy",
+            "sessionId": "s1",
+            "toolCallId": "toolu_1",
+            "category": "command-safety",
+            "eventType": "command-safety.needs-approval",
+            "commandPreview": "pwd && mkdir -p ~/Desktop/out",
+            "messageParams": {
+                "command": "pwd && mkdir -p ~/Desktop/out"
+            }
+        });
+
+        let input = HookServer::permission_tool_input_from_raw(&raw);
+        assert!(input.contains("pwd && mkdir -p"));
+        assert!(input.contains("command-safety"));
+        assert_eq!(
+            HookServer::raw_tool_use_id(&raw).as_deref(),
+            Some("toolu_1")
+        );
+    }
+
+    #[test]
+    fn workbuddy_permission_resolution_clears_matching_pending_permission() {
+        let store = Arc::new(SessionStore::new());
+        store.get_or_create_session("s1", "workbuddy", "project", "/tmp/project", "");
+        store.set_pending_permission(
+            "s1",
+            Some(PendingPermission {
+                tool_use_id: Some("toolu_1".to_string()),
+                tool_name: "File Safety".to_string(),
+                tool_input: "{}".to_string(),
+                diff: None,
+                options: None,
+            }),
+        );
+        let sound = Arc::new(std::sync::Mutex::new(None));
+        let app = Arc::new(std::sync::Mutex::new(None));
+        let config_store = Arc::new(std::sync::Mutex::new(None));
+        let raw = serde_json::json!({
+            "agent": "workbuddy",
+            "sessionId": "s1",
+            "toolCallId": "toolu_1",
+            "category": "file-safety",
+            "eventType": "file-safety.approved",
+            "decision": "approved"
+        });
+        let event = AgentEvent::ToolUse {
+            session_id: "s1".to_string(),
+            tool_name: "File Safety".to_string(),
+            tool_input: "{}".to_string(),
+            tool_target: None,
+            status: "success".to_string(),
+        };
+
+        HookServer::process_event(&event, &raw, &store, &sound, &app, &config_store);
+
+        let session = store.get_session("s1").expect("session should exist");
+        assert!(session.pending_permission.is_none());
+        assert_eq!(session.phase, SessionPhase::Processing);
     }
 
     #[test]
