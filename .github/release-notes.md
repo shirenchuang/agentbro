@@ -1,14 +1,16 @@
-# AgentBro v2.4.0
+# AgentBro v2.5.0
 
 ## English
 
-AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, making the skill manager more predictable when importing local skills or configuring agent-specific fields.
+AgentBro v2.5.0 expands WorkBuddy support and makes Skills v2 agent management more practical for day-to-day cleanup, distribution, and navigation.
 
 ### Highlights
 
-- **Custom agent config fields** - Added support for agent-defined configuration fields in the add-agent dialog, so agents can request the settings they actually need during setup.
-- **Skill source selection** - Fixed skill source field selection to keep local, marketplace, and pack-backed skill flows aligned.
-- **Local skill import conflict handling** - Avoided false conflict warnings when importing local skills, reducing noisy blockers in normal skill management workflows.
+- **Richer WorkBuddy integration** - WorkBuddy now installs hooks into `.workbuddy/settings.json` with nested hook entries and covers prompts, tool use, permissions, notifications, compaction, session lifecycle, and subagent events.
+- **Better permission and session handling** - AgentBro recognizes more WorkBuddy/Codex event shapes, clears resolved permission prompts more reliably, and removes closed or stale Codex App threads from the island.
+- **Skills v2 cleanup tools** - Agent management now supports deleting custom Agent registrations, removing unmanaged local skills, and deleting managed skill distributions from detail views.
+- **Skill pack conflict recovery** - Pack sync can surface blocking conflicts and let you choose whether to overwrite, keep the Agent copy, or skip a target.
+- **Smarter Agent navigation** - Installed Agents in the settings sidebar are ordered by usage, with manual up/down controls for keeping frequent Agents close at hand.
 
 ### Documentation
 
@@ -27,7 +29,7 @@ AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, 
 ### Downloads
 
 - Recommended download: `AgentBro_latest_universal.dmg`
-- Versioned archive: `AgentBro_2.4.0_universal.dmg`
+- Versioned archive: `AgentBro_2.5.0_universal.dmg`
 - Stable Windows installers: `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`; prereleases use versioned installer names.
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
 - Mainland China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
@@ -39,13 +41,15 @@ AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, 
 
 ## 中文
 
-AgentBro v2.4.0 改进了自定义 Agent 设置和技能来源处理，让技能管理器在导入本地技能、配置 Agent 专属字段时更稳定、更可预期。
+AgentBro v2.5.0 扩展了 WorkBuddy 支持，也让 Skills v2 的 Agent 管理更适合日常清理、分发和导航。
 
 ### 重点更新
 
-- **自定义 Agent 配置字段** - 新增 Add Agent 对话框对 Agent 自定义配置字段的支持，Agent 可以在设置时要求填写真正需要的参数。
-- **技能来源选择** - 修复技能来源字段选择逻辑，让本地、市场和技能包来源的流程保持一致。
-- **本地技能导入冲突处理** - 避免导入本地技能时出现误报冲突，减少正常技能管理流程里的干扰。
+- **更完整的 WorkBuddy 集成** - WorkBuddy 现在会把 hook 安装到 `.workbuddy/settings.json`，使用嵌套 hook 配置，并覆盖提示词、工具调用、权限、通知、上下文压缩、会话生命周期和子任务事件。
+- **更稳的权限与会话处理** - AgentBro 能识别更多 WorkBuddy/Codex 事件格式，更可靠地清理已处理的权限请求，并从灵动岛里移除已关闭或过期的 Codex App 线程。
+- **Skills v2 清理工具** - Agent 管理页现在支持删除自定义 Agent 注册、移除未接管的本地 Skill，以及从详情页删除已管理的 Skill 分发。
+- **技能包冲突恢复** - 技能包同步遇到阻止项时，可以直接选择覆盖、保留 Agent 版本或跳过目标。
+- **更聪明的 Agent 导航** - 设置侧边栏里的已安装 Agent 会按使用情况排序，并支持手动上移/下移常用 Agent。
 
 ### 文档
 
@@ -64,7 +68,7 @@ AgentBro v2.4.0 改进了自定义 Agent 设置和技能来源处理，让技能
 ### 下载
 
 - 推荐下载: `AgentBro_latest_universal.dmg`
-- 版本归档: `AgentBro_2.4.0_universal.dmg`
+- 版本归档: `AgentBro_2.5.0_universal.dmg`
 - 稳定版 Windows 安装包: `AgentBro_latest_x64-setup.exe` 与 `AgentBro_latest_x64.msi`; 预览版使用带版本号的安装包文件名。
 - 自动更新文件: `AgentBro.app.tar.gz` 与 `latest.json`
 - 国内直链: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
