@@ -68,7 +68,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: None,
             settings_file: None,
         },
-        "workbuddy" => basic_skill_paths(&h, ".workbuddy/skills-marketplace/skills"),
+        "workbuddy" => basic_skill_paths(&h, ".workbuddy/skills"),
         "copilot" => basic_skill_paths(&h, ".copilot/skills"),
         "kiro" => basic_skill_paths(&h, ".kiro/skills"),
         "pi" => basic_skill_paths(&h, ".pi/agent/skills"),
@@ -249,6 +249,7 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
     match agent {
         "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
+        "workbuddy" => Some(h.join(".workbuddy").join("plugins")),
         _ => custom_agent_plugin_dir(agent),
     }
 }

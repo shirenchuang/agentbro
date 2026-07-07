@@ -1345,7 +1345,7 @@ function SessionCard({
                   <span className="hover-list__yolo-badge">YOLO</span>
                 )}
                 {session.model && (
-                  <span className="hover-list__model-badge">{formatModelName(session.model)}</span>
+                  <span className="hover-list__model-badge" title={formatModelName(session.model)}>{formatModelName(session.model)}</span>
                 )}
                 <span className="hover-list__duration">{formatDurationShort(session.duration)}</span>
                 <button

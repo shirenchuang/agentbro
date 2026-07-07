@@ -473,6 +473,24 @@ pub const QODER_EVENTS: &[HookEventDescriptor] = &[
     plain_event("SubagentStop"),
 ];
 
+pub const WORKBUDDY_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("UserPromptSubmit"),
+    matcher_event("PreToolUse", "*", None),
+    matcher_event("PostToolUse", "*", None),
+    matcher_event("PostToolUseFailure", "*", None),
+    matcher_event("PermissionRequest", "*", Some(21_600)),
+    matcher_event("PermissionDenied", "*", None),
+    matcher_event("Notification", "*", None),
+    plain_event("Stop"),
+    plain_event("StopFailure"),
+    plain_event("SessionStart"),
+    plain_event("SessionEnd"),
+    plain_event("PreCompact"),
+    plain_event("PostCompact"),
+    plain_event("SubagentStart"),
+    plain_event("SubagentStop"),
+];
+
 const fn plain_event(name: &'static str) -> HookEventDescriptor {
     HookEventDescriptor {
         name,
@@ -654,7 +672,18 @@ pub fn stepfun_profile() -> AgentIntegrationProfile {
 }
 
 pub fn workbuddy_profile() -> AgentIntegrationProfile {
-    json_profile("workbuddy", ".workbuddy/hooks.json", BASIC_AGENT_EVENTS)
+    AgentIntegrationProfile {
+        id: "workbuddy",
+        installation_kind: InstallationKind::JsonHooks {
+            entry: JsonHookEntry::TypedCommand,
+            nested: true,
+        },
+        configuration_path: ".workbuddy/settings.json",
+        activation_path: None,
+        source: "workbuddy",
+        extra_args: &[],
+        events: WORKBUDDY_EVENTS,
+    }
 }
 
 fn json_profile(
@@ -3254,6 +3283,66 @@ name = "also keep"
             serde_json::json!("*")
         );
         assert!(updated["hooks"].get("session_start").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workbuddy_profile_uses_settings_json_nested_hooks() {
+        let profile = workbuddy_profile();
+        assert_eq!(profile.configuration_path, ".workbuddy/settings.json");
+        assert!(matches!(
+            profile.installation_kind,
+            InstallationKind::JsonHooks { nested: true, .. }
+        ));
+
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/Users/me/.codeisland/codeisland-bridge --source workbuddy"
+                            }
+                        ],
+                        "matcher": "*"
+                    }
+                ]
+            }
+        });
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-workbuddy-profile-{}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let updated = update_nested_json_hooks(
+            &profile,
+            &path,
+            "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source workbuddy",
+        )
+        .unwrap();
+
+        let session_start = updated["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(session_start.len(), 2);
+        assert!(session_start[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("codeisland-bridge"));
+        assert!(session_start[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--source workbuddy"));
+        assert_eq!(
+            updated["hooks"]["PreToolUse"][0]["matcher"],
+            serde_json::json!("*")
+        );
+        assert!(updated["hooks"].get("PermissionRequest").is_some());
 
         let _ = std::fs::remove_file(path);
     }

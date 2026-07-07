@@ -58,6 +58,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "qwen",
         "kimi",
         "deepseek",
+        "workbuddy",
         "windsurf",
         "augment",
         "kilocode",
@@ -166,6 +167,11 @@ fn table() -> &'static [AgentMeta] {
             icon_key: "deepseek",
         },
         AgentMeta {
+            id: "workbuddy",
+            display_name: "WorkBuddy",
+            icon_key: "workbuddy",
+        },
+        AgentMeta {
             id: "windsurf",
             display_name: "Windsurf",
             icon_key: "windsurf",
@@ -237,6 +243,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "qwen" => ".qwen/skills",
         "kimi" => ".kimi/skills",
         "deepseek" => ".deepseek/skills",
+        "workbuddy" => ".workbuddy/skills",
         "windsurf" => ".windsurf/skills",
         "augment" => ".augment/skills",
         "kilocode" => ".kilocode/skills",
@@ -396,6 +403,19 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workbuddy_is_visible_and_uses_installed_skills_dir() {
+        assert!(visible_agent_ids().iter().any(|id| id == "workbuddy"));
+        assert_eq!(display_name("workbuddy"), "WorkBuddy");
+        assert_eq!(icon_key("workbuddy"), "workbuddy");
+
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_skills_dir(home, "workbuddy"),
+            Some(home.join(".workbuddy/skills"))
+        );
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

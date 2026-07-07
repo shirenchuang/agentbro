@@ -9,6 +9,7 @@ import qwenIcon from '../../assets/cli-icons/qwen.png'
 import kimiIcon from '../../assets/cli-icons/kimi.png'
 import hermesIcon from '../../assets/cli-icons/hermes.png'
 import codebuddyIcon from '../../assets/cli-icons/codebuddy.png'
+import workbuddyIcon from '../../assets/cli-icons/workbuddy.png'
 import qoderIcon from '../../assets/cli-icons/qoder.png'
 import piIcon from '../../assets/cli-icons/pi.png'
 import openclawIcon from '../../assets/openclaw.png'
@@ -34,6 +35,7 @@ const agentIcons: Record<string, string> = {
   'kimi-code-cli': kimiIcon,
   hermes: hermesIcon,
   codebuddy: codebuddyIcon,
+  workbuddy: workbuddyIcon,
   qoder: qoderIcon,
   'qoder-cli': qoderIcon,
   pi: piIcon,
@@ -61,6 +63,7 @@ const agentColors: Record<string, string> = {
   amp: '#84CC16',
   kiro: '#F59E0B',
   hermes: '#14B8A6',
+  workbuddy: '#16C8A7',
 }
 
 const agentLabels: Record<string, string> = {
@@ -85,6 +88,7 @@ const agentLabels: Record<string, string> = {
   amp: 'Am',
   kiro: 'Ki',
   hermes: 'H',
+  workbuddy: 'WB',
 }
 
 export function AgentIconBadge({

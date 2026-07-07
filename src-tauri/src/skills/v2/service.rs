@@ -444,7 +444,23 @@ impl Service {
             )
             .map_err(|e| e.to_string())
         })?;
+        if agent_id == "workbuddy" {
+            self.cleanup_workbuddy_marketplace_unmanaged()?;
+        }
         Ok(())
+    }
+
+    fn cleanup_workbuddy_marketplace_unmanaged(&self) -> Result<(), String> {
+        self.db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM unmanaged_items
+                 WHERE agent_id = 'workbuddy'
+                   AND path LIKE '%/.workbuddy/skills-marketplace/%'",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
     }
 
     fn find_target_by_path(
@@ -3076,6 +3092,48 @@ impl Service {
         Ok(target_skill_id)
     }
 
+    pub fn delete_unmanaged_agent_skill(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+    ) -> Result<(), String> {
+        let item = self.find_unmanaged(unmanaged_id)?;
+        if item.agent_id.as_deref() != Some(agent_id) {
+            return Err(format!(
+                "Unmanaged item '{}' does not belong to agent '{}'.",
+                unmanaged_id, agent_id
+            ));
+        }
+        if item.item_type != "agent_skill" {
+            return Err("Only unmanaged agent skills can be deleted here.".to_string());
+        }
+
+        let path = Path::new(&item.path);
+        let allowed = agent_meta::agent_skill_dirs(&self.home, agent_id)
+            .into_iter()
+            .any(|root| unmanaged_delete_path_allowed(&root, path));
+        if !allowed {
+            return Err(format!(
+                "Refusing to delete unmanaged skill outside '{}' skill roots: {}",
+                agent_id,
+                path.display()
+            ));
+        }
+
+        fsutil::remove_path(path)?;
+        self.db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM unmanaged_items WHERE id = ?1",
+                params![unmanaged_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })?;
+        self.scan_one_agent_into_db(agent_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
     fn upsert_target_managed(
         &self,
         agent_id: &str,
@@ -4667,6 +4725,19 @@ fn existing_target_mode(path: &Path) -> &'static str {
     } else {
         "copy"
     }
+}
+
+fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
+    let root = fsutil::normalized_path(root);
+    if path.is_symlink() {
+        return path
+            .parent()
+            .map(fsutil::normalized_path)
+            .map(|parent| parent.starts_with(&root))
+            .unwrap_or(false);
+    }
+    let path = fsutil::normalized_path(path);
+    path.starts_with(&root) && path != root
 }
 
 fn filesystem_target_mode(path: &Path) -> Option<String> {

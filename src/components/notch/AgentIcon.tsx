@@ -1,5 +1,10 @@
 /* Agent Icon — Per-agent colored icon */
 import type { AgentType } from '../../types/agent'
+import workbuddyIcon from '../../assets/cli-icons/workbuddy.png'
+
+const agentIcons: Partial<Record<AgentType, string>> = {
+  workbuddy: workbuddyIcon,
+}
 
 const agentColors: Record<string, string> = {
   'claude-code': '#D97706',
@@ -12,6 +17,7 @@ const agentColors: Record<string, string> = {
   'droid': '#EF4444',
   'qoder': '#EC4899',
   'codebuddy': '#14B8A6',
+  'workbuddy': '#16C8A7',
   'copilot': '#6B7280',
   'kiro': '#F59E0B',
 }
@@ -27,6 +33,7 @@ const agentLabels: Record<string, string> = {
   'droid': 'D',
   'qoder': 'Q',
   'codebuddy': 'B',
+  'workbuddy': 'WB',
   'copilot': 'Co',
   'kiro': 'K',
 }
@@ -39,6 +46,7 @@ interface AgentIconProps {
 export function AgentIcon({ agentType, size = 20 }: AgentIconProps) {
   const color = agentColors[agentType] || '#6B7280'
   const label = agentLabels[agentType] || '?'
+  const iconSrc = agentIcons[agentType]
 
   return (
     <div
@@ -57,7 +65,16 @@ export function AgentIcon({ agentType, size = 20 }: AgentIconProps) {
         flexShrink: 0,
       }}
     >
-      {label}
+      {iconSrc ? (
+        <img
+          src={iconSrc}
+          alt=""
+          draggable={false}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: size * 0.24 }}
+        />
+      ) : (
+        label
+      )}
     </div>
   )
 }

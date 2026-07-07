@@ -9,6 +9,7 @@ interface SessionContextHeaderProps {
 const AGENT_NAMES: Record<string, string> = {
   'claude-code': 'Claude',
   'gemini-cli': 'Gemini',
+  'workbuddy': 'WorkBuddy',
 }
 
 function getAgentName(type: string): string {
