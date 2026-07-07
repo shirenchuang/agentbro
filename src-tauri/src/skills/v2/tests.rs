@@ -2219,6 +2219,24 @@ fn delete_center_skills_batch_preserves_agent_installs_once() {
 // ── Adopt unmanaged agent skill ─────────────────────────────────
 
 #[test]
+fn missing_unmanaged_adopt_record_returns_stable_error_code() {
+    let (_home, svc, _lock) = fresh_service("adopt-missing-unmanaged");
+
+    let err = svc
+        .preview_adopt_agent_skill("claude-code", "unm-stale-record")
+        .unwrap_err();
+
+    assert!(
+        err.starts_with("SKILL_UNMANAGED_STALE:"),
+        "expected stable stale unmanaged error, got {err}"
+    );
+    assert!(
+        !err.contains("Query returned no rows"),
+        "database no-row error should not leak to callers"
+    );
+}
+
+#[test]
 fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
     let (_home, svc, _lock) = fresh_service("adopt-keep");
     let rogue = write_skill(
@@ -2256,6 +2274,64 @@ fn adopt_import_keep_tracks_agent_skill_and_validates_option() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-agent");
+    let rogue = write_skill(
+        &svc.home.join(".workbuddy/skills"),
+        "rogue",
+        "rogue-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| {
+            u.agent_id.as_deref() == Some("workbuddy") && u.path == rogue.display().to_string()
+        })
+        .expect("workbuddy unmanaged skill found");
+
+    svc.delete_unmanaged_agent_skill("workbuddy", &unmanaged.id)
+        .unwrap();
+
+    assert!(!rogue.exists());
+    assert!(svc.get_skill_detail("rogue-skill").is_err());
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn delete_unmanaged_agent_skill_rejects_wrong_agent() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-wrong-agent");
+    let rogue = write_skill(
+        &svc.home.join(".claude/skills"),
+        "rogue",
+        "rogue-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| {
+            u.agent_id.as_deref() == Some("claude-code") && u.path == rogue.display().to_string()
+        })
+        .expect("claude unmanaged skill found");
+
+    let err = svc
+        .delete_unmanaged_agent_skill("workbuddy", &unmanaged.id)
+        .unwrap_err();
+
+    assert!(err.contains("does not belong to agent"));
+    assert!(rogue.exists());
 }
 
 #[test]
@@ -2751,6 +2827,97 @@ enabled = false
         .plugins
         .iter()
         .any(|plugin| plugin.id == "archived@openai-curated" && !plugin.enabled));
+}
+
+#[test]
+fn agent_detail_reports_workbuddy_plugins_without_marketplace_noise() {
+    let (_home, svc, _lock) = fresh_service("workbuddy-plugins");
+    let workbuddy_dir = svc.home.join(".workbuddy");
+    fs::create_dir_all(&workbuddy_dir).unwrap();
+    fs::write(
+        workbuddy_dir.join("settings.json"),
+        serde_json::json!({
+            "enabledPlugins": {
+                "weixinpay@workbuddy-builtin": true,
+                "playwright-cli@codebuddy-plugins-official": true,
+                "disabled-one@codebuddy-plugins-official": false
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let plugin_manifest = workbuddy_dir.join(
+        "plugins/marketplaces/codebuddy-plugins-official/plugins/playwright-cli/.codebuddy-plugin/plugin.json",
+    );
+    fs::create_dir_all(plugin_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &plugin_manifest,
+        serde_json::json!({
+            "name": "playwright-cli",
+            "displayName": "Playwright CLI",
+            "version": "0.1.0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let disabled_manifest = workbuddy_dir.join(
+        "plugins/marketplaces/codebuddy-plugins-official/plugins/disabled-one/.codebuddy-plugin/plugin.json",
+    );
+    fs::create_dir_all(disabled_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &disabled_manifest,
+        serde_json::json!({
+            "name": "disabled-one",
+            "displayName": "Disabled One",
+            "version": "0.0.1"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let unused_manifest = workbuddy_dir.join(
+        "plugins/marketplaces/codebuddy-plugins-official/plugins/market-only/.codebuddy-plugin/plugin.json",
+    );
+    fs::create_dir_all(unused_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &unused_manifest,
+        serde_json::json!({
+            "name": "market-only",
+            "displayName": "Market Only",
+            "version": "9.9.9"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("workbuddy").unwrap();
+    assert_eq!(
+        detail.plugin_dir,
+        Some(workbuddy_dir.join("plugins").display().to_string())
+    );
+    assert_eq!(detail.plugins.len(), 3);
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "weixinpay@workbuddy-builtin"
+            && plugin.name == "weixinpay"
+            && plugin.enabled
+            && plugin.source.as_deref() == Some("workbuddy-plugin:workbuddy-builtin")
+    }));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "playwright-cli@codebuddy-plugins-official"
+            && plugin.name == "Playwright CLI"
+            && plugin.version.as_deref() == Some("0.1.0")
+            && plugin.enabled
+            && plugin.source.as_deref() == Some("workbuddy-plugin:codebuddy-plugins-official")
+    }));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "disabled-one@codebuddy-plugins-official" && !plugin.enabled
+    }));
+    assert!(!detail
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "market-only"));
 }
 
 #[test]

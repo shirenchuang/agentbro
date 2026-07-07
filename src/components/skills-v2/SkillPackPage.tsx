@@ -18,6 +18,12 @@ import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
+type PackSyncConflictState = {
+  pack: SkillPackDetail
+  targetAgents: string[]
+  requestedMode: 'link' | 'copy'
+  preview: DistributionPreview
+}
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const DEFAULT_SKILL_PACK_ID = 'default'
@@ -40,6 +46,7 @@ export function SkillPackPage() {
   const [deletePreview, setDeletePreview] = useState<DeleteSkillPackPreview | null>(null)
   const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
   const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
+  const [syncConflict, setSyncConflict] = useState<PackSyncConflictState | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
 
@@ -118,10 +125,24 @@ export function SkillPackPage() {
     setSyncNotice(null)
     try {
       const result = await skillApiV2.syncPackToAgents(packId, agentIds)
-      const failed = result.agents.filter((agent) => agent.status === 'failed').length
+      const failedAgents = result.agents.filter((agent) => agent.status === 'failed')
+      if (failedAgents.length > 0) {
+        const targetAgents = failedAgents.map((agent) => agent.agentId)
+        const requestedMode = state.settings?.defaultDistributeMode || 'link'
+        const preview = await skillApiV2.previewApplyPack(packId, targetAgents, requestedMode)
+        if (preview.blockers.length > 0) {
+          const currentPack = useSkillStoreV2.getState().selectedPackDetail
+          const pack = currentPack?.id === packId ? currentPack : await skillApiV2.getPackDetail(packId)
+          setSyncConflict({ pack, targetAgents, requestedMode, preview })
+          setSyncNotice('同步遇到需要处理的冲突，请选择处理方式。')
+          await state.loadOverview(true)
+          await state.selectPack(packId)
+          return
+        }
+      }
       setSyncNotice(
-        failed > 0
-          ? t('skills.packSyncFailedNotice', { count: failed, defaultValue: '{{count}} 个 Agent 同步失败，可查看状态后重试。' })
+        failedAgents.length > 0
+          ? t('skills.packSyncFailedNotice', { count: failedAgents.length, defaultValue: '{{count}} 个 Agent 同步失败，可查看状态后重试。' })
           : t('skills.packSyncDoneNotice', { count: result.agents.length, defaultValue: '已同步 {{count}} 个 Agent。' }),
       )
       await state.loadOverview(true)
@@ -305,6 +326,19 @@ export function SkillPackPage() {
             } finally {
               setBusy(false)
             }
+          }}
+        />
+      )}
+      {syncConflict && (
+        <PackSyncConflictDialog
+          key={`${syncConflict.pack.id}:${syncConflict.targetAgents.join(',')}`}
+          conflict={syncConflict}
+          onClose={() => setSyncConflict(null)}
+          onDone={async () => {
+            const packId = syncConflict.pack.id
+            setSyncConflict(null)
+            await state.loadOverview(true)
+            await state.selectPack(packId)
           }}
         />
       )}
@@ -931,6 +965,143 @@ function RevokePackDialog({
   )
 }
 
+function PackSyncConflictDialog({
+  conflict,
+  onClose,
+  onDone,
+}: {
+  conflict: PackSyncConflictState
+  onClose: () => void
+  onDone: () => void
+}) {
+  const { t } = useTranslation()
+  const [preview, setPreview] = useState(conflict.preview)
+  const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const changesByAction = useMemo(() => {
+    const grouped = { create: 0, reuse: 0, other: 0 }
+    for (const change of preview.changes) {
+      if (change.action === 'create') grouped.create += 1
+      else if (change.action === 'reuse') grouped.reuse += 1
+      else grouped.other += 1
+    }
+    return grouped
+  }, [preview])
+  const unresolvedBlockers = preview.blockers.filter((blocker) => !blockerDecisions[blockerKey(blocker)]).length
+
+  const execute = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const blockerDecisionsPayload = preview.blockers
+        .map((blocker) => {
+          const action = blockerDecisions[blockerKey(blocker)]
+          return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
+        })
+        .filter((item): item is DistributionBlockerDecision => Boolean(item))
+      const result = await skillApiV2.executeApplyPack(
+        conflict.pack.id,
+        conflict.targetAgents,
+        conflict.requestedMode,
+        blockerDecisionsPayload,
+      )
+      if (result.blockers.length > 0) {
+        setPreview(result)
+        setBlockerDecisions({})
+        return
+      }
+      onDone()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <PreviewDialog
+      title="确认同步冲突"
+      confirmLabel="按选择同步"
+      destructive
+      busy={busy}
+      disabled={unresolvedBlockers > 0}
+      onConfirm={execute}
+      onCancel={onClose}
+    >
+      <div className="sm2__notice sm2__notice--warn" style={{ margin: 0 }}>
+        当前同步的 Agent 里面有未接管的同名 Skill。请选择是否覆盖安装，或忽略该目标。
+      </div>
+      <div className="sm2__preview-stats">
+        <PackMetric label="新增 target" value={changesByAction.create} />
+        <PackMetric label="复用 target" value={changesByAction.reuse} />
+        <PackMetric label="阻止项" value={preview.blockers.length} tone={preview.blockers.length > 0 ? 'warn' : 'ok'} />
+      </div>
+      {preview.changes.map((change, index) => (
+        <div key={index} className="sm2__change">
+          {change.action === 'create'
+            ? `新增 ${change.agentId} / ${change.skillId} (${skillModeLabel(t, change.actualMode)})`
+            : `复用 ${change.agentId} / ${change.skillId}`}
+        </div>
+      ))}
+      {preview.blockers.map((blocker, index) => (
+        <div key={index} className="sm2__change sm2__change--blocked">
+          <div>
+            阻止 {blocker.skillId}/{blocker.agentId}：{distributionBlockerMessage(blocker)}
+          </div>
+          {blocker.existingPath && (
+            <div className="sm2-distribute__path-row" style={{ marginTop: 8 }}>
+              <code>{blocker.existingPath}</code>
+              <button type="button" className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(blocker.existingPath!)}>
+                打开
+              </button>
+            </div>
+          )}
+          <div className="sm2-distribute__decision-row" role="radiogroup" aria-label={`${blocker.agentId} 同步冲突处理方式`}>
+            {blocker.existingPath && (
+              <button
+                type="button"
+                className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'overwrite' ? ' sm2-distribute__decision--active' : ''}`}
+                onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'overwrite' }))}
+              >
+                {isManagedCopyBlocker(blocker) ? '以中心库为准' : '覆盖安装'}
+              </button>
+            )}
+            {isManagedCopyBlocker(blocker) && (
+              <button
+                type="button"
+                className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'agent_over_center' ? ' sm2-distribute__decision--active' : ''}`}
+                onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'agent_over_center' }))}
+              >
+                以 Agent 为准
+              </button>
+            )}
+            <button
+              type="button"
+              className={`sm2-distribute__decision${blockerDecisions[blockerKey(blocker)] === 'skip' ? ' sm2-distribute__decision--active' : ''}`}
+              onClick={() => setBlockerDecisions((prev) => ({ ...prev, [blockerKey(blocker)]: 'skip' }))}
+            >
+              忽略此目标
+            </button>
+          </div>
+        </div>
+      ))}
+      {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+    </PreviewDialog>
+  )
+}
+
+function distributionBlockerMessage(blocker: ConflictBlocker) {
+  if (blocker.reason.startsWith('An unmanaged ')) {
+    return '目标路径已存在未接管的同名 Skill，需要先选择覆盖安装或忽略。'
+  }
+  if (isManagedCopyBlocker(blocker)) {
+    return '已管理的 copy 版本有本地修改，需要选择中心库或 Agent 版本为准。'
+  }
+  return blocker.reason
+}
+
 function ApplyPackDialog({
   pack,
   agents,
@@ -1086,7 +1257,7 @@ function ApplyPackDialog({
       {preview.blockers.map((blocker, index) => (
         <div key={index} className="sm2__change sm2__change--blocked">
           <div>
-            阻止 {blocker.skillId}/{blocker.agentId}：{blocker.reason}
+            阻止 {blocker.skillId}/{blocker.agentId}：{distributionBlockerMessage(blocker)}
           </div>
           {blocker.existingPath && (
             <div className="sm2-distribute__path-row" style={{ marginTop: 8 }}>

@@ -136,7 +136,7 @@
 
 .hover-list__session-title {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 260px;
   overflow: hidden;
   color: var(--island-text);
   font-size: 12px;
@@ -153,9 +153,11 @@
 
 .hover-list__meta {
   display: flex;
+  min-width: 0;
+  max-width: min(62%, 720px);
   align-items: center;
   gap: 5px;
-  flex-shrink: 0;
+  flex: 0 1 auto;
   margin-left: auto;
 }
 
@@ -205,7 +207,10 @@
 }
 
 .hover-list__model-badge {
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: min(28vw, 260px);
+  flex: 1 1 auto;
+  overflow: hidden;
   padding: 1px 6px;
   border-radius: 9999px;
   background: rgba(148, 163, 184, 0.12);
@@ -214,6 +219,7 @@
   font-weight: 600;
   letter-spacing: 0.2px;
   line-height: 1.4;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

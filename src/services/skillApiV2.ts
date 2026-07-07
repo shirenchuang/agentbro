@@ -729,6 +729,8 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
   executeAdopt: (agentId: string, unmanagedId: string, option: string, renamedId?: string | null) =>
     isTauriRuntime() ? invoke<string>('execute_adopt_agent_skill', { agentId, unmanagedId, option, renamedId: renamedId ?? null }) : Promise.resolve(''),
+  deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
+    isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }) : Promise.resolve(),
 
   previewSyncCopy: (targetId: string) =>
     isTauriRuntime() ? invoke<CopySyncPreview>('preview_sync_copy_target', { targetId }) : Promise.resolve(null as unknown as CopySyncPreview),

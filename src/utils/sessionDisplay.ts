@@ -70,6 +70,7 @@ export function getAgentDisplayName(session: SessionState): string {
   switch (session.agentType) {
     case 'claude-code': return 'Claude'
     case 'gemini-cli': return 'Gemini'
+    case 'workbuddy': return 'WorkBuddy'
     default: return session.agentType.charAt(0).toUpperCase() + session.agentType.slice(1)
   }
 }

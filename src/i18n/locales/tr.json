@@ -665,7 +665,8 @@
     "errors": {
       "targetDirectChild": "Hedef yol '{{targetPath}}', {{skillsDir}} dizininin doğrudan alt öğesi olmalıdır.",
       "targetNoParent": "Hedef yol '{{targetPath}}' için üst dizin yok.",
-      "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor."
+      "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor.",
+      "unmanagedStale": "Bu Skill artık bekleyenler listesinde değil. Yeniden tarayıp tekrar deneyin."
     },
     "batchAdoptPack": {
       "title": "{{count}} Skill'i yönet",

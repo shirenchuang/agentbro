@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
+import { useId } from 'react'
 
 interface PreviewDialogProps {
   title: string
@@ -30,6 +31,7 @@ export function PreviewDialog({
   onConfirm,
   onCancel,
 }: PreviewDialogProps) {
+  const titleId = useId()
   if (typeof document === 'undefined') return null
 
   const modalClass = [
@@ -40,9 +42,9 @@ export function PreviewDialog({
 
   return createPortal(
     <div className="sm2__overlay" onClick={onCancel}>
-      <div className={modalClass} onClick={(e) => e.stopPropagation()}>
+      <div className={modalClass} role="dialog" aria-modal="true" aria-labelledby={titleId} onClick={(e) => e.stopPropagation()}>
         <div className="sm2__modal-head">
-          <h3>{title}</h3>
+          <h3 id={titleId}>{title}</h3>
         </div>
         <div className="sm2__modal-body">
           {children}

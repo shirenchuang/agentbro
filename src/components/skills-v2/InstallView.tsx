@@ -14,7 +14,7 @@ import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
-import { skillModeLabel, unmanagedReasonLabel } from './skillLabels'
+import { skillErrorMessage, skillModeLabel, unmanagedReasonLabel } from './skillLabels'
 import { extractSkillDescription, stripSkillFrontmatter } from './frontmatter'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
@@ -1443,6 +1443,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [detailRow, setDetailRow] = useState<AgentSyncRow | null>(null)
+  const [deleteDetailRow, setDeleteDetailRow] = useState<AgentSyncRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -1455,6 +1456,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [batchConflictOpen, setBatchConflictOpen] = useState(false)
   const [batchConflictScope, setBatchConflictScope] = useState<BatchConflictScope>('scoped')
   const [cleaningShared, setCleaningShared] = useState(false)
+  const [deletingDetailTargetId, setDeletingDetailTargetId] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -1662,7 +1664,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           await skillApiV2.executeAdopt(item.agentId, item.id, defaultBatchAdoptMode(item))
           ok += 1
         } catch (e) {
-          failed.push(`${item.name}: ${String(e)}`)
+          failed.push(`${item.name}: ${skillErrorMessage(t, e)}`)
         }
       }
       await load()
@@ -1686,7 +1688,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       const preview = await skillApiV2.previewAdopt(item.agentId, item.id)
       setAdoptPreview(preview)
     } catch (e) {
-      setError(String(e))
+      setError(skillErrorMessage(t, e))
     } finally {
       setAdoptOpeningId(null)
     }
@@ -1721,6 +1723,28 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       setError(String(e))
     } finally {
       setCleaningShared(false)
+    }
+  }
+
+  const deleteDetailDistribution = async (row: AgentSyncRow) => {
+    const targetId = row.item.targetId
+    if (!targetId || deletingDetailTargetId) return
+    setDeletingDetailTargetId(targetId)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await skillApiV2.deleteSkillTargetDistributions([targetId])
+      await load()
+      await onDone()
+      setDetailRow(null)
+      setDeleteDetailRow(null)
+      const failed = result.failures.map((failure) => `${row.item.name}: ${failure.error}`)
+      setNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
+      if (failed.length > 0) setError(failed.slice(0, 3).join('\n'))
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setDeletingDetailTargetId(null)
     }
   }
 
@@ -1777,7 +1801,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           await skillApiV2.executeAdopt(item.agentId, item.id, oneClickAdoptMode(item, mode), null)
           ok += 1
         } catch (e) {
-          failed.push(`${item.name}: ${String(e)}`)
+          failed.push(`${item.name}: ${skillErrorMessage(t, e)}`)
         }
       }
       await load()
@@ -1814,7 +1838,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
           )
           ok += 1
         } catch (e) {
-          failed.push(`${item.name}: ${String(e)}`)
+          failed.push(`${item.name}: ${skillErrorMessage(t, e)}`)
         }
       }
       await load()
@@ -2132,9 +2156,25 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
         row={detailRow}
         importing={importing}
         opening={Boolean(adoptOpeningId)}
+        deleting={Boolean(deletingDetailTargetId)}
         onClose={() => setDetailRow(null)}
         onAdopt={(item) => void openAdoptPreview(item)}
+        onDelete={(row) => setDeleteDetailRow(row)}
       />
+
+      {deleteDetailRow && (
+        <PreviewDialog
+          title={`删除 Agent 分发「${deleteDetailRow.item.name}」`}
+          confirmLabel="确认删除"
+          busyLabel="删除中…"
+          destructive
+          busy={deletingDetailTargetId === deleteDetailRow.item.targetId}
+          onCancel={() => setDeleteDetailRow(null)}
+          onConfirm={() => void deleteDetailDistribution(deleteDetailRow)}
+        >
+          <p>将从 <strong>{deleteDetailRow.agent.displayName}</strong> 移除这个 Skill 分发，并删除对应的本地目标。之后仍可从中心库重新安装。</p>
+        </PreviewDialog>
+      )}
 
       {adoptPreview && (
         <AdoptDialog
@@ -2417,15 +2457,18 @@ function AgentSyncProgress({ progress }: { progress: AgentSyncImportProgress }) 
   )
 }
 
-function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
+function AgentSkillDetail({ row, importing, opening, deleting, onClose, onAdopt, onDelete }: {
   row: AgentSyncRow | null
   importing: boolean
   opening: boolean
+  deleting: boolean
   onClose: () => void
   onAdopt: (item: AgentSkillInventoryItem) => void
+  onDelete: (row: AgentSyncRow) => void
 }) {
   const agent = row?.agent
   const item = row?.item
+  const canDelete = Boolean(row && item?.managed && item.targetId)
   const [revealBusy, setRevealBusy] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
 
@@ -2468,6 +2511,11 @@ function AgentSkillDetail({ row, importing, opening, onClose, onAdopt }: {
             <button className="sm2__btn sm2__btn--ghost" disabled={revealBusy} onClick={() => void revealInFinder()}>
               {revealBusy ? '打开中…' : '打开目录 ↗'}
             </button>
+            {canDelete && row && (
+              <button className="sm2__btn sm2__btn--danger" disabled={importing || opening || deleting} onClick={() => onDelete(row)}>
+                {deleting ? '删除中…' : '删除分发'}
+              </button>
+            )}
           </>
         ) : undefined
       }

@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { AdoptPreview } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
+import { skillErrorMessage } from './skillLabels'
 
 export function AdoptDialog({
   preview,
@@ -12,6 +14,7 @@ export function AdoptDialog({
   onClose: () => void
   onDone: () => void | Promise<void>
 }) {
+  const { t } = useTranslation()
   const [option, setOption] = useState(() => preferredAdoptOption(preview.options))
   const [renamedId, setRenamedId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -27,7 +30,7 @@ export function AdoptDialog({
       await skillApiV2.executeAdopt(preview.agentId, preview.unmanagedId, option, option === 'rename' ? renamedId : null)
       await onDone()
     } catch (e) {
-      setError(String(e))
+      setError(skillErrorMessage(t, e))
     } finally {
       setBusy(false)
     }

@@ -1269,11 +1269,7 @@ async fn handle_codex_app_server_notification(
             let Some(thread_id) = codex_string(params, "threadId") else {
                 return Ok(());
             };
-            store.update_session(&thread_id, |session| {
-                session.phase = SessionPhase::Done;
-                session.description = Some("Session ended".to_string());
-                session.last_response = Some("Session ended".to_string());
-            });
+            store.remove_session(&thread_id);
         }
         _ => {}
     }
@@ -1766,6 +1762,10 @@ fn sync_codex_app_server_thread_to_store(
     thread: &serde_json::Value,
 ) -> Option<CodexAppServerThreadSummary> {
     let thread_id = codex_string(thread, "id")?;
+    if codex_thread_is_closed(thread) {
+        store.remove_session(&thread_id);
+        return None;
+    }
     let name = codex_string(thread, "name");
     let preview = codex_string(thread, "preview");
     let cwd = codex_string(thread, "cwd")
@@ -1779,6 +1779,10 @@ fn sync_codex_app_server_thread_to_store(
         .map(str::to_string);
     let updated_at = codex_timestamp(thread.get("updatedAt").or_else(|| thread.get("updated_at")));
     let created_at = codex_timestamp(thread.get("createdAt").or_else(|| thread.get("created_at")));
+    if codex_app_server_idle_thread_is_stale(&phase, updated_at) {
+        store.remove_session(&thread_id);
+        return None;
+    }
     let (last_user_message, last_response) = codex_latest_messages_from_thread(thread);
     let project = name
         .clone()
@@ -1924,6 +1928,49 @@ fn sync_remote_codex_thread_to_store(
 
 fn codex_phase_from_thread(thread: &serde_json::Value) -> SessionPhase {
     codex_phase_from_status(thread.get("status"), None)
+}
+
+fn codex_thread_is_closed(thread: &serde_json::Value) -> bool {
+    for key in ["archived", "deleted", "closed", "ended"] {
+        if thread.get(key).and_then(|value| value.as_bool()) == Some(true) {
+            return true;
+        }
+        if thread
+            .get("status")
+            .and_then(|status| status.get(key))
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
+            return true;
+        }
+    }
+
+    let closed_states = ["archived", "deleted", "closed", "ended"];
+    let status_text = thread
+        .get("status")
+        .and_then(|status| {
+            status
+                .as_str()
+                .or_else(|| status.get("type").and_then(|value| value.as_str()))
+        })
+        .or_else(|| thread.get("state").and_then(|value| value.as_str()))
+        .or_else(|| thread.get("lifecycle").and_then(|value| value.as_str()))
+        .map(|value| value.trim().to_ascii_lowercase());
+
+    status_text
+        .as_deref()
+        .is_some_and(|value| closed_states.contains(&value))
+}
+
+fn codex_app_server_idle_thread_is_stale(phase: &SessionPhase, updated_at: Option<i64>) -> bool {
+    const IDLE_THREAD_RETENTION_SECONDS: i64 = 30 * 60;
+    if !matches!(phase, SessionPhase::Idle | SessionPhase::Done) {
+        return false;
+    }
+    let Some(updated_at) = updated_at else {
+        return false;
+    };
+    chrono::Utc::now().timestamp() - updated_at > IDLE_THREAD_RETENTION_SECONDS
 }
 
 fn codex_phase_from_status(
@@ -6948,6 +6995,73 @@ mod tests {
             Some("I found the timing issue.")
         );
         assert_eq!(session.term_bundle_id.as_deref(), Some("com.openai.codex"));
+    }
+
+    #[test]
+    fn codex_app_server_thread_sync_removes_closed_threads() {
+        let store = SessionStore::new();
+        let active_thread = serde_json::json!({
+            "id": "thread-closed",
+            "name": "Old work",
+            "cwd": "/tmp/agentbro",
+            "status": { "type": "active", "activeFlags": [] }
+        });
+        let archived_thread = serde_json::json!({
+            "id": "thread-closed",
+            "name": "Old work",
+            "cwd": "/tmp/agentbro",
+            "archived": true,
+            "status": { "type": "active", "activeFlags": [] }
+        });
+        let closed_status_thread = serde_json::json!({
+            "id": "thread-status-closed",
+            "name": "Closed work",
+            "cwd": "/tmp/agentbro",
+            "status": { "type": "closed" }
+        });
+
+        sync_codex_app_server_thread_to_store(&store, &active_thread).unwrap();
+        assert!(store.get_session("thread-closed").is_some());
+
+        assert!(sync_codex_app_server_thread_to_store(&store, &archived_thread).is_none());
+        assert!(store.get_session("thread-closed").is_none());
+        assert!(sync_codex_app_server_thread_to_store(&store, &closed_status_thread).is_none());
+        assert!(store.get_session("thread-status-closed").is_none());
+    }
+
+    #[test]
+    fn codex_app_server_thread_sync_drops_stale_idle_threads() {
+        let store = SessionStore::new();
+        let stale_updated_at = chrono::Utc::now().timestamp() - 31 * 60;
+        let active_thread = serde_json::json!({
+            "id": "thread-stale-idle",
+            "name": "Old idle work",
+            "cwd": "/tmp/agentbro",
+            "updatedAt": stale_updated_at,
+            "status": { "type": "active", "activeFlags": [] }
+        });
+        let stale_idle_thread = serde_json::json!({
+            "id": "thread-stale-idle",
+            "name": "Old idle work",
+            "cwd": "/tmp/agentbro",
+            "updatedAt": stale_updated_at,
+            "status": { "type": "idle" }
+        });
+        let recent_idle_thread = serde_json::json!({
+            "id": "thread-recent-idle",
+            "name": "Recent idle work",
+            "cwd": "/tmp/agentbro",
+            "updatedAt": chrono::Utc::now().timestamp() - 60,
+            "status": { "type": "idle" }
+        });
+
+        sync_codex_app_server_thread_to_store(&store, &active_thread).unwrap();
+        assert!(store.get_session("thread-stale-idle").is_some());
+
+        assert!(sync_codex_app_server_thread_to_store(&store, &stale_idle_thread).is_none());
+        assert!(store.get_session("thread-stale-idle").is_none());
+        assert!(sync_codex_app_server_thread_to_store(&store, &recent_idle_thread).is_some());
+        assert!(store.get_session("thread-recent-idle").is_some());
     }
 
     #[test]

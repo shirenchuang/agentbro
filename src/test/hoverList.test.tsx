@@ -87,6 +87,21 @@ describe('HoverList interactions', () => {
     expect(screen.queryByText(/environment_context/)).not.toBeInTheDocument()
   })
 
+  it('keeps Unknown project labels when the backend cannot infer a project', () => {
+    render(
+      <HoverList
+        sessions={[session({
+          project: 'Unknown',
+          sessionTitle: '@skill:expert-manager 帮我创建一个内容创作专家',
+          lastUserMessage: '@skill:expert-manager 帮我创建一个内容创作专家',
+        })]}
+        onSessionClick={vi.fn()}
+      />,
+    )
+
+    expect(document.querySelector('.hover-list__session-title')).toHaveTextContent('Unknown · @skill:expert-manager 帮我创建一个内容创作专家')
+  })
+
   it('opens session detail on mouse down so hover state cannot swallow the click', () => {
     const onSessionClick = vi.fn()
     render(<HoverList sessions={[session()]} onSessionClick={onSessionClick} />)

@@ -818,7 +818,8 @@
     "errors": {
       "targetDirectChild": "대상 경로 '{{targetPath}}'은(는) {{skillsDir}}의 직접 하위 항목이어야 합니다.",
       "targetNoParent": "대상 경로 '{{targetPath}}'에 상위 디렉터리가 없습니다.",
-      "targetNameMismatch": "대상 경로 '{{targetPath}}'이(가) Skill '{{skillId}}'와 일치하지 않습니다."
+      "targetNameMismatch": "대상 경로 '{{targetPath}}'이(가) Skill '{{skillId}}'와 일치하지 않습니다.",
+      "unmanagedStale": "이 Skill은 더 이상 대기 목록에 없습니다. 다시 스캔한 뒤 재시도하세요."
     },
     "installing": "Installing...",
     "sync": "Sync",

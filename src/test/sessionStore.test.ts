@@ -333,6 +333,50 @@ describe('sessionStore backend overlays', () => {
     expect(state.activeSessionId).toBeNull()
   })
 
+  it('uses backend activity time for cold-restored idle sessions', () => {
+    const oldActivitySeconds = Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000)
+    useConfigStore.setState({ sessionTimeoutMinutes: 30 })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'old-codex',
+        agentType: 'codex',
+        terminal: 'Codex',
+        phase: 'idle',
+        startedAt: oldActivitySeconds - 60,
+        lastMainAgentAt: oldActivitySeconds,
+        sessionTitle: 'Old Codex thread',
+        lastUserMessage: 'Old Codex thread',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessions['old-codex'].idleSince).toBe(oldActivitySeconds * 1000)
+    expect(state.sessionList).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
+  it('does not replay cold-restored completed sessions after the display timeout', () => {
+    const oldActivitySeconds = Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000)
+    useConfigStore.setState({ sessionTimeoutMinutes: 30 })
+
+    useSessionStore.getState().replaceAllSessions([
+      session({
+        id: 'old-done',
+        phase: 'done',
+        startedAt: oldActivitySeconds - 60,
+        lastMainAgentAt: oldActivitySeconds,
+        description: 'Finished old work',
+        responseText: 'Finished old work',
+      }),
+    ])
+
+    const state = useSessionStore.getState()
+    expect(state.sessions['old-done'].taskCompletedAt).toBe(oldActivitySeconds * 1000)
+    expect(state.sessionList).toEqual([])
+    expect(state.activeOverlay).toBeNull()
+  })
+
   it('refreshes visible sessions when an inactive row crosses the session timeout', () => {
     const now = Date.now()
     useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 5 })

@@ -818,7 +818,8 @@
     "errors": {
       "targetDirectChild": "ターゲットパス '{{targetPath}}' は {{skillsDir}} の直接の子である必要があります。",
       "targetNoParent": "ターゲットパス '{{targetPath}}' には親ディレクトリがありません。",
-      "targetNameMismatch": "ターゲットパス '{{targetPath}}' は Skill '{{skillId}}' と一致しません。"
+      "targetNameMismatch": "ターゲットパス '{{targetPath}}' は Skill '{{skillId}}' と一致しません。",
+      "unmanagedStale": "この Skill は保留リストにもうありません。再スキャンしてからもう一度お試しください。"
     },
     "installing": "Installing...",
     "sync": "Sync",

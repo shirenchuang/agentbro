@@ -5,6 +5,8 @@ const SOURCE_TYPE_KEYS: Record<string, string> = {
   'skills.sh': 'skills_sh',
 }
 
+const STALE_UNMANAGED_ERROR_CODE = 'SKILL_UNMANAGED_STALE'
+
 export function skillModeLabel(t: TFunction, mode?: string | null): string {
   if (mode === 'link') return t('skills.mode.link', { defaultValue: 'Symlink' })
   if (mode === 'copy') return t('skills.mode.copy', { defaultValue: 'Copy' })
@@ -34,4 +36,15 @@ export function targetClaimLabel(t: TFunction, claim?: Pick<TargetClaim, 'claimT
 export function unmanagedReasonLabel(t: TFunction, reason?: string | null): string {
   if (!reason) return ''
   return t(`skills.reason.${reason}`, { defaultValue: reason })
+}
+
+export function skillErrorMessage(t: TFunction, error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  const message = raw.replace(/^Error:\s*/, '')
+  if (message.startsWith(STALE_UNMANAGED_ERROR_CODE) || message === 'Query returned no rows') {
+    return t('skills.errors.unmanagedStale', {
+      defaultValue: 'This Skill is no longer in the pending list. Rescan and try again.',
+    })
+  }
+  return raw
 }

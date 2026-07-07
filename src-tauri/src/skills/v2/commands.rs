@@ -154,6 +154,11 @@ pub fn execute_adopt_agent_skill(
 }
 
 #[tauri::command]
+pub fn delete_unmanaged_agent_skill(agent_id: String, unmanaged_id: String) -> Result<(), String> {
+    svc()?.delete_unmanaged_agent_skill(&agent_id, &unmanaged_id)
+}
+
+#[tauri::command]
 pub fn preview_sync_copy_target(
     target_id: String,
 ) -> Result<crate::skills::v2::service::CopySyncPreview, String> {
