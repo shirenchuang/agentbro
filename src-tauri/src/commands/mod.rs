@@ -5230,14 +5230,22 @@ pub async fn update_config(state: State<'_, AppState>, config: AppConfig) -> Res
 }
 
 #[tauri::command]
-pub async fn set_language(state: State<'_, AppState>, language: String) -> Result<(), String> {
+pub async fn set_language(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    language: String,
+) -> Result<(), String> {
     let language = match language.as_str() {
         "en" | "zh" | "ja" | "ko" | "tr" => language,
         other => return Err(format!("Unsupported language: {}", other)),
     };
     let mut config = state.config_store.get();
     config.language = language;
-    state.config_store.update(config)
+    state.config_store.update(config)?;
+    if let Err(error) = crate::refresh_skill_pack_tray_menu(&app) {
+        log::warn!("Failed to refresh tray menu language: {error}");
+    }
+    Ok(())
 }
 
 #[tauri::command]

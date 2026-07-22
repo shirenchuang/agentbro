@@ -670,7 +670,9 @@ export const useConfigStore = create<ConfigStore>()(
 
   // Actions
   updateConfig: (key, value) => {
-    set({ [key]: value } as Partial<ConfigState>)
+    set((state) => Object.is(state[key], value)
+      ? state
+      : ({ [key]: value } as Partial<ConfigState>))
   },
 
   resetIslandDefaults: () => {

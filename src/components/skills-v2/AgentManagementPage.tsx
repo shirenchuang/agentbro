@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { open } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
-import type { AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
+import type { AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
 import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
@@ -45,6 +46,10 @@ type BatchAdoptPackOption = {
   description: string
   memberCount: number
 }
+type MoveToPackOption = BatchAdoptPackOption & {
+  applied: boolean
+  isDefault: boolean
+}
 
 const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
@@ -72,6 +77,7 @@ export function AgentManagementPage() {
   const [scanningAgentId, setScanningAgentId] = useState<string | null>(null)
   const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null)
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null)
+  const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
   const [adoptingUnmanagedId, setAdoptingUnmanagedId] = useState<string | null>(null)
   const [programs, setPrograms] = useState<Record<string, AgentProgramInfo>>({})
@@ -81,11 +87,12 @@ export function AgentManagementPage() {
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
   const [customDialogOpen, setCustomDialogOpen] = useState(false)
+  const [uninstallAgentTarget, setUninstallAgentTarget] = useState<AgentDetail | null>(null)
   const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentDetail | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
   const selectedAgentIdRef = useRef<string | null>(null)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
-  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
+  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
 
   const loadPrograms = useCallback(async () => {
     setProgramLoading(true)
@@ -104,6 +111,12 @@ export function AgentManagementPage() {
     loadPrograms()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (state.customAgentDialogRequest <= 0) return
+    setCustomDialogOpen(true)
+    useSkillStoreV2.setState({ customAgentDialogRequest: 0 })
+  }, [state.customAgentDialogRequest])
 
   useEffect(() => {
     selectedAgentIdRef.current = state.selectedAgentId
@@ -311,6 +324,93 @@ export function AgentManagementPage() {
     }
   }
 
+  const uninstallAgent = async (agent: AgentDetail) => {
+    setUninstallingAgentId(agent.id)
+    setNotice(null)
+    state.setError(null)
+    setAgentOutput([])
+    const failures: string[] = []
+    let removedSkills = 0
+    try {
+      const program = programs[agent.id]
+      const programInstalled = program?.status === 'installed' || program?.status === 'updateAvailable'
+      if (programInstalled && program.uninstallCommand) {
+        try {
+          await agentApi.uninstall(agent.id)
+        } catch (error) {
+          failures.push(`程序：${skillErrorMessage(t, error)}`)
+        }
+      }
+
+      const targetIds = agent.skills.map((skill) => skill.id)
+      if (targetIds.length > 0) {
+        try {
+          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds)
+          removedSkills += result.deleted
+          failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
+        } catch (error) {
+          failures.push(`已管理 Skills：${skillErrorMessage(t, error)}`)
+        }
+      }
+
+      const unmanagedItems = useSkillStoreV2.getState().unmanaged
+        .filter((item) => item.agentId === agent.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+      for (const item of unmanagedItems) {
+        try {
+          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id)
+          removedSkills += 1
+        } catch (error) {
+          failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
+        }
+      }
+
+      if (program?.hooksInstalled) {
+        try {
+          await agentApi.uninstallHook(agent.id)
+        } catch (error) {
+          failures.push(`Hook：${skillErrorMessage(t, error)}`)
+        }
+      }
+
+      const remainingUnmanaged = await skillApiV2.listUnmanaged()
+      useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
+      setUninstallAgentTarget(null)
+      await Promise.all([loadPrograms(), state.loadOverview(true)])
+      if (failures.length > 0) {
+        if (useSkillStoreV2.getState().selectedAgentId === agent.id) {
+          await state.loadAgentDetail(agent.id, true)
+        }
+        state.setError(`部分卸载失败：${failures.slice(0, 3).join('；')}`)
+      } else {
+        const programRemoved = !programInstalled || Boolean(program?.uninstallCommand)
+        if (programRemoved) {
+          const current = useSkillStoreV2.getState()
+          const nextAgents = current.agents.map((item) => item.id === agent.id
+            ? {
+                ...item,
+                enabled: false,
+                installed: false,
+                version: null,
+                managedSkillCount: 0,
+                unmanagedSkillCount: 0,
+              }
+            : item)
+          useSkillStoreV2.setState({ agents: nextAgents })
+          if (current.selectedAgentId === agent.id) {
+            const nextAgent = nextAgents.find((item) => item.installed && item.id !== SHARED_SKILLS_AGENT_ID)
+            await state.selectAgent(nextAgent?.id ?? null)
+          }
+        }
+        const cleanup = removedSkills > 0 ? `，已清理 ${removedSkills} 个 Skills` : ''
+        setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
+      }
+    } catch (e) {
+      state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
+    } finally {
+      setUninstallingAgentId(null)
+    }
+  }
+
   const openAgentDownload = async (agentId: string) => {
     setOpeningAgentId(agentId)
     try {
@@ -341,7 +441,7 @@ export function AgentManagementPage() {
     setNotice(null)
     state.setError(null)
     try {
-      await state.loadOverview(true)
+      await Promise.all([state.refresh(), loadPrograms()])
     } finally {
       setRefreshingOverview(false)
     }
@@ -357,10 +457,15 @@ export function AgentManagementPage() {
     setNotice(null)
     state.setError(null)
     try {
-      await agentApi.addCustom(config)
+      const added = await agentApi.addCustom(config)
       await Promise.all([state.loadOverview(true), loadPrograms()])
+      if (useSkillStoreV2.getState().agents.some((agent) => agent.id === added.id)) {
+        await state.selectAgent(added.id)
+      }
       setCustomDialogOpen(false)
-      setNotice('自定义 Agent 已添加')
+      setNotice(config.category === 'claude-compatible'
+        ? 'Claude Code 实例已添加，Hook 已安装'
+        : '自定义 Agent 已添加')
     } catch (e) {
       state.setError(String(e))
     } finally {
@@ -388,6 +493,28 @@ export function AgentManagementPage() {
     }
   }
 
+  const selectedProgram = detail ? programs[detail.id] ?? null : null
+  const selectedProgramInstalled = selectedProgram?.status === 'installed' || selectedProgram?.status === 'updateAvailable'
+  const selectedUnmanagedItems = detail
+    ? state.unmanaged.filter((item) => item.agentId === detail.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    : []
+  const selectedHasResiduals = Boolean(detail && (
+    detail.skills.length > 0
+    || selectedUnmanagedItems.length > 0
+    || detail.appliedPacks.length > 0
+    || selectedProgram?.hooksInstalled
+  ))
+  const canUninstallSelectedAgent = Boolean(
+    selectedProgram
+    && !selectedProgram.isCustom
+    && ((selectedProgramInstalled && selectedProgram?.uninstallCommand) || selectedHasResiduals),
+  )
+  const uninstallProgram = uninstallAgentTarget ? programs[uninstallAgentTarget.id] ?? null : null
+  const uninstallProgramInstalled = uninstallProgram?.status === 'installed' || uninstallProgram?.status === 'updateAvailable'
+  const uninstallUnmanagedItems = uninstallAgentTarget
+    ? state.unmanaged.filter((item) => item.agentId === uninstallAgentTarget.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    : []
+
   return (
     <div className="sm2 sm2--agents">
       <div className="sm2__header sm2__header--stacked">
@@ -396,9 +523,17 @@ export function AgentManagementPage() {
           <p className="sm2__header-subtitle">查看每个 Agent 的 Skills、技能包、MCP、插件与 Hook 状态。</p>
         </div>
         <div className="sm2__tabs">
-          <ActionButton className="sm2__btn sm2__btn--primary" onClick={() => setCustomDialogOpen(true)} disabled={busy}>
-            添加自定义 Agent
-          </ActionButton>
+          {detail && canUninstallSelectedAgent && (
+            <ActionButton
+              className="sm2__btn sm2__btn--danger"
+              disabled={state.loading || actionBusy}
+              busy={uninstallingAgentId === detail.id}
+              busyLabel="卸载中"
+              onClick={() => setUninstallAgentTarget(detail)}
+            >
+              卸载 Agent
+            </ActionButton>
+          )}
           <ActionButton className="sm2__btn" onClick={refreshOverview} disabled={state.loading || actionBusy} busy={refreshingOverview} busyLabel="刷新中">
             刷新总览
           </ActionButton>
@@ -488,6 +623,54 @@ export function AgentManagementPage() {
           onSubmit={addCustomAgent}
         />
       )}
+      {uninstallAgentTarget && (
+        <PreviewDialog
+          title={`卸载 Agent「${uninstallAgentTarget.displayName}」`}
+          confirmLabel="确认卸载"
+          busyLabel="卸载中"
+          modalClassName="sm2__modal--agent-uninstall"
+          destructive
+          busy={uninstallingAgentId === uninstallAgentTarget.id}
+          onCancel={() => setUninstallAgentTarget(null)}
+          onConfirm={() => uninstallAgent(uninstallAgentTarget)}
+        >
+          <p className="sm2-agent-uninstall__intro">卸载会移除支持自动卸载的程序，并清理 AgentBro 检测到的本地能力残留。</p>
+          <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
+            {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
+              <div><strong>程序</strong><span>{uninstallProgram.kind === 'app' ? '移到废纸篓' : '执行卸载命令'}</span></div>
+            )}
+            {uninstallProgramInstalled && !uninstallProgram?.uninstallCommand && (
+              <div><strong>程序</strong><span>不支持自动卸载，将保留</span></div>
+            )}
+            {uninstallAgentTarget.skills.length > 0 && (
+              <div><strong>{uninstallAgentTarget.skills.length}</strong><span>已管理 Skills</span></div>
+            )}
+            {uninstallUnmanagedItems.length > 0 && (
+              <div className="sm2-agent-uninstall__danger-count"><strong>{uninstallUnmanagedItems.length}</strong><span>未管理 Skills</span></div>
+            )}
+            {uninstallAgentTarget.appliedPacks.length > 0 && (
+              <div><strong>{uninstallAgentTarget.appliedPacks.length}</strong><span>技能包关联</span></div>
+            )}
+            {uninstallProgram?.hooksInstalled && (
+              <div><strong>Hook</strong><span>移除 AgentBro Hook</span></div>
+            )}
+            {!uninstallProgramInstalled && (
+              <div><strong>程序</strong><span>未安装，仅清理残留</span></div>
+            )}
+          </div>
+          {uninstallUnmanagedItems.length > 0 && (
+            <div className="sm2-agent-uninstall__warning">未管理 Skills 会直接删除；若中心库没有副本，删除后无法从 AgentBro 恢复。</div>
+          )}
+          <div className="sm2-agent-uninstall__preserved">保留：中心技能库、Agent 配置、会话记录、MCP 与插件配置。</div>
+          {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
+            <code className="sm2__command-preview">
+              {uninstallProgram.kind === 'app'
+                ? `移到废纸篓：${uninstallProgram.appPath}`
+                : uninstallProgram.uninstallCommand}
+            </code>
+          )}
+        </PreviewDialog>
+      )}
       {deleteAgentTarget && (
         <PreviewDialog
           title={`删除 Agent「${deleteAgentTarget.displayName}」`}
@@ -498,7 +681,7 @@ export function AgentManagementPage() {
           onCancel={() => setDeleteAgentTarget(null)}
           onConfirm={() => deleteCustomAgent(deleteAgentTarget)}
         >
-          <p>这只会移除 AgentBro 中的自定义 Agent 注册，不会删除你的 Agent 配置目录或 Skills 文件。</p>
+          <p>会移除 AgentBro 注册并清理该实例的 AgentBro Hook，不会删除配置目录、会话记录或 Skills 文件。</p>
         </PreviewDialog>
       )}
     </div>
@@ -514,7 +697,7 @@ function CustomAgentDialog({
   onClose: () => void
   onSubmit: (config: CustomAgentConfig) => Promise<void>
 }) {
-  const [engine, setEngine] = useState('claude-compatible')
+  const { t } = useTranslation()
   const [displayName, setDisplayName] = useState('')
   const [configRoot, setConfigRoot] = useState('')
   const [skillsDir, setSkillsDir] = useState('')
@@ -530,6 +713,15 @@ function CustomAgentDialog({
     setSettingsFile(paths.settingsFile)
     setMcpConfig(paths.mcpConfig)
     setPluginDir(paths.pluginDir)
+  }
+
+  const chooseRoot = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false })
+      if (typeof selected === 'string') applyRoot(selected)
+    } catch (nextError) {
+      setError(String(nextError))
+    }
   }
 
   const submit = async () => {
@@ -552,9 +744,9 @@ function CustomAgentDialog({
     await onSubmit({
       id: null,
       displayName: name,
-      category: engine,
+      category: 'claude-compatible',
       globalSkillsDir: skillPath,
-      iconName: engine === 'claude-compatible' ? 'claude-code' : 'custom',
+      iconName: 'claude-code',
       configDir: root,
       settingsFile: settingsFile.trim() || null,
       mcpConfig: mcpConfig.trim() || null,
@@ -563,86 +755,96 @@ function CustomAgentDialog({
   }
 
   return (
-    <div className="skills-dialog-overlay" onClick={onClose}>
+    <div className="skills-dialog-overlay sm2-custom-agent-overlay" onClick={onClose}>
       <div
         aria-labelledby="custom-agent-dialog-title"
         className="skills-dialog custom-agent-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
       >
         <div className="skills-dialog__header">
-          <div className="skills-dialog__title" id="custom-agent-dialog-title">添加自定义 Agent</div>
+          <div>
+            <div className="skills-dialog__title" id="custom-agent-dialog-title">{t('settings.addEngineBranch')}</div>
+            <p className="custom-agent-dialog__subtitle">让企业封装版 Claude Code 使用自己的配置目录，同时复用 AgentBro 的 Hook、会话和 Skills 管理。</p>
+          </div>
         </div>
         <div className="skills-dialog__body">
-          <div className="install-form-row">
-            <label className="install-form-label" htmlFor="custom-agent-engine">兼容引擎</label>
-            <select
-              className="install-form-input"
-              id="custom-agent-engine"
-              value={engine}
-              onChange={(e) => setEngine(e.target.value)}
-            >
-              <option value="claude-compatible">Claude Code 兼容</option>
-              <option value="custom">通用 Agent</option>
-            </select>
+          <div className="custom-agent-compatibility" role="note">
+            <AgentIconBadge iconKey="claude-code" size={28} />
+            <div>
+              <strong>沿用 Claude Code 能力</strong>
+              <span>保存后自动写入该目录的 settings.json，并监听独立的 projects 与 Skills 目录。</span>
+            </div>
+            <em>自动安装 Hook</em>
           </div>
           <div className="install-form-row">
             <label className="install-form-label" htmlFor="custom-agent-name">显示名称</label>
             <input
               className="install-form-input"
               id="custom-agent-name"
-              placeholder="例如 AntCC"
+              placeholder="例如研发团队 Claude Code"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
             />
           </div>
           <div className="install-form-row">
             <label className="install-form-label" htmlFor="custom-agent-root">配置根目录</label>
-            <input
-              className="install-form-input"
-              id="custom-agent-root"
-              placeholder="例如 /Users/me/.codefuse/engine/cc"
-              value={configRoot}
-              onChange={(e) => applyRoot(e.target.value)}
-            />
-            <div className="custom-agent-hint">填写根目录后会自动推导 Skills、settings、MCP 和插件缓存路径。</div>
+            <div className="custom-agent-path-input">
+              <input
+                className="install-form-input"
+                id="custom-agent-root"
+                placeholder="例如 ~/.codefuse/engine/cc/"
+                value={configRoot}
+                onChange={(e) => applyRoot(e.target.value)}
+              />
+              <button className="skills-btn custom-agent-path-input__browse" type="button" disabled={busy} onClick={chooseRoot}>
+                选择目录
+              </button>
+            </div>
+            <div className="custom-agent-hint">请选择实际存在的 Claude 配置根目录；其下通常包含 settings.json、projects 和 skills。</div>
           </div>
-          <div className="install-form-row">
-            <label className="install-form-label" htmlFor="custom-agent-skills">Skills 目录</label>
-            <input
-              className="install-form-input"
-              id="custom-agent-skills"
-              value={skillsDir}
-              onChange={(e) => setSkillsDir(e.target.value)}
-            />
-          </div>
-          <div className="install-form-row">
-            <label className="install-form-label" htmlFor="custom-agent-settings">Settings 文件</label>
-            <input
-              className="install-form-input"
-              id="custom-agent-settings"
-              value={settingsFile}
-              onChange={(e) => setSettingsFile(e.target.value)}
-            />
-          </div>
-          <div className="install-form-row">
-            <label className="install-form-label" htmlFor="custom-agent-mcp">MCP 配置</label>
-            <input
-              className="install-form-input"
-              id="custom-agent-mcp"
-              value={mcpConfig}
-              onChange={(e) => setMcpConfig(e.target.value)}
-            />
-          </div>
-          <div className="install-form-row">
-            <label className="install-form-label" htmlFor="custom-agent-plugin">Plugin 目录</label>
-            <input
-              className="install-form-input"
-              id="custom-agent-plugin"
-              value={pluginDir}
-              onChange={(e) => setPluginDir(e.target.value)}
-            />
-          </div>
+          <details className="custom-agent-advanced">
+            <summary>高级路径设置</summary>
+            <div className="custom-agent-advanced__fields">
+              <div className="install-form-row">
+                <label className="install-form-label" htmlFor="custom-agent-skills">Skills 目录</label>
+                <input
+                  className="install-form-input"
+                  id="custom-agent-skills"
+                  value={skillsDir}
+                  onChange={(e) => setSkillsDir(e.target.value)}
+                />
+              </div>
+              <div className="install-form-row">
+                <label className="install-form-label" htmlFor="custom-agent-settings">Settings 文件</label>
+                <input
+                  className="install-form-input"
+                  id="custom-agent-settings"
+                  value={settingsFile}
+                  onChange={(e) => setSettingsFile(e.target.value)}
+                />
+              </div>
+              <div className="install-form-row">
+                <label className="install-form-label" htmlFor="custom-agent-mcp">MCP 配置</label>
+                <input
+                  className="install-form-input"
+                  id="custom-agent-mcp"
+                  value={mcpConfig}
+                  onChange={(e) => setMcpConfig(e.target.value)}
+                />
+              </div>
+              <div className="install-form-row">
+                <label className="install-form-label" htmlFor="custom-agent-plugin">Plugin 目录</label>
+                <input
+                  className="install-form-input"
+                  id="custom-agent-plugin"
+                  value={pluginDir}
+                  onChange={(e) => setPluginDir(e.target.value)}
+                />
+              </div>
+            </div>
+          </details>
           {error && <div className="custom-agent-error">{error}</div>}
         </div>
         <div className="skills-dialog__footer">
@@ -881,7 +1083,15 @@ function AgentDetailView({
       </div>
 
       <div className="sm2__subtab-body">
-        {tab === 'overview' && <OverviewTab detail={detail} busy={busy} onRevoke={onRevoke} onApplyPack={onApplyPack} />}
+        {tab === 'overview' && (
+          <OverviewTab
+            detail={detail}
+            busy={busy}
+            onOpenSection={onTab}
+            onRevoke={onRevoke}
+            onApplyPack={onApplyPack}
+          />
+        )}
         {tab === 'skills' && (
           <SkillsTab
             detail={detail}
@@ -918,60 +1128,269 @@ function Stat({ value, label, tone }: { value: number; label: string; tone?: 'ok
 function OverviewTab({
   detail,
   busy,
+  onOpenSection,
   onRevoke,
   onApplyPack,
 }: {
   detail: AgentDetail
   busy: boolean
+  onOpenSection: (tab: DetailTab) => void
   onRevoke: (packId: string, agentId: string) => void
   onApplyPack: (packId: string, agentId: string) => boolean | Promise<boolean>
 }) {
+  const showUnmanaged = useSkillStoreV2((s) => s.settings?.showUnmanaged ?? true)
+  const unmanagedCount = useSkillStoreV2((s) => s.unmanaged)
+    .filter((item) => showUnmanaged && item.agentId === detail.id).length
   const appliedIds = new Set(detail.appliedPacks.map((p) => p.packId))
   const available = detail.availablePacks.filter((p) => !appliedIds.has(p.id))
+  const validMcpCount = detail.mcpServers.filter((server) => server.valid).length
+  const enabledPluginCount = detail.plugins.filter((plugin) => plugin.enabled).length
+  const invalidMcpCount = detail.mcpServers.length - validMcpCount
+  const configuredPaths = [detail.skillsDir, detail.configPath, detail.mcpConfigPath, detail.pluginDir]
+    .filter(Boolean).length
+  const healthErrors = detail.health.filter((issue) => ['error', 'critical'].includes(issue.severity.toLowerCase())).length
+  const attentionCount = detail.health.length + unmanagedCount + invalidMcpCount
+  const statusTone = healthErrors > 0 ? 'danger' : attentionCount > 0 ? 'attention' : 'ready'
+  const statusTitle = healthErrors > 0
+    ? `${healthErrors} 项配置异常`
+    : attentionCount > 0
+      ? `${attentionCount} 项需要关注`
+      : '运行状态良好'
+  const statusDescription = healthErrors > 0
+    ? '关键配置存在异常，建议先修复后再同步能力。'
+    : attentionCount > 0
+      ? 'Agent 可以继续使用，完成下方事项后会更稳定。'
+      : 'Skills、扩展与配置均未发现待处理问题。'
+  const nextActions: Array<{ label: string; meta: string; tab: DetailTab; tone?: 'warn' }> = []
+
+  if (unmanagedCount > 0) {
+    nextActions.push({ label: `接管 ${unmanagedCount} 个未管理 Skill`, meta: '统一纳入中心库管理', tab: 'skills', tone: 'warn' })
+  }
+  if (invalidMcpCount > 0) {
+    nextActions.push({ label: `修复 ${invalidMcpCount} 个 MCP 配置`, meta: '存在缺失或无效命令', tab: 'mcp', tone: 'warn' })
+  }
+  if (detail.health.length > 0) {
+    nextActions.push({ label: `查看 ${detail.health.length} 项健康提示`, meta: '检查路径与配置详情', tab: 'config', tone: 'warn' })
+  }
+  if (available.length > 0) {
+    nextActions.push({ label: `${available.length} 个技能包可应用`, meta: '按场景继续扩展能力', tab: 'skills' })
+  }
+
+  const capabilities: Array<{
+    id: string
+    label: string
+    value: number
+    unit: string
+    detail: string
+    tab: DetailTab
+    tone: 'blue' | 'green' | 'amber' | 'violet'
+    progress: number
+  }> = [
+    {
+      id: 'skills',
+      label: 'Skills',
+      value: detail.skills.length,
+      unit: '已管理',
+      detail: unmanagedCount > 0 ? `${unmanagedCount} 个待接管` : '全部已纳入管理',
+      tab: 'skills',
+      tone: unmanagedCount > 0 ? 'amber' : 'blue',
+      progress: detail.skills.length + unmanagedCount === 0 ? 100 : detail.skills.length / (detail.skills.length + unmanagedCount) * 100,
+    },
+    {
+      id: 'packs',
+      label: '技能包',
+      value: detail.appliedPacks.length,
+      unit: '已应用',
+      detail: available.length > 0
+        ? `${available.length} 个可继续应用`
+        : detail.appliedPacks.length > 0 ? '当前技能包已全部应用' : '尚未应用技能包',
+      tab: 'skills',
+      tone: 'violet',
+      progress: detail.appliedPacks.length + available.length === 0 ? 0 : detail.appliedPacks.length / (detail.appliedPacks.length + available.length) * 100,
+    },
+    {
+      id: 'mcp',
+      label: 'MCP 服务',
+      value: validMcpCount,
+      unit: detail.mcpServers.length > 0 ? `/ ${detail.mcpServers.length} 可用` : '未配置',
+      detail: detail.mcpServers.length === 0 ? '尚未连接服务' : invalidMcpCount > 0 ? `${invalidMcpCount} 个配置异常` : '服务连接正常',
+      tab: 'mcp',
+      tone: invalidMcpCount > 0 ? 'amber' : detail.mcpServers.length > 0 ? 'green' : 'blue',
+      progress: detail.mcpServers.length === 0 ? 0 : validMcpCount / detail.mcpServers.length * 100,
+    },
+    {
+      id: 'plugins',
+      label: 'Plugins',
+      value: enabledPluginCount,
+      unit: detail.plugins.length > 0 ? `/ ${detail.plugins.length} 启用` : '未安装',
+      detail: detail.plugins.length === 0 ? '暂无插件扩展' : enabledPluginCount === detail.plugins.length ? '插件均已启用' : `${detail.plugins.length - enabledPluginCount} 个未启用`,
+      tab: 'plugins',
+      tone: 'green',
+      progress: detail.plugins.length === 0 ? 0 : enabledPluginCount / detail.plugins.length * 100,
+    },
+  ]
+
   return (
-    <div className="sm2__two-col">
-      <section className="sm2__panel">
-        <div className="sm2__panel-head">
-          <h3>已应用技能包</h3>
-          <span>{detail.appliedPacks.length}</span>
+    <div className="sm2__agent-overview">
+      <section className={`sm2__agent-overview-status sm2__agent-overview-status--${statusTone}`}>
+        <div className="sm2__agent-overview-status-copy">
+          <div className="sm2__agent-overview-kicker">
+            <span className="sm2__agent-overview-pulse" />
+            Agent 状态
+          </div>
+          <h3>{statusTitle}</h3>
+          <p>{statusDescription}</p>
         </div>
-        {detail.appliedPacks.length === 0 ? (
-          <div className="sm2__empty sm2__empty--compact">暂未应用技能包</div>
-        ) : (
-          detail.appliedPacks.map((p) => (
-            <div key={p.packId} className="sm2__object-row">
-              <div>
-                <strong>{p.packName}</strong>
-                <span>{p.memberCount} 个 Skill</span>
-              </div>
-              <button className="sm2__btn sm2__btn--danger" disabled={busy} onClick={() => onRevoke(p.packId, detail.id)}>
-                撤销
-              </button>
-            </div>
-          ))
-        )}
-      </section>
-      <section className="sm2__panel">
-        <div className="sm2__panel-head">
-          <h3>可应用技能包</h3>
-          <span>{available.length}</span>
+        <div className="sm2__agent-overview-readiness" aria-label={`配置完整度 ${configuredPaths} / 4`}>
+          <div>
+            <span>配置完整度</span>
+            <strong>{configuredPaths}<small>/4</small></strong>
+          </div>
+          <div className="sm2__agent-overview-readiness-track" aria-hidden="true">
+            <span style={{ width: `${configuredPaths / 4 * 100}%` }} />
+          </div>
+          <button type="button" onClick={() => onOpenSection('config')}>查看配置 <span aria-hidden="true">→</span></button>
         </div>
-        {available.length === 0 ? (
-          <div className="sm2__empty sm2__empty--compact">没有更多可应用技能包</div>
-        ) : (
-          available.map((p) => (
-            <div key={p.id} className="sm2__object-row">
-              <div>
-                <strong>{p.name}</strong>
-                <span>{p.memberCount} 个 Skill · {p.appliedAgentCount} 个 Agent 已用</span>
-              </div>
-              <button className="sm2__btn sm2__btn--primary" disabled={busy || p.memberCount === 0} onClick={() => onApplyPack(p.id, detail.id)}>
-                应用
-              </button>
-            </div>
-          ))
-        )}
       </section>
+
+      <section className="sm2__agent-overview-section" aria-labelledby="agent-capability-title">
+        <div className="sm2__agent-overview-section-head">
+          <div>
+            <h3 id="agent-capability-title">能力快照</h3>
+            <p>点击卡片查看和管理对应能力</p>
+          </div>
+          <span>{detail.skills.length + detail.mcpServers.length + detail.plugins.length} 项能力已连接</span>
+        </div>
+        <div className="sm2__agent-capability-grid">
+          {capabilities.map((capability) => (
+            <button
+              key={capability.id}
+              type="button"
+              className={`sm2__agent-capability-card sm2__agent-capability-card--${capability.tone}`}
+              onClick={() => onOpenSection(capability.tab)}
+            >
+              <span className="sm2__agent-capability-label">
+                <i aria-hidden="true">{capability.label.slice(0, 1)}</i>
+                {capability.label}
+                <b aria-hidden="true">↗</b>
+              </span>
+              <span className="sm2__agent-capability-value">
+                <strong>{capability.value}</strong>
+                <small>{capability.unit}</small>
+              </span>
+              <span className="sm2__agent-capability-detail">{capability.detail}</span>
+              <span className="sm2__agent-capability-track" aria-hidden="true">
+                <span style={{ width: `${Math.max(0, Math.min(100, capability.progress))}%` }} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="sm2__agent-overview-lower">
+        <section className="sm2__agent-overview-panel">
+          <div className="sm2__agent-overview-panel-head">
+            <div>
+              <h3>技能包</h3>
+              <p>快速调整当前 Agent 生效的技能组合</p>
+            </div>
+            <button type="button" onClick={() => onOpenSection('skills')}>管理全部</button>
+          </div>
+          <div className="sm2__agent-overview-pack-groups">
+            <div className="sm2__agent-overview-pack-group">
+              <div className="sm2__agent-overview-pack-group-head">
+                <span>已生效</span>
+                <b>{detail.appliedPacks.length}</b>
+              </div>
+              {detail.appliedPacks.length > 0 ? (
+                <div className="sm2__agent-overview-pack-list">
+                  {detail.appliedPacks.map((pack) => (
+                    <div key={pack.packId} className="sm2__agent-overview-pack-row sm2__agent-overview-pack-row--active">
+                      <span aria-hidden="true">✓</span>
+                      <div>
+                        <strong>{pack.packName}</strong>
+                        <small>{pack.memberCount} 个 Skill</small>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`取消应用 ${pack.packName}`}
+                        disabled={busy}
+                        onClick={() => onRevoke(pack.packId, detail.id)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="sm2__agent-overview-pack-empty">暂未应用技能包</div>
+              )}
+            </div>
+
+            <div className="sm2__agent-overview-pack-group">
+              <div className="sm2__agent-overview-pack-group-head">
+                <span>可应用</span>
+                <b>{available.length}</b>
+              </div>
+              {available.length > 0 ? (
+                <div className="sm2__agent-overview-pack-list">
+                  {available.map((pack) => (
+                    <div key={pack.id} className="sm2__agent-overview-pack-row">
+                      <span aria-hidden="true">＋</span>
+                      <div>
+                        <strong>{pack.name}</strong>
+                        <small>{pack.memberCount} 个 Skill · {pack.appliedAgentCount} 个 Agent 已用</small>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`应用 ${pack.name}`}
+                        disabled={busy || pack.memberCount === 0}
+                        onClick={() => onApplyPack(pack.id, detail.id)}
+                      >
+                        应用
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="sm2__agent-overview-pack-empty">没有更多可应用技能包</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="sm2__agent-overview-panel sm2__agent-overview-panel--next">
+          <div className="sm2__agent-overview-panel-head">
+            <div>
+              <h3>下一步</h3>
+              <p>{nextActions.length > 0 ? '根据当前状态整理的建议' : '当前没有必须处理的事项'}</p>
+            </div>
+            {nextActions.length > 0 && <span>{nextActions.length}</span>}
+          </div>
+          {nextActions.length > 0 ? (
+            <div className="sm2__agent-overview-actions">
+              {nextActions.slice(0, 4).map((action) => (
+                <button key={`${action.tab}-${action.label}`} type="button" onClick={() => onOpenSection(action.tab)}>
+                  <i className={action.tone === 'warn' ? 'is-warn' : ''} aria-hidden="true" />
+                  <div>
+                    <strong>{action.label}</strong>
+                    <small>{action.meta}</small>
+                  </div>
+                  <b aria-hidden="true">→</b>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="sm2__agent-overview-all-clear">
+              <span aria-hidden="true">✓</span>
+              <div>
+                <strong>已准备就绪</strong>
+                <small>可以开始在任务中使用这个 Agent。</small>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   )
 }
@@ -1017,6 +1436,7 @@ function SkillsTab({
   const [adoptingIds, setAdoptingIds] = useState<Set<string>>(() => new Set())
   const [batchDeleteTargets, setBatchDeleteTargets] = useState<AgentDetail['skills'] | null>(null)
   const [batchAdoptItems, setBatchAdoptItems] = useState<UnmanagedItemDto[] | null>(null)
+  const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
   const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
@@ -1055,6 +1475,10 @@ function SkillsTab({
   const unmanagedDeleting = deletingUnmanagedIds.size > 0
   const unmanagedAdopting = adoptingIds.size > 0
   const actionBusy = busy || managedDeleting || unmanagedDeleting || unmanagedAdopting
+  const moveToPackOptions = useMemo(
+    () => packOptionsForMove(detail, state.packs),
+    [detail, state.packs],
+  )
 
   useEffect(() => {
     setManagedSelectionMode(false)
@@ -1062,6 +1486,7 @@ function SkillsTab({
     setSelectedManagedIds(new Set())
     setSelectedUnmanagedIds(new Set())
     setBatchDeleteTargets(null)
+    setMoveToPackTarget(null)
     setDeleteUnmanagedTarget(null)
   }, [detail.id, scope])
 
@@ -1363,6 +1788,7 @@ function SkillsTab({
           busy={actionBusy}
           onToggle={toggleManaged}
           onDelete={(skill) => deleteManaged([skill])}
+          onMoveToPack={moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
           onOpenSkillDetail={onOpenSkillDetail}
         />
       )}
@@ -1432,6 +1858,21 @@ function SkillsTab({
             const items = batchAdoptItems
             setBatchAdoptItems(null)
             await adoptUnmanaged(items, selection)
+          }}
+        />
+      )}
+      {moveToPackTarget && (
+        <MoveDirectSkillToPackDialog
+          target={moveToPackTarget}
+          packs={moveToPackOptions}
+          onCancel={() => setMoveToPackTarget(null)}
+          onDone={async (result) => {
+            await refreshAgentSkills()
+            setMoveToPackTarget(null)
+            setLocalNotice(t('skills.moveToPack.success', {
+              skill: result.skillName,
+              pack: result.packName,
+            }))
           }}
         />
       )}
@@ -1628,6 +2069,203 @@ function BatchAdoptPackDialog({
   )
 }
 
+function MoveDirectSkillToPackDialog({
+  target,
+  packs,
+  onCancel,
+  onDone,
+}: {
+  target: AgentDetail['skills'][number]
+  packs: MoveToPackOption[]
+  onCancel: () => void
+  onDone: (result: MoveDirectSkillToPackPreview) => Promise<void> | void
+}) {
+  const { t } = useTranslation()
+  const [packId, setPackId] = useState(() => {
+    const existingPackClaim = target.claims.find((claim) => (
+      claim.claimType === 'pack'
+      && claim.packId !== null
+      && packs.some((pack) => pack.id === claim.packId)
+    ))
+    return existingPackClaim?.packId ?? packs[0]?.id ?? ''
+  })
+  const [preview, setPreview] = useState<MoveDirectSkillToPackPreview | null>(null)
+  const [blockerDecisions, setBlockerDecisions] = useState<Record<string, PackBlockerDecision>>({})
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const name = pathBasename(target.targetPath) || target.skillId
+
+  useEffect(() => {
+    if (!packId) return
+    let active = true
+    setLoading(true)
+    setPreview(null)
+    setBlockerDecisions({})
+    setError(null)
+    skillApiV2.previewMoveDirectSkillToPack(target.id, packId)
+      .then((next) => {
+        if (active) setPreview(next)
+      })
+      .catch((nextError) => {
+        if (active) setError(skillErrorMessage(t, nextError))
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [packId, t, target.id])
+
+  const blockers = preview?.distribution.blockers ?? []
+  const unresolvedBlockers = blockers.filter((blocker) => !blockerDecisions[installBlockerKey(blocker)]).length
+  const selectedPack = packs.find((pack) => pack.id === packId)
+
+  const execute = async () => {
+    if (!preview) return
+    const decisions = blockers.map((blocker) => ({
+      skillId: blocker.skillId,
+      agentId: blocker.agentId,
+      action: blockerDecisions[installBlockerKey(blocker)],
+    })).filter((decision): decision is DistributionBlockerDecision => Boolean(decision.action))
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await skillApiV2.moveDirectSkillToPack(target.id, packId, decisions)
+      await onDone(result)
+    } catch (nextError) {
+      setError(skillErrorMessage(t, nextError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <PreviewDialog
+      title={t('skills.moveToPack.title')}
+      confirmLabel={t('skills.moveToPack.confirm')}
+      busyLabel={t('skills.moveToPack.moving')}
+      cancelLabel={t('skills.cancel')}
+      busy={busy}
+      disabled={loading || !preview || unresolvedBlockers > 0}
+      modalClassName="sm2__modal--move-to-pack sm2__modal--light-surface"
+      onCancel={onCancel}
+      onConfirm={execute}
+    >
+      <div className="sm2-move-to-pack">
+        <div className="sm2-move-to-pack__subject">
+          <div className="sm2__agent-skill-icon">{initials(name)}</div>
+          <div>
+            <span>{t('skills.moveToPack.skill')}</span>
+            <strong>{name}</strong>
+            <code>{target.targetPath}</code>
+          </div>
+          <span className="sm2__tag sm2__tag--ready">{t('skills.claim.direct')}</span>
+        </div>
+
+        <label className="sm2-move-to-pack__select" htmlFor="sm2-move-to-pack-select">
+          <span>{t('skills.moveToPack.targetPack')}</span>
+          <select
+            id="sm2-move-to-pack-select"
+            value={packId}
+            disabled={busy}
+            onChange={(event) => setPackId(event.target.value)}
+          >
+            {packs.map((pack) => (
+              <option key={pack.id} value={pack.id}>
+                {pack.name} · {t('skills.moveToPack.memberCount', { count: pack.memberCount })} · {pack.applied ? t('skills.moveToPack.applied') : t('skills.moveToPack.notApplied')}
+              </option>
+            ))}
+          </select>
+          {selectedPack?.description && <small>{selectedPack.description}</small>}
+          {selectedPack?.isDefault && <small>{t('skills.moveToPack.defaultPackHint')}</small>}
+        </label>
+
+        {loading && <div className="sm2-move-to-pack__loading">{t('skills.moveToPack.previewing')}</div>}
+
+        {preview && (
+          <section className="sm2-move-to-pack__impact" aria-label={t('skills.moveToPack.impact')}>
+            <h4>{t('skills.moveToPack.impact')}</h4>
+            <div className="sm2-move-to-pack__impact-row">
+              <span>1</span>
+              <div>
+                <strong>{preview.willAddToPack ? t('skills.moveToPack.addMembershipTitle') : t('skills.moveToPack.keepMembershipTitle')}</strong>
+                <small>{preview.willAddToPack
+                  ? t('skills.moveToPack.addMembership', { skill: preview.skillName, pack: preview.packName })
+                  : t('skills.moveToPack.keepMembership', { skill: preview.skillName, pack: preview.packName })}</small>
+              </div>
+            </div>
+            <div className="sm2-move-to-pack__impact-row">
+              <span>2</span>
+              <div>
+                <strong>{preview.alreadyApplied ? t('skills.moveToPack.syncPackTitle') : t('skills.moveToPack.applyPackTitle')}</strong>
+                <small>{preview.alreadyApplied
+                  ? t('skills.moveToPack.syncPack', {
+                      pack: preview.packName,
+                      agent: preview.displayName,
+                    })
+                  : preview.otherMemberCount > 0
+                    ? t('skills.moveToPack.applyPack', {
+                        pack: preview.packName,
+                        agent: preview.displayName,
+                        count: preview.otherMemberCount,
+                      })
+                    : t('skills.moveToPack.noOtherMembers', { pack: preview.packName })}</small>
+              </div>
+            </div>
+            <div className="sm2-move-to-pack__impact-row sm2-move-to-pack__impact-row--final">
+              <span>3</span>
+              <div>
+                <strong>{t('skills.moveToPack.removeDirectTitle')}</strong>
+                <small>{t('skills.moveToPack.removeDirect', { skill: preview.skillName, agent: preview.displayName })}</small>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {preview && blockers.length > 0 && (
+          <section className="sm2-move-to-pack__conflicts">
+            <h4>{t('skills.moveToPack.conflicts', { count: blockers.length })}</h4>
+            {blockers.map((blocker) => {
+              const key = installBlockerKey(blocker)
+              const decision = blockerDecisions[key]
+              const managedCopyBlocker = isManagedCopyBlocker(blocker)
+              return (
+                <div key={key} className="sm2-agent-install__preview-row sm2-agent-install__preview-row--blocked">
+                  <span className="sm2__tag sm2__tag--conflict">{t('skills.moveToPack.blocked')}</span>
+                  <div>
+                    <strong>{blocker.skillId}</strong>
+                    <span>{blocker.reason}</span>
+                    {blocker.existingPath && <code>{blocker.existingPath}</code>}
+                    <div className="sm2-agent-install__decision-row">
+                      {blocker.existingPath && (
+                        <button type="button" className={`sm2__btn${decision === 'overwrite' ? ' sm2__btn--active' : ''}`} onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'overwrite' }))}>
+                          {managedCopyBlocker ? t('skills.moveToPack.centerWins') : t('skills.moveToPack.overwrite')}
+                        </button>
+                      )}
+                      {managedCopyBlocker && (
+                        <button type="button" className={`sm2__btn${decision === 'agent_over_center' ? ' sm2__btn--active' : ''}`} onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'agent_over_center' }))}>
+                          {t('skills.moveToPack.agentWins')}
+                        </button>
+                      )}
+                      <button type="button" className={`sm2__btn${decision === 'skip' ? ' sm2__btn--active' : ''}`} onClick={() => setBlockerDecisions((current) => ({ ...current, [key]: 'skip' }))}>
+                        {t('skills.moveToPack.skip')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </section>
+        )}
+
+        {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      </div>
+    </PreviewDialog>
+  )
+}
+
 function PackApplyProgressToast({ progress }: { progress: PackApplyProgress }) {
   return (
     <div
@@ -1807,31 +2445,56 @@ function AgentPackToggleRail({
       applied: true,
       isDefault: pack.packId === 'default',
     }))
-  const rows = [...availableRows, ...appliedOnlyRows]
+  const rows = [...availableRows, ...appliedOnlyRows].sort((left, right) => {
+    if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1
+    if (left.applied !== right.applied) return left.applied ? -1 : 1
+    return 0
+  })
+  const appliedCount = rows.filter((pack) => pack.applied).length
 
   if (rows.length === 0) return null
 
   return (
     <section className="sm2__agent-pack-rail" aria-label="技能包应用">
       <div className="sm2__agent-pack-rail-head">
-        <strong>技能包</strong>
-        <span>点击应用到当前 Agent，再点取消应用。</span>
+        <div className="sm2__agent-pack-rail-title">
+          <span className="sm2__agent-pack-rail-mark" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+          </span>
+          <div>
+            <strong>技能包</strong>
+            <span>选择一组能力快速应用，再次点击即可取消</span>
+          </div>
+        </div>
+        <div className="sm2__agent-pack-rail-summary" aria-label={`已应用 ${appliedCount} 个，共 ${rows.length} 个技能包`}>
+          <strong>{appliedCount}</strong>
+          <span>/ {rows.length} 已应用</span>
+        </div>
       </div>
       <div className="sm2__agent-pack-toggles">
         {rows.map((pack) => (
           <button
             key={pack.id}
+            type="button"
             className={`sm2__agent-pack-toggle${pack.applied ? ' sm2__agent-pack-toggle--applied' : ''}${pack.isDefault ? ' sm2__agent-pack-toggle--default' : ''}`}
             disabled={busy || (!pack.applied && pack.memberCount === 0)}
             aria-pressed={pack.applied}
             aria-label={`${pack.applied ? '取消应用' : '应用'} ${pack.name}`}
+            title={pack.name}
             onClick={() => pack.applied ? onRevoke(pack.id, detail.id) : onApplyPack(pack.id, detail.id)}
           >
+            <span className="sm2__agent-pack-toggle-mark" aria-hidden="true">{pack.applied ? '✓' : '+'}</span>
             <span className="sm2__agent-pack-toggle-main">
               <strong>{pack.name}</strong>
-              <span>{pack.isDefault ? '中心库全量' : `${pack.memberCount} 个 Skill`}</span>
+              <span>{pack.isDefault ? `中心库全量 · ${pack.memberCount} 个 Skill` : `${pack.memberCount} 个 Skill`}</span>
             </span>
-            <span className="sm2__agent-pack-toggle-state">{pack.applied ? '已应用' : '应用'}</span>
+            <span className="sm2__agent-pack-toggle-state" aria-hidden="true">
+              {pack.applied ? '已应用' : '应用'}
+              <i>{pack.applied ? '×' : '→'}</i>
+            </span>
           </button>
         ))}
       </div>
@@ -2138,6 +2801,7 @@ function ManagedSkillCollection({
   busy,
   onToggle,
   onDelete,
+  onMoveToPack,
   onOpenSkillDetail,
 }: {
   skills: AgentDetail['skills']
@@ -2148,6 +2812,7 @@ function ManagedSkillCollection({
   busy: boolean
   onToggle: (targetId: string) => void
   onDelete: (skill: AgentDetail['skills'][number]) => void
+  onMoveToPack?: (skill: AgentDetail['skills'][number]) => void
   onOpenSkillDetail: (skillId: string) => void
 }) {
   if (skills.length === 0) {
@@ -2167,6 +2832,7 @@ function ManagedSkillCollection({
             busy={busy}
             onToggle={onToggle}
             onDelete={onDelete}
+            onMoveToPack={onMoveToPack}
             onOpenSkillDetail={onOpenSkillDetail}
           />
         ))}
@@ -2186,6 +2852,7 @@ function ManagedSkillCollection({
           busy={busy}
           onToggle={onToggle}
           onDelete={onDelete}
+          onMoveToPack={onMoveToPack}
           onOpenSkillDetail={onOpenSkillDetail}
         />
       ))}
@@ -2201,6 +2868,7 @@ function ManagedSkillCard({
   busy,
   onToggle,
   onDelete,
+  onMoveToPack,
   onOpenSkillDetail,
 }: {
   skill: AgentDetail['skills'][number]
@@ -2210,11 +2878,13 @@ function ManagedSkillCard({
   busy: boolean
   onToggle: (targetId: string) => void
   onDelete: (skill: AgentDetail['skills'][number]) => void
+  onMoveToPack?: (skill: AgentDetail['skills'][number]) => void
   onOpenSkillDetail: (skillId: string) => void
 }) {
   const { t } = useTranslation()
   const name = pathBasename(skill.targetPath) || skill.id
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
+  const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
   return (
     <article
       className={`sm2__agent-skill-card sm2__agent-skill-card--clickable${selected ? ' sm2__agent-skill-card--selected' : ''}${deleting ? ' sm2__agent-skill-card--deleting' : ''}`}
@@ -2247,15 +2917,31 @@ function ManagedSkillCard({
       </div>
       <div className="sm2__agent-skill-meta">
         <span className="sm2__source-pill">{skillModeLabel(t, skill.actualMode)}</span>
-        <span className="sm2__source-pill">{targetClaimLabel(t, skill.claims[0])}</span>
+        {skill.claims.length > 0
+          ? skill.claims.map((claim) => (
+            <span key={claim.id} className={`sm2__source-pill sm2__source-pill--claim-${claim.claimType}`}>
+              {targetClaimLabel(t, claim)}
+            </span>
+          ))
+          : <span className="sm2__source-pill sm2__source-pill--claim-direct">{targetClaimLabel(t, null)}</span>}
       </div>
       <code>{skill.targetPath}</code>
-      <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
-        e.stopPropagation()
-        onDelete(skill)
-      }}>
-        删除
-      </ActionButton>
+      <div className="sm2__agent-skill-card-actions">
+        {directlyDistributed && onMoveToPack && (
+          <button className="sm2__btn sm2__btn--pack" aria-label={`${t('skills.moveToPack.action')} ${name}`} disabled={busy} onClick={(event) => {
+            event.stopPropagation()
+            onMoveToPack(skill)
+          }}>
+            {t('skills.moveToPack.action')}
+          </button>
+        )}
+        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
+          e.stopPropagation()
+          onDelete(skill)
+        }}>
+          删除
+        </ActionButton>
+      </div>
     </article>
   )
 }
@@ -2268,6 +2954,7 @@ function ManagedSkillListRow({
   busy,
   onToggle,
   onDelete,
+  onMoveToPack,
   onOpenSkillDetail,
 }: {
   skill: AgentDetail['skills'][number]
@@ -2277,11 +2964,13 @@ function ManagedSkillListRow({
   busy: boolean
   onToggle: (targetId: string) => void
   onDelete: (skill: AgentDetail['skills'][number]) => void
+  onMoveToPack?: (skill: AgentDetail['skills'][number]) => void
   onOpenSkillDetail: (skillId: string) => void
 }) {
   const { t } = useTranslation()
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   const name = pathBasename(skill.targetPath) || skill.id
+  const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
   return (
     <div className={`sm2__object-row sm2__object-row--path sm2__object-row--clickable${selected ? ' sm2__object-row--selected' : ''}${deleting ? ' sm2__object-row--deleting' : ''}`} aria-busy={deleting || undefined} onClick={() => onOpenSkillDetail(skill.skillId)}>
       {selectable && (
@@ -2300,12 +2989,22 @@ function ManagedSkillListRow({
         <span>{skillModeLabel(t, skill.actualMode)} · {skillStatusLabel(t, skill.status)} · {claims.join(' / ')}</span>
         <code>{skill.targetPath}</code>
       </div>
-      <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
-        e.stopPropagation()
-        onDelete(skill)
-      }}>
-        删除
-      </ActionButton>
+      <div className="sm2__object-row-actions">
+        {directlyDistributed && onMoveToPack && (
+          <button className="sm2__btn sm2__btn--pack" aria-label={`${t('skills.moveToPack.action')} ${name}`} disabled={busy} onClick={(event) => {
+            event.stopPropagation()
+            onMoveToPack(skill)
+          }}>
+            {t('skills.moveToPack.action')}
+          </button>
+        )}
+        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
+          e.stopPropagation()
+          onDelete(skill)
+        }}>
+          删除
+        </ActionButton>
+      </div>
     </div>
   )
 }
@@ -2478,6 +3177,34 @@ function packOptionsForBatchAdopt(detail: AgentDetail, packs: BatchAdoptPackOpti
     })
   }
   return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function packOptionsForMove(detail: AgentDetail, packs: SkillPackSummary[]) {
+  const appliedIds = new Set(detail.appliedPacks.map((pack) => pack.packId))
+  const byId = new Map<string, MoveToPackOption>()
+  const add = (pack: BatchAdoptPackOption) => {
+    if (!pack.id || byId.has(pack.id)) return
+    byId.set(pack.id, {
+      ...pack,
+      applied: appliedIds.has(pack.id),
+      isDefault: pack.id === 'default',
+    })
+  }
+  for (const pack of packs) add(pack)
+  for (const pack of detail.availablePacks) add(pack)
+  for (const pack of detail.appliedPacks) {
+    add({
+      id: pack.packId,
+      name: pack.packName,
+      description: '',
+      memberCount: pack.memberCount,
+    })
+  }
+  return Array.from(byId.values()).sort((left, right) => {
+    if (left.isDefault !== right.isDefault) return left.isDefault ? 1 : -1
+    if (left.applied !== right.applied) return left.applied ? -1 : 1
+    return left.name.localeCompare(right.name)
+  })
 }
 
 function skillInstalledOnAgent(skill: SkillSummary, agentId: string) {

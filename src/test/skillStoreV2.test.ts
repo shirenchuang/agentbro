@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSkillStoreV2, filteredSkills } from '../stores/skillStoreV2'
-import type { SkillSummary, SkillManagerOverview, UnmanagedItemDto } from '../services/skillApiV2'
+import type { AgentDetail, SkillSummary, SkillManagerOverview, UnmanagedItemDto } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
@@ -35,6 +35,26 @@ function makeOverview(overrides: Partial<SkillManagerOverview> = {}): SkillManag
       showUnmanaged: true,
     },
     ...overrides,
+  }
+}
+
+function makeAgentDetail(id: string): AgentDetail {
+  return {
+    id,
+    displayName: id,
+    iconKey: id,
+    version: null,
+    latestVersion: null,
+    skillsDir: null,
+    configPath: null,
+    mcpConfigPath: null,
+    pluginDir: null,
+    skills: [],
+    appliedPacks: [],
+    availablePacks: [],
+    mcpServers: [],
+    plugins: [],
+    health: [],
   }
 }
 
@@ -288,6 +308,48 @@ describe('skillStoreV2 tab navigation', () => {
   it('switches the install subtab', () => {
     useSkillStoreV2.getState().setInstallTab('agent')
     expect(useSkillStoreV2.getState().activeInstallTab).toBe('agent')
+  })
+})
+
+describe('skillStoreV2 Agent selection', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  beforeEach(() => {
+    useSkillStoreV2.setState({
+      selectedAgentId: null,
+      selectedAgentDetail: null,
+      agentDetailLoading: false,
+      error: null,
+    })
+  })
+
+  it('ignores an older detail response after selecting another Agent', async () => {
+    let resolveClaude!: (detail: AgentDetail) => void
+    let resolveCodex!: (detail: AgentDetail) => void
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation((agentId) => (
+      new Promise<AgentDetail>((resolve) => {
+        if (agentId === 'claude-code') resolveClaude = resolve
+        else resolveCodex = resolve
+      })
+    ))
+
+    const claudeSelection = useSkillStoreV2.getState().selectAgent('claude-code')
+    const codexSelection = useSkillStoreV2.getState().selectAgent('codex')
+
+    resolveClaude(makeAgentDetail('claude-code'))
+    await claudeSelection
+
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe('codex')
+    expect(useSkillStoreV2.getState().selectedAgentDetail).toBeNull()
+    expect(useSkillStoreV2.getState().agentDetailLoading).toBe(true)
+
+    resolveCodex(makeAgentDetail('codex'))
+    await codexSelection
+
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.id).toBe('codex')
+    expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
   })
 })
 

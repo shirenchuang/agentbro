@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri as isTauriRuntime } from './tauriApi'
 
 // ── Skill Manager v2 DTO types ────────────────────────────────────
@@ -218,6 +219,13 @@ export interface SkillManagerOverview {
   settings: SkillManagerSettings
 }
 
+export interface SkillPackPickerData {
+  agents: AgentSummary[]
+  packs: SkillPackSummary[]
+  appliedByAgent: Record<string, string[]>
+  defaultDistributeMode: 'link' | 'copy'
+}
+
 export interface ProjectSummary {
   id: string
   name: string
@@ -351,6 +359,33 @@ export interface AddCenterSkillResult {
   skipped: string[]
 }
 
+export interface MarketplaceBatchSkillInput {
+  itemId: string
+  skillId: string
+  sourceUri: string
+}
+
+export interface MarketplaceBatchItemResult {
+  itemId: string
+  skillId: string
+  success: boolean
+  error: string | null
+}
+
+export interface MarketplaceBatchInstallResult {
+  items: MarketplaceBatchItemResult[]
+  cancelled: boolean
+}
+
+export interface MarketplaceBatchProgress {
+  jobId: string
+  phase: 'cloning' | 'installing' | 'success' | 'failed' | 'completed' | 'cancelled' | string
+  itemId: string | null
+  completed: number
+  total: number
+  message: string | null
+}
+
 export interface AffectedTarget {
   targetId: string
   agentId: string
@@ -406,6 +441,21 @@ export interface RemoveSkillFromPackPreview {
   appliedAgentCount: number
   canKeepStandalone: boolean
   canRemoveTargets: boolean
+}
+
+export interface MoveDirectSkillToPackPreview {
+  targetId: string
+  skillId: string
+  skillName: string
+  agentId: string
+  displayName: string
+  packId: string
+  packName: string
+  alreadyMember: boolean
+  alreadyApplied: boolean
+  willAddToPack: boolean
+  otherMemberCount: number
+  distribution: DistributionPreview
 }
 
 export interface SkillPackSyncAgentResult {
@@ -611,6 +661,16 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<SkillManagerOverview>('skill_manager_overview')
       : Promise.resolve(demoOverview()),
+  getSkillPackPickerData: (): Promise<SkillPackPickerData> => {
+    if (isTauriRuntime()) return invoke<SkillPackPickerData>('skill_pack_picker_data')
+    const overview = demoOverview()
+    return Promise.resolve({
+      agents: overview.agents,
+      packs: overview.packs,
+      appliedByAgent: {} as Record<string, string[]>,
+      defaultDistributeMode: overview.settings.defaultDistributeMode,
+    })
+  },
   refresh: () => (isTauriRuntime() ? invoke<void>('skill_manager_refresh') : Promise.resolve()),
   refreshOverview: () =>
     isTauriRuntime()
@@ -685,13 +745,35 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<AddCenterSkillResult>('execute_add_center_skill', { input, decisions })
       : Promise.resolve({ skillIds: [], updated: [], skipped: [] }),
-  previewGitHubRepoImport: (repoUrl: string) =>
+  executeMarketplaceSkillBatch: (jobId: string, repoSource: string, skills: MarketplaceBatchSkillInput[]) =>
     isTauriRuntime()
-      ? invoke<GitHubRepoPreview>('preview_github_repo_import', { repoUrl })
+      ? invoke<MarketplaceBatchInstallResult>('execute_marketplace_skill_batch', { jobId, repoSource, skills })
+      : Promise.resolve({
+          items: skills.map((skill) => ({ itemId: skill.itemId, skillId: skill.skillId, success: true, error: null })),
+          cancelled: false,
+        }),
+  cancelMarketplaceSkillBatch: (jobId: string) =>
+    isTauriRuntime()
+      ? invoke<boolean>('cancel_marketplace_skill_batch', { jobId })
+      : Promise.resolve(true),
+  onMarketplaceBatchProgress: (handler: (progress: MarketplaceBatchProgress) => void): Promise<UnlistenFn> =>
+    isTauriRuntime()
+      ? listen<MarketplaceBatchProgress>('marketplace-skill-batch-progress', (event) => handler(event.payload))
+      : Promise.resolve(() => {}),
+  previewGitHubRepoImport: (repoUrl: string, githubToken?: string) =>
+    isTauriRuntime()
+      ? invoke<GitHubRepoPreview>('preview_github_repo_import', {
+          repoUrl,
+          githubToken: githubToken?.trim() || null,
+        })
       : Promise.resolve({ repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl }, skills: [] }),
-  importGitHubRepoSkills: (repoUrl: string, selections: GitHubSkillImportSelection[]) =>
+  importGitHubRepoSkills: (repoUrl: string, selections: GitHubSkillImportSelection[], githubToken?: string) =>
     isTauriRuntime()
-      ? invoke<GitHubRepoImportResult>('import_github_repo_skills', { repoUrl, selections })
+      ? invoke<GitHubRepoImportResult>('import_github_repo_skills', {
+          repoUrl,
+          selections,
+          githubToken: githubToken?.trim() || null,
+        })
       : Promise.resolve({
           repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl },
           importedSkills: [],
@@ -748,8 +830,10 @@ export const skillApiV2 = {
   listPacks: () => (isTauriRuntime() ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
   getPackDetail: (packId: string) =>
     isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }) : Promise.resolve(null as unknown as SkillPackDetail),
-  upsertPack: (pack: UpsertPackInput) =>
-    isTauriRuntime() ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack }) : Promise.resolve(null as unknown as SkillPackDetail),
+  upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean } = {}) =>
+    isTauriRuntime()
+      ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false })
+      : Promise.resolve(null as unknown as SkillPackDetail),
   previewDeletePack: (packId: string) =>
     isTauriRuntime() ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
   deletePack: (packId: string) =>
@@ -768,6 +852,14 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
   removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean) =>
     isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }) : Promise.resolve(),
+  previewMoveDirectSkillToPack: (targetId: string, packId: string) =>
+    isTauriRuntime()
+      ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId })
+      : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
+  moveDirectSkillToPack: (targetId: string, packId: string, blockerDecisions: DistributionBlockerDecision[] = []) =>
+    isTauriRuntime()
+      ? invoke<MoveDirectSkillToPackPreview>('execute_move_direct_skill_to_pack', { targetId, packId, blockerDecisions })
+      : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
 
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>

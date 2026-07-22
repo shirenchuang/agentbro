@@ -425,7 +425,7 @@ impl Service {
         Ok(AgentScanResult { managed, unmanaged })
     }
 
-    fn ensure_agent_row(&self, agent_id: &str) -> Result<(), String> {
+    fn ensure_agent_row(&self, agent_id: &str) -> Result<bool, String> {
         let display = agent_meta::display_name(agent_id);
         let installed = agent_meta::agent_installed(&self.home, agent_id);
         let skills_dir =
@@ -447,7 +447,7 @@ impl Service {
         if agent_id == "workbuddy" {
             self.cleanup_workbuddy_marketplace_unmanaged()?;
         }
-        Ok(())
+        Ok(installed)
     }
 
     fn cleanup_workbuddy_marketplace_unmanaged(&self) -> Result<(), String> {
@@ -620,6 +620,51 @@ impl Service {
 
     pub fn overview(&self) -> Result<SkillManagerOverview, String> {
         self.overview_with_target_refresh(false)
+    }
+
+    pub fn skill_pack_picker_data(&self) -> Result<SkillPackPickerData, String> {
+        self.init_if_needed()?;
+        let agents = self
+            .list_managed_agents()?
+            .into_iter()
+            .filter(|agent| agent.installed && agent.enabled && agent.skills_dir.is_some())
+            .collect::<Vec<_>>();
+        let mut applied_by_agent = agents
+            .iter()
+            .map(|agent| (agent.id.clone(), Vec::new()))
+            .collect::<HashMap<_, _>>();
+        let applied = self.db.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT DISTINCT t.agent_id, c.pack_id
+                     FROM skill_target_claims c
+                     JOIN skill_targets t ON t.id = c.target_id
+                     WHERE c.pack_id IS NOT NULL
+                     ORDER BY t.agent_id, c.pack_id",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| error.to_string())?;
+            let mut values = Vec::new();
+            for row in rows {
+                values.push(row.map_err(|error| error.to_string())?);
+            }
+            Ok(values)
+        })?;
+        for (agent_id, pack_id) in applied {
+            if let Some(pack_ids) = applied_by_agent.get_mut(&agent_id) {
+                pack_ids.push(pack_id);
+            }
+        }
+        Ok(SkillPackPickerData {
+            agents,
+            packs: self.list_skill_packs()?,
+            applied_by_agent,
+            default_distribute_mode: self.settings()?.default_distribute_mode,
+        })
     }
 
     fn overview_with_target_refresh(
@@ -1066,7 +1111,7 @@ impl Service {
     fn agent_summaries_for_ids(&self, agent_ids: Vec<String>) -> Result<Vec<AgentSummary>, String> {
         let mut out = Vec::new();
         for id in &agent_ids {
-            self.ensure_agent_row(id)?;
+            let installed = self.ensure_agent_row(id)?;
             let (enabled, skills_dir, version, latest) = self.db.with_conn(|c| {
                 c.query_row(
                     "SELECT enabled, skills_dir, version, latest_version FROM agents WHERE id = ?1",
@@ -1082,7 +1127,6 @@ impl Service {
                 )
                 .map_err(|e| e.to_string())
             })?;
-            let installed = agent_meta::agent_installed(&self.home, id);
             let managed_skill_count = self.count_agent_targets(id)?;
             let unmanaged_skill_count = self.count_agent_unmanaged(id)?;
             out.push(AgentSummary {
@@ -3104,12 +3148,12 @@ impl Service {
                 unmanaged_id, agent_id
             ));
         }
-        if item.item_type != "agent_skill" {
-            return Err("Only unmanaged agent skills can be deleted here.".to_string());
+        if item.item_type != "agent_skill" && item.item_type != "skill" {
+            return Err("Only unmanaged skills can be deleted here.".to_string());
         }
 
         let path = Path::new(&item.path);
-        let allowed = agent_meta::agent_skill_dirs(&self.home, agent_id)
+        let allowed = agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
             .into_iter()
             .any(|root| unmanaged_delete_path_allowed(&root, path));
         if !allowed {
@@ -3995,7 +4039,192 @@ impl Service {
         })
     }
 
+    fn direct_target_for_pack_move(
+        &self,
+        target_id: &str,
+    ) -> Result<(String, String, String), String> {
+        let target = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT skill_id, agent_id, target_path FROM skill_targets WHERE id = ?1",
+                params![target_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })?;
+        let target = target.ok_or_else(|| format!("Target not found: {target_id}"))?;
+        let has_direct_claim = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT 1 FROM skill_target_claims
+                 WHERE target_id = ?1 AND claim_type = 'direct' LIMIT 1",
+                params![target_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(|e| e.to_string())
+        })?;
+        if !has_direct_claim {
+            return Err(
+                "Only directly distributed Skills can be moved into a skill pack.".to_string(),
+            );
+        }
+        Ok(target)
+    }
+
+    pub fn preview_move_direct_skill_to_pack(
+        &self,
+        target_id: &str,
+        pack_id: &str,
+    ) -> Result<MoveDirectSkillToPackPreview, String> {
+        let (skill_id, agent_id, _) = self.direct_target_for_pack_move(target_id)?;
+        let pack = self.get_skill_pack_detail(pack_id)?;
+        let already_member = pack
+            .members
+            .iter()
+            .any(|member| member.skill_id == skill_id);
+        let will_add_to_pack = pack_id != DEFAULT_SKILL_PACK_ID && !already_member;
+        let other_skill_ids = pack
+            .members
+            .iter()
+            .filter(|member| member.skill_id != skill_id)
+            .map(|member| member.skill_id.clone())
+            .collect::<Vec<_>>();
+        let already_applied = self
+            .pack_applied_agent_ids(pack_id)?
+            .iter()
+            .any(|id| id == &agent_id);
+        let requested_mode = self.settings()?.default_distribute_mode;
+        let distribution = self.preview_distribute_skill(
+            if already_applied {
+                Vec::new()
+            } else {
+                other_skill_ids.clone()
+            },
+            vec![agent_id.clone()],
+            requested_mode,
+        )?;
+
+        Ok(MoveDirectSkillToPackPreview {
+            target_id: target_id.to_string(),
+            skill_id: skill_id.clone(),
+            skill_name: self.skill_name(&skill_id).unwrap_or(skill_id),
+            agent_id: agent_id.clone(),
+            display_name: agent_meta::display_name(&agent_id),
+            pack_id: pack.id,
+            pack_name: pack.name,
+            already_member,
+            already_applied,
+            will_add_to_pack,
+            other_member_count: other_skill_ids.len(),
+            distribution,
+        })
+    }
+
+    pub fn move_direct_skill_to_pack(
+        &self,
+        target_id: &str,
+        pack_id: &str,
+        blocker_decisions: Vec<DistributionBlockerDecision>,
+    ) -> Result<MoveDirectSkillToPackPreview, String> {
+        let mut preview = self.preview_move_direct_skill_to_pack(target_id, pack_id)?;
+        let (_, agent_id, target_path) = self.direct_target_for_pack_move(target_id)?;
+        let previously_applied_agents = self.pack_applied_agent_ids(pack_id)?;
+        let old_revision = self.pack_revision(pack_id)?;
+
+        preview.distribution.blocker_decisions = blocker_decisions;
+        if !preview.distribution.skill_ids.is_empty() {
+            preview.distribution = self.execute_distribute_skill(
+                preview.distribution,
+                ClaimOrigin::Pack(pack_id.to_string()),
+            )?;
+        }
+
+        let next_revision = if preview.will_add_to_pack {
+            let now = db::now_iso();
+            self.db.transaction(|tx| {
+                let next_order = tx
+                    .query_row(
+                        "SELECT COALESCE(MAX(sort_order), -1) + 1
+                         FROM skill_pack_members WHERE pack_id = ?1",
+                        params![pack_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO skill_pack_members(pack_id, skill_id, sort_order, required)
+                     VALUES (?1, ?2, ?3, 1)",
+                    params![pack_id, preview.skill_id, next_order],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE skill_packs
+                     SET revision = revision + 1, updated_at = ?1
+                     WHERE id = ?2",
+                    params![now, pack_id],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+            old_revision + 1
+        } else {
+            old_revision
+        };
+
+        self.append_claim(
+            &target_path,
+            &agent_id,
+            ClaimOrigin::Pack(pack_id.to_string()),
+        )?;
+        self.db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM skill_target_claims
+                 WHERE target_id = ?1 AND claim_type = 'direct'",
+                params![target_id],
+            )
+            .map_err(|e| e.to_string())
+        })?;
+
+        if pack_id != DEFAULT_SKILL_PACK_ID {
+            if preview.will_add_to_pack {
+                let other_agents = previously_applied_agents
+                    .into_iter()
+                    .filter(|id| id != &agent_id)
+                    .collect::<Vec<_>>();
+                self.mark_pack_agents_pending(pack_id, &other_agents, old_revision)?;
+                self.mark_pack_agent_status(pack_id, &agent_id, next_revision, "synced", None)?;
+                if self.settings()?.auto_sync_skill_packs && !other_agents.is_empty() {
+                    let _ = self.sync_skill_pack_to_agents(pack_id, other_agents);
+                } else {
+                    self.update_pack_rollup_status(pack_id, next_revision)?;
+                }
+            } else {
+                self.mark_pack_agent_status(pack_id, &agent_id, next_revision, "synced", None)?;
+                self.update_pack_rollup_status(pack_id, next_revision)?;
+            }
+        }
+
+        self.scan_one_agent_into_db(&agent_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(preview)
+    }
+
     pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {
+        self.upsert_skill_pack_with_sync(pack, true)
+    }
+
+    pub fn upsert_skill_pack_deferred(
+        &self,
+        pack: UpsertPackInput,
+    ) -> Result<SkillPackDetail, String> {
+        self.upsert_skill_pack_with_sync(pack, false)
+    }
+
+    fn upsert_skill_pack_with_sync(
+        &self,
+        pack: UpsertPackInput,
+        sync_applied_agents: bool,
+    ) -> Result<SkillPackDetail, String> {
         if pack.id == DEFAULT_SKILL_PACK_ID {
             return Err("全量技能包是系统内置入口，cannot be edited.".to_string());
         }
@@ -4070,7 +4299,7 @@ impl Service {
         })?;
         if member_changed && !applied_agents.is_empty() {
             self.mark_pack_agents_pending(&id, &applied_agents, old_revision)?;
-            if self.settings()?.auto_sync_skill_packs {
+            if sync_applied_agents && self.settings()?.auto_sync_skill_packs {
                 let _ = self.sync_skill_pack_to_agents(&id, applied_agents);
             } else {
                 self.update_pack_rollup_status(&id, next_revision)?;
@@ -4444,12 +4673,33 @@ impl Service {
     // ── Agent detail ──────────────────────────────────────────────
 
     pub fn get_agent_detail(&self, agent_id: &str) -> Result<AgentDetail, String> {
-        self.ensure_agent_row(agent_id)?;
-        let summary = self
-            .list_managed_agents()?
-            .into_iter()
-            .find(|a| a.id == agent_id)
-            .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+        if !agent_meta::visible_agent_ids()
+            .iter()
+            .any(|id| id == agent_id)
+        {
+            return Err(format!("Agent not found: {agent_id}"));
+        }
+        let persisted = self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT version, latest_version, skills_dir FROM agents WHERE id = ?1",
+                [agent_id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })?;
+        let (version, latest_version, persisted_skills_dir) =
+            persisted.unwrap_or((None, None, None));
+        let skills_dir = persisted_skills_dir.or_else(|| {
+            agent_meta::agent_skills_dir(&self.home, agent_id)
+                .map(|path| path.display().to_string())
+        });
 
         let targets = self.db.with_conn(|c| {
             let mut stmt = c
@@ -4520,12 +4770,12 @@ impl Service {
             crate::skills::agent_paths::plugin_cache_dir(agent_id).map(|p| p.display().to_string());
 
         Ok(AgentDetail {
-            id: summary.id,
-            display_name: summary.display_name,
-            icon_key: summary.icon_key,
-            version: summary.version,
-            latest_version: summary.latest_version,
-            skills_dir: summary.skills_dir,
+            id: agent_id.to_string(),
+            display_name: agent_meta::display_name(agent_id),
+            icon_key: agent_meta::icon_key(agent_id),
+            version,
+            latest_version,
+            skills_dir,
             config_path,
             mcp_config_path,
             plugin_dir,

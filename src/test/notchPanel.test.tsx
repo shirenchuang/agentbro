@@ -178,6 +178,15 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('Claude')).toBeInTheDocument()
   })
 
+  it('collapses the island before opening settings so the transparent host cannot block it', () => {
+    mountIsland()
+
+    fireEvent.click(screen.getByTitle('notch.settings'))
+
+    expect(useSessionStore.getState().panelState).toBe('collapsed')
+    expect(tauriMocks.setNotchFocusable).toHaveBeenCalledWith(false)
+  })
+
   it('does not render the pet companion inside the notch window in pet mode', () => {
     useConfigStore.setState({ islandSurfaceMode: 'pet' })
     mountIsland()

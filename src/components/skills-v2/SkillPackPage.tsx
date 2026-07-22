@@ -15,6 +15,7 @@ import type {
 } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
+import { SkillDetailSlider } from './SkillDetailSlider'
 import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
@@ -23,6 +24,10 @@ type PackSyncConflictState = {
   targetAgents: string[]
   requestedMode: 'link' | 'copy'
   preview: DistributionPreview
+}
+type SyncPackOptions = {
+  background?: boolean
+  packName?: string
 }
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
@@ -47,6 +52,7 @@ export function SkillPackPage() {
   const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
   const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
   const [syncConflict, setSyncConflict] = useState<PackSyncConflictState | null>(null)
+  const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
 
@@ -78,6 +84,7 @@ export function SkillPackPage() {
   const totalApplied = state.packs.reduce((sum, pack) => sum + pack.appliedAgentCount, 0)
   const unhealthyPacks = state.packs.filter((pack) => !pack.healthy).length
   const syncIssueCount = state.packs.reduce((sum, pack) => sum + (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0), 0)
+  const issueCount = unhealthyPacks + missingCount + syncIssueCount
 
   const startCreate = () => {
     state.selectPack(null)
@@ -120,9 +127,13 @@ export function SkillPackPage() {
     }
   }
 
-  const syncPack = async (packId: string, agentIds: string[] = []) => {
-    setBusy(true)
-    setSyncNotice(null)
+  const syncPack = async (packId: string, agentIds: string[] = [], options: SyncPackOptions = {}) => {
+    if (options.background) {
+      setSyncNotice(`“${options.packName || '技能包'}”已保存，正在后台同步到 Agent…`)
+    } else {
+      setBusy(true)
+      setSyncNotice(null)
+    }
     try {
       const result = await skillApiV2.syncPackToAgents(packId, agentIds)
       const failedAgents = result.agents.filter((agent) => agent.status === 'failed')
@@ -143,14 +154,17 @@ export function SkillPackPage() {
       setSyncNotice(
         failedAgents.length > 0
           ? t('skills.packSyncFailedNotice', { count: failedAgents.length, defaultValue: '{{count}} 个 Agent 同步失败，可查看状态后重试。' })
+          : options.background
+            ? `“${options.packName || '技能包'}”已保存，并同步到 ${result.agents.length} 个 Agent。`
           : t('skills.packSyncDoneNotice', { count: result.agents.length, defaultValue: '已同步 {{count}} 个 Agent。' }),
       )
       await state.loadOverview(true)
       await state.selectPack(packId)
     } catch (e) {
       state.setError(String(e))
+      if (options.background) setSyncNotice(`“${options.packName || '技能包'}”已保存，但后台同步失败。`)
     } finally {
-      setBusy(false)
+      if (!options.background) setBusy(false)
     }
   }
 
@@ -159,10 +173,18 @@ export function SkillPackPage() {
       <div className="sm2__header sm2__header--stacked">
         <div>
           <h2 className="sm2__title">技能包</h2>
-          <p className="sm2__header-subtitle">管理一组中心库 Skill ID，并通过 claims 安全应用或撤销到 Agent。</p>
+          <p className="sm2__header-subtitle">把常用 Skills 组合起来，一次应用到多个 Agent。</p>
+          <div className="sm2__pack-page-meta" aria-label="技能包概览">
+            <span><strong>{state.packs.length}</strong> 个组合</span>
+            <span><strong>{totalMembers}</strong> 个成员引用</span>
+            <span><strong>{totalApplied}</strong> 个 Agent 应用</span>
+            <span className={issueCount > 0 ? 'sm2__pack-page-meta--warn' : 'sm2__pack-page-meta--ok'}>
+              <i aria-hidden="true" />{issueCount > 0 ? `${issueCount} 项待处理` : '状态正常'}
+            </span>
+          </div>
         </div>
         <div className="sm2__tabs">
-          <button className="sm2__btn sm2__btn--primary" onClick={startCreate}>新建技能包</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={startCreate}>＋ 新建技能包</button>
           <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || busy}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -172,17 +194,13 @@ export function SkillPackPage() {
       {state.error && <div className="sm2__error">{state.error}</div>}
       {syncNotice && <div className="sm2__notice sm2__notice--ok">{syncNotice}</div>}
 
-      <div className="sm2__pack-dashboard">
-        <PackMetric label="技能包" value={state.packs.length} />
-        <PackMetric label="成员引用" value={totalMembers} />
-        <PackMetric label="Agent 应用" value={totalApplied} />
-        <PackMetric label="需要处理" value={unhealthyPacks + missingCount + syncIssueCount} tone={unhealthyPacks + missingCount + syncIssueCount > 0 ? 'warn' : 'ok'} />
-      </div>
-
       <div className="sm2__pack-layout">
         <aside className="sm2__pack-sidebar settings-scroll">
           <div className="sm2__pack-sidebar-head">
-            <strong>全部技能包</strong>
+            <div>
+              <strong>全部技能包</strong>
+              <span>选择一个组合查看详情</span>
+            </div>
             <span>{filteredPacks.length}</span>
           </div>
           <input
@@ -222,6 +240,7 @@ export function SkillPackPage() {
             <PackLanding onCreate={startCreate} />
           ) : (
             <PackDetail
+              key={detail.id}
               detail={detail}
               busy={busy}
               onApply={() => setApplyFor(detail)}
@@ -229,6 +248,7 @@ export function SkillPackPage() {
               onDuplicate={startDuplicate}
               onDelete={() => openDelete(detail.id)}
               onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
+              onOpenSkill={setDetailSkillId}
               onRevoke={(agentId) => openRevoke(detail.id, agentId)}
               onSync={(agentIds) => syncPack(detail.id, agentIds)}
             />
@@ -236,15 +256,32 @@ export function SkillPackPage() {
         </main>
       </div>
 
+      <SkillDetailSlider
+        skillId={detailSkillId}
+        open={Boolean(detailSkillId)}
+        onClose={() => setDetailSkillId(null)}
+      />
+
       {builderMode && (
         <PackBuilderDialog
           mode={builderMode}
           existing={builderMode === 'create' ? null : detail}
           onCancel={() => setBuilderMode(null)}
-          onSaved={async (packId) => {
+          onSaved={(saved) => {
             setBuilderMode(null)
-            await state.loadOverview(true)
-            await state.selectPack(packId)
+            useSkillStoreV2.setState({
+              selectedPackId: saved.id,
+              selectedPackDetail: saved,
+            })
+            if (state.settings?.autoSyncSkillPacks !== false && packNeedsSync(saved)) {
+              void syncPack(saved.id, [], { background: true, packName: saved.name })
+              return
+            }
+            setSyncNotice(`“${saved.name}”已保存。`)
+            void (async () => {
+              await state.loadOverview(true)
+              await state.selectPack(saved.id)
+            })()
           }}
         />
       )}
@@ -355,8 +392,16 @@ function PackBuilderDialog({
   mode: BuilderMode
   existing: SkillPackDetail | null
   onCancel: () => void
-  onSaved: (packId: string) => void
+  onSaved: (pack: SkillPackDetail) => void
 }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onCancel])
+
   if (typeof document === 'undefined') return null
 
   const title = mode === 'edit' ? '编辑技能包' : mode === 'duplicate' ? '复制技能包' : '创建技能包'
@@ -400,19 +445,33 @@ function PackListItem({
   const hasSyncIssue = (pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0) > 0
   return (
     <button className={`sm2__pack-list-item${active ? ' sm2__pack-list-item--active' : ''}${isDefault ? ' sm2__pack-list-item--default' : ''}`} onClick={onClick}>
-      <span className="sm2__pack-list-top">
-        <strong>{pack.name}</strong>
-        <span className={`sm2__pack-health ${pack.healthy && !hasSyncIssue ? 'sm2__pack-health--ok' : 'sm2__pack-health--warn'}`}>
-          {isDefault ? '系统' : hasSyncIssue ? packSyncStatusLabel(syncStatus) : pack.healthy ? 'OK' : '缺失'}
+      <PackEmblem compact builtIn={isDefault} />
+      <span className="sm2__pack-list-body">
+        <span className="sm2__pack-list-top">
+          <strong>{pack.name}</strong>
+          <span className={`sm2__pack-health ${pack.healthy && !hasSyncIssue ? 'sm2__pack-health--ok' : 'sm2__pack-health--warn'}`}>
+            {isDefault ? '内置' : hasSyncIssue ? packSyncStatusLabel(syncStatus) : pack.healthy ? '正常' : '有缺失'}
+          </span>
+        </span>
+        <span className="sm2__pack-list-desc">{pack.description || '自定义 Skill 组合'}</span>
+        <span className="sm2__pack-list-meta">
+          <span>{pack.memberCount} Skills</span>
+          <span>{pack.appliedAgentCount} Agents</span>
+          {hasSyncIssue && <span>{(pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0)} 待同步</span>}
         </span>
       </span>
-      <span className="sm2__pack-list-desc">{pack.description || '自定义 Skill 组合'}</span>
-      <span className="sm2__pack-list-meta">
-        <span>{pack.memberCount} Skills</span>
-        <span>{pack.appliedAgentCount} Agents</span>
-        {hasSyncIssue && <span>{(pack.pendingSyncCount || 0) + (pack.failedSyncCount || 0)} 待同步</span>}
-      </span>
+      <span className="sm2__pack-list-arrow" aria-hidden="true">›</span>
     </button>
+  )
+}
+
+function PackEmblem({ compact = false, builtIn = false }: { compact?: boolean; builtIn?: boolean }) {
+  return (
+    <span className={`sm2__pack-emblem${compact ? ' sm2__pack-emblem--compact' : ''}${builtIn ? ' sm2__pack-emblem--built-in' : ''}`} aria-hidden="true">
+      <i />
+      <i />
+      <i />
+    </span>
   )
 }
 
@@ -421,7 +480,7 @@ function PackLanding({ onCreate }: { onCreate: () => void }) {
     <div className="sm2__pack-landing">
       <div className="sm2__pack-landing-mark">PACK</div>
       <strong>选择一个技能包</strong>
-      <span>右侧会显示成员、应用 Agent、claim 影响和可执行操作。</span>
+      <span>右侧会显示包内成员、已应用 Agent 和可执行操作。</span>
       <button className="sm2__btn sm2__btn--primary" onClick={onCreate}>新建技能包</button>
     </div>
   )
@@ -435,6 +494,7 @@ function PackDetail({
   onDuplicate,
   onDelete,
   onRemoveSkill,
+  onOpenSkill,
   onRevoke,
   onSync,
 }: {
@@ -445,6 +505,7 @@ function PackDetail({
   onDuplicate: () => void
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
+  onOpenSkill: (skillId: string) => void
   onRevoke: (agentId: string) => void
   onSync: (agentIds?: string[]) => void
 }) {
@@ -452,42 +513,59 @@ function PackDetail({
   const isDefault = detail.id === DEFAULT_SKILL_PACK_ID
   const syncStatus = detail.syncStatus || 'synced'
   const needsSync = packNeedsSync(detail)
+  const [activeSection, setActiveSection] = useState<'members' | 'agents'>(needsSync ? 'agents' : 'members')
+  const [memberQuery, setMemberQuery] = useState('')
+  const filteredMembers = useMemo(() => {
+    const query = memberQuery.trim().toLowerCase()
+    if (!query) return detail.members
+    return detail.members.filter((member) =>
+      [member.skillName, member.skillId].join(' ').toLowerCase().includes(query),
+    )
+  }, [detail.members, memberQuery])
+
   return (
     <div className="sm2__pack-workbench">
       <header className="sm2__pack-detail-hero">
-        <div className="sm2__pack-detail-main">
-          <div className="sm2__pack-kicker">{isDefault ? 'Built-in Pack' : 'Skill Pack'}</div>
-          <h3>{detail.name}</h3>
-          <p>{detail.description || '保存一组中心库 Skill ID，方便应用到 Agent。'}</p>
-          {isDefault ? (
+        <div className="sm2__pack-detail-identity">
+          <PackEmblem builtIn={isDefault} />
+          <div className="sm2__pack-detail-main">
+            <div className="sm2__pack-kicker">{isDefault ? '系统组合' : '自定义组合'}</div>
+            <h3>{detail.name}</h3>
+            <p>{detail.description || '保存一组中心库 Skill，方便重复应用。'}</p>
             <div className="sm2__pack-tagline">
-              <span>自动包含中心库全部 Skills</span>
-              <span>不可编辑</span>
+              <span>{detail.members.length} Skills</span>
+              <span>{detail.appliedAgents.length} Agents</span>
+              {isDefault && <span>自动更新成员</span>}
+              {!isDefault && detail.tags.map((tag) => <span key={tag}>{tag}</span>)}
             </div>
-          ) : detail.tags.length > 0 ? (
-            <div className="sm2__pack-tagline">
-              {detail.tags.map((tag) => <span key={tag}>{tag}</span>)}
-            </div>
-          ) : null}
+          </div>
         </div>
         <div className="sm2__pack-actions">
           <button className="sm2__btn sm2__btn--primary" onClick={onApply} disabled={busy || detail.members.length === 0 || missing.length > 0}>
-            应用
+            应用到 Agent
           </button>
           {!isDefault && <button className="sm2__btn" onClick={onEdit} disabled={busy}>编辑</button>}
           {!isDefault && needsSync && (
-            <button className="sm2__btn sm2__btn--primary" onClick={() => onSync()} disabled={busy}>
-              {busy ? '同步中…' : '同步到 Agent'}
+            <button className="sm2__btn" onClick={() => onSync()} disabled={busy}>
+              {busy ? '同步中…' : '同步全部'}
             </button>
           )}
-          {!isDefault && <button className="sm2__btn" onClick={onDuplicate} disabled={busy}>复制</button>}
-          {!isDefault && <button className="sm2__btn sm2__btn--danger" onClick={onDelete} disabled={busy}>删除</button>}
+          {!isDefault && (
+            <details className="sm2__pack-more">
+              <summary aria-label="更多操作">•••</summary>
+              <div role="menu">
+                <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
+                <button role="menuitem" className="sm2__pack-more-danger" onClick={onDelete} disabled={busy}>删除技能包</button>
+              </div>
+            </details>
+          )}
         </div>
       </header>
 
       {isDefault && (
-        <div className="sm2__notice sm2__notice--ok">
-          全量技能包是系统内置入口，成员始终等于当前中心库全量；这里只能应用或从 Agent 撤销应用。
+        <div className="sm2__pack-system-note">
+          <strong>始终跟随中心库</strong>
+          <span>这是系统内置入口，成员会自动保持为中心库全量；可以应用或撤销，但不需要手动维护。</span>
         </div>
       )}
 
@@ -503,33 +581,73 @@ function PackDetail({
         </div>
       )}
 
-      <div className="sm2__pack-summary-grid">
-        <PackMetric label="成员 Skills" value={detail.members.length} />
-        <PackMetric label="已应用 Agent" value={detail.appliedAgents.length} />
-        <PackMetric label="缺失成员" value={missing.length} tone={missing.length > 0 ? 'warn' : 'ok'} />
-        <PackMetric label="同步状态" value={(detail.pendingSyncCount || 0) + (detail.failedSyncCount || 0)} tone={needsSync ? 'warn' : 'ok'} />
+      <div className="sm2__pack-view-tabs" role="tablist" aria-label="技能包详情">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSection === 'members'}
+          className={activeSection === 'members' ? 'sm2__pack-view-tab sm2__pack-view-tab--active' : 'sm2__pack-view-tab'}
+          onClick={() => setActiveSection('members')}
+        >
+          包内 Skills <span>{detail.members.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSection === 'agents'}
+          className={activeSection === 'agents' ? 'sm2__pack-view-tab sm2__pack-view-tab--active' : 'sm2__pack-view-tab'}
+          onClick={() => setActiveSection('agents')}
+        >
+          已应用 Agent <span>{detail.appliedAgents.length}</span>
+          {needsSync && <i aria-label="需要同步" />}
+        </button>
       </div>
 
-      <div className="sm2__pack-sections">
-        <section className="sm2__pack-section sm2__pack-section--members">
+      <div className="sm2__pack-tab-panel" role="tabpanel">
+        {activeSection === 'members' ? (
+          <section className="sm2__pack-section sm2__pack-section--members">
           <div className="sm2__pack-section-head">
             <div>
-              <h3>成员 Skills</h3>
-              <span>技能包只保存这些中心库 Skill ID。</span>
+              <h3>包内 Skills</h3>
+              <span>应用技能包时，会把这些成员一起分发。</span>
             </div>
-            <span>{detail.members.length}</span>
+            <input
+              className="sm2__search sm2__pack-member-search"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              aria-label="搜索包内 Skills"
+              placeholder="搜索包内 Skills"
+            />
           </div>
           {detail.members.length === 0 ? (
-            <div className="sm2__empty sm2__empty--compact">无成员</div>
+            <div className="sm2__pack-panel-empty">
+              <strong>这个技能包还是空的</strong>
+              <span>{isDefault ? '中心库中暂时没有 Skills。' : '点击“编辑”添加需要一起使用的 Skills。'}</span>
+              {!isDefault && <button className="sm2__btn" onClick={onEdit}>添加 Skills</button>}
+            </div>
+          ) : filteredMembers.length === 0 ? (
+            <div className="sm2__pack-panel-empty">
+              <strong>没有匹配的 Skill</strong>
+              <span>换个名称或 Skill ID 试试。</span>
+            </div>
           ) : (
             <div className="sm2__pack-member-list">
-              {detail.members.map((member, index) => (
+              {filteredMembers.map((member) => (
                 <div key={member.skillId} className={`sm2__pack-member-row${member.missing ? ' sm2__pack-member-row--missing' : ''}`}>
-                  <div className="sm2__pack-member-index">{index + 1}</div>
-                  <div className="sm2__pack-member-body">
-                    <strong>{member.skillName}</strong>
-                    <span>{member.skillId}</span>
-                  </div>
+                  <button
+                    type="button"
+                    className="sm2__pack-member-open"
+                    aria-label={`查看 Skill 详情 ${member.skillName}`}
+                    disabled={member.missing}
+                    onClick={() => onOpenSkill(member.skillId)}
+                  >
+                    <span className="sm2__pack-skill-mark" aria-hidden="true">{member.skillName.trim().slice(0, 1).toUpperCase() || 'S'}</span>
+                    <span className="sm2__pack-member-body">
+                      <strong>{member.skillName}</strong>
+                      <span>{member.skillId}</span>
+                    </span>
+                    {!member.missing && <span className="sm2__pack-member-open-arrow" aria-hidden="true">查看 ›</span>}
+                  </button>
                   <div className="sm2__pack-member-state">
                     <span className={`sm2__tag sm2__tag--${member.missing ? 'conflict' : 'ok'}`}>
                       {member.missing ? '缺失' : '就绪'}
@@ -544,18 +662,27 @@ function PackDetail({
               ))}
             </div>
           )}
-        </section>
-
-        <section className="sm2__pack-section">
+          </section>
+        ) : (
+          <section className="sm2__pack-section sm2__pack-section--agents">
           <div className="sm2__pack-section-head">
             <div>
               <h3>已应用 Agent</h3>
-              <span>撤销时只移除该技能包 claim。</span>
+              <span>每个 Agent 独立同步；撤销只移除这个技能包带来的内容。</span>
             </div>
-            <span>{detail.appliedAgents.length}</span>
+            <button className="sm2__btn sm2__btn--primary" onClick={onApply} disabled={busy || detail.members.length === 0 || missing.length > 0}>
+              ＋ 应用到 Agent
+            </button>
           </div>
           {detail.appliedAgents.length === 0 ? (
-            <div className="sm2__empty sm2__empty--compact">尚未应用到任何 Agent</div>
+            <div className="sm2__pack-panel-empty">
+              <PackEmblem compact />
+              <strong>还没有应用到 Agent</strong>
+              <span>选择一个或多个 Agent，这组 Skills 会一起安装并保持同步。</span>
+              <button className="sm2__btn sm2__btn--primary" onClick={onApply} disabled={busy || detail.members.length === 0 || missing.length > 0}>
+                选择 Agent
+              </button>
+            </div>
           ) : (
             <div className="sm2__pack-agent-list">
               {detail.appliedAgents.map((agent, index) => (
@@ -563,7 +690,7 @@ function PackDetail({
                   <AgentIconBadge iconKey={agent.iconKey || agent.agentId || agent.packName} title={agent.displayName || agent.agentId || agent.packName} size={30} />
                   <div>
                     <strong>{agent.displayName || agent.agentId || agent.packName}</strong>
-                    <span>{agent.memberCount} member claims · {packSyncStatusLabel(agent.syncStatus || 'synced')}</span>
+                    <span>{agent.memberCount} 个成员 · {packSyncStatusLabel(agent.syncStatus || 'synced')}</span>
                     {agent.syncError && <span>{agent.syncError}</span>}
                   </div>
                   {agent.agentId && agent.syncStatus && agent.syncStatus !== 'synced' && (
@@ -580,7 +707,8 @@ function PackDetail({
               ))}
             </div>
           )}
-        </section>
+          </section>
+        )}
       </div>
     </div>
   )
@@ -607,7 +735,7 @@ function PackBuilderPanel({
   mode: BuilderMode
   existing: SkillPackDetail | null
   onCancel: () => void
-  onSaved: (packId: string) => void
+  onSaved: (pack: SkillPackDetail) => void
 }) {
   const skills = useSkillStoreV2((s) => s.skills)
   const { t } = useTranslation()
@@ -689,14 +817,17 @@ function PackBuilderPanel({
     setBusy(true)
     setError(null)
     try {
-      const saved = await skillApiV2.upsertPack({
-        id: mode === 'edit' ? existing?.id || '' : '',
-        name: name.trim(),
-        description: '',
-        tags: [],
-        skillIds,
-      })
-      onSaved(saved.id)
+      const saved = await skillApiV2.upsertPack(
+        {
+          id: mode === 'edit' ? existing?.id || '' : '',
+          name: name.trim(),
+          description: '',
+          tags: [],
+          skillIds,
+        },
+        { deferSync: true },
+      )
+      onSaved(saved)
     } catch (e) {
       setError(String(e))
     } finally {
@@ -708,54 +839,35 @@ function PackBuilderPanel({
     <div className="sm2__pack-builder2">
       <header className="sm2__pack-builder-head">
         <div>
-          <div className="sm2__pack-kicker">{mode === 'edit' ? 'Edit Pack' : mode === 'duplicate' ? 'Duplicate Pack' : 'New Pack'}</div>
+          <div className="sm2__pack-kicker">{mode === 'edit' ? '编辑组合' : mode === 'duplicate' ? '复制组合' : '新建组合'}</div>
           <h3>{mode === 'edit' ? '编辑技能包' : mode === 'duplicate' ? '复制技能包' : '创建技能包'}</h3>
-          <p>选择中心库 Skills。保存的只是 Skill ID，不绑定 Agent 或分发方式。</p>
+          <p>为组合命名，再从中心库挑选需要一起使用的 Skills。</p>
         </div>
-        <div className="sm2__pack-actions">
-          <button className="sm2__btn" onClick={onCancel} disabled={busy}>取消</button>
-          <button className="sm2__btn sm2__btn--primary" onClick={save} disabled={busy}>
-            {busy ? '保存中…' : '保存'}
-          </button>
-        </div>
+        <button className="sm2__pack-builder-close" type="button" aria-label="关闭" onClick={onCancel} disabled={busy}>×</button>
       </header>
 
-      <div className="sm2__pack-builder-rail" aria-hidden="true">
-        <span className="sm2__pack-builder-rail-item sm2__pack-builder-rail-item--active">命名</span>
-        <span className={`sm2__pack-builder-rail-item${selected.size > 0 ? ' sm2__pack-builder-rail-item--active' : ''}`}>
-          {selected.size > 0 ? `${selected.size} Skills` : '选择 Skills'}
-        </span>
-        <span className={`sm2__pack-builder-rail-item${name.trim() && selected.size > 0 ? ' sm2__pack-builder-rail-item--ready' : ''}`}>
-          保存组合
-        </span>
+      <div className="sm2__pack-builder-identity">
+        <label className="sm2__field">
+          <span>技能包名称</span>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：Code Review 工具集" />
+        </label>
+        <div className="sm2__pack-builder-count" aria-live="polite">
+          <strong>{selectedSkills.length}</strong>
+          <span>个 Skills 已加入</span>
+        </div>
       </div>
 
       <div className="sm2__pack-builder2-grid">
-        <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-builder-card--identity">
-          <div className="sm2__pack-section-head">
-            <div>
-              <h3>基本信息</h3>
-              <span>只需要一个名称。</span>
-            </div>
-          </div>
-          <div className="sm2__builder-form2">
-            <label className="sm2__field">
-              <span>技能包名称</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Code Review 工具集" />
-            </label>
-          </div>
-        </section>
-
         <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-section--picker">
           <div className="sm2__pack-section-head">
             <div>
-              <h3>中心库 Skills</h3>
-              <span>{filtered.length} 个可选。</span>
+              <h3>从中心库添加</h3>
+              <span>{filtered.length} 个结果，点击左侧 ＋ 加入技能包。</span>
             </div>
-            <span>{selectedVisibleCount}/{filtered.length}</span>
+            <span>{selectedVisibleCount} 已选</span>
           </div>
           <div className="sm2__pack-picker-tools">
-            <input className="sm2__search sm2__search--full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill" />
+            <input className="sm2__search sm2__search--full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按名称、描述或 ID 搜索" />
             <button className="sm2__btn sm2__btn--ghost" onClick={selectVisible} disabled={filtered.length === 0 || selectedVisibleCount === filtered.length}>
               全选当前
             </button>
@@ -787,20 +899,25 @@ function PackBuilderPanel({
               <div className="sm2__empty sm2__empty--compact">没有匹配的 Skill</div>
             ) : (
               filtered.map((skill) => (
-                <button
+                <div
                   key={skill.id}
                   className={`sm2__skill-pick${selected.has(skill.id) ? ' sm2__skill-pick--selected' : ''}`}
-                  aria-label={`选择 ${skill.name}`}
-                  aria-pressed={selected.has(skill.id)}
-                  onClick={() => toggle(skill.id)}
                 >
-                  <span className="sm2__skill-pick-check" aria-hidden="true">{selected.has(skill.id) ? '✓' : ''}</span>
+                  <button
+                    type="button"
+                    className="sm2__skill-pick-action"
+                    aria-label={selected.has(skill.id) ? `从技能包移除 ${skill.name}` : `添加 ${skill.name} 到技能包`}
+                    aria-pressed={selected.has(skill.id)}
+                    onClick={() => toggle(skill.id)}
+                  >
+                    <span aria-hidden="true">{selected.has(skill.id) ? '✓' : '+'}</span>
+                  </button>
                   <span className="sm2__skill-pick-body">
                     <strong>{skill.name}</strong>
                     <span>{skill.description || skill.id}</span>
                   </span>
                   <span className="sm2__tag">{skillSourceTypeLabel(t, skill.sourceType)}</span>
-                </button>
+                </div>
               ))
             )}
           </div>
@@ -809,27 +926,28 @@ function PackBuilderPanel({
         <section className="sm2__pack-section sm2__pack-builder-card sm2__pack-builder-card--selected">
           <div className="sm2__pack-section-head">
             <div>
-              <h3>已选择</h3>
-              <span>保存后的成员顺序。</span>
+              <h3>包内 Skills</h3>
+              <span>保存后，这些成员会作为一个组合使用。</span>
             </div>
             <span role="status" aria-label="已选择 Skill 数量">{selectedSkills.length}</span>
           </div>
           <div className="sm2__pack-selected-tools">
-            <span>{selectedSkills.length === 0 ? '从右侧选择 Skill' : `将保存 ${selectedSkills.length} 个 Skill ID`}</span>
+            <span>{selectedSkills.length === 0 ? '从左侧选择 Skill' : `已加入 ${selectedSkills.length} 个 Skill`}</span>
             <button className="sm2__btn sm2__btn--ghost" onClick={clearSelected} disabled={selectedSkills.length === 0 || (existingApplied && selectedSkills.length === existingMemberIds.size)}>
               清空
             </button>
           </div>
           {selectedSkills.length === 0 ? (
             <div className="sm2__pack-selected-empty">
+              <PackEmblem compact />
               <strong>还没有成员</strong>
-              <span>点击右侧 Skill，它会立即加入这个包。</span>
+              <span>点击左侧 ＋，Skill 会立即加入这个包。</span>
             </div>
           ) : (
             <div className="sm2__pack-member-list">
-              {selectedSkills.map((skill, index) => (
+              {selectedSkills.map((skill) => (
                 <div key={skill.id} className="sm2__pack-member-row">
-                  <div className="sm2__pack-member-index">{index + 1}</div>
+                  <div className="sm2__pack-selected-marker" aria-hidden="true">✓</div>
                   <div className="sm2__pack-member-body">
                     <strong>{skill.name}</strong>
                     <span>{skill.id}</span>
@@ -842,6 +960,19 @@ function PackBuilderPanel({
         </section>
       </div>
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
+      <footer className="sm2__pack-builder-footer">
+        <span>
+          {name.trim()
+            ? `“${name.trim()}”将保存 ${selectedSkills.length} 个 Skill${existingApplied ? '；已应用成员需在详情页移除' : ''}`
+            : '填写名称后即可保存技能包'}
+        </span>
+        <div className="sm2__pack-actions">
+          <button className="sm2__btn" onClick={onCancel} disabled={busy}>取消</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={save} disabled={busy || !name.trim()}>
+            {busy ? '保存中…' : mode === 'edit' ? '保存更改' : '创建技能包'}
+          </button>
+        </div>
+      </footer>
     </div>
   )
 }

@@ -52,8 +52,9 @@ export function SpriteCanvas({
   const [atlasGrid, setAtlasGrid] = useState<AtlasGrid | null>(null)
   const [idleBehavior, setIdleBehavior] = useState<string | null>(null)
   const prefersReducedMotion = usePrefersReducedMotion()
+  const pageVisible = usePageVisibility()
 
-  const trackedIdleMs = useTrackedIdleMs(priority)
+  const trackedIdleMs = useTrackedIdleMs(priority, pageVisible)
   const effectiveIdleSinceMs = idleSinceMs && idleSinceMs > 0 ? idleSinceMs : trackedIdleMs
   const activePet = useMemo(() => pet ?? themeToPet(theme), [pet, theme])
 
@@ -105,7 +106,7 @@ export function SpriteCanvas({
   }, [activePet?.id, activePet?.frameSize.height, activePet?.frameSize.width, activePet?.spritesheetUrl])
 
   useEffect(() => {
-    if (!anim || !activePet) return
+    if (!anim || !activePet || !pageVisible) return
 
     let cancelled = false
     let timer: ReturnType<typeof window.setTimeout> | null = null
@@ -162,13 +163,14 @@ export function SpriteCanvas({
     isIdle,
     isSleeping,
     overrideAnimName,
+    pageVisible,
     prefersReducedMotion,
     shouldSettleToIdle,
   ])
 
   // Idle behavior scheduler — picks a random one-shot animation when idle.
   useEffect(() => {
-    if (!enableIdleBehaviors || !isIdle || isSleeping || animationOverride) {
+    if (!pageVisible || !enableIdleBehaviors || !isIdle || isSleeping || animationOverride) {
       if (idleBehavior !== null) {
         const timer = window.setTimeout(() => setIdleBehavior(null), 0)
         return () => window.clearTimeout(timer)
@@ -195,6 +197,7 @@ export function SpriteCanvas({
     effectiveIdleSinceMs,
     animationOverride,
     idleBehavior,
+    pageVisible,
     energyLevel,
     activePet,
   ])
@@ -396,17 +399,32 @@ function usePrefersReducedMotion(): boolean {
   return prefersReducedMotion
 }
 
+function usePageVisibility(): boolean {
+  const [visible, setVisible] = useState(() => (
+    typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  ))
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const update = () => setVisible(document.visibilityState !== 'hidden')
+    document.addEventListener('visibilitychange', update)
+    return () => document.removeEventListener('visibilitychange', update)
+  }, [])
+
+  return visible
+}
+
 /**
  * Tracks how long the surface has been in `idle` priority. Resets to 0 the
  * moment priority changes away from idle. Updates at 1 Hz while idle.
  */
-function useTrackedIdleMs(priority: Priority): number {
+function useTrackedIdleMs(priority: Priority, pageVisible: boolean): number {
   const startRef = useRef<number | null>(null)
   const [idleMs, setIdleMs] = useState(0)
   const isIdle = priorityName(priority) === 'idle'
 
   useEffect(() => {
-    if (!isIdle) {
+    if (!isIdle || !pageVisible) {
       startRef.current = null
       const timer = window.setTimeout(() => setIdleMs(0), 0)
       return () => window.clearTimeout(timer)
@@ -422,7 +440,7 @@ function useTrackedIdleMs(priority: Priority): number {
       window.clearTimeout(resetTimer)
       window.clearInterval(id)
     }
-  }, [isIdle])
+  }, [isIdle, pageVisible])
 
   return idleMs
 }

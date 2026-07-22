@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-#[cfg(target_os = "windows")]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -11,14 +10,8 @@ pub fn command_path(binary: &str) -> PathBuf {
     find_binary(binary).unwrap_or_else(|| PathBuf::from(binary))
 }
 
-#[cfg(target_os = "windows")]
 pub fn augmented_path_env() -> Option<OsString> {
-    let mut dirs = Vec::new();
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-    dirs.extend(candidate_dirs());
-    std::env::join_paths(dedupe_paths(dirs)).ok()
+    std::env::join_paths(candidate_dirs()).ok()
 }
 
 pub fn find_binary(binary: &str) -> Option<PathBuf> {
@@ -292,10 +285,41 @@ fn shell_var_fallback_cmd(var: &str) -> String {
 }
 
 pub fn login_shell_var(var: &str) -> Option<String> {
+    shell_var(var, false)
+}
+
+pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
+    if vars.is_empty() {
+        return Vec::new();
+    }
+    let shell = user_shell();
+    let output = match std::process::Command::new(&shell)
+        .args(["-lic", "env"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let output = String::from_utf8_lossy(&output.stdout);
+    vars.iter()
+        .filter_map(|name| {
+            output.lines().find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key == *name && !value.trim().is_empty())
+                    .then(|| ((*name).to_string(), value.to_string()))
+            })
+        })
+        .collect()
+}
+
+fn shell_var(var: &str, interactive: bool) -> Option<String> {
     let shell = user_shell();
     let cmd = shell_var_fallback_cmd(var);
+    let shell_mode = if interactive { "-lic" } else { "-lc" };
     let output = std::process::Command::new(&shell)
-        .args(["-lc", &cmd])
+        .args([shell_mode, &cmd])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()

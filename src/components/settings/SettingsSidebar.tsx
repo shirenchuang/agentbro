@@ -1,11 +1,12 @@
 import { useTranslation } from 'react-i18next'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { useSessionStore } from '../../stores/sessionStore'
 import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
-import { buildAgentUsageScores, moveAgentInOrder, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
+import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
 
 interface SidebarItem {
   id: string
@@ -20,6 +21,11 @@ interface SidebarGroup {
 }
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
+
+interface AgentDropTarget {
+  agentId: string
+  edge: 'before' | 'after'
+}
 
 const sidebarGroups: SidebarGroup[] = [
   {
@@ -61,13 +67,31 @@ export function SettingsSidebar({
   const { t } = useTranslation()
   const skillActiveTab = useSkillStoreV2((s) => s.activeTab)
   const setSkillTab = useSkillStoreV2((s) => s.setTab)
+  const setSkillInstallTab = useSkillStoreV2((s) => s.setInstallTab)
+  const marketplaceInstallTask = useSkillStoreV2((s) => s.marketplaceInstallTask)
   const skillAgents = useSkillStoreV2((s) => s.agents)
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
+  const requestCustomAgentDialog = useSkillStoreV2((s) => s.requestCustomAgentDialog)
   const sessionList = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const [showUninstalledSkillAgents, setShowUninstalledSkillAgents] = useState(false)
   const [manualAgentOrder, setManualAgentOrder] = useState<string[]>(() => readStoredAgentOrder())
+  const [draggedAgentId, setDraggedAgentId] = useState<string | null>(null)
+  const [agentDropTarget, setAgentDropTarget] = useState<AgentDropTarget | null>(null)
+  const agentMouseCleanupRef = useRef<(() => void) | null>(null)
+  const suppressAgentClickRef = useRef(false)
+  const marketplaceTaskItems = marketplaceInstallTask ? Object.values(marketplaceInstallTask.items) : []
+  const marketplaceTaskCompleted = marketplaceTaskItems.filter((item) => ['success', 'failed', 'cancelled'].includes(item.status)).length
+  const marketplaceTaskBadge = marketplaceInstallTask
+    ? marketplaceInstallTask.busy
+      ? `${marketplaceTaskCompleted}/${marketplaceTaskItems.length}`
+      : marketplaceInstallTask.result?.cancelled
+        ? '■'
+        : marketplaceInstallTask.result?.failedCount
+          ? '!'
+          : '✓'
+    : null
   const agentUsageScores = useMemo(() => buildAgentUsageScores(sessionList, activeSessionId), [sessionList, activeSessionId])
   const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID), [skillAgents])
   const installedSkillAgents = useMemo(
@@ -81,12 +105,81 @@ export function SettingsSidebar({
     () => sortAgentSummaries(visibleSkillAgents.filter((agent) => !agent.installed), { usageScores: agentUsageScores }),
     [agentUsageScores, visibleSkillAgents],
   )
-  const moveInstalledAgent = useCallback((agentId: string, direction: 'up' | 'down') => {
-    const displayedAgentIds = installedSkillAgents.map((agent) => agent.id)
-    const next = moveAgentInOrder(manualAgentOrder, displayedAgentIds, agentId, direction)
+  const reorderInstalledAgent = useCallback((sourceAgentId: string, target: AgentDropTarget) => {
+    const next = installedSkillAgents.map((agent) => agent.id).filter((agentId) => agentId !== sourceAgentId)
+    const targetIndex = next.indexOf(target.agentId)
+    if (targetIndex < 0) return
+    next.splice(targetIndex + (target.edge === 'after' ? 1 : 0), 0, sourceAgentId)
     setManualAgentOrder(next)
     writeStoredAgentOrder(next)
-  }, [installedSkillAgents, manualAgentOrder])
+  }, [installedSkillAgents])
+  const finishAgentDrag = () => {
+    setDraggedAgentId(null)
+    setAgentDropTarget(null)
+  }
+  const startAgentMouseDrag = (event: ReactMouseEvent<HTMLDivElement>, agentId: string) => {
+    if (event.button !== 0 || installedSkillAgents.length < 2) return
+    agentMouseCleanupRef.current?.()
+
+    const startX = event.clientX
+    const startY = event.clientY
+    let dragging = false
+    let dropTarget: AgentDropTarget | null = null
+
+    const handleMouseMove = (mouseEvent: MouseEvent) => {
+      if (!dragging && Math.hypot(mouseEvent.clientX - startX, mouseEvent.clientY - startY) < 6) return
+      if (!dragging) {
+        dragging = true
+        setDraggedAgentId(agentId)
+      }
+      mouseEvent.preventDefault()
+
+      const targetRow = Array.from(document.querySelectorAll<HTMLElement>('.sm2-sidebar__subitem-row[data-agent-id]')).find((row) => {
+        const bounds = row.getBoundingClientRect()
+        return mouseEvent.clientX >= bounds.left
+          && mouseEvent.clientX <= bounds.right
+          && mouseEvent.clientY >= bounds.top
+          && mouseEvent.clientY <= bounds.bottom
+      })
+      const targetAgentId = targetRow?.dataset.agentId
+      if (!targetRow || !targetAgentId || targetAgentId === agentId) {
+        dropTarget = null
+        setAgentDropTarget(null)
+        return
+      }
+
+      const bounds = targetRow.getBoundingClientRect()
+      const nextTarget: AgentDropTarget = {
+        agentId: targetAgentId,
+        edge: mouseEvent.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after',
+      }
+      if (dropTarget?.agentId === nextTarget.agentId && dropTarget.edge === nextTarget.edge) return
+      dropTarget = nextTarget
+      setAgentDropTarget(nextTarget)
+    }
+
+    const handleMouseUp = (mouseEvent: MouseEvent) => {
+      if (dragging) mouseEvent.preventDefault()
+      cleanup()
+      if (dragging && dropTarget) reorderInstalledAgent(agentId, dropTarget)
+      if (dragging) {
+        suppressAgentClickRef.current = true
+        window.setTimeout(() => { suppressAgentClickRef.current = false }, 0)
+      }
+      finishAgentDrag()
+    }
+
+    const cleanup = () => {
+      window.removeEventListener('mousemove', handleMouseMove, true)
+      window.removeEventListener('mouseup', handleMouseUp, true)
+      agentMouseCleanupRef.current = null
+    }
+
+    window.addEventListener('mousemove', handleMouseMove, true)
+    window.addEventListener('mouseup', handleMouseUp, true)
+    agentMouseCleanupRef.current = cleanup
+  }
+  useEffect(() => () => agentMouseCleanupRef.current?.(), [])
   const sidebarClassName = `settings-sidebar settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const capabilitySidebarClassName = `settings-sidebar settings-sidebar--capability settings-scroll${collapsed ? ' settings-sidebar--collapsed' : ''}`
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
@@ -100,6 +193,10 @@ export function SettingsSidebar({
   const isCapabilitySection = activeSection === 'island' || activeSection === 'monitor' || activeSection === 'agents' || activeSection === 'switch' || activeSection === 'skill-manager-v2'
   const brandTitle = isCapabilitySection ? sectionTitleById[activeSection] : t('settings.title')
   const backToSettingsLabel = t('settings.backToSettings', { defaultValue: 'Back to Settings' })
+  const openSkillTab = (tab: SkillManagerTab) => {
+    setSkillTab(tab)
+    if (tab === 'install' && marketplaceInstallTask) setSkillInstallTab('official')
+  }
   const toggleSidebar = (
     <div className={`settings-sidebar__brand${isCapabilitySection ? ' settings-sidebar__brand--contextual' : ''}`}>
       <button
@@ -228,7 +325,7 @@ export function SettingsSidebar({
               className={skillActiveTab === item.id ? 'active' : ''}
               aria-label={item.label}
               title={item.label}
-              onClick={() => setSkillTab(item.id)}
+              onClick={() => openSkillTab(item.id)}
             >
               <span
                 className="settings-sidebar__icon settings-capability-nav__icon--colored"
@@ -237,6 +334,11 @@ export function SettingsSidebar({
                 {item.icon}
               </span>
               <span className="settings-sidebar__label-text">{item.label}</span>
+              {item.id === 'install' && marketplaceTaskBadge && (
+                <em className="settings-sidebar__task-count" aria-label={t('skills.marketInstall.globalTaskTitle')}>
+                  {marketplaceTaskBadge}
+                </em>
+              )}
             </button>
           ))}
           {skillActiveTab === 'agents' && (
@@ -252,39 +354,27 @@ export function SettingsSidebar({
                   {installedSkillAgents.length === 0 ? (
                     <div className="sm2-sidebar__subgroup-empty">暂无已安装 Agent</div>
                   ) : (
-                    installedSkillAgents.map((a, index) => (
-                      <div key={a.id} className="sm2-sidebar__subitem-row">
+                    installedSkillAgents.map((a) => (
+                      <div
+                        key={a.id}
+                        className={`sm2-sidebar__subitem-row${installedSkillAgents.length > 1 ? ' sm2-sidebar__subitem-row--draggable' : ''}${draggedAgentId === a.id ? ' sm2-sidebar__subitem-row--dragging' : ''}${agentDropTarget?.agentId === a.id ? ` sm2-sidebar__subitem-row--drop-${agentDropTarget.edge}` : ''}`}
+                        data-agent-id={a.id}
+                        title={`拖拽调整 ${a.displayName} 顺序`}
+                        onMouseDown={(event) => startAgentMouseDrag(event, a.id)}
+                      >
                         <button
                           type="button"
                           className={`sm2-sidebar__subitem${skillSelectedAgentId === a.id ? ' sm2-sidebar__subitem--active' : ''}`}
-                          onClick={() => selectAgent(a.id)}
+                          onClick={() => {
+                            if (suppressAgentClickRef.current) return
+                            selectAgent(a.id)
+                          }}
                         >
                           <AgentIconBadge iconKey={a.iconKey} title={a.displayName} size={20} />
                           <span className="sm2-sidebar__subitem-label">{a.displayName}</span>
                           <span className="sm2-sidebar__subitem-dot" />
                         </button>
-                        <span className="sm2-sidebar__reorder" aria-label={`调整 ${a.displayName} 顺序`}>
-                          <button
-                            type="button"
-                            className="sm2-sidebar__reorder-btn"
-                            disabled={index === 0}
-                            aria-label={`上移 ${a.displayName}`}
-                            title={`上移 ${a.displayName}`}
-                            onClick={() => moveInstalledAgent(a.id, 'up')}
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            className="sm2-sidebar__reorder-btn"
-                            disabled={index === installedSkillAgents.length - 1}
-                            aria-label={`下移 ${a.displayName}`}
-                            title={`下移 ${a.displayName}`}
-                            onClick={() => moveInstalledAgent(a.id, 'down')}
-                          >
-                            ↓
-                          </button>
-                        </span>
+                        <span className="sm2-sidebar__drag-handle" aria-hidden="true" />
                       </div>
                     ))
                   )}
@@ -317,6 +407,16 @@ export function SettingsSidebar({
                   )}
                 </>
               )}
+              <button
+                type="button"
+                className="sm2-sidebar__subgroup-add"
+                aria-label={t('settings.addEngineBranch')}
+                title={t('settings.addEngineBranch')}
+                onClick={requestCustomAgentDialog}
+              >
+                <span aria-hidden="true">＋</span>
+                <span>{t('settings.addEngineBranch')}</span>
+              </button>
             </div>
           )}
         </div>
@@ -342,8 +442,16 @@ export function SettingsSidebar({
                   className={`settings-sidebar__item ${isActive ? 'settings-sidebar__item--active' : ''}`}
                   aria-label={t(item.labelKey)}
                   title={t(item.labelKey)}
-                  onClick={() => onSelect(item.id)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(item.id) } }}
+                  onClick={() => {
+                    if (item.id === 'skill-manager-v2' && marketplaceInstallTask) openSkillTab('install')
+                    onSelect(item.id)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return
+                    e.preventDefault()
+                    if (item.id === 'skill-manager-v2' && marketplaceInstallTask) openSkillTab('install')
+                    onSelect(item.id)
+                  }}
                 >
                   <span
                     className="settings-sidebar__icon"
@@ -352,6 +460,14 @@ export function SettingsSidebar({
                     {item.icon}
                   </span>
                   <span className="settings-sidebar__label-text">{t(item.labelKey)}</span>
+                  {item.id === 'skill-manager-v2' && marketplaceTaskBadge && (
+                    <span
+                      className={`settings-sidebar__task-badge${marketplaceInstallTask?.busy ? ' settings-sidebar__task-badge--busy' : ''}`}
+                      aria-label={t('skills.marketInstall.globalTaskTitle')}
+                    >
+                      {marketplaceTaskBadge}
+                    </span>
+                  )}
                 </div>
               )
             })}

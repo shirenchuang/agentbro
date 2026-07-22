@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { useShallow } from 'zustand/react/shallow'
 import { useConfigStore } from '../../../stores/configStore'
 import { SettingSection } from '../SettingSection'
 import { SettingGroup } from '../SettingGroup'
@@ -10,7 +11,11 @@ import { GlassButton } from '../../shared'
 
 export function GeneralSection() {
   const { t, i18n } = useTranslation()
-  const config = useConfigStore()
+  const { language, launchAtLogin, updateConfig } = useConfigStore(useShallow((state) => ({
+    language: state.language,
+    launchAtLogin: state.launchAtLogin,
+    updateConfig: state.updateConfig,
+  })))
 
   const languageOptions = [
     { value: 'en', label: 'English' },
@@ -35,26 +40,26 @@ export function GeneralSection() {
             })()}
             options={languageOptions}
             onChange={(v) => {
-              const previousLanguage = config.language
+              const previousLanguage = language
               const nextLanguage = v as 'en' | 'zh' | 'ja' | 'ko' | 'tr'
               i18n.changeLanguage(v)
-              config.updateConfig('language', nextLanguage)
+              updateConfig('language', nextLanguage)
               setLanguage(nextLanguage).catch((error) => {
                 console.error('[settings] setLanguage:', error)
                 i18n.changeLanguage(previousLanguage)
-                config.updateConfig('language', previousLanguage)
+                updateConfig('language', previousLanguage)
               })
             }}
             minWidth={120}
           />
         </SettingRow>
         <SettingRow label={t('settings.launchAtLogin')} description={t('settings.launchAtLoginDesc')}>
-          <Toggle checked={config.launchAtLogin} onChange={(v) => {
-            const previous = config.launchAtLogin
-            config.updateConfig('launchAtLogin', v)
+          <Toggle checked={launchAtLogin} onChange={(v) => {
+            const previous = launchAtLogin
+            updateConfig('launchAtLogin', v)
             setLaunchAtLogin(v).catch((error) => {
               console.error('[settings] setLaunchAtLogin:', error)
-              config.updateConfig('launchAtLogin', previous)
+              updateConfig('launchAtLogin', previous)
             })
           }} />
         </SettingRow>

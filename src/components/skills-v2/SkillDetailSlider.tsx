@@ -16,6 +16,7 @@ import { extractSkillDescription as extractFrontmatterDescription, stripSkillFro
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
+type CopyMenuState = { x: number; y: number; text: string }
 
 export interface SkillDetailFallback {
   id: string
@@ -76,6 +77,7 @@ export function SkillDetailSlider({
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>('preview')
   const [skillDocPath, setSkillDocPath] = useState<string | null>(null)
   const [skillDocContent, setSkillDocContent] = useState('')
+  const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
 
   useEffect(() => {
     if (!open || !skillId) return
@@ -91,6 +93,7 @@ export function SkillDetailSlider({
     setDiffError(null)
     setDeleteTargetId(null)
     setBatchDeleteMode(false)
+    setCopyMenu(null)
     setSelectedDeleteTargetIds(new Set())
     setBatchDeleteTargetIds(null)
     skillApiV2
@@ -140,6 +143,22 @@ export function SkillDetailSlider({
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, skillId, fallbackSkill?.centerPath])
+
+  useEffect(() => {
+    if (!copyMenu) return
+    const closeMenu = () => setCopyMenu(null)
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu()
+    }
+    window.addEventListener('pointerdown', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [copyMenu])
 
   const loadFile = async (path: string) => {
     setActiveFile(path)
@@ -277,6 +296,30 @@ export function SkillDetailSlider({
   const selectedBatchDeleteTargets = detail?.targets.filter((target) => selectedDeleteTargetIds.has(target.id)) ?? []
   const batchDeleteTargets = detail?.targets.filter((target) => batchDeleteTargetIds?.includes(target.id)) ?? []
 
+  const openCopyMenu = (event: MouseEvent<HTMLElement>) => {
+    const target = event.target instanceof Element ? event.target : null
+    if (!target?.closest('.selectable')) return
+    const text = window.getSelection()?.toString() || ''
+    if (!text.trim()) return
+    event.preventDefault()
+    event.stopPropagation()
+    setCopyMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 104)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 48)),
+      text,
+    })
+  }
+
+  const copySelectedText = async () => {
+    if (!copyMenu) return
+    try {
+      await writeClipboardText(copyMenu.text)
+      setCopyMenu(null)
+    } catch (e) {
+      setError(`复制失败：${e}`)
+    }
+  }
+
   return (
     <>
     <SlideOver
@@ -284,7 +327,7 @@ export function SkillDetailSlider({
       onClose={onClose}
       width={1040}
       className="sm2__slideover--skill-detail"
-      title={summary?.name || skillId || ''}
+      title={<span className="selectable" onContextMenu={openCopyMenu}>{summary?.name || skillId || ''}</span>}
       actions={
         summary && (
           <>
@@ -308,7 +351,7 @@ export function SkillDetailSlider({
       {loading && <div className="sm2__empty">加载中…</div>}
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
       {detail && (
-        <div className="sm2__skill-detail">
+        <div className="sm2__skill-detail" onContextMenu={openCopyMenu}>
           <div className="sm2__detail-pills">
             <span className={`sm2__tag sm2__tag--${detail.status}${isCopyDiffStatus(detail.status) ? ' sm2__detail-status--copy-diff' : ''}`}>
               {STATUS_LABEL[detail.status] || detail.status}
@@ -430,8 +473,46 @@ export function SkillDetailSlider({
         </div>
       </PreviewDialog>
     )}
+    {copyMenu && createPortal(
+      <div
+        className="sm2__selection-menu"
+        role="menu"
+        style={{ left: copyMenu.x, top: copyMenu.y }}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void copySelectedText()}
+        >
+          复制
+        </button>
+      </div>,
+      document.body,
+    )}
     </>
   )
+}
+
+async function writeClipboardText(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+  } catch {
+    // Fall through to the WebView-compatible copy command.
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('剪贴板不可用')
 }
 
 function OverviewTab({

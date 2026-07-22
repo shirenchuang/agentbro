@@ -1036,7 +1036,6 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         useSessionStore.getState().pushOverlay(overlay)
       }
     }
-    saveSessionsDebounced()
   },
 
   setChatHistory: (sessionId, messages, meta) => {

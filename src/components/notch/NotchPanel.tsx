@@ -978,8 +978,9 @@ export function NotchPanel() {
       if (ignoreCursorEventsDelayTimerRef.current) clearTimeout(ignoreCursorEventsDelayTimerRef.current)
       if (openPrepareFrameRef.current != null) window.cancelAnimationFrame(openPrepareFrameRef.current)
       if (pendingDetailOpenTimerRef.current) clearTimeout(pendingDetailOpenTimerRef.current)
+      requestNativeIgnoreCursorEvents(true, { force: true })
     }
-  }, [])
+  }, [requestNativeIgnoreCursorEvents])
 
   useEffect(() => {
     if (!isTauri()) return
@@ -990,6 +991,7 @@ export function NotchPanel() {
 
     let cancelled = false
     let inFlight = false
+    let pollTimer: number | undefined
 
     const tick = async () => {
       if (cancelled || inFlight || isDragging) return
@@ -1028,13 +1030,22 @@ export function NotchPanel() {
       }
     }
 
-    const interval = window.setInterval(tick, 50)
-    tick()
+    const poll = async () => {
+      await tick()
+      if (cancelled) return
+      const panelState = useSessionStore.getState().panelState
+      const delay = nativeHoverInsideRef.current || panelState !== 'collapsed' || preparingOpen
+        ? 50
+        : document.visibilityState === 'hidden'
+          ? 1000
+          : 100
+      pollTimer = window.setTimeout(poll, delay)
+    }
+    void poll()
 
     return () => {
       cancelled = true
-      requestNativeIgnoreCursorEvents(false)
-      window.clearInterval(interval)
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer)
     }
   }, [activeOverlay, handleMouseEnter, handleMouseLeave, interaction.isHidden, islandEnabled, islandSurfaceMode, isDragging, preparingOpen, requestNativeIgnoreCursorEvents])
 
@@ -1259,7 +1270,7 @@ export function NotchPanel() {
     handleSessionClick(sessionId, { forceDetail: true })
   }
 
-  const handleCollapse = () => {
+  const handleCollapse = useCallback(() => {
     detailModeRef.current = false
     detailBackGuardUntilRef.current = 0
     if (pendingDetailOpenTimerRef.current) {
@@ -1269,7 +1280,35 @@ export function NotchPanel() {
     markActiveBlockingOverlayInline()
     setNotchFocusable(false).catch(() => {})
     setPanelState('collapsed')
-  }
+  }, [markActiveBlockingOverlayInline, setPanelState])
+
+  useEffect(() => {
+    if (!isTauri()) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      if (cancelled) return
+      listen('settings-window-opened', () => {
+        nativeHoverInsideRef.current = false
+        const overlay = useSessionStore.getState().activeOverlay
+        if (overlay && isNonBlockingOverlay(overlay)) {
+          dismissNonBlockingOverlay(overlay.id, { collapse: true })
+        } else {
+          handleCollapse()
+        }
+        requestNativeIgnoreCursorEvents(true, { force: true })
+      }).then((fn) => {
+        if (cancelled) fn()
+        else unlisten = fn
+      }).catch(() => {})
+    }).catch(() => {})
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [dismissNonBlockingOverlay, handleCollapse, requestNativeIgnoreCursorEvents])
 
   const showBlockingOverlayAsSessionList = useCallback(() => {
     detailModeRef.current = false

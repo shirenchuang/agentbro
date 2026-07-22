@@ -1,9 +1,5 @@
 /* AgentBro — Main App */
-import { useEffect, useRef, useState } from 'react'
-import { ClaudeHookUiLab } from './components/dev/ClaudeHookUiLab'
-import { NotchPanel } from './components/notch/NotchPanel'
-import { PetApp } from './PetApp'
-import { SettingsApp } from './components/settings'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { COLOR_THEMES, useThemeStore } from './stores/themeStore'
 import { useConfigStore } from './stores/configStore'
 import { usePetStore } from './stores/petStore'
@@ -13,6 +9,12 @@ import { useAutoHide } from './hooks/useAutoHide'
 import { getActiveThemeBundle, isTauri } from './services/tauriApi'
 import { primaryModifierPressed } from './utils/platform'
 import './styles/globals.css'
+
+const ClaudeHookUiLab = lazy(() => import('./components/dev/ClaudeHookUiLab').then((module) => ({ default: module.ClaudeHookUiLab })))
+const NotchPanel = lazy(() => import('./components/notch/NotchPanel').then((module) => ({ default: module.NotchPanel })))
+const PetApp = lazy(() => import('./PetApp').then((module) => ({ default: module.PetApp })))
+const SettingsApp = lazy(() => import('./components/settings/SettingsApp').then((module) => ({ default: module.SettingsApp })))
+const SkillPackPicker = lazy(() => import('./components/tray/SkillPackPicker').then((module) => ({ default: module.SkillPackPicker })))
 
 // Fields whose source of truth lives in the Rust backend and is broadcast via
 // the `config-changed` event. We must NOT replay stale values from another
@@ -60,6 +62,7 @@ async function detectWindowLabel(): Promise<string> {
   // Check URL hash first (works in both Tauri and browser)
   if (window.location.hash === '#settings') return 'settings'
   if (window.location.hash === '#pet') return 'pet'
+  if (window.location.hash === '#skill-pack-picker') return 'skill-pack-picker'
 
   // In Tauri, use the real window label
   if (isTauri()) {
@@ -80,7 +83,7 @@ async function detectWindowLabel(): Promise<string> {
 function App() {
   const [windowLabel, setWindowLabel] = useState<string | null>(null)
 
-  useTauriInit()
+  useTauriInit(windowLabel)
   useAutoHide()
 
   // Apply color theme to DOM
@@ -216,7 +219,11 @@ function App() {
 
   // Pet companion window — independent, only renders the pet sprite layer.
   if (windowLabel === 'pet') {
-    return <PetApp />
+    return <Suspense fallback={null}><PetApp /></Suspense>
+  }
+
+  if (windowLabel === 'skill-pack-picker') {
+    return <Suspense fallback={null}><SkillPackPicker /></Suspense>
   }
 
   // Settings window
@@ -242,7 +249,7 @@ function App() {
 
     return (
       <div style={{ width: '100vw', height: '100vh', background: 'var(--settings-bg)' }}>
-        <SettingsApp onClose={handleClose} />
+        <Suspense fallback={null}><SettingsApp onClose={handleClose} /></Suspense>
       </div>
     )
   }
@@ -255,12 +262,12 @@ function App() {
       position: 'relative',
     }}>
       <BackgroundUpdater />
-      <NotchPanel />
+      <Suspense fallback={null}><NotchPanel /></Suspense>
     </div>
   )
 
   if (!isTauri() && windowLabel === 'notch') {
-    return <ClaudeHookUiLab>{notchWindow}</ClaudeHookUiLab>
+    return <Suspense fallback={notchWindow}><ClaudeHookUiLab>{notchWindow}</ClaudeHookUiLab></Suspense>
   }
 
   // Notch window (default)

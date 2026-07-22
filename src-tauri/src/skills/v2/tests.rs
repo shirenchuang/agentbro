@@ -1295,6 +1295,229 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
+fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
+    let (_home, svc, _lock) = fresh_service("move-direct-to-pack");
+    let direct = write_skill(&svc.home.join("s"), "direct", "direct-skill", Some("v1"));
+    let companion = write_skill(
+        &svc.home.join("s"),
+        "companion",
+        "companion-skill",
+        Some("v1"),
+    );
+    for src in [direct, companion] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "daily-pack".to_string(),
+        name: "Daily Pack".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["companion-skill".to_string()],
+    })
+    .unwrap();
+
+    let direct_preview = svc
+        .preview_distribute_skill(
+            vec!["direct-skill".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(direct_preview, ClaimOrigin::Direct)
+        .unwrap();
+    let direct_detail = svc.get_skill_detail("direct-skill").unwrap();
+    let target = &direct_detail.targets[0];
+    let target_id = target.id.clone();
+    let target_path = Path::new(&target.target_path);
+    fs::write(target_path.join("reference.md"), "agent-local-change").unwrap();
+
+    let preview = svc
+        .preview_move_direct_skill_to_pack(&target_id, "daily-pack")
+        .unwrap();
+    assert!(preview.will_add_to_pack);
+    assert!(!preview.already_applied);
+    assert_eq!(preview.other_member_count, 1);
+    assert!(preview.distribution.blockers.is_empty());
+    assert_eq!(preview.distribution.skill_ids, vec!["companion-skill"]);
+
+    svc.move_direct_skill_to_pack(&target_id, "daily-pack", vec![])
+        .unwrap();
+
+    let pack = svc.get_skill_pack_detail("daily-pack").unwrap();
+    assert!(pack
+        .members
+        .iter()
+        .any(|member| member.skill_id == "direct-skill"));
+    let moved = svc.get_skill_detail("direct-skill").unwrap();
+    assert_eq!(moved.targets.len(), 1);
+    assert_eq!(
+        fs::read_to_string(Path::new(&moved.targets[0].target_path).join("reference.md")).unwrap(),
+        "agent-local-change"
+    );
+    assert_eq!(moved.targets[0].claims.len(), 1);
+    assert_eq!(moved.targets[0].claims[0].claim_type, "pack");
+    assert_eq!(
+        moved.targets[0].claims[0].pack_id.as_deref(),
+        Some("daily-pack")
+    );
+    let installed_companion = svc.get_skill_detail("companion-skill").unwrap();
+    assert!(installed_companion.targets.iter().any(|installed| {
+        installed.agent_id == "codex"
+            && installed
+                .claims
+                .iter()
+                .any(|claim| claim.pack_id.as_deref() == Some("daily-pack"))
+    }));
+
+    let revoked = svc
+        .remove_skill_pack_from_agent("daily-pack", "codex")
+        .unwrap();
+    assert_eq!(revoked.removed_targets, 2);
+    assert!(svc
+        .get_skill_detail("direct-skill")
+        .unwrap()
+        .targets
+        .is_empty());
+    assert!(svc
+        .get_skill_detail("companion-skill")
+        .unwrap()
+        .targets
+        .is_empty());
+}
+
+#[test]
+fn moving_to_pack_requires_a_direct_claim() {
+    let (_home, svc, _lock) = fresh_service("move-pack-only-target");
+    let src = write_skill(&svc.home.join("s"), "only", "pack-only", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    for id in ["source-pack", "target-pack"] {
+        svc.upsert_skill_pack(UpsertPackInput {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: if id == "source-pack" {
+                vec!["pack-only".to_string()]
+            } else {
+                vec![]
+            },
+        })
+        .unwrap();
+    }
+    svc.apply_skill_pack("source-pack", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+    let target_id = svc.get_skill_detail("pack-only").unwrap().targets[0]
+        .id
+        .clone();
+
+    let error = svc
+        .preview_move_direct_skill_to_pack(&target_id, "target-pack")
+        .unwrap_err();
+    assert!(error.contains("directly distributed"));
+}
+
+#[test]
+fn moving_into_an_applied_pack_does_not_refresh_other_members() {
+    let (_home, svc, _lock) = fresh_service("move-to-applied-pack");
+    let direct = write_skill(&svc.home.join("s"), "direct", "direct-skill", Some("v1"));
+    let companion = write_skill(
+        &svc.home.join("s"),
+        "companion",
+        "companion-skill",
+        Some("v1"),
+    );
+    for src in [direct, companion] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "applied-pack".to_string(),
+        name: "Applied Pack".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["companion-skill".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack(
+        "applied-pack",
+        vec!["codex".to_string()],
+        "copy".to_string(),
+    )
+    .unwrap();
+    let companion_target = svc.get_skill_detail("companion-skill").unwrap().targets[0]
+        .target_path
+        .clone();
+    fs::write(
+        Path::new(&companion_target).join("reference.md"),
+        "keep-companion-local-change",
+    )
+    .unwrap();
+
+    let direct_preview = svc
+        .preview_distribute_skill(
+            vec!["direct-skill".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(direct_preview, ClaimOrigin::Direct)
+        .unwrap();
+    let direct_target_id = svc.get_skill_detail("direct-skill").unwrap().targets[0]
+        .id
+        .clone();
+
+    let preview = svc
+        .preview_move_direct_skill_to_pack(&direct_target_id, "applied-pack")
+        .unwrap();
+    assert!(preview.already_applied);
+    assert_eq!(preview.other_member_count, 1);
+    assert!(preview.distribution.skill_ids.is_empty());
+    assert!(preview.distribution.blockers.is_empty());
+
+    svc.move_direct_skill_to_pack(&direct_target_id, "applied-pack", vec![])
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(Path::new(&companion_target).join("reference.md")).unwrap(),
+        "keep-companion-local-change"
+    );
+}
+
+#[test]
 fn updating_applied_pack_auto_syncs_new_members_by_default() {
     let (_home, svc, _lock) = fresh_service("pack-auto-sync");
     let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
@@ -1345,6 +1568,56 @@ fn updating_applied_pack_auto_syncs_new_members_by_default() {
                 .iter()
                 .any(|claim| claim.pack_id.as_deref() == Some("p-sync"))
     }));
+}
+
+#[test]
+fn updating_applied_pack_can_defer_automatic_sync() {
+    let (_home, svc, _lock) = fresh_service("pack-deferred-auto-sync");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-deferred".to_string(),
+        name: "Deferred".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-deferred", vec!["codex".to_string()], "copy".to_string())
+        .unwrap();
+
+    let pending = svc
+        .upsert_skill_pack_deferred(UpsertPackInput {
+            id: "p-deferred".to_string(),
+            name: "Deferred".to_string(),
+            description: "".to_string(),
+            tags: vec![],
+            skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+        })
+        .unwrap();
+
+    assert_eq!(pending.sync_status, "pending");
+    assert_eq!(pending.pending_sync_count, 1);
+    assert!(svc
+        .get_skill_detail("skill-two")
+        .unwrap()
+        .targets
+        .is_empty());
 }
 
 #[test]
@@ -2750,6 +3023,45 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
         .health
         .iter()
         .any(|issue| issue.kind == "skills_dir_missing"));
+}
+
+#[test]
+fn agent_detail_does_not_refresh_unrelated_agents() {
+    let (_home, svc, _lock) = fresh_service("agent-detail-isolated");
+    let metadata_dir = svc.home.join(".agentbro");
+    fs::create_dir_all(&metadata_dir).unwrap();
+    fs::write(
+        metadata_dir.join("metadata.json"),
+        serde_json::json!({
+            "customAgents": [{
+                "id": "unrelated-agent",
+                "displayName": "Unrelated Agent",
+                "category": "custom",
+                "globalSkillsDir": svc.home.join(".unrelated/skills").display().to_string(),
+                "isEnabled": true
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let count_unrelated_rows = || {
+        svc.db
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM agents WHERE id = 'unrelated-agent'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+    };
+
+    assert_eq!(count_unrelated_rows(), 0);
+    svc.get_agent_detail("claude-code").unwrap();
+    assert_eq!(count_unrelated_rows(), 0);
 }
 
 #[test]

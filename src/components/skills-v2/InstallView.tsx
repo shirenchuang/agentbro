@@ -7,7 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
-import type { MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
+import type { MarketplaceBatchProgress, MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
 import { PreviewDialog } from './PreviewDialog'
@@ -134,13 +134,29 @@ interface MarketPackAttachResult {
   alreadyMember: boolean
 }
 
+type MarketBatchItemStatus = 'queued' | 'installing' | 'success' | 'failed' | 'cancelled'
+
+interface MarketBatchItemProgress {
+  status: MarketBatchItemStatus
+  message?: string
+}
+
+interface MarketBatchResult {
+  successCount: number
+  failedCount: number
+  cancelled: boolean
+  packName?: string
+  completionError?: string
+  sourceError?: string
+}
+
 export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string) => void; onDone: InstallDoneHandler }) {
   const { t } = useTranslation()
   const [items, setItems] = useState<MarketplaceSkill[]>([])
   const [sourceItemsBySource, setSourceItemsBySource] = useState<Record<string, MarketplaceSkill[]>>({})
   const [board, setBoard] = useState<MarketBoard>('alltime')
   const [publisherFilter, setPublisherFilter] = useState('')
-  const [sourceFilter, setSourceFilter] = useState('')
+  const [sourceFilter, setSourceFilter] = useState(() => useSkillStoreV2.getState().marketplaceInstallTask?.source || '')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
@@ -153,12 +169,24 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   const [viewMode, setViewMode] = useState<MarketViewMode>('cards')
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkill | null>(null)
   const [packDialogSkill, setPackDialogSkill] = useState<MarketplaceSkill | null>(null)
+  const [selectedMarketIds, setSelectedMarketIds] = useState<Set<string>>(() => new Set())
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<Record<string, MarketBatchItemProgress>>({})
+  const [batchResult, setBatchResult] = useState<MarketBatchResult | null>(null)
+  const [batchPhase, setBatchPhase] = useState<MarketplaceBatchProgress['phase']>('completed')
   const [preferredPackBySource, setPreferredPackBySource] = useState<Record<string, string>>({})
   const [packMembershipBySkillId, setPackMembershipBySkillId] = useState<Record<string, string[]>>({})
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
+  const skipInitialScopeResetRef = useRef(Boolean(useSkillStoreV2.getState().marketplaceInstallTask?.source))
+  const skipInitialPublisherResetRef = useRef(Boolean(useSkillStoreV2.getState().marketplaceInstallTask?.source))
+  const batchJobIdRef = useRef('')
+  const batchInstallingItemRef = useRef('')
+  const batchCancelRequestedRef = useRef(false)
   const centerSkills = useSkillStoreV2((s) => s.skills)
   const packs = useSkillStoreV2((s) => s.packs)
+  const marketplaceInstallTask = useSkillStoreV2((s) => s.marketplaceInstallTask)
   const registryId = 'skills-sh'
   const isSkillsSh = ['skills-sh', 'skills.sh', 'skillssh'].includes(registryId)
   const boardTabs: Array<{ id: MarketBoard; label: string }> = [
@@ -168,6 +196,10 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   ]
 
   useEffect(() => {
+    if (skipInitialScopeResetRef.current) {
+      skipInitialScopeResetRef.current = false
+      return
+    }
     setPublisherFilter('')
     setSourceFilter('')
     setSourcesExpanded(false)
@@ -175,9 +207,74 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   }, [registryId, board, query])
 
   useEffect(() => {
+    if (skipInitialPublisherResetRef.current) {
+      skipInitialPublisherResetRef.current = false
+      return
+    }
     setSourceFilter('')
     setPage(1)
   }, [publisherFilter])
+
+  useEffect(() => {
+    if (batchJobIdRef.current) return
+    setSelectedMarketIds(new Set())
+    setBatchDialogOpen(false)
+    setBatchProgress({})
+    setBatchResult(null)
+  }, [sourceFilter])
+
+  useEffect(() => {
+    let disposed = false
+    let stopListening: (() => void) | null = null
+    void skillApiV2.onMarketplaceBatchProgress((progress) => {
+      if (progress.jobId !== batchJobIdRef.current) return
+      useSkillStoreV2.getState().updateMarketplaceInstallProgress(progress)
+      setBatchPhase(progress.phase)
+      if (progress.phase === 'installing' && progress.itemId) {
+        const previousItemId = batchInstallingItemRef.current
+        batchInstallingItemRef.current = progress.itemId
+        setInstalling((previous) => {
+          const next = new Set(previous)
+          if (previousItemId) next.delete(previousItemId)
+          next.add(progress.itemId!)
+          return next
+        })
+        setBatchProgress((previous) => ({
+          ...previous,
+          [progress.itemId!]: { status: 'installing' },
+        }))
+        return
+      }
+      if ((progress.phase === 'success' || progress.phase === 'failed') && progress.itemId) {
+        if (batchInstallingItemRef.current === progress.itemId) {
+          batchInstallingItemRef.current = ''
+        }
+        setInstalling((previous) => {
+          const next = new Set(previous)
+          next.delete(progress.itemId!)
+          return next
+        })
+        setBatchProgress((previous) => ({
+          ...previous,
+          [progress.itemId!]: {
+            status: progress.phase === 'success' ? 'success' : 'failed',
+            message: progress.message || t(
+              progress.phase === 'success'
+                ? 'skills.marketInstall.batchInstalled'
+                : 'skills.marketInstall.batchState.failed',
+            ),
+          },
+        }))
+      }
+    }).then((unlisten) => {
+      if (disposed) unlisten()
+      else stopListening = unlisten
+    })
+    return () => {
+      disposed = true
+      stopListening?.()
+    }
+  }, [t])
 
   useEffect(() => {
     setPage(1)
@@ -411,6 +508,26 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
     (currentPage - 1) * MARKET_PAGE_SIZE,
     currentPage * MARKET_PAGE_SIZE,
   )
+  const selectedMarketSkills = visibleItems.filter((item) => selectedMarketIds.has(item.id))
+  const allPageItemsSelected = paginatedItems.length > 0 && paginatedItems.every((item) => selectedMarketIds.has(item.id))
+  const displayedBatchBusy = marketplaceInstallTask?.busy ?? batchBusy
+  const displayedBatchResult = marketplaceInstallTask?.result ?? batchResult
+  const displayedBatchPhase = marketplaceInstallTask?.phase ?? batchPhase
+  const displayedBatchProgress: Record<string, MarketBatchItemProgress> = marketplaceInstallTask
+    ? Object.fromEntries(Object.entries(marketplaceInstallTask.items).map(([id, item]) => [id, {
+        status: item.status,
+        message: item.message,
+      }]))
+    : batchProgress
+  const batchProgressValues = Object.values(displayedBatchProgress)
+  const batchTotalCount = batchProgressValues.length
+  const batchCompletedCount = batchProgressValues.filter((item) =>
+    item.status === 'success' || item.status === 'failed' || item.status === 'cancelled',
+  ).length
+  const batchFailedCount = batchProgressValues.filter((item) => item.status === 'failed').length
+  const batchProgressPercent = batchTotalCount === 0
+    ? 0
+    : Math.round((batchCompletedCount / batchTotalCount) * 100)
 
   const visiblePages = useMemo(() => {
     return Array.from({ length: totalPages }, (_, i) => i + 1).filter((p) => {
@@ -428,6 +545,248 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
   const packNamesForSkill = useCallback((it: MarketplaceSkill) => {
     return packMembershipBySkillId[marketSkillId(it)] || []
   }, [packMembershipBySkillId])
+
+  const toggleMarketSelection = useCallback((skillId: string) => {
+    setSelectedMarketIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(skillId)) next.delete(skillId)
+      else next.add(skillId)
+      return next
+    })
+  }, [])
+
+  const toggleCurrentPageSelection = useCallback(() => {
+    setSelectedMarketIds((previous) => {
+      const next = new Set(previous)
+      if (allPageItemsSelected) paginatedItems.forEach((item) => next.delete(item.id))
+      else paginatedItems.forEach((item) => next.add(item.id))
+      return next
+    })
+  }, [allPageItemsSelected, paginatedItems])
+
+  const openBatchInstallDialog = useCallback(() => {
+    if (selectedMarketSkills.length === 0) return
+    setError(null)
+    setStatus(null)
+    setBatchProgress(Object.fromEntries(
+      selectedMarketSkills.map((item) => [item.id, { status: 'queued' as const }]),
+    ))
+    setBatchResult(null)
+    setBatchDialogOpen(true)
+  }, [selectedMarketSkills])
+
+  const installSelected = async (choice: MarketInstallPackChoice) => {
+    if (displayedBatchBusy || selectedMarketSkills.length === 0) return
+    const batchSkills = [...selectedMarketSkills]
+    const source = marketSkillSource(batchSkills[0])
+    const successful: Array<{ skill: MarketplaceSkill; skillId: string }> = []
+    let failedCount = 0
+    let cancelled = false
+    let sourceError: string | undefined
+    const jobId = `market-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    setBatchDialogOpen(false)
+    setBatchBusy(true)
+    setBatchResult(null)
+    setBatchPhase('preparing')
+    setError(null)
+    setStatus(null)
+    batchJobIdRef.current = jobId
+    batchCancelRequestedRef.current = false
+    useSkillStoreV2.getState().beginMarketplaceInstallTask(
+      jobId,
+      source,
+      batchSkills.map((item) => ({ id: item.id, name: item.name })),
+    )
+
+    const pendingSkills: MarketplaceSkill[] = []
+    for (const item of batchSkills) {
+      const existingCenterSkill = findMarketCenterSkill(item, useSkillStoreV2.getState().skills)
+      if (existingCenterSkill) {
+        successful.push({ skill: item, skillId: existingCenterSkill.id })
+        setInstalledIds((previous) => new Set(previous).add(item.id))
+        setBatchProgress((previous) => ({
+          ...previous,
+          [item.id]: {
+            status: 'success',
+            message: t('skills.marketInstall.batchAlreadyInstalled'),
+          },
+        }))
+        useSkillStoreV2.getState().updateMarketplaceInstallItem(item.id, {
+          status: 'success',
+          message: t('skills.marketInstall.batchAlreadyInstalled'),
+        })
+      } else {
+        pendingSkills.push(item)
+      }
+    }
+
+    if (pendingSkills.length > 0) {
+      try {
+        const installResult = await skillApiV2.executeMarketplaceSkillBatch(
+          jobId,
+          `github:${source}`,
+          pendingSkills.map((item) => ({
+            itemId: item.id,
+            skillId: marketSkillId(item),
+            sourceUri: item.downloadUrl,
+          })),
+        )
+        cancelled = installResult.cancelled
+        const itemById = new Map(pendingSkills.map((item) => [item.id, item]))
+        for (const installed of installResult.items) {
+          const item = itemById.get(installed.itemId)
+          if (!item) continue
+          if (installed.success) {
+            successful.push({ skill: item, skillId: installed.skillId })
+            setInstalledIds((previous) => new Set(previous).add(item.id))
+            setBatchProgress((previous) => ({
+              ...previous,
+              [item.id]: { status: 'success', message: t('skills.marketInstall.batchInstalled') },
+            }))
+            useSkillStoreV2.getState().updateMarketplaceInstallItem(item.id, {
+              status: 'success',
+              message: t('skills.marketInstall.batchInstalled'),
+            })
+          } else {
+            failedCount += 1
+            setBatchProgress((previous) => ({
+              ...previous,
+              [item.id]: { status: 'failed', message: installed.error || t('skills.marketInstall.batchState.failed') },
+            }))
+            useSkillStoreV2.getState().updateMarketplaceInstallItem(item.id, {
+              status: 'failed',
+              message: installed.error || t('skills.marketInstall.batchState.failed'),
+            })
+          }
+        }
+        const processedIds = new Set(installResult.items.map((item) => item.itemId))
+        if (cancelled) {
+          for (const item of pendingSkills.filter((candidate) => !processedIds.has(candidate.id))) {
+            useSkillStoreV2.getState().updateMarketplaceInstallItem(item.id, {
+              status: 'cancelled',
+              message: t('skills.marketInstall.batchState.cancelled'),
+            })
+          }
+          setBatchProgress((previous) => ({
+            ...previous,
+            ...Object.fromEntries(
+              pendingSkills
+                .filter((item) => !processedIds.has(item.id))
+                .map((item) => [item.id, {
+                  status: 'cancelled' as const,
+                  message: t('skills.marketInstall.batchState.cancelled'),
+                }]),
+            ),
+          }))
+        }
+      } catch (installError) {
+        cancelled = batchCancelRequestedRef.current
+          || useSkillStoreV2.getState().marketplaceInstallTask?.cancelRequested === true
+        if (!cancelled) sourceError = String(installError)
+        for (const item of pendingSkills) {
+          useSkillStoreV2.getState().updateMarketplaceInstallItem(item.id, {
+            status: cancelled ? 'cancelled' : 'queued',
+            message: cancelled ? t('skills.marketInstall.batchState.cancelled') : t('skills.marketInstall.batchState.notStarted'),
+          })
+        }
+        setBatchProgress((previous) => ({
+          ...previous,
+          ...Object.fromEntries(pendingSkills.map((item) => [item.id, {
+            status: cancelled ? 'cancelled' as const : 'queued' as const,
+            message: cancelled ? t('skills.marketInstall.batchState.cancelled') : t('skills.marketInstall.batchState.notStarted'),
+          }])),
+        }))
+      }
+    }
+
+    batchInstallingItemRef.current = ''
+    setInstalling((previous) => {
+      const next = new Set(previous)
+      for (const item of batchSkills) next.delete(item.id)
+      return next
+    })
+
+    let packResult: MarketPackAttachResult | null = null
+    let completionError: string | undefined
+    if (choice.mode !== 'center' && successful.length > 0) {
+      setBatchPhase('organizing')
+      useSkillStoreV2.getState().setMarketplaceInstallPhase('organizing')
+      try {
+        packResult = await attachMarketSkillsToPack(successful, choice)
+        const attachedPack = packResult
+        const successfulSources = uniqStrings(successful.map(({ skill }) => marketSkillSource(skill)))
+        if (successfulSources.length > 0) {
+          setPreferredPackBySource((previous) => ({
+            ...previous,
+            ...Object.fromEntries(successfulSources.map((source) => [source, attachedPack.packId])),
+          }))
+        }
+        setPackMembershipBySkillId((previous) => {
+          let next = { ...previous }
+          for (const { skill, skillId } of successful) {
+            next = {
+              ...next,
+              ...marketPackMembershipPatch(next, skillId, marketSkillId(skill), attachedPack.packName),
+            }
+          }
+          return next
+        })
+      } catch (attachError) {
+        completionError = String(attachError)
+      }
+    }
+
+    if (successful.length > 0) {
+      try {
+        await useSkillStoreV2.getState().loadOverview(true)
+        await onDone()
+      } catch (refreshError) {
+        completionError = completionError || String(refreshError)
+      }
+    }
+
+    const result = {
+      successCount: successful.length,
+      failedCount,
+      cancelled,
+      packName: packResult?.packName,
+      completionError,
+      sourceError,
+    }
+    setBatchResult(result)
+    setBatchBusy(false)
+    setBatchPhase(cancelled ? 'cancelled' : sourceError ? 'source_failed' : failedCount > 0 ? 'failed' : 'completed')
+    batchJobIdRef.current = ''
+    batchCancelRequestedRef.current = false
+    useSkillStoreV2.getState().finishMarketplaceInstallTask(result)
+    setStatus(t(
+      cancelled
+        ? 'skills.marketInstall.batchCancelledStatus'
+        : sourceError
+          ? 'skills.marketInstall.batchSourceFailedStatus'
+          : failedCount > 0 || completionError
+            ? 'skills.marketInstall.batchPartialStatus'
+            : packResult
+              ? 'skills.marketInstall.batchPackStatus'
+              : 'skills.marketInstall.batchSuccessStatus',
+      {
+        success: successful.length,
+        failed: failedCount,
+        pack: packResult?.packName || '',
+        message: sourceError || '',
+      },
+    ))
+  }
+
+  const cancelBatchInstall = async () => {
+    batchCancelRequestedRef.current = true
+    const accepted = await useSkillStoreV2.getState().cancelMarketplaceInstallTask()
+    if (!accepted) {
+      batchCancelRequestedRef.current = false
+      setError(t('skills.marketInstall.cancelNotAccepted'))
+    }
+  }
 
   const install = async (
     it: MarketplaceSkill,
@@ -629,6 +988,56 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
         默认从 skills.sh 在线市场读取榜单；输入关键词后切换为搜索结果。安装会先进中心库，之后再分发给各个 Agent。
       </div>
       {status && <div className="sm2__notice sm2__notice--ok">{status}</div>}
+      {(displayedBatchBusy || displayedBatchResult) && (
+        <div className={`sm2__market-background-job${displayedBatchResult?.cancelled ? ' sm2__market-background-job--cancelled' : ''}${batchFailedCount > 0 || displayedBatchResult?.sourceError ? ' sm2__market-background-job--warn' : ''}`}>
+          <div className="sm2__market-background-job-main">
+            <span className={`sm2__market-background-job-icon sm2__market-background-job-icon--${displayedBatchPhase}`} aria-hidden="true">
+              {displayedBatchBusy ? '↓' : displayedBatchResult?.cancelled ? '■' : batchFailedCount > 0 || displayedBatchResult?.sourceError ? '!' : '✓'}
+            </span>
+            <div>
+              <strong>{t(`skills.marketInstall.backgroundPhase.${displayedBatchPhase}`)}</strong>
+              <small>
+                {t('skills.marketInstall.backgroundProgress', {
+                  completed: batchCompletedCount,
+                  total: batchTotalCount,
+                  failed: batchFailedCount,
+                })}
+              </small>
+            </div>
+          </div>
+          <div className="sm2__market-background-job-track" aria-label={t('skills.marketInstall.installProgress')}>
+            <span
+              className={['cloning', 'preparing'].includes(displayedBatchPhase) ? 'sm2__market-background-job-bar sm2__market-background-job-bar--indeterminate' : 'sm2__market-background-job-bar'}
+              style={['cloning', 'preparing'].includes(displayedBatchPhase) ? undefined : { width: `${batchProgressPercent}%` }}
+            />
+          </div>
+          {displayedBatchBusy ? (
+            <button
+              className="sm2__btn sm2__btn--ghost sm2__market-background-job-cancel"
+              disabled={displayedBatchPhase === 'cancelling' || displayedBatchPhase === 'organizing'}
+              onClick={() => void cancelBatchInstall()}
+            >
+              {displayedBatchPhase === 'cancelling'
+                ? t('skills.marketInstall.cancelling')
+                : displayedBatchPhase === 'organizing'
+                  ? t('skills.marketInstall.organizing')
+                  : t('skills.marketInstall.cancelInstall')}
+            </button>
+          ) : (
+            <button
+              className="sm2__btn sm2__btn--ghost"
+              onClick={() => {
+                setBatchResult(null)
+                setBatchProgress({})
+                setSelectedMarketIds(new Set())
+                useSkillStoreV2.getState().dismissMarketplaceInstallTask()
+              }}
+            >
+              {t('skills.marketInstall.dismissProgress')}
+            </button>
+          )}
+        </div>
+      )}
       {viewLoading ? (
         <div className="sm2__empty">{sourceFilter ? `加载「${sourceFilter}」…` : '加载市场…'}</div>
       ) : viewError ? (
@@ -685,14 +1094,58 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
               </button>
             </div>
           )}
+          {sourceFilter && !displayedBatchBusy && !displayedBatchResult && (
+            <div className="sm2__market-batchbar">
+              <label className="sm2__market-batch-select-all">
+                <input
+                  type="checkbox"
+                  checked={allPageItemsSelected}
+                  disabled={displayedBatchBusy || paginatedItems.length === 0}
+                  onChange={toggleCurrentPageSelection}
+                />
+                <span>{t('skills.marketInstall.selectPage')}</span>
+              </label>
+              <span className={`sm2__market-batch-count${selectedMarketSkills.length > 0 ? ' sm2__market-batch-count--active' : ''}`}>
+                {t('skills.marketInstall.selectedCount', { count: selectedMarketSkills.length })}
+              </span>
+              <div className="sm2__market-batch-actions">
+                {selectedMarketSkills.length > 0 && (
+                  <button
+                    className="sm2__btn sm2__btn--ghost sm2__market-batch-clear"
+                    disabled={displayedBatchBusy}
+                    onClick={() => setSelectedMarketIds(new Set())}
+                  >
+                    {t('skills.marketInstall.clearSelection')}
+                  </button>
+                )}
+                <button
+                  className="sm2__btn sm2__btn--primary sm2__market-batch-install"
+                  disabled={displayedBatchBusy || selectedMarketSkills.length === 0}
+                  onClick={openBatchInstallDialog}
+                >
+                  <span aria-hidden="true">↓</span>
+                  {t('skills.marketInstall.installSelected', { count: selectedMarketSkills.length })}
+                </button>
+              </div>
+            </div>
+          )}
           {viewMode === 'list' ? (
             <div className="sm2__market-list" ref={gridRef}>
               {paginatedItems.map((it) => {
                 const isJustInstalled = installedIds.has(it.id)
                 const isCurrentInstalling = installing.has(it.id)
                 const done = it.isInstalled || isJustInstalled || isMarketItemInstalled(it, centerSkills)
+                const selected = selectedMarketIds.has(it.id)
                 return (
-                  <div key={it.id} className={`sm2__market-item${isCurrentInstalling ? ' sm2__market-item--installing' : ''}`} onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
+                  <div key={it.id} className={`sm2__market-item${isCurrentInstalling ? ' sm2__market-item--installing' : ''}${selected ? ' sm2__market-item--selected' : ''}`} onClick={() => setDetailSkill(it)} style={{ cursor: 'pointer' }}>
+                    {sourceFilter && (
+                      <MarketSkillCheckbox
+                        checked={selected}
+                        disabled={displayedBatchBusy || isCurrentInstalling}
+                        label={t('skills.marketInstall.selectSkill', { name: it.name })}
+                        onChange={() => toggleMarketSelection(it.id)}
+                      />
+                    )}
                     <SkillAvatar source={it.source} name={it.name} />
                     <div className="sm2__market-item-main">
                       <div className="sm2__market-item-title">
@@ -737,9 +1190,18 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
                 const isJustInstalled = installedIds.has(it.id)
                 const isCurrentInstalling = installing.has(it.id)
                 const done = it.isInstalled || isJustInstalled || isMarketItemInstalled(it, centerSkills)
+                const selected = selectedMarketIds.has(it.id)
                 return (
-                  <div key={it.id} className={`sm2__install-card${isCurrentInstalling ? ' sm2__install-card--installing' : ''}${done ? ' sm2__install-card--installed' : ''}`} onClick={() => setDetailSkill(it)}>
+                  <div key={it.id} className={`sm2__install-card${isCurrentInstalling ? ' sm2__install-card--installing' : ''}${done ? ' sm2__install-card--installed' : ''}${selected ? ' sm2__install-card--selected' : ''}`} onClick={() => setDetailSkill(it)}>
                     <div className="sm2__install-card-head">
+                      {sourceFilter && (
+                        <MarketSkillCheckbox
+                          checked={selected}
+                          disabled={displayedBatchBusy || isCurrentInstalling}
+                          label={t('skills.marketInstall.selectSkill', { name: it.name })}
+                          onChange={() => toggleMarketSelection(it.id)}
+                        />
+                      )}
                       <SkillAvatar source={it.source} name={it.name} />
                       <div className="sm2__install-card-title">{it.name}</div>
                       {it.webUrl && (
@@ -835,7 +1297,262 @@ export function MarketPanel({ onInstall, onDone }: { onInstall: (source?: string
           }}
         />
       )}
+      {batchDialogOpen && selectedMarketSkills.length > 0 && (
+        <MarketBatchInstallDialog
+          skills={selectedMarketSkills}
+          packs={packs}
+          preferredPackId={preferredPackBySource[sourceFilter]}
+          installedSkillIds={new Set(
+            selectedMarketSkills
+              .filter((skill) => isMarketItemInstalled(skill, useSkillStoreV2.getState().skills))
+              .map((skill) => skill.id),
+          )}
+          busy={batchBusy}
+          progress={batchProgress}
+          result={batchResult}
+          onClose={() => {
+            if (batchBusy) return
+            setBatchDialogOpen(false)
+            if (batchResult) setSelectedMarketIds(new Set())
+          }}
+          onConfirm={(choice) => void installSelected(choice)}
+        />
+      )}
     </div>
+  )
+}
+
+function MarketSkillCheckbox({ checked, disabled, label, onChange }: {
+  checked: boolean
+  disabled: boolean
+  label: string
+  onChange: () => void
+}) {
+  return (
+    <label className="sm2__market-skill-check" onClick={(event) => event.stopPropagation()}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-label={label}
+        onChange={onChange}
+      />
+      <span aria-hidden="true">✓</span>
+    </label>
+  )
+}
+
+function MarketBatchInstallDialog({
+  skills,
+  packs,
+  preferredPackId,
+  installedSkillIds,
+  busy,
+  progress,
+  result,
+  onClose,
+  onConfirm,
+}: {
+  skills: MarketplaceSkill[]
+  packs: SkillPackSummary[]
+  preferredPackId?: string
+  installedSkillIds: Set<string>
+  busy: boolean
+  progress: Record<string, MarketBatchItemProgress>
+  result: MarketBatchResult | null
+  onClose: () => void
+  onConfirm: (choice: MarketInstallPackChoice) => void
+}) {
+  const { t } = useTranslation()
+  const source = marketSkillSource(skills[0])
+  const editablePacks = useMemo(
+    () => packs.filter((pack) => pack.id !== DEFAULT_SKILL_PACK_ID),
+    [packs],
+  )
+  const recommendedPack = useMemo(
+    () => recommendedMarketPack(editablePacks, source, preferredPackId),
+    [editablePacks, preferredPackId, source],
+  )
+  const [mode, setMode] = useState<MarketPackChoiceMode>(() => recommendedPack ? 'existing' : source ? 'new' : 'center')
+  const [packQuery, setPackQuery] = useState('')
+  const [packId, setPackId] = useState(() => recommendedPack?.id || editablePacks[0]?.id || '')
+  const [newPackName, setNewPackName] = useState(() => source || t('skills.marketInstall.batchDefaultPackName'))
+  const [newPackDescription, setNewPackDescription] = useState(() =>
+    t('skills.marketInstall.defaultPackDescription', { source: source || t('skills.marketInstall.batchDefaultPackName') }),
+  )
+
+  const filteredPacks = useMemo(() => {
+    const q = packQuery.trim().toLowerCase()
+    if (!q) return editablePacks
+    return editablePacks.filter((pack) =>
+      [pack.name, pack.description, pack.tags.join(' ')]
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [editablePacks, packQuery])
+
+  const completedCount = Object.values(progress).filter((item) => item.status === 'success' || item.status === 'failed').length
+  const allAlreadyInstalled = skills.every((skill) => installedSkillIds.has(skill.id))
+  const disabled =
+    busy ||
+    (allAlreadyInstalled && mode === 'center') ||
+    (mode === 'existing' && !packId) ||
+    (mode === 'new' && !newPackName.trim())
+  const sourceLabel = source || skills[0]?.registryId || 'skills.sh'
+
+  return (
+    <PreviewDialog
+      title={t('skills.marketInstall.batchDialogTitle', { count: skills.length })}
+      confirmLabel={t('skills.marketInstall.confirmBatchInstall', { count: skills.length })}
+      busyLabel={t('skills.marketInstall.batchBusy', { current: Math.min(skills.length, completedCount + 1), total: skills.length })}
+      modalClassName="sm2__modal--market-pack-install sm2__modal--market-batch-install"
+      busy={busy}
+      disabled={disabled}
+      onCancel={onClose}
+      onConfirm={() => onConfirm({
+        mode,
+        packId,
+        newPackName: newPackName.trim(),
+        newPackDescription: newPackDescription.trim(),
+      })}
+      actions={result ? (
+        <button className="sm2__btn sm2__btn--primary" onClick={onClose}>
+          {t('skills.marketInstall.done')}
+        </button>
+      ) : undefined}
+    >
+      <div className="sm2__market-pack-install sm2__market-batch-install">
+        <div className="sm2__market-batch-summary">
+          <div>
+            <span>{t('skills.marketInstall.batchSource')}</span>
+            <strong>{sourceLabel}</strong>
+          </div>
+          <div>
+            <span>{t('skills.marketInstall.batchQueue')}</span>
+            <strong>{t('skills.marketInstall.batchSkillCount', { count: skills.length })}</strong>
+          </div>
+          <small>{t('skills.marketInstall.sequentialHint')}</small>
+        </div>
+
+        <div className="sm2__market-batch-queue" aria-label={t('skills.marketInstall.batchQueue')}>
+          {skills.map((skill, index) => {
+            const itemProgress = progress[skill.id] || { status: 'queued' as const }
+            return (
+              <div key={skill.id} className={`sm2__market-batch-item sm2__market-batch-item--${itemProgress.status}`}>
+                <span className="sm2__market-batch-index">{index + 1}</span>
+                <SkillAvatar source={skill.source} name={skill.name} />
+                <div>
+                  <strong>{skill.name}</strong>
+                  <small>{itemProgress.message || t(`skills.marketInstall.batchState.${itemProgress.status}`)}</small>
+                </div>
+                <span className="sm2__market-batch-state" aria-hidden="true">
+                  {itemProgress.status === 'success' ? '✓' : itemProgress.status === 'failed' ? '!' : itemProgress.status === 'installing' ? '•••' : '·'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {result && (
+          <div className={`sm2__market-batch-result${result.failedCount > 0 || result.completionError || result.sourceError ? ' sm2__market-batch-result--warn' : ''}`}>
+            <strong>
+              {result.sourceError
+                ? t('skills.marketInstall.batchSourceFailedTitle')
+                : t('skills.marketInstall.batchResultTitle', { success: result.successCount, failed: result.failedCount })}
+            </strong>
+            {result.packName && <span>{t('skills.marketInstall.batchResultPack', { pack: result.packName })}</span>}
+            {result.completionError && <span>{t('skills.marketInstall.batchCompletionFailed', { message: result.completionError })}</span>}
+            {result.sourceError && <span>{result.sourceError}</span>}
+          </div>
+        )}
+
+        {!result && (
+          <>
+            {allAlreadyInstalled && (
+              <div className="sm2__notice sm2__notice--ok">
+                {t('skills.marketInstall.batchInstalledHint')}
+              </div>
+            )}
+            <div className="sm2__market-pack-options" role="radiogroup" aria-label={t('skills.marketInstall.packChoiceLabel')}>
+              <label className={`sm2__market-pack-option${mode === 'center' ? ' sm2__market-pack-option--active' : ''}`}>
+                <input
+                  type="radio"
+                  name="market-batch-pack-mode"
+                  checked={mode === 'center'}
+                  disabled={busy}
+                  onChange={() => setMode('center')}
+                />
+                <span>
+                  <strong>{t('skills.marketInstall.centerOnlyTitle')}</strong>
+                  <small>{t('skills.marketInstall.centerOnlyDesc')}</small>
+                </span>
+              </label>
+
+              <label className={`sm2__market-pack-option${mode === 'existing' ? ' sm2__market-pack-option--active' : ''}${editablePacks.length === 0 ? ' sm2__market-pack-option--disabled' : ''}`}>
+                <input
+                  type="radio"
+                  name="market-batch-pack-mode"
+                  checked={mode === 'existing'}
+                  disabled={busy || editablePacks.length === 0}
+                  onChange={() => setMode('existing')}
+                />
+                <span>
+                  <strong>{recommendedPack ? t('skills.marketInstall.existingRecommendedTitle', { pack: recommendedPack.name }) : t('skills.marketInstall.existingTitle')}</strong>
+                  <small>{editablePacks.length === 0 ? t('skills.marketInstall.noPacksHint') : t('skills.marketInstall.batchExistingDesc', { count: skills.length })}</small>
+                </span>
+              </label>
+
+              {mode === 'existing' && editablePacks.length > 0 && (
+                <div className="sm2__market-pack-picker">
+                  <input
+                    className="sm2__search sm2__search--full"
+                    value={packQuery}
+                    disabled={busy}
+                    onChange={(event) => setPackQuery(event.target.value)}
+                    placeholder={t('skills.marketInstall.searchPackPlaceholder')}
+                  />
+                  <select value={packId} disabled={busy} onChange={(event) => setPackId(event.target.value)}>
+                    {filteredPacks.map((pack) => (
+                      <option key={pack.id} value={pack.id}>
+                        {pack.name} · {pack.memberCount} Skills
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <label className={`sm2__market-pack-option${mode === 'new' ? ' sm2__market-pack-option--active' : ''}`}>
+                <input
+                  type="radio"
+                  name="market-batch-pack-mode"
+                  checked={mode === 'new'}
+                  disabled={busy}
+                  onChange={() => setMode('new')}
+                />
+                <span>
+                  <strong>{t('skills.marketInstall.newTitle')}</strong>
+                  <small>{t('skills.marketInstall.batchNewDesc', { count: skills.length })}</small>
+                </span>
+              </label>
+
+              {mode === 'new' && (
+                <div className="sm2__market-pack-form">
+                  <label>
+                    <span>{t('skills.marketInstall.packName')}</span>
+                    <input disabled={busy} value={newPackName} onChange={(event) => setNewPackName(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>{t('skills.marketInstall.packDescription')}</span>
+                    <textarea disabled={busy} value={newPackDescription} onChange={(event) => setNewPackDescription(event.target.value)} rows={3} />
+                  </label>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </PreviewDialog>
   )
 }
 
@@ -1163,6 +1880,45 @@ function MarketSkillDetail({ skill, onClose, installing, installed, packNames, o
       )}
     </SlideOver>
   )
+}
+
+async function attachMarketSkillsToPack(
+  installedSkills: Array<{ skill: MarketplaceSkill; skillId: string }>,
+  choice: MarketInstallPackChoice,
+): Promise<MarketPackAttachResult> {
+  const skillIds = uniqStrings(installedSkills.map(({ skillId }) => skillId))
+  if (choice.mode === 'existing') {
+    const packId = choice.packId || ''
+    if (!packId) throw new Error('Skill pack is required.')
+    const detail = await skillApiV2.getPackDetail(packId)
+    const existingIds = detail.members.map((member) => member.skillId)
+    const alreadyMember = skillIds.every((skillId) => existingIds.includes(skillId))
+    const saved = await skillApiV2.upsertPack({
+      id: detail.id,
+      name: detail.name,
+      description: detail.description,
+      tags: detail.tags,
+      skillIds: uniqStrings([...existingIds, ...skillIds]),
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember }
+  }
+
+  if (choice.mode === 'new') {
+    const sources = uniqStrings(installedSkills.map(({ skill }) => marketSkillSource(skill)))
+    const primarySource = sources[0] || installedSkills[0]?.skill.name || ''
+    const name = choice.newPackName?.trim() || primarySource
+    const description = choice.newPackDescription?.trim() || `Skills from ${primarySource}.`
+    const saved = await skillApiV2.upsertPack({
+      id: '',
+      name,
+      description,
+      tags: uniqStrings(['market', ...sources]),
+      skillIds,
+    })
+    return { packId: saved.id, packName: saved.name, alreadyMember: false }
+  }
+
+  throw new Error('Skill pack is required.')
 }
 
 async function attachMarketSkillToPack(
@@ -3442,7 +4198,7 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     skills: GitRepoSkill[],
     picked: Set<string>,
   ) => {
-    const result = await skillApiV2.importGitHubRepoSkills(ref, selections)
+    const result = await skillApiV2.importGitHubRepoSkills(ref, selections, token)
     await skillApiV2.refresh()
     const importedCount = result.importedSkills.length || selections.filter((s) => s.resolution !== 'skip').length
     const skippedCount = result.skippedSkills.length || selections.filter((s) => s.resolution === 'skip').length
@@ -3451,6 +4207,7 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
       skipped: skippedCount,
       skills: skills.filter((s) => picked.has(s.sourcePath)).map((s) => s.skillName),
     })
+    setToken('')
     setStage('done')
     onDone()
   }
@@ -3464,7 +4221,7 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setBusy(true)
     setError(null)
     try {
-      const preview = await skillApiV2.previewGitHubRepoImport(ref)
+      const preview = await skillApiV2.previewGitHubRepoImport(ref, token)
       if (preview.skills.length === 0) {
         setError('该仓库未检测到任何 Skill（需含 SKILL.md）')
         return
