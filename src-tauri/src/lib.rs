@@ -3226,13 +3226,10 @@ fn install_github_skill_into_center(
     }
     let proposed_skill_id = match resolution {
         "overwrite" => original_skill_id.clone(),
-        "rename" => {
-            let renamed = rename_to
-                .map(sanitize_skill_directory_name)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "Renamed GitHub Skill id cannot be empty".to_string())?;
-            renamed
-        }
+        "rename" => rename_to
+            .map(sanitize_skill_directory_name)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Renamed GitHub Skill id cannot be empty".to_string())?,
         other => return Err(format!("Unsupported GitHub Skill resolution: {other}")),
     };
     let decision = skills::v2::models::AddCenterSkillDecision {

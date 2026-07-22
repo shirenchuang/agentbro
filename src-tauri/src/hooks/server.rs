@@ -599,7 +599,7 @@ impl HookServer {
             );
         }
 
-        (!input.is_empty()).then(|| serde_json::Value::Object(input))
+        (!input.is_empty()).then_some(serde_json::Value::Object(input))
     }
 
     fn normalized_permission_input_from_raw(raw: &serde_json::Value) -> Option<serde_json::Value> {
