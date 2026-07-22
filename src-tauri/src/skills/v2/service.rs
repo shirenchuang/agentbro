@@ -46,7 +46,32 @@ pub struct DeleteSkillTargetDistributionsResult {
 impl Service {
     pub fn new(sqlite_path: &Path, home: PathBuf) -> Result<Self, String> {
         let db = Arc::new(Db::open(sqlite_path)?);
-        Ok(Service { db, home })
+        let service = Service { db, home };
+        service.recover_interrupted_pack_syncs()?;
+        Ok(service)
+    }
+
+    fn recover_interrupted_pack_syncs(&self) -> Result<(), String> {
+        let now = db::now_iso();
+        self.db.transaction(|tx| {
+            tx.execute(
+                "UPDATE skill_packs
+                 SET last_sync_status = 'pending', last_sync_error = NULL
+                 WHERE id IN (
+                   SELECT DISTINCT pack_id FROM skill_pack_agent_syncs WHERE status = 'syncing'
+                 )",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE skill_pack_agent_syncs
+                 SET status = 'pending', error = NULL, updated_at = ?1
+                 WHERE status = 'syncing'",
+                params![now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
     }
 
     pub fn center_path(&self) -> Result<PathBuf, String> {
@@ -1732,6 +1757,7 @@ impl Service {
         };
         let mut candidates = Vec::new();
         let mut blockers = Vec::new();
+        let mut unchanged_count = 0;
 
         // If the source is an archive, extract it to a temp dir first so the
         // rest of the flow can treat it as a folder. The temp dir persists
@@ -1787,12 +1813,11 @@ impl Service {
         for dir in dirs {
             let proposed = fsutil::infer_skill_id(&dir);
             let fm = fsutil::read_frontmatter(&dir);
-            let hash = fsutil::hash_dir(&dir);
+            let mut hash = None;
             let existing = self.skill_row(&proposed)?;
             let (action, reason, existing_source) = match existing {
                 None => ("create".to_string(), None, None),
                 Some(row) => {
-                    // same source?
                     let src_row = self.source_for_skill(&proposed)?;
                     let same_source = match &src_row {
                         Some(s) => sources_match_for_candidate(
@@ -1801,9 +1826,31 @@ impl Service {
                             &s.source_type,
                             s.source_uri.as_deref(),
                         ),
-                        None => row.current_hash == hash,
+                        None => {
+                            let source_hash = hash.get_or_insert_with(|| fsutil::hash_dir(&dir));
+                            row.current_hash == *source_hash
+                        }
                     };
                     if same_source {
+                        let mode_matches =
+                            center_import_mode_matches(&input, &row.center_path, &dir);
+                        if mode_matches {
+                            let content_matches = if input.import_mode.as_deref() == Some("link") {
+                                true
+                            } else {
+                                let source_hash =
+                                    hash.get_or_insert_with(|| fsutil::hash_dir(&dir));
+                                skill_directories_match(
+                                    &dir,
+                                    Path::new(&row.center_path),
+                                    source_hash,
+                                )
+                            };
+                            if content_matches {
+                                unchanged_count += 1;
+                                continue;
+                            }
+                        }
                         ("update".to_string(), None, src_row.map(|s| s.source_type))
                     } else {
                         (
@@ -1817,6 +1864,7 @@ impl Service {
                     }
                 }
             };
+            let hash = hash.unwrap_or_else(|| fsutil::hash_dir(&dir));
             let cand = AddCenterSkillCandidate {
                 skill_id: proposed.clone(),
                 proposed_skill_id: proposed.clone(),
@@ -1838,6 +1886,7 @@ impl Service {
         Ok(AddCenterSkillPreview {
             candidates,
             blockers,
+            unchanged_count,
             center_path: center.display().to_string(),
         })
     }
@@ -2500,6 +2549,15 @@ impl Service {
         preview: DistributionPreview,
         claim_origin: ClaimOrigin,
     ) -> Result<DistributionPreview, String> {
+        self.execute_distribute_skill_internal(preview, claim_origin, true)
+    }
+
+    fn execute_distribute_skill_internal(
+        &self,
+        preview: DistributionPreview,
+        claim_origin: ClaimOrigin,
+        refresh_after: bool,
+    ) -> Result<DistributionPreview, String> {
         let mut result = preview.clone();
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Err(format!(
@@ -2665,8 +2723,10 @@ impl Service {
                 _ => {}
             }
         }
-        self.scan_all_agents_into_db()?;
-        self.refresh_snapshot_best_effort();
+        if refresh_after {
+            self.scan_all_agents_into_db()?;
+            self.refresh_snapshot_best_effort();
+        }
         Ok(result)
     }
 
@@ -4134,9 +4194,10 @@ impl Service {
 
         preview.distribution.blocker_decisions = blocker_decisions;
         if !preview.distribution.skill_ids.is_empty() {
-            preview.distribution = self.execute_distribute_skill(
+            preview.distribution = self.execute_distribute_skill_internal(
                 preview.distribution,
                 ClaimOrigin::Pack(pack_id.to_string()),
+                false,
             )?;
         }
 
@@ -4204,7 +4265,14 @@ impl Service {
             }
         }
 
-        self.scan_one_agent_into_db(&agent_id)?;
+        if preview
+            .distribution
+            .changes
+            .iter()
+            .any(|change| change.action == "overwrite")
+        {
+            self.scan_one_agent_into_db(&agent_id)?;
+        }
         self.refresh_snapshot_best_effort();
         Ok(preview)
     }
@@ -4386,30 +4454,46 @@ impl Service {
     fn sync_skill_pack_to_agent(&self, pack_id: &str, agent_id: &str) -> Result<(), String> {
         let member_ids = self.pack_member_skill_ids(pack_id)?;
         let member_set: BTreeSet<String> = member_ids.iter().cloned().collect();
-        let stale_targets: Vec<(String, String)> = self.db.with_conn(|c| {
+        let claimed_targets: Vec<(String, String, String, String)> = self.db.with_conn(|c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT DISTINCT t.id, t.skill_id FROM skill_target_claims c
+                    "SELECT DISTINCT t.id, t.skill_id, t.target_path, t.status
+                     FROM skill_target_claims c
                      JOIN skill_targets t ON t.id = c.target_id
                      WHERE c.pack_id = ?1 AND t.agent_id = ?2",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![pack_id, agent_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for row in rows {
-                let (target_id, skill_id) = row.map_err(|e| e.to_string())?;
-                if !member_set.contains(&skill_id) {
-                    out.push((target_id, skill_id));
-                }
+                out.push(row.map_err(|e| e.to_string())?);
             }
             Ok(out)
         })?;
 
-        for (target_id, _) in stale_targets {
+        let mut satisfied_member_ids = BTreeSet::new();
+        for (target_id, skill_id, target_path, status) in claimed_targets {
+            if member_set.contains(&skill_id) {
+                if status == "ok"
+                    && !matches!(
+                        inspect_path(Path::new(&target_path)),
+                        PathKind::Missing | PathKind::BrokenSymlink
+                    )
+                {
+                    satisfied_member_ids.insert(skill_id);
+                }
+                continue;
+            }
+
             self.db.with_conn(|c| {
                 c.execute(
                     "DELETE FROM skill_target_claims WHERE target_id = ?1 AND pack_id = ?2",
@@ -4422,23 +4506,30 @@ impl Service {
             }
         }
 
-        if member_ids.is_empty() {
-            self.scan_one_agent_into_db(agent_id)?;
+        let changed_member_ids = member_ids
+            .into_iter()
+            .filter(|skill_id| !satisfied_member_ids.contains(skill_id))
+            .collect::<Vec<_>>();
+        if changed_member_ids.is_empty() {
             return Ok(());
         }
 
-        let result = self.apply_skill_pack_with_decisions(
-            pack_id,
+        let preview = self.preview_distribute_skill(
+            changed_member_ids,
             vec![agent_id.to_string()],
             self.settings()?.default_distribute_mode,
-            Vec::new(),
         )?;
-        if !result.blockers.is_empty() {
+        if !preview.blockers.is_empty() {
             return Err(format!(
                 "{} blocker(s) need manual resolution before syncing.",
-                result.blockers.len()
+                preview.blockers.len()
             ));
         }
+        self.execute_distribute_skill_internal(
+            preview,
+            ClaimOrigin::Pack(pack_id.to_string()),
+            false,
+        )?;
         Ok(())
     }
 
@@ -5401,6 +5492,29 @@ fn source_uri_for_candidate(input: &AddCenterSkillInput, candidate_dir: &Path) -
     } else {
         input.source_uri.clone()
     }
+}
+
+fn center_import_mode_matches(
+    input: &AddCenterSkillInput,
+    center_path: &str,
+    source_dir: &Path,
+) -> bool {
+    let center = Path::new(center_path);
+    match input.import_mode.as_deref().unwrap_or("copy") {
+        "link" => center.is_symlink() && paths_equal(center, source_dir),
+        "copy" => !center.is_symlink(),
+        _ => false,
+    }
+}
+
+fn skill_directories_match(source: &Path, center: &Path, source_hash: &str) -> bool {
+    if !center.is_dir() {
+        return false;
+    }
+    if source.file_name() == center.file_name() {
+        return source_hash == fsutil::hash_dir(center);
+    }
+    fsutil::hash_dir_contents(source) == fsutil::hash_dir_contents(center)
 }
 
 fn paths_refer_to_same_local_source(candidate_dir: &Path, existing_uri: &str) -> bool {

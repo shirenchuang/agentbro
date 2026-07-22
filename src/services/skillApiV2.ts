@@ -344,6 +344,7 @@ export interface AddCenterSkillCandidate {
 export interface AddCenterSkillPreview {
   candidates: AddCenterSkillCandidate[]
   blockers: AddCenterSkillCandidate[]
+  unchangedCount?: number
   centerPath: string
 }
 
@@ -740,7 +741,7 @@ export const skillApiV2 = {
   previewAddCenterSkill: (input: AddCenterSkillInput) =>
     isTauriRuntime()
       ? invoke<AddCenterSkillPreview>('preview_add_center_skill', { input })
-      : Promise.resolve({ candidates: [], blockers: [], centerPath: '' }),
+      : Promise.resolve({ candidates: [], blockers: [], unchangedCount: 0, centerPath: '' }),
   executeAddCenterSkill: (input: AddCenterSkillInput, decisions: AddCenterSkillDecision[]) =>
     isTauriRuntime()
       ? invoke<AddCenterSkillResult>('execute_add_center_skill', { input, decisions })

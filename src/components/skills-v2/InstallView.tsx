@@ -3803,6 +3803,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
   if (preview) {
     const totalChanges = preview.candidates.length + preview.blockers.length
+    const createCount = preview.candidates.filter((candidate) => candidate.action === 'create').length
+    const updateCount = preview.candidates.filter((candidate) => candidate.action === 'update').length
     const blockerCount = preview.blockers.length
     const overwriteAll = blockerCount > 0 && preview.blockers.every((b) => (conflictResolutions[b.skillId] || 'rename') === 'overwrite')
     const setConflictResolution = (skillId: string, resolution: LocalConflictResolution) => {
@@ -3826,7 +3828,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           </div>
           <div className="sm2__local-preview-actions">
             <div className="sm2__local-preview-stats">
-              <span><strong>{preview.candidates.length}</strong> 可导入</span>
+              <span><strong>{createCount}</strong> 新增</span>
+              <span><strong>{updateCount}</strong> 更新</span>
               <span><strong>{preview.blockers.length}</strong> 需处理</span>
             </div>
             {blockerCount > 0 && (
@@ -3847,7 +3850,9 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
         </div>
 
         {totalChanges === 0 ? (
-          <div className="sm2__empty">没有检测到可导入的 Skill。</div>
+          <div className="sm2__empty">
+            没有检测到新增或变更{preview.unchangedCount ? `，${preview.unchangedCount} 个 Skill 均无需重复导入` : ''}。
+          </div>
         ) : localViewMode === 'cards' ? (
           <div className="sm2__local-preview-grid">
             {preview.candidates.map((c) => (
@@ -3885,7 +3890,9 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
         {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
         <div className="sm2__btn-row sm2__local-preview-footer">
           <button className="sm2__btn" onClick={() => { setPreview(null); setConflictResolutions({}) }} disabled={busy}>返回</button>
-          <button className="sm2__btn sm2__btn--primary" onClick={execute} disabled={busy}>{busy ? '处理中…' : '执行导入'}</button>
+          <button className="sm2__btn sm2__btn--primary" onClick={execute} disabled={busy || totalChanges === 0}>
+            {busy ? '处理中…' : totalChanges === 0 ? '无需导入' : '执行导入'}
+          </button>
         </div>
       </div>
     )

@@ -29,10 +29,68 @@ type SyncPackOptions = {
   background?: boolean
   packName?: string
 }
+type PackBuilderSaveOptions = {
+  forceSync?: boolean
+}
+type SkillPackMembershipsBySkillId = Record<string, SkillPackSummary[]>
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const DEFAULT_SKILL_PACK_ID = 'default'
 type BlockerDecision = DistributionBlockerDecision['action']
+
+function useSkillPackMemberships(packs: SkillPackSummary[], selectedDetail: SkillPackDetail | null) {
+  const [result, setResult] = useState<{
+    key: string
+    membershipsBySkillId: SkillPackMembershipsBySkillId
+  }>({ key: '', membershipsBySkillId: {} })
+  const customPacks = useMemo(
+    () => packs.filter((pack) => pack.id !== DEFAULT_SKILL_PACK_ID),
+    [packs],
+  )
+  const requestKey = useMemo(() => [
+    ...customPacks.map((pack) => `${pack.id}:${pack.memberCount}:${pack.revision || ''}`),
+    selectedDetail
+      ? `${selectedDetail.id}:${selectedDetail.revision || ''}:${selectedDetail.members.map((member) => member.skillId).join(',')}`
+      : '',
+  ].join('|'), [customPacks, selectedDetail])
+
+  useEffect(() => {
+    let cancelled = false
+    if (customPacks.length === 0) return
+
+    void (async () => {
+      const details = await Promise.allSettled(customPacks.map(async (pack) => ({
+        pack,
+        detail: selectedDetail?.id === pack.id
+          ? selectedDetail
+          : await skillApiV2.getPackDetail(pack.id),
+      })))
+      if (cancelled) return
+
+      const next: SkillPackMembershipsBySkillId = {}
+      for (const result of details) {
+        if (result.status !== 'fulfilled' || !result.value.detail?.members) continue
+        const { pack, detail } = result.value
+        for (const member of detail.members) {
+          if (member.missing) continue
+          if (!next[member.skillId]) next[member.skillId] = []
+          next[member.skillId].push(pack)
+        }
+      }
+      setResult({ key: requestKey, membershipsBySkillId: next })
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [customPacks, requestKey, selectedDetail])
+
+  if (customPacks.length === 0) return { membershipsBySkillId: {}, loading: false }
+  return {
+    membershipsBySkillId: result.key === requestKey ? result.membershipsBySkillId : {},
+    loading: result.key !== requestKey,
+  }
+}
 
 function blockerKey(blocker: ConflictBlocker) {
   return `${blocker.skillId}\u0000${blocker.agentId}`
@@ -79,6 +137,7 @@ export function SkillPackPage() {
   }, [packQuery, state.packs])
 
   const detail = state.selectedPackDetail
+  const packMemberships = useSkillPackMemberships(state.packs, detail)
   const missingCount = detail?.members.filter((member) => member.missing).length || 0
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
   const totalApplied = state.packs.reduce((sum, pack) => sum + pack.appliedAgentCount, 0)
@@ -251,6 +310,8 @@ export function SkillPackPage() {
               onOpenSkill={setDetailSkillId}
               onRevoke={(agentId) => openRevoke(detail.id, agentId)}
               onSync={(agentIds) => syncPack(detail.id, agentIds)}
+              membershipsBySkillId={packMemberships.membershipsBySkillId}
+              membershipsLoading={packMemberships.loading}
             />
           )}
         </main>
@@ -266,14 +327,16 @@ export function SkillPackPage() {
         <PackBuilderDialog
           mode={builderMode}
           existing={builderMode === 'create' ? null : detail}
+          membershipsBySkillId={packMemberships.membershipsBySkillId}
+          membershipsLoading={packMemberships.loading}
           onCancel={() => setBuilderMode(null)}
-          onSaved={(saved) => {
+          onSaved={(saved, options) => {
             setBuilderMode(null)
             useSkillStoreV2.setState({
               selectedPackId: saved.id,
               selectedPackDetail: saved,
             })
-            if (state.settings?.autoSyncSkillPacks !== false && packNeedsSync(saved)) {
+            if ((options.forceSync || state.settings?.autoSyncSkillPacks !== false) && packNeedsSync(saved)) {
               void syncPack(saved.id, [], { background: true, packName: saved.name })
               return
             }
@@ -386,13 +449,17 @@ export function SkillPackPage() {
 function PackBuilderDialog({
   mode,
   existing,
+  membershipsBySkillId,
+  membershipsLoading,
   onCancel,
   onSaved,
 }: {
   mode: BuilderMode
   existing: SkillPackDetail | null
+  membershipsBySkillId: SkillPackMembershipsBySkillId
+  membershipsLoading: boolean
   onCancel: () => void
-  onSaved: (pack: SkillPackDetail) => void
+  onSaved: (pack: SkillPackDetail, options: PackBuilderSaveOptions) => void
 }) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -415,7 +482,14 @@ function PackBuilderDialog({
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
       >
-        <PackBuilderPanel mode={mode} existing={existing} onCancel={onCancel} onSaved={onSaved} />
+        <PackBuilderPanel
+          mode={mode}
+          existing={existing}
+          membershipsBySkillId={membershipsBySkillId}
+          membershipsLoading={membershipsLoading}
+          onCancel={onCancel}
+          onSaved={onSaved}
+        />
       </div>
     </div>,
     document.body,
@@ -489,6 +563,8 @@ function PackLanding({ onCreate }: { onCreate: () => void }) {
 function PackDetail({
   detail,
   busy,
+  membershipsBySkillId,
+  membershipsLoading,
   onApply,
   onEdit,
   onDuplicate,
@@ -500,6 +576,8 @@ function PackDetail({
 }: {
   detail: SkillPackDetail
   busy: boolean
+  membershipsBySkillId: SkillPackMembershipsBySkillId
+  membershipsLoading: boolean
   onApply: () => void
   onEdit: () => void
   onDuplicate: () => void
@@ -646,6 +724,12 @@ function PackDetail({
                       <strong>{member.skillName}</strong>
                       <span>{member.skillId}</span>
                     </span>
+                    <SkillPackMembershipTags
+                      packs={membershipsBySkillId[member.skillId] || []}
+                      loading={membershipsLoading}
+                      excludePackId={isDefault ? undefined : detail.id}
+                      emptyLabel={isDefault ? '未加入自定义包' : '仅当前包'}
+                    />
                     {!member.missing && <span className="sm2__pack-member-open-arrow" aria-hidden="true">查看 ›</span>}
                   </button>
                   <div className="sm2__pack-member-state">
@@ -729,13 +813,17 @@ function packSyncStatusLabel(status: string) {
 function PackBuilderPanel({
   mode,
   existing,
+  membershipsBySkillId,
+  membershipsLoading,
   onCancel,
   onSaved,
 }: {
   mode: BuilderMode
   existing: SkillPackDetail | null
+  membershipsBySkillId: SkillPackMembershipsBySkillId
+  membershipsLoading: boolean
   onCancel: () => void
-  onSaved: (pack: SkillPackDetail) => void
+  onSaved: (pack: SkillPackDetail, options: PackBuilderSaveOptions) => void
 }) {
   const skills = useSkillStoreV2((s) => s.skills)
   const { t } = useTranslation()
@@ -747,7 +835,6 @@ function PackBuilderPanel({
   const [error, setError] = useState<string | null>(null)
 
   const existingMemberIds = useMemo(() => new Set(existing?.members.map((member) => member.skillId) || []), [existing])
-  const existingApplied = mode === 'edit' && (existing?.appliedAgents.length || 0) > 0
   const sourceOptions = useMemo(() => {
     const counts = new Map<string, number>()
     skills.forEach((skill) => counts.set(skill.sourceType, (counts.get(skill.sourceType) || 0) + 1))
@@ -772,12 +859,10 @@ function PackBuilderPanel({
   }, [query, skills, sourceFilter, t])
   const selectedSkills = skills.filter((skill) => selected.has(skill.id))
   const selectedVisibleCount = filtered.filter((skill) => selected.has(skill.id)).length
+  const editingPackId = mode === 'edit' ? existing?.id : undefined
+  const emptyMembershipLabel = editingPackId ? '仅当前包' : '未加入技能包'
 
   const toggle = (id: string) => {
-    if (existingApplied && existingMemberIds.has(id) && selected.has(id)) {
-      setError('已应用技能包中的成员需要通过详情页「移除」预览影响范围。')
-      return
-    }
     setError(null)
     setSelected((prev) => {
       const next = new Set(prev)
@@ -798,7 +883,7 @@ function PackBuilderPanel({
 
   const clearSelected = () => {
     setError(null)
-    setSelected(existingApplied ? new Set(existingMemberIds) : new Set())
+    setSelected(new Set())
   }
 
   const save = async () => {
@@ -806,14 +891,8 @@ function PackBuilderPanel({
       setError('技能包名称必填。')
       return
     }
-    if (existingApplied) {
-      const removed = Array.from(existingMemberIds).filter((id) => !selected.has(id))
-      if (removed.length > 0) {
-        setError('已应用技能包不能直接移除成员，请回到详情页使用「移除」。')
-        return
-      }
-    }
     const skillIds = Array.from(selected)
+    const removedExistingMember = mode === 'edit' && Array.from(existingMemberIds).some((id) => !selected.has(id))
     setBusy(true)
     setError(null)
     try {
@@ -827,7 +906,7 @@ function PackBuilderPanel({
         },
         { deferSync: true },
       )
-      onSaved(saved)
+      onSaved(saved, { forceSync: removedExistingMember })
     } catch (e) {
       setError(String(e))
     } finally {
@@ -916,6 +995,12 @@ function PackBuilderPanel({
                     <strong>{skill.name}</strong>
                     <span>{skill.description || skill.id}</span>
                   </span>
+                  <SkillPackMembershipTags
+                    packs={membershipsBySkillId[skill.id] || []}
+                    loading={membershipsLoading}
+                    excludePackId={editingPackId}
+                    emptyLabel={emptyMembershipLabel}
+                  />
                   <span className="sm2__tag">{skillSourceTypeLabel(t, skill.sourceType)}</span>
                 </div>
               ))
@@ -933,7 +1018,7 @@ function PackBuilderPanel({
           </div>
           <div className="sm2__pack-selected-tools">
             <span>{selectedSkills.length === 0 ? '从左侧选择 Skill' : `已加入 ${selectedSkills.length} 个 Skill`}</span>
-            <button className="sm2__btn sm2__btn--ghost" onClick={clearSelected} disabled={selectedSkills.length === 0 || (existingApplied && selectedSkills.length === existingMemberIds.size)}>
+            <button className="sm2__btn sm2__btn--ghost" onClick={clearSelected} disabled={selectedSkills.length === 0}>
               清空
             </button>
           </div>
@@ -952,6 +1037,12 @@ function PackBuilderPanel({
                     <strong>{skill.name}</strong>
                     <span>{skill.id}</span>
                   </div>
+                  <SkillPackMembershipTags
+                    packs={membershipsBySkillId[skill.id] || []}
+                    loading={membershipsLoading}
+                    excludePackId={editingPackId}
+                    emptyLabel={emptyMembershipLabel}
+                  />
                   <button className="sm2__btn sm2__btn--ghost" aria-label={`移除 ${skill.name}`} onClick={() => toggle(skill.id)}>移除</button>
                 </div>
               ))}
@@ -963,7 +1054,7 @@ function PackBuilderPanel({
       <footer className="sm2__pack-builder-footer">
         <span>
           {name.trim()
-            ? `“${name.trim()}”将保存 ${selectedSkills.length} 个 Skill${existingApplied ? '；已应用成员需在详情页移除' : ''}`
+            ? `“${name.trim()}”将保存 ${selectedSkills.length} 个 Skill`
             : '填写名称后即可保存技能包'}
         </span>
         <div className="sm2__pack-actions">
@@ -974,6 +1065,41 @@ function PackBuilderPanel({
         </div>
       </footer>
     </div>
+  )
+}
+
+function SkillPackMembershipTags({
+  packs,
+  loading,
+  excludePackId,
+  emptyLabel,
+}: {
+  packs: SkillPackSummary[]
+  loading: boolean
+  excludePackId?: string
+  emptyLabel: string
+}) {
+  const visiblePacks = packs.filter((pack) => pack.id !== excludePackId)
+  const isOverlap = Boolean(excludePackId)
+  const ariaLabel = loading
+    ? '正在载入技能包归属'
+    : visiblePacks.length > 0
+      ? `${isOverlap ? '还属于' : '所属'}技能包：${visiblePacks.map((pack) => pack.name).join('、')}`
+      : emptyLabel
+
+  return (
+    <span
+      className={`sm2__pack-memberships${visiblePacks.length === 0 ? ' sm2__pack-memberships--empty' : ''}`}
+      aria-label={ariaLabel}
+      title={ariaLabel}
+    >
+      <span className="sm2__pack-memberships-label">{isOverlap ? '还在' : '技能包'}</span>
+      {visiblePacks.length > 0 ? visiblePacks.map((pack) => (
+        <span key={pack.id} className="sm2__pack-membership-chip" title={pack.name}>{pack.name}</span>
+      )) : (
+        <span className="sm2__pack-membership-empty">{loading ? '归属载入中…' : emptyLabel}</span>
+      )}
+    </span>
   )
 }
 

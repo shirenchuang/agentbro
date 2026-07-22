@@ -81,8 +81,12 @@ fn hash_is_stable_and_ignores_noise() {
     let h1 = fsutil::hash_dir(&a);
     // add a .DS_Store — must not change hash
     fs::write(a.join(".DS_Store"), "noise").unwrap();
+    fs::create_dir_all(a.join(".venv/lib")).unwrap();
+    fs::write(a.join(".venv/lib/runtime.py"), "generated").unwrap();
+    fs::create_dir_all(a.join("output/renders")).unwrap();
+    fs::write(a.join("output/renders/preview.mp4"), "generated").unwrap();
     let h2 = fsutil::hash_dir(&a);
-    assert_eq!(h1, h2, ".DS_Store must be ignored");
+    assert_eq!(h1, h2, "generated entries must be ignored");
     // change real content — hash must change
     fs::write(a.join("reference.md"), "changed").unwrap();
     let h3 = fsutil::hash_dir(&a);
@@ -156,7 +160,20 @@ fn add_center_skill_creates_and_updates() {
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "github-code-review");
 
-    // re-import same source → update, not duplicate
+    let unchanged_preview = svc
+        .preview_add_center_skill(AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some("file://incoming".to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        })
+        .unwrap();
+    assert_eq!(unchanged_preview.unchanged_count, 1);
+    assert!(unchanged_preview.candidates.is_empty());
+
     let result2 = svc
         .execute_add_center_skill(
             AddCenterSkillInput {
@@ -172,8 +189,44 @@ fn add_center_skill_creates_and_updates() {
         )
         .unwrap();
     assert!(result2.skill_ids.is_empty());
-    assert_eq!(result2.updated, vec!["github-code-review".to_string()]);
+    assert!(result2.updated.is_empty());
+    assert!(result2.skipped.is_empty());
     assert_eq!(svc.list_center_skills().unwrap().len(), 1);
+
+    fs::write(src.join("reference.md"), "v2").unwrap();
+    let changed_preview = svc
+        .preview_add_center_skill(AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some("file://incoming".to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        })
+        .unwrap();
+    assert_eq!(changed_preview.unchanged_count, 0);
+    assert_eq!(changed_preview.candidates.len(), 1);
+    assert_eq!(changed_preview.candidates[0].action, "update");
+
+    let changed_result = svc
+        .execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: Some("file://incoming".to_string()),
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(
+        changed_result.updated,
+        vec!["github-code-review".to_string()]
+    );
 }
 
 #[test]
@@ -213,6 +266,34 @@ fn add_center_skill_can_link_to_local_source() {
     .unwrap();
     let center_doc = fs::read_to_string(center_skill.join("SKILL.md")).unwrap();
     assert!(center_doc.contains("# updated"));
+
+    let linked_preview = svc
+        .preview_add_center_skill(AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(src.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        })
+        .unwrap();
+    assert_eq!(linked_preview.unchanged_count, 1);
+    assert!(linked_preview.candidates.is_empty());
+
+    let copy_preview = svc
+        .preview_add_center_skill(AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: Some(src.display().to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("copy".to_string()),
+        })
+        .unwrap();
+    assert_eq!(copy_preview.candidates.len(), 1);
+    assert_eq!(copy_preview.candidates[0].action, "update");
 }
 
 #[test]
@@ -252,12 +333,10 @@ fn local_parent_import_matches_existing_child_source() {
         preview.blockers.is_empty(),
         "parent folder import should not conflict with the same child source"
     );
-    let alpha_preview = preview
-        .candidates
-        .iter()
-        .find(|candidate| candidate.skill_id == "alpha-review")
-        .unwrap();
-    assert_eq!(alpha_preview.action, "update");
+    assert_eq!(preview.unchanged_count, 1);
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].skill_id, "beta-review");
+    assert_eq!(preview.candidates[0].action, "create");
 
     svc.execute_add_center_skill(
         AddCenterSkillInput {
@@ -1351,9 +1430,34 @@ fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
     assert_eq!(preview.other_member_count, 1);
     assert!(preview.distribution.blockers.is_empty());
     assert_eq!(preview.distribution.skill_ids, vec!["companion-skill"]);
+    svc.db
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE agents SET last_scanned_at = 'before-pack-move' WHERE id = 'codex'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
 
     svc.move_direct_skill_to_pack(&target_id, "daily-pack", vec![])
         .unwrap();
+
+    let last_scanned_at = svc
+        .db
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT last_scanned_at FROM agents WHERE id = 'codex'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(last_scanned_at.as_deref(), Some("before-pack-move"));
 
     let pack = svc.get_skill_pack_detail("daily-pack").unwrap();
     assert!(pack
@@ -1687,6 +1791,130 @@ fn updating_applied_pack_can_defer_and_manually_sync() {
     assert_eq!(synced.sync_status, "synced");
     assert_eq!(synced.pending_sync_count, 0);
     assert_eq!(svc.get_skill_detail("skill-two").unwrap().targets.len(), 1);
+}
+
+#[test]
+fn syncing_removed_pack_member_preserves_unchanged_targets() {
+    let (_home, svc, _lock) = fresh_service("pack-incremental-removal");
+    let first = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    let second = write_skill(&svc.home.join("s"), "two", "skill-two", Some("v1"));
+    for src in [first, second] {
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: src.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-incremental".to_string(),
+        name: "Incremental".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string(), "skill-two".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack(
+        "p-incremental",
+        vec!["codex".to_string()],
+        "copy".to_string(),
+    )
+    .unwrap();
+
+    let first_target = svc.get_skill_detail("skill-one").unwrap().targets[0]
+        .target_path
+        .clone();
+    let second_target = svc.get_skill_detail("skill-two").unwrap().targets[0]
+        .target_path
+        .clone();
+    fs::write(
+        Path::new(&first_target).join("reference.md"),
+        "agent-local-change",
+    )
+    .unwrap();
+
+    svc.upsert_skill_pack_deferred(UpsertPackInput {
+        id: "p-incremental".to_string(),
+        name: "Incremental".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    let result = svc
+        .sync_skill_pack_to_agents("p-incremental", vec!["codex".to_string()])
+        .unwrap();
+
+    assert_eq!(result.status, "synced");
+    assert_eq!(
+        fs::read_to_string(Path::new(&first_target).join("reference.md")).unwrap(),
+        "agent-local-change"
+    );
+    assert!(!Path::new(&second_target).exists());
+}
+
+#[test]
+fn reopening_service_recovers_interrupted_pack_syncs() {
+    let (_home, svc, _lock) = fresh_service("pack-sync-recovery");
+    let src = write_skill(&svc.home.join("s"), "one", "skill-one", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    svc.upsert_skill_pack(UpsertPackInput {
+        id: "p-recovery".to_string(),
+        name: "Recovery".to_string(),
+        description: "".to_string(),
+        tags: vec![],
+        skill_ids: vec!["skill-one".to_string()],
+    })
+    .unwrap();
+    svc.apply_skill_pack("p-recovery", vec!["codex".to_string()], "link".to_string())
+        .unwrap();
+    svc.db
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE skill_pack_agent_syncs SET status = 'syncing' WHERE pack_id = 'p-recovery'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    drop(svc);
+    let reopened = Service::new(&fsutil::default_sqlite_path(), fsutil::home()).unwrap();
+    let status = reopened
+        .db
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT status FROM skill_pack_agent_syncs WHERE pack_id = 'p-recovery' AND agent_id = 'codex'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    assert_eq!(status, "pending");
 }
 
 #[test]

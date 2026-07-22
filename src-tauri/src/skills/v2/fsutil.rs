@@ -12,7 +12,15 @@ use std::path::{Component, Path, PathBuf};
 pub fn is_ignored_entry(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".DS_Store" | "node_modules" | "target" | "__pycache__" | ".idea"
+        ".git"
+            | ".DS_Store"
+            | "node_modules"
+            | "target"
+            | "__pycache__"
+            | ".idea"
+            | ".venv"
+            | "venv"
+            | "output"
     ) || name.ends_with(".tmp")
         || name.ends_with(".swp")
 }
@@ -225,17 +233,27 @@ fn is_url(target: &str) -> bool {
 /// Stable hash over a directory's files: relative paths + contents, sorted,
 /// ignoring noise entries. Returns hex digest.
 pub fn hash_dir(dir: &Path) -> String {
+    hash_dir_with_root(dir, true)
+}
+
+pub fn hash_dir_contents(dir: &Path) -> String {
+    hash_dir_with_root(dir, false)
+}
+
+fn hash_dir_with_root(dir: &Path, include_root: bool) -> String {
     let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
     collect_files(dir, dir, &mut entries);
     entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut hasher = Sha256::new();
-    hasher.update(
-        dir.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    if include_root {
+        hasher.update(
+            dir.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    }
     for (abs, rel) in &entries {
         hasher.update(rel.to_string_lossy().as_bytes());
         hasher.update(b"\0");

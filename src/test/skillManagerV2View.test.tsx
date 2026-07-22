@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
@@ -1154,6 +1154,26 @@ describe('Local skill import', () => {
         importMode: 'copy',
       })
     })
+  })
+
+  it('shows no unchanged skills and prevents a redundant import', async () => {
+    vi.spyOn(skillApiV2, 'previewAddCenterSkill').mockResolvedValue({
+      centerPath: '/Users/me/.agentbro/skills',
+      candidates: [],
+      blockers: [],
+      unchangedCount: 40,
+    })
+
+    const { LocalPanel } = await import('../components/skills-v2/InstallView')
+    render(<LocalPanel onDone={() => {}} />)
+
+    fireEvent.change(screen.getByPlaceholderText('选择或粘贴包含 SKILL.md 的目录 / .zip'), {
+      target: { value: '/Users/me/code/szskills' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '预览导入' }))
+
+    expect(await screen.findByText('没有检测到新增或变更，40 个 Skill 均无需重复导入。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '无需导入' })).toBeDisabled()
   })
 })
 
@@ -4847,6 +4867,115 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除 Release Checklist' }))
     expect(screen.getByRole('button', { name: '添加 Release Checklist 到技能包' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('status', { name: '已选择 Skill 数量' })).toHaveTextContent('0')
+  })
+
+  it('shows other skill pack memberships in the detail and editor member lists', async () => {
+    const currentPack: SkillPackDetail = {
+      id: 'daily-pack',
+      name: '日常包',
+      description: '',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [],
+      createdAt: '',
+      updatedAt: '',
+    }
+    const releasePack: SkillPackDetail = {
+      ...currentPack,
+      id: 'release-pack',
+      name: '发布包',
+    }
+    const packs = [
+      { id: currentPack.id, name: currentPack.name, description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+      { id: releasePack.id, name: releasePack.name, description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
+    ]
+    useSkillStoreV2.setState({
+      overview: { ...makeOverview(), skills: [makeSkill()], packs },
+      skills: [makeSkill()],
+      packs,
+      selectedPackId: currentPack.id,
+      selectedPackDetail: currentPack,
+      lastOverviewLoadedAt: Date.now(),
+    })
+    const getPackDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockImplementation(async (packId) => (
+      packId === releasePack.id ? releasePack : currentPack
+    ))
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+
+    expect(await screen.findByLabelText('还属于技能包：发布包')).toBeInTheDocument()
+    expect(getPackDetail).toHaveBeenCalledWith('release-pack')
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    const dialog = screen.getByRole('dialog', { name: '编辑技能包' })
+    expect(within(dialog).getAllByLabelText('还属于技能包：发布包')).toHaveLength(2)
+  })
+
+  it('removes an applied pack member and forces Agent sync when saving', async () => {
+    const pack: SkillPackDetail = {
+      id: 'daily-pack',
+      name: 'Daily Pack',
+      description: '',
+      tags: [],
+      members: [
+        { skillId: 'release-checklist', skillName: 'Release Checklist', required: true, sortOrder: 0, missing: false },
+      ],
+      appliedAgents: [
+        { packId: 'daily-pack', packName: 'Daily Pack', memberCount: 1, agentId: 'codex', displayName: 'Codex', syncStatus: 'synced' },
+      ],
+      syncStatus: 'synced',
+      pendingSyncCount: 0,
+      failedSyncCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    }
+    const pendingPack: SkillPackDetail = {
+      ...pack,
+      members: [],
+      revision: 2,
+      syncStatus: 'pending',
+      pendingSyncCount: 1,
+    }
+    useSkillStoreV2.setState({
+      skills: [makeSkill()],
+      packs: [
+        { id: pack.id, name: pack.name, description: '', tags: [], memberCount: 1, appliedAgentCount: 1, healthy: true },
+      ],
+      selectedPackId: pack.id,
+      selectedPackDetail: pack,
+      settings: {
+        centerPath: '~/.agents/skills',
+        sqlitePath: '~/.agentbro/skill-manager.db',
+        defaultDistributeMode: 'link',
+        linkFailPolicy: 'ask',
+        startupScan: true,
+        showUnmanaged: true,
+        autoSyncSkillPacks: false,
+      },
+      lastOverviewLoadedAt: Date.now(),
+    })
+    const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue(pendingPack)
+    const syncPack = vi.spyOn(skillApiV2, 'syncPackToAgents').mockImplementation(() => new Promise(() => {}))
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    fireEvent.click(screen.getByRole('button', { name: '移除 Release Checklist' }))
+
+    expect(screen.getByRole('button', { name: '添加 Release Checklist 到技能包' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText(/已应用技能包中的成员需要/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+
+    await waitFor(() => expect(upsertPack).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'daily-pack', skillIds: [] }),
+      { deferSync: true },
+    ))
+    await waitFor(() => expect(syncPack).toHaveBeenCalledWith('daily-pack', []))
+    expect(screen.getByText('“Daily Pack”已保存，正在后台同步到 Agent…')).toBeInTheDocument()
   })
 
   it('closes the pack builder after the record is saved while Agent sync continues in the background', async () => {
