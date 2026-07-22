@@ -113,7 +113,7 @@ Want to author your own pet? Use the [`shirenchuang/agentbro-pet`](https://githu
 
 ## Agent Management
 
-If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Qoder, OpenCode, and other tools side by side, AgentBro brings their installs, integrations, capability packs, and local config into one workspace. Open **Agent Management** in settings to access the Skill Library, Skill Install, Skill Packs, Projects, Agent Management, Diagnostics, and Settings pages.
+If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode, and other tools side by side, AgentBro brings their installs, integrations, capability packs, and local config into one workspace. Open **Agent Management** in settings to access the Skill Library, Skill Install, Skill Packs, Projects, Agent Management, Diagnostics, and Settings pages.
 
 - Installs and versions: detect whether each CLI or desktop app is available, show current/latest versions, executable paths, config directories, and official install pages; supported CLIs can be installed or updated directly, while desktop apps open their download page.
 - Hook integration: install or remove hooks per agent, inspect bridge commands and config paths, and toggle event groups such as approvals, notifications, lifecycle, and activity.
@@ -151,8 +151,10 @@ AgentBro supports agents at two levels: runtime hook adapters send session event
 | Scope | Agents |
 | --- | --- |
 | Dynamic Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, Kiro |
-| Agent Management scan | Everything above, plus the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
+| Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
+
+Doubao support on macOS detects `/Applications/Doubao.app`, manages `~/Doubao/skills`, and continues to cover Doubao's compatible `~/.agents/skills` through the central library. Doubao does not currently expose a public hook, so island activity is a best-effort inference from local processes and read-only metadata for two task-state directories; conversation contents are never read, and page synchronization can cause a brief false positive.
 
 ## Roadmap
 

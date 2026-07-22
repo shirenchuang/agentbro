@@ -862,6 +862,15 @@
       "pack": "팩",
       "packNamed": "팩: {{name}}"
     },
+    "agentManagement": {
+      "packFilter": {
+        "label": "팩 소속",
+        "all": "전체",
+        "inPack": "팩에 포함",
+        "standalone": "팩에 미포함",
+        "noResults": "필터와 일치하는 관리된 Skill이 없습니다"
+      }
+    },
     "reason": {
       "not_in_center_library": "중앙 라이브러리에 없음",
       "center_library_conflict": "중앙 라이브러리 이름 충돌"

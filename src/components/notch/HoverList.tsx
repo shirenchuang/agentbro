@@ -55,6 +55,8 @@ const AGENT_BADGE_COLORS: Record<string, { bg: string; text: string }> = {
   'stepfun': { bg: 'rgba(236, 72, 153, 0.15)', text: '#ec4899' },
   'antigravity': { bg: 'rgba(168, 85, 247, 0.15)', text: '#a855f7' },
   'workbuddy': { bg: 'rgba(14, 165, 233, 0.15)', text: '#0ea5e9' },
+  'zcode': { bg: 'rgba(248, 250, 252, 0.12)', text: '#f8fafc' },
+  'doubao': { bg: 'rgba(90, 117, 255, 0.15)', text: '#7d91ff' },
   'hermes': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b' },
   'pi': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e' },
 }

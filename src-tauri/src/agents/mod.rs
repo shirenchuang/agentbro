@@ -29,6 +29,7 @@ pub mod stepfun;
 pub mod toml_hooks;
 pub mod traits;
 pub mod workbuddy;
+pub mod zcode;
 
 pub use traits::AgentAdapter;
 
@@ -244,6 +245,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(hermes::HermesAdapter::new()),
         Box::new(pi::PiAdapter::new()),
         Box::new(kiro::KiroAdapter::new()),
+        Box::new(zcode::ZcodeAdapter::new()),
     ]
 }
 
@@ -282,6 +284,7 @@ impl_default_adapter!(
     qwen::QwenAdapter,
     stepfun::StepFunAdapter,
     workbuddy::WorkBuddyAdapter,
+    zcode::ZcodeAdapter,
 );
 
 #[cfg(test)]

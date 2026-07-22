@@ -1,6 +1,8 @@
 import type { SessionPhase, SessionState } from '../types/agent'
 
 const APP_BUNDLE_LABELS: Array<[string, string]> = [
+  ['com.bot.pc.doubao', 'Doubao'],
+  ['dev.zcode.app', 'ZCode'],
   ['openai.codex', 'Codex App'],
   ['codex', 'Codex App'],
   ['openai.chat', 'ChatGPT'],
@@ -71,6 +73,8 @@ export function getAgentDisplayName(session: SessionState): string {
     case 'claude-code': return 'Claude'
     case 'gemini-cli': return 'Gemini'
     case 'workbuddy': return 'WorkBuddy'
+    case 'zcode': return 'ZCode'
+    case 'doubao': return 'Doubao'
     default: return session.agentType.charAt(0).toUpperCase() + session.agentType.slice(1)
   }
 }

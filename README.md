@@ -113,7 +113,7 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
 ## Agent 管理
 
-如果你同时在用 Claude Code、Codex、Gemini CLI、Cursor、Kimi、Qoder、OpenCode 等工具，AgentBro 可以把这些 Agent 的安装、接入、能力包和本地配置收进同一个工作台。入口在设置里的 **Agent管理**，里面包含 Skill 库、安装 Skill、技能包、项目、Agent 管理、诊断与修复等页面。
+如果你同时在用 Claude Code、Codex、Gemini CLI、Cursor、Kimi、豆包、Qoder、OpenCode 等工具，AgentBro 可以把这些 Agent 的安装、接入、能力包和本地配置收进同一个工作台。入口在设置里的 **Agent管理**，里面包含 Skill 库、安装 Skill、技能包、项目、Agent 管理、诊断与修复等页面。
 
 - 安装与版本：检测 CLI / 桌面 App 是否可用、当前版本、最新版本、可执行文件、配置目录和官方安装页；支持的 CLI 可以直接安装或更新，不支持自动安装的 App 会打开下载页。
 - Hook 接入：按 Agent 安装 / 卸载 Hook，查看 Bridge 命令和配置路径，并按审批、通知、生命周期、活动等事件分组开关。
@@ -151,8 +151,10 @@ AgentBro 对不同 Agent 的支持分为两层：运行时 Hook 适配器负责�
 | 范围 | Agent |
 | --- | --- |
 | 灵动岛 / Hook 深度接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy、Hermes、Pi、Kiro |
-| Agent 管理扫描 | 上面所有 Agent，另支持 `.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
+| Agent 管理扫描 | 上面所有 Agent，另支持豆包、`.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
 | 项目级扫描 | 目前聚焦 Claude Code 与 Codex 常见项目配置：项目级 Skills、MCP、插件和指令文件 |
+
+豆包 macOS 支持会检测 `/Applications/Doubao.app`、管理 `~/Doubao/skills`，并继续通过中心库覆盖豆包兼容的 `~/.agents/skills`。由于豆包目前没有公开 Hook，灵动岛中的任务状态来自本机进程与两个任务存储目录的只读元数据关联，不读取聊天内容；该状态属于尽力推断，页面同步可能造成短暂误报。
 
 ## 路线图
 

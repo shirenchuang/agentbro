@@ -1,4 +1,4 @@
-use super::agent_paths;
+use super::{agent_paths, zcode_config};
 use super::{
     AgentSkillState, DiscoveredSkill, InstallMode, McpServerConfig, ObsidianVault, ScannedSkill,
     SkillSource, SkillType,
@@ -22,7 +22,7 @@ pub fn scan_agent(agent: &str) -> Vec<ScannedSkill> {
         scan_mcp_config(mcp_path, agent, &mut results);
     }
 
-    if matches!(agent, "claude-code" | "codex") {
+    if matches!(agent, "claude-code" | "codex" | "zcode") {
         scan_plugins(agent, &mut results);
     }
 
@@ -341,7 +341,7 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                         } else {
                             InstallMode::Direct
                         },
-                        enabled: !disabled_skills.contains(&skill_name),
+                        enabled: skill_enabled(agent, &path, &skill_name, &disabled_skills),
                     }],
                     frontmatter: fm,
                 });
@@ -378,7 +378,7 @@ fn scan_directory(dir: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
                     install_path: path.display().to_string(),
                     link_target: None,
                     install_mode: InstallMode::Direct,
-                    enabled: !disabled_skills.contains(&skill_name),
+                    enabled: skill_enabled(agent, &path, &skill_name, &disabled_skills),
                 }],
                 frontmatter: fm,
             });
@@ -396,6 +396,9 @@ fn disabled_skill_ids(agent: &str) -> HashSet<String> {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return HashSet::new();
     };
+    if agent == "zcode" {
+        return zcode_config::disabled_skill_paths(&json);
+    }
     json.get("disabledSkills")
         .and_then(|value| value.as_array())
         .map(|items| {
@@ -405,6 +408,14 @@ fn disabled_skill_ids(agent: &str) -> HashSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn skill_enabled(agent: &str, path: &Path, skill_name: &str, disabled: &HashSet<String>) -> bool {
+    if agent == "zcode" {
+        !disabled.contains(path.to_string_lossy().as_ref())
+    } else {
+        !disabled.contains(skill_name)
+    }
 }
 
 fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSkill>) {
@@ -417,10 +428,13 @@ fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSki
         Err(_) => return,
     };
 
-    let servers = json
-        .get("mcpServers")
-        .or_else(|| json.get("mcp_servers"))
-        .and_then(|v| v.as_object());
+    let servers = if agent == "zcode" {
+        zcode_config::mcp_servers(&json)
+    } else {
+        json.get("mcpServers")
+            .or_else(|| json.get("mcp_servers"))
+            .and_then(|v| v.as_object())
+    };
 
     let servers = match servers {
         Some(s) => s,
@@ -497,7 +511,11 @@ fn scan_mcp_config(config_path: &Path, agent: &str, results: &mut Vec<ScannedSki
                 install_path: config_path.display().to_string(),
                 link_target: None,
                 install_mode: InstallMode::Direct,
-                enabled: !disabled.contains(name),
+                enabled: if agent == "zcode" {
+                    value.get("enabled").and_then(|value| value.as_bool()) != Some(false)
+                } else {
+                    !disabled.contains(name)
+                },
             }],
             frontmatter,
         });
@@ -508,10 +526,13 @@ pub fn read_mcp_server_config(agent: &str, server_name: &str) -> Option<McpServe
     let config_path = agent_paths::paths_for_agent(agent).mcp_config?;
     let content = fs::read_to_string(config_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let server = json
-        .get("mcpServers")
-        .or_else(|| json.get("mcp_servers"))?
-        .get(server_name)?;
+    let server = if agent == "zcode" {
+        zcode_config::mcp_servers(&json)?.get(server_name)?
+    } else {
+        json.get("mcpServers")
+            .or_else(|| json.get("mcp_servers"))?
+            .get(server_name)?
+    };
     let command = server.get("command")?.as_str()?.to_string();
     let args = server
         .get("args")
@@ -556,6 +577,7 @@ fn scan_plugins(agent: &str, results: &mut Vec<ScannedSkill>) {
             home.join(".codex").join("plugins").join("marketplaces"),
             home.join(".codex").join("plugins").join("cache"),
         ],
+        "zcode" => vec![home.join(".zcode/cli/plugins/cache")],
         _ => Vec::new(),
     };
     for root in roots {
@@ -597,10 +619,15 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
                 .join("plugin.json")
                 .exists()
                 .then(|| path.join(".codex-plugin").join("plugin.json"))
+        })
+        .or_else(|| {
+            path.join(".zcode-plugin")
+                .join("plugin.json")
+                .exists()
+                .then(|| path.join(".zcode-plugin").join("plugin.json"))
         });
 
-    let marker_path = path.join(".codex-plugin");
-    if manifest_path.is_none() && !marker_path.exists() {
+    if manifest_path.is_none() {
         return;
     }
 
@@ -646,13 +673,20 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
         frontmatter.insert("version".to_string(), version.to_string());
     }
 
-    let id = format!("plugin:{}", plugin_id);
+    let plugin_config_key = plugin_config_key(path, agent, &plugin_id);
+    let id = format!(
+        "plugin:{}",
+        if agent == "zcode" {
+            &plugin_config_key
+        } else {
+            &plugin_id
+        }
+    );
     if results.iter().any(|skill| skill.id == id) {
         return;
     }
 
     let meta = fs::metadata(path).ok();
-    let plugin_config_key = plugin_config_key(path, agent, &plugin_id);
     results.push(ScannedSkill {
         id,
         name,
@@ -688,7 +722,7 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
 }
 
 fn plugin_config_key(path: &Path, agent: &str, plugin_id: &str) -> String {
-    if agent != "codex" {
+    if !matches!(agent, "codex" | "zcode") {
         return plugin_id.to_string();
     }
     let mut components = path
@@ -722,11 +756,28 @@ fn plugin_enabled(agent: &str, plugin_key: &str, plugin_id: &str) -> bool {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return true;
     };
-    json.get("enabledPlugins")
-        .and_then(|value| value.as_object())
+    let enabled_plugins = if agent == "zcode" {
+        zcode_config::enabled_plugins(&json)
+    } else {
+        json.get("enabledPlugins")
+            .and_then(|value| value.as_object())
+    };
+    enabled_plugins
         .and_then(|plugins| plugins.get(plugin_key).or_else(|| plugins.get(plugin_id)))
         .and_then(|value| value.as_bool())
-        .unwrap_or(true)
+        .unwrap_or_else(|| {
+            if agent == "zcode" {
+                dirs::home_dir()
+                    .map(|home| {
+                        home.join(".zcode/cli/plugins/data")
+                            .join(plugin_key)
+                            .exists()
+                    })
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
 }
 
 fn symlink_target(path: &Path) -> Option<String> {

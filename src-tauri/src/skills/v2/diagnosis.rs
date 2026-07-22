@@ -637,10 +637,13 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
         return vec![];
     };
-    let servers = v
-        .get("mcpServers")
-        .or_else(|| v.get("mcpServers"))
-        .and_then(|s| s.as_object());
+    let servers = if agent_id == "zcode" {
+        crate::skills::zcode_config::mcp_servers(&v)
+    } else {
+        v.get("mcpServers")
+            .or_else(|| v.get("mcp_servers"))
+            .and_then(|s| s.as_object())
+    };
     let mut out = Vec::new();
     if let Some(servers) = servers {
         for (name, cfg) in servers {
@@ -678,6 +681,9 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
 pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
     if agent_id == "workbuddy" {
         return read_workbuddy_plugins(svc);
+    }
+    if agent_id == "zcode" {
+        return read_zcode_plugins(svc);
     }
 
     let (cache, marker_dir, source_label, config_path) = match agent_id {
@@ -744,6 +750,45 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
             source: source
                 .map(|source| format!("{source_label}:{source}"))
                 .or_else(|| Some(source_label.to_string())),
+        });
+    }
+    out.sort_by_key(|plugin| plugin.name.to_lowercase());
+    out
+}
+
+fn read_zcode_plugins(svc: &Service) -> Vec<PluginStatus> {
+    let cache = svc.home.join(".zcode/cli/plugins/cache");
+    let data = svc.home.join(".zcode/cli/plugins/data");
+    let config = svc.home.join(".zcode/cli/config.json");
+    let enabled_plugins = std::fs::read_to_string(config)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|json| crate::skills::zcode_config::enabled_plugins(&json).cloned())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for manifest in plugin_manifests(&cache, ".zcode-plugin") {
+        let Some(info) = read_plugin_manifest_info(&cache, &manifest) else {
+            continue;
+        };
+        let config_key = info
+            .source
+            .as_deref()
+            .map(|source| format!("{}@{source}", info.id))
+            .unwrap_or_else(|| info.id.clone());
+        let enabled = enabled_plugins
+            .get(&config_key)
+            .or_else(|| enabled_plugins.get(&info.id))
+            .and_then(|value| value.as_bool())
+            .unwrap_or_else(|| data.join(&config_key).exists());
+        out.push(PluginStatus {
+            id: config_key,
+            name: info.name,
+            version: info.version,
+            enabled,
+            source: info
+                .source
+                .map(|source| format!("zcode-plugin:{source}"))
+                .or_else(|| Some("zcode-plugin".to_string())),
         });
     }
     out.sort_by_key(|plugin| plugin.name.to_lowercase());

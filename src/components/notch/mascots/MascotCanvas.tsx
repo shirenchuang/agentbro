@@ -18,6 +18,8 @@ import qwenIcon from '../../../assets/cli-icons/qwen.png'
 import stepfunIcon from '../../../assets/cli-icons/stepfun.png'
 import workbuddyIcon from '../../../assets/cli-icons/workbuddy.png'
 import kiroIcon from '../../../assets/kiro.png'
+import zcodeIcon from '../../../assets/cli-icons/zcode.svg'
+import doubaoIcon from '../../../assets/cli-icons/doubao.svg'
 import './MascotCanvas.css'
 
 export type MascotAnimState = 'idle' | 'processing' | 'running' | 'alert'
@@ -60,6 +62,8 @@ const MASCOT_ASSETS: Record<string, MascotAsset> = {
   'hermes': { src: hermesIcon, inset: 3 },
   'pi': { src: piIcon, inset: 3 },
   'kiro': { src: kiroIcon, inset: 3 },
+  'zcode': { src: zcodeIcon, inset: 3 },
+  'doubao': { src: doubaoIcon, inset: 3 },
 }
 
 function normalizeToolType(toolType: string) {

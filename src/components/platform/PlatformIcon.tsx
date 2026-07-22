@@ -15,6 +15,8 @@ import qoderCliIcon from '../../assets/cli-icons/qoder.png'
 import qwenCliIcon from '../../assets/cli-icons/qwen.png'
 import stepfunCliIcon from '../../assets/cli-icons/stepfun.png'
 import workbuddyCliIcon from '../../assets/cli-icons/workbuddy.png'
+import zcodeCliIcon from '../../assets/cli-icons/zcode.svg'
+import doubaoCliIcon from '../../assets/cli-icons/doubao.svg'
 import easyclawIcon from '../../assets/easyclaw.png'
 import kiroIcon from '../../assets/kiro.png'
 import openclawIcon from '../../assets/openclaw.png'
@@ -67,6 +69,8 @@ const imageIcons: Record<string, string> = {
   windsurf: windsurfIcon,
   workbuddy: workbuddyCliIcon,
   'work-buddy': workbuddyCliIcon,
+  zcode: zcodeCliIcon,
+  doubao: doubaoCliIcon,
 }
 
 const glyphIcons: Record<string, string> = {

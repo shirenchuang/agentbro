@@ -24,4 +24,24 @@ describe('Mascot image assets', () => {
     expect(wrapper).toHaveAttribute('data-mascot-state', 'alert')
     expect(image?.getAttribute('src')).toContain('/src/assets/cli-icons/qwen.png')
   })
+
+  it('uses the ZCode icon for ZCode sessions', () => {
+    const { container } = render(<MascotRouter toolType="zcode" phase="processing" size={28} />)
+
+    const wrapper = container.querySelector('.mascot-image')
+    const image = container.querySelector('.mascot-image img') as HTMLImageElement | null
+
+    expect(wrapper).toHaveAttribute('data-mascot-source', 'zcode')
+    expect(image?.getAttribute('src')).toContain('data:image/svg+xml')
+  })
+
+  it('uses the Doubao icon for Doubao sessions', () => {
+    const { container } = render(<MascotRouter toolType="doubao" phase="processing" size={28} />)
+
+    const wrapper = container.querySelector('.mascot-image')
+    const image = container.querySelector('.mascot-image img') as HTMLImageElement | null
+
+    expect(wrapper).toHaveAttribute('data-mascot-source', 'doubao')
+    expect(image?.getAttribute('src')).toContain('data:image/svg+xml')
+  })
 })

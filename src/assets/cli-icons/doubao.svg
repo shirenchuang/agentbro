@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="doubao-gradient" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55C8FF"/>
+      <stop offset="1" stop-color="#5967FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="url(#doubao-gradient)"/>
+  <path d="M17 21.5c0-4.7 3.8-8.5 8.5-8.5h13C43.2 13 47 16.8 47 21.5v13c0 4.7-3.8 8.5-8.5 8.5H31l-9.8 8v-8.7A8.5 8.5 0 0 1 17 35V21.5Z" fill="white"/>
+  <circle cx="26" cy="28" r="2.8" fill="#5A75FF"/>
+  <circle cx="38" cy="28" r="2.8" fill="#5A75FF"/>
+  <path d="M26 35c3.3 2.7 8.7 2.7 12 0" fill="none" stroke="#5A75FF" stroke-width="3" stroke-linecap="round"/>
+</svg>
