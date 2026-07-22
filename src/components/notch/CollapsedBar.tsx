@@ -366,6 +366,7 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
   async function openSettings(e: React.MouseEvent) {
     e.stopPropagation()
+    onCollapse()
     try {
       await openSettingsWindow()
     } catch (err) {

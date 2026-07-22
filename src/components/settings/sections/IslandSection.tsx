@@ -709,19 +709,19 @@ function BehaviorTab() {
       <SettingGroup label={t('settings.island.section.expand', { defaultValue: 'Expand' })}>
         <SettingRow label={t('settings.hoverExpandDelay')} description={t('settings.hoverExpandDelayDesc')}>
           <Slider value={config.hoverExpandDelay} min={0} max={1000} step={50}
-            onChange={(v) => config.updateConfig('hoverExpandDelay', v)} unit="ms" />
+            onCommit={(v) => config.updateConfig('hoverExpandDelay', v)} unit="ms" />
         </SettingRow>
         <SettingRow label={t('settings.microHoverExpandDelay')} description={t('settings.microHoverExpandDelayDesc')}>
           <Slider value={config.microHoverExpandDelay} min={0} max={1000} step={50}
-            onChange={(v) => config.updateConfig('microHoverExpandDelay', v)} unit="ms" />
+            onCommit={(v) => config.updateConfig('microHoverExpandDelay', v)} unit="ms" />
         </SettingRow>
         <SettingRow label={t('settings.collapseDelay')} description={t('settings.collapseDelayDesc')}>
           <Slider value={config.collapseDelay} min={100} max={1000} step={50}
-            onChange={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
+            onCommit={(v) => config.updateConfig('collapseDelay', v)} unit="ms" />
         </SettingRow>
         <SettingRow label={t('settings.islandAnimationScale', { defaultValue: 'Animation Scale' })} description={t('settings.islandAnimationScaleDesc', { defaultValue: 'Adjust the speed of island open, close, and content motion.' })}>
           <Slider value={config.islandAnimationScale} min={0.25} max={6} step={0.25}
-            onChange={(v) => config.updateConfig('islandAnimationScale', v)} unit="x" />
+            onCommit={(v) => config.updateConfig('islandAnimationScale', v)} unit="x" />
         </SettingRow>
       </SettingGroup>
 
@@ -731,22 +731,22 @@ function BehaviorTab() {
         </SettingRow>
         <SettingRow label={t('settings.idleCompactDwell')} description={t('settings.idleCompactDwellDesc')}>
           <Slider value={config.idleCompactDwellSeconds} min={0} max={60} step={1}
-            onChange={(v) => config.updateConfig('idleCompactDwellSeconds', v)} unit="s" />
+            onCommit={(v) => config.updateConfig('idleCompactDwellSeconds', v)} unit="s" />
         </SettingRow>
         <SettingRow label={t('settings.noSessionsHideDelay')} description={t('settings.noSessionsHideDelayDesc')}>
           <Slider value={config.noSessionsHideDelay} min={1} max={30} step={1}
-            onChange={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
+            onCommit={(v) => config.updateConfig('noSessionsHideDelay', v)} unit="min" />
         </SettingRow>
       </SettingGroup>
 
       <SettingGroup label={t('settings.island.section.dwell', { defaultValue: 'Dwell Time' })}>
         <SettingRow label={t('settings.taskCompleteDwell')} description={t('settings.taskCompleteDwellDesc')}>
           <Slider value={config.taskCompleteDwellSeconds} min={1} max={30} step={1}
-            onChange={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
+            onCommit={(v) => config.updateConfig('taskCompleteDwellSeconds', v)} unit="s" />
         </SettingRow>
         <SettingRow label={t('settings.escSilenceDuration')} description={t('settings.escSilenceDurationDesc')}>
           <Slider value={config.escSilenceDuration} min={10} max={300} step={10}
-            onChange={(v) => config.updateConfig('escSilenceDuration', v)} unit="s" />
+            onCommit={(v) => config.updateConfig('escSilenceDuration', v)} unit="s" />
         </SettingRow>
       </SettingGroup>
 
@@ -759,7 +759,7 @@ function BehaviorTab() {
         </SettingRow>
         <SettingRow label={t('settings.carouselInterval')} description={t('settings.carouselIntervalDesc')}>
           <Slider value={config.carouselIntervalMs} min={1000} max={10000} step={500}
-            onChange={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
+            onCommit={(v) => config.updateConfig('carouselIntervalMs', v)} unit="ms" />
         </SettingRow>
         <SettingRow label={t('settings.idleTimeout')} description={t('settings.idleTimeoutDesc')}>
           <Dropdown value={String(config.idleTimeoutMinutes)} options={idleTimeoutOptions}
@@ -787,7 +787,7 @@ function BehaviorTab() {
         )}
         <SettingRow label={t('settings.sessionTimeout')} description={t('settings.sessionTimeoutDesc')}>
           <Slider value={config.sessionTimeoutMinutes} min={1} max={120} step={1}
-            onChange={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
+            onCommit={(v) => config.updateConfig('sessionTimeoutMinutes', v)} unit="min" />
         </SettingRow>
       </SettingGroup>
     </>
@@ -932,10 +932,9 @@ function DisplayTab() {
                 min={10}
                 max={120}
                 step={5}
-                onChange={(v) => {
+                onCommit={(v) => {
                   config.updateConfig('islandPetScale', v)
                   persistIslandSurfaceOptions({ islandPetScale: v })
-                  previewLayout('expanded')
                 }}
                 unit="%"
               />
@@ -1058,24 +1057,27 @@ function DisplayTab() {
         {config.notchHeightMode === 'custom' && (
           <SettingRow label={t('settings.customNotchHeight')} description={`${config.customNotchHeight}px`}>
             <Slider value={config.customNotchHeight} min={CUSTOM_NOTCH_HEIGHT_MIN} max={CUSTOM_NOTCH_HEIGHT_MAX} step={1}
-              onChange={(v) => { config.updateConfig('customNotchHeight', v); previewLayout('compact', { notchHeightMode: 'custom', customNotchHeight: v }) }} unit="px" />
+              onChange={(v) => previewLayout('compact', { notchHeightMode: 'custom', customNotchHeight: v })}
+              onCommit={(v) => config.updateConfig('customNotchHeight', v)} unit="px" />
           </SettingRow>
         )}
         <SettingRow label={t('settings.microPillWidth', { defaultValue: 'Micro Pill Width' })} description={`${config.microPillWidth}px`}>
           <Slider value={config.microPillWidth} min={84} max={180} step={4}
-            onChange={(v) => { config.updateConfig('microPillWidth', v); previewLayout('micro', { microPillWidth: v }) }} unit="px" />
+            onChange={(v) => previewLayout('micro', { microPillWidth: v })}
+            onCommit={(v) => config.updateConfig('microPillWidth', v)} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.compactPillWidth', { defaultValue: 'Compact Pill Width' })} description={`${compactPillWidthValue}px`}>
           <Slider value={compactPillWidthValue} min={260} max={520} step={10}
-            onChange={(v) => {
+            onChange={(v) => previewLayout('compact', { compactPillWidth: v, collapsedWidthScale: 100 })}
+            onCommit={(v) => {
               config.updateConfig('compactPillWidth', v)
               config.updateConfig('collapsedWidthScale', 100)
-              previewLayout('compact', { compactPillWidth: v, collapsedWidthScale: 100 })
             }} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.panelMaxWidth', { defaultValue: 'Expanded Panel Width' })} description={`${config.panelMaxWidth}px`}>
           <Slider value={config.panelMaxWidth} min={480} max={760} step={10}
-            onChange={(v) => { config.updateConfig('panelMaxWidth', v); previewLayout('expanded', { panelMaxWidth: v }) }} unit="px" />
+            onChange={(v) => previewLayout('expanded', { panelMaxWidth: v })}
+            onCommit={(v) => config.updateConfig('panelMaxWidth', v)} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.hoverSpeed')} description={t('settings.hoverSpeedDesc')}>
           <Dropdown value={config.hoverSpeed} options={hoverSpeedOptions}
@@ -1090,15 +1092,18 @@ function DisplayTab() {
         </SettingRow>
         <SettingRow label={t('settings.completionCardHeight')} description={`${config.completionCardHeight}px`}>
           <Slider value={config.completionCardHeight} min={80} max={420} step={10}
-            onChange={(v) => { config.updateConfig('completionCardHeight', v); previewLayout('completion', { completionCardHeight: v }) }} unit="px" />
+            onChange={(v) => previewLayout('completion', { completionCardHeight: v })}
+            onCommit={(v) => config.updateConfig('completionCardHeight', v)} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.maxPanelHeight')} description={`${config.maxPanelHeight}px`}>
           <Slider value={config.maxPanelHeight} min={300} max={800} step={20}
-            onChange={(v) => { config.updateConfig('maxPanelHeight', v); previewLayout('expanded', { maxPanelHeight: v }) }} unit="px" />
+            onChange={(v) => previewLayout('expanded', { maxPanelHeight: v })}
+            onCommit={(v) => config.updateConfig('maxPanelHeight', v)} unit="px" />
         </SettingRow>
         <SettingRow label={t('settings.detailPanelMaxHeight')} description={`${config.detailPanelMaxHeight}px`}>
           <Slider value={config.detailPanelMaxHeight} min={260} max={1200} step={20}
-            onChange={(v) => { config.updateConfig('detailPanelMaxHeight', v); previewLayout('expanded', { detailPanelMaxHeight: v }) }} unit="px" />
+            onChange={(v) => previewLayout('expanded', { detailPanelMaxHeight: v })}
+            onCommit={(v) => config.updateConfig('detailPanelMaxHeight', v)} unit="px" />
         </SettingRow>
       </SettingGroup>
 
@@ -1575,7 +1580,7 @@ function SoundTab() {
         </SettingRow>
         <SettingRow label={t('settings.volume')}>
           <Slider value={config.volume} min={0} max={100}
-            onChange={(v) => { config.updateConfig('volume', v); setSoundVolume(v) }} unit="%" />
+            onCommit={(v) => { config.updateConfig('volume', v); setSoundVolume(v) }} unit="%" />
         </SettingRow>
         <SettingRow label={t('settings.soundPack')} description={t('settings.soundPackDesc')}>
           <Dropdown value={config.soundPack} options={soundPackOptions}

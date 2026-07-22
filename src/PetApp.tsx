@@ -5,7 +5,6 @@
 import { useEffect } from 'react'
 import { PetSurface } from './components/notch/PetSurface'
 import { BackgroundUpdater } from './components/BackgroundUpdater'
-import { useTauriInit } from './hooks/useTauri'
 import { useSessionStore } from './stores/sessionStore'
 import { useConfigStore } from './stores/configStore'
 import { isTauri } from './services/tauriApi'
@@ -13,11 +12,6 @@ import { PetVitalsLab } from './components/dev/PetVitalsLab'
 import './styles/globals.css'
 
 export function PetApp() {
-  // Reuse the same Tauri initialization as the notch window so the pet
-  // surface can react to overlay/session events (summon, pet selection,
-  // active agent type, etc.).
-  useTauriInit()
-
   // Make the pet window's web view transparent — the underlying Tauri window
   // is already configured transparent, but globals.css sets a background.
   useEffect(() => {

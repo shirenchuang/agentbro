@@ -3,7 +3,7 @@
  */
 import { useEffect } from 'react'
 import i18n from 'i18next'
-import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setCustomSounds, setSoundEventRule, setSoundQuietHours, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
+import { isTauri, getSessions, getUsageRateLimits, getUsageSnapshots, getConfig, listThemes, setSoundEventRule, getActiveThemeBundle, setLanguage, getAppStateFlags } from '../services/tauriApi'
 import { usePetStore } from '../stores/petStore'
 import { useMarketStore } from '../stores/marketStore'
 import type { BackendSession, BackendConfig, ParsedMessage, ParsedMessageBlock } from '../services/tauriApi'
@@ -13,6 +13,25 @@ import { useThemeStore } from '../stores/themeStore'
 import type { SoundChoice } from '../stores/configStore'
 import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage, RateLimitInfo } from '../types/agent'
 import { energyIntervalMs, getAppEnergyMode } from '../utils/energyPolicy'
+
+type Unlisten = () => void
+type TauriInitScope = string | null
+type MarketEventMode = 'full' | 'completion' | 'off'
+
+function listenForTauriEvent<T>(
+  eventName: string,
+  handler: (event: { payload: T }) => void,
+  register: (unlisten: Unlisten) => void,
+  isCancelled: () => boolean,
+) {
+  import('@tauri-apps/api/event')
+    .then(({ listen }) => listen<T>(eventName, handler))
+    .then((unlisten) => {
+      if (isCancelled()) unlisten()
+      else register(unlisten)
+    })
+    .catch((error) => console.error(`[tauri] listen ${eventName}:`, error))
+}
 
 let lastBackendThemeName: string | null = null
 let pendingBackendThemeName: string | null = null
@@ -319,77 +338,80 @@ function sessionUsageSnapshots(sessions: SessionState[]): RateLimitInfo[] {
 
 function applyBackendConfig(config: BackendConfig) {
   const store = useConfigStore.getState()
-  store.updateConfig('soundEnabled', config.soundEnabled)
-  store.updateConfig('volume', Math.round(config.soundVolume * 100))
-  store.updateConfig('launchAtLogin', config.launchAtLogin ?? false)
-  store.updateConfig('autoHide', config.autoHide)
-  store.updateConfig('smartSuppression', config.smartSuppression)
-  store.updateConfig('showUsageQuota', config.showTokenUsage ?? true)
-  store.updateConfig('usageQueryEnabled', config.usageQueryEnabled ?? true)
-  store.updateConfig('codexAppServerSyncEnabled', config.codexAppServerSyncEnabled ?? false)
-  store.updateConfig('codexAppServerSyncIntervalSeconds', config.codexAppServerSyncIntervalSeconds ?? 30)
-  if (config.language) {
-    store.updateConfig('language', config.language)
-    if (i18n.language !== config.language) {
-      void i18n.changeLanguage(config.language)
-    }
-  }
-  store.updateConfig('autoHideNoSessions', config.autoHideNoSessions)
-  store.updateConfig('displayMonitor', config.displayId)
-  store.updateConfig('globalShortcut', config.globalShortcut)
-  store.updateConfig('shortcutApprove', config.shortcutApprove)
-  store.updateConfig('shortcutApproveEnabled', config.shortcutApproveEnabled)
-  store.updateConfig('shortcutDeny', config.shortcutDeny)
-  store.updateConfig('shortcutDenyEnabled', config.shortcutDenyEnabled)
-  store.updateConfig('shortcutSkip', config.shortcutSkip)
-  store.updateConfig('shortcutSkipEnabled', config.shortcutSkipEnabled)
-  if (config.soundEvents && Object.keys(config.soundEvents).length > 0) {
-    const updatedEvents = store.soundEvents.map((event) => ({
+  const soundEvents = config.soundEvents && Object.keys(config.soundEvents).length > 0
+    ? store.soundEvents.map((event) => ({
       ...event,
       enabled: config.soundRules?.[event.id]?.enabled ?? config.soundEvents[event.id] ?? event.enabled,
     }))
-    store.updateConfig('soundEvents', updatedEvents)
-  }
-  if (config.soundRules && Object.keys(config.soundRules).length > 0) {
-    store.updateConfig('soundRules', Object.fromEntries(
+    : store.soundEvents
+  const soundRules = config.soundRules && Object.keys(config.soundRules).length > 0
+    ? Object.fromEntries(
       Object.entries(config.soundRules).map(([id, rule]) => [
         id,
         { enabled: rule.enabled, sound: rule.sound as SoundChoice },
       ]),
-    ))
-  }
-  if (Array.isArray(config.customSounds)) {
-    store.updateConfig('customSounds', config.customSounds)
-  }
-  store.updateConfig('soundPack', config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom')
-  store.updateConfig('probeSessionFilter', config.probeSessionFilter)
-  if (typeof config.excludedHookCwdSubstrings === 'string') {
-    store.updateConfig('excludedHookCwdSubstrings', config.excludedHookCwdSubstrings)
-  }
-  if (Array.isArray(config.sessionSilenceRules)) {
-    store.updateConfig('sessionSilenceRules', config.sessionSilenceRules)
-  }
-  store.updateConfig('tipsEnabled', config.tipsEnabled)
-  store.updateConfig('pixelCursorEnabled', config.pixelCursorEnabled)
-  store.updateConfig('confettiEnabled', config.confettiEnabled)
-  store.updateConfig('analyticsEnabled', config.analyticsEnabled ?? true)
-  store.updateConfig('analyticsConsentPromptCompleted', config.analyticsConsentPromptCompleted ?? true)
-  store.updateConfig('islandSurfaceMode', config.islandSurfaceMode ?? 'island')
-  store.updateConfig('petVitalsDebugOpen', import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false)
-  store.updateConfig('islandPetScale', config.islandPetScale ?? 72)
-  store.updateConfig('islandPetWindowOrigin', config.islandPetWindowOrigin ?? null)
-  store.updateConfig('islandPetWindowAnchor', config.islandPetWindowAnchor ?? null)
-  store.updateConfig('islandActivePetId', config.islandActivePetId ?? null)
-  store.updateConfig('islandAgentPetMap', config.islandAgentPetMap ?? {})
-  store.updateConfig('followFocus', config.followFocus)
-  store.updateConfig('quietHours', {
-    enabled: config.quietHoursEnabled,
-    start: config.quietHoursStart,
-    end: config.quietHoursEnd,
+    )
+    : store.soundRules
+
+  useConfigStore.setState({
+    soundEnabled: config.soundEnabled,
+    volume: Math.round(config.soundVolume * 100),
+    launchAtLogin: config.launchAtLogin ?? false,
+    autoHide: config.autoHide,
+    smartSuppression: config.smartSuppression,
+    showUsageQuota: config.showTokenUsage ?? true,
+    usageQueryEnabled: config.usageQueryEnabled ?? true,
+    codexAppServerSyncEnabled: config.codexAppServerSyncEnabled ?? false,
+    codexAppServerSyncIntervalSeconds: config.codexAppServerSyncIntervalSeconds ?? 30,
+    language: config.language || store.language,
+    autoHideNoSessions: config.autoHideNoSessions,
+    displayMonitor: config.displayId,
+    globalShortcut: config.globalShortcut,
+    shortcutApprove: config.shortcutApprove,
+    shortcutApproveEnabled: config.shortcutApproveEnabled,
+    shortcutDeny: config.shortcutDeny,
+    shortcutDenyEnabled: config.shortcutDenyEnabled,
+    shortcutSkip: config.shortcutSkip,
+    shortcutSkipEnabled: config.shortcutSkipEnabled,
+    soundEvents,
+    soundRules,
+    customSounds: Array.isArray(config.customSounds) ? config.customSounds : store.customSounds,
+    soundPack: config.soundPack as 'eight-bit' | 'subtle' | 'synth' | 'system' | 'none' | 'custom',
+    probeSessionFilter: config.probeSessionFilter,
+    excludedHookCwdSubstrings: typeof config.excludedHookCwdSubstrings === 'string'
+      ? config.excludedHookCwdSubstrings
+      : store.excludedHookCwdSubstrings,
+    sessionSilenceRules: Array.isArray(config.sessionSilenceRules)
+      ? config.sessionSilenceRules
+      : store.sessionSilenceRules,
+    tipsEnabled: config.tipsEnabled,
+    pixelCursorEnabled: config.pixelCursorEnabled,
+    confettiEnabled: config.confettiEnabled,
+    analyticsEnabled: config.analyticsEnabled ?? true,
+    analyticsConsentPromptCompleted: config.analyticsConsentPromptCompleted ?? true,
+    islandSurfaceMode: config.islandSurfaceMode ?? 'island',
+    petVitalsDebugOpen: import.meta.env.DEV ? (config.petVitalsDebugOpen ?? false) : false,
+    islandPetScale: config.islandPetScale ?? 72,
+    islandPetWindowOrigin: config.islandPetWindowOrigin ?? null,
+    islandPetWindowAnchor: config.islandPetWindowAnchor ?? null,
+    islandActivePetId: config.islandActivePetId ?? null,
+    islandAgentPetMap: config.islandAgentPetMap ?? {},
+    followFocus: config.followFocus,
+    quietHours: {
+      enabled: config.quietHoursEnabled,
+      start: config.quietHoursStart,
+      end: config.quietHoursEnd,
+    },
+    idleTimeoutMinutes: config.idleTimeoutMinutes ?? 5,
+    idleInteractionRoutingEnabled: config.idleInteractionRoutingEnabled ?? false,
+    idleInteractionRoutingMinutes: config.idleInteractionRoutingMinutes ?? 5,
   })
-  store.updateConfig('idleTimeoutMinutes', config.idleTimeoutMinutes ?? 5)
-  store.updateConfig('idleInteractionRoutingEnabled', config.idleInteractionRoutingEnabled ?? false)
-  store.updateConfig('idleInteractionRoutingMinutes', config.idleInteractionRoutingMinutes ?? 5)
+
+  if (config.language) {
+    if (i18n.language !== config.language) {
+      void i18n.changeLanguage(config.language)
+    }
+  }
 }
 
 function syncSoundEventSettingsToBackend() {
@@ -400,18 +422,6 @@ function syncSoundEventSettingsToBackend() {
     setSoundEventRule(event.id, rule.enabled, rule.sound)
       .catch((e) => console.error('[tauri] setSoundEventRule:', e))
   })
-}
-
-function syncQuietHoursToBackend() {
-  const quietHours = useConfigStore.getState().quietHours
-  setSoundQuietHours(quietHours.enabled, quietHours.start, quietHours.end)
-    .catch((e) => console.error('[tauri] setSoundQuietHours:', e))
-}
-
-function syncCustomSoundsToBackend() {
-  const customSounds = useConfigStore.getState().customSounds
-  setCustomSounds(customSounds)
-    .catch((e) => console.error('[tauri] setCustomSounds:', e))
 }
 
 function syncThemesFromBackend(configTheme?: string) {
@@ -479,7 +489,8 @@ function refreshUsageRateLimits(force = false) {
 }
 
 const APP_SERVER_LIVE_POLL_MS = 10_000
-const SESSION_REFRESH_FALLBACK_MS = 2_000
+const SESSION_REFRESH_FALLBACK_MS = 10_000
+type SessionSyncMode = 'full' | 'events' | 'off'
 
 function refreshAppServerLiveFlag() {
   getAppStateFlags()
@@ -490,14 +501,20 @@ function refreshAppServerLiveFlag() {
 // ── Hooks ────────────────────────────────────────────────────────
 
 /** Listen for session-update events from the backend and sync sessionStore. */
-export function useSessionEvents() {
+export function useSessionEvents(mode: SessionSyncMode = 'full') {
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || mode === 'off') return
 
     let unlisten: (() => void) | undefined
+    let cancelled = false
     let lastSessionSnapshot = ''
-    const usageRateLimitTimer = window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
-    const appServerLiveTimer = window.setInterval(refreshAppServerLiveFlag, APP_SERVER_LIVE_POLL_MS)
+    const fullSync = mode === 'full'
+    const usageRateLimitTimer = fullSync
+      ? window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
+      : undefined
+    const appServerLiveTimer = fullSync
+      ? window.setInterval(refreshAppServerLiveFlag, APP_SERVER_LIVE_POLL_MS)
+      : undefined
     const snapshotSessions = (sessions: BackendSession[], suppressed: boolean) => JSON.stringify({
       suppressed,
       sessions: [...sessions].sort((a, b) => a.id.localeCompare(b.id)),
@@ -516,7 +533,7 @@ export function useSessionEvents() {
       store.replaceAllSessions(transformed, { suppressed })
       const usageSnapshots = sessionUsageSnapshots(transformed)
       if (usageSnapshots.length > 0) store.setUsageSnapshots(usageSnapshots)
-      refreshUsageRateLimits(options.force === true)
+      if (fullSync) refreshUsageRateLimits(options.force === true)
       if (suppressed) {
         const current = useSessionStore.getState().panelState
         if (current === 'expanded') {
@@ -527,48 +544,56 @@ export function useSessionEvents() {
 
     // Load initial sessions
     getSessions()
-      .then(sessions => applyBackendSessions(sessions, { force: true }))
+      .then((sessions) => {
+        if (!cancelled) applyBackendSessions(sessions, { force: true })
+      })
       .catch(e => console.error('[tauri] getSessions:', e))
 
-    refreshAppServerLiveFlag()
-    const sessionRefreshTimer = window.setInterval(() => {
-      getSessions()
-        .then(sessions => applyBackendSessions(sessions))
-        .catch(e => console.error('[tauri] poll getSessions:', e))
-    }, SESSION_REFRESH_FALLBACK_MS)
+    if (fullSync) refreshAppServerLiveFlag()
+    const sessionRefreshTimer = fullSync
+      ? window.setInterval(() => {
+        getSessions()
+          .then((sessions) => {
+            if (!cancelled) applyBackendSessions(sessions)
+          })
+          .catch(e => console.error('[tauri] poll getSessions:', e))
+      }, SESSION_REFRESH_FALLBACK_MS)
+      : undefined
 
-    // Listen for live updates (dynamic import to avoid crash in browser dev mode)
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ sessions: BackendSession[]; suppressed?: boolean }>('session-update', (event) => {
+    listenForTauriEvent<{ sessions: BackendSession[]; suppressed?: boolean }>(
+      'session-update',
+      (event) => {
         applyBackendSessions(event.payload.sessions, { suppressed: event.payload.suppressed === true })
-        // When suppressed, the backend signals that the user is looking at
-        // the terminal — do NOT auto-expand the panel.
-      }).then(fn => { unlisten = fn })
-        .catch(e => console.error('[tauri] listen session-update:', e))
-    }).catch(e => console.error('[tauri] import event:', e))
+      },
+      (fn) => { unlisten = fn },
+      () => cancelled,
+    )
 
     return () => {
-      window.clearInterval(usageRateLimitTimer)
-      window.clearInterval(appServerLiveTimer)
-      window.clearInterval(sessionRefreshTimer)
+      cancelled = true
+      if (usageRateLimitTimer !== undefined) window.clearInterval(usageRateLimitTimer)
+      if (appServerLiveTimer !== undefined) window.clearInterval(appServerLiveTimer)
+      if (sessionRefreshTimer !== undefined) window.clearInterval(sessionRefreshTimer)
       unlisten?.()
     }
-  }, [])
+  }, [mode])
 }
 
 /** Listen for config-changed events from the backend and sync configStore. */
-export function useConfigSync() {
+export function useConfigSync(enabled = true, canWriteMigrations = true) {
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || !enabled) return
 
     let unlisten: (() => void) | undefined
+    let cancelled = false
 
     getConfig().then((config) => {
+      if (cancelled) return
       const localLanguage = useConfigStore.getState().language
-      const effectiveConfig = localLanguage && config.language !== localLanguage
+      const effectiveConfig = canWriteMigrations && localLanguage && config.language !== localLanguage
         ? { ...config, language: localLanguage }
         : config
-      if (effectiveConfig.language !== config.language) {
+      if (canWriteMigrations && effectiveConfig.language !== config.language) {
         setLanguage(effectiveConfig.language).catch(e => console.error('[tauri] setLanguage:', e))
       }
       applyBackendConfig(effectiveConfig)
@@ -576,23 +601,22 @@ export function useConfigSync() {
       const petStore = usePetStore.getState()
       petStore.hydrateFromConfig(effectiveConfig.islandActivePetId ?? null)
       void petStore.loadRegistry()
-      if (!effectiveConfig.soundRules || Object.keys(effectiveConfig.soundRules).length === 0) {
+      if (canWriteMigrations && (!effectiveConfig.soundRules || Object.keys(effectiveConfig.soundRules).length === 0)) {
         syncSoundEventSettingsToBackend()
       }
-      syncQuietHoursToBackend()
-      syncCustomSoundsToBackend()
     })
       .catch(e => console.error('[tauri] getConfig:', e))
 
-    // Dynamic import to avoid crash in browser dev mode
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<BackendConfig>('config-changed', (event) => {
+    listenForTauriEvent<BackendConfig>(
+      'config-changed',
+      (event) => {
         applyBackendConfig(event.payload)
         applyBackendThemeChange(event.payload.theme)
         usePetStore.getState().hydrateFromConfig(event.payload.islandActivePetId ?? null)
-      }).then(fn => { unlisten = fn })
-        .catch(e => console.error('[tauri] listen config-changed:', e))
-    }).catch(e => console.error('[tauri] import event:', e))
+      },
+      (fn) => { unlisten = fn },
+      () => cancelled,
+    )
 
     const handleThemeSync = (event: Event) => {
       const detail = (event as CustomEvent<{ status?: string; name?: string }>).detail
@@ -606,10 +630,11 @@ export function useConfigSync() {
     window.addEventListener('agentbro-theme-sync', handleThemeSync)
 
     return () => {
+      cancelled = true
       unlisten?.()
       window.removeEventListener('agentbro-theme-sync', handleThemeSync)
     }
-  }, [])
+  }, [canWriteMigrations, enabled])
 }
 
 // ── Conversation Update Mapping ─────────────────────────────────
@@ -830,14 +855,14 @@ export function mapParsedBlocksFlat(msg: ParsedMessage): ChatMessage[] {
 }
 
 /** Listen for conversation-update events from the file watcher and sync chat history. */
-export function useConversationUpdates() {
+export function useConversationUpdates(enabled = true) {
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || !enabled) return
 
     let unlisten: (() => void) | undefined
+    let cancelled = false
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{
+    listenForTauriEvent<{
         sessionId: string
         result: {
           allMessages: ParsedMessage[]
@@ -847,8 +872,8 @@ export function useConversationUpdates() {
           totalCount?: number
         }
       }>(
-        'conversation-update',
-        (event) => {
+      'conversation-update',
+      (event) => {
           const { sessionId, result } = event.payload
           const store = useSessionStore.getState()
 
@@ -880,23 +905,27 @@ export function useConversationUpdates() {
 
           // Non-truncated: allMessages is authoritative for the whole session.
           store.setChatHistory(sessionId, mapParsedMessages(result.allMessages))
-        },
-      ).then(fn => { unlisten = fn })
-        .catch(e => console.error('[tauri] listen conversation-update:', e))
-    }).catch(e => console.error('[tauri] import event:', e))
+      },
+      (fn) => { unlisten = fn },
+      () => cancelled,
+    )
 
-    return () => { unlisten?.() }
-  }, [])
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [enabled])
 }
 
 /** Listen for hook self-recovery notices and expose them in the island. */
-export function useHookRecoveryEvents() {
+export function useHookRecoveryEvents(enabled = true) {
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || !enabled) return
 
     let unlistenRestored: (() => void) | undefined
     let unlistenFailed: (() => void) | undefined
     let clearTimer: ReturnType<typeof setTimeout> | undefined
+    let cancelled = false
 
     const show = (notification: 'restored' | 'rate_limited') => {
       const store = useSessionStore.getState()
@@ -907,73 +936,78 @@ export function useHookRecoveryEvents() {
       }, 5000)
     }
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('hook-recovery', () => show('restored'))
-        .then(fn => { unlistenRestored = fn })
-        .catch(e => console.error('[tauri] listen hook-recovery:', e))
-      listen<void>('hook-recovery-failed', () => show('rate_limited'))
-        .then(fn => { unlistenFailed = fn })
-        .catch(e => console.error('[tauri] listen hook-recovery-failed:', e))
-    }).catch(e => console.error('[tauri] import event:', e))
+    listenForTauriEvent<string>(
+      'hook-recovery',
+      () => show('restored'),
+      (fn) => { unlistenRestored = fn },
+      () => cancelled,
+    )
+    listenForTauriEvent<void>(
+      'hook-recovery-failed',
+      () => show('rate_limited'),
+      (fn) => { unlistenFailed = fn },
+      () => cancelled,
+    )
 
     return () => {
+      cancelled = true
       unlistenRestored?.()
       unlistenFailed?.()
       if (clearTimer) clearTimeout(clearTimer)
     }
-  }, [])
+  }, [enabled])
 }
 
-/** Combined init hook — call once in App. */
-export function useTauriInit() {
-  useSessionEvents()
-  useConfigSync()
-  useConversationUpdates()
-  useHookRecoveryEvents()
-  useMarketInstallEvents()
+/** Combined init hook — call once in App with the current window label. */
+export function useTauriInit(scope: TauriInitScope = 'notch') {
+  const ready = scope !== null
+  useSessionEvents(scope === 'notch' ? 'full' : scope === 'pet' ? 'events' : 'off')
+  useConfigSync(ready, scope === 'notch')
+  useConversationUpdates(scope === 'notch')
+  useHookRecoveryEvents(scope === 'notch')
+  useMarketInstallEvents(scope === 'settings' ? 'full' : ready ? 'completion' : 'off')
 }
 
 /** Listen for abpets install/uninstall log lines and completion events. */
-export function useMarketInstallEvents() {
+export function useMarketInstallEvents(mode: MarketEventMode = 'full') {
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isTauri() || mode === 'off') return
 
     let unlistenLog: (() => void) | undefined
     let unlistenDone: (() => void) | undefined
+    let cancelled = false
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ jobId: string; stream: 'stdout' | 'stderr'; line: string }>(
+    if (mode === 'full') {
+      listenForTauriEvent<{ jobId: string; stream: 'stdout' | 'stderr'; line: string }>(
         'market:install_log',
         (event) => {
           const { jobId, stream, line } = event.payload
           if (typeof jobId !== 'string' || typeof line !== 'string') return
           useMarketStore.getState().appendLog(jobId, stream, line)
         },
+        (fn) => { unlistenLog = fn },
+        () => cancelled,
       )
-        .then(fn => { unlistenLog = fn })
-        .catch(e => console.error('[tauri] listen market:install_log:', e))
+    }
 
-      listen<{ jobId: string; success: boolean; exitCode: number | null; error: string | null }>(
-        'market:install_done',
-        (event) => {
-          const { jobId, success, exitCode, error } = event.payload
-          if (typeof jobId !== 'string') return
-          useMarketStore.getState().markDone(jobId, !!success, exitCode ?? null, error ?? null)
-          // Refresh the pet registry on every install/uninstall completion so all
-          // webviews (Settings, PetSurface, Notch) pick up newly-installed pets or
-          // drop uninstalled ones — markDone only reaches the originating webview.
-          if (success) {
-            void usePetStore.getState().loadRegistry()
-          }
-        },
-      )
-        .then(fn => { unlistenDone = fn })
-        .catch(e => console.error('[tauri] listen market:install_done:', e))
-    }).catch(e => console.error('[tauri] import event:', e))
+    listenForTauriEvent<{ jobId: string; success: boolean; exitCode: number | null; error: string | null }>(
+      'market:install_done',
+      (event) => {
+        const { jobId, success, exitCode, error } = event.payload
+        if (typeof jobId !== 'string') return
+        useMarketStore.getState().markDone(jobId, !!success, exitCode ?? null, error ?? null)
+        if (success) {
+          void usePetStore.getState().loadRegistry()
+        }
+      },
+      (fn) => { unlistenDone = fn },
+      () => cancelled,
+    )
 
     return () => {
+      cancelled = true
       unlistenLog?.()
       unlistenDone?.()
     }
-  }, [])
+  }, [mode])
 }

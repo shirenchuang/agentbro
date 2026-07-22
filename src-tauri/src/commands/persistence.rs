@@ -12,24 +12,24 @@ fn get_sessions_path() -> Option<PathBuf> {
         .map(|p| p.join(APP_SUPPORT_DIR).join(SESSIONS_FILE))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_sessions(sessions_json: String) -> Result<(), String> {
     let path = get_sessions_path().ok_or("Cannot get data directory")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&path, sessions_json).map_err(|e| e.to_string())?;
-    log::info!("Sessions persisted to {:?}", path);
+    log::debug!("Sessions persisted to {:?}", path);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_sessions() -> Result<String, String> {
     let path = get_sessions_path().ok_or("Cannot get data directory")?;
     if !path.exists() {
         return Ok("[]".to_string());
     }
     let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    log::info!("Sessions loaded from {:?}", path);
+    log::debug!("Sessions loaded from {:?}", path);
     Ok(data)
 }

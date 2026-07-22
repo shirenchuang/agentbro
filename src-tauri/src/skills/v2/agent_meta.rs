@@ -282,16 +282,55 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     dedupe_paths(dirs)
 }
 
-/// Whether the agent's skills directory (or config) exists on disk — used to
-/// decide if the agent is "installed".
+pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
+    if agent == "openclaw" {
+        return vec![
+            openclaw_workspace_dir(home).join("skills"),
+            home.join(".openclaw").join("skills"),
+            home.join(".openclaw").join("plugin-skills"),
+        ];
+    }
+    let shared = home.join(".agents").join("skills");
+    agent_skill_dirs(home, agent)
+        .into_iter()
+        .filter(|path| path != &shared)
+        .collect()
+}
+
+/// Runtime status includes the program and Agent-owned residual capabilities;
+/// fixture homes keep the broader path-based behavior used by service tests.
 pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
+    #[cfg(not(target_os = "windows"))]
+    if is_runtime_home(home) && crate::agents::programs::has_program_metadata(agent) {
+        if agent_program_installed(agent) {
+            return true;
+        }
+        if agent_owned_skill_dirs(home, agent)
+            .into_iter()
+            .any(|path| directory_has_valid_skill(&path, agent == "openclaw"))
+        {
+            return true;
+        }
+        let paths = agent_paths::paths_for_agent(agent);
+        return [paths.settings_file, paths.mcp_config]
+            .into_iter()
+            .flatten()
+            .any(|path| crate::agents::hook_manager::has_agentbro_hooks(&path));
+    }
+
     for dir in agent_skill_dirs(home, agent) {
         if dir.exists() {
             return true;
         }
     }
-    // fall back to the agent's config dir presence
-    if matches!(agent_paths::paths_for_agent(agent).skill_dirs.first(), Some(d) if d.exists()) {
+    let paths = agent_paths::paths_for_agent(agent);
+    if paths
+        .settings_file
+        .as_ref()
+        .is_some_and(|path| path.exists())
+        || paths.mcp_config.as_ref().is_some_and(|path| path.exists())
+        || paths.skill_dirs.first().is_some_and(|path| path.exists())
+    {
         return true;
     }
 
@@ -303,9 +342,29 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
     }
 
     #[cfg(not(target_os = "windows"))]
-    {
-        is_runtime_home(home) && agent_program_installed(agent)
+    false
+}
+
+fn directory_has_valid_skill(path: &Path, recursive: bool) -> bool {
+    directory_has_valid_skill_inner(path, recursive, 0)
+}
+
+fn directory_has_valid_skill_inner(path: &Path, recursive: bool, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
     }
+    std::fs::read_dir(path).ok().is_some_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if crate::skills::v2::fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+                return false;
+            }
+            let child = entry.path();
+            child.is_dir()
+                && (crate::skills::v2::fsutil::is_skill_dir(&child)
+                    || recursive && directory_has_valid_skill_inner(&child, true, depth + 1))
+        })
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -320,10 +379,7 @@ fn agent_program_installed(agent: &str) -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn is_runtime_home(home: &Path) -> bool {
-    let Some(runtime_home) = dirs::home_dir() else {
-        return false;
-    };
-    same_path(home, &runtime_home)
+    same_path(home, &crate::skills::v2::fsutil::home())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -415,6 +471,37 @@ mod tests {
             agent_skills_dir(home, "workbuddy"),
             Some(home.join(".workbuddy/skills"))
         );
+    }
+
+    #[test]
+    fn owned_skill_dirs_exclude_shared_agent_roots() {
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_owned_skill_dirs(home, "codex"),
+            vec![home.join(".codex/skills")]
+        );
+        assert!(!agent_owned_skill_dirs(home, "openclaw")
+            .iter()
+            .any(|path| path == &home.join(".agents/skills")));
+    }
+
+    #[test]
+    fn skill_manifest_alone_is_not_an_installed_capability() {
+        let root = std::env::temp_dir().join(format!(
+            "agentbro-agent-meta-skills-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".skills-manifest.json"), "{}").unwrap();
+
+        assert!(!directory_has_valid_skill(&root, false));
+
+        let skill = root.join("release-checklist");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "# Release checklist").unwrap();
+        assert!(directory_has_valid_skill(&root, false));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "windows")]

@@ -13,12 +13,42 @@ import type {
   DistributionPreview,
   ProjectSummary,
   ProjectDetail,
+  MarketplaceBatchProgress,
 } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
 export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
 export type SkillInstallTab = 'official' | 'agent' | 'local' | 'git'
 export type SkillViewMode = 'cards' | 'list'
+export type MarketplaceInstallItemStatus = 'queued' | 'installing' | 'success' | 'failed' | 'cancelled'
+
+export interface MarketplaceInstallItemState {
+  id: string
+  name: string
+  status: MarketplaceInstallItemStatus
+  message?: string
+}
+
+export interface MarketplaceInstallTaskResult {
+  successCount: number
+  failedCount: number
+  cancelled: boolean
+  packName?: string
+  completionError?: string
+  sourceError?: string
+}
+
+export interface MarketplaceInstallTask {
+  jobId: string
+  source: string
+  startedAt: number
+  phase: MarketplaceBatchProgress['phase']
+  busy: boolean
+  cancelRequested: boolean
+  items: Record<string, MarketplaceInstallItemState>
+  result: MarketplaceInstallTaskResult | null
+  error: string | null
+}
 
 const OVERVIEW_CACHE_TTL_MS = 60_000
 
@@ -59,6 +89,8 @@ interface SkillV2State {
   projectDetailLoading: boolean
   startupScanInFlight: boolean
   lastOverviewLoadedAt: number
+  marketplaceInstallTask: MarketplaceInstallTask | null
+  customAgentDialogRequest: number
 }
 
 interface SkillV2Actions {
@@ -84,6 +116,26 @@ interface SkillV2Actions {
   setBusy: (action: string | null) => void
   setError: (err: string | null) => void
   setLastPreview: (p: DistributionPreview | null) => void
+  beginMarketplaceInstallTask: (jobId: string, source: string, items: Array<{ id: string; name: string }>) => void
+  updateMarketplaceInstallProgress: (progress: MarketplaceBatchProgress) => void
+  updateMarketplaceInstallItem: (itemId: string, patch: Partial<MarketplaceInstallItemState>) => void
+  setMarketplaceInstallPhase: (phase: MarketplaceBatchProgress['phase']) => void
+  finishMarketplaceInstallTask: (result: MarketplaceInstallTaskResult) => void
+  cancelMarketplaceInstallTask: () => Promise<boolean>
+  dismissMarketplaceInstallTask: () => void
+  requestCustomAgentDialog: () => void
+}
+
+let marketplaceProgressListenerStarted = false
+
+function ensureMarketplaceProgressListener() {
+  if (marketplaceProgressListenerStarted) return
+  marketplaceProgressListenerStarted = true
+  void skillApiV2.onMarketplaceBatchProgress((progress) => {
+    useSkillStoreV2.getState().updateMarketplaceInstallProgress(progress)
+  }).catch(() => {
+    marketplaceProgressListenerStarted = false
+  })
 }
 
 export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) => ({
@@ -116,6 +168,8 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   projectDetailLoading: false,
   startupScanInFlight: false,
   lastOverviewLoadedAt: 0,
+  marketplaceInstallTask: null,
+  customAgentDialogRequest: 0,
 
   init: async () => {
     // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
@@ -202,6 +256,9 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   setTab: (tab) => set({ activeTab: tab }),
+  requestCustomAgentDialog: () => set((state) => ({
+    customAgentDialogRequest: state.customAgentDialogRequest + 1,
+  })),
   setInstallTab: (tab) => set({ activeInstallTab: tab }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setFilter: (key, value) =>
@@ -241,11 +298,17 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     set({ agentDetailLoading: true })
     try {
       const detail = await skillApiV2.getAgentDetail(agentId)
-      set({ selectedAgentDetail: detail })
+      if (get().selectedAgentId === agentId) {
+        set({ selectedAgentDetail: detail })
+      }
     } catch (e) {
-      set({ error: String(e) })
+      if (get().selectedAgentId === agentId) {
+        set({ error: String(e) })
+      }
     } finally {
-      set({ agentDetailLoading: false })
+      if (get().selectedAgentId === agentId) {
+        set({ agentDetailLoading: false })
+      }
     }
   },
   loadProjects: async () => {
@@ -354,6 +417,118 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   setBusy: (action) => set({ busyAction: action }),
   setError: (err) => set({ error: err }),
   setLastPreview: (p) => set({ lastPreview: p }),
+  beginMarketplaceInstallTask: (jobId, source, items) => {
+    ensureMarketplaceProgressListener()
+    set({
+      marketplaceInstallTask: {
+        jobId,
+        source,
+        startedAt: Date.now(),
+        phase: 'preparing',
+        busy: true,
+        cancelRequested: false,
+        items: Object.fromEntries(items.map((item) => [item.id, {
+          ...item,
+          status: 'queued' as const,
+        }])),
+        result: null,
+        error: null,
+      },
+    })
+  },
+  updateMarketplaceInstallProgress: (progress) => set((state) => {
+    const task = state.marketplaceInstallTask
+    if (!task || task.jobId !== progress.jobId) return state
+    let items = task.items
+    if (progress.itemId && ['installing', 'success', 'failed'].includes(progress.phase)) {
+      const current = items[progress.itemId]
+      if (current) {
+        items = {
+          ...items,
+          [progress.itemId]: {
+            ...current,
+            status: progress.phase === 'installing'
+              ? 'installing'
+              : progress.phase === 'success'
+                ? 'success'
+                : 'failed',
+            message: progress.message || current.message,
+          },
+        }
+      }
+    }
+    return {
+      marketplaceInstallTask: {
+        ...task,
+        phase: progress.phase,
+        items,
+        error: (progress.phase === 'failed' || progress.phase === 'source_failed') && !progress.itemId
+          ? progress.message || task.error
+          : task.error,
+      },
+    }
+  }),
+  updateMarketplaceInstallItem: (itemId, patch) => set((state) => {
+    const task = state.marketplaceInstallTask
+    const current = task?.items[itemId]
+    if (!task || !current) return state
+    return {
+      marketplaceInstallTask: {
+        ...task,
+        items: {
+          ...task.items,
+          [itemId]: { ...current, ...patch, id: current.id, name: current.name },
+        },
+      },
+    }
+  }),
+  setMarketplaceInstallPhase: (phase) => set((state) => state.marketplaceInstallTask ? {
+    marketplaceInstallTask: { ...state.marketplaceInstallTask, phase },
+  } : state),
+  finishMarketplaceInstallTask: (result) => set((state) => state.marketplaceInstallTask ? {
+    marketplaceInstallTask: {
+      ...state.marketplaceInstallTask,
+      phase: result.cancelled ? 'cancelled' : result.sourceError ? 'source_failed' : result.failedCount > 0 || result.completionError ? 'failed' : 'completed',
+      busy: false,
+      cancelRequested: false,
+      result,
+      error: result.sourceError || result.completionError || state.marketplaceInstallTask.error,
+    },
+  } : state),
+  cancelMarketplaceInstallTask: async () => {
+    const task = get().marketplaceInstallTask
+    if (!task?.busy || task.phase === 'organizing') return false
+    const previousPhase = task.phase
+    set({ marketplaceInstallTask: { ...task, phase: 'cancelling', cancelRequested: true, error: null } })
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        if (await skillApiV2.cancelMarketplaceSkillBatch(task.jobId)) return true
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      }
+      set((state) => state.marketplaceInstallTask?.jobId === task.jobId ? {
+        marketplaceInstallTask: {
+          ...state.marketplaceInstallTask,
+          phase: previousPhase,
+          cancelRequested: false,
+          error: 'cancel-not-accepted',
+        },
+      } : state)
+      return false
+    } catch (error) {
+      set((state) => state.marketplaceInstallTask?.jobId === task.jobId ? {
+        marketplaceInstallTask: {
+          ...state.marketplaceInstallTask,
+          phase: previousPhase,
+          cancelRequested: false,
+          error: String(error),
+        },
+      } : state)
+      return false
+    }
+  },
+  dismissMarketplaceInstallTask: () => set((state) => (
+    state.marketplaceInstallTask?.busy ? state : { marketplaceInstallTask: null }
+  )),
 }))
 
 export function filteredSkills(state: SkillV2State): SkillSummary[] {

@@ -270,6 +270,53 @@
   white-space: nowrap;
 }
 
+.settings-sidebar__task-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 22px;
+  padding: 2px 8px;
+  margin-left: auto;
+  border: 1px solid rgba(10, 132, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.10);
+  color: #0878df;
+  font-size: 10px;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-sidebar__task-badge--busy::before {
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #0a84ff;
+  content: '';
+  box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.10);
+  animation: settings-task-pulse 1.6s ease-in-out infinite;
+}
+
+.settings-sidebar--collapsed .settings-sidebar__item {
+  position: relative;
+}
+
+.settings-sidebar--collapsed .settings-sidebar__task-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 17px;
+  min-height: 17px;
+  padding: 0 4px;
+  border: 2px solid rgba(250, 251, 255, 0.96);
+  font-size: 8px;
+}
+
+.settings-sidebar--collapsed .settings-sidebar__task-badge--busy::before {
+  display: none;
+}
+
 .settings-sidebar--collapsed .settings-sidebar__label-text,
 .settings-sidebar--collapsed .settings-sidebar__group-label,
 .settings-sidebar--collapsed .settings-sidebar__separator,
@@ -437,6 +484,37 @@
 .settings-capability-nav button.active em {
   background: rgba(255, 255, 255, 0.22);
   color: #ffffff;
+}
+
+.settings-capability-nav button {
+  position: relative;
+}
+
+.settings-sidebar--collapsed .settings-capability-nav button .settings-sidebar__task-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 4px;
+  border: 2px solid rgba(250, 251, 255, 0.96);
+  background: #0a84ff;
+  color: #fff;
+  font-size: 8px;
+}
+
+@keyframes settings-task-pulse {
+  0%, 100% { opacity: 0.58; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-sidebar__task-badge--busy::before {
+    animation: none;
+  }
 }
 
 .settings-capability-agent-list {

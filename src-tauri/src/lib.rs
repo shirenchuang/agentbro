@@ -7,6 +7,7 @@ pub mod energy;
 pub mod hook_endpoint;
 pub mod hooks;
 pub mod market;
+pub mod menu_bar;
 pub mod network_monitor;
 pub mod pets;
 pub mod platform;
@@ -21,7 +22,6 @@ pub mod webhook;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
@@ -69,6 +69,7 @@ struct PetDragState {
 
 static NOTCH_DRAG_STATE: OnceLock<Mutex<Option<NotchDragState>>> = OnceLock::new();
 static PET_DRAG_STATE: OnceLock<Mutex<Option<PetDragState>>> = OnceLock::new();
+static TRAY_ICON_RECT: OnceLock<Mutex<Option<tauri::Rect>>> = OnceLock::new();
 
 fn notch_drag_state() -> &'static Mutex<Option<NotchDragState>> {
     NOTCH_DRAG_STATE.get_or_init(|| Mutex::new(None))
@@ -76,6 +77,10 @@ fn notch_drag_state() -> &'static Mutex<Option<NotchDragState>> {
 
 fn pet_drag_state() -> &'static Mutex<Option<PetDragState>> {
     PET_DRAG_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn tray_icon_rect() -> &'static Mutex<Option<tauri::Rect>> {
+    TRAY_ICON_RECT.get_or_init(|| Mutex::new(None))
 }
 
 // ── Display Controller Commands ─────────────────────────────────
@@ -475,11 +480,55 @@ async fn detect_tools() -> Vec<agents::detection::DetectedTool> {
     agents::detection::detect_installed_tools()
 }
 
+fn configured_engine_instance(
+    state: &commands::AppState,
+    tool_name: &str,
+) -> Option<config::EngineInstance> {
+    let id = tool_name.strip_prefix("engine:")?;
+    state
+        .config_store
+        .get()
+        .engine_instances
+        .into_iter()
+        .find(|instance| instance.id == id)
+}
+
+fn configured_engine_adapter(
+    instance: &config::EngineInstance,
+) -> agents::claude_code::ClaudeCodeAdapter {
+    agents::claude_code::ClaudeCodeAdapter::with_config_root(
+        agents::claude_code::expand_tilde(&instance.config_root),
+        instance.label.clone(),
+    )
+}
+
+fn persist_engine_enabled(
+    state: &commands::AppState,
+    engine_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.config_store.get();
+    let instance = config
+        .engine_instances
+        .iter_mut()
+        .find(|instance| instance.id == engine_id)
+        .ok_or_else(|| format!("Engine instance not found: {engine_id}"))?;
+    instance.enabled = enabled;
+    state.config_store.update(config)
+}
+
 #[tauri::command]
 async fn install_agent_hook(
     state: tauri::State<'_, commands::AppState>,
     tool_name: String,
 ) -> Result<(), String> {
+    if let Some(instance) = configured_engine_instance(&state, &tool_name) {
+        configured_engine_adapter(&instance)
+            .install_hooks()
+            .map_err(|error| error.to_string())?;
+        persist_engine_enabled(&state, &instance.id, true)?;
+        return Ok(());
+    }
     if let Some(custom_id) = tool_name.strip_prefix("custom:") {
         let cfg = state.config_store.get();
         let entry = cfg
@@ -628,6 +677,13 @@ async fn uninstall_agent_hook(
     state: tauri::State<'_, commands::AppState>,
     tool_name: String,
 ) -> Result<(), String> {
+    if let Some(instance) = configured_engine_instance(&state, &tool_name) {
+        configured_engine_adapter(&instance)
+            .remove_hooks()
+            .map_err(|error| error.to_string())?;
+        persist_engine_enabled(&state, &instance.id, false)?;
+        return Ok(());
+    }
     if let Some(custom_id) = tool_name.strip_prefix("custom:") {
         let mut cfg = state.config_store.get();
         let idx = cfg
@@ -679,6 +735,16 @@ async fn configure_agent_hook_events(
     tool_name: String,
     enabled_events: Vec<String>,
 ) -> Result<(), String> {
+    if let Some(instance) = configured_engine_instance(&state, &tool_name) {
+        let profile = agents::profiles::claude_code_profile();
+        agents::profiles::save_event_selection(&profile, &enabled_events)
+            .map_err(|error| error.to_string())?;
+        configured_engine_adapter(&instance)
+            .install_hooks()
+            .map_err(|error| error.to_string())?;
+        persist_engine_enabled(&state, &instance.id, true)?;
+        return Ok(());
+    }
     if let Some(custom_id) = tool_name.strip_prefix("custom:") {
         let cfg = state.config_store.get();
         let entry = cfg
@@ -726,15 +792,16 @@ async fn configure_agent_hook_events(
 async fn get_all_hook_status(
     state: tauri::State<'_, commands::AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    let primary_claude_settings = agents::claude_code::default_config_root().join("settings.json");
     let mut results: Vec<serde_json::Value> = state
         .adapters
         .iter()
+        .filter(|adapter| {
+            adapter.name() != "claude-code"
+                || adapter.hook_config_paths().first() == Some(&primary_claude_settings)
+        })
         .map(|a| {
-            let tool_id = if a.name() == "claude-code" && a.display_name() != "Claude Code" {
-                a.display_name().to_string()
-            } else {
-                a.name().to_string()
-            };
+            let tool_id = a.name().to_string();
             let profile = agents::profiles::profile_for_agent(a.name());
             let supports_event_selection = profile
                 .as_ref()
@@ -800,8 +867,42 @@ async fn get_all_hook_status(
         })
         .collect();
 
-    // Append custom hook installs from config
     let cfg = state.config_store.get();
+    for instance in &cfg.engine_instances {
+        let root = agents::claude_code::expand_tilde(&instance.config_root);
+        let settings_path = root.join("settings.json");
+        let profile = agents::profiles::claude_code_profile();
+        let hook_health = agents::profiles::install_health(&profile, &settings_path);
+        let installed = hook_health.is_present();
+        let root_string = root.display().to_string();
+        let bridge_command = agents::profiles::managed_bridge_command_labeled(
+            &profile,
+            Some(&instance.label),
+            Some(&root_string),
+        )
+        .ok();
+        results.push(serde_json::json!({
+            "toolId": format!("engine:{}", instance.id),
+            "adapterId": "claude-code",
+            "profileId": "claude-code",
+            "name": "claude-code",
+            "displayName": instance.label,
+            "installed": installed,
+            "installStatus": hook_health.as_status_str(),
+            "configPath": display_path_with_home(&settings_path),
+            "configDir": display_path_with_home(&root),
+            "status": if root.is_dir() { "Available" } else { "Unavailable" },
+            "supportsEventSelection": agents::profiles::supports_event_selection(&profile),
+            "events": agents::profiles::event_statuses(&profile),
+            "enabledEventNames": agents::profiles::selected_event_names(&profile),
+            "bridgeCommand": bridge_command,
+            "bridgePath": display_path_with_home(&agents::hook_manager::bridge_binary_path()),
+            "isCustom": true,
+            "customId": instance.id,
+        }));
+    }
+
+    // Append custom hook installs from config
     for entry in &cfg.custom_hook_installs {
         let profile = agents::profiles::profile_for_agent(&entry.profile_id);
         let base_dir = std::path::PathBuf::from(expand_tilde_target(&entry.install_directory));
@@ -1751,6 +1852,129 @@ fn menu_bar_icon() -> tauri::image::Image<'static> {
         .to_owned()
 }
 
+pub(crate) fn refresh_skill_pack_tray_menu(app: &tauri::AppHandle) -> Result<(), String> {
+    let language = app
+        .try_state::<AppState>()
+        .map(|state| state.config_store.get().language)
+        .unwrap_or_else(|| "en".to_string());
+    let menu = menu_bar::build_tray_menu(app, &language).map_err(|error| error.to_string())?;
+    let tray = app
+        .tray_by_id(menu_bar::TRAY_ID)
+        .ok_or_else(|| "AgentBro tray icon is unavailable".to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+}
+
+const SKILL_PACK_PICKER_WIDTH: f64 = 390.0;
+const SKILL_PACK_PICKER_HEIGHT: f64 = 520.0;
+
+fn show_skill_pack_picker(app: &tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let window = match handle.get_webview_window(menu_bar::SKILL_PACK_PICKER_ID) {
+            Some(existing) => existing,
+            None => match build_skill_pack_picker_window(&handle) {
+                Ok(window) => window,
+                Err(error) => {
+                    log::warn!("Failed to create skill pack picker: {error}");
+                    return;
+                }
+            },
+        };
+        position_skill_pack_picker(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("skill-pack-picker-shown", ());
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn build_skill_pack_picker_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        menu_bar::SKILL_PACK_PICKER_ID,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("AgentBro Skill Packs")
+    .inner_size(SKILL_PACK_PICKER_WIDTH, SKILL_PACK_PICKER_HEIGHT)
+    .transparent(true)
+    .decorations(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .focused(false)
+    .accept_first_mouse(true)
+    .background_color(tauri::webview::Color(0, 0, 0, 0))
+    .visible(false)
+    .build()
+    .map_err(|error| format!("skill pack picker window: {error}"))?;
+
+    let window_for_event = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(false) = event {
+            let _ = window_for_event.hide();
+        }
+    });
+
+    Ok(window)
+}
+
+fn position_skill_pack_picker(window: &tauri::WebviewWindow) {
+    let anchor = tray_icon_rect().lock().ok().and_then(|value| *value);
+    let monitors = window.available_monitors().unwrap_or_default();
+    let monitor = anchor
+        .and_then(|rect| {
+            monitors.iter().find(|monitor| {
+                let position = rect.position.to_physical::<f64>(monitor.scale_factor());
+                let monitor_position = monitor.position();
+                let monitor_size = monitor.size();
+                position.x >= monitor_position.x as f64
+                    && position.x < (monitor_position.x + monitor_size.width as i32) as f64
+                    && position.y >= monitor_position.y as f64
+                    && position.y < (monitor_position.y + monitor_size.height as i32) as f64
+            })
+        })
+        .cloned()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let window_size = window.outer_size().unwrap_or_else(|_| {
+        tauri::PhysicalSize::new(
+            (SKILL_PACK_PICKER_WIDTH * scale).round() as u32,
+            (SKILL_PACK_PICKER_HEIGHT * scale).round() as u32,
+        )
+    });
+    let (anchor_x, anchor_bottom) = anchor
+        .map(|rect| {
+            let position = rect.position.to_physical::<f64>(scale);
+            let size = rect.size.to_physical::<f64>(scale);
+            (position.x + size.width / 2.0, position.y + size.height)
+        })
+        .unwrap_or_else(|| {
+            (
+                monitor_position.x as f64 + monitor_size.width as f64 / 2.0,
+                monitor_position.y as f64 + 28.0 * scale,
+            )
+        });
+    let inset = 8.0 * scale;
+    let min_x = monitor_position.x as f64 + inset;
+    let max_x =
+        monitor_position.x as f64 + monitor_size.width as f64 - window_size.width as f64 - inset;
+    let min_y = monitor_position.y as f64 + inset;
+    let max_y =
+        monitor_position.y as f64 + monitor_size.height as f64 - window_size.height as f64 - inset;
+    let x = (anchor_x - window_size.width as f64 / 2.0).clamp(min_x, max_x.max(min_x));
+    let y = (anchor_bottom + 6.0 * scale).clamp(min_y, max_y.max(min_y));
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        x.round() as i32,
+        y.round() as i32,
+    )));
+}
+
 fn first_pending_permission(store: &SessionStore) -> Option<SessionState> {
     let mut sessions: Vec<_> = store
         .get_all_sessions()
@@ -2182,6 +2406,11 @@ fn find_cursor_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> 
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
+        if let Some(notch) = handle.get_webview_window("notch") {
+            let _ = notch.set_ignore_cursor_events(true);
+        }
+        let _ = handle.emit("settings-window-opened", ());
+
         #[cfg(target_os = "macos")]
         {
             let _ = handle.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -2816,10 +3045,17 @@ async fn preview_github_skills_cmd(
 }
 
 #[tauri::command]
-async fn preview_github_repo_import(repo_url: String) -> Result<serde_json::Value, String> {
+async fn preview_github_repo_import(
+    repo_url: String,
+    github_token: Option<String>,
+) -> Result<serde_json::Value, String> {
     let repo = normalize_github_repo_ref(&repo_url)?;
-    let previews = skills::installer::preview_github_skills(&repo.spec)?;
-    let installed_ids = skills::scanner::scan_agent("central")
+    let previews =
+        skills::installer::preview_github_skills_with_token(&repo.spec, github_token.as_deref())?;
+    let manager = skills::v2::service()?;
+    manager.scan_center_into_db()?;
+    let installed_ids = manager
+        .list_center_skills()?
         .into_iter()
         .map(|skill| skill.id)
         .collect::<std::collections::HashSet<_>>();
@@ -2866,62 +3102,105 @@ async fn preview_github_repo_import(repo_url: String) -> Result<serde_json::Valu
 async fn import_github_repo_skills(
     repo_url: String,
     selections: Vec<serde_json::Value>,
+    github_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let repo = normalize_github_repo_ref(&repo_url)?;
-    let targets = vec![skills::TargetConfig {
-        agent: "central".to_string(),
-        install_mode: skills::InstallMode::Direct,
-    }];
+    let manager = skills::v2::service()?;
+    let center_path = manager.center_path()?;
+    let skipped = selections
+        .iter()
+        .filter(|selection| {
+            selection
+                .get("resolution")
+                .and_then(|value| value.as_str())
+                .unwrap_or("overwrite")
+                == "skip"
+        })
+        .map(|selection| {
+            selection
+                .get("sourcePath")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    let active_selections = selections
+        .iter()
+        .filter(|selection| {
+            selection
+                .get("resolution")
+                .and_then(|value| value.as_str())
+                .unwrap_or("overwrite")
+                != "skip"
+        })
+        .collect::<Vec<_>>();
+    let started_at = std::time::Instant::now();
+    log::info!(
+        "GitHub Skill import started: selected={}, skipped={}",
+        active_selections.len(),
+        skipped.len()
+    );
     let mut imported = Vec::new();
-    let mut skipped = Vec::new();
-    for selection in selections {
-        let source_path = selection
-            .get("sourcePath")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let resolution = selection
-            .get("resolution")
-            .and_then(|value| value.as_str())
-            .unwrap_or("overwrite");
-        if resolution == "skip" {
-            skipped.push(source_path);
-            continue;
-        }
-        let rename_to = selection
-            .get("renamedSkillId")
-            .or_else(|| selection.get("renamed_skill_id"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let source = github_import_source(&repo.spec, &source_path);
-        let installed_ids = skills::installer::install_skill_named(
-            &source,
-            &targets,
-            &skills::InstallMode::Direct,
-            rename_to,
-            rename_to,
+    if !active_selections.is_empty() {
+        let clone_source = github_repo_clone_source(&repo);
+        let (repo_root, temp_root) = skills::installer::resolve_external_skill_source_with_token(
+            &clone_source,
+            github_token.as_deref(),
         )?;
-        for installed_id in installed_ids {
-            skills::registry::add_source(&installed_id, &source)?;
-            imported.push(serde_json::json!({
-                "sourcePath": source_path,
-                "originalSkillId": installed_id,
-                "importedSkillId": installed_id,
-                "skillName": installed_id,
-                "targetDirectory": skills::agent_paths::agentbro_skills_dir()
-                    .join(
-                        rename_to
-                            .map(sanitize_skill_directory_name)
-                            .unwrap_or_else(|| sanitize_skill_directory_name(&installed_id)),
-                    )
-                    .display()
-                    .to_string(),
-                "resolution": resolution,
-            }));
+        let install_result = (|| {
+            for selection in active_selections {
+                let source_path = selection
+                    .get("sourcePath")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let resolution = selection
+                    .get("resolution")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("overwrite");
+                let rename_to = selection
+                    .get("renamedSkillId")
+                    .or_else(|| selection.get("renamed_skill_id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let source = github_import_source(&repo.spec, &source_path);
+                let local_source =
+                    resolve_github_import_skill_path(&repo_root, &repo.spec, &source_path)?;
+                let (original_skill_id, imported_skill_id) = install_github_skill_into_center(
+                    &manager,
+                    &local_source,
+                    &source,
+                    resolution,
+                    rename_to,
+                )?;
+                imported.push(serde_json::json!({
+                    "sourcePath": source_path,
+                    "originalSkillId": original_skill_id,
+                    "importedSkillId": imported_skill_id,
+                    "skillName": imported_skill_id,
+                    "targetDirectory": center_path.join(&imported_skill_id).display().to_string(),
+                    "resolution": resolution,
+                }));
+            }
+            Ok::<(), String>(())
+        })();
+        if let Some(root) = temp_root {
+            let _ = std::fs::remove_dir_all(root);
         }
+        if let Err(error) = &install_result {
+            log::warn!("GitHub Skill import failed: {error}");
+        }
+        install_result?;
     }
+    log::info!(
+        "GitHub Skill import completed: imported={}, skipped={}, elapsed_ms={}",
+        imported.len(),
+        skipped.len(),
+        started_at.elapsed().as_millis()
+    );
     Ok(serde_json::json!({
         "repo": {
             "owner": repo.owner,
@@ -2932,6 +3211,58 @@ async fn import_github_repo_skills(
         "importedSkills": imported,
         "skippedSkills": skipped,
     }))
+}
+
+fn install_github_skill_into_center(
+    manager: &skills::v2::service::Service,
+    local_source: &Path,
+    source_uri: &str,
+    resolution: &str,
+    rename_to: Option<&str>,
+) -> Result<(String, String), String> {
+    let original_skill_id = skills::v2::fsutil::infer_skill_id(local_source);
+    if original_skill_id.is_empty() {
+        return Err("GitHub Skill id cannot be empty".to_string());
+    }
+    let proposed_skill_id = match resolution {
+        "overwrite" => original_skill_id.clone(),
+        "rename" => {
+            let renamed = rename_to
+                .map(sanitize_skill_directory_name)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Renamed GitHub Skill id cannot be empty".to_string())?;
+            renamed
+        }
+        other => return Err(format!("Unsupported GitHub Skill resolution: {other}")),
+    };
+    let decision = skills::v2::models::AddCenterSkillDecision {
+        skill_id: original_skill_id.clone(),
+        proposed_skill_id: Some(proposed_skill_id.clone()),
+        resolution: if resolution == "rename" {
+            "create".to_string()
+        } else {
+            "update".to_string()
+        },
+    };
+    let result = manager.execute_add_center_skill(
+        skills::v2::models::AddCenterSkillInput {
+            source_path: local_source.display().to_string(),
+            source_type: "github".to_string(),
+            source_uri: Some(source_uri.to_string()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: Some(false),
+            import_mode: Some("copy".to_string()),
+        },
+        vec![decision],
+    )?;
+    let imported_skill_id = result
+        .skill_ids
+        .first()
+        .or_else(|| result.updated.first())
+        .cloned()
+        .ok_or_else(|| format!("GitHub Skill '{}' was not imported", original_skill_id))?;
+    Ok((original_skill_id, imported_skill_id))
 }
 
 struct GithubRepoRefCompat {
@@ -2976,6 +3307,76 @@ fn normalize_github_repo_ref(input: &str) -> Result<GithubRepoRefCompat, String>
         normalized_url: format!("https://github.com/{owner}/{repo}"),
         spec,
     })
+}
+
+fn github_repo_clone_source(repo: &GithubRepoRefCompat) -> String {
+    if repo.branch == "HEAD" {
+        format!("github:{}/{}", repo.owner, repo.repo)
+    } else {
+        format!("github:{}/{}/tree/{}", repo.owner, repo.repo, repo.branch)
+    }
+}
+
+fn resolve_github_import_skill_path(
+    repo_root: &Path,
+    repo_spec: &str,
+    source_path: &str,
+) -> Result<PathBuf, String> {
+    let import_source = github_import_source(repo_spec, source_path);
+    let relative_path = github_import_repo_path(&import_source)?;
+    let canonical_root = repo_root
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve cloned GitHub repository: {error}"))?;
+    let candidate = if relative_path.as_os_str().is_empty() {
+        canonical_root.clone()
+    } else {
+        canonical_root.join(relative_path)
+    };
+    let canonical_candidate = candidate.canonicalize().map_err(|error| {
+        format!(
+            "GitHub Skill path '{}' was not found in the cloned repository: {error}",
+            source_path
+        )
+    })?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        return Err(format!(
+            "GitHub Skill path '{}' resolves outside the cloned repository",
+            source_path
+        ));
+    }
+    if !canonical_candidate.join("SKILL.md").is_file() {
+        return Err(format!(
+            "GitHub Skill path '{}' does not contain SKILL.md",
+            source_path
+        ));
+    }
+    Ok(canonical_candidate)
+}
+
+fn github_import_repo_path(import_source: &str) -> Result<PathBuf, String> {
+    let spec = import_source
+        .strip_prefix("github:")
+        .ok_or_else(|| format!("Invalid GitHub import source: {import_source}"))?;
+    let parts = spec
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err(format!("Invalid GitHub import source: {import_source}"));
+    }
+    let path_parts = if parts.get(2) == Some(&"tree") {
+        parts.get(4..).unwrap_or_default()
+    } else {
+        parts.get(2..).unwrap_or_default()
+    };
+    if path_parts.iter().any(|part| matches!(*part, "." | "..")) {
+        return Err("GitHub Skill path cannot contain '.' or '..' components".to_string());
+    }
+    let mut path = PathBuf::new();
+    for part in path_parts {
+        path.push(part);
+    }
+    Ok(path)
 }
 
 fn github_import_source(repo_spec: &str, source_path: &str) -> String {
@@ -3035,7 +3436,12 @@ fn repo_path_contains(base_path: &str, source_path: &str) -> bool {
 
 #[cfg(test)]
 mod github_import_source_tests {
-    use super::github_import_source;
+    use super::{github_import_repo_path, github_import_source, install_github_skill_into_center};
+    use crate::skills::v2::models::SettingsUpdate;
+    use crate::skills::v2::service::Service;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn specific_tree_skill_path_is_not_appended_twice() {
@@ -3070,6 +3476,92 @@ mod github_import_source_tests {
             github_import_source("vercel-labs/skills/tree/main/skills", "find-skills"),
             "github:vercel-labs/skills/tree/main/skills/find-skills",
         );
+    }
+
+    #[test]
+    fn import_source_maps_to_one_repo_relative_path() {
+        assert_eq!(
+            github_import_repo_path("github:vercel-labs/skills/tree/main/skills/find-skills")
+                .unwrap(),
+            PathBuf::from("skills/find-skills"),
+        );
+        assert_eq!(
+            github_import_repo_path("github:owner/repo/skills/find-skills").unwrap(),
+            PathBuf::from("skills/find-skills"),
+        );
+    }
+
+    #[test]
+    fn import_source_rejects_parent_traversal() {
+        assert!(github_import_repo_path("github:owner/repo/skills/../secret").is_err());
+    }
+
+    #[test]
+    fn github_install_writes_to_configured_v2_center() {
+        let _lock = crate::skills::lock_shared_test_home();
+        let previous_home = std::env::var_os("HOME");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_home = std::env::temp_dir().join(format!("agentbro-github-center-{suffix}"));
+        fs::create_dir_all(&temp_home).unwrap();
+        std::env::set_var("HOME", &temp_home);
+
+        let test_result = (|| -> Result<(String, bool, bool, bool), String> {
+            let source = temp_home.join("repo").join("skills").join("github-skill");
+            fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+            fs::write(
+                source.join("SKILL.md"),
+                "---\nname: github-skill\ndescription: GitHub import test\n---\n",
+            )
+            .map_err(|error| error.to_string())?;
+            let center = temp_home.join("custom-center");
+            let sqlite = temp_home.join("skill-manager.db");
+            let manager = Service::new(&sqlite, temp_home.clone())?;
+            manager.update_settings(SettingsUpdate {
+                center_path: Some(center.display().to_string()),
+                sqlite_path: Some(sqlite.display().to_string()),
+                default_distribute_mode: None,
+                link_fail_policy: None,
+                startup_scan: None,
+                show_unmanaged: None,
+                auto_sync_skill_packs: None,
+            })?;
+            manager.init()?;
+
+            let (_, imported_skill_id) = install_github_skill_into_center(
+                &manager,
+                &source,
+                "github:owner/repo/skills/github-skill",
+                "overwrite",
+                None,
+            )?;
+            let listed = manager
+                .list_center_skills()?
+                .into_iter()
+                .any(|skill| skill.id == imported_skill_id);
+            Ok((
+                imported_skill_id.clone(),
+                center.join(&imported_skill_id).join("SKILL.md").is_file(),
+                temp_home.join(".agents/skills").exists(),
+                listed,
+            ))
+        })();
+
+        if let Some(home) = previous_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(&temp_home);
+
+        let (imported_skill_id, exists_in_center, wrote_legacy_agents_path, listed) =
+            test_result.unwrap();
+        assert_eq!(imported_skill_id, "github-skill");
+        assert!(exists_in_center);
+        assert!(!wrote_legacy_agents_path);
+        assert!(listed);
     }
 }
 
@@ -5007,7 +5499,9 @@ pub fn run() {
 
             // Initialize themes: ensure built-in themes exist in user dir
             if let Ok(resource_path) = app.path().resource_dir() {
-                theme::scanner::seed_builtin_themes(&resource_path);
+                tauri::async_runtime::spawn_blocking(move || {
+                    theme::scanner::seed_builtin_themes(&resource_path);
+                });
             }
 
             // Initialize adapters: default ~/.claude + custom engine instances
@@ -5024,11 +5518,6 @@ pub fn run() {
                         ));
                     }
                 }
-            }
-
-            // Update hook script if app was updated (compare embedded vs deployed)
-            if ClaudeCodeAdapter::update_hook_script_if_needed() {
-                log::info!("Hook script was updated to match new app version");
             }
 
             // Build the shared adapter list. Claude Code instances are expanded
@@ -5053,37 +5542,45 @@ pub fn run() {
             // cc-switch swapping providers — overwrote the agent's settings file
             // while AgentBro was not running and wiped our hooks. The live
             // recovery watcher handles the same case while running.
-            let enabled_intent = config_store.get().enabled_agents;
-            for adapter in adapters.iter() {
-                let name = adapter.name();
-                let is_claude = name == "claude-code";
-                if !is_claude && !enabled_intent.iter().any(|a| a == name) {
-                    continue;
+            let startup_adapters = adapters.clone();
+            let startup_config_store = config_store.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if ClaudeCodeAdapter::update_hook_script_if_needed() {
+                    log::info!("Hook script was updated to match new app version");
                 }
-                if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
-                    log::info!(
-                        "Skipping startup hook install for {}: {}",
-                        adapter.display_name(),
-                        skip_reason
-                    );
-                    continue;
-                }
-                if let Err(e) = adapter.install_hooks() {
-                    log::warn!(
-                        "Failed to install hooks for {}: {}",
-                        adapter.display_name(),
-                        e
-                    );
-                } else {
-                    log::info!("Hooks installed for {}", adapter.display_name());
-                    // Migrate existing Claude Code users: record the intent so the
-                    // recovery watcher will self-heal a wiped hook without a manual
-                    // reinstall. No-op once already recorded.
-                    if let Err(e) = config_store.mark_agent_enabled(name) {
-                        log::warn!("Failed to persist enabled-agent intent for {}: {}", name, e);
+                let enabled_intent = startup_config_store.get().enabled_agents;
+                for adapter in startup_adapters.iter() {
+                    let name = adapter.name();
+                    let is_claude = name == "claude-code";
+                    if !is_claude && !enabled_intent.iter().any(|a| a == name) {
+                        continue;
+                    }
+                    if let Err(skip_reason) = ensure_installable(adapter.as_ref()) {
+                        log::info!(
+                            "Skipping startup hook install for {}: {}",
+                            adapter.display_name(),
+                            skip_reason
+                        );
+                        continue;
+                    }
+                    if let Err(e) = adapter.install_hooks() {
+                        log::warn!(
+                            "Failed to install hooks for {}: {}",
+                            adapter.display_name(),
+                            e
+                        );
+                    } else {
+                        log::info!("Hooks installed for {}", adapter.display_name());
+                        if let Err(e) = startup_config_store.mark_agent_enabled(name) {
+                            log::warn!(
+                                "Failed to persist enabled-agent intent for {}: {}",
+                                name,
+                                e
+                            );
+                        }
                     }
                 }
-            }
+            });
 
             // Initialize and start hook server
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
@@ -5146,18 +5643,9 @@ pub fn run() {
             }
 
             // Build macOS menu bar / system tray shortcut with menu.
-            let show_item = MenuItemBuilder::with_id("show", "Open AgentBro").build(app)?;
-            let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let tray_menu = menu_bar::build_tray_menu(app, &config_store.get().language)?;
 
-            let tray_menu = MenuBuilder::new(app)
-                .item(&show_item)
-                .item(&settings_item)
-                .separator()
-                .item(&quit_item)
-                .build()?;
-
-            let tray_icon = TrayIconBuilder::new()
+            let tray_icon = TrayIconBuilder::with_id(menu_bar::TRAY_ID)
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .tooltip("AgentBro")
@@ -5165,25 +5653,42 @@ pub fn run() {
                 .icon_as_template(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
+                        button,
+                        button_state,
+                        rect,
                         ..
                     } = event
                     {
-                        show_notch_window(tray.app_handle());
+                        if let Ok(mut anchor) = tray_icon_rect().lock() {
+                            *anchor = Some(rect);
+                        }
+                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                            if let Err(error) = show_skill_pack_picker(tray.app_handle()) {
+                                log::warn!("Failed to show skill pack picker: {error}");
+                            }
+                        }
                     }
                 })
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => {
-                        show_notch_window(app);
+                .on_menu_event(|app, event| {
+                    let menu_id = event.id().as_ref();
+                    if menu_id == menu_bar::SKILL_PACK_PICKER_ID {
+                        if let Err(error) = show_skill_pack_picker(app) {
+                            log::warn!("Failed to show skill pack picker: {error}");
+                        }
+                        return;
                     }
-                    "settings" => {
-                        let _ = show_settings_window(app);
+                    match menu_id {
+                        "show" => {
+                            show_notch_window(app);
+                        }
+                        "settings" => {
+                            let _ = show_settings_window(app);
+                        }
+                        "quit" => {
+                            std::process::exit(0);
+                        }
+                        _ => {}
                     }
-                    "quit" => {
-                        std::process::exit(0);
-                    }
-                    _ => {}
                 })
                 .build(app)?;
 
@@ -5280,6 +5785,10 @@ pub fn run() {
                 app_state.session_store.clone(),
             );
             app.manage(app_state);
+
+            if let Err(error) = build_skill_pack_picker_window(app.handle()) {
+                log::warn!("Failed to prewarm skill pack picker: {error}");
+            }
 
             if let Err(err) = register_island_global_shortcuts(app.handle()) {
                 log::warn!("Failed to register island global shortcuts: {}", err);
@@ -5552,6 +6061,7 @@ pub fn run() {
             skills::v2::commands::skill_manager_bootstrap,
             skills::v2::commands::skill_manager_init,
             skills::v2::commands::skill_manager_overview,
+            skills::v2::commands::skill_pack_picker_data,
             skills::v2::commands::skill_manager_refresh,
             skills::v2::commands::skill_manager_refresh_overview,
             skills::v2::commands::skill_manager_settings,
@@ -5560,6 +6070,8 @@ pub fn run() {
             skills::v2::commands::get_skill_detail_v2,
             skills::v2::commands::preview_add_center_skill,
             skills::v2::commands::execute_add_center_skill,
+            skills::v2::commands::execute_marketplace_skill_batch,
+            skills::v2::commands::cancel_marketplace_skill_batch,
             skills::v2::commands::preview_delete_center_skill,
             skills::v2::commands::execute_delete_center_skill,
             skills::v2::commands::preview_delete_center_skills,
@@ -5587,6 +6099,8 @@ pub fn run() {
             skills::v2::commands::execute_remove_skill_pack_from_agent,
             skills::v2::commands::preview_remove_skill_from_pack,
             skills::v2::commands::execute_remove_skill_from_pack,
+            skills::v2::commands::preview_move_direct_skill_to_pack,
+            skills::v2::commands::execute_move_direct_skill_to_pack,
             skills::v2::commands::list_managed_agents_v2,
             skills::v2::commands::get_agent_detail_v2,
             skills::v2::commands::list_unmanaged_v2,

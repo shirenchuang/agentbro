@@ -53,7 +53,7 @@ describe('collapsed bar settings button', () => {
     tauriMocks.openSettingsWindow.mockResolvedValue(undefined)
   })
 
-  it('opens native settings from the expanded header gear without collapsing', async () => {
+  it('collapses the island before opening native settings from the expanded header gear', async () => {
     const onCollapse = vi.fn()
     const { container } = render(
       <CollapsedBar sessions={[]} panelState="expanded" onCollapse={onCollapse} />,
@@ -66,8 +66,8 @@ describe('collapsed bar settings button', () => {
 
     fireEvent.click(settingsButton!)
 
+    expect(onCollapse).toHaveBeenCalledOnce()
     await waitFor(() => expect(tauriMocks.openSettingsWindow).toHaveBeenCalledTimes(1))
-    expect(onCollapse).not.toHaveBeenCalled()
   })
 
   it('shows which session is waiting for approval in the collapsed island', () => {

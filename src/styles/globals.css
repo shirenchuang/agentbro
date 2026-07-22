@@ -33,8 +33,14 @@ code, pre {
 }
 
 /* Disable text selection in UI, allow in content areas */
-.selectable {
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
   user-select: text;
+}
+
+.selectable {
+  cursor: text;
 }
 
 /* Pet companion window (label "pet") — strip every default background so the

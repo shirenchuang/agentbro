@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { filteredSkills, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { SkillSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
+import type { SkillSummary, SkillPackSummary, DeleteCenterSkillPreview } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
 import { DistributeDialog } from './DistributeDialog'
 import { SkillDetailSlider } from './SkillDetailSlider'
@@ -38,6 +38,7 @@ export function SkillLibraryPage() {
   const [deletePreview, setDeletePreview] = useState<DeleteCenterSkillPreview | null>(null)
   const [packFilter, setPackFilter] = useState('')
   const [packMembersById, setPackMembersById] = useState<Record<string, string[]>>({})
+  const [packMembershipsLoading, setPackMembershipsLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const sources = useMemo(
     () => Array.from(new Set(state.skills.map((s) => s.sourceType).filter(Boolean))).sort(),
@@ -54,6 +55,16 @@ export function SkillLibraryPage() {
     const memberSet = new Set(memberIds)
     return baseSkills.filter((skill) => memberSet.has(skill.id))
   }, [baseSkills, packFilter, packMembersById])
+  const skillPacksById = useMemo(() => {
+    const next: Record<string, SkillPackSummary[]> = {}
+    for (const pack of filterablePacks) {
+      for (const skillId of packMembersById[pack.id] ?? []) {
+        if (!next[skillId]) next[skillId] = []
+        next[skillId].push(pack)
+      }
+    }
+    return next
+  }, [filterablePacks, packMembersById])
   const selectedSkills = useMemo(
     () => state.skills.filter((skill) => selectedSkillIds.has(skill.id)),
     [selectedSkillIds, state.skills],
@@ -89,9 +100,12 @@ export function SkillLibraryPage() {
     let cancelled = false
     if (filterablePacks.length === 0) {
       setPackMembersById({})
+      setPackMembershipsLoading(false)
       return
     }
 
+    setPackMembersById({})
+    setPackMembershipsLoading(true)
     void (async () => {
       try {
         const details = await Promise.all(
@@ -110,6 +124,8 @@ export function SkillLibraryPage() {
         setPackMembersById(next)
       } catch (e) {
         if (!cancelled) setStoreError(String(e))
+      } finally {
+        if (!cancelled) setPackMembershipsLoading(false)
       }
     })()
 
@@ -328,6 +344,8 @@ export function SkillLibraryPage() {
               <SkillCard
                 key={s.id}
                 skill={s}
+                packs={skillPacksById[s.id] ?? []}
+                packMembershipsLoading={packMembershipsLoading}
                 batchMode={batchMode}
                 selected={selectedSkillIds.has(s.id)}
                 onToggleSelection={() => toggleSkillSelection(s.id)}
@@ -365,6 +383,11 @@ export function SkillLibraryPage() {
                 <div className="sm2__row-main">
                   <div className="sm2__row-title">{s.name}</div>
                   <div className="sm2__row-sub">{skillSourceTypeLabel(t, s.sourceType)} · {STATUS_LABEL[s.status] || s.status}</div>
+                  <SkillPackMembership
+                    packs={skillPacksById[s.id] ?? []}
+                    loading={packMembershipsLoading}
+                    compact
+                  />
                 </div>
                 <CopyDiffMarker count={copyDiffCount(s)} />
                 <AgentBadges skill={s} />
@@ -621,14 +644,46 @@ function CopyDiffMarker({ count }: { count: number }) {
   )
 }
 
+function SkillPackMembership({
+  packs,
+  loading,
+  compact = false,
+}: {
+  packs: SkillPackSummary[]
+  loading: boolean
+  compact?: boolean
+}) {
+  const label = packs.length > 0
+    ? `所属技能包：${packs.map((pack) => pack.name).join('、')}`
+    : loading ? '正在载入技能包归属' : '未加入技能包'
+
+  return (
+    <div
+      className={`sm2__skill-packs${compact ? ' sm2__skill-packs--compact' : ''}${packs.length === 0 ? ' sm2__skill-packs--empty' : ''}`}
+      aria-label={label}
+    >
+      <span className="sm2__skill-packs-label">技能包</span>
+      {packs.length > 0 ? packs.map((pack) => (
+        <span key={pack.id} className="sm2__skill-pack-chip" title={pack.name}>{pack.name}</span>
+      )) : (
+        <span className="sm2__skill-pack-empty">{loading ? '载入中…' : '未加入'}</span>
+      )}
+    </div>
+  )
+}
+
 function SkillCard({
   skill,
+  packs,
+  packMembershipsLoading,
   batchMode,
   selected,
   onToggleSelection,
   onClick,
 }: {
   skill: SkillSummary
+  packs: SkillPackSummary[]
+  packMembershipsLoading: boolean
   batchMode: boolean
   selected: boolean
   onToggleSelection: () => void
@@ -668,6 +723,7 @@ function SkillCard({
         <span className={`sm2__tag sm2__tag--${skill.status}`}>{STATUS_LABEL[skill.status] || skill.status}</span>
         <span className="sm2__tag">{skill.skillType}</span>
       </div>
+      <SkillPackMembership packs={packs} loading={packMembershipsLoading} />
       <div className="sm2__card-foot">
         {skill.installedAgents.length > 0 && (
           <div className="sm2__agents">

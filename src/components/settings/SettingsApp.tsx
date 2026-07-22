@@ -12,10 +12,12 @@ import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
 import { SkillManagerSection } from '../skills-v2/SkillManagerSection'
+import { MarketplaceInstallTaskDock } from '../skills-v2/MarketplaceInstallTaskDock'
 import { useUpdater } from '../../hooks/useUpdater'
 import { useConfigStore } from '../../stores/configStore'
 import { isTauri } from '../../services/tauriApi'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
@@ -37,6 +39,8 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const [activeMonitorView, setActiveMonitorView] = useState<MonitorSettingsView>('overview')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [updateMinimized, setUpdateMinimized] = useState(false)
+  const skillActiveTab = useSkillStoreV2((state) => state.activeTab)
+  const skillInstallTab = useSkillStoreV2((state) => state.activeInstallTab)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const isMarketSection = activeSection === 'island' && activeIslandView === 'market'
   const isSkillManager = activeSection === 'skill-manager-v2'
@@ -60,6 +64,13 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
 
   const handleCloseRequest = async () => {
     if (await confirmCloseWhileDownloading()) onClose()
+  }
+
+  const openMarketplaceInstallTask = () => {
+    const skillStore = useSkillStoreV2.getState()
+    skillStore.setTab('install')
+    skillStore.setInstallTab('official')
+    setActiveSection('skill-manager-v2')
   }
 
   useEffect(() => {
@@ -176,6 +187,10 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         />
       )}
       {!analyticsConsentPromptCompleted && <FirstRunWelcome />}
+      <MarketplaceInstallTaskDock
+        hidden={activeSection === 'skill-manager-v2' && skillActiveTab === 'install' && skillInstallTab === 'official'}
+        onOpen={openMarketplaceInstallTask}
+      />
     </div>
   )
 }

@@ -4,6 +4,7 @@
 //! cross the Tauri boundary match the TypeScript types in `skillApi.ts`.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const SCHEMA_VERSION: i64 = 4;
 
@@ -312,6 +313,15 @@ pub struct SkillPackSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillPackPickerData {
+    pub agents: Vec<AgentSummary>,
+    pub packs: Vec<SkillPackSummary>,
+    pub applied_by_agent: HashMap<String, Vec<String>>,
+    pub default_distribute_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillPackDetail {
     pub id: String,
     pub name: String,
@@ -475,6 +485,41 @@ pub struct AddCenterSkillResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MarketplaceBatchSkillInput {
+    pub item_id: String,
+    pub skill_id: String,
+    pub source_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceBatchItemResult {
+    pub item_id: String,
+    pub skill_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceBatchInstallResult {
+    pub items: Vec<MarketplaceBatchItemResult>,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceBatchProgress {
+    pub job_id: String,
+    pub phase: String,
+    pub item_id: Option<String>,
+    pub completed: usize,
+    pub total: usize,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteCenterSkillPreview {
     pub skill_id: String,
     pub skill_ids: Vec<String>,
@@ -528,6 +573,23 @@ pub struct RemoveSkillFromPackPreview {
     pub applied_agent_count: usize,
     pub can_keep_standalone: bool,
     pub can_remove_targets: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveDirectSkillToPackPreview {
+    pub target_id: String,
+    pub skill_id: String,
+    pub skill_name: String,
+    pub agent_id: String,
+    pub display_name: String,
+    pub pack_id: String,
+    pub pack_name: String,
+    pub already_member: bool,
+    pub already_applied: bool,
+    pub will_add_to_pack: bool,
+    pub other_member_count: usize,
+    pub distribution: DistributionPreview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

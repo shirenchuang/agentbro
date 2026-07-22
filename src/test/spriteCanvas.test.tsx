@@ -77,6 +77,37 @@ describe('SpriteCanvas', () => {
     expect(sprite).toHaveAttribute('data-pet-rendered-animation', 'running-left')
     expect(sprite).toHaveStyle({ backgroundPosition: '100% 28.57142857142857%' })
   })
+
+  it('pauses frame updates while the document is hidden', () => {
+    let visibilityState: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
+
+    render(
+      <SpriteCanvas
+        pet={makePet()}
+        priority={PRIORITY.working}
+        size={32}
+        enableIdleBehaviors={false}
+      />,
+    )
+
+    const sprite = screen.getByTestId('sprite-canvas')
+    act(() => {
+      vi.advanceTimersByTime(100)
+    })
+    const frameBeforeHide = sprite.getAttribute('data-pet-rendered-frame')
+
+    act(() => {
+      visibilityState = 'hidden'
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    act(() => {
+      vi.advanceTimersByTime(600)
+    })
+
+    expect(sprite).toHaveAttribute('data-pet-rendered-frame', frameBeforeHide)
+    expect(sprite).toHaveAttribute('data-pet-rendered-animation', 'running')
+  })
 })
 
 class MockImage {

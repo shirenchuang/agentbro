@@ -79,7 +79,6 @@ struct AgentProgramSeed {
     id: String,
     display_name: String,
     icon: String,
-    adapter_installed: bool,
     hooks_installed: bool,
 }
 
@@ -89,6 +88,8 @@ enum RuntimePlatform {
     Windows,
     Linux,
 }
+
+const APP_TRASH_UNINSTALL_COMMAND: &str = "Move application to Trash";
 
 impl RuntimePlatform {
     fn current() -> Self {
@@ -171,9 +172,23 @@ pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Res
 
 #[tauri::command]
 pub async fn add_custom_agent(
+    app: AppHandle,
+    state: State<'_, AppState>,
     config: registry::CustomAgentConfig,
 ) -> Result<AgentProgramInfo, String> {
     let entry = registry::add_custom_agent(config)?;
+
+    if let Err(error) = register_custom_claude_engine(&app, &state, &entry) {
+        if let Err(rollback_error) = registry::remove_custom_agent(&entry.id) {
+            log::error!(
+                "Failed to roll back custom agent {} after engine registration failed: {}",
+                entry.id,
+                rollback_error
+            );
+        }
+        return Err(error);
+    }
+
     Ok(info_for_custom_agent(entry))
 }
 
@@ -187,8 +202,138 @@ pub async fn update_custom_agent(
 }
 
 #[tauri::command]
-pub async fn remove_custom_agent(agent_id: String) -> Result<(), String> {
+pub async fn remove_custom_agent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), String> {
+    let entry = registry::list_custom_agents()
+        .into_iter()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| format!("Custom agent not found: {agent_id}"))?;
+
+    unregister_custom_claude_engine(&app, &state, &entry)?;
     registry::remove_custom_agent(&agent_id)
+}
+
+const CLAUDE_COMPATIBLE_CATEGORY: &str = "claude-compatible";
+
+fn register_custom_claude_engine(
+    app: &AppHandle,
+    state: &AppState,
+    entry: &registry::CustomAgentEntry,
+) -> Result<(), String> {
+    if entry.category != CLAUDE_COMPATIBLE_CATEGORY {
+        return Ok(());
+    }
+
+    let config_root = custom_claude_config_root(entry)?;
+    let canonical_root = config_root
+        .canonicalize()
+        .unwrap_or_else(|_| config_root.clone());
+    let default_root = crate::agents::claude_code::default_config_root();
+    if default_root.canonicalize().unwrap_or(default_root) == canonical_root {
+        return Err("Use the built-in Claude Code agent for the default config root".to_string());
+    }
+    let mut config = state.config_store.get();
+    if config.engine_instances.iter().any(|instance| {
+        let existing = crate::agents::claude_code::expand_tilde(&instance.config_root);
+        existing.canonicalize().unwrap_or(existing) == canonical_root
+    }) {
+        return Err(format!(
+            "Claude Code engine already exists at {}",
+            config_root.display()
+        ));
+    }
+
+    let adapter = crate::agents::claude_code::ClaudeCodeAdapter::with_config_root(
+        config_root.clone(),
+        entry.display_name.clone(),
+    );
+    adapter.install_hooks().map_err(|error| error.to_string())?;
+
+    config.engine_instances.push(crate::config::EngineInstance {
+        id: entry.id.clone(),
+        label: entry.display_name.clone(),
+        config_root: config_root.display().to_string(),
+        enabled: true,
+    });
+    if let Err(error) = state.config_store.update(config) {
+        if let Err(cleanup_error) = adapter.remove_hooks() {
+            log::warn!(
+                "Failed to clean up hooks after custom engine registration failed: {}",
+                cleanup_error
+            );
+        }
+        return Err(error);
+    }
+
+    restart_conversation_watcher(app, state);
+    Ok(())
+}
+
+fn unregister_custom_claude_engine(
+    app: &AppHandle,
+    state: &AppState,
+    entry: &registry::CustomAgentEntry,
+) -> Result<(), String> {
+    if entry.category != CLAUDE_COMPATIBLE_CATEGORY {
+        return Ok(());
+    }
+
+    let mut config = state.config_store.get();
+    let instance = config
+        .engine_instances
+        .iter()
+        .find(|instance| instance.id == entry.id)
+        .cloned();
+
+    if let Some(instance) = instance {
+        let root = crate::agents::claude_code::expand_tilde(&instance.config_root);
+        let adapter =
+            crate::agents::claude_code::ClaudeCodeAdapter::with_config_root(root, instance.label);
+        adapter.remove_hooks().map_err(|error| error.to_string())?;
+        config
+            .engine_instances
+            .retain(|engine| engine.id != entry.id);
+        state.config_store.update(config)?;
+        restart_conversation_watcher(app, state);
+    }
+
+    Ok(())
+}
+
+fn custom_claude_config_root(entry: &registry::CustomAgentEntry) -> Result<PathBuf, String> {
+    let raw_root = entry
+        .config_dir
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Claude Code config root cannot be empty".to_string())?;
+    let root = crate::agents::claude_code::expand_tilde(raw_root);
+    if !root.is_dir() {
+        return Err(format!(
+            "Claude Code config root does not exist: {}",
+            root.display()
+        ));
+    }
+    Ok(root)
+}
+
+fn restart_conversation_watcher(app: &AppHandle, state: &AppState) {
+    let roots = state
+        .config_store
+        .get()
+        .engine_instances
+        .into_iter()
+        .filter(|instance| instance.enabled)
+        .map(|instance| crate::agents::claude_code::expand_tilde(&instance.config_root))
+        .collect::<Vec<_>>();
+    let watcher =
+        crate::hooks::file_watcher::ConversationWatcher::start_with_roots(app.clone(), &roots);
+    match state.conversation_watcher.lock() {
+        Ok(mut current) => *current = watcher,
+        Err(error) => log::warn!("Failed to refresh conversation watcher: {}", error),
+    }
 }
 
 async fn build_agent_list(
@@ -204,7 +349,6 @@ async fn build_agent_list(
                     id: (*id).to_string(),
                     display_name: display_name_for_agent(id).to_string(),
                     icon: icon_for_agent(id).to_string(),
-                    adapter_installed: false,
                     hooks_installed: false,
                 },
             );
@@ -222,10 +366,6 @@ async fn build_agent_list(
                 id,
                 display_name: adapter.display_name().to_string(),
                 icon: adapter.icon().to_string(),
-                adapter_installed: matches!(
-                    adapter.status(),
-                    AdapterStatus::Active | AdapterStatus::Installed | AdapterStatus::Available
-                ),
                 hooks_installed: adapter.hooks_installed(),
             },
         );
@@ -260,15 +400,18 @@ async fn build_agent_list(
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
-    let binary_path = which_agent_binary(&id, &meta);
-    let app_path = installed_app_path(&id, &meta);
+    let binary_path = match &meta.kind {
+        AgentProgramKind::Cli => which_agent_binary(&id, &meta),
+        AgentProgramKind::App => None,
+    };
+    let app_path = match &meta.kind {
+        AgentProgramKind::Cli => None,
+        AgentProgramKind::App => installed_app_path(&id, &meta),
+    };
     let display_app_path = app_path
         .clone()
         .or_else(|| default_app_path_for_display(&id, &meta));
-    let installed = binary_path.is_some()
-        || app_path.is_some()
-        || config_dir_exists(&meta)
-        || seed.adapter_installed;
+    let installed = program_is_installed(&meta, binary_path.is_some(), app_path.is_some());
     let skills_dir = agent_paths::paths_for_agent(&id)
         .skill_dirs
         .first()
@@ -424,6 +567,11 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
     let skills_path = Path::new(&agent.global_skills_dir);
     let detected =
         skills_path.exists() || skills_path.parent().is_some_and(|parent| parent.exists());
+    let hooks_installed = agent.category == CLAUDE_COMPATIBLE_CATEGORY
+        && agent
+            .settings_file
+            .as_deref()
+            .is_some_and(|path| crate::agents::hook_manager::has_agentbro_hooks(Path::new(path)));
     let config_dir = agent
         .config_dir
         .clone()
@@ -449,7 +597,7 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
         install_command: None,
         update_command: None,
         uninstall_command: None,
-        hooks_installed: false,
+        hooks_installed,
         skills_dir: Some(agent.global_skills_dir),
         is_custom: true,
     }
@@ -462,13 +610,42 @@ async fn run_agent_command(
     operation: &str,
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
-    let command = match operation {
-        "install" => meta.install_command,
-        "update" => meta.update_command,
-        "uninstall" => meta.uninstall_command,
-        _ => None,
+    if operation == "uninstall"
+        && !program_is_installed(
+            &meta,
+            find_agent_binary(agent_id, &meta).is_some(),
+            installed_app_path(agent_id, &meta).is_some(),
+        )
+    {
+        emit_output(
+            &app,
+            agent_id,
+            operation,
+            "info",
+            "Agent is already uninstalled",
+            true,
+            Some(true),
+        );
+        return Ok(());
     }
-    .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?;
+    if operation == "uninstall"
+        && meta.kind == AgentProgramKind::App
+        && meta.uninstall_command == Some(APP_TRASH_UNINSTALL_COMMAND)
+    {
+        return trash_agent_app(app, agent_id, &meta).await;
+    }
+    let command = if agent_id == "aider" && operation == "uninstall" {
+        aider_uninstall_command().await?
+    } else {
+        match operation {
+            "install" => meta.install_command,
+            "update" => meta.update_command,
+            "uninstall" => meta.uninstall_command,
+            _ => None,
+        }
+        .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
+        .to_string()
+    };
 
     emit_output(
         &app,
@@ -480,7 +657,7 @@ async fn run_agent_command(
         None,
     );
 
-    let mut child = command_shell(command)
+    let mut child = command_shell(&command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -539,6 +716,110 @@ async fn run_agent_command(
     }
 }
 
+async fn aider_uninstall_command() -> Result<String, String> {
+    if command_output_contains("uv", &["tool", "list"], "aider-chat").await {
+        return Ok("uv tool uninstall aider-chat".to_string());
+    }
+    if command_output_contains("pipx", &["list", "--short"], "aider-chat").await {
+        return Ok("pipx uninstall aider-chat".to_string());
+    }
+    if command_succeeds("python3", &["-m", "pip", "show", "aider-chat"]).await {
+        return Ok("python3 -m pip uninstall -y aider-chat".to_string());
+    }
+    Err("Aider is present, but its package manager could not be determined".to_string())
+}
+
+async fn command_output_contains(binary: &str, args: &[&str], needle: &str) -> bool {
+    let Some(path) = executable::find_binary(binary) else {
+        return false;
+    };
+    Command::new(path)
+        .args(args)
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).contains(needle))
+}
+
+async fn command_succeeds(binary: &str, args: &[&str]) -> bool {
+    let Some(path) = executable::find_binary(binary) else {
+        return false;
+    };
+    Command::new(path)
+        .args(args)
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success())
+}
+
+async fn trash_agent_app(
+    app: AppHandle,
+    agent_id: &str,
+    meta: &ProgramMetadata,
+) -> Result<(), String> {
+    let app_path = installed_app_path(agent_id, meta)
+        .ok_or_else(|| format!("Application is not installed for {agent_id}"))?;
+    let path = Path::new(&app_path);
+    let system_apps = Path::new("/Applications");
+    let user_apps = dirs::home_dir().map(|home| home.join("Applications"));
+    let safe_parent = path.parent().is_some_and(|parent| {
+        parent == system_apps || user_apps.as_deref().is_some_and(|apps| parent == apps)
+    });
+    if path.extension().and_then(|value| value.to_str()) != Some("app") || !safe_parent {
+        return Err(format!(
+            "Refusing to trash unexpected application path: {app_path}"
+        ));
+    }
+
+    emit_output(
+        &app,
+        agent_id,
+        "uninstall",
+        "info",
+        &format!("Moving {app_path} to Trash"),
+        false,
+        None,
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg("on run argv")
+        .arg("-e")
+        .arg("tell application \"Finder\" to delete POSIX file (item 1 of argv)")
+        .arg("-e")
+        .arg("end run")
+        .arg(&app_path)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    let success = output.status.success();
+    emit_output(
+        &app,
+        agent_id,
+        "uninstall",
+        "info",
+        if success {
+            "Application moved to Trash"
+        } else {
+            "Failed to move application to Trash"
+        },
+        true,
+        Some(success),
+    );
+
+    if success {
+        Ok(())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if error.is_empty() {
+            format!("uninstall failed for {agent_id}")
+        } else {
+            error
+        })
+    }
+}
+
 fn emit_output(
     app: &AppHandle,
     agent_id: &str,
@@ -576,6 +857,9 @@ fn command_shell(command: &str) -> Command {
     {
         let mut shell = Command::new("sh");
         shell.args(["-lc", command]);
+        if let Some(path) = executable::augmented_path_env() {
+            shell.env("PATH", path);
+        }
         shell
     }
 }
@@ -722,10 +1006,11 @@ fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
-fn config_dir_exists(meta: &ProgramMetadata) -> bool {
-    meta.config_dir
-        .map(expand_home)
-        .is_some_and(|path| Path::new(&path).exists())
+fn program_is_installed(meta: &ProgramMetadata, has_binary: bool, has_app: bool) -> bool {
+    match meta.kind {
+        AgentProgramKind::Cli => has_binary,
+        AgentProgramKind::App => has_app,
+    }
 }
 
 fn app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
@@ -766,14 +1051,19 @@ pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus
     let Some(meta) = metadata_for(agent_id) else {
         return AdapterStatus::Unavailable;
     };
-    if find_agent_binary(agent_id, &meta).is_some() || installed_app_path(agent_id, &meta).is_some()
-    {
+    let installed = match &meta.kind {
+        AgentProgramKind::Cli => find_agent_binary(agent_id, &meta).is_some(),
+        AgentProgramKind::App => installed_app_path(agent_id, &meta).is_some(),
+    };
+    if installed {
         AdapterStatus::Available
-    } else if config_dir_exists(&meta) {
-        AdapterStatus::Installed
     } else {
         AdapterStatus::Unavailable
     }
+}
+
+pub(crate) fn has_program_metadata(agent_id: &str) -> bool {
+    metadata_for(agent_id).is_some()
 }
 
 fn macos_app_path_candidates(meta: &ProgramMetadata) -> Vec<String> {
@@ -1067,14 +1357,15 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.qoder",
             "https://qoder.com",
         ),
-        "copilot" => cli_no_uninstall(
-            "gh",
-            "gh",
-            "github/gh-copilot",
-            Some("gh extension install github/gh-copilot"),
-            Some("gh extension upgrade gh-copilot"),
-            "~/.config/gh",
-            "https://github.com/github/gh-copilot",
+        "copilot" => cli(
+            "copilot",
+            "npm",
+            "@github/copilot",
+            "npm install -g @github/copilot",
+            "npm install -g @github/copilot@latest",
+            "npm uninstall -g @github/copilot",
+            "~/.copilot",
+            "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
         ),
         "cursor-cli" => cli_no_uninstall(
             "cursor-agent",
@@ -1091,7 +1382,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.cursor",
             "https://cursor.com",
         ),
-        "cline" => app(
+        "cline" => app_no_uninstall(
             "cline",
             "/Applications/Visual Studio Code.app",
             "~/Documents/Cline",
@@ -1227,11 +1518,11 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
         ),
         "aider" => cli(
             "aider",
-            "pipx",
+            "uv",
             "aider-chat",
-            "pipx install aider-chat",
-            "pipx upgrade aider-chat",
-            "pipx uninstall aider-chat",
+            "uv tool install --force --python python3.12 --with pip aider-chat@latest",
+            "uv tool install --force --python python3.12 --with pip aider-chat@latest",
+            "uv tool uninstall aider-chat",
             "~/.aider",
             "https://aider.chat",
         ),
@@ -1331,17 +1622,71 @@ fn app(
         package_name: None,
         install_command: None,
         update_command: None,
-        uninstall_command: None,
+        uninstall_command: Some(APP_TRASH_UNINSTALL_COMMAND),
         app_path: Some(app_path),
         config_dir: Some(config_dir),
         download_url: Some(url),
     }
 }
 
+fn app_no_uninstall(
+    binary: &'static str,
+    app_path: &'static str,
+    config_dir: &'static str,
+    url: &'static str,
+) -> ProgramMetadata {
+    let mut meta = app(binary, app_path, config_dir, url);
+    meta.uninstall_command = None;
+    meta
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::skills::v2::agent_meta;
+
+    fn custom_claude_entry(config_root: String) -> registry::CustomAgentEntry {
+        registry::CustomAgentEntry {
+            id: "custom-codefuse".to_string(),
+            display_name: "CodeFuse Claude Code".to_string(),
+            category: CLAUDE_COMPATIBLE_CATEGORY.to_string(),
+            global_skills_dir: format!("{config_root}/skills"),
+            icon_name: Some("claude-code".to_string()),
+            is_enabled: true,
+            config_dir: Some(config_root.clone()),
+            settings_file: Some(format!("{config_root}/settings.json")),
+            mcp_config: Some(format!("{config_root}/settings.json")),
+            plugin_dir: Some(format!("{config_root}/plugins/cache")),
+        }
+    }
+
+    #[test]
+    fn custom_claude_engine_requires_an_existing_config_root() {
+        let missing = std::env::temp_dir().join(format!(
+            "agentbro-missing-custom-claude-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let entry = custom_claude_entry(missing.display().to_string());
+
+        let error = custom_claude_config_root(&entry).expect_err("missing root must fail");
+
+        assert!(error.contains("config root does not exist"));
+    }
+
+    #[test]
+    fn custom_claude_engine_accepts_an_existing_config_root() {
+        let root =
+            std::env::temp_dir().join(format!("agentbro-custom-claude-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create temp config root");
+        let entry = custom_claude_entry(root.display().to_string());
+
+        assert_eq!(
+            custom_claude_config_root(&entry).expect("existing root"),
+            root
+        );
+
+        std::fs::remove_dir(&root).expect("remove temp config root");
+    }
 
     #[test]
     fn visible_skill_agents_have_program_metadata() {
@@ -1376,6 +1721,36 @@ mod tests {
         assert_eq!(
             codex.update_command,
             Some("npm install -g @openai/codex@latest"),
+        );
+    }
+
+    #[test]
+    fn standalone_apps_can_move_to_trash_without_exposing_host_apps() {
+        let kiro = metadata_for("kiro").expect("kiro metadata");
+        assert_eq!(kiro.uninstall_command, Some(APP_TRASH_UNINSTALL_COMMAND));
+
+        let cline = metadata_for("cline").expect("cline metadata");
+        assert_eq!(cline.uninstall_command, None);
+    }
+
+    #[test]
+    fn cli_program_state_requires_the_executable() {
+        let aider = metadata_for("aider").expect("aider metadata");
+        assert!(!program_is_installed(&aider, false, false));
+        assert!(program_is_installed(&aider, true, false));
+        assert_eq!(aider.package_manager, Some("uv"));
+        assert_eq!(
+            aider.uninstall_command,
+            Some("uv tool uninstall aider-chat")
+        );
+
+        let copilot = metadata_for("copilot").expect("copilot metadata");
+        assert_eq!(copilot.binary, Some("copilot"));
+        assert_eq!(copilot.package_manager, Some("npm"));
+        assert_eq!(copilot.package_name, Some("@github/copilot"));
+        assert_eq!(
+            copilot.uninstall_command,
+            Some("npm uninstall -g @github/copilot")
         );
     }
 
