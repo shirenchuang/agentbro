@@ -51,6 +51,8 @@ export function agentColor(agentId: string) {
   if (agentId === 'openclaw' || agentId === 'qclaw' || agentId === 'easyclaw' || agentId === 'autoclaw') return '#30b0c7'
   if (agentId === 'windsurf') return '#5ac8fa'
   if (agentId === 'workbuddy') return '#af52de'
+  if (agentId === 'zcode') return '#1c1c1e'
+  if (agentId === 'doubao') return '#5a75ff'
   return '#8e8e93'
 }
 

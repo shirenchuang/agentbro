@@ -8,6 +8,7 @@ pub mod registry;
 pub mod scanner;
 pub mod sync;
 pub mod v2;
+pub mod zcode_config;
 
 use serde::{Deserialize, Serialize};
 
@@ -624,6 +625,103 @@ mod tests {
                 .any(|skill| skill.id == "plugin:test-plugin" && skill.agents[0].enabled),
             "plugin toggle should update enabledPlugins"
         );
+    }
+
+    #[test]
+    fn scans_and_manages_zcode_native_config() {
+        let _guard = lock_home();
+        let home = TempHome::new("zcode-config");
+        let skill = write_skill(
+            &home.path.join(".zcode/skills"),
+            "fixture-dir",
+            "fixture-skill",
+        );
+        let plugin = home
+            .path
+            .join(".zcode/cli/plugins/cache/official/test-plugin/1.0.0");
+        fs::create_dir_all(plugin.join(".zcode-plugin")).expect("create ZCode plugin");
+        fs::write(
+            plugin.join(".zcode-plugin/plugin.json"),
+            r#"{"name":"test-plugin","displayName":"Test Plugin","version":"1.0.0"}"#,
+        )
+        .expect("write ZCode plugin manifest");
+        fs::create_dir_all(home.path.join(".zcode/cli")).expect("create ZCode config dir");
+        fs::write(
+            home.path.join(".zcode/cli/config.json"),
+            serde_json::to_string(&serde_json::json!({
+                "mcp": {
+                    "servers": {
+                        "fixture": {
+                            "type": "stdio",
+                            "command": "node",
+                            "args": ["server.js"],
+                            "enabled": false
+                        }
+                    }
+                },
+                "plugins": {
+                    "enabledPlugins": {
+                        "test-plugin@official": false
+                    }
+                },
+                "skill": {
+                    skill.display().to_string(): { "enable": false }
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write ZCode config");
+
+        let scanned = scanner::scan_agent("zcode");
+        assert!(scanned.iter().any(|item| {
+            item.id == "fixture-skill"
+                && matches!(item.skill_type, SkillType::Skill)
+                && !item.agents[0].enabled
+        }));
+        assert!(scanned.iter().any(|item| {
+            item.id == "mcp:fixture"
+                && matches!(item.skill_type, SkillType::Mcp)
+                && !item.agents[0].enabled
+        }));
+        assert!(scanned.iter().any(|item| {
+            item.id == "plugin:test-plugin@official"
+                && matches!(item.skill_type, SkillType::Plugin)
+                && !item.agents[0].enabled
+        }));
+
+        installer::toggle_skill("fixture-skill", "zcode", true).expect("enable ZCode skill");
+        installer::toggle_skill("mcp:fixture", "zcode", true).expect("enable ZCode MCP");
+        installer::toggle_skill("plugin:test-plugin@official", "zcode", true)
+            .expect("enable ZCode plugin");
+        installer::upsert_mcp_server(
+            "zcode",
+            &McpServerConfig {
+                name: "added".to_string(),
+                command: "node".to_string(),
+                args: vec!["added.js".to_string()],
+                env: std::collections::HashMap::new(),
+            },
+        )
+        .expect("add ZCode MCP");
+
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(home.path.join(".zcode/cli/config.json"))
+                .expect("read ZCode config"),
+        )
+        .unwrap();
+        assert_eq!(config["skill"][skill.display().to_string()]["enable"], true);
+        assert_eq!(config["mcp"]["servers"]["fixture"]["enabled"], true);
+        assert_eq!(
+            config["plugins"]["enabledPlugins"]["test-plugin@official"],
+            true
+        );
+        assert_eq!(config["mcp"]["servers"]["added"]["type"], "stdio");
+        assert_eq!(config["mcp"]["servers"]["added"]["enabled"], true);
+
+        installer::remove_mcp_server("zcode", "added").expect("remove ZCode MCP");
+        assert!(scanner::scan_agent("zcode")
+            .iter()
+            .all(|item| item.id != "mcp:added"));
     }
 
     #[test]

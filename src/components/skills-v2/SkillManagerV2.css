@@ -1292,6 +1292,10 @@
   --sm2-pack-blue-soft: rgba(10, 132, 255, 0.09);
   --sm2-pack-violet: #6c5cff;
   --sm2-pack-violet-soft: rgba(108, 92, 255, 0.11);
+  --sm2-membership-accent: var(--sm2-pack-blue);
+  --sm2-membership-soft: var(--sm2-pack-blue-soft);
+  --sm2-membership-border: var(--sm2-pack-border-strong);
+  --sm2-membership-muted: var(--sm2-pack-muted);
   --sm2-pack-green: #058766;
   --sm2-pack-green-soft: rgba(5, 135, 102, 0.11);
   --sm2-pack-amber: #b26a0a;
@@ -12585,6 +12589,28 @@
   flex-wrap: wrap;
 }
 
+.sm2--agents .sm2__agent-skill-pack-filter {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--sm2-agent-muted);
+  font-size: 11px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.sm2--agents .sm2__agent-skill-pack-filter .sm2__select {
+  min-width: 136px;
+  height: 34px;
+  border-color: var(--sm2-agent-border);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--sm2-agent-text);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.74) inset;
+  cursor: pointer;
+  font-weight: 720;
+}
+
 .sm2--agents .sm2__agent-skill-actions > span {
   color: var(--sm2-agent-muted);
   font-size: 12px;
@@ -16112,6 +16138,10 @@
   --sm2-builder-raised: #ffffff;
   --sm2-builder-blue: #246bfd;
   --sm2-builder-green: #07845f;
+  --sm2-membership-accent: var(--sm2-builder-blue);
+  --sm2-membership-soft: rgba(36, 107, 253, 0.07);
+  --sm2-membership-border: rgba(36, 107, 253, 0.16);
+  --sm2-membership-muted: var(--sm2-builder-muted);
   width: min(1080px, calc(100vw - 48px));
   height: min(780px, calc(100vh - 48px));
   max-height: calc(100vh - 48px);
@@ -16213,7 +16243,7 @@
 }
 
 .sm2__pack-builder-modal .sm2__pack-builder2-grid {
-  grid-template-columns: minmax(460px, 1.55fr) minmax(280px, 0.75fr);
+  grid-template-columns: minmax(500px, 1.35fr) minmax(360px, 0.95fr);
   grid-template-rows: minmax(0, 1fr);
   flex: 1;
   gap: 12px;
@@ -16366,6 +16396,8 @@
 }
 
 .sm2__pack-builder-modal .sm2__pack-builder-card--selected .sm2__pack-member-row {
+  display: grid;
+  grid-template-columns: 24px minmax(108px, 1fr) minmax(104px, 1.05fr) auto;
   min-height: 48px;
   border-color: rgba(46, 57, 77, 0.09);
   border-radius: 8px;
@@ -16459,7 +16491,23 @@
   }
 
   .sm2__pack-builder-modal .sm2__pack-builder2-grid {
-    grid-template-columns: minmax(380px, 1.35fr) minmax(240px, 0.75fr);
+    grid-template-columns: minmax(400px, 1.2fr) minmax(300px, 1fr);
+  }
+}
+
+@media (max-width: 840px) {
+  .sm2__pack-builder-modal .sm2__pack-builder2-grid {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .sm2__pack-builder-modal .sm2__pack-section--picker {
+    min-height: 410px;
+  }
+
+  .sm2__pack-builder-modal .sm2__pack-builder-card--selected {
+    min-height: 260px;
   }
 }
 
@@ -16557,8 +16605,62 @@
 }
 
 .sm2__pack-builder-modal .sm2__skill-pick {
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(112px, 1fr) minmax(96px, 0.72fr) auto;
   cursor: default;
+}
+
+.sm2__pack-memberships {
+  min-width: 0;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.sm2__pack-memberships-label {
+  flex: 0 0 auto;
+  color: var(--sm2-membership-muted);
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.sm2__pack-membership-chip,
+.sm2__pack-membership-empty {
+  min-width: 0;
+  max-width: 116px;
+  overflow: hidden;
+  border: 1px solid var(--sm2-membership-border);
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: var(--sm2-membership-soft);
+  color: var(--sm2-membership-accent);
+  font-size: 8px;
+  font-weight: 760;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm2__pack-membership-empty {
+  border-style: dashed;
+  background: transparent;
+  color: var(--sm2-membership-muted);
+  font-weight: 650;
+}
+
+.sm2__pack-member-open > .sm2__pack-memberships {
+  max-width: 46%;
+  flex-basis: min(280px, 42%);
+}
+
+.sm2__pack-builder-modal .sm2__skill-pick > .sm2__pack-memberships {
+  align-content: center;
+}
+
+.sm2__pack-builder-modal .sm2__pack-builder-card--selected .sm2__pack-memberships {
+  max-width: none;
 }
 
 .sm2__skill-pick-action {

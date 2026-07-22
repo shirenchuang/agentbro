@@ -1,9 +1,13 @@
 /* Agent Icon — Per-agent colored icon */
 import type { AgentType } from '../../types/agent'
 import workbuddyIcon from '../../assets/cli-icons/workbuddy.png'
+import zcodeIcon from '../../assets/cli-icons/zcode.svg'
+import doubaoIcon from '../../assets/cli-icons/doubao.svg'
 
 const agentIcons: Partial<Record<AgentType, string>> = {
   workbuddy: workbuddyIcon,
+  zcode: zcodeIcon,
+  doubao: doubaoIcon,
 }
 
 const agentColors: Record<string, string> = {
@@ -20,6 +24,8 @@ const agentColors: Record<string, string> = {
   'workbuddy': '#16C8A7',
   'copilot': '#6B7280',
   'kiro': '#F59E0B',
+  'zcode': '#F8FAFC',
+  'doubao': '#5A75FF',
 }
 
 const agentLabels: Record<string, string> = {
@@ -36,6 +42,8 @@ const agentLabels: Record<string, string> = {
   'workbuddy': 'WB',
   'copilot': 'Co',
   'kiro': 'K',
+  'zcode': 'Z',
+  'doubao': '豆',
 }
 
 interface AgentIconProps {

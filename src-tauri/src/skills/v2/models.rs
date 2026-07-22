@@ -463,6 +463,7 @@ pub struct AddCenterSkillCandidate {
 pub struct AddCenterSkillPreview {
     pub candidates: Vec<AddCenterSkillCandidate>,
     pub blockers: Vec<AddCenterSkillCandidate>,
+    pub unchanged_count: usize,
     pub center_path: String,
 }
 

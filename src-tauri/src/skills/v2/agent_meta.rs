@@ -57,8 +57,10 @@ pub fn managed_agent_ids() -> Vec<String> {
         "copilot",
         "qwen",
         "kimi",
+        "doubao",
         "deepseek",
         "workbuddy",
+        "zcode",
         "windsurf",
         "augment",
         "kilocode",
@@ -162,6 +164,11 @@ fn table() -> &'static [AgentMeta] {
             icon_key: "kimi",
         },
         AgentMeta {
+            id: "doubao",
+            display_name: "Doubao",
+            icon_key: "doubao",
+        },
+        AgentMeta {
             id: "deepseek",
             display_name: "DeepSeek",
             icon_key: "deepseek",
@@ -170,6 +177,11 @@ fn table() -> &'static [AgentMeta] {
             id: "workbuddy",
             display_name: "WorkBuddy",
             icon_key: "workbuddy",
+        },
+        AgentMeta {
+            id: "zcode",
+            display_name: "ZCode",
+            icon_key: "zcode",
         },
         AgentMeta {
             id: "windsurf",
@@ -242,8 +254,10 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
         "kimi" => ".kimi/skills",
+        "doubao" => "Doubao/skills",
         "deepseek" => ".deepseek/skills",
         "workbuddy" => ".workbuddy/skills",
+        "zcode" => ".zcode/skills",
         "windsurf" => ".windsurf/skills",
         "augment" => ".augment/skills",
         "kilocode" => ".kilocode/skills",
@@ -502,6 +516,32 @@ mod tests {
         assert!(directory_has_valid_skill(&root, false));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn zcode_is_visible_and_uses_official_skills_dir() {
+        assert!(visible_agent_ids().iter().any(|id| id == "zcode"));
+        assert_eq!(display_name("zcode"), "ZCode");
+        assert_eq!(icon_key("zcode"), "zcode");
+
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_skills_dir(home, "zcode"),
+            Some(home.join(".zcode/skills"))
+        );
+    }
+
+    #[test]
+    fn doubao_is_visible_and_uses_user_skills_dir() {
+        assert!(visible_agent_ids().iter().any(|id| id == "doubao"));
+        assert_eq!(display_name("doubao"), "Doubao");
+        assert_eq!(icon_key("doubao"), "doubao");
+
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_skills_dir(home, "doubao"),
+            Some(home.join("Doubao/skills"))
+        );
     }
 
     #[cfg(target_os = "windows")]

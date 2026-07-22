@@ -6,9 +6,9 @@ export type AgentType =
   | 'copilot'
   | 'qoder' | 'qoder-cli'
   | 'codebuddy' | 'codebuddycn'
-  | 'qwen' | 'kimi' | 'deepseek' | 'opencode'
+  | 'qwen' | 'kimi' | 'doubao' | 'deepseek' | 'opencode'
   | 'droid' | 'stepfun' | 'antigravity'
-  | 'workbuddy' | 'hermes' | 'pi' | 'kiro'
+  | 'workbuddy' | 'hermes' | 'pi' | 'kiro' | 'zcode'
 
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 

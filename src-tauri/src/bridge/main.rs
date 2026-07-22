@@ -70,7 +70,25 @@ fn normalize_tty(raw: &str) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn ask_user_question_hook_output(updated_input: serde_json::Value) -> serde_json::Value {
+    ask_user_question_hook_output_for_source("claude-code", updated_input)
+}
+
+fn ask_user_question_hook_output_for_source(
+    source: &str,
+    updated_input: serde_json::Value,
+) -> serde_json::Value {
+    if is_zcode_source(source) {
+        return serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": updated_input
+            }
+        });
+    }
+
     serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -98,7 +116,17 @@ fn plan_title_from_content(plan_content: &str) -> String {
         .unwrap_or_else(|| "Plan".to_string())
 }
 
+#[cfg(test)]
 fn plan_hook_output(
+    tool_input: serde_json::Value,
+    mode: &str,
+    message: Option<&str>,
+) -> serde_json::Value {
+    plan_hook_output_for_source("claude-code", tool_input, mode, message)
+}
+
+fn plan_hook_output_for_source(
+    source: &str,
     tool_input: serde_json::Value,
     mode: &str,
     message: Option<&str>,
@@ -122,7 +150,7 @@ fn plan_hook_output(
         "behavior": "allow",
         "updatedInput": tool_input
     });
-    if matches!(mode, "acceptEdits" | "bypassPermissions") {
+    if !is_zcode_source(source) && matches!(mode, "acceptEdits" | "bypassPermissions") {
         if let Some(obj) = decision.as_object_mut() {
             obj.insert(
                 "updatedPermissions".into(),
@@ -143,6 +171,10 @@ fn plan_hook_output(
 
 fn is_codex_source(source: &str) -> bool {
     source == "codex" || source == "openai.codex"
+}
+
+fn is_zcode_source(source: &str) -> bool {
+    source == "zcode"
 }
 
 fn is_gemini_source(source: &str) -> bool {
@@ -184,6 +216,7 @@ fn permission_hook_output(
         "allow" => {
             let mut decision = serde_json::json!({ "behavior": "allow" });
             if !is_codex_source(source)
+                && !is_zcode_source(source)
                 && always
                 && permission_suggestions
                     .as_array()
@@ -197,7 +230,7 @@ fn permission_hook_output(
             Some(permission_request_output(decision))
         }
         "auto" => {
-            if is_codex_source(source) {
+            if is_codex_source(source) || is_zcode_source(source) {
                 Some(permission_request_output(
                     serde_json::json!({ "behavior": "allow" }),
                 ))
@@ -936,7 +969,7 @@ fn main() {
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
                     let answer = resp["answer"].as_str().unwrap_or("");
                     let updated_input = ask_user_question_updated_input(&tool_input, answer);
-                    let output = ask_user_question_hook_output(updated_input);
+                    let output = ask_user_question_hook_output_for_source(&source, updated_input);
                     println!("{}", output);
                 }
                 return;
@@ -995,6 +1028,7 @@ fn main() {
                     "toolResponse",
                     "tool_result",
                     "toolResult",
+                    "toolResultPreview",
                     "result",
                 ],
             ) {
@@ -1053,7 +1087,8 @@ fn main() {
                     if let Some(resp) = send_and_maybe_receive(&state, true) {
                         let answer = resp["answer"].as_str().unwrap_or("");
                         let updated_input = ask_user_question_updated_input(&tool_input, answer);
-                        let output = ask_user_question_hook_output(updated_input);
+                        let output =
+                            ask_user_question_hook_output_for_source(&source, updated_input);
                         println!("{}", output);
                     }
                 }
@@ -1088,7 +1123,12 @@ fn main() {
 
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
                     let mode = resp["mode"].as_str().unwrap_or("manual");
-                    let output = plan_hook_output(tool_input, mode, resp["message"].as_str());
+                    let output = plan_hook_output_for_source(
+                        &source,
+                        tool_input,
+                        mode,
+                        resp["message"].as_str(),
+                    );
                     println!("{}", output);
                 }
                 return;
@@ -1151,6 +1191,8 @@ fn main() {
                     "last_assistant_message",
                     "lastAssistantMessage",
                     "summary",
+                    "responseText",
+                    "responsePreview",
                     "message",
                     "result",
                 ],
@@ -1398,6 +1440,22 @@ mod tests {
     }
 
     #[test]
+    fn zcode_question_output_matches_strict_pre_tool_schema() {
+        let output = ask_user_question_hook_output_for_source(
+            "zcode",
+            serde_json::json!({ "answers": { "Which view?": "Overlay" } }),
+        );
+        let hook_output = output["hookSpecificOutput"]
+            .as_object()
+            .expect("hook output object");
+
+        assert_eq!(hook_output["hookEventName"], "PreToolUse");
+        assert_eq!(hook_output["permissionDecision"], "allow");
+        assert!(hook_output.contains_key("updatedInput"));
+        assert!(!hook_output.contains_key("decision"));
+    }
+
+    #[test]
     fn ask_user_question_state_accepts_multiple_alias_and_string_options() {
         let tool_input = serde_json::json!({
             "questions": [
@@ -1503,6 +1561,21 @@ mod tests {
     }
 
     #[test]
+    fn zcode_plan_output_omits_unsupported_permission_updates() {
+        let output = plan_hook_output_for_source(
+            "zcode",
+            serde_json::json!({ "plan": "1. Update schema" }),
+            "bypassPermissions",
+            None,
+        );
+        let decision = &output["hookSpecificOutput"]["decision"];
+
+        assert_eq!(decision["behavior"], "allow");
+        assert!(decision.get("updatedInput").is_some());
+        assert!(decision.get("updatedPermissions").is_none());
+    }
+
+    #[test]
     fn codex_permission_output_never_returns_reserved_permission_fields() {
         let output = permission_hook_output(
             "codex",
@@ -1518,6 +1591,21 @@ mod tests {
         assert!(decision.get("updatedInput").is_none());
         assert!(decision.get("updatedPermissions").is_none());
         assert!(decision.get("interrupt").is_none());
+    }
+
+    #[test]
+    fn zcode_permission_output_matches_strict_permission_schema() {
+        let output = permission_hook_output(
+            "zcode",
+            "auto",
+            "",
+            true,
+            serde_json::json!([{ "type": "setMode", "mode": "bypassPermissions" }]),
+        )
+        .expect("permission output");
+        let decision = &output["hookSpecificOutput"]["decision"];
+
+        assert_eq!(decision, &serde_json::json!({ "behavior": "allow" }));
     }
 
     #[test]

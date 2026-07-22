@@ -26,6 +26,7 @@ pub fn detect_installed_tools() -> Vec<DetectedTool> {
         detect_tool("codebuddy", "CodeBuddy", &["codebuddy"], &[".codebuddy"]),
         detect_tool("qwen", "Qwen Coder", &["qwen-coder", "qwen"], &[".qwen"]),
         detect_tool("kimi", "Kimi", &["kimi"], &[".kimi"]),
+        detect_zcode(),
         detect_tool("deepseek", "DeepSeek", &["deepseek"], &[".deepseek"]),
         detect_tool(
             "opencode",
@@ -84,6 +85,28 @@ fn detect_cursor() -> DetectedTool {
         status,
         binary_path: binary_path.map(|p| p.display().to_string()),
         config_dir: config_dir.map(|p| p.display().to_string()),
+    }
+}
+
+fn detect_zcode() -> DetectedTool {
+    let binary_path = find_binary(&["zcode"]);
+    let config_dir = find_config_dir(&[".zcode"]);
+    let program_status = super::programs::detected_status_for_agent_program("zcode");
+
+    let status = if binary_path.is_some() || matches!(program_status, AdapterStatus::Available) {
+        AdapterStatus::Available
+    } else if config_dir.is_some() || matches!(program_status, AdapterStatus::Installed) {
+        AdapterStatus::Installed
+    } else {
+        AdapterStatus::Unavailable
+    };
+
+    DetectedTool {
+        name: "zcode".to_string(),
+        display_name: "ZCode".to_string(),
+        status,
+        binary_path: binary_path.map(|path| path.display().to_string()),
+        config_dir: config_dir.map(|path| path.display().to_string()),
     }
 }
 

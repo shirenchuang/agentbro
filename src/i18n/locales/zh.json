@@ -902,6 +902,15 @@
       "pack": "技能包",
       "packNamed": "技能包：{{name}}"
     },
+    "agentManagement": {
+      "packFilter": {
+        "label": "技能包归属",
+        "all": "全部",
+        "inPack": "技能包",
+        "standalone": "非技能包",
+        "noResults": "没有匹配的已管理 Skill"
+      }
+    },
     "reason": {
       "not_in_center_library": "未在中心库",
       "center_library_conflict": "中心库同名冲突"
