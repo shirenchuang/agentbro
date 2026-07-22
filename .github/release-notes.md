@@ -1,14 +1,16 @@
-# AgentBro v2.4.0
+# AgentBro v2.6.0
 
 ## English
 
-AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, making the skill manager more predictable when importing local skills or configuring agent-specific fields.
+AgentBro v2.6.0 makes skill setup and Agent maintenance faster, with batch marketplace installs, a menu-bar skill pack picker, and clearer lifecycle controls for local coding agents.
 
 ### Highlights
 
-- **Custom agent config fields** - Added support for agent-defined configuration fields in the add-agent dialog, so agents can request the settings they actually need during setup.
-- **Skill source selection** - Fixed skill source field selection to keep local, marketplace, and pack-backed skill flows aligned.
-- **Local skill import conflict handling** - Avoided false conflict warnings when importing local skills, reducing noisy blockers in normal skill management workflows.
+- **Batch marketplace installs** - Select multiple Skills from one repository, install them in a single background task, follow progress from anywhere in Settings, and cancel an active download when needed.
+- **Menu-bar skill pack picker** - Open a lightweight picker from the macOS menu bar to enable or disable skill packs without opening the full settings window.
+- **Practical Agent lifecycle controls** - Agent details now expose richer program, version, configuration, hook, and health information, with supported install, update, uninstall, and cleanup actions.
+- **Stronger skill organization** - Move directly distributed Skills into packs, batch-manage Agent Skills, resolve conflicts more clearly, and keep pack application progress visible while navigating.
+- **Smoother island and settings interactions** - Settings controls respond more fluidly, the island collapses before Settings opens, and native hover/cursor handling avoids transparent-window interference.
 
 ### Documentation
 
@@ -27,7 +29,7 @@ AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, 
 ### Downloads
 
 - Recommended download: `AgentBro_latest_universal.dmg`
-- Versioned archive: `AgentBro_2.4.0_universal.dmg`
+- Versioned archive: `AgentBro_2.6.0_universal.dmg`
 - Stable Windows installers: `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`; prereleases use versioned installer names.
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
 - Mainland China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
@@ -39,13 +41,15 @@ AgentBro v2.4.0 improves custom agent setup and tightens skill source handling, 
 
 ## 中文
 
-AgentBro v2.4.0 改进了自定义 Agent 设置和技能来源处理，让技能管理器在导入本地技能、配置 Agent 专属字段时更稳定、更可预期。
+AgentBro v2.6.0 让 Skill 配置和 Agent 维护更高效，新增技能市场批量安装、菜单栏技能包快切，并完善本地编程 Agent 的生命周期管理。
 
 ### 重点更新
 
-- **自定义 Agent 配置字段** - 新增 Add Agent 对话框对 Agent 自定义配置字段的支持，Agent 可以在设置时要求填写真正需要的参数。
-- **技能来源选择** - 修复技能来源字段选择逻辑，让本地、市场和技能包来源的流程保持一致。
-- **本地技能导入冲突处理** - 避免导入本地技能时出现误报冲突，减少正常技能管理流程里的干扰。
+- **技能市场批量安装** - 可从同一仓库选择多个 Skill，通过单个后台任务完成安装；离开市场页面后仍能查看进度，并可随时取消正在进行的下载。
+- **菜单栏技能包快切** - 可从 macOS 菜单栏打开轻量选择器，直接启用或停用技能包，无需进入完整设置窗口。
+- **更实用的 Agent 生命周期管理** - Agent 详情页提供更完整的程序、版本、配置、Hook 和健康信息，并为支持的 Agent 提供安装、更新、卸载与清理操作。
+- **更强的 Skill 整理能力** - 可将直接分发的 Skill 移入技能包、批量管理 Agent Skills、更清晰地解决冲突，并在页面切换时持续显示技能包应用进度。
+- **更流畅的灵动岛与设置交互** - 设置控件响应更及时；打开设置前会先折叠灵动岛，原生悬停和鼠标穿透处理也不再让透明窗口阻挡操作。
 
 ### 文档
 
@@ -64,7 +68,7 @@ AgentBro v2.4.0 改进了自定义 Agent 设置和技能来源处理，让技能
 ### 下载
 
 - 推荐下载: `AgentBro_latest_universal.dmg`
-- 版本归档: `AgentBro_2.4.0_universal.dmg`
+- 版本归档: `AgentBro_2.6.0_universal.dmg`
 - 稳定版 Windows 安装包: `AgentBro_latest_x64-setup.exe` 与 `AgentBro_latest_x64.msi`; 预览版使用带版本号的安装包文件名。
 - 自动更新文件: `AgentBro.app.tar.gz` 与 `latest.json`
 - 国内直链: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
