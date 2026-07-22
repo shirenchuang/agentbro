@@ -55,6 +55,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
         "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".kimi/skills"),
+        "doubao" => basic_skill_paths(&h, "Doubao/skills"),
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),
@@ -69,6 +70,11 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             settings_file: None,
         },
         "workbuddy" => basic_skill_paths(&h, ".workbuddy/skills"),
+        "zcode" => SkillPaths {
+            skill_dirs: vec![h.join(".zcode").join("skills")],
+            mcp_config: Some(h.join(".zcode").join("cli").join("config.json")),
+            settings_file: Some(h.join(".zcode").join("cli").join("config.json")),
+        },
         "copilot" => basic_skill_paths(&h, ".copilot/skills"),
         "kiro" => basic_skill_paths(&h, ".kiro/skills"),
         "pi" => basic_skill_paths(&h, ".pi/agent/skills"),
@@ -207,6 +213,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "antigravity",
         "qwen",
         "kimi",
+        "doubao",
         "deepseek",
         "droid",
         "stepfun",
@@ -214,6 +221,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "codebuddycn",
         "codybuddycn",
         "workbuddy",
+        "zcode",
         "kiro",
         "pi",
         "factory-droid",
@@ -250,6 +258,7 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
         "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
         "workbuddy" => Some(h.join(".workbuddy").join("plugins")),
+        "zcode" => Some(h.join(".zcode").join("cli").join("plugins").join("cache")),
         _ => custom_agent_plugin_dir(agent),
     }
 }

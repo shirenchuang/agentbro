@@ -240,11 +240,15 @@ describe('Skill library view mode (no Agent matrix)', () => {
     })
 
     const { SkillLibraryPage } = await import('../components/skills-v2/SkillLibraryPage')
-    render(<SkillLibraryPage />)
+    const { container } = render(<SkillLibraryPage />)
 
     await waitFor(() => {
       expect(skillApiV2.getPackDetail).toHaveBeenCalledWith('writing-pack')
     })
+    expect(await screen.findByLabelText(/写作包/)).toBeInTheDocument()
+    expect(container.querySelector('.sm2__skill-pack-membership--empty')).not.toBeNull()
+    fireEvent.click(screen.getByText('列表'))
+    expect(screen.getByLabelText(/写作包/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /技能包/ }))
     fireEvent.click(screen.getByRole('option', { name: /写作包/ }))
 
@@ -2818,6 +2822,49 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__agent-skill-card')).not.toBeNull()
     fireEvent.click(screen.getByText('列表'))
     expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
+  })
+
+  it('filters managed Agent skills by skill pack membership', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        skills: [
+          makeTarget({
+            id: 'target-direct',
+            skillId: 'direct-tool',
+            targetPath: '/c/skills/direct-tool',
+            claims: [{ id: 'claim-direct', claimType: 'direct', packId: null, packName: null, createdAt: '2026-01-01T00:00:00Z' }],
+          }),
+          makeTarget({
+            id: 'target-pack',
+            skillId: 'pack-tool',
+            targetPath: '/c/skills/pack-tool',
+            claims: [
+              { id: 'claim-pack-direct', claimType: 'direct', packId: null, packName: null, createdAt: '2026-01-01T00:00:00Z' },
+              { id: 'claim-pack', claimType: 'pack', packId: 'daily-tools', packName: 'Daily Tools', createdAt: '2026-01-01T00:00:00Z' },
+            ],
+          }),
+        ],
+      },
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (3)'))
+
+    const packFilter = screen.getByLabelText('技能包归属')
+    expect(screen.getByRole('option', { name: '全部 (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '技能包 (1)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '非技能包 (1)' })).toBeInTheDocument()
+
+    fireEvent.change(packFilter, { target: { value: 'pack' } })
+    expect(screen.getByText('pack-tool')).toBeInTheDocument()
+    expect(screen.queryByText('direct-tool')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '已管理 1' })).toBeInTheDocument()
+
+    fireEvent.change(packFilter, { target: { value: 'standalone' } })
+    expect(screen.getByText('direct-tool')).toBeInTheDocument()
+    expect(screen.queryByText('pack-tool')).not.toBeInTheDocument()
   })
 
   it('opens a center library install dialog from Agent skills and distributes only to the selected agent', async () => {

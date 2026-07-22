@@ -40,6 +40,8 @@ describe('agentApi seedAgentPrograms', () => {
     const agents = await seedWithPlatform('MacIntel')
 
     expect(agents.find((agent) => agent.id === 'cursor')?.appPath).toBe('/Applications/Cursor.app')
+    expect(agents.find((agent) => agent.id === 'zcode')?.appPath).toBe('/Applications/ZCode.app')
+    expect(agents.find((agent) => agent.id === 'doubao')?.appPath).toBe('/Applications/Doubao.app')
   })
 
   it('checks Tauri runtime at call time for install actions', async () => {

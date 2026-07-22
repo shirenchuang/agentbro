@@ -5208,6 +5208,7 @@ pub fn run() {
             commands::register_codex_app_server_bridge(codex_app_server.clone());
 
             hooks::claude_desktop_watcher::start(session_store.clone(), app.handle().clone());
+            hooks::doubao_watcher::start(session_store.clone());
             commands::start_codex_app_server_background_sync(
                 config_store.clone(),
                 session_store.clone(),

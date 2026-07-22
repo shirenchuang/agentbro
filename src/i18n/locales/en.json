@@ -788,6 +788,15 @@
       "pack": "Pack",
       "packNamed": "Pack: {{name}}"
     },
+    "agentManagement": {
+      "packFilter": {
+        "label": "Pack membership",
+        "all": "All",
+        "inPack": "In a pack",
+        "standalone": "Not in a pack",
+        "noResults": "No managed Skills match this filter"
+      }
+    },
     "reason": {
       "not_in_center_library": "Not in center library",
       "center_library_conflict": "Center library name conflict"

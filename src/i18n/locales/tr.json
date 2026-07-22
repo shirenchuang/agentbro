@@ -636,6 +636,15 @@
       "pack": "Paket",
       "packNamed": "Paket: {{name}}"
     },
+    "agentManagement": {
+      "packFilter": {
+        "label": "Paket üyeliği",
+        "all": "Tümü",
+        "inPack": "Pakette",
+        "standalone": "Paket dışında",
+        "noResults": "Bu filtreyle eşleşen yönetilen Skill yok"
+      }
+    },
     "reason": {
       "not_in_center_library": "Merkez kütüphanede yok",
       "center_library_conflict": "Merkez kütüphane ad çakışması"

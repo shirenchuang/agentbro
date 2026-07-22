@@ -17,6 +17,7 @@ import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
 type AgentSkillScope = 'managed' | 'unmanaged'
+type AgentSkillPackFilter = 'all' | 'pack' | 'standalone'
 type AgentLibraryScope = 'uninstalled' | 'installed' | 'all'
 type InstallBlockerDecision = 'overwrite' | 'skip'
 type PackBlockerDecision = DistributionBlockerDecision['action']
@@ -1007,6 +1008,7 @@ function SkillsTab({
   const [page, setPage] = useState(1)
   const [viewMode, setViewMode] = useState<AgentSkillViewMode>('cards')
   const [scope, setScope] = useState<AgentSkillScope>('managed')
+  const [packFilter, setPackFilter] = useState<AgentSkillPackFilter>('all')
   const [selectedManagedIds, setSelectedManagedIds] = useState<Set<string>>(() => new Set())
   const [selectedUnmanagedIds, setSelectedUnmanagedIds] = useState<Set<string>>(() => new Set())
   const [managedSelectionMode, setManagedSelectionMode] = useState(false)
@@ -1022,7 +1024,7 @@ function SkillsTab({
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
   const q = query.trim().toLowerCase()
-  const filteredManaged = useMemo(() => {
+  const searchedManaged = useMemo(() => {
     if (!q) return detail.skills
     return detail.skills.filter((s) =>
       [
@@ -1033,6 +1035,14 @@ function SkillsTab({
       ].filter(Boolean).join(' ').toLowerCase().includes(q),
     )
   }, [q, detail.skills])
+  const packFilterCounts = useMemo(() => {
+    const pack = searchedManaged.filter(hasSkillPackClaim).length
+    return { all: searchedManaged.length, pack, standalone: searchedManaged.length - pack }
+  }, [searchedManaged])
+  const filteredManaged = useMemo(() => {
+    if (packFilter === 'all') return searchedManaged
+    return searchedManaged.filter((skill) => packFilter === 'pack' ? hasSkillPackClaim(skill) : !hasSkillPackClaim(skill))
+  }, [packFilter, searchedManaged])
   const filteredUnmanaged = useMemo(() => {
     if (!q) return unmanaged
     return unmanaged.filter((u) =>
@@ -1063,7 +1073,7 @@ function SkillsTab({
     setSelectedUnmanagedIds(new Set())
     setBatchDeleteTargets(null)
     setDeleteUnmanagedTarget(null)
-  }, [detail.id, scope])
+  }, [detail.id, packFilter, scope])
 
   useEffect(() => {
     if (!localNotice) return
@@ -1285,6 +1295,20 @@ function SkillsTab({
       <div className="sm2__toolbar sm2__toolbar--inset sm2__toolbar--split">
         <input className="sm2__search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill 名称 / 路径 / 来源 / 原因" />
         <div className="sm2__agent-skill-actions">
+          {scope === 'managed' && (
+            <label className="sm2__agent-skill-pack-filter">
+              <span>{t('skills.agentManagement.packFilter.label')}</span>
+              <select
+                className="sm2__select"
+                value={packFilter}
+                onChange={(event) => setPackFilter(event.target.value as AgentSkillPackFilter)}
+              >
+                <option value="all">{t('skills.agentManagement.packFilter.all')} ({packFilterCounts.all})</option>
+                <option value="pack">{t('skills.agentManagement.packFilter.inPack')} ({packFilterCounts.pack})</option>
+                <option value="standalone">{t('skills.agentManagement.packFilter.standalone')} ({packFilterCounts.standalone})</option>
+              </select>
+            </label>
+          )}
           {scope === 'managed' ? (
             <>
               <button className="sm2__btn sm2__btn--primary" disabled={actionBusy || state.skills.length === 0} onClick={() => setInstallDialogOpen(true)}>
@@ -1361,6 +1385,7 @@ function SkillsTab({
           selectedIds={selectedManagedIds}
           deletingIds={deletingIds}
           busy={actionBusy}
+          emptyMessage={q || packFilter !== 'all' ? t('skills.agentManagement.packFilter.noResults') : undefined}
           onToggle={toggleManaged}
           onDelete={(skill) => deleteManaged([skill])}
           onOpenSkillDetail={onOpenSkillDetail}
@@ -2136,6 +2161,7 @@ function ManagedSkillCollection({
   selectedIds,
   deletingIds,
   busy,
+  emptyMessage,
   onToggle,
   onDelete,
   onOpenSkillDetail,
@@ -2146,12 +2172,13 @@ function ManagedSkillCollection({
   selectedIds: Set<string>
   deletingIds: Set<string>
   busy: boolean
+  emptyMessage?: string
   onToggle: (targetId: string) => void
   onDelete: (skill: AgentDetail['skills'][number]) => void
   onOpenSkillDetail: (skillId: string) => void
 }) {
   if (skills.length === 0) {
-    return <div className="sm2__empty sm2__empty--compact">暂无已管理 Skill</div>
+    return <div className="sm2__empty sm2__empty--compact">{emptyMessage || '暂无已管理 Skill'}</div>
   }
 
   if (mode === 'list') {
@@ -2455,6 +2482,10 @@ function toggleSetValue(current: Set<string>, value: string) {
   if (next.has(value)) next.delete(value)
   else next.add(value)
   return next
+}
+
+function hasSkillPackClaim(skill: AgentDetail['skills'][number]) {
+  return skill.claims.some((claim) => claim.claimType === 'pack')
 }
 
 function uniqueValues(values: string[]) {

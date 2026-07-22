@@ -8893,6 +8893,49 @@
   color: var(--sm2-library-green);
 }
 
+.sm2--library .sm2__skill-pack-membership {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 190px;
+  min-height: 24px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  border: 1px solid rgba(108, 92, 255, 0.18);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(108, 92, 255, 0.08);
+  color: #5546d8;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.sm2--library .sm2__skill-pack-membership svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+}
+
+.sm2--library .sm2__skill-pack-membership > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm2--library .sm2__skill-pack-membership--empty {
+  border-color: rgba(104, 113, 129, 0.14);
+  background: rgba(104, 113, 129, 0.055);
+  color: var(--sm2-library-muted);
+}
+
 .sm2--library .sm2__row {
   border-color: var(--sm2-library-border);
   border-radius: 10px;
@@ -10966,6 +11009,28 @@
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.sm2--agents .sm2__agent-skill-pack-filter {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--sm2-agent-muted);
+  font-size: 11px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.sm2--agents .sm2__agent-skill-pack-filter .sm2__select {
+  min-width: 136px;
+  height: 34px;
+  border-color: var(--sm2-agent-border);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--sm2-agent-text);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.74) inset;
+  cursor: pointer;
+  font-weight: 720;
 }
 
 .sm2--agents .sm2__agent-skill-actions > span {

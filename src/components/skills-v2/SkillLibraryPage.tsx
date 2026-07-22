@@ -54,6 +54,20 @@ export function SkillLibraryPage() {
     const memberSet = new Set(memberIds)
     return baseSkills.filter((skill) => memberSet.has(skill.id))
   }, [baseSkills, packFilter, packMembersById])
+  const packMembershipsReady = useMemo(
+    () => filterablePacks.every((pack) => Object.prototype.hasOwnProperty.call(packMembersById, pack.id)),
+    [filterablePacks, packMembersById],
+  )
+  const packNamesBySkillId = useMemo(() => {
+    const next: Record<string, string[]> = {}
+    for (const pack of filterablePacks) {
+      for (const skillId of packMembersById[pack.id] ?? []) {
+        if (!next[skillId]) next[skillId] = []
+        next[skillId].push(pack.name)
+      }
+    }
+    return next
+  }, [filterablePacks, packMembersById])
   const selectedSkills = useMemo(
     () => state.skills.filter((skill) => selectedSkillIds.has(skill.id)),
     [selectedSkillIds, state.skills],
@@ -328,6 +342,7 @@ export function SkillLibraryPage() {
               <SkillCard
                 key={s.id}
                 skill={s}
+                packNames={packMembershipsReady ? packNamesBySkillId[s.id] ?? [] : null}
                 batchMode={batchMode}
                 selected={selectedSkillIds.has(s.id)}
                 onToggleSelection={() => toggleSkillSelection(s.id)}
@@ -367,6 +382,7 @@ export function SkillLibraryPage() {
                   <div className="sm2__row-sub">{skillSourceTypeLabel(t, s.sourceType)} · {STATUS_LABEL[s.status] || s.status}</div>
                 </div>
                 <CopyDiffMarker count={copyDiffCount(s)} />
+                <SkillPackMembership packNames={packMembershipsReady ? packNamesBySkillId[s.id] ?? [] : null} />
                 <AgentBadges skill={s} />
               </div>
             ))}
@@ -623,12 +639,14 @@ function CopyDiffMarker({ count }: { count: number }) {
 
 function SkillCard({
   skill,
+  packNames,
   batchMode,
   selected,
   onToggleSelection,
   onClick,
 }: {
   skill: SkillSummary
+  packNames: string[] | null
   batchMode: boolean
   selected: boolean
   onToggleSelection: () => void
@@ -677,7 +695,35 @@ function SkillCard({
           </div>
         )}
         {skill.installedAgents.length === 0 && <span className="sm2__row-sub">尚未分发到 Agent</span>}
+        <SkillPackMembership packNames={packNames} />
       </div>
     </div>
+  )
+}
+
+function SkillPackMembership({ packNames }: { packNames: string[] | null }) {
+  const { t } = useTranslation()
+  const visibleName = packNames === null
+    ? '…'
+    : packNames.length > 1
+      ? `${packNames[0]} +${packNames.length - 1}`
+      : packNames[0] ?? '—'
+  const label = t('skills.claim.packNamed', { name: visibleName, defaultValue: 'Pack: {{name}}' })
+  const title = packNames?.length
+    ? packNames.map((name) => t('skills.claim.packNamed', { name, defaultValue: 'Pack: {{name}}' })).join('\n')
+    : label
+
+  return (
+    <span
+      className={`sm2__skill-pack-membership${packNames?.length ? '' : ' sm2__skill-pack-membership--empty'}`}
+      aria-label={label}
+      title={title}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="m2.5 5 5.5-3 5.5 3v6L8 14l-5.5-3V5Z" />
+        <path d="M2.8 5 8 8l5.2-3M8 8v5.7" />
+      </svg>
+      <span>{label}</span>
+    </span>
   )
 }

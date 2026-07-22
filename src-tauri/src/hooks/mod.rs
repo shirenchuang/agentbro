@@ -1,5 +1,6 @@
 // Hook Server — TCP/Unix socket server for agent hook events
 pub mod claude_desktop_watcher;
+pub mod doubao_watcher;
 pub mod conversation_parser;
 pub mod diagnostics;
 pub mod file_watcher;

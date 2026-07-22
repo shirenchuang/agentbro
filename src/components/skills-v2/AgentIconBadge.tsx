@@ -16,6 +16,8 @@ import openclawIcon from '../../assets/openclaw.png'
 import qclawIcon from '../../assets/qclaw.png'
 import easyclawIcon from '../../assets/easyclaw.png'
 import autoclawIcon from '../../assets/autoclaw.png'
+import zcodeIcon from '../../assets/cli-icons/zcode.svg'
+import doubaoIcon from '../../assets/cli-icons/doubao.svg'
 
 const agentIcons: Record<string, string> = {
   'claude-code': claudeIcon,
@@ -39,6 +41,8 @@ const agentIcons: Record<string, string> = {
   qoder: qoderIcon,
   'qoder-cli': qoderIcon,
   pi: piIcon,
+  zcode: zcodeIcon,
+  doubao: doubaoIcon,
 }
 
 const agentColors: Record<string, string> = {
@@ -64,6 +68,8 @@ const agentColors: Record<string, string> = {
   kiro: '#F59E0B',
   hermes: '#14B8A6',
   workbuddy: '#16C8A7',
+  zcode: '#FFFFFF',
+  doubao: '#5A75FF',
 }
 
 const agentLabels: Record<string, string> = {
@@ -89,6 +95,8 @@ const agentLabels: Record<string, string> = {
   kiro: 'Ki',
   hermes: 'H',
   workbuddy: 'WB',
+  zcode: 'Z',
+  doubao: '豆',
 }
 
 export function AgentIconBadge({

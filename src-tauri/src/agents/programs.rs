@@ -981,11 +981,13 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "qwen" => "Qwen Code",
         "deepseek" => "DeepSeek",
         "kimi" => "Kimi",
+        "doubao" => "Doubao",
         "droid" | "factory-droid" => "Factory Droid",
         "stepfun" => "StepFun",
         "codebuddy" => "CodeBuddy",
         "codebuddycn" | "codybuddycn" => "CodyBuddyCN",
         "workbuddy" => "WorkBuddy",
+        "zcode" => "ZCode",
         "kiro" => "Kiro",
         "pi" => "Pi",
         "junie" => "Junie",
@@ -1133,6 +1135,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.kimi",
             "https://www.kimi.com",
         ),
+        "doubao" => app(
+            "doubao",
+            "/Applications/Doubao.app",
+            "~/Library/Application Support/Doubao",
+            "https://www.doubao.com/download/desktop",
+        ),
         "droid" => app(
             "droid",
             "/Applications/Factory.app",
@@ -1156,6 +1164,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "/Applications/WorkBuddy.app",
             "~/.workbuddy",
             "https://workbuddy.ai",
+        ),
+        "zcode" => app(
+            "zcode",
+            "/Applications/ZCode.app",
+            "~/.zcode",
+            "https://zcode.z.ai/cn",
         ),
         "hermes" => app(
             "hermes",
@@ -1376,6 +1390,22 @@ mod tests {
         assert_eq!(
             codex.update_command,
             Some("npm install -g @openai/codex@latest"),
+        );
+    }
+
+    #[test]
+    fn doubao_metadata_uses_the_macos_app_and_official_download() {
+        let doubao = metadata_for("doubao").expect("doubao metadata");
+
+        assert_eq!(doubao.kind, AgentProgramKind::App);
+        assert_eq!(doubao.app_path, Some("/Applications/Doubao.app"));
+        assert_eq!(
+            doubao.config_dir,
+            Some("~/Library/Application Support/Doubao")
+        );
+        assert_eq!(
+            doubao.download_url,
+            Some("https://www.doubao.com/download/desktop")
         );
     }
 

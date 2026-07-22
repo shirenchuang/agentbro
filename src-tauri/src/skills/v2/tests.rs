@@ -2753,6 +2753,61 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
 }
 
 #[test]
+fn agent_detail_reads_zcode_nested_mcp_and_plugins() {
+    let (_home, svc, _lock) = fresh_service("zcode-agent-detail");
+    let zcode_dir = svc.home.join(".zcode/cli");
+    fs::create_dir_all(&zcode_dir).unwrap();
+    fs::write(
+        zcode_dir.join("config.json"),
+        serde_json::json!({
+            "mcp": {
+                "servers": {
+                    "filesystem": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                        "enabled": true
+                    }
+                }
+            },
+            "plugins": {
+                "enabledPlugins": {
+                    "reviewer@official": false
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plugin_manifest =
+        zcode_dir.join("plugins/cache/official/reviewer/1.2.3/.zcode-plugin/plugin.json");
+    fs::create_dir_all(plugin_manifest.parent().unwrap()).unwrap();
+    fs::write(
+        &plugin_manifest,
+        serde_json::json!({
+            "name": "reviewer",
+            "displayName": "Reviewer Tools",
+            "version": "1.2.3"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("zcode").unwrap();
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "filesystem" && server.command == "npx"));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "reviewer@official"
+            && plugin.name == "Reviewer Tools"
+            && plugin.version.as_deref() == Some("1.2.3")
+            && !plugin.enabled
+            && plugin.source.as_deref() == Some("zcode-plugin:official")
+    }));
+}
+
+#[test]
 fn agent_detail_reports_codex_toml_config_paths() {
     let (_home, svc, _lock) = fresh_service("codex-config-paths");
     let codex_dir = svc.home.join(".codex");

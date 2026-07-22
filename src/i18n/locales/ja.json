@@ -789,6 +789,15 @@
       "pack": "パック",
       "packNamed": "パック: {{name}}"
     },
+    "agentManagement": {
+      "packFilter": {
+        "label": "パック所属",
+        "all": "すべて",
+        "inPack": "パック内",
+        "standalone": "パック外",
+        "noResults": "フィルターに一致する管理済み Skill はありません"
+      }
+    },
     "reason": {
       "not_in_center_library": "中央ライブラリにありません",
       "center_library_conflict": "中央ライブラリの同名競合"

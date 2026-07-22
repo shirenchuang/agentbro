@@ -28,6 +28,7 @@ pub enum JsonHookEntry {
 #[derive(Clone, Copy)]
 pub enum InstallationKind {
     JsonHooks { entry: JsonHookEntry, nested: bool },
+    ZcodeJsonHooks,
     YamlHooks,
     CursorSettings,
     KiroAgentFile,
@@ -491,6 +492,20 @@ pub const WORKBUDDY_EVENTS: &[HookEventDescriptor] = &[
     plain_event("SubagentStop"),
 ];
 
+pub const ZCODE_EVENTS: &[HookEventDescriptor] = &[
+    plain_event("SessionStart"),
+    plain_event("UserPromptSubmit"),
+    plain_event("PreToolUse"),
+    HookEventDescriptor {
+        name: "PermissionRequest",
+        template: HookEntryTemplate::Plain,
+        timeout: Some(21_600),
+    },
+    plain_event("PostToolUse"),
+    plain_event("PostToolUseFailure"),
+    plain_event("Stop"),
+];
+
 const fn plain_event(name: &'static str) -> HookEventDescriptor {
     HookEventDescriptor {
         name,
@@ -686,6 +701,18 @@ pub fn workbuddy_profile() -> AgentIntegrationProfile {
     }
 }
 
+pub fn zcode_profile() -> AgentIntegrationProfile {
+    AgentIntegrationProfile {
+        id: "zcode",
+        installation_kind: InstallationKind::ZcodeJsonHooks,
+        configuration_path: ".zcode/cli/config.json",
+        activation_path: None,
+        source: "zcode",
+        extra_args: &[],
+        events: ZCODE_EVENTS,
+    }
+}
+
 fn json_profile(
     id: &'static str,
     configuration_path: &'static str,
@@ -824,6 +851,7 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "qwen" => Some(qwen_profile()),
         "stepfun" => Some(stepfun_profile()),
         "workbuddy" => Some(workbuddy_profile()),
+        "zcode" => Some(zcode_profile()),
         _ => None,
     }
 }
@@ -911,6 +939,10 @@ pub fn install_at(
         InstallationKind::JsonHooks { nested: false, .. } => {
             update_json_hooks(profile, path)?;
         }
+        InstallationKind::ZcodeJsonHooks => {
+            let command = managed_bridge_command(profile)?;
+            update_zcode_json_hooks(profile, path, &command)?;
+        }
         InstallationKind::YamlHooks => {
             update_yaml_hooks(profile, path)?;
         }
@@ -977,6 +1009,9 @@ fn install_at_labeled(
                 entries.push(flat_json_hook_entry(entry, &event, &command));
             }
             hook_manager::write_json_config(path, &settings)?;
+        }
+        InstallationKind::ZcodeJsonHooks => {
+            update_zcode_json_hooks(profile, path, &command)?;
         }
         _ => {
             install_at(profile, path)?;
@@ -1085,6 +1120,9 @@ pub fn uninstall_at(
         InstallationKind::JsonHooks { nested: false, .. } => {
             remove_json_hooks(profile, path)?;
         }
+        InstallationKind::ZcodeJsonHooks => {
+            remove_zcode_json_hooks(profile, path)?;
+        }
         InstallationKind::YamlHooks => {
             hook_manager::remove_hooks_yaml(path)?;
         }
@@ -1128,6 +1166,7 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
         InstallationKind::JsonHooks { .. }
         | InstallationKind::YamlHooks
         | InstallationKind::KiroAgentFile => hook_manager::has_agentbro_hooks(path),
+        InstallationKind::ZcodeJsonHooks => zcode_json_hooks_contain_profile(profile, path),
         InstallationKind::ExecutableHookFiles => executable_hook_files_installed(profile, path),
         InstallationKind::CursorSettings => cursor_settings_enabled(path),
         InstallationKind::PluginFile => {
@@ -1151,6 +1190,7 @@ pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookIns
 
     match profile.installation_kind {
         InstallationKind::JsonHooks { nested, .. } => json_hooks_health(profile, path, nested),
+        InstallationKind::ZcodeJsonHooks => zcode_json_hooks_health(profile, path),
         InstallationKind::YamlHooks | InstallationKind::TomlHooks => {
             text_hooks_health(profile, path)
         }
@@ -1834,6 +1874,181 @@ fn remove_nested_json_hooks(
     let mut settings = hook_manager::read_json_config(path);
     strip_json_hooks_for_profile(&mut settings, profile);
     hook_manager::write_json_config(path, &settings)
+}
+
+fn update_zcode_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    command: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut settings = read_zcode_json_config(path)?;
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = serde_json::json!({});
+    } else if !settings.get("hooks").is_some_and(Value::is_object) {
+        return Err(invalid_zcode_config(path, "hooks must be an object"));
+    }
+    if settings["hooks"].get("enabled").is_some()
+        && !settings["hooks"]
+            .get("enabled")
+            .is_some_and(Value::is_boolean)
+    {
+        return Err(invalid_zcode_config(
+            path,
+            "hooks.enabled must be a boolean",
+        ));
+    }
+    settings["hooks"]["enabled"] = Value::Bool(true);
+    if settings["hooks"].get("events").is_none() {
+        settings["hooks"]["events"] = serde_json::json!({});
+    } else if !settings["hooks"]
+        .get("events")
+        .is_some_and(Value::is_object)
+    {
+        return Err(invalid_zcode_config(path, "hooks.events must be an object"));
+    }
+    strip_zcode_json_hooks_for_profile(&mut settings, profile);
+
+    let events = settings["hooks"]["events"]
+        .as_object_mut()
+        .expect("ZCode hook events is object");
+    for event in effective_events(profile) {
+        let value = events
+            .entry(event.name.to_string())
+            .or_insert_with(|| serde_json::json!([]));
+        if !value.is_array() {
+            *value = serde_json::json!([]);
+        }
+        let groups = value.as_array_mut().expect("ZCode event hooks is array");
+        groups.retain(|group| !json_hook_contains_profile(group, profile));
+
+        let mut hook = serde_json::json!({
+            "type": "command",
+            "command": command,
+        });
+        if let Some(timeout) = event.timeout {
+            hook["timeout"] = serde_json::json!(timeout);
+        }
+        groups.push(serde_json::json!({ "hooks": [hook] }));
+    }
+
+    hook_manager::write_json_config(path, &settings)?;
+    Ok(settings)
+}
+
+fn remove_zcode_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut settings = read_zcode_json_config(path)?;
+    strip_zcode_json_hooks_for_profile(&mut settings, profile);
+    hook_manager::write_json_config(path, &settings)
+}
+
+fn strip_zcode_json_hooks_for_profile(settings: &mut Value, profile: &AgentIntegrationProfile) {
+    let Some(events) = settings
+        .get_mut("hooks")
+        .and_then(|hooks| hooks.get_mut("events"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    for entries in events.values_mut() {
+        if let Some(entries) = entries.as_array_mut() {
+            for entry in entries.iter_mut() {
+                if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                    hooks.retain(|hook| !json_hook_contains_profile(hook, profile));
+                }
+            }
+            entries.retain(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(Value::as_array)
+                    .map(|hooks| !hooks.is_empty())
+                    .unwrap_or_else(|| !json_hook_contains_profile(entry, profile))
+            });
+        }
+    }
+    events.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
+}
+
+fn zcode_json_hooks_contain_profile(profile: &AgentIntegrationProfile, path: &Path) -> bool {
+    let settings = hook_manager::read_json_config(path);
+    if settings.pointer("/hooks/enabled").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    let Some(events) = settings.pointer("/hooks/events").and_then(Value::as_object) else {
+        return false;
+    };
+    events.values().any(|entries| {
+        let mut commands = Vec::new();
+        collect_json_agentbro_commands(entries, &mut commands);
+        commands
+            .iter()
+            .any(|command| agentbro_command_matches_profile(profile, command))
+    })
+}
+
+fn zcode_json_hooks_health(profile: &AgentIntegrationProfile, path: &Path) -> HookInstallHealth {
+    let settings = match read_json_health(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(events) = settings.pointer("/hooks/events").and_then(Value::as_object) else {
+        return HookInstallHealth::NotInstalled;
+    };
+
+    let contains_profile = events.values().any(|entries| {
+        let mut commands = Vec::new();
+        collect_json_agentbro_commands(entries, &mut commands);
+        commands
+            .iter()
+            .any(|command| agentbro_command_matches_profile(profile, command))
+    });
+    if !contains_profile {
+        return HookInstallHealth::NotInstalled;
+    }
+    if settings.pointer("/hooks/enabled").and_then(Value::as_bool) != Some(true) {
+        return HookInstallHealth::NeedsReinstall;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+    if effective_events(profile)
+        .iter()
+        .any(|event| !json_event_has_current_profile_command(events, profile, event))
+    {
+        return HookInstallHealth::NeedsReinstall;
+    }
+
+    HookInstallHealth::Installed
+}
+
+fn read_zcode_json_config(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = std::fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Err(invalid_zcode_config(path, "file is empty"));
+    }
+    let settings: Value = serde_json::from_str(&content)
+        .map_err(|error| invalid_zcode_config(path, &error.to_string()))?;
+    if !settings.is_object() {
+        return Err(invalid_zcode_config(path, "expected object"));
+    }
+    Ok(settings)
+}
+
+fn invalid_zcode_config(path: &Path, reason: &str) -> Box<dyn std::error::Error> {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("Invalid ZCode config {}: {reason}", path.display()),
+    )
+    .into()
 }
 
 pub fn install_nested_json_hooks_at(
@@ -3344,6 +3559,191 @@ name = "also keep"
         );
         assert!(updated["hooks"].get("PermissionRequest").is_some());
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn zcode_profile_writes_hooks_under_events_object() {
+        let profile = zcode_profile();
+        assert_eq!(profile.configuration_path, ".zcode/cli/config.json");
+        assert!(matches!(
+            profile.installation_kind,
+            InstallationKind::ZcodeJsonHooks
+        ));
+
+        let settings = serde_json::json!({
+            "model": "keep-me",
+            "hooks": {
+                "enabled": false,
+                "events": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/usr/local/bin/personal-zcode-hook"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        });
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-zcode-profile-{}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let updated = update_zcode_json_hooks(
+            &profile,
+            &path,
+            "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source zcode",
+        )
+        .unwrap();
+
+        assert_eq!(updated["model"], "keep-me");
+        assert_eq!(updated["hooks"]["enabled"], true);
+        assert_eq!(
+            updated["hooks"]["events"]["SessionStart"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            updated["hooks"]["events"]["SessionStart"][1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--source zcode")
+        );
+        assert!(updated["hooks"]["events"]["PreToolUse"][0]
+            .get("matcher")
+            .is_none());
+        assert_eq!(
+            updated["hooks"]["events"]["PermissionRequest"][0]["hooks"][0]["timeout"],
+            21_600
+        );
+        for event in ZCODE_EVENTS {
+            assert!(
+                updated["hooks"]["events"].get(event.name).is_some(),
+                "missing ZCode event {}",
+                event.name
+            );
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn zcode_cleanup_preserves_unmanaged_hooks() {
+        let profile = zcode_profile();
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "events": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/Users/me/.agentbro/bin/agentbro-bridge --source zcode"
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "/usr/local/bin/shared-personal-hook"
+                                }
+                            ]
+                        },
+                        {
+                            "hooks": [{
+                                "type": "command",
+                                "command": "/usr/local/bin/personal-hook"
+                            }]
+                        }
+                    ]
+                }
+            }
+        });
+
+        strip_zcode_json_hooks_for_profile(&mut settings, &profile);
+
+        let entries = settings["hooks"]["events"]["PreToolUse"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0]["hooks"][0]["command"],
+            "/usr/local/bin/shared-personal-hook"
+        );
+        assert_eq!(entries[0]["matcher"], "Bash");
+        assert_eq!(
+            entries[1]["hooks"][0]["command"],
+            "/usr/local/bin/personal-hook"
+        );
+    }
+
+    #[test]
+    fn zcode_disabled_hooks_are_not_reported_as_installed() {
+        let profile = zcode_profile();
+        let settings = serde_json::json!({
+            "hooks": {
+                "enabled": false,
+                "events": {
+                    "SessionStart": [{
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/Users/me/.agentbro/bin/agentbro-bridge --source zcode"
+                        }]
+                    }]
+                }
+            }
+        });
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-zcode-disabled-{}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(!zcode_json_hooks_contain_profile(&profile, &path));
+        assert_eq!(
+            zcode_json_hooks_health(&profile, &path),
+            HookInstallHealth::NeedsReinstall
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn zcode_install_rejects_malformed_config_without_overwriting_it() {
+        let profile = zcode_profile();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-zcode-malformed-{}-{suffix}.json",
+            std::process::id()
+        ));
+        let original = r#"{"model":"glm-5", invalid}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let result = update_zcode_json_hooks(
+            &profile,
+            &path,
+            "/Users/me/.agentbro/bin/agentbro-bridge --source zcode",
+        );
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_file(path);
     }
 

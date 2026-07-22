@@ -1,4 +1,4 @@
-use super::agent_paths;
+use super::{agent_paths, zcode_config};
 use super::{
     GitHubSkillPreview, InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest,
     TargetConfig,
@@ -992,6 +992,9 @@ pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), St
     if let Some(plugin_id) = skill_id.strip_prefix("plugin:") {
         return toggle_plugin(plugin_id, agent, enabled);
     }
+    if agent == "zcode" {
+        return toggle_zcode_skill(skill_id, enabled);
+    }
 
     let paths = agent_paths::paths_for_agent(agent);
     let settings_path = match paths.settings_file {
@@ -1029,20 +1032,56 @@ pub fn toggle_skill(skill_id: &str, agent: &str, enabled: bool) -> Result<(), St
     fs::write(&settings_path, content).map_err(|e| e.to_string())
 }
 
+fn toggle_zcode_skill(skill_id: &str, enabled: bool) -> Result<(), String> {
+    let paths = agent_paths::paths_for_agent("zcode");
+    let settings_path = paths
+        .settings_file
+        .ok_or_else(|| "ZCode has no settings file".to_string())?;
+    let skill_path = find_zcode_skill_path(&paths.skill_dirs, skill_id)
+        .ok_or_else(|| format!("ZCode skill not found: {skill_id}"))?;
+    let mut json = read_json_object(&settings_path)?;
+    zcode_config::skill_overrides_mut(&mut json)?.insert(
+        skill_path.display().to_string(),
+        serde_json::json!({ "enable": enabled }),
+    );
+    write_json_object(&settings_path, &json)
+}
+
+fn find_zcode_skill_path(skill_dirs: &[PathBuf], skill_id: &str) -> Option<PathBuf> {
+    for root in skill_dirs {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|name| name.to_str());
+            if file_name == Some(skill_id) || frontmatter_name(&path).as_deref() == Some(skill_id) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn toggle_plugin(plugin_id: &str, agent: &str, enabled: bool) -> Result<(), String> {
     let settings_path = agent_paths::paths_for_agent(agent)
         .settings_file
         .ok_or_else(|| format!("Agent {} has no settings file", agent))?;
     let mut json = read_json_object(&settings_path)?;
-    let enabled_plugins = json
-        .as_object_mut()
-        .ok_or("Settings is not an object")?
-        .entry("enabledPlugins")
-        .or_insert_with(|| serde_json::json!({}));
-    enabled_plugins
-        .as_object_mut()
-        .ok_or("enabledPlugins is not an object")?
-        .insert(plugin_id.to_string(), serde_json::Value::Bool(enabled));
+    if agent == "zcode" {
+        zcode_config::enabled_plugins_mut(&mut json)?
+            .insert(plugin_id.to_string(), serde_json::Value::Bool(enabled));
+    } else {
+        let enabled_plugins = json
+            .as_object_mut()
+            .ok_or("Settings is not an object")?
+            .entry("enabledPlugins")
+            .or_insert_with(|| serde_json::json!({}));
+        enabled_plugins
+            .as_object_mut()
+            .ok_or("enabledPlugins is not an object")?
+            .insert(plugin_id.to_string(), serde_json::Value::Bool(enabled));
+    }
     write_json_object(&settings_path, &json)
 }
 
@@ -1058,15 +1097,6 @@ pub fn upsert_mcp_server(agent: &str, server: &McpServerConfig) -> Result<(), St
         .mcp_config
         .ok_or_else(|| format!("Agent {} has no MCP config file", agent))?;
     let mut json = read_json_object(&config_path)?;
-    let servers = json
-        .as_object_mut()
-        .ok_or("MCP config is not an object")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let servers = servers
-        .as_object_mut()
-        .ok_or("mcpServers is not an object")?;
     let mut value = serde_json::json!({
         "command": server.command,
         "args": server.args,
@@ -1074,6 +1104,18 @@ pub fn upsert_mcp_server(agent: &str, server: &McpServerConfig) -> Result<(), St
     if !server.env.is_empty() {
         value["env"] = serde_json::to_value(&server.env).map_err(|e| e.to_string())?;
     }
+    let servers = if agent == "zcode" {
+        value["type"] = serde_json::json!("stdio");
+        value["enabled"] = serde_json::json!(true);
+        zcode_config::mcp_servers_mut(&mut json)?
+    } else {
+        json.as_object_mut()
+            .ok_or("MCP config is not an object")?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or("mcpServers is not an object")?
+    };
     servers.insert(server.name.clone(), value);
     write_json_object(&config_path, &json)
 }
@@ -1141,9 +1183,18 @@ pub fn remove_mcp_server(agent: &str, server_name: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut json = read_json_object(&config_path)?;
-    for key in ["mcpServers", "mcp_servers"] {
-        if let Some(servers) = json.get_mut(key).and_then(|value| value.as_object_mut()) {
+    if agent == "zcode" {
+        if let Some(servers) = json
+            .pointer_mut("/mcp/servers")
+            .and_then(serde_json::Value::as_object_mut)
+        {
             servers.remove(server_name);
+        }
+    } else {
+        for key in ["mcpServers", "mcp_servers"] {
+            if let Some(servers) = json.get_mut(key).and_then(|value| value.as_object_mut()) {
+                servers.remove(server_name);
+            }
         }
     }
     write_json_object(&config_path, &json)
@@ -1154,6 +1205,16 @@ fn toggle_mcp_server(server_name: &str, agent: &str, enabled: bool) -> Result<()
         .mcp_config
         .ok_or_else(|| format!("Agent {} has no MCP config file", agent))?;
     let mut json = read_json_object(&config_path)?;
+    if agent == "zcode" {
+        let server = zcode_config::mcp_servers_mut(&mut json)?
+            .get_mut(server_name)
+            .ok_or_else(|| format!("MCP server not found: {server_name}"))?;
+        server
+            .as_object_mut()
+            .ok_or_else(|| format!("Invalid ZCode MCP server: {server_name}"))?
+            .insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+        return write_json_object(&config_path, &json);
+    }
     let disabled = json
         .as_object_mut()
         .ok_or("MCP config is not an object")?

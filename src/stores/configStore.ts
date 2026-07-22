@@ -316,6 +316,7 @@ const defaultAgentHooks: AgentHook[] = [
   { agentType: 'stepfun', label: 'StepFun', enabled: false, connected: false },
   { agentType: 'antigravity', label: 'AntiGravity', enabled: false, connected: false },
   { agentType: 'workbuddy', label: 'WorkBuddy', enabled: false, connected: false },
+  { agentType: 'zcode', label: 'ZCode', enabled: false, connected: false },
   { agentType: 'hermes', label: 'Hermes', enabled: false, connected: false },
   { agentType: 'pi', label: 'Pi', enabled: false, connected: false },
   { agentType: 'kiro', label: 'Kiro', enabled: false, connected: false },
