@@ -720,6 +720,134 @@
   "skills": {
     "title": "技能管理",
     "description": "管理 AI Agent 的 Skills、MCP 和插件，支持跨设备同步。",
+    "mcpManagement": {
+      "summary": "MCP 状态摘要",
+      "total": "全部",
+      "enabledCount": "已启用",
+      "invalidCount": "异常",
+      "scanning": "扫描中…",
+      "rescan": "重新扫描",
+      "add": "新增 MCP",
+      "readOnly": "当前 Agent 的 MCP 配置暂时只读。首版支持 Claude Code、Codex、Gemini CLI、Cursor、Kimi Code 和 ZCode。",
+      "configPath": "配置文件",
+      "emptyTitle": "还没有 MCP 服务器",
+      "emptyDescription": "添加本地命令或远程服务，让此 Agent 获得更多工具能力。",
+      "addFirst": "添加第一个 MCP",
+      "saved": "已保存 MCP「{{name}}」",
+      "disabled": "已停用 MCP「{{name}}」",
+      "enabled": "已启用 MCP「{{name}}」",
+      "deleted": "已删除 MCP「{{name}}」",
+      "valid": "配置正常",
+      "invalid": "配置异常",
+      "disabledByAgentbro": "由 AgentBro 停用",
+      "testConnected": "连接成功",
+      "testFailed": "连接失败",
+      "toggleLabel": "启用或停用 {{name}}",
+      "readOnlyTag": "只读",
+      "testing": "测试中…",
+      "test": "测试连接",
+      "edit": "编辑",
+      "delete": "删除",
+      "deleteTitle": "删除 MCP「{{name}}」？",
+      "deleteConfirm": "确认删除",
+      "deleting": "删除中",
+      "deleteDescription": "将从 {{agent}} 的全局配置中删除「{{name}}」。AgentBro 会在写入前创建本地备份。",
+      "editor": {
+        "editTitle": "编辑 MCP「{{name}}」",
+        "addTitle": "新增 MCP 服务器",
+        "name": "名称",
+        "transport": "连接方式",
+        "transportOptions": {
+          "stdio": "stdio（本地命令）",
+          "http": "HTTP（远程服务）",
+          "sse": "SSE（兼容旧服务）"
+        },
+        "transportShortOptions": {
+          "stdio": "本地命令",
+          "http": "HTTP",
+          "sse": "SSE"
+        },
+        "command": "命令",
+        "arguments": "参数",
+        "addArgument": "添加参数",
+        "cwd": "工作目录（可选）",
+        "environment": "环境变量",
+        "addEnvironment": "添加环境变量",
+        "url": "服务地址",
+        "headers": "请求头",
+        "addHeader": "添加请求头",
+        "secretNote": "Token、Key、Secret、Password 和 Authorization 等敏感值不会回显；不修改时会原样保留。",
+        "key": "键",
+        "value": "值",
+        "secretConfigured": "已配置，留空则保持不变",
+        "saving": "保存中…"
+      },
+      "inspector": {
+        "title": "MCP 检查器 · {{name}}",
+        "subtitle": "{{agent}} · {{transport}}",
+        "inspect": "检查",
+        "inspecting": "检查中…",
+        "reinspect": "重新检查",
+        "disabledNotice": "此 MCP 当前已停用。本次只读检查会临时启动或连接该服务，完成后立即关闭。",
+        "loadingTitle": "正在检查 MCP 能力",
+        "loadingDescription": "正在协商协议并只读获取 Tools、Resources 和 Prompts，不会调用任何工具。",
+        "unavailable": "无法启动检查",
+        "retry": "重试",
+        "tabsLabel": "MCP 检查结果",
+        "tabs": {
+          "overview": "概览",
+          "tools": "Tools",
+          "resources": "Resources",
+          "prompts": "Prompts",
+          "logs": "日志"
+        },
+        "status": {
+          "connected": "连接正常",
+          "partial": "检查不完整",
+          "failed": "检查失败",
+          "cancelled": "检查已取消"
+        },
+        "overview": {
+          "server": "服务",
+          "protocol": "协议版本",
+          "transport": "连接方式",
+          "duration": "总耗时",
+          "inspectedAt": "检查时间",
+          "capabilities": "声明的能力",
+          "warnings": "需要注意",
+          "suggestions": "建议操作"
+        },
+        "supported": "已支持",
+        "unsupported": "未声明",
+        "itemCount": "{{count}} 项",
+        "readOnlyNotice": "检查器只读取能力元数据，不调用工具、不读取资源正文，也不生成提示内容。",
+        "risk": {
+          "readOnly": "只读",
+          "destructive": "破坏性",
+          "idempotent": "幂等",
+          "openWorld": "访问外部",
+          "declared": "已声明风险",
+          "unknown": "风险未知"
+        },
+        "parameters": "输入参数",
+        "arguments": "参数",
+        "required": "必填",
+        "emptySupported": "{{feature}} 暂无项目",
+        "emptyUnsupported": "未提供 {{feature}}",
+        "emptySupportedDescription": "服务声明了此能力，但当前返回的列表为空。",
+        "emptyUnsupportedDescription": "服务在初始化阶段没有声明此项能力。",
+        "phases": {
+          "connect": "启动或连接",
+          "initialize": "协议初始化",
+          "initialized": "初始化确认",
+          "tools": "发现 Tools",
+          "resources": "发现 Resources",
+          "prompts": "发现 Prompts",
+          "shutdown": "关闭连接",
+          "inspection": "检查"
+        }
+      }
+    },
     "tab_skills": "技能列表",
     "tab_packs": "技能包",
     "tab_sync": "同步",
@@ -903,6 +1031,17 @@
       "packNamed": "技能包：{{name}}"
     },
     "agentManagement": {
+      "scanComplete": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}",
+      "scanCompleteShared": "扫描完成（含 .agents 共享目录）：已管理 {{managed}}，未管理 {{unmanaged}}",
+      "sharedDirectoryNotice": "{{count}} 个 Skill 来自 .agents 共享目录。接管后会进入中心库，并从共享目录清理；后续请通过中心库或技能包控制分发。",
+      "unmanagedDelete": {
+        "title": "删除 Skill「{{name}}」？",
+        "confirm": "直接删除",
+        "busy": "删除中...",
+        "description": "这会删除当前 Agent 中的本地 Skill 目录，不会写入中心库，也无法从中心库恢复。",
+        "deleting": "正在删除 Skill「{{name}}」...",
+        "deleted": "已删除 Skill「{{name}}」"
+      },
       "packFilter": {
         "label": "技能包归属",
         "all": "全部",
@@ -913,7 +1052,8 @@
     },
     "reason": {
       "not_in_center_library": "未在中心库",
-      "center_library_conflict": "中心库同名冲突"
+      "center_library_conflict": "中心库同名冲突",
+      "shared_agents_directory": ".agents 共享目录"
     },
     "distributionReason": {
       "convertManaged": "已通过{{from}}管理，将转换为{{to}}。",
@@ -942,7 +1082,8 @@
       "targetNoParent": "目标路径 '{{targetPath}}' 没有父目录。",
       "targetNameMismatch": "目标路径 '{{targetPath}}' 与 Skill '{{skillId}}' 不匹配。",
       "unmanagedStale": "该 Skill 已不在待处理列表中，请重新扫描后重试。",
-      "adoptOptionUnavailable": "当前选择的接管方式已不可用。请重新打开接管预览，并从建议操作中选择。"
+      "adoptOptionUnavailable": "当前选择的接管方式已不可用。请重新打开接管预览，并从建议操作中选择。",
+      "unmanagedAgentMismatch": "该未管理 Skill 不属于 Agent「{{agent}}」，请重新扫描后重试。"
     },
     "installing": "安装中...",
     "sync": "同步",
@@ -988,6 +1129,12 @@
     "batchAdoptPack": {
       "title": "批量接管 {{count}} 个 Skill",
       "confirm": "确认接管",
+      "strategyTitle": "批量接管适用范围",
+      "strategyHint": "批量接管只自动处理能使用统一默认策略的 Skill。若某个 Skill 需要你决定保留中心版本、覆盖中心库或重命名，批量操作会跳过它，不会自动覆盖；完成后请在对应卡片上单独点击「接管」。",
+      "complete": "批量接管完成：已接管 {{adopted}} 个，需单独确认 {{review}} 个，失败 {{failed}} 个{{packNotice}}",
+      "packSynced": "，已同步 {{count}} 个到「{{pack}}」",
+      "nameSeparator": "、",
+      "individualReviewRequired": "以下 {{count}} 个 Skill 需要单独确认，批量接管已跳过：{{names}}。它们不能使用统一的批量策略，通常是因为与中心库同名但内容不同。请退出批量管理，分别点击对应卡片上的「接管」，在接管预览中选择保留中心版本、覆盖中心库、重命名新增或跳过。",
       "agent": "Agent",
       "skillCount": "Skill 数量",
       "summary": "将接管",

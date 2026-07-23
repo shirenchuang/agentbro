@@ -7,7 +7,8 @@
 
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::{
-    ClaimOrigin, DeleteSkillTargetDistributionsResult, Service, UpsertPackInput,
+    AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult, Service,
+    UpsertPackInput,
 };
 use crate::skills::v2::{diagnosis, snapshot};
 use std::collections::HashMap;
@@ -317,6 +318,11 @@ pub fn execute_adopt_agent_skill(
     renamed_id: Option<String>,
 ) -> Result<String, String> {
     svc()?.execute_adopt_agent_skill(&agent_id, &unmanaged_id, &option, renamed_id)
+}
+
+#[tauri::command(async)]
+pub fn execute_adopt_agent_skills(items: Vec<AdoptBatchItem>) -> Result<AdoptBatchResult, String> {
+    svc()?.execute_adopt_agent_skills(items)
 }
 
 #[tauri::command(async)]

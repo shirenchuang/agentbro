@@ -680,6 +680,134 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "mcpManagement": {
+      "summary": "MCP 상태 요약",
+      "total": "전체",
+      "enabledCount": "활성",
+      "invalidCount": "문제",
+      "scanning": "검색 중…",
+      "rescan": "다시 검색",
+      "add": "MCP 추가",
+      "readOnly": "이 Agent의 MCP 설정은 읽기 전용입니다. 첫 버전은 Claude Code, Codex, Gemini CLI, Cursor, Kimi Code, ZCode를 지원합니다.",
+      "configPath": "설정 파일",
+      "emptyTitle": "MCP 서버가 없습니다",
+      "emptyDescription": "로컬 명령 또는 원격 서비스를 추가해 이 Agent의 도구를 확장하세요.",
+      "addFirst": "첫 MCP 추가",
+      "saved": "MCP “{{name}}” 저장됨",
+      "disabled": "MCP “{{name}}” 비활성화됨",
+      "enabled": "MCP “{{name}}” 활성화됨",
+      "deleted": "MCP “{{name}}” 삭제됨",
+      "valid": "정상",
+      "invalid": "설정 오류",
+      "disabledByAgentbro": "AgentBro에서 비활성화",
+      "testConnected": "연결 성공",
+      "testFailed": "연결 실패",
+      "toggleLabel": "{{name}} 활성화 또는 비활성화",
+      "readOnlyTag": "읽기 전용",
+      "testing": "테스트 중…",
+      "test": "연결 테스트",
+      "edit": "편집",
+      "delete": "삭제",
+      "deleteTitle": "MCP “{{name}}”을 삭제할까요?",
+      "deleteConfirm": "삭제",
+      "deleting": "삭제 중",
+      "deleteDescription": "{{agent}}의 전역 설정에서 “{{name}}”을 제거합니다. AgentBro는 쓰기 전에 로컬 백업을 만듭니다.",
+      "editor": {
+        "editTitle": "MCP “{{name}}” 편집",
+        "addTitle": "MCP 서버 추가",
+        "name": "이름",
+        "transport": "전송 방식",
+        "transportOptions": {
+          "stdio": "stdio (로컬 명령)",
+          "http": "HTTP (원격 서비스)",
+          "sse": "SSE (레거시 호환)"
+        },
+        "transportShortOptions": {
+          "stdio": "로컬 명령",
+          "http": "HTTP",
+          "sse": "SSE"
+        },
+        "command": "명령",
+        "arguments": "인수",
+        "addArgument": "인수 추가",
+        "cwd": "작업 디렉터리 (선택)",
+        "environment": "환경 변수",
+        "addEnvironment": "환경 변수 추가",
+        "url": "서버 URL",
+        "headers": "요청 헤더",
+        "addHeader": "헤더 추가",
+        "secretNote": "Token, Key, Secret, Password, Authorization 값은 표시되지 않으며 변경하지 않은 값은 유지됩니다.",
+        "key": "키",
+        "value": "값",
+        "secretConfigured": "설정됨. 비워 두면 유지",
+        "saving": "저장 중…"
+      },
+      "inspector": {
+        "title": "MCP 검사기 · {{name}}",
+        "subtitle": "{{agent}} · {{transport}}",
+        "inspect": "검사",
+        "inspecting": "검사 중…",
+        "reinspect": "다시 검사",
+        "disabledNotice": "이 MCP는 비활성화되어 있습니다. 읽기 전용 검사 동안만 임시로 시작하거나 연결하고 완료 후 즉시 닫습니다.",
+        "loadingTitle": "MCP 기능 검사 중",
+        "loadingDescription": "어떤 기능도 실행하지 않고 프로토콜을 협상하며 Tools, Resources, Prompts 목록을 가져옵니다.",
+        "unavailable": "검사를 시작할 수 없습니다",
+        "retry": "다시 시도",
+        "tabsLabel": "MCP 검사 결과",
+        "tabs": {
+          "overview": "개요",
+          "tools": "Tools",
+          "resources": "Resources",
+          "prompts": "Prompts",
+          "logs": "로그"
+        },
+        "status": {
+          "connected": "연결 정상",
+          "partial": "검사 미완료",
+          "failed": "검사 실패",
+          "cancelled": "검사 취소됨"
+        },
+        "overview": {
+          "server": "서버",
+          "protocol": "프로토콜",
+          "transport": "연결 방식",
+          "duration": "소요 시간",
+          "inspectedAt": "검사 시간",
+          "capabilities": "선언된 기능",
+          "warnings": "주의 사항",
+          "suggestions": "권장 작업"
+        },
+        "supported": "지원됨",
+        "unsupported": "선언되지 않음",
+        "itemCount": "{{count}}개",
+        "readOnlyNotice": "검사기는 기능 메타데이터만 읽습니다. 도구 호출, 리소스 본문 읽기, 프롬프트 생성을 수행하지 않습니다.",
+        "risk": {
+          "readOnly": "읽기 전용",
+          "destructive": "파괴적",
+          "idempotent": "멱등",
+          "openWorld": "외부 접근",
+          "declared": "위험 선언됨",
+          "unknown": "위험 알 수 없음"
+        },
+        "parameters": "입력 매개변수",
+        "arguments": "인수",
+        "required": "필수",
+        "emptySupported": "{{feature}} 항목 없음",
+        "emptyUnsupported": "{{feature}} 미제공",
+        "emptySupportedDescription": "서버가 이 기능을 선언했지만 현재 목록이 비어 있습니다.",
+        "emptyUnsupportedDescription": "서버가 초기화 중 이 기능을 선언하지 않았습니다.",
+        "phases": {
+          "connect": "시작 또는 연결",
+          "initialize": "프로토콜 초기화",
+          "initialized": "초기화 확인",
+          "tools": "Tools 검색",
+          "resources": "Resources 검색",
+          "prompts": "Prompts 검색",
+          "shutdown": "연결 닫기",
+          "inspection": "검사"
+        }
+      }
+    },
     "tab_skills": "Skills",
     "tab_packs": "Packs",
     "tab_sync": "Sync",
@@ -863,6 +991,17 @@
       "packNamed": "팩: {{name}}"
     },
     "agentManagement": {
+      "scanComplete": "스캔 완료: 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}",
+      "scanCompleteShared": "스캔 완료(.agents 공유 디렉터리 포함): 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}",
+      "sharedDirectoryNotice": "{{count}}개의 Skill이 .agents 공유 디렉터리에 있습니다. 인계 후 중앙 라이브러리로 이동되고 공유 디렉터리에서는 제거됩니다. 이후 배포는 중앙 라이브러리 또는 스킬 팩에서 관리하세요.",
+      "unmanagedDelete": {
+        "title": "Skill \"{{name}}\"을(를) 삭제하시겠습니까?",
+        "confirm": "영구 삭제",
+        "busy": "삭제 중...",
+        "description": "현재 Agent에서 로컬 Skill 디렉터리를 삭제합니다. 중앙 라이브러리에 추가되지 않으며 중앙 라이브러리에서 복원할 수도 없습니다.",
+        "deleting": "Skill \"{{name}}\" 삭제 중...",
+        "deleted": "Skill \"{{name}}\"을(를) 삭제했습니다"
+      },
       "packFilter": {
         "label": "팩 소속",
         "all": "전체",
@@ -873,7 +1012,8 @@
     },
     "reason": {
       "not_in_center_library": "중앙 라이브러리에 없음",
-      "center_library_conflict": "중앙 라이브러리 이름 충돌"
+      "center_library_conflict": "중앙 라이브러리 이름 충돌",
+      "shared_agents_directory": ".agents 공유 디렉터리"
     },
     "distributionReason": {
       "convertManaged": "이미 {{from}}로 관리 중입니다. {{to}}로 변환합니다.",
@@ -902,7 +1042,8 @@
       "targetNoParent": "대상 경로 '{{targetPath}}'에 상위 디렉터리가 없습니다.",
       "targetNameMismatch": "대상 경로 '{{targetPath}}'이(가) Skill '{{skillId}}'와 일치하지 않습니다.",
       "unmanagedStale": "이 Skill은 더 이상 대기 목록에 없습니다. 다시 스캔한 뒤 재시도하세요.",
-      "adoptOptionUnavailable": "선택한 인계 방식은 더 이상 사용할 수 없습니다. 인계 미리보기를 다시 열고 제안된 작업 중 하나를 선택하세요."
+      "adoptOptionUnavailable": "선택한 인계 방식은 더 이상 사용할 수 없습니다. 인계 미리보기를 다시 열고 제안된 작업 중 하나를 선택하세요.",
+      "unmanagedAgentMismatch": "이 관리되지 않는 Skill은 Agent '{{agent}}'에 속하지 않습니다. 다시 스캔한 뒤 재시도하세요."
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -948,6 +1089,12 @@
     "batchAdoptPack": {
       "title": "Skill {{count}}개 가져오기",
       "confirm": "가져오기 확인",
+      "strategyTitle": "일괄 가져오기의 적용 범위",
+      "strategyHint": "일괄 가져오기는 하나의 기본 전략을 사용할 수 있는 Skill만 자동 처리합니다. 중앙 버전 유지, 덮어쓰기 또는 이름 변경을 사용자가 결정해야 하는 Skill은 자동으로 덮어쓰지 않고 건너뜁니다. 완료 후 해당 카드에서 가져오기를 개별적으로 클릭하세요.",
+      "complete": "일괄 가져오기 완료: {{adopted}}개 가져옴, {{review}}개 개별 확인 필요, {{failed}}개 실패{{packNotice}}",
+      "packSynced": ", \"{{pack}}\"에 {{count}}개 동기화됨",
+      "nameSeparator": ", ",
+      "individualReviewRequired": "다음 {{count}}개 Skill은 개별 확인이 필요하여 일괄 가져오기에서 건너뛰었습니다: {{names}}. 공통 일괄 전략을 사용할 수 없으며, 일반적으로 중앙 라이브러리의 Skill과 이름은 같지만 내용이 다르기 때문입니다. 일괄 관리를 종료하고 각 카드의 가져오기를 클릭한 뒤 중앙 버전 유지, 덮어쓰기, 새 이름으로 가져오기 또는 건너뛰기를 선택하세요.",
       "agent": "Agent",
       "skillCount": "Skill 수",
       "summary": "가져올 대상",

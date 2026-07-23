@@ -4,6 +4,7 @@ pub mod explanation;
 pub mod frontmatter;
 pub mod installer;
 pub mod marketplace;
+pub mod mcp_management;
 pub mod registry;
 pub mod scanner;
 pub mod sync;

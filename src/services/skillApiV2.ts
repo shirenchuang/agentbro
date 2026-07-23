@@ -178,6 +178,149 @@ export interface McpServerStatus {
   message: string
 }
 
+export type McpTransport = 'stdio' | 'http' | 'sse'
+
+export interface McpConfigValue {
+  key: string
+  value: string | null
+  secret: boolean
+  configured: boolean
+}
+
+export interface McpServerDraft {
+  name: string
+  transport: McpTransport
+  command: string | null
+  args: string[]
+  env: McpConfigValue[]
+  cwd: string | null
+  url: string | null
+  headers: McpConfigValue[]
+}
+
+export interface McpServerEntry extends McpServerDraft {
+  enabled: boolean
+  disabledByAgentbro: boolean
+  valid: boolean
+  message: string
+  warnings: string[]
+  configPath: string
+  editable: boolean
+  sourceKind: string
+}
+
+export interface McpCapabilities {
+  editable: boolean
+  supportsStdio: boolean
+  supportsHttp: boolean
+  supportsSse: boolean
+  supportsNativeToggle: boolean
+}
+
+export interface McpInventory {
+  agentId: string
+  configPath: string | null
+  revision: string
+  capabilities: McpCapabilities
+  servers: McpServerEntry[]
+}
+
+export interface McpValidationResultV2 {
+  valid: boolean
+  message: string
+  warnings: string[]
+}
+
+export interface McpConnectionTestResult {
+  success: boolean
+  category: string
+  message: string
+  latencyMs: number
+  protocolVersion: string | null
+  serverName: string | null
+  serverVersion: string | null
+  toolCount: number | null
+}
+
+export interface McpInspectionCapabilities {
+  tools: boolean
+  resources: boolean
+  prompts: boolean
+  logging: boolean
+}
+
+export interface McpInspectionToolAnnotations {
+  readOnly: boolean | null
+  destructive: boolean | null
+  idempotent: boolean | null
+  openWorld: boolean | null
+}
+
+export interface McpInspectionInput {
+  name: string
+  valueType: string
+  description: string | null
+  required: boolean
+}
+
+export interface McpInspectionTool {
+  name: string
+  title: string | null
+  description: string | null
+  inputs: McpInspectionInput[]
+  annotations: McpInspectionToolAnnotations
+  hasAnnotations: boolean
+}
+
+export interface McpInspectionResource {
+  uri: string
+  name: string
+  title: string | null
+  description: string | null
+  mimeType: string | null
+  size: number | null
+}
+
+export interface McpInspectionPromptArgument {
+  name: string
+  description: string | null
+  required: boolean
+}
+
+export interface McpInspectionPrompt {
+  name: string
+  title: string | null
+  description: string | null
+  arguments: McpInspectionPromptArgument[]
+}
+
+export interface McpInspectionStep {
+  phase: string
+  status: string
+  durationMs: number
+  message: string
+}
+
+export interface McpInspectionReport {
+  inspectionId: string
+  status: 'connected' | 'partial' | 'failed' | 'cancelled'
+  category: string
+  summary: string
+  inspectedAtMs: number
+  durationMs: number
+  protocolVersion: string | null
+  serverName: string | null
+  serverVersion: string | null
+  transport: McpTransport
+  capabilities: McpInspectionCapabilities
+  tools: McpInspectionTool[]
+  resources: McpInspectionResource[]
+  prompts: McpInspectionPrompt[]
+  steps: McpInspectionStep[]
+  warnings: string[]
+  suggestions: string[]
+}
+
 export interface PluginStatus {
   id: string
   name: string
@@ -548,6 +691,24 @@ export interface AdoptPreview {
   options: AdoptOption[]
 }
 
+export interface AdoptBatchItem {
+  agentId: string
+  unmanagedId: string
+  option: string
+  renamedId: string | null
+}
+
+export interface AdoptBatchItemResult {
+  unmanagedId: string
+  skillId: string | null
+  error: string | null
+}
+
+export interface AdoptBatchResult {
+  items: AdoptBatchItemResult[]
+  finalizationError: string | null
+}
+
 export interface CopySyncPreview {
   targetId: string
   skillId: string
@@ -654,6 +815,115 @@ export interface MarketplaceSkillDetail {
   githubUrl: string | null
   installCommand: string | null
   webUrl: string | null
+}
+
+function demoMcpInventory(agent: string): McpInventory {
+  return {
+    agentId: agent,
+    configPath: null,
+    revision: 'demo',
+    capabilities: {
+      editable: false,
+      supportsStdio: false,
+      supportsHttp: false,
+      supportsSse: false,
+      supportsNativeToggle: false,
+    },
+    servers: [],
+  }
+}
+
+function demoMcpInspectionReport(
+  serverName: string,
+  inspectionId: string,
+): McpInspectionReport {
+  return {
+    inspectionId,
+    status: 'connected',
+    category: 'connected',
+    summary: 'Connected · 2 tools · 1 resource · 1 prompt',
+    inspectedAtMs: Date.now(),
+    durationMs: 46,
+    protocolVersion: '2025-11-25',
+    serverName,
+    serverVersion: '1.0.0',
+    transport: 'stdio',
+    capabilities: {
+      tools: true,
+      resources: true,
+      prompts: true,
+      logging: false,
+    },
+    tools: [
+      {
+        name: 'search',
+        title: 'Search',
+        description: 'Search the connected knowledge base.',
+        inputs: [
+          {
+            name: 'query',
+            valueType: 'string',
+            description: 'Search query',
+            required: true,
+          },
+        ],
+        annotations: {
+          readOnly: true,
+          destructive: false,
+          idempotent: true,
+          openWorld: false,
+        },
+        hasAnnotations: true,
+      },
+      {
+        name: 'publish',
+        title: 'Publish',
+        description: 'Publish a prepared item.',
+        inputs: [],
+        annotations: {
+          readOnly: false,
+          destructive: true,
+          idempotent: false,
+          openWorld: true,
+        },
+        hasAnnotations: true,
+      },
+    ],
+    resources: [
+      {
+        uri: 'demo://knowledge',
+        name: 'Knowledge base',
+        title: null,
+        description: 'Connected demo knowledge base.',
+        mimeType: 'application/json',
+        size: null,
+      },
+    ],
+    prompts: [
+      {
+        name: 'summarize',
+        title: 'Summarize',
+        description: 'Prepare a concise summary.',
+        arguments: [
+          {
+            name: 'topic',
+            description: 'Topic to summarize',
+            required: true,
+          },
+        ],
+      },
+    ],
+    steps: [
+      { phase: 'connect', status: 'success', durationMs: 8, message: 'MCP process started' },
+      { phase: 'initialize', status: 'success', durationMs: 15, message: 'Protocol negotiation completed' },
+      { phase: 'tools', status: 'success', durationMs: 9, message: 'Discovered 2 tools' },
+      { phase: 'resources', status: 'success', durationMs: 7, message: 'Discovered 1 resource' },
+      { phase: 'prompts', status: 'success', durationMs: 5, message: 'Discovered 1 prompt' },
+      { phase: 'shutdown', status: 'success', durationMs: 2, message: 'Inspection session closed' },
+    ],
+    warnings: [],
+    suggestions: [],
+  }
 }
 
 export const skillApiV2 = {
@@ -813,6 +1083,13 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
   executeAdopt: (agentId: string, unmanagedId: string, option: string, renamedId?: string | null) =>
     isTauriRuntime() ? invoke<string>('execute_adopt_agent_skill', { agentId, unmanagedId, option, renamedId: renamedId ?? null }) : Promise.resolve(''),
+  executeAdoptBatch: (items: AdoptBatchItem[]) =>
+    isTauriRuntime()
+      ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items })
+      : Promise.resolve({
+        items: items.map((item) => ({ unmanagedId: item.unmanagedId, skillId: '', error: null })),
+        finalizationError: null,
+      }),
   deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
     isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }) : Promise.resolve(),
 
@@ -866,6 +1143,56 @@ export const skillApiV2 = {
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
+  listMcpInventory: (agent: string) =>
+    isTauriRuntime()
+      ? invoke<McpInventory>('list_mcp_inventory_cmd', { agent })
+      : Promise.resolve(demoMcpInventory(agent)),
+  validateMcpServerDraft: (agent: string, server: McpServerDraft, originalName?: string | null) =>
+    isTauriRuntime()
+      ? invoke<McpValidationResultV2>('validate_mcp_server_draft_cmd', {
+          agent,
+          server,
+          originalName: originalName ?? null,
+        })
+      : Promise.resolve({ valid: true, message: 'MCP configuration is valid', warnings: [] }),
+  saveMcpServer: (agent: string, server: McpServerDraft, revision: string, originalName?: string | null) =>
+    isTauriRuntime()
+      ? invoke<McpInventory>('save_mcp_server_cmd', {
+          agent,
+          server,
+          revision,
+          originalName: originalName ?? null,
+        })
+      : Promise.resolve(demoMcpInventory(agent)),
+  setMcpServerEnabled: (agent: string, serverName: string, revision: string, enabled: boolean) =>
+    isTauriRuntime()
+      ? invoke<McpInventory>('set_mcp_server_enabled_cmd', { agent, serverName, revision, enabled })
+      : Promise.resolve(demoMcpInventory(agent)),
+  deleteMcpServer: (agent: string, serverName: string, revision: string) =>
+    isTauriRuntime()
+      ? invoke<McpInventory>('delete_mcp_server_v2_cmd', { agent, serverName, revision })
+      : Promise.resolve(demoMcpInventory(agent)),
+  testMcpServerConnection: (agent: string, serverName: string) =>
+    isTauriRuntime()
+      ? invoke<McpConnectionTestResult>('test_mcp_server_connection_cmd', { agent, serverName })
+      : Promise.resolve({
+          success: false,
+          category: 'unavailable',
+          message: 'Connection testing requires the AgentBro desktop app',
+          latencyMs: 0,
+          protocolVersion: null,
+          serverName: null,
+          serverVersion: null,
+          toolCount: null,
+        }),
+  inspectMcpServer: (agent: string, serverName: string, inspectionId: string) =>
+    isTauriRuntime()
+      ? invoke<McpInspectionReport>('inspect_mcp_server_cmd', { agent, serverName, inspectionId })
+      : Promise.resolve(demoMcpInspectionReport(serverName, inspectionId)),
+  cancelMcpInspection: (inspectionId: string) =>
+    isTauriRuntime()
+      ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId })
+      : Promise.resolve(),
   listUnmanaged: () => (isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
   listAgentSkillInventory: () =>
     isTauriRuntime() ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),

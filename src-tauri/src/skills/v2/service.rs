@@ -43,6 +43,30 @@ pub struct DeleteSkillTargetDistributionsResult {
     pub failures: Vec<DeleteSkillTargetDistributionFailure>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptBatchItem {
+    pub agent_id: String,
+    pub unmanaged_id: String,
+    pub option: String,
+    pub renamed_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptBatchItemResult {
+    pub unmanaged_id: String,
+    pub skill_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptBatchResult {
+    pub items: Vec<AdoptBatchItemResult>,
+    pub finalization_error: Option<String>,
+}
+
 impl Service {
     pub fn new(sqlite_path: &Path, home: PathBuf) -> Result<Self, String> {
         let db = Arc::new(Db::open(sqlite_path)?);
@@ -423,6 +447,13 @@ impl Service {
                     None => {
                         // is the inferred skill id known in center?
                         let center_known = self.skill_id_known(&inferred)?;
+                        let reason = if is_shared_agents_skill_path(&self.home, &path) {
+                            "shared_agents_directory"
+                        } else if center_known {
+                            "same_name_as_center_skill"
+                        } else {
+                            "not_in_center_library"
+                        };
                         if center_known {
                             // same-name center skill exists — possible quick adopt
                             unmanaged += 1;
@@ -431,7 +462,7 @@ impl Service {
                                 &path,
                                 &inferred,
                                 Some(fsutil::hash_dir(&path)),
-                                "same_name_as_center_skill",
+                                reason,
                             )?;
                         } else {
                             unmanaged += 1;
@@ -440,7 +471,7 @@ impl Service {
                                 &path,
                                 &inferred,
                                 Some(fsutil::hash_dir(&path)),
-                                "not_in_center_library",
+                                reason,
                             )?;
                         }
                     }
@@ -3096,6 +3127,69 @@ impl Service {
         option: &str,
         renamed_id: Option<String>,
     ) -> Result<String, String> {
+        let skill_id =
+            self.execute_adopt_agent_skill_inner(agent_id, unmanaged_id, option, renamed_id)?;
+        if option != "skip" {
+            self.scan_one_agent_into_db(agent_id)?;
+            self.refresh_snapshot_best_effort();
+        }
+        Ok(skill_id)
+    }
+
+    pub fn execute_adopt_agent_skills(
+        &self,
+        items: Vec<AdoptBatchItem>,
+    ) -> Result<AdoptBatchResult, String> {
+        let mut affected_agents = BTreeSet::new();
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            if item.option != "skip" {
+                affected_agents.insert(item.agent_id.clone());
+            }
+            match self.execute_adopt_agent_skill_inner(
+                &item.agent_id,
+                &item.unmanaged_id,
+                &item.option,
+                item.renamed_id,
+            ) {
+                Ok(skill_id) => results.push(AdoptBatchItemResult {
+                    unmanaged_id: item.unmanaged_id,
+                    skill_id: Some(skill_id),
+                    error: None,
+                }),
+                Err(error) => results.push(AdoptBatchItemResult {
+                    unmanaged_id: item.unmanaged_id,
+                    skill_id: None,
+                    error: Some(error),
+                }),
+            }
+        }
+
+        let needs_finalization = !affected_agents.is_empty();
+        let mut finalization_errors = Vec::new();
+        for agent_id in affected_agents {
+            if let Err(error) = self.scan_one_agent_into_db(&agent_id) {
+                finalization_errors.push(format!("{agent_id}: {error}"));
+            }
+        }
+        if needs_finalization {
+            self.refresh_snapshot_best_effort();
+        }
+
+        Ok(AdoptBatchResult {
+            items: results,
+            finalization_error: (!finalization_errors.is_empty())
+                .then(|| finalization_errors.join("\n")),
+        })
+    }
+
+    fn execute_adopt_agent_skill_inner(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+        option: &str,
+        renamed_id: Option<String>,
+    ) -> Result<String, String> {
         let preview = self.preview_adopt_agent_skill(agent_id, unmanaged_id)?;
         if !preview.options.iter().any(|o| o.value == option) {
             return Err(format!(
@@ -3247,8 +3341,6 @@ impl Service {
             )
             .map_err(|e| e.to_string())
         })?;
-        self.scan_one_agent_into_db(agent_id)?;
-        self.refresh_snapshot_best_effort();
         Ok(target_skill_id)
     }
 
@@ -5731,6 +5823,11 @@ fn discover_agent_skill_paths_inner(
         }
     }
     Ok(())
+}
+
+fn is_shared_agents_skill_path(home: &Path, path: &Path) -> bool {
+    let shared = home.join(".agents").join("skills");
+    path.starts_with(shared)
 }
 
 // ── ZIP extraction for local archive import ──────────────────────

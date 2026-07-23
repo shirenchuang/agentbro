@@ -680,6 +680,134 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "mcpManagement": {
+      "summary": "MCP ステータス概要",
+      "total": "合計",
+      "enabledCount": "有効",
+      "invalidCount": "問題",
+      "scanning": "スキャン中…",
+      "rescan": "再スキャン",
+      "add": "MCP を追加",
+      "readOnly": "この Agent の MCP 設定は読み取り専用です。初期リリースでは Claude Code、Codex、Gemini CLI、Cursor、Kimi Code、ZCode をサポートします。",
+      "configPath": "設定ファイル",
+      "emptyTitle": "MCP サーバーはまだありません",
+      "emptyDescription": "ローカルコマンドまたはリモートサービスを追加して、この Agent のツールを拡張します。",
+      "addFirst": "最初の MCP を追加",
+      "saved": "MCP「{{name}}」を保存しました",
+      "disabled": "MCP「{{name}}」を無効にしました",
+      "enabled": "MCP「{{name}}」を有効にしました",
+      "deleted": "MCP「{{name}}」を削除しました",
+      "valid": "正常",
+      "invalid": "設定エラー",
+      "disabledByAgentbro": "AgentBro により無効",
+      "testConnected": "接続成功",
+      "testFailed": "接続失敗",
+      "toggleLabel": "{{name}} を有効または無効にする",
+      "readOnlyTag": "読み取り専用",
+      "testing": "テスト中…",
+      "test": "接続をテスト",
+      "edit": "編集",
+      "delete": "削除",
+      "deleteTitle": "MCP「{{name}}」を削除しますか？",
+      "deleteConfirm": "削除",
+      "deleting": "削除中",
+      "deleteDescription": "{{agent}} のグローバル設定から「{{name}}」を削除します。AgentBro は書き込み前にローカルバックアップを作成します。",
+      "editor": {
+        "editTitle": "MCP「{{name}}」を編集",
+        "addTitle": "MCP サーバーを追加",
+        "name": "名前",
+        "transport": "トランスポート",
+        "transportOptions": {
+          "stdio": "stdio（ローカルコマンド）",
+          "http": "HTTP（リモートサービス）",
+          "sse": "SSE（旧サービス互換）"
+        },
+        "transportShortOptions": {
+          "stdio": "ローカルコマンド",
+          "http": "HTTP",
+          "sse": "SSE"
+        },
+        "command": "コマンド",
+        "arguments": "引数",
+        "addArgument": "引数を追加",
+        "cwd": "作業ディレクトリ（任意）",
+        "environment": "環境変数",
+        "addEnvironment": "環境変数を追加",
+        "url": "サーバー URL",
+        "headers": "リクエストヘッダー",
+        "addHeader": "ヘッダーを追加",
+        "secretNote": "Token、Key、Secret、Password、Authorization の値は表示されません。変更しない値は保持されます。",
+        "key": "キー",
+        "value": "値",
+        "secretConfigured": "設定済み。空欄で保持",
+        "saving": "保存中…"
+      },
+      "inspector": {
+        "title": "MCP インスペクター · {{name}}",
+        "subtitle": "{{agent}} · {{transport}}",
+        "inspect": "検査",
+        "inspecting": "検査中…",
+        "reinspect": "再検査",
+        "disabledNotice": "この MCP は無効です。読み取り専用の検査中だけ一時的に起動または接続し、完了後すぐに閉じます。",
+        "loadingTitle": "MCP の機能を検査中",
+        "loadingDescription": "プロトコルをネゴシエートし、何も実行せずに Tools、Resources、Prompts を取得しています。",
+        "unavailable": "検査を開始できません",
+        "retry": "再試行",
+        "tabsLabel": "MCP 検査結果",
+        "tabs": {
+          "overview": "概要",
+          "tools": "Tools",
+          "resources": "Resources",
+          "prompts": "Prompts",
+          "logs": "ログ"
+        },
+        "status": {
+          "connected": "接続正常",
+          "partial": "検査未完了",
+          "failed": "検査失敗",
+          "cancelled": "キャンセル済み"
+        },
+        "overview": {
+          "server": "サーバー",
+          "protocol": "プロトコル",
+          "transport": "接続方式",
+          "duration": "所要時間",
+          "inspectedAt": "検査日時",
+          "capabilities": "宣言された機能",
+          "warnings": "注意事項",
+          "suggestions": "推奨操作"
+        },
+        "supported": "対応",
+        "unsupported": "未宣言",
+        "itemCount": "{{count}} 件",
+        "readOnlyNotice": "インスペクターは機能メタデータのみを読み取ります。ツールの実行、リソース本文の読み取り、プロンプト生成は行いません。",
+        "risk": {
+          "readOnly": "読み取り専用",
+          "destructive": "破壊的",
+          "idempotent": "冪等",
+          "openWorld": "外部アクセス",
+          "declared": "リスク宣言済み",
+          "unknown": "リスク不明"
+        },
+        "parameters": "入力パラメーター",
+        "arguments": "引数",
+        "required": "必須",
+        "emptySupported": "{{feature}} はありません",
+        "emptyUnsupported": "{{feature}} は提供されていません",
+        "emptySupportedDescription": "サーバーはこの機能を宣言していますが、現在の一覧は空です。",
+        "emptyUnsupportedDescription": "サーバーは初期化時にこの機能を宣言していません。",
+        "phases": {
+          "connect": "起動または接続",
+          "initialize": "プロトコル初期化",
+          "initialized": "初期化確認",
+          "tools": "Tools を検出",
+          "resources": "Resources を検出",
+          "prompts": "Prompts を検出",
+          "shutdown": "接続を閉じる",
+          "inspection": "検査"
+        }
+      }
+    },
     "tab_skills": "Skills",
     "tab_packs": "Packs",
     "tab_sync": "Sync",
@@ -863,6 +991,17 @@
       "packNamed": "パック: {{name}}"
     },
     "agentManagement": {
+      "scanComplete": "スキャン完了：管理済み {{managed}}、未管理 {{unmanaged}}",
+      "scanCompleteShared": "スキャン完了（.agents 共有ディレクトリを含む）：管理済み {{managed}}、未管理 {{unmanaged}}",
+      "sharedDirectoryNotice": "{{count}} 個の Skill は .agents 共有ディレクトリにあります。引き継ぎ後はセンターライブラリに移動し、共有ディレクトリから削除されます。以後はセンターライブラリまたはスキルパックから配布を管理してください。",
+      "unmanagedDelete": {
+        "title": "Skill「{{name}}」を削除しますか？",
+        "confirm": "完全に削除",
+        "busy": "削除中...",
+        "description": "現在の Agent からローカル Skill ディレクトリを削除します。センターライブラリには追加されず、そこから復元することもできません。",
+        "deleting": "Skill「{{name}}」を削除しています...",
+        "deleted": "Skill「{{name}}」を削除しました"
+      },
       "packFilter": {
         "label": "パック所属",
         "all": "すべて",
@@ -873,7 +1012,8 @@
     },
     "reason": {
       "not_in_center_library": "中央ライブラリにありません",
-      "center_library_conflict": "中央ライブラリの同名競合"
+      "center_library_conflict": "中央ライブラリの同名競合",
+      "shared_agents_directory": ".agents 共有ディレクトリ"
     },
     "distributionReason": {
       "convertManaged": "すでに{{from}}で管理されています。{{to}}に変換します。",
@@ -902,7 +1042,8 @@
       "targetNoParent": "ターゲットパス '{{targetPath}}' には親ディレクトリがありません。",
       "targetNameMismatch": "ターゲットパス '{{targetPath}}' は Skill '{{skillId}}' と一致しません。",
       "unmanagedStale": "この Skill は保留リストにもうありません。再スキャンしてからもう一度お試しください。",
-      "adoptOptionUnavailable": "選択した引き継ぎ方法は現在利用できません。引き継ぎプレビューを開き直し、提案された操作から選択してください。"
+      "adoptOptionUnavailable": "選択した引き継ぎ方法は現在利用できません。引き継ぎプレビューを開き直し、提案された操作から選択してください。",
+      "unmanagedAgentMismatch": "この未管理 Skill は Agent「{{agent}}」に属していません。再スキャンしてからもう一度お試しください。"
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -948,6 +1089,12 @@
     "batchAdoptPack": {
       "title": "{{count}} 件の Skill を取り込む",
       "confirm": "取り込みを確定",
+      "strategyTitle": "一括取り込みの適用範囲",
+      "strategyHint": "一括取り込みでは、同じ既定方針を使える Skill のみを自動処理します。センター版を残すか、上書きするか、名前を変更するかの判断が必要な Skill は自動上書きせずスキップします。完了後、該当カードの「取り込む」を個別にクリックしてください。",
+      "complete": "一括取り込み完了：取り込み済み {{adopted}} 件、個別確認が必要 {{review}} 件、失敗 {{failed}} 件{{packNotice}}",
+      "packSynced": "、「{{pack}}」へ {{count}} 件同期済み",
+      "nameSeparator": "、",
+      "individualReviewRequired": "次の {{count}} 件の Skill は個別確認が必要なため、一括取り込みでスキップしました：{{names}}。共通の一括方針を使用できません。通常はセンターライブラリと同名で内容が異なる場合です。一括管理を終了し、各カードの「取り込む」をクリックして、センター版を残す、上書き、名前を変更して追加、またはスキップを選択してください。",
       "agent": "Agent",
       "skillCount": "Skill 数",
       "summary": "取り込み対象",

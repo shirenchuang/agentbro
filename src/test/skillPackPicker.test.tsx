@@ -147,6 +147,32 @@ describe('SkillPackPicker', () => {
     expect(tabs.scrollLeft).toBe(80)
   })
 
+  it('switches agents on a regular pointer click without capturing it', async () => {
+    vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValueOnce({
+      ...pickerData,
+      agents: [codex, claudeCode],
+      appliedByAgent: { codex: [], 'claude-code': [] },
+    })
+
+    render(<SkillPackPicker />)
+
+    const tabs = await screen.findByRole('tablist')
+    const claudeTab = screen.getByRole('tab', { name: /Claude Code/ })
+    const setPointerCapture = vi.fn()
+    Object.defineProperty(tabs, 'setPointerCapture', {
+      configurable: true,
+      value: setPointerCapture,
+    })
+
+    fireEvent.pointerDown(claudeTab, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 160 })
+    fireEvent.pointerUp(claudeTab, { pointerId: 1, pointerType: 'mouse', clientX: 160 })
+    fireEvent.click(claudeTab)
+
+    expect(setPointerCapture).not.toHaveBeenCalled()
+    expect(claudeTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /Codex/ })).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('drags the agent tabs without selecting the tab under the pointer', async () => {
     vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValueOnce({
       ...pickerData,
@@ -158,11 +184,17 @@ describe('SkillPackPicker', () => {
 
     const tabs = await screen.findByRole('tablist')
     const claudeTab = screen.getByRole('tab', { name: /Claude Code/ })
+    const setPointerCapture = vi.fn()
+    Object.defineProperty(tabs, 'setPointerCapture', {
+      configurable: true,
+      value: setPointerCapture,
+    })
     fireEvent.pointerDown(claudeTab, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 160 })
     fireEvent.pointerMove(tabs, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
     fireEvent.pointerUp(tabs, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
     fireEvent.click(claudeTab)
 
+    expect(setPointerCapture).toHaveBeenCalledWith(1)
     expect(tabs.scrollLeft).toBe(80)
     expect(screen.getByRole('tab', { name: /Codex/ })).toHaveAttribute('aria-selected', 'true')
     expect(claudeTab).toHaveAttribute('aria-selected', 'false')

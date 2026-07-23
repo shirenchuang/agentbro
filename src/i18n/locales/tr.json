@@ -572,7 +572,136 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "mcpManagement": {
+      "summary": "MCP durum özeti",
+      "total": "Toplam",
+      "enabledCount": "Etkin",
+      "invalidCount": "Sorun",
+      "scanning": "Taranıyor…",
+      "rescan": "Yeniden tara",
+      "add": "MCP ekle",
+      "readOnly": "Bu Agent için MCP yapılandırması salt okunur. İlk sürüm Claude Code, Codex, Gemini CLI, Cursor, Kimi Code ve ZCode'u destekler.",
+      "configPath": "Yapılandırma dosyası",
+      "emptyTitle": "Henüz MCP sunucusu yok",
+      "emptyDescription": "Bu Agent'a daha fazla araç kazandırmak için yerel bir komut veya uzak hizmet ekleyin.",
+      "addFirst": "İlk MCP'yi ekle",
+      "saved": "MCP “{{name}}” kaydedildi",
+      "disabled": "MCP “{{name}}” devre dışı bırakıldı",
+      "enabled": "MCP “{{name}}” etkinleştirildi",
+      "deleted": "MCP “{{name}}” silindi",
+      "valid": "Geçerli",
+      "invalid": "Geçersiz",
+      "disabledByAgentbro": "AgentBro tarafından devre dışı",
+      "testConnected": "Bağlandı",
+      "testFailed": "Bağlantı başarısız",
+      "toggleLabel": "{{name}} öğesini etkinleştir veya devre dışı bırak",
+      "readOnlyTag": "Salt okunur",
+      "testing": "Test ediliyor…",
+      "test": "Bağlantıyı test et",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "deleteTitle": "MCP “{{name}}” silinsin mi?",
+      "deleteConfirm": "Sil",
+      "deleting": "Siliniyor",
+      "deleteDescription": "“{{name}}”, {{agent}} genel yapılandırmasından kaldırılır. AgentBro yazmadan önce yerel bir yedek oluşturur.",
+      "editor": {
+        "editTitle": "MCP “{{name}}” düzenle",
+        "addTitle": "MCP sunucusu ekle",
+        "name": "Ad",
+        "transport": "Aktarım",
+        "transportOptions": {
+          "stdio": "stdio (yerel komut)",
+          "http": "HTTP (uzak hizmet)",
+          "sse": "SSE (eski uyumluluk)"
+        },
+        "transportShortOptions": {
+          "stdio": "Yerel komut",
+          "http": "HTTP",
+          "sse": "SSE"
+        },
+        "command": "Komut",
+        "arguments": "Argümanlar",
+        "addArgument": "Argüman ekle",
+        "cwd": "Çalışma dizini (isteğe bağlı)",
+        "environment": "Ortam değişkenleri",
+        "addEnvironment": "Ortam değişkeni ekle",
+        "url": "Sunucu URL'si",
+        "headers": "İstek başlıkları",
+        "addHeader": "Başlık ekle",
+        "secretNote": "Token, key, secret, password ve Authorization değerleri gösterilmez. Değiştirilmeyen değerler korunur.",
+        "key": "Anahtar",
+        "value": "Değer",
+        "secretConfigured": "Yapılandırıldı; korumak için boş bırakın",
+        "saving": "Kaydediliyor…"
+      },
+      "inspector": {
+        "title": "MCP İnceleyici · {{name}}",
+        "subtitle": "{{agent}} · {{transport}}",
+        "inspect": "İncele",
+        "inspecting": "İnceleniyor…",
+        "reinspect": "Yeniden incele",
+        "disabledNotice": "Bu MCP devre dışı. Salt okunur inceleme sırasında geçici olarak başlatılır veya bağlanılır ve tamamlanınca hemen kapatılır.",
+        "loadingTitle": "MCP yetenekleri inceleniyor",
+        "loadingDescription": "Hiçbir şey çağrılmadan protokol görüşülüyor ve Tools, Resources ile Prompts listeleniyor.",
+        "unavailable": "İnceleme başlatılamadı",
+        "retry": "Yeniden dene",
+        "tabsLabel": "MCP inceleme sonuçları",
+        "tabs": {
+          "overview": "Genel bakış",
+          "tools": "Tools",
+          "resources": "Resources",
+          "prompts": "Prompts",
+          "logs": "Günlükler"
+        },
+        "status": {
+          "connected": "Bağlı",
+          "partial": "Eksik",
+          "failed": "Başarısız",
+          "cancelled": "İptal edildi"
+        },
+        "overview": {
+          "server": "Sunucu",
+          "protocol": "Protokol",
+          "transport": "Bağlantı türü",
+          "duration": "Süre",
+          "inspectedAt": "İnceleme zamanı",
+          "capabilities": "Bildirilen yetenekler",
+          "warnings": "Uyarılar",
+          "suggestions": "Önerilen işlemler"
+        },
+        "supported": "Destekleniyor",
+        "unsupported": "Bildirilmedi",
+        "itemCount": "{{count}} öğe",
+        "readOnlyNotice": "İnceleyici yalnızca yetenek meta verilerini okur; araç çağırmaz, kaynak içeriği okumaz ve istem oluşturmaz.",
+        "risk": {
+          "readOnly": "Salt okunur",
+          "destructive": "Yıkıcı",
+          "idempotent": "İdempotent",
+          "openWorld": "Dış erişim",
+          "declared": "Risk bildirildi",
+          "unknown": "Risk bilinmiyor"
+        },
+        "parameters": "Girdi parametreleri",
+        "arguments": "Argümanlar",
+        "required": "Zorunlu",
+        "emptySupported": "{{feature}} bulunamadı",
+        "emptyUnsupported": "{{feature}} sunulmuyor",
+        "emptySupportedDescription": "Sunucu bu yeteneği bildirdi ancak mevcut liste boş.",
+        "emptyUnsupportedDescription": "Sunucu başlatma sırasında bu yeteneği bildirmedi.",
+        "phases": {
+          "connect": "Başlat veya bağlan",
+          "initialize": "Protokolü başlat",
+          "initialized": "Başlatmayı doğrula",
+          "tools": "Tools keşfi",
+          "resources": "Resources keşfi",
+          "prompts": "Prompts keşfi",
+          "shutdown": "Bağlantıyı kapat",
+          "inspection": "İnceleme"
+        }
+      }
+    },
     "cancel": "İptal",
+    "save": "Kaydet",
     "deleteCenterSkill": {
       "title": "Merkez Skill \"{{skillId}}\" sil",
       "confirmTitle": "Silmeden önce onayla",
@@ -710,6 +839,17 @@
       "packNamed": "Paket: {{name}}"
     },
     "agentManagement": {
+      "scanComplete": "Tarama tamamlandı: {{managed}} yönetilen, {{unmanaged}} yönetilmeyen",
+      "scanCompleteShared": "Tarama tamamlandı (.agents paylaşılan dizini dahil): {{managed}} yönetilen, {{unmanaged}} yönetilmeyen",
+      "sharedDirectoryNotice": "{{count}} Skill .agents paylaşılan dizininden geliyor. Devralındıktan sonra merkez kütüphaneye taşınır ve paylaşılan dizinden kaldırılır. Sonraki dağıtımları merkez kütüphane veya Skill paketleri üzerinden yönetin.",
+      "unmanagedDelete": {
+        "title": "\"{{name}}\" Skill silinsin mi?",
+        "confirm": "Kalıcı Olarak Sil",
+        "busy": "Siliniyor...",
+        "description": "Bu işlem, yerel Skill dizinini geçerli Agent'tan siler. Merkez kütüphaneye eklenmez ve oradan geri yüklenemez.",
+        "deleting": "\"{{name}}\" Skill siliniyor...",
+        "deleted": "\"{{name}}\" Skill silindi"
+      },
       "packFilter": {
         "label": "Paket üyeliği",
         "all": "Tümü",
@@ -720,7 +860,8 @@
     },
     "reason": {
       "not_in_center_library": "Merkez kütüphanede yok",
-      "center_library_conflict": "Merkez kütüphane ad çakışması"
+      "center_library_conflict": "Merkez kütüphane ad çakışması",
+      "shared_agents_directory": ".agents paylaşılan dizini"
     },
     "distributionReason": {
       "convertManaged": "Zaten {{from}} olarak yönetiliyor; {{to}} biçimine dönüştürülecek.",
@@ -749,7 +890,8 @@
       "targetNoParent": "Hedef yol '{{targetPath}}' için üst dizin yok.",
       "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor.",
       "unmanagedStale": "Bu Skill artık bekleyenler listesinde değil. Yeniden tarayıp tekrar deneyin.",
-      "adoptOptionUnavailable": "Seçilen yönetimi devralma yöntemi artık kullanılamıyor. Devralma önizlemesini yeniden açın ve önerilen işlemlerden birini seçin."
+      "adoptOptionUnavailable": "Seçilen yönetimi devralma yöntemi artık kullanılamıyor. Devralma önizlemesini yeniden açın ve önerilen işlemlerden birini seçin.",
+      "unmanagedAgentMismatch": "Bu yönetilmeyen Skill, '{{agent}}' Agent'ına ait değil. Yeniden tarayıp tekrar deneyin."
     },
     "adoptPack": {
       "title": "Skill paketine ekle",
@@ -772,6 +914,12 @@
     "batchAdoptPack": {
       "title": "{{count}} Skill'i yönet",
       "confirm": "Yönetimi onayla",
+      "strategyTitle": "Toplu yönetimin kullanım alanı",
+      "strategyHint": "Toplu yönetim yalnızca tek bir varsayılan strateji kullanabilen Skill'leri otomatik işler. Merkez sürümünü koruma, üzerine yazma veya yeniden adlandırma kararı gereken Skill'ler otomatik olarak değiştirilmez ve atlanır. İşlem bittikten sonra ilgili karttaki Yönet düğmesine tek tek tıklayın.",
+      "complete": "Toplu yönetim tamamlandı: {{adopted}} yönetildi, {{review}} tek tek onay bekliyor, {{failed}} başarısız{{packNotice}}",
+      "packSynced": ", {{count}} Skill \"{{pack}}\" paketine eşitlendi",
+      "nameSeparator": ", ",
+      "individualReviewRequired": "Şu {{count}} Skill tek tek onay gerektirdiği için atlandı: {{names}}. Ortak toplu stratejiyi kullanamıyorlar; bunun olağan nedeni merkez kütüphanedeki bir Skill ile aynı ada fakat farklı içeriğe sahip olmalarıdır. Toplu yönetimden çıkın, her karttaki Yönet düğmesine tıklayın ve merkez sürümünü koruma, üzerine yazma, yeni adla içe aktarma veya atlama seçeneklerinden birini belirleyin.",
       "agent": "Agent",
       "skillCount": "Skill sayısı",
       "summary": "Yönetilecekler",

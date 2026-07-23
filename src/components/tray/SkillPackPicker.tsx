@@ -236,7 +236,6 @@ export function SkillPackPicker() {
       startScrollLeft: event.currentTarget.scrollLeft,
       dragged: false,
     }
-    event.currentTarget.setPointerCapture?.(event.pointerId)
   }
 
   const handleAgentPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -244,6 +243,7 @@ export function SkillPackPicker() {
     if (!drag || drag.pointerId !== event.pointerId) return
     const delta = event.clientX - drag.startX
     if (!drag.dragged && Math.abs(delta) < AGENT_DRAG_THRESHOLD) return
+    if (!drag.dragged) event.currentTarget.setPointerCapture?.(event.pointerId)
     drag.dragged = true
     event.currentTarget.classList.add('skill-pack-picker__agents--dragging')
     event.currentTarget.scrollLeft = drag.startScrollLeft - delta

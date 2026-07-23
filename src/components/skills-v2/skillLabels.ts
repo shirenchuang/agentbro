@@ -8,6 +8,7 @@ const SOURCE_TYPE_KEYS: Record<string, string> = {
 const STALE_UNMANAGED_ERROR_CODE = 'SKILL_UNMANAGED_STALE'
 const ADOPT_OPTION_UNAVAILABLE_PREFIX = 'Adopt option '
 const ADOPT_OPTION_UNAVAILABLE_HINT = 'Re-run preview and choose one of the suggested actions.'
+const UNMANAGED_AGENT_MISMATCH = /^Unmanaged item '.+' does not belong to agent '([^']+)'\.$/
 
 export function skillModeLabel(t: TFunction, mode?: string | null): string {
   if (mode === 'link') return t('skills.mode.link', { defaultValue: 'Symlink' })
@@ -48,10 +49,23 @@ export function skillErrorMessage(t: TFunction, error: unknown): string {
       defaultValue: 'This Skill is no longer in the pending list. Rescan and try again.',
     })
   }
-  if (message.startsWith(ADOPT_OPTION_UNAVAILABLE_PREFIX) && message.endsWith(ADOPT_OPTION_UNAVAILABLE_HINT)) {
+  if (isAdoptOptionUnavailableError(error)) {
     return t('skills.errors.adoptOptionUnavailable', {
       defaultValue: 'The selected adoption method is no longer available. Reopen the adoption preview and choose one of the suggested actions.',
     })
   }
+  const unmanagedAgentMismatch = message.match(UNMANAGED_AGENT_MISMATCH)
+  if (unmanagedAgentMismatch) {
+    return t('skills.errors.unmanagedAgentMismatch', {
+      agent: unmanagedAgentMismatch[1],
+      defaultValue: "This unmanaged Skill does not belong to Agent '{{agent}}'. Rescan and try again.",
+    })
+  }
   return raw
+}
+
+export function isAdoptOptionUnavailableError(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error)
+  const message = raw.replace(/^Error:\s*/, '')
+  return message.startsWith(ADOPT_OPTION_UNAVAILABLE_PREFIX) && message.endsWith(ADOPT_OPTION_UNAVAILABLE_HINT)
 }
