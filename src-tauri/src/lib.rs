@@ -1864,8 +1864,8 @@ pub(crate) fn refresh_skill_pack_tray_menu(app: &tauri::AppHandle) -> Result<(),
     tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
 
-const SKILL_PACK_PICKER_WIDTH: f64 = 390.0;
-const SKILL_PACK_PICKER_HEIGHT: f64 = 520.0;
+const SKILL_PACK_PICKER_WIDTH: f64 = 360.0;
+const SKILL_PACK_PICKER_HEIGHT: f64 = 460.0;
 
 fn show_skill_pack_picker(app: &tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();

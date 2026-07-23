@@ -1,33 +1,70 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AdoptPreview } from '../../services/skillApiV2'
+import type { AdoptPreview, SkillPackSummary } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { skillErrorMessage } from './skillLabels'
 
 export function AdoptDialog({
   preview,
+  packs,
   onClose,
   onDone,
 }: {
   preview: AdoptPreview
+  packs: SkillPackSummary[]
   onClose: () => void
   onDone: () => void | Promise<void>
 }) {
   const { t } = useTranslation()
+  const editablePacks = useMemo(
+    () => packs
+      .filter((pack) => pack.id && pack.id !== 'default')
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    [packs],
+  )
   const [option, setOption] = useState(() => preferredAdoptOption(preview.options))
   const [renamedId, setRenamedId] = useState('')
+  const [addToPack, setAddToPack] = useState(false)
+  const [packMode, setPackMode] = useState<'existing' | 'new'>(() => editablePacks.length > 0 ? 'existing' : 'new')
+  const [packId, setPackId] = useState(() => editablePacks[0]?.id ?? '')
+  const [newPackName, setNewPackName] = useState('')
+  const [adoptedSkillId, setAdoptedSkillId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const selectedOption = preview.options.find((o) => o.value === option)
   const optionCopy = selectedOption ? adoptOptionCopy(selectedOption) : null
   const effectiveRenamedId = renamedId.trim() || `${preview.inferredSkillId}-import`
+  const packChoiceInvalid = addToPack && option !== 'skip' && (
+    packMode === 'existing' ? !packId : !newPackName.trim()
+  )
+
+  useEffect(() => {
+    setPackId((current) => editablePacks.some((pack) => pack.id === current) ? current : editablePacks[0]?.id ?? '')
+    if (editablePacks.length === 0) setPackMode('new')
+  }, [editablePacks])
 
   const execute = async () => {
     setBusy(true)
     setError(null)
     try {
-      await skillApiV2.executeAdopt(preview.agentId, preview.unmanagedId, option, option === 'rename' ? renamedId : null)
+      const skillId = adoptedSkillId || await skillApiV2.executeAdopt(
+        preview.agentId,
+        preview.unmanagedId,
+        option,
+        option === 'rename' ? renamedId : null,
+      )
+      if (option !== 'skip' && !adoptedSkillId) setAdoptedSkillId(skillId)
+      if (addToPack && option !== 'skip') {
+        try {
+          await addSkillToPack(skillId, packMode === 'existing'
+            ? { kind: 'existing', packId }
+            : { kind: 'new', name: newPackName.trim() })
+        } catch (e) {
+          setError(t('skills.adoptPack.partialError', { error: skillErrorMessage(t, e) }))
+          return
+        }
+      }
       await onDone()
     } catch (e) {
       setError(skillErrorMessage(t, e))
@@ -36,15 +73,28 @@ export function AdoptDialog({
     }
   }
 
+  const close = () => {
+    if (adoptedSkillId) {
+      void Promise.resolve(onDone())
+      return
+    }
+    onClose()
+  }
+
   return (
     <PreviewDialog
       title={`接管 ${preview.inferredSkillId || '未命名 Skill'}`}
-      confirmLabel={option === 'skip' ? '保持未管理' : '确认接管'}
+      confirmLabel={adoptedSkillId && addToPack
+        ? t('skills.adoptPack.retry')
+        : option === 'skip'
+          ? '保持未管理'
+          : '确认接管'}
       modalClassName="sm2__modal--adopt"
       destructive={selectedOption?.destructive}
       busy={busy}
+      disabled={packChoiceInvalid}
       onConfirm={execute}
-      onCancel={onClose}
+      onCancel={close}
     >
       <div className="sm2-adopt">
         <div className="sm2-adopt__summary">
@@ -79,6 +129,7 @@ export function AdoptDialog({
                   role="radio"
                   aria-checked={active}
                   aria-label={copy.shortLabel}
+                  disabled={Boolean(adoptedSkillId)}
                   onClick={() => {
                     setOption(o.value)
                     if (o.value === 'rename' && !renamedId.trim()) setRenamedId(`${preview.inferredSkillId}-import`)
@@ -104,9 +155,94 @@ export function AdoptDialog({
               value={renamedId}
               onChange={(e) => setRenamedId(e.target.value)}
               placeholder={`${preview.inferredSkillId}-import`}
+              disabled={Boolean(adoptedSkillId)}
             />
             <span>将以「{effectiveRenamedId}」写入中心库，原 Agent 文件会作为副本目标被管理。</span>
           </div>
+        )}
+
+        {option !== 'skip' && (
+          <section className="sm2-adopt__section sm2-adopt-pack">
+            <div className="sm2-adopt__section-head">
+              <h4>{t('skills.adoptPack.title')}</h4>
+              <span>{t('skills.adoptPack.hint')}</span>
+            </div>
+            <label className="sm2-adopt-pack__toggle">
+              <input
+                type="checkbox"
+                checked={addToPack}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked
+                  setAddToPack(checked)
+                  if (checked && editablePacks.length > 0 && !packId) {
+                    setPackMode('existing')
+                    setPackId(editablePacks[0].id)
+                  }
+                }}
+              />
+              <span aria-hidden="true" />
+              <div>
+                <strong>{t('skills.adoptPack.toggle')}</strong>
+                <small>{addToPack ? t('skills.adoptPack.enabledHelp') : t('skills.adoptPack.disabledHelp')}</small>
+              </div>
+            </label>
+
+            {addToPack && (
+              <div className="sm2-adopt__rename sm2-adopt-pack__target">
+                <div className="sm2__view-toggle sm2__view-toggle--soft" aria-label={t('skills.adoptPack.mode')}>
+                  <button
+                    type="button"
+                    className={packMode === 'existing' ? 'active' : ''}
+                    disabled={editablePacks.length === 0}
+                    onClick={() => {
+                      setPackMode('existing')
+                      if (!packId) setPackId(editablePacks[0]?.id ?? '')
+                    }}
+                  >
+                    {t('skills.adoptPack.existing')}
+                  </button>
+                  <button
+                    type="button"
+                    className={packMode === 'new' ? 'active' : ''}
+                    onClick={() => setPackMode('new')}
+                  >
+                    {t('skills.adoptPack.new')}
+                  </button>
+                </div>
+
+                {packMode === 'existing' && (
+                  <>
+                    <label htmlFor="sm2-adopt-pack-existing">{t('skills.adoptPack.targetPack')}</label>
+                    <select
+                      id="sm2-adopt-pack-existing"
+                      value={packId}
+                      onChange={(event) => setPackId(event.target.value)}
+                    >
+                      {editablePacks.map((pack) => (
+                        <option key={pack.id} value={pack.id}>
+                          {pack.name} ({pack.memberCount})
+                        </option>
+                      ))}
+                    </select>
+                    <span>{editablePacks.length > 0 ? t('skills.adoptPack.existingImpact') : t('skills.adoptPack.noPacks')}</span>
+                  </>
+                )}
+
+                {packMode === 'new' && (
+                  <>
+                    <label htmlFor="sm2-adopt-pack-new">{t('skills.adoptPack.newPackName')}</label>
+                    <input
+                      id="sm2-adopt-pack-new"
+                      value={newPackName}
+                      onChange={(event) => setNewPackName(event.target.value)}
+                      placeholder={t('skills.adoptPack.newPackPlaceholder')}
+                    />
+                    <span>{t('skills.adoptPack.newImpact')}</span>
+                  </>
+                )}
+              </div>
+            )}
+          </section>
         )}
 
         {optionCopy && (
@@ -120,6 +256,34 @@ export function AdoptDialog({
       </div>
     </PreviewDialog>
   )
+}
+
+type AdoptPackSelection =
+  | { kind: 'existing'; packId: string }
+  | { kind: 'new'; name: string }
+
+async function addSkillToPack(skillId: string, selection: AdoptPackSelection) {
+  if (selection.kind === 'new') {
+    await skillApiV2.upsertPack({
+      id: '',
+      name: selection.name,
+      description: '',
+      tags: [],
+      skillIds: [skillId],
+    })
+    return
+  }
+
+  const pack = await skillApiV2.getPackDetail(selection.packId)
+  const existingIds = pack.members.map((member) => member.skillId)
+  if (existingIds.includes(skillId)) return
+  await skillApiV2.upsertPack({
+    id: pack.id,
+    name: pack.name,
+    description: pack.description,
+    tags: pack.tags,
+    skillIds: [...existingIds, skillId],
+  })
 }
 
 function adoptOptionCopy(option: { value: string; label: string; destructive: boolean }) {

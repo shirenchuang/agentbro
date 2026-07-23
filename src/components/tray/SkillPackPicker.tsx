@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -10,6 +19,14 @@ import './SkillPackPicker.css'
 
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const EMPTY_PACK_IDS = new Set<string>()
+const AGENT_DRAG_THRESHOLD = 4
+
+interface AgentDragState {
+  pointerId: number
+  startX: number
+  startScrollLeft: number
+  dragged: boolean
+}
 
 function sortAgents(agents: AgentSummary[]) {
   return [...agents].sort((left, right) => {
@@ -47,6 +64,8 @@ export function SkillPackPicker() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const interactionRevision = useRef(0)
+  const agentDrag = useRef<AgentDragState | null>(null)
+  const suppressAgentClick = useRef(false)
 
   const loadPickerData = useCallback(async (foreground: boolean) => {
     const revision = interactionRevision.current
@@ -196,6 +215,65 @@ export function SkillPackPicker() {
     }
   }
 
+  const handleAgentWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const list = event.currentTarget
+    if (list.scrollWidth <= list.clientWidth) return
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+    const nextScrollLeft = Math.max(
+      0,
+      Math.min(list.scrollWidth - list.clientWidth, list.scrollLeft + delta),
+    )
+    if (nextScrollLeft === list.scrollLeft) return
+    list.scrollLeft = nextScrollLeft
+    event.preventDefault()
+  }
+
+  const handleAgentPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    agentDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: event.currentTarget.scrollLeft,
+      dragged: false,
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  const handleAgentPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = agentDrag.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const delta = event.clientX - drag.startX
+    if (!drag.dragged && Math.abs(delta) < AGENT_DRAG_THRESHOLD) return
+    drag.dragged = true
+    event.currentTarget.classList.add('skill-pack-picker__agents--dragging')
+    event.currentTarget.scrollLeft = drag.startScrollLeft - delta
+    event.preventDefault()
+  }
+
+  const finishAgentDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = agentDrag.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    suppressAgentClick.current = drag.dragged
+    event.currentTarget.classList.remove('skill-pack-picker__agents--dragging')
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    agentDrag.current = null
+  }
+
+  const cancelAgentDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    suppressAgentClick.current = false
+    event.currentTarget.classList.remove('skill-pack-picker__agents--dragging')
+    agentDrag.current = null
+  }
+
+  const handleAgentClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!suppressAgentClick.current) return
+    suppressAgentClick.current = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   return (
     <main className="skill-pack-picker" aria-label={t('tray.skillPickerTitle')}>
       <div className="skill-pack-picker__pointer" aria-hidden="true" />
@@ -217,7 +295,17 @@ export function SkillPackPicker() {
         </header>
 
         {agents.length > 0 && (
-          <div className="skill-pack-picker__agents" role="tablist" aria-label={t('skills.allAgents')}>
+          <div
+            className="skill-pack-picker__agents"
+            role="tablist"
+            aria-label={t('skills.allAgents')}
+            onWheel={handleAgentWheel}
+            onPointerDown={handleAgentPointerDown}
+            onPointerMove={handleAgentPointerMove}
+            onPointerUp={finishAgentDrag}
+            onPointerCancel={cancelAgentDrag}
+            onClickCapture={handleAgentClickCapture}
+          >
             {agents.map((agent) => {
               const count = appliedByAgent[agent.id]?.size ?? 0
               return (

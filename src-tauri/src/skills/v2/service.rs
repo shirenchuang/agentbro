@@ -1585,6 +1585,9 @@ impl Service {
         if let Some(agent) = self.scan_codex_project(root, &center_hashes)? {
             agents.push(agent);
         }
+        if let Some(agent) = self.scan_kimi_project(root, &center_hashes)? {
+            agents.push(agent);
+        }
         Ok(agents)
     }
 
@@ -1738,6 +1741,59 @@ impl Service {
             skills,
             mcp_servers,
             plugins,
+            health,
+        }))
+    }
+
+    fn scan_kimi_project(
+        &self,
+        root: &Path,
+        center_hashes: &HashMap<String, String>,
+    ) -> Result<Option<ProjectAgentDetail>, String> {
+        let agent_id = "kimi";
+        let kimi_skills_dir = root.join(".kimi-code").join("skills");
+        let mcp_json = root.join(".kimi-code").join("mcp.json");
+        let kimi_agents_dir = root.join(".kimi-code").join("agents");
+        let shared_agents_dir = root.join(".agents").join("agents");
+
+        let skills = scan_project_skills(agent_id, &kimi_skills_dir, center_hashes)?;
+        let config_paths = existing_paths(&[kimi_agents_dir.clone(), shared_agents_dir.clone()]);
+        let mcp_config_paths = existing_paths(std::slice::from_ref(&mcp_json));
+        let mcp_servers = read_json_mcp_servers_path(&mcp_json);
+        let mut health = Vec::new();
+        if kimi_skills_dir.exists() && skills.is_empty() {
+            health.push(project_agent_issue(
+                agent_id,
+                "empty_skills_dir",
+                &kimi_skills_dir,
+            ));
+        }
+        if mcp_json.exists() && !mcp_json.is_file() {
+            health.push(project_agent_issue(
+                agent_id,
+                "invalid_mcp_config_path",
+                &mcp_json,
+            ));
+        }
+        let detected = !skills.is_empty()
+            || !mcp_servers.is_empty()
+            || !config_paths.is_empty()
+            || mcp_json.exists()
+            || kimi_skills_dir.exists();
+        if !detected {
+            return Ok(None);
+        }
+        Ok(Some(ProjectAgentDetail {
+            agent_id: agent_id.to_string(),
+            display_name: agent_meta::display_name(agent_id),
+            icon_key: agent_meta::icon_key(agent_id),
+            skills_dirs: existing_paths(&[kimi_skills_dir]),
+            config_paths,
+            mcp_config_paths,
+            plugin_config_paths: Vec::new(),
+            skills,
+            mcp_servers,
+            plugins: Vec::new(),
             health,
         }))
     }
@@ -4849,16 +4905,32 @@ impl Service {
         let plugins = crate::skills::v2::diagnosis::read_plugins(self, agent_id);
         let health = crate::skills::v2::diagnosis::agent_health(self, agent_id);
         let agent_paths = crate::skills::agent_paths::paths_for_agent(agent_id);
-        let mcp_config_path = agent_paths.mcp_config.map(|p| p.display().to_string());
-        let config_path = crate::agents::profiles::profile_for_agent(agent_id)
-            .and_then(|profile| {
-                crate::agents::profiles::activation_url(&profile)
-                    .or_else(|| Some(crate::agents::profiles::configuration_url(&profile)))
+        let kimi_home = (agent_id == "kimi")
+            .then(|| crate::skills::agent_paths::kimi_code_home_for(&self.home));
+        let mcp_config_path = kimi_home
+            .as_ref()
+            .map(|home| home.join("mcp.json"))
+            .or(agent_paths.mcp_config)
+            .map(|path| path.display().to_string());
+        let config_path = kimi_home
+            .as_ref()
+            .map(|home| home.join("config.toml"))
+            .or_else(|| {
+                crate::agents::profiles::profile_for_agent(agent_id).and_then(|profile| {
+                    crate::agents::profiles::activation_url(&profile)
+                        .or_else(|| Some(crate::agents::profiles::configuration_url(&profile)))
+                })
             })
             .or(agent_paths.settings_file)
-            .map(|p| p.display().to_string());
-        let plugin_dir =
-            crate::skills::agent_paths::plugin_cache_dir(agent_id).map(|p| p.display().to_string());
+            .map(|path| path.display().to_string());
+        let plugin_dir = kimi_home
+            .as_ref()
+            .map(|home| home.join("plugins").join("managed"))
+            .or_else(|| crate::skills::agent_paths::plugin_cache_dir(agent_id))
+            .map(|path| path.display().to_string());
+        let agent_dir = kimi_home
+            .as_ref()
+            .map(|home| home.join("agents").display().to_string());
 
         Ok(AgentDetail {
             id: agent_id.to_string(),
@@ -4870,6 +4942,7 @@ impl Service {
             config_path,
             mcp_config_path,
             plugin_dir,
+            agent_dir,
             skills,
             applied_packs,
             available_packs,
@@ -5350,6 +5423,7 @@ fn project_agent_skills_dir(root: &Path, agent_id: &str) -> Result<PathBuf, Stri
     match agent_id {
         "claude-code" => Ok(root.join(".claude").join("skills")),
         "codex" => Ok(root.join(".agents").join("skills")),
+        "kimi" => Ok(root.join(".kimi-code").join("skills")),
         other => Err(format!(
             "Project-level skills are not supported for {other} yet."
         )),
@@ -5376,6 +5450,7 @@ fn read_json_mcp_servers_path(path: &Path) -> Vec<McpServerStatus> {
             let command = cfg
                 .get("command")
                 .and_then(|value| value.as_str())
+                .or_else(|| cfg.get("url").and_then(|value| value.as_str()))
                 .unwrap_or("")
                 .to_string();
             let args = cfg

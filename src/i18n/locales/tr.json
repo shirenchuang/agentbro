@@ -748,7 +748,26 @@
       "targetDirectChild": "Hedef yol '{{targetPath}}', {{skillsDir}} dizininin doğrudan alt öğesi olmalıdır.",
       "targetNoParent": "Hedef yol '{{targetPath}}' için üst dizin yok.",
       "targetNameMismatch": "Hedef yol '{{targetPath}}', Skill '{{skillId}}' ile eşleşmiyor.",
-      "unmanagedStale": "Bu Skill artık bekleyenler listesinde değil. Yeniden tarayıp tekrar deneyin."
+      "unmanagedStale": "Bu Skill artık bekleyenler listesinde değil. Yeniden tarayıp tekrar deneyin.",
+      "adoptOptionUnavailable": "Seçilen yönetimi devralma yöntemi artık kullanılamıyor. Devralma önizlemesini yeniden açın ve önerilen işlemlerden birini seçin."
+    },
+    "adoptPack": {
+      "title": "Skill paketine ekle",
+      "hint": "İsteğe bağlı. Yönetim tamamlandıktan sonra bu Skill'i bir pakete de ekler.",
+      "toggle": "Skill paketine de ekle",
+      "enabledHelp": "Mevcut bir paket seçin veya burada yeni bir paket oluşturun.",
+      "disabledHelp": "İşaretlenmezse Skill yalnızca merkez kütüphaneye alınır.",
+      "mode": "Skill paketi seçimi",
+      "existing": "Mevcut paketi seç",
+      "new": "Yeni paket oluştur",
+      "targetPack": "Skill paketi",
+      "noPacks": "Seçilebilecek Skill paketi yok. Yeni bir paket oluşturun.",
+      "existingImpact": "Mevcut üyeler korunur ve bu Skill ikinci kez eklenmez.",
+      "newPackName": "Skill paketi adı",
+      "newPackPlaceholder": "Örn. Agent araçları",
+      "newImpact": "Yeni Skill paketi, yönetim başarılı olduktan sonra oluşturulur.",
+      "partialError": "Yönetim tamamlandı ancak Skill paketine ekleme başarısız oldu: {{error}}",
+      "retry": "Pakete eklemeyi yeniden dene"
     },
     "batchAdoptPack": {
       "title": "{{count}} Skill'i yönet",

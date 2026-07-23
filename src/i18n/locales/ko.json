@@ -901,7 +901,8 @@
       "targetDirectChild": "대상 경로 '{{targetPath}}'은(는) {{skillsDir}}의 직접 하위 항목이어야 합니다.",
       "targetNoParent": "대상 경로 '{{targetPath}}'에 상위 디렉터리가 없습니다.",
       "targetNameMismatch": "대상 경로 '{{targetPath}}'이(가) Skill '{{skillId}}'와 일치하지 않습니다.",
-      "unmanagedStale": "이 Skill은 더 이상 대기 목록에 없습니다. 다시 스캔한 뒤 재시도하세요."
+      "unmanagedStale": "이 Skill은 더 이상 대기 목록에 없습니다. 다시 스캔한 뒤 재시도하세요.",
+      "adoptOptionUnavailable": "선택한 인계 방식은 더 이상 사용할 수 없습니다. 인계 미리보기를 다시 열고 제안된 작업 중 하나를 선택하세요."
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -926,6 +927,24 @@
     "rescan": "Rescan",
     "installToAgent": "Install to Agent",
     "packMembership": "Pack Membership",
+    "adoptPack": {
+      "title": "스킬 팩에 추가",
+      "hint": "선택 사항입니다. 가져오기가 끝나면 이 Skill을 팩에도 추가합니다.",
+      "toggle": "스킬 팩에도 추가",
+      "enabledHelp": "기존 팩을 선택하거나 여기에서 새로 만드세요.",
+      "disabledHelp": "선택하지 않으면 센터 라이브러리에만 가져옵니다.",
+      "mode": "스킬 팩 선택 방식",
+      "existing": "기존 팩 선택",
+      "new": "새 팩 만들기",
+      "targetPack": "스킬 팩",
+      "noPacks": "선택할 수 있는 스킬 팩이 없습니다. 새 팩을 만드세요.",
+      "existingImpact": "기존 멤버는 유지되며 이 Skill은 중복 추가되지 않습니다.",
+      "newPackName": "스킬 팩 이름",
+      "newPackPlaceholder": "예: Agent essentials",
+      "newImpact": "가져오기에 성공한 후 새 스킬 팩을 만듭니다.",
+      "partialError": "가져오기는 완료됐지만 스킬 팩 추가에 실패했습니다: {{error}}",
+      "retry": "팩 추가 다시 시도"
+    },
     "batchAdoptPack": {
       "title": "Skill {{count}}개 가져오기",
       "confirm": "가져오기 확인",

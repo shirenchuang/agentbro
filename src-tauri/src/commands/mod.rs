@@ -620,7 +620,7 @@ fn claude_usage_provider_status(enabled: bool) -> UsageProviderStatus {
 fn catalog_supported_agent_usage_providers(enabled: bool) -> Vec<UsageProviderStatus> {
     let mut providers = [
         ("z-ai", "Z.ai", "Z.ai", "api/key", None, false),
-        ("kimi", "Kimi", "Kimi", "web/token", Some("~/.kimi"), false),
+        ("kimi", "Kimi Code", "Kimi Code", "web/token", Some("~/.kimi-code"), false),
         ("gemini-cli", "Gemini CLI", "Gemini", "api/oauth", Some("~/.gemini"), find_binary("gemini").is_some()),
         ("copilot", "GitHub Copilot", "Copilot", "api/device-flow", None, find_binary("gh").is_some()),
         ("cursor", "Cursor", "Cursor", "web/cookies", Some("~/.cursor"), false),

@@ -6,6 +6,8 @@ const SOURCE_TYPE_KEYS: Record<string, string> = {
 }
 
 const STALE_UNMANAGED_ERROR_CODE = 'SKILL_UNMANAGED_STALE'
+const ADOPT_OPTION_UNAVAILABLE_PREFIX = 'Adopt option '
+const ADOPT_OPTION_UNAVAILABLE_HINT = 'Re-run preview and choose one of the suggested actions.'
 
 export function skillModeLabel(t: TFunction, mode?: string | null): string {
   if (mode === 'link') return t('skills.mode.link', { defaultValue: 'Symlink' })
@@ -44,6 +46,11 @@ export function skillErrorMessage(t: TFunction, error: unknown): string {
   if (message.startsWith(STALE_UNMANAGED_ERROR_CODE) || message === 'Query returned no rows') {
     return t('skills.errors.unmanagedStale', {
       defaultValue: 'This Skill is no longer in the pending list. Rescan and try again.',
+    })
+  }
+  if (message.startsWith(ADOPT_OPTION_UNAVAILABLE_PREFIX) && message.endsWith(ADOPT_OPTION_UNAVAILABLE_HINT)) {
+    return t('skills.errors.adoptOptionUnavailable', {
+      defaultValue: 'The selected adoption method is no longer available. Reopen the adoption preview and choose one of the suggested actions.',
     })
   }
   return raw

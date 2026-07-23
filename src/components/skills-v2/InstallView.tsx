@@ -2189,6 +2189,7 @@ function oneClickAdoptMode(item: AgentSkillInventoryItem, mode: OneClickOrganize
 
 export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const { t } = useTranslation()
+  const packs = useSkillStoreV2((state) => state.packs)
   const [agents, setAgents] = useState<AgentSkillInventoryAgent[]>([])
   const [sharedAgent, setSharedAgent] = useState<AgentSkillInventoryAgent | null>(null)
   const [selectedAgent, setSelectedAgent] = useState('all')
@@ -2935,6 +2936,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
       {adoptPreview && (
         <AdoptDialog
           preview={adoptPreview}
+          packs={packs}
           onClose={() => setAdoptPreview(null)}
           onDone={finishAdoptPreview}
         />

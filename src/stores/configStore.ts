@@ -309,7 +309,7 @@ const defaultAgentHooks: AgentHook[] = [
   { agentType: 'codebuddy', label: 'CodeBuddy', enabled: false, connected: false },
   { agentType: 'codebuddycn', label: 'CodyBuddyCN', enabled: false, connected: false },
   { agentType: 'qwen', label: 'Qwen', enabled: false, connected: false },
-  { agentType: 'kimi', label: 'Kimi', enabled: false, connected: false },
+  { agentType: 'kimi', label: 'Kimi Code', enabled: false, connected: false },
   { agentType: 'deepseek', label: 'DeepSeek', enabled: false, connected: false },
   { agentType: 'opencode', label: 'OpenCode', enabled: false, connected: false },
   { agentType: 'droid', label: 'Factory', enabled: false, connected: false },

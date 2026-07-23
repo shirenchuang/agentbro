@@ -901,7 +901,8 @@
       "targetDirectChild": "ターゲットパス '{{targetPath}}' は {{skillsDir}} の直接の子である必要があります。",
       "targetNoParent": "ターゲットパス '{{targetPath}}' には親ディレクトリがありません。",
       "targetNameMismatch": "ターゲットパス '{{targetPath}}' は Skill '{{skillId}}' と一致しません。",
-      "unmanagedStale": "この Skill は保留リストにもうありません。再スキャンしてからもう一度お試しください。"
+      "unmanagedStale": "この Skill は保留リストにもうありません。再スキャンしてからもう一度お試しください。",
+      "adoptOptionUnavailable": "選択した引き継ぎ方法は現在利用できません。引き継ぎプレビューを開き直し、提案された操作から選択してください。"
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -926,6 +927,24 @@
     "rescan": "Rescan",
     "installToAgent": "Install to Agent",
     "packMembership": "Pack Membership",
+    "adoptPack": {
+      "title": "スキルパックに追加",
+      "hint": "任意。取り込み完了後、この Skill をパックにも追加します。",
+      "toggle": "スキルパックにも追加する",
+      "enabledHelp": "既存のパックを選ぶか、ここで新規作成します。",
+      "disabledHelp": "オフの場合は中心ライブラリにのみ取り込みます。",
+      "mode": "スキルパックの選択方法",
+      "existing": "既存から選択",
+      "new": "新規パックを作成",
+      "targetPack": "スキルパック",
+      "noPacks": "選択できるスキルパックがありません。新規作成してください。",
+      "existingImpact": "既存メンバーは保持され、この Skill が重複して追加されることはありません。",
+      "newPackName": "スキルパック名",
+      "newPackPlaceholder": "例: Agent essentials",
+      "newImpact": "取り込み成功後に新しいスキルパックを作成します。",
+      "partialError": "取り込みは完了しましたが、スキルパックへの追加に失敗しました: {{error}}",
+      "retry": "パックへの追加を再試行"
+    },
     "batchAdoptPack": {
       "title": "{{count}} 件の Skill を取り込む",
       "confirm": "取り込みを確定",

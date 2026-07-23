@@ -202,6 +202,7 @@ export interface AgentDetail {
   configPath: string | null
   mcpConfigPath: string | null
   pluginDir: string | null
+  agentDir?: string | null
   skills: SkillTargetDetail[]
   appliedPacks: AppliedPackSummary[]
   availablePacks: SkillPackSummary[]

@@ -607,9 +607,13 @@ pub fn execute_safe_fixes(svc: &Service) -> Result<usize, String> {
 
 // ── MCP / Plugin reads (best-effort) ──────────────────────────────
 
-pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> {
-    let paths = crate::skills::agent_paths::paths_for_agent(agent_id);
-    let Some(config) = paths.mcp_config else {
+pub fn read_mcp_servers(svc: &Service, agent_id: &str) -> Vec<McpServerStatus> {
+    let config = if agent_id == "kimi" {
+        Some(crate::skills::agent_paths::kimi_code_home_for(&svc.home).join("mcp.json"))
+    } else {
+        crate::skills::agent_paths::paths_for_agent(agent_id).mcp_config
+    };
+    let Some(config) = config else {
         return vec![];
     };
     let Ok(content) = std::fs::read_to_string(&config) else {
@@ -650,6 +654,7 @@ pub fn read_mcp_servers(_svc: &Service, agent_id: &str) -> Vec<McpServerStatus> 
             let command = cfg
                 .get("command")
                 .and_then(|c| c.as_str())
+                .or_else(|| cfg.get("url").and_then(|url| url.as_str()))
                 .unwrap_or("")
                 .to_string();
             let args: Vec<String> = cfg
@@ -684,6 +689,9 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
     }
     if agent_id == "zcode" {
         return read_zcode_plugins(svc);
+    }
+    if agent_id == "kimi" {
+        return read_kimi_plugins(svc);
     }
 
     let (cache, marker_dir, source_label, config_path) = match agent_id {
@@ -791,6 +799,85 @@ fn read_zcode_plugins(svc: &Service) -> Vec<PluginStatus> {
                 .or_else(|| Some("zcode-plugin".to_string())),
         });
     }
+    out.sort_by_key(|plugin| plugin.name.to_lowercase());
+    out
+}
+
+fn read_kimi_plugins(svc: &Service) -> Vec<PluginStatus> {
+    let kimi_home = crate::skills::agent_paths::kimi_code_home_for(&svc.home);
+    let installed_path = kimi_home.join("plugins").join("installed.json");
+    let Ok(content) = std::fs::read_to_string(installed_path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(entries) = value.get("plugins").and_then(|plugins| plugins.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut out = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(|id| id.as_str())?.to_string();
+            let root = entry
+                .get("root")
+                .and_then(|root| root.as_str())
+                .map(PathBuf::from)
+                .map(|path| {
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        kimi_home.join(path)
+                    }
+                });
+            let manifest = root.as_ref().and_then(|root| {
+                [
+                    root.join("kimi.plugin.json"),
+                    root.join(".kimi-plugin").join("plugin.json"),
+                ]
+                .into_iter()
+                .find_map(|path| {
+                    std::fs::read_to_string(path).ok().and_then(|content| {
+                        serde_json::from_str::<serde_json::Value>(&content).ok()
+                    })
+                })
+            });
+            let name = manifest
+                .as_ref()
+                .and_then(|manifest| {
+                    manifest
+                        .pointer("/interface/displayName")
+                        .and_then(|name| name.as_str())
+                        .or_else(|| manifest.get("displayName").and_then(|name| name.as_str()))
+                        .or_else(|| manifest.get("name").and_then(|name| name.as_str()))
+                })
+                .unwrap_or(&id)
+                .to_string();
+            let version = manifest.as_ref().and_then(|manifest| {
+                manifest
+                    .get("version")
+                    .and_then(|version| version.as_str())
+                    .map(str::to_string)
+            });
+            let source = entry
+                .get("originalSource")
+                .and_then(|source| source.as_str())
+                .or_else(|| entry.get("source").and_then(|source| source.as_str()))
+                .map(|source| format!("kimi-plugin:{source}"));
+
+            Some(PluginStatus {
+                id,
+                name,
+                version,
+                enabled: entry
+                    .get("enabled")
+                    .and_then(|enabled| enabled.as_bool())
+                    .unwrap_or(true),
+                source,
+            })
+        })
+        .collect::<Vec<_>>();
     out.sort_by_key(|plugin| plugin.name.to_lowercase());
     out
 }

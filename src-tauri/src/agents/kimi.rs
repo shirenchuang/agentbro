@@ -1,4 +1,4 @@
-// KimiAdapter — Agent adapter for Moonshot Kimi (TOML config format)
+// KimiAdapter — Agent adapter for Kimi Code (TOML config format)
 
 use super::profiles;
 use super::{AdapterStatus, AgentAdapter, AgentEvent};
@@ -28,7 +28,7 @@ impl AgentAdapter for KimiAdapter {
         "kimi"
     }
     fn display_name(&self) -> &str {
-        "Kimi"
+        "Kimi Code"
     }
     fn icon(&self) -> &str {
         "kimi"
@@ -106,6 +106,7 @@ impl AgentAdapter for KimiAdapter {
                 message: raw
                     .get("error_message")
                     .or_else(|| raw.get("error"))
+                    .or_else(|| raw.get("stop_error"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("Kimi turn failed")
                     .to_string(),
@@ -130,6 +131,21 @@ impl AgentAdapter for KimiAdapter {
                 tool_input: tool_input_str(),
                 tool_target: None,
                 status: "failure".to_string(),
+            }),
+            "PermissionRequest" => Ok(AgentEvent::Processing {
+                session_id,
+                description: format!("Waiting for Kimi approval: {}", tool_name()),
+            }),
+            "PermissionResult" => Ok(AgentEvent::Processing {
+                session_id,
+                description: format!(
+                    "Kimi approval {}: {}",
+                    raw.get("decision")
+                        .or_else(|| raw.get("permission_decision"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("resolved"),
+                    tool_name()
+                ),
             }),
             "UserPromptSubmit" => Ok(AgentEvent::Processing {
                 session_id,
@@ -184,6 +200,7 @@ impl AgentAdapter for KimiAdapter {
                 agent_transcript_path: None,
                 last_assistant_message: raw
                     .get("response")
+                    .or_else(|| raw.get("last_assistant_message"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
             }),
@@ -200,6 +217,7 @@ impl AgentAdapter for KimiAdapter {
                 session_id,
                 description: "Context compacted".to_string(),
             }),
+            "Interrupt" => Ok(AgentEvent::Interrupt { session_id }),
             other => Ok(AgentEvent::Processing {
                 session_id,
                 description: format!("Kimi event: {}", other),
@@ -286,6 +304,52 @@ mod tests {
             AgentEvent::ToolUse { status, .. } => assert_eq!(status, "failure"),
             other => panic!("expected ToolUse failure, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_event_routes_permission_events_as_observations() {
+        let request = adapter()
+            .parse_event(&json!({
+                "session_id": "s",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Shell",
+            }))
+            .expect("parse");
+        match request {
+            AgentEvent::Processing { description, .. } => {
+                assert!(description.contains("Waiting for Kimi approval"));
+                assert!(description.contains("Shell"));
+            }
+            other => panic!("expected Processing, got {:?}", other),
+        }
+
+        let result = adapter()
+            .parse_event(&json!({
+                "session_id": "s",
+                "hook_event_name": "PermissionResult",
+                "tool_name": "Shell",
+                "decision": "approved",
+            }))
+            .expect("parse");
+        match result {
+            AgentEvent::Processing { description, .. } => {
+                assert!(description.contains("approved"));
+                assert!(description.contains("Shell"));
+            }
+            other => panic!("expected Processing, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_event_routes_interrupt() {
+        let event = adapter()
+            .parse_event(&json!({
+                "session_id": "s",
+                "hook_event_name": "Interrupt",
+                "reason": "user",
+            }))
+            .expect("parse");
+        assert!(matches!(event, AgentEvent::Interrupt { session_id } if session_id == "s"));
     }
 
     #[test]
