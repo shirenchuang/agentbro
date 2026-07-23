@@ -598,6 +598,7 @@ export function AgentManagementPage() {
       {adopt && (
         <AdoptDialog
           preview={adopt}
+          packs={state.packs}
           onClose={() => setAdopt(null)}
           onDone={async () => {
             const agentId = adopt.agentId
@@ -3584,6 +3585,7 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
     { label: 'Skills 目录', value: skillsDir, openable: true },
     { label: 'MCP 配置', value: detail.mcpConfigPath, openable: true },
     { label: 'Plugin 目录', value: detail.pluginDir, openable: true },
+    { label: '自定义 Agent 目录', value: detail.agentDir ?? null, openable: true },
   ]
   return (
     <section className="sm2__panel">

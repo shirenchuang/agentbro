@@ -160,7 +160,7 @@ fn table() -> &'static [AgentMeta] {
         },
         AgentMeta {
             id: "kimi",
-            display_name: "Kimi",
+            display_name: "Kimi Code",
             icon_key: "kimi",
         },
         AgentMeta {
@@ -253,7 +253,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "autoclaw" => ".openclaw-autoclaw/skills",
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
-        "kimi" => ".kimi/skills",
+        "kimi" => return Some(agent_paths::kimi_code_home_for(home).join("skills")),
         "doubao" => "Doubao/skills",
         "deepseek" => ".deepseek/skills",
         "workbuddy" => ".workbuddy/skills",

@@ -116,8 +116,10 @@ impl HookEventCategory {
 
     pub fn for_event_name(name: &str) -> Self {
         match name {
-            "PreToolUse" | "PermissionRequest" | "PermissionDenied" | "pre_tool_use"
-            | "preToolUse" | "permissionRequest" => Self::Approvals,
+            "PreToolUse" | "PermissionRequest" | "PermissionResult" | "PermissionDenied"
+            | "pre_tool_use" | "preToolUse" | "permissionRequest" | "permissionResult" => {
+                Self::Approvals
+            }
             "Notification"
             | "UserPromptSubmit"
             | "user_prompt_submit"
@@ -413,6 +415,16 @@ pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
         timeout: None,
     },
     HookEventDescriptor {
+        name: "PermissionRequest",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "PermissionResult",
+        template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
         name: "Notification",
         template: HookEntryTemplate::Matcher(""),
         timeout: None,
@@ -455,6 +467,11 @@ pub const KIMI_EVENTS: &[HookEventDescriptor] = &[
     HookEventDescriptor {
         name: "PostCompact",
         template: HookEntryTemplate::Matcher(""),
+        timeout: None,
+    },
+    HookEventDescriptor {
+        name: "Interrupt",
+        template: HookEntryTemplate::Plain,
         timeout: None,
     },
 ];
@@ -799,7 +816,7 @@ pub fn kimi_profile() -> AgentIntegrationProfile {
     AgentIntegrationProfile {
         id: "kimi",
         installation_kind: InstallationKind::TomlHooks,
-        configuration_path: ".kimi/config.toml",
+        configuration_path: ".kimi-code/config.toml",
         activation_path: None,
         source: "kimi",
         extra_args: &[],
@@ -820,7 +837,11 @@ pub fn deepseek_profile() -> AgentIntegrationProfile {
 }
 
 pub fn configuration_url(profile: &AgentIntegrationProfile) -> PathBuf {
-    resolve_home_path(profile.configuration_path)
+    if profile.id == "kimi" {
+        crate::skills::agent_paths::kimi_code_home().join("config.toml")
+    } else {
+        resolve_home_path(profile.configuration_path)
+    }
 }
 
 pub fn activation_url(profile: &AgentIntegrationProfile) -> Option<PathBuf> {
@@ -3835,12 +3856,14 @@ name = "also keep"
         let managed = build_managed_hook_entries(&profile, "/tmp/agentbro-bridge --source kimi");
         let rendered = super::super::toml_hooks::rebuild(&[], &managed, &marker(&profile));
 
-        // All 13 documented Kimi events present.
+        // All current documented Kimi events present.
         for event in &[
             "UserPromptSubmit",
             "PreToolUse",
             "PostToolUse",
             "PostToolUseFailure",
+            "PermissionRequest",
+            "PermissionResult",
             "Notification",
             "Stop",
             "StopFailure",
@@ -3850,6 +3873,7 @@ name = "also keep"
             "SubagentStop",
             "PreCompact",
             "PostCompact",
+            "Interrupt",
         ] {
             assert!(
                 rendered.contains(&format!("event = \"{}\"", event)),
@@ -3859,12 +3883,6 @@ name = "also keep"
             );
         }
 
-        // PermissionRequest was a phantom event we used to emit; remove safety.
-        assert!(
-            !rendered.contains("PermissionRequest"),
-            "PermissionRequest is not a real Kimi event, must not appear"
-        );
-
         // matcher must be empty string (regex "match all"), never "*" (invalid regex).
         assert!(
             !rendered.contains("matcher = \"*\""),
@@ -3872,7 +3890,7 @@ name = "also keep"
         );
         assert!(rendered.contains("matcher = \"\""));
 
-        // No bogus huge timeout left over from the PermissionRequest hook.
+        // Observation-only permission hooks must not block waiting for AgentBro.
         assert!(!rendered.contains("timeout = 86400"));
 
         assert!(rendered.contains(MARKER_PREFIX));

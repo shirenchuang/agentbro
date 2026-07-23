@@ -10,6 +10,20 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+pub fn kimi_code_home() -> PathBuf {
+    let h = home();
+    kimi_code_home_for(&h)
+}
+
+pub fn kimi_code_home_for(home: &Path) -> PathBuf {
+    if dirs::home_dir().as_deref() == Some(home) {
+        if let Some(value) = std::env::var_os("KIMI_CODE_HOME").filter(|value| !value.is_empty()) {
+            return expand_home_with_base(home, &value.to_string_lossy());
+        }
+    }
+    home.join(".kimi-code")
+}
+
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
     match agent {
@@ -54,7 +68,14 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
-        "kimi" | "kimi-code-cli" => basic_skill_paths(&h, ".kimi/skills"),
+        "kimi" | "kimi-code-cli" => {
+            let kimi_home = kimi_code_home_for(&h);
+            SkillPaths {
+                skill_dirs: vec![kimi_home.join("skills"), h.join(".agents").join("skills")],
+                mcp_config: Some(kimi_home.join("mcp.json")),
+                settings_file: None,
+            }
+        }
         "doubao" => basic_skill_paths(&h, "Doubao/skills"),
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
@@ -257,6 +278,7 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
     match agent {
         "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
+        "kimi" | "kimi-code-cli" => Some(kimi_code_home_for(&h).join("plugins").join("managed")),
         "workbuddy" => Some(h.join(".workbuddy").join("plugins")),
         "zcode" => Some(h.join(".zcode").join("cli").join("plugins").join("cache")),
         _ => custom_agent_plugin_dir(agent),

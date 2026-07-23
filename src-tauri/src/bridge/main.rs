@@ -734,6 +734,8 @@ fn normalize_hook_event(event: &str) -> &str {
         "postToolUseFailure" | "errorOccurred" => "PostToolUseFailure",
         "permission_request" => "PermissionRequest",
         "permissionRequest" => "PermissionRequest",
+        "permission_result" => "PermissionResult",
+        "permissionResult" => "PermissionResult",
         "permission_denied" => "PermissionDenied",
         "permissionDenied" => "PermissionDenied",
         "notification" => "Notification",
@@ -750,6 +752,7 @@ fn normalize_hook_event(event: &str) -> &str {
         "subagentStop" => "SubagentStop",
         "agentSpawn" => "SessionStart",
         "stop_failure" => "StopFailure",
+        "interrupt" => "Interrupt",
         other => other,
     }
 }
@@ -985,7 +988,11 @@ fn main() {
                     obj.insert("tool".into(), t.clone());
                 }
                 obj.insert("tool_input".into(), tool_input);
-                if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+                if let Some(id) = data
+                    .get("tool_use_id")
+                    .or_else(|| data.get("toolUseId"))
+                    .or_else(|| data.get("tool_call_id"))
+                {
                     obj.insert("tool_use_id".into(), id.clone());
                 }
 
@@ -1005,7 +1012,11 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+            if let Some(id) = data
+                .get("tool_use_id")
+                .or_else(|| data.get("toolUseId"))
+                .or_else(|| data.get("tool_call_id"))
+            {
                 obj.insert("tool_use_id".into(), id.clone());
             }
         }
@@ -1017,7 +1028,11 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+            if let Some(id) = data
+                .get("tool_use_id")
+                .or_else(|| data.get("toolUseId"))
+                .or_else(|| data.get("tool_call_id"))
+            {
                 obj.insert("tool_use_id".into(), id.clone());
             }
             if let Some(response) = value_field_with_payload(
@@ -1058,7 +1073,11 @@ fn main() {
             {
                 obj.insert("tool_error".into(), e.clone());
             }
-            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+            if let Some(id) = data
+                .get("tool_use_id")
+                .or_else(|| data.get("toolUseId"))
+                .or_else(|| data.get("tool_call_id"))
+            {
                 obj.insert("tool_use_id".into(), id.clone());
             }
         }
@@ -1075,6 +1094,24 @@ fn main() {
             }
         }
         "PermissionRequest" => {
+            if source == "kimi" {
+                obj.insert("status".into(), "waiting_for_approval".into());
+                if !tool_name.is_empty() {
+                    obj.insert("tool".into(), tool_name.into());
+                }
+                obj.insert("tool_input".into(), tool_input);
+                copy_optional_field(
+                    obj,
+                    &data,
+                    "tool_use_id",
+                    &["tool_call_id", "tool_use_id", "toolUseId"],
+                );
+                copy_optional_field(obj, &data, "action", &["action"]);
+                copy_optional_field(obj, &data, "display", &["display"]);
+                send_and_maybe_receive(&state, false);
+                return;
+            }
+
             if tool_name == "AskUserQuestion" {
                 // OpenCode asks questions through PermissionRequest and consumes
                 // decision.updatedInput.answers from the bridge response. Claude Code
@@ -1142,7 +1179,11 @@ fn main() {
                 obj.insert("tool".into(), t.clone());
             }
             obj.insert("tool_input".into(), tool_input);
-            if let Some(id) = data.get("tool_use_id").or_else(|| data.get("toolUseId")) {
+            if let Some(id) = data
+                .get("tool_use_id")
+                .or_else(|| data.get("toolUseId"))
+                .or_else(|| data.get("tool_call_id"))
+            {
                 obj.insert("tool_use_id".into(), id.clone());
             }
 
@@ -1167,6 +1208,22 @@ fn main() {
             }
             return;
         }
+        "PermissionResult" => {
+            obj.insert("status".into(), "processing".into());
+            if !tool_name.is_empty() {
+                obj.insert("tool".into(), tool_name.into());
+            }
+            obj.insert("tool_input".into(), tool_input);
+            copy_optional_field(
+                obj,
+                &data,
+                "tool_use_id",
+                &["tool_call_id", "tool_use_id", "toolUseId"],
+            );
+            copy_optional_field(obj, &data, "decision", &["decision", "permission_decision"]);
+            copy_optional_field(obj, &data, "selected_label", &["selected_label"]);
+            copy_optional_field(obj, &data, "action", &["action"]);
+        }
         "Notification" => {
             let notification_type = data["notification_type"].as_str().unwrap_or("");
             if notification_type == "permission_prompt" {
@@ -1180,6 +1237,11 @@ fn main() {
             if let Some(msg) = data.get("message") {
                 obj.insert("message".into(), msg.clone());
             }
+            copy_optional_field(obj, &data, "title", &["title"]);
+            copy_optional_field(obj, &data, "body", &["body", "message"]);
+            copy_optional_field(obj, &data, "severity", &["severity"]);
+            copy_optional_field(obj, &data, "source_kind", &["source_kind"]);
+            copy_optional_field(obj, &data, "source_id", &["source_id"]);
         }
         "Stop" => {
             obj.insert("status".into(), "waiting_for_input".into());
@@ -1222,9 +1284,15 @@ fn main() {
         }
         "StopFailure" => {
             obj.insert("status".into(), "waiting_for_input".into());
-            if let Some(e) = data.get("error").or_else(|| data.get("message")) {
+            if let Some(e) = data
+                .get("error_message")
+                .or_else(|| data.get("error"))
+                .or_else(|| data.get("message"))
+            {
                 obj.insert("stop_error".into(), e.clone());
+                obj.insert("error_message".into(), e.clone());
             }
+            copy_optional_field(obj, &data, "error_type", &["error_type"]);
         }
         "SessionStart" => {
             obj.insert("status".into(), "waiting_for_input".into());
@@ -1252,26 +1320,32 @@ fn main() {
         }
         "PreCompact" => {
             obj.insert("status".into(), "compacting".into());
+            copy_optional_field(obj, &data, "trigger", &["trigger"]);
         }
         "PostCompact" => {
             obj.insert("status".into(), "processing".into());
+            copy_optional_field(obj, &data, "trigger", &["trigger"]);
         }
         "SubagentStart" => {
             obj.insert("status".into(), "processing".into());
             let agent_id = data
                 .get("agent_id")
                 .or_else(|| data.get("agentId"))
+                .or_else(|| data.get("agent_name"))
                 .or_else(|| data.get("tool_use_id"))
                 .or_else(|| data.get("toolUseId"))
                 .cloned()
                 .unwrap_or_else(|| "unknown".into());
-            obj.insert("agent_id".into(), agent_id);
+            obj.insert("agent_id".into(), agent_id.clone());
+            obj.insert("agent_name".into(), agent_id);
             let desc = data
                 .get("description")
+                .or_else(|| data.get("prompt"))
                 .or_else(|| data.get("message"))
                 .cloned()
                 .unwrap_or_else(|| "".into());
             obj.insert("description".into(), desc);
+            copy_optional_field(obj, &data, "prompt", &["prompt"]);
             copy_optional_field(
                 obj,
                 &data,
@@ -1290,11 +1364,13 @@ fn main() {
             let agent_id = data
                 .get("agent_id")
                 .or_else(|| data.get("agentId"))
+                .or_else(|| data.get("agent_name"))
                 .or_else(|| data.get("tool_use_id"))
                 .or_else(|| data.get("toolUseId"))
                 .cloned()
                 .unwrap_or_else(|| "unknown".into());
-            obj.insert("agent_id".into(), agent_id);
+            obj.insert("agent_id".into(), agent_id.clone());
+            obj.insert("agent_name".into(), agent_id);
             let agent_status = data
                 .get("agent_status")
                 .or_else(|| data.get("agentStatus"))
@@ -1323,8 +1399,17 @@ fn main() {
                 obj,
                 &data,
                 "last_assistant_message",
-                &["last_assistant_message", "lastAssistantMessage", "message"],
+                &[
+                    "response",
+                    "last_assistant_message",
+                    "lastAssistantMessage",
+                    "message",
+                ],
             );
+        }
+        "Interrupt" => {
+            obj.insert("status".into(), "interrupted".into());
+            copy_optional_field(obj, &data, "reason", &["reason"]);
         }
         "beforeShellExecution" => {
             obj.insert("status".into(), "shell_starting".into());
@@ -1413,6 +1498,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_current_kimi_permission_events() {
+        assert_eq!(
+            normalize_hook_event("permission_request"),
+            "PermissionRequest"
+        );
+        assert_eq!(
+            normalize_hook_event("permission_result"),
+            "PermissionResult"
+        );
+        assert_eq!(normalize_hook_event("interrupt"), "Interrupt");
+    }
 
     #[test]
     fn ask_user_question_output_keeps_updated_input_on_decision() {

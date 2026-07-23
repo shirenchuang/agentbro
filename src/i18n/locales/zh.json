@@ -941,7 +941,8 @@
       "targetDirectChild": "目标路径 '{{targetPath}}' 必须直接位于 {{skillsDir}} 下。",
       "targetNoParent": "目标路径 '{{targetPath}}' 没有父目录。",
       "targetNameMismatch": "目标路径 '{{targetPath}}' 与 Skill '{{skillId}}' 不匹配。",
-      "unmanagedStale": "该 Skill 已不在待处理列表中，请重新扫描后重试。"
+      "unmanagedStale": "该 Skill 已不在待处理列表中，请重新扫描后重试。",
+      "adoptOptionUnavailable": "当前选择的接管方式已不可用。请重新打开接管预览，并从建议操作中选择。"
     },
     "installing": "安装中...",
     "sync": "同步",
@@ -966,6 +967,24 @@
     "rescan": "重新扫描",
     "installToAgent": "安装到 Agent",
     "packMembership": "所属技能包",
+    "adoptPack": {
+      "title": "加入技能包",
+      "hint": "可选。接管完成后，将这个 Skill 同时归入技能包。",
+      "toggle": "同时加入技能包",
+      "enabledHelp": "选择已有技能包，或在这里新建一个。",
+      "disabledHelp": "不勾选时只接管到中心库。",
+      "mode": "技能包选择方式",
+      "existing": "选择已有",
+      "new": "新建技能包",
+      "targetPack": "技能包",
+      "noPacks": "暂无可选技能包，可直接新建。",
+      "existingImpact": "保留已有成员；如果 Skill 已在包中，不会重复添加。",
+      "newPackName": "技能包名称",
+      "newPackPlaceholder": "例如 Agent 常用工具",
+      "newImpact": "新技能包会在接管成功后创建。",
+      "partialError": "接管已完成，但加入技能包失败：{{error}}",
+      "retry": "重试加入技能包"
+    },
     "batchAdoptPack": {
       "title": "批量接管 {{count}} 个 Skill",
       "confirm": "确认接管",

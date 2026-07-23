@@ -900,7 +900,8 @@
       "targetDirectChild": "Target path '{{targetPath}}' must be a direct child of {{skillsDir}}.",
       "targetNoParent": "Target path '{{targetPath}}' has no parent directory.",
       "targetNameMismatch": "Target path '{{targetPath}}' does not match Skill '{{skillId}}'.",
-      "unmanagedStale": "This Skill is no longer in the pending list. Rescan and try again."
+      "unmanagedStale": "This Skill is no longer in the pending list. Rescan and try again.",
+      "adoptOptionUnavailable": "The selected adoption method is no longer available. Reopen the adoption preview and choose one of the suggested actions."
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -925,6 +926,24 @@
     "rescan": "Rescan",
     "installToAgent": "Install to Agent",
     "packMembership": "Pack Membership",
+    "adoptPack": {
+      "title": "Add to skill pack",
+      "hint": "Optional. Add this Skill to a pack after adoption.",
+      "toggle": "Also add to a skill pack",
+      "enabledHelp": "Choose an existing pack or create one here.",
+      "disabledHelp": "When unchecked, the Skill is only adopted to the center library.",
+      "mode": "Skill pack choice",
+      "existing": "Choose existing",
+      "new": "Create new pack",
+      "targetPack": "Skill pack",
+      "noPacks": "No skill packs are available. Create one instead.",
+      "existingImpact": "Existing members are preserved, and this Skill will not be added twice.",
+      "newPackName": "Skill pack name",
+      "newPackPlaceholder": "For example Agent essentials",
+      "newImpact": "The new skill pack will be created after adoption succeeds.",
+      "partialError": "Adoption succeeded, but adding to the skill pack failed: {{error}}",
+      "retry": "Retry adding to pack"
+    },
     "batchAdoptPack": {
       "title": "Adopt {{count}} Skill(s)",
       "confirm": "Confirm adoption",

@@ -4348,7 +4348,11 @@
 }
 
 .sm2__modal--adopt {
+  display: flex;
+  flex-direction: column;
   width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
 }
 
 .sm2__modal--adopt .sm2__modal-head {
@@ -4366,6 +4370,7 @@
 
 .sm2__modal--adopt .sm2__modal-body {
   padding: 18px 26px;
+  overflow-y: auto;
 }
 
 .sm2__modal--adopt .sm2__modal-actions {
@@ -4502,10 +4507,14 @@
   transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.sm2-adopt__option:hover {
+.sm2-adopt__option:hover:not(:disabled) {
   border-color: rgba(10, 132, 255, 0.24);
   background: rgba(255, 255, 255, 0.96);
   transform: translateY(-1px);
+}
+
+.sm2-adopt__option:disabled {
+  cursor: default;
 }
 
 .sm2-adopt__option--active {
@@ -4657,6 +4666,95 @@
 
 .sm2-batch-adopt-pack__target {
   gap: 10px;
+}
+
+.sm2-adopt-pack__toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 11px;
+  align-items: center;
+  padding: 12px 13px;
+  border: 1px solid rgba(40, 51, 77, 0.14);
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.sm2-adopt-pack__toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sm2-adopt-pack__toggle > span {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid rgba(104, 113, 129, 0.45);
+  border-radius: 5px;
+  background: #fff;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.sm2-adopt-pack__toggle > span::after {
+  width: 7px;
+  height: 4px;
+  border-bottom: 2px solid #fff;
+  border-left: 2px solid #fff;
+  content: "";
+  opacity: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.sm2-adopt-pack__toggle input:checked + span {
+  border-color: var(--accent, #007aff);
+  background: var(--accent, #007aff);
+}
+
+.sm2-adopt-pack__toggle input:checked + span::after {
+  opacity: 1;
+}
+
+.sm2-adopt-pack__toggle input:focus-visible + span {
+  outline: 2px solid rgba(10, 132, 255, 0.34);
+  outline-offset: 2px;
+}
+
+.sm2-adopt-pack__toggle div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sm2-adopt-pack__toggle strong {
+  color: var(--text-primary, #0f172a);
+  font-size: 14px;
+  font-weight: 820;
+}
+
+.sm2-adopt-pack__toggle small {
+  color: var(--text-secondary, #667085);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sm2-adopt-pack__target {
+  gap: 10px;
+  animation: sm2-adopt-pack-reveal 160ms ease-out;
+}
+
+@keyframes sm2-adopt-pack-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .sm2-adopt__rename label {
@@ -4863,6 +4961,12 @@
   .sm2-adopt__option em {
     grid-column: 2;
     justify-self: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sm2-adopt-pack__target {
+    animation: none;
   }
 }
 

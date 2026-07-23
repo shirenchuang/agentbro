@@ -12,7 +12,7 @@ body.skill-pack-picker-body {
   --picker-surface: rgba(249, 248, 244, 0.96);
   position: fixed;
   inset: 0;
-  padding: 12px 8px 8px;
+  padding: 10px 6px 6px;
   color: var(--picker-ink);
   font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
 }
@@ -38,14 +38,11 @@ body.skill-pack-picker-body {
   overflow: hidden;
   flex-direction: column;
   border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 22px;
+  border-radius: 19px;
   background:
     radial-gradient(circle at 8% -5%, rgba(255, 190, 75, 0.14), transparent 30%),
     var(--picker-surface);
-  box-shadow:
-    0 22px 48px rgba(32, 37, 33, 0.22),
-    0 3px 12px rgba(32, 37, 33, 0.12),
-    inset 0 0 0 0.5px rgba(22, 28, 24, 0.08);
+  box-shadow: none;
   backdrop-filter: blur(30px) saturate(1.45);
   -webkit-backdrop-filter: blur(30px) saturate(1.45);
   animation: skill-pack-picker-enter 180ms cubic-bezier(0.2, 0.88, 0.3, 1) both;
@@ -60,7 +57,7 @@ body.skill-pack-picker-body {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  padding: 22px 22px 13px;
+  padding: 17px 18px 10px;
 }
 
 .skill-pack-picker__kicker {
@@ -74,7 +71,7 @@ body.skill-pack-picker-body {
 }
 
 .skill-pack-picker__header h1 {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 720;
   letter-spacing: -0.035em;
   line-height: 1.12;
@@ -82,9 +79,9 @@ body.skill-pack-picker-body {
 
 .skill-pack-picker__header p {
   max-width: 286px;
-  margin-top: 5px;
+  margin-top: 4px;
   color: var(--picker-muted);
-  font-size: 11.5px;
+  font-size: 10.5px;
   line-height: 1.45;
 }
 
@@ -112,13 +109,22 @@ body.skill-pack-picker-body {
 .skill-pack-picker__agents {
   display: flex;
   gap: 5px;
-  margin: 0 16px 12px;
+  margin: 0 13px 9px;
   padding: 4px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--picker-line);
   border-radius: 13px;
   background: rgba(37, 43, 39, 0.04);
+  cursor: grab;
   scrollbar-width: none;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.skill-pack-picker__agents--dragging {
+  cursor: grabbing;
 }
 
 .skill-pack-picker__agents::-webkit-scrollbar {
@@ -128,7 +134,7 @@ body.skill-pack-picker-body {
 .skill-pack-picker__agent {
   display: flex;
   min-width: max-content;
-  height: 35px;
+  height: 32px;
   padding: 4px 9px 4px 5px;
   align-items: center;
   gap: 7px;
@@ -183,14 +189,14 @@ body.skill-pack-picker-body {
 
 .skill-pack-picker__toolbar {
   display: flex;
-  margin: 0 17px 9px;
+  margin: 0 14px 7px;
   align-items: center;
   gap: 10px;
 }
 
 .skill-pack-picker__search {
   display: flex;
-  height: 33px;
+  height: 31px;
   min-width: 0;
   flex: 1;
   align-items: center;
@@ -244,8 +250,8 @@ body.skill-pack-picker-body {
 
 .skill-pack-picker__error {
   display: flex;
-  margin: 0 17px 8px;
-  padding: 8px 10px;
+  margin: 0 14px 7px;
+  padding: 7px 9px;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -271,7 +277,7 @@ body.skill-pack-picker-body {
   min-height: 0;
   flex: 1;
   margin: 0 8px;
-  padding: 0 9px 10px;
+  padding: 0 7px 8px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(50, 57, 52, 0.15) transparent;
@@ -281,9 +287,9 @@ body.skill-pack-picker-body {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 58px;
-  margin-bottom: 5px;
-  padding: 9px 10px;
+  min-height: 52px;
+  margin-bottom: 4px;
+  padding: 7px 9px;
   align-items: center;
   gap: 10px;
   border: 1px solid transparent;
@@ -408,8 +414,8 @@ body.skill-pack-picker-body {
 
 .skill-pack-picker__footer {
   display: flex;
-  min-height: 57px;
-  padding: 10px 17px 11px;
+  min-height: 50px;
+  padding: 8px 14px 9px;
   align-items: center;
   justify-content: space-between;
   border-top: 1px solid var(--picker-line);
@@ -478,7 +484,7 @@ body.skill-pack-picker-body {
     background:
       radial-gradient(circle at 8% -5%, rgba(255, 174, 57, 0.1), transparent 30%),
       var(--picker-surface);
-    box-shadow: 0 24px 55px rgba(0, 0, 0, 0.52), inset 0 0 0 0.5px rgba(255, 255, 255, 0.04);
+    box-shadow: none;
   }
 
   .skill-pack-picker__agent--active,

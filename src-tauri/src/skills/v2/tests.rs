@@ -3535,10 +3535,101 @@ fn kimi_does_not_claim_agentbro_center_skills() {
     assert!(!kimi.installed);
     assert_eq!(
         kimi.skills_dir,
-        Some(svc.home.join(".kimi/skills").display().to_string())
+        Some(svc.home.join(".kimi-code/skills").display().to_string())
     );
     assert_eq!(kimi.unmanaged_count, 0);
     assert!(kimi.items.is_empty());
+}
+
+#[test]
+fn kimi_code_agent_detail_discovers_managed_resources() {
+    let (_home, svc, _lock) = fresh_service("kimi-code-resources");
+    let kimi_home = svc.home.join(".kimi-code");
+    write_skill(
+        &kimi_home.join("skills"),
+        "reviewer",
+        "kimi-reviewer",
+        Some("v1"),
+    );
+    fs::create_dir_all(kimi_home.join("agents")).unwrap();
+    fs::write(kimi_home.join("agents/reviewer.md"), "# Reviewer").unwrap();
+    fs::write(
+        kimi_home.join("mcp.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "stdio": { "command": "npx", "args": ["-y", "server"] },
+                "remote": { "type": "http", "url": "https://example.com/mcp" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let plugin_root = kimi_home.join("plugins/managed/review-plugin");
+    fs::create_dir_all(&plugin_root).unwrap();
+    fs::write(
+        plugin_root.join("kimi.plugin.json"),
+        serde_json::json!({
+            "name": "review-plugin",
+            "version": "1.2.3",
+            "interface": { "displayName": "Review Plugin" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        kimi_home.join("plugins/installed.json"),
+        serde_json::json!({
+            "version": 1,
+            "plugins": [{
+                "id": "review-plugin",
+                "root": plugin_root,
+                "source": "github",
+                "enabled": true,
+                "originalSource": "moonshot/review-plugin",
+                "installedAt": "2026-01-01T00:00:00Z"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    svc.refresh().unwrap();
+    let detail = svc.get_agent_detail("kimi").unwrap();
+    assert_eq!(
+        detail.skills_dir,
+        Some(kimi_home.join("skills").display().to_string())
+    );
+    assert_eq!(
+        detail.config_path,
+        Some(kimi_home.join("config.toml").display().to_string())
+    );
+    assert_eq!(
+        detail.mcp_config_path,
+        Some(kimi_home.join("mcp.json").display().to_string())
+    );
+    assert_eq!(
+        detail.plugin_dir,
+        Some(kimi_home.join("plugins/managed").display().to_string())
+    );
+    assert_eq!(
+        detail.agent_dir,
+        Some(kimi_home.join("agents").display().to_string())
+    );
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "stdio" && server.command == "npx" && server.valid));
+    assert!(detail.mcp_servers.iter().any(|server| {
+        server.name == "remote" && server.command == "https://example.com/mcp" && server.valid
+    }));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "review-plugin"
+            && plugin.name == "Review Plugin"
+            && plugin.version.as_deref() == Some("1.2.3")
+            && plugin.enabled
+            && plugin.source.as_deref() == Some("kimi-plugin:moonshot/review-plugin")
+    }));
 }
 
 #[test]
@@ -3847,6 +3938,56 @@ enabled = true
 }
 
 #[test]
+fn project_inventory_scans_kimi_code_resources() {
+    let (_home, svc, _lock) = fresh_service("project-kimi-code");
+    let root = svc.home.join("workspace/kimi-repo");
+    write_skill(
+        &root.join(".kimi-code/skills"),
+        "review",
+        "kimi-project-review",
+        Some("v1"),
+    );
+    fs::create_dir_all(root.join(".kimi-code/agents")).unwrap();
+    fs::write(
+        root.join(".kimi-code/agents/reviewer.md"),
+        "# Project reviewer",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".kimi-code/mcp.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "remote": { "type": "sse", "url": "https://example.com/sse" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.add_project(root.display().to_string()).unwrap();
+    assert_eq!(detail.summary.detected_agent_count, 1);
+    assert_eq!(detail.summary.skill_count, 1);
+    assert_eq!(detail.summary.mcp_count, 1);
+    let kimi = detail
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "kimi")
+        .expect("Kimi Code project agent");
+    assert!(kimi
+        .skills
+        .iter()
+        .any(|skill| skill.id == "kimi-project-review"));
+    assert!(kimi
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "remote" && server.command == "https://example.com/sse"));
+    assert!(kimi
+        .config_paths
+        .iter()
+        .any(|path| path.ends_with(".kimi-code/agents")));
+}
+
+#[test]
 fn installs_center_skill_to_project_and_rescans() {
     let (_home, svc, _lock) = fresh_service("project-install");
     let source = write_skill(
@@ -3893,6 +4034,25 @@ fn installs_center_skill_to_project_and_rescans() {
         .find(|skill| skill.id == "center-alpha")
         .expect("installed skill");
     assert_eq!(skill.status, "centerSynced");
+
+    let kimi_detail = svc
+        .install_center_skills_to_project(
+            &project.summary.id,
+            "kimi",
+            vec!["center-alpha".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    let kimi_target = root.join(".kimi-code/skills/center-alpha");
+    assert!(kimi_target.join("SKILL.md").is_file());
+    assert!(kimi_detail
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == "kimi")
+        .is_some_and(|agent| agent
+            .skills
+            .iter()
+            .any(|skill| skill.id == "center-alpha" && skill.status == "centerSynced")));
 }
 
 // ── Settings ─────────────────────────────────────────────────────

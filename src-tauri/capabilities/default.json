@@ -2,7 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/nicedoctor/tauri-config-schema/v2/schema.json",
   "identifier": "default",
   "description": "Default permissions for AgentBro",
-  "windows": ["notch", "settings", "pet"],
+  "windows": [
+    "notch",
+    "settings",
+    "pet",
+    "skill-pack-picker"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",

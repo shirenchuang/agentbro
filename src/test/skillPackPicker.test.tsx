@@ -29,6 +29,14 @@ const codex: AgentSummary = {
   unmanagedSkillCount: 0,
 }
 
+const claudeCode: AgentSummary = {
+  ...codex,
+  id: 'claude-code',
+  displayName: 'Claude Code',
+  iconKey: 'claude',
+  skillsDir: '/Users/me/.claude/skills',
+}
+
 const packs: SkillPackSummary[] = [
   {
     id: 'frontend',
@@ -109,5 +117,54 @@ describe('SkillPackPicker', () => {
     expect(items[0]).toHaveTextContent('代码审查')
     expect(items[0]).toHaveAttribute('aria-checked', 'true')
     expect(items[1]).toHaveTextContent('前端开发')
+  })
+
+  it('hides the picker when the done button is clicked', async () => {
+    render(<SkillPackPicker />)
+
+    await screen.findByRole('checkbox', { name: /前端开发/ })
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+
+    await waitFor(() => expect(hideWindow).toHaveBeenCalledTimes(1))
+  })
+
+  it('scrolls the agent tabs horizontally with the mouse wheel', async () => {
+    vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValueOnce({
+      ...pickerData,
+      agents: [codex, claudeCode],
+      appliedByAgent: { codex: [], 'claude-code': [] },
+    })
+
+    render(<SkillPackPicker />)
+
+    const tabs = await screen.findByRole('tablist')
+    Object.defineProperties(tabs, {
+      clientWidth: { configurable: true, value: 200 },
+      scrollWidth: { configurable: true, value: 500 },
+    })
+    fireEvent.wheel(tabs, { deltaX: 0, deltaY: 80 })
+
+    expect(tabs.scrollLeft).toBe(80)
+  })
+
+  it('drags the agent tabs without selecting the tab under the pointer', async () => {
+    vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValueOnce({
+      ...pickerData,
+      agents: [codex, claudeCode],
+      appliedByAgent: { codex: [], 'claude-code': [] },
+    })
+
+    render(<SkillPackPicker />)
+
+    const tabs = await screen.findByRole('tablist')
+    const claudeTab = screen.getByRole('tab', { name: /Claude Code/ })
+    fireEvent.pointerDown(claudeTab, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 160 })
+    fireEvent.pointerMove(tabs, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
+    fireEvent.pointerUp(tabs, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
+    fireEvent.click(claudeTab)
+
+    expect(tabs.scrollLeft).toBe(80)
+    expect(screen.getByRole('tab', { name: /Codex/ })).toHaveAttribute('aria-selected', 'true')
+    expect(claudeTab).toHaveAttribute('aria-selected', 'false')
   })
 })

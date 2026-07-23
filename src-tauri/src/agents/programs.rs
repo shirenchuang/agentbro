@@ -399,6 +399,7 @@ async fn build_agent_list(
 
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
+    let is_kimi = id == "kimi";
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = match &meta.kind {
         AgentProgramKind::Cli => which_agent_binary(&id, &meta),
@@ -443,7 +444,11 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         installed_version,
         latest_version,
         binary_path,
-        config_dir: meta.config_dir.map(expand_home),
+        config_dir: if is_kimi {
+            Some(agent_paths::kimi_code_home().display().to_string())
+        } else {
+            meta.config_dir.map(expand_home)
+        },
         app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
@@ -1270,7 +1275,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "antigravity" => "Antigravity",
         "qwen" => "Qwen Code",
         "deepseek" => "DeepSeek",
-        "kimi" => "Kimi",
+        "kimi" => "Kimi Code",
         "doubao" => "Doubao",
         "droid" | "factory-droid" => "Factory Droid",
         "stepfun" => "StepFun",
@@ -1420,11 +1425,15 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.deepseek",
             "https://www.deepseek.com",
         ),
-        "kimi" => app(
+        "kimi" => cli(
             "kimi",
-            "/Applications/Kimi.app",
-            "~/.kimi",
-            "https://www.kimi.com",
+            "npm",
+            "@moonshot-ai/kimi-code",
+            "npm install -g @moonshot-ai/kimi-code",
+            "npm install -g @moonshot-ai/kimi-code@latest",
+            "npm uninstall -g @moonshot-ai/kimi-code",
+            "~/.kimi-code",
+            "https://www.kimi.com/code/docs/kimi-code-cli/guides/getting-started.html",
         ),
         "doubao" => app(
             "doubao",
@@ -1736,6 +1745,18 @@ mod tests {
             codex.update_command,
             Some("npm install -g @openai/codex@latest"),
         );
+
+        let kimi = metadata_for("kimi").expect("kimi metadata");
+        assert_eq!(display_name_for_agent("kimi"), "Kimi Code");
+        assert_eq!(kimi.kind, AgentProgramKind::Cli);
+        assert_eq!(kimi.binary, Some("kimi"));
+        assert_eq!(kimi.package_manager, Some("npm"));
+        assert_eq!(kimi.package_name, Some("@moonshot-ai/kimi-code"));
+        assert_eq!(
+            kimi.update_command,
+            Some("npm install -g @moonshot-ai/kimi-code@latest"),
+        );
+        assert_eq!(kimi.config_dir, Some("~/.kimi-code"));
     }
 
     #[test]

@@ -272,6 +272,7 @@ pub struct AgentDetail {
     pub config_path: Option<String>,
     pub mcp_config_path: Option<String>,
     pub plugin_dir: Option<String>,
+    pub agent_dir: Option<String>,
     pub skills: Vec<SkillTargetDetail>,
     pub applied_packs: Vec<AppliedPackSummary>,
     pub available_packs: Vec<SkillPackSummary>,
