@@ -6156,6 +6156,7 @@ pub fn run() {
             skills::v2::commands::execute_adopt_agent_skill,
             skills::v2::commands::execute_adopt_agent_skills,
             skills::v2::commands::delete_unmanaged_agent_skill,
+            skills::v2::commands::delete_unmanaged_agent_skills,
             skills::v2::commands::preview_sync_copy_target,
             skills::v2::commands::preview_copy_target_diff,
             skills::v2::commands::execute_sync_copy_target,

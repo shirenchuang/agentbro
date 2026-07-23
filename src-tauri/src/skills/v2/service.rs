@@ -54,6 +54,13 @@ pub struct AdoptBatchItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteUnmanagedAgentSkillFailure {
+    pub unmanaged_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AdoptBatchItemResult {
     pub unmanaged_id: String,
     pub skill_id: Option<String>,
@@ -65,6 +72,13 @@ pub struct AdoptBatchItemResult {
 pub struct AdoptBatchResult {
     pub items: Vec<AdoptBatchItemResult>,
     pub finalization_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteUnmanagedAgentSkillsResult {
+    pub deleted: usize,
+    pub failures: Vec<DeleteUnmanagedAgentSkillFailure>,
 }
 
 impl Service {
@@ -3349,6 +3363,40 @@ impl Service {
         agent_id: &str,
         unmanaged_id: &str,
     ) -> Result<(), String> {
+        self.remove_unmanaged_agent_skill(agent_id, unmanaged_id)?;
+        self.scan_one_agent_into_db(agent_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    pub fn delete_unmanaged_agent_skills(
+        &self,
+        agent_id: &str,
+        unmanaged_ids: Vec<String>,
+    ) -> Result<DeleteUnmanagedAgentSkillsResult, String> {
+        let mut deleted = 0usize;
+        let mut failures = Vec::new();
+        for unmanaged_id in unmanaged_ids {
+            match self.remove_unmanaged_agent_skill(agent_id, &unmanaged_id) {
+                Ok(()) => deleted += 1,
+                Err(error) => failures.push(DeleteUnmanagedAgentSkillFailure {
+                    unmanaged_id,
+                    error,
+                }),
+            }
+        }
+        if deleted > 0 {
+            self.scan_one_agent_into_db(agent_id)?;
+            self.refresh_snapshot_best_effort();
+        }
+        Ok(DeleteUnmanagedAgentSkillsResult { deleted, failures })
+    }
+
+    fn remove_unmanaged_agent_skill(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+    ) -> Result<(), String> {
         let item = self.find_unmanaged(unmanaged_id)?;
         if item.agent_id.as_deref() != Some(agent_id) {
             return Err(format!(
@@ -3381,8 +3429,6 @@ impl Service {
             .map(|_| ())
             .map_err(|e| e.to_string())
         })?;
-        self.scan_one_agent_into_db(agent_id)?;
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 

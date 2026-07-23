@@ -3665,6 +3665,44 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().error).toBeNull()
   })
 
+  it('deletes selected unmanaged agent skills in a batch after confirmation', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [
+        ...useSkillStoreV2.getState().unmanaged,
+        {
+          id: 'unmanaged-2',
+          agentId: 'claude-code',
+          itemType: 'skill',
+          path: '/c/skills/another-skill',
+          inferredSkillId: 'another-skill',
+          hash: null,
+          reason: 'not_in_center_library',
+        },
+      ],
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkills').mockResolvedValue({ deleted: 2, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (3)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+    const dialog = screen.getByRole('dialog', { name: '确认批量删除未管理 Skill？' })
+    expect(dialog).toHaveTextContent('2 个未管理 Skill 将从当前 Agent 直接删除。')
+    expect(deleteUnmanaged).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2']))
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
     const execute = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
       items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],

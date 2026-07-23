@@ -2836,6 +2836,44 @@ fn delete_unmanaged_agent_skill_rejects_wrong_agent() {
 }
 
 #[test]
+fn delete_unmanaged_agent_skills_removes_multiple_local_copies() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-agent-batch");
+    let first = write_skill(
+        &svc.home.join(".workbuddy/skills"),
+        "rogue-first",
+        "rogue-first",
+        Some("v1"),
+    );
+    let second = write_skill(
+        &svc.home.join(".workbuddy/skills"),
+        "rogue-second",
+        "rogue-second",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged_ids = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .filter(|item| {
+            item.agent_id.as_deref() == Some("workbuddy")
+                && (item.path == first.display().to_string()
+                    || item.path == second.display().to_string())
+        })
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+
+    let result = svc
+        .delete_unmanaged_agent_skills("workbuddy", unmanaged_ids)
+        .unwrap();
+
+    assert_eq!(result.deleted, 2);
+    assert!(result.failures.is_empty());
+    assert!(!first.exists());
+    assert!(!second.exists());
+}
+
+#[test]
 fn adopt_shared_agents_skill_copies_to_center_and_removes_source() {
     let (_home, svc, _lock) = fresh_service("adopt-shared-cleanup");
     let shared = write_skill(

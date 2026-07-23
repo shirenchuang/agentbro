@@ -7,8 +7,8 @@
 
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::{
-    AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult, Service,
-    UpsertPackInput,
+    AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult,
+    DeleteUnmanagedAgentSkillsResult, Service, UpsertPackInput,
 };
 use crate::skills::v2::{diagnosis, snapshot};
 use std::collections::HashMap;
@@ -328,6 +328,14 @@ pub fn execute_adopt_agent_skills(items: Vec<AdoptBatchItem>) -> Result<AdoptBat
 #[tauri::command(async)]
 pub fn delete_unmanaged_agent_skill(agent_id: String, unmanaged_id: String) -> Result<(), String> {
     svc()?.delete_unmanaged_agent_skill(&agent_id, &unmanaged_id)
+}
+
+#[tauri::command(async)]
+pub fn delete_unmanaged_agent_skills(
+    agent_id: String,
+    unmanaged_ids: Vec<String>,
+) -> Result<DeleteUnmanagedAgentSkillsResult, String> {
+    svc()?.delete_unmanaged_agent_skills(&agent_id, unmanaged_ids)
 }
 
 #[tauri::command(async)]

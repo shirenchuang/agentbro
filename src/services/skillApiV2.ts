@@ -567,6 +567,16 @@ export interface DeleteSkillTargetDistributionsResult {
   failures: DeleteSkillTargetDistributionFailure[]
 }
 
+export interface DeleteUnmanagedAgentSkillFailure {
+  unmanagedId: string
+  error: string
+}
+
+export interface DeleteUnmanagedAgentSkillsResult {
+  deleted: number
+  failures: DeleteUnmanagedAgentSkillFailure[]
+}
+
 export interface RemovePackFromAgentPreview {
   packId: string
   packName: string
@@ -1092,6 +1102,10 @@ export const skillApiV2 = {
       }),
   deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
     isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }) : Promise.resolve(),
+  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[]) =>
+    isTauriRuntime()
+      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds })
+      : Promise.resolve({ deleted: unmanagedIds.length, failures: [] }),
 
   previewSyncCopy: (targetId: string) =>
     isTauriRuntime() ? invoke<CopySyncPreview>('preview_sync_copy_target', { targetId }) : Promise.resolve(null as unknown as CopySyncPreview),
