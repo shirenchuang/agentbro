@@ -679,6 +679,134 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "mcpManagement": {
+      "summary": "MCP status summary",
+      "total": "Total",
+      "enabledCount": "Enabled",
+      "invalidCount": "Issues",
+      "scanning": "Scanning…",
+      "rescan": "Rescan",
+      "add": "Add MCP",
+      "readOnly": "MCP configuration is read-only for this Agent. The first release supports Claude Code, Codex, Gemini CLI, Cursor, Kimi Code, and ZCode.",
+      "configPath": "Config file",
+      "emptyTitle": "No MCP servers yet",
+      "emptyDescription": "Add a local command or remote service to give this Agent more tools.",
+      "addFirst": "Add first MCP",
+      "saved": "Saved MCP “{{name}}”",
+      "disabled": "Disabled MCP “{{name}}”",
+      "enabled": "Enabled MCP “{{name}}”",
+      "deleted": "Deleted MCP “{{name}}”",
+      "valid": "Valid",
+      "invalid": "Invalid",
+      "disabledByAgentbro": "Disabled by AgentBro",
+      "testConnected": "Connected",
+      "testFailed": "Connection failed",
+      "toggleLabel": "Enable or disable {{name}}",
+      "readOnlyTag": "Read-only",
+      "testing": "Testing…",
+      "test": "Test connection",
+      "edit": "Edit",
+      "delete": "Delete",
+      "deleteTitle": "Delete MCP “{{name}}”?",
+      "deleteConfirm": "Delete",
+      "deleting": "Deleting",
+      "deleteDescription": "This removes “{{name}}” from {{agent}}'s global configuration. AgentBro creates a local backup before writing.",
+      "editor": {
+        "editTitle": "Edit MCP “{{name}}”",
+        "addTitle": "Add MCP server",
+        "name": "Name",
+        "transport": "Transport",
+        "transportOptions": {
+          "stdio": "stdio (local command)",
+          "http": "HTTP (remote service)",
+          "sse": "SSE (legacy compatibility)"
+        },
+        "transportShortOptions": {
+          "stdio": "Local command",
+          "http": "HTTP",
+          "sse": "SSE"
+        },
+        "command": "Command",
+        "arguments": "Arguments",
+        "addArgument": "Add argument",
+        "cwd": "Working directory (optional)",
+        "environment": "Environment variables",
+        "addEnvironment": "Add environment variable",
+        "url": "Server URL",
+        "headers": "Request headers",
+        "addHeader": "Add header",
+        "secretNote": "Token, key, secret, password, and Authorization values are never revealed. Unchanged values are preserved.",
+        "key": "Key",
+        "value": "Value",
+        "secretConfigured": "Configured; leave blank to preserve",
+        "saving": "Saving…"
+      },
+      "inspector": {
+        "title": "MCP Inspector · {{name}}",
+        "subtitle": "{{agent}} · {{transport}}",
+        "inspect": "Inspect",
+        "inspecting": "Inspecting…",
+        "reinspect": "Inspect again",
+        "disabledNotice": "This MCP is disabled. The read-only inspection temporarily starts or connects to it, then closes it immediately.",
+        "loadingTitle": "Inspecting MCP capabilities",
+        "loadingDescription": "Negotiating the protocol and listing Tools, Resources, and Prompts without invoking anything.",
+        "unavailable": "Inspection could not start",
+        "retry": "Retry",
+        "tabsLabel": "MCP inspection results",
+        "tabs": {
+          "overview": "Overview",
+          "tools": "Tools",
+          "resources": "Resources",
+          "prompts": "Prompts",
+          "logs": "Logs"
+        },
+        "status": {
+          "connected": "Connected",
+          "partial": "Incomplete",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        },
+        "overview": {
+          "server": "Server",
+          "protocol": "Protocol",
+          "transport": "Transport",
+          "duration": "Duration",
+          "inspectedAt": "Inspected",
+          "capabilities": "Declared capabilities",
+          "warnings": "Warnings",
+          "suggestions": "Suggested actions"
+        },
+        "supported": "Supported",
+        "unsupported": "Not declared",
+        "itemCount": "{{count}} items",
+        "readOnlyNotice": "The inspector reads capability metadata only. It does not call tools, read resource contents, or render prompts.",
+        "risk": {
+          "readOnly": "Read-only",
+          "destructive": "Destructive",
+          "idempotent": "Idempotent",
+          "openWorld": "Open world",
+          "declared": "Risk declared",
+          "unknown": "Risk unknown"
+        },
+        "parameters": "Input parameters",
+        "arguments": "Arguments",
+        "required": "Required",
+        "emptySupported": "No {{feature}} found",
+        "emptyUnsupported": "{{feature}} not provided",
+        "emptySupportedDescription": "The server declared this capability, but its current list is empty.",
+        "emptyUnsupportedDescription": "The server did not declare this capability during initialization.",
+        "phases": {
+          "connect": "Start or connect",
+          "initialize": "Initialize protocol",
+          "initialized": "Confirm initialization",
+          "tools": "Discover Tools",
+          "resources": "Discover Resources",
+          "prompts": "Discover Prompts",
+          "shutdown": "Close connection",
+          "inspection": "Inspection"
+        }
+      }
+    },
     "tab_skills": "Skills",
     "tab_packs": "Packs",
     "tab_sync": "Sync",
@@ -862,6 +990,17 @@
       "packNamed": "Pack: {{name}}"
     },
     "agentManagement": {
+      "scanComplete": "Scan complete: {{managed}} managed, {{unmanaged}} unmanaged",
+      "scanCompleteShared": "Scan complete (including the .agents shared directory): {{managed}} managed, {{unmanaged}} unmanaged",
+      "sharedDirectoryNotice": "{{count}} Skills are from the .agents shared directory. After adoption, they will be moved into the center library and removed from the shared directory. Manage future distribution through the center library or skill packs.",
+      "unmanagedDelete": {
+        "title": "Delete Skill \"{{name}}\"?",
+        "confirm": "Delete Permanently",
+        "busy": "Deleting...",
+        "description": "This deletes the local Skill directory from the current Agent. It will not be added to the center library and cannot be restored from there.",
+        "deleting": "Deleting Skill \"{{name}}\"...",
+        "deleted": "Deleted Skill \"{{name}}\""
+      },
       "packFilter": {
         "label": "Pack membership",
         "all": "All",
@@ -872,7 +1011,8 @@
     },
     "reason": {
       "not_in_center_library": "Not in center library",
-      "center_library_conflict": "Center library name conflict"
+      "center_library_conflict": "Center library name conflict",
+      "shared_agents_directory": ".agents shared directory"
     },
     "distributionReason": {
       "convertManaged": "Already managed as {{from}}; will convert to {{to}}.",
@@ -901,7 +1041,8 @@
       "targetNoParent": "Target path '{{targetPath}}' has no parent directory.",
       "targetNameMismatch": "Target path '{{targetPath}}' does not match Skill '{{skillId}}'.",
       "unmanagedStale": "This Skill is no longer in the pending list. Rescan and try again.",
-      "adoptOptionUnavailable": "The selected adoption method is no longer available. Reopen the adoption preview and choose one of the suggested actions."
+      "adoptOptionUnavailable": "The selected adoption method is no longer available. Reopen the adoption preview and choose one of the suggested actions.",
+      "unmanagedAgentMismatch": "This unmanaged Skill does not belong to Agent '{{agent}}'. Rescan and try again."
     },
     "installing": "Installing...",
     "sync": "Sync",
@@ -947,6 +1088,12 @@
     "batchAdoptPack": {
       "title": "Adopt {{count}} Skill(s)",
       "confirm": "Confirm adoption",
+      "strategyTitle": "When to use batch adoption",
+      "strategyHint": "Batch adoption automatically handles only Skills that can use one default strategy. If a Skill needs you to choose whether to keep the center version, overwrite it, or rename the import, it will be skipped and never overwritten automatically. After the batch finishes, click Adopt on that Skill's card.",
+      "complete": "Batch adoption complete: {{adopted}} adopted, {{review}} need individual review, {{failed}} failed{{packNotice}}",
+      "packSynced": ", {{count}} synced to \"{{pack}}\"",
+      "nameSeparator": ", ",
+      "individualReviewRequired": "These {{count}} Skills need individual review and were skipped: {{names}}. They cannot use the shared batch strategy, usually because their names match center-library Skills but their contents differ. Exit batch management, click Adopt on each card, then choose to keep the center version, overwrite it, import under a new name, or skip.",
       "agent": "Agent",
       "skillCount": "Skills",
       "summary": "Adopting",

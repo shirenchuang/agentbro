@@ -3756,6 +3756,73 @@ async fn validate_mcp_server_cmd(
 }
 
 #[tauri::command]
+async fn list_mcp_inventory_cmd(
+    agent: String,
+) -> Result<skills::mcp_management::McpInventory, String> {
+    skills::mcp_management::list_mcp_servers(&agent)
+}
+
+#[tauri::command]
+async fn validate_mcp_server_draft_cmd(
+    agent: String,
+    server: skills::mcp_management::McpServerDraft,
+    original_name: Option<String>,
+) -> Result<skills::mcp_management::McpValidationResultV2, String> {
+    skills::mcp_management::validate_mcp_server_draft(&agent, &server, original_name.as_deref())
+}
+
+#[tauri::command]
+async fn save_mcp_server_cmd(
+    agent: String,
+    server: skills::mcp_management::McpServerDraft,
+    original_name: Option<String>,
+    revision: String,
+) -> Result<skills::mcp_management::McpInventory, String> {
+    skills::mcp_management::save_mcp_server(&agent, original_name.as_deref(), &revision, &server)
+}
+
+#[tauri::command]
+async fn set_mcp_server_enabled_cmd(
+    agent: String,
+    server_name: String,
+    revision: String,
+    enabled: bool,
+) -> Result<skills::mcp_management::McpInventory, String> {
+    skills::mcp_management::set_mcp_server_enabled(&agent, &server_name, &revision, enabled)
+}
+
+#[tauri::command]
+async fn delete_mcp_server_v2_cmd(
+    agent: String,
+    server_name: String,
+    revision: String,
+) -> Result<skills::mcp_management::McpInventory, String> {
+    skills::mcp_management::delete_mcp_server(&agent, &server_name, &revision)
+}
+
+#[tauri::command]
+async fn test_mcp_server_connection_cmd(
+    agent: String,
+    server_name: String,
+) -> Result<skills::mcp_management::McpConnectionTestResult, String> {
+    skills::mcp_management::test_mcp_server_connection(&agent, &server_name).await
+}
+
+#[tauri::command]
+async fn inspect_mcp_server_cmd(
+    agent: String,
+    server_name: String,
+    inspection_id: String,
+) -> Result<skills::mcp_management::McpInspectionReport, String> {
+    skills::mcp_management::inspect_mcp_server(&agent, &server_name, &inspection_id).await
+}
+
+#[tauri::command]
+async fn cancel_mcp_inspection_cmd(inspection_id: String) -> Result<(), String> {
+    skills::mcp_management::cancel_mcp_inspection(&inspection_id)
+}
+
+#[tauri::command]
 async fn toggle_skill_cmd(skill_id: String, agent: String, enabled: bool) -> Result<(), String> {
     skills::installer::toggle_skill(&skill_id, &agent, enabled)
 }
@@ -5984,6 +6051,14 @@ pub fn run() {
             upsert_mcp_server_cmd,
             remove_mcp_server_cmd,
             validate_mcp_server_cmd,
+            list_mcp_inventory_cmd,
+            validate_mcp_server_draft_cmd,
+            save_mcp_server_cmd,
+            set_mcp_server_enabled_cmd,
+            delete_mcp_server_v2_cmd,
+            test_mcp_server_connection_cmd,
+            inspect_mcp_server_cmd,
+            cancel_mcp_inspection_cmd,
             toggle_skill_cmd,
             read_skill_files,
             read_skill_file_content,
@@ -6079,6 +6154,7 @@ pub fn run() {
             skills::v2::commands::scan_agent_inventory,
             skills::v2::commands::preview_adopt_agent_skill,
             skills::v2::commands::execute_adopt_agent_skill,
+            skills::v2::commands::execute_adopt_agent_skills,
             skills::v2::commands::delete_unmanaged_agent_skill,
             skills::v2::commands::preview_sync_copy_target,
             skills::v2::commands::preview_copy_target_diff,

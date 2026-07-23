@@ -4,7 +4,7 @@
 
 use crate::skills::v2::fsutil;
 use crate::skills::v2::models::*;
-use crate::skills::v2::service::{ClaimOrigin, Service, UpsertPackInput};
+use crate::skills::v2::service::{AdoptBatchItem, ClaimOrigin, Service, UpsertPackInput};
 use rusqlite::params;
 use std::fs;
 use std::io::Write;
@@ -2878,6 +2878,71 @@ fn adopt_shared_agents_skill_copies_to_center_and_removes_source() {
 }
 
 #[test]
+fn batch_adopt_shared_agents_skills_preserves_per_item_results() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-batch");
+    let shared_root = svc.home.join(".agents/skills");
+    let alpha = write_skill(&shared_root, "alpha", "alpha", Some("v1"));
+    let beta = write_skill(&shared_root, "beta", "beta", Some("v1"));
+    let gamma = write_skill(&shared_root, "gamma", "gamma", Some("v1"));
+    svc.refresh().unwrap();
+    let unmanaged = svc.list_unmanaged().unwrap();
+    let unmanaged_id = |path: &Path| {
+        unmanaged
+            .iter()
+            .find(|item| item.path == path.display().to_string())
+            .map(|item| item.id.clone())
+            .unwrap()
+    };
+    let alpha_id = unmanaged_id(&alpha);
+    let beta_id = unmanaged_id(&beta);
+    let gamma_id = unmanaged_id(&gamma);
+
+    let result = svc
+        .execute_adopt_agent_skills(vec![
+            AdoptBatchItem {
+                agent_id: "agents".to_string(),
+                unmanaged_id: alpha_id.clone(),
+                option: "import_cleanup".to_string(),
+                renamed_id: None,
+            },
+            AdoptBatchItem {
+                agent_id: "agents".to_string(),
+                unmanaged_id: beta_id.clone(),
+                option: "import_keep".to_string(),
+                renamed_id: None,
+            },
+            AdoptBatchItem {
+                agent_id: "agents".to_string(),
+                unmanaged_id: gamma_id.clone(),
+                option: "import_cleanup".to_string(),
+                renamed_id: None,
+            },
+        ])
+        .unwrap();
+
+    assert_eq!(result.items.len(), 3);
+    assert_eq!(result.finalization_error, None);
+    assert_eq!(result.items[0].skill_id.as_deref(), Some("alpha"));
+    assert!(result.items[0].error.is_none());
+    assert!(result.items[1].skill_id.is_none());
+    assert!(result.items[1]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("not allowed")));
+    assert_eq!(result.items[2].skill_id.as_deref(), Some("gamma"));
+    assert!(!alpha.exists());
+    assert!(beta.exists());
+    assert!(!gamma.exists());
+    assert!(svc.center_path().unwrap().join("alpha").is_dir());
+    assert!(svc.center_path().unwrap().join("gamma").is_dir());
+
+    let remaining = svc.list_unmanaged().unwrap();
+    assert!(remaining.iter().any(|item| item.id == beta_id));
+    assert!(remaining.iter().all(|item| item.id != alpha_id));
+    assert!(remaining.iter().all(|item| item.id != gamma_id));
+}
+
+#[test]
 fn diagnosis_recommends_cleaning_managed_shared_agents_skill() {
     let (_home, svc, _lock) = fresh_service("diag-managed-shared");
     let src = write_skill(&svc.home.join("s"), "shared", "shared-skill", Some("v1"));
@@ -3659,6 +3724,10 @@ fn shared_agents_skills_dir_is_scanned_as_own_target() {
     assert_eq!(
         shared.items[0].path,
         svc.home.join(".agents/skills/shared").display().to_string()
+    );
+    assert_eq!(
+        shared.items[0].reason.as_deref(),
+        Some("shared_agents_directory")
     );
 }
 

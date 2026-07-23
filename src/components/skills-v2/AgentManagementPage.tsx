@@ -11,8 +11,9 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
+import { McpManagementTab } from './McpManagementTab'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
-import { skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
+import { isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
@@ -276,12 +277,20 @@ export function AgentManagementPage() {
     setNotice(null)
     state.setError(null)
     try {
-      const result = await skillApiV2.scanAgentInventory(agentId)
+      const scanIds = agentId === 'codex' ? [agentId, SHARED_SKILLS_AGENT_ID] : [agentId]
+      const results = await Promise.all(scanIds.map((id) => skillApiV2.scanAgentInventory(id)))
       const unmanaged = await skillApiV2.listUnmanaged()
       useSkillStoreV2.setState({ unmanaged })
       await state.loadAgentDetail(agentId, true)
       await state.loadOverview(true)
-      setNotice(`扫描完成：已管理 ${result.managed}，未管理 ${result.unmanaged}`)
+      const managed = results.reduce((sum, result) => sum + result.managed, 0)
+      const unmanagedCount = results.reduce((sum, result) => sum + result.unmanaged, 0)
+      setNotice(t(
+        scanIds.length > 1
+          ? 'skills.agentManagement.scanCompleteShared'
+          : 'skills.agentManagement.scanComplete',
+        { managed, unmanaged: unmanagedCount },
+      ))
     } catch (e) {
       state.setError(String(e))
     } finally {
@@ -602,10 +611,12 @@ export function AgentManagementPage() {
           onClose={() => setAdopt(null)}
           onDone={async () => {
             const agentId = adopt.agentId
+            const visibleDetailId = detail?.id
             setAdopt(null)
             const unmanaged = await skillApiV2.listUnmanaged()
             useSkillStoreV2.setState({ unmanaged })
-            await state.loadAgentDetail(agentId, true)
+            if (agentId !== SHARED_SKILLS_AGENT_ID) await state.loadAgentDetail(agentId, true)
+            if (visibleDetailId && visibleDetailId !== agentId) await state.loadAgentDetail(visibleDetailId, true)
             await state.loadOverview(true)
           }}
         />
@@ -998,7 +1009,7 @@ function AgentDetailView({
   onRequestDelete: (agent: AgentDetail) => void
 }) {
   const showUnmanaged = useSkillStoreV2((s) => s.settings?.showUnmanaged ?? true)
-  const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => showUnmanaged && u.agentId === detail.id)
+  const unmanaged = useSkillStoreV2((s) => s.unmanaged).filter((u) => showUnmanaged && unmanagedVisibleForAgent(detail.id, u))
   const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
@@ -1441,6 +1452,7 @@ function SkillsTab({
   const [batchAdoptItems, setBatchAdoptItems] = useState<UnmanagedItemDto[] | null>(null)
   const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
   const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
+  const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
@@ -1467,7 +1479,7 @@ function SkillsTab({
   const filteredUnmanaged = useMemo(() => {
     if (!q) return unmanaged
     return unmanaged.filter((u) =>
-      [u.inferredSkillId, u.path, u.reason, unmanagedReasonLabel(t, u.reason)]
+      [u.inferredSkillId, u.path, u.reason, unmanagedReasonLabel(t, u.reason), unmanagedSourceLabel(t, u)]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -1482,6 +1494,7 @@ function SkillsTab({
   }
   const shownUnmanaged = filteredUnmanaged.slice(0, page * PAGE_SIZE)
   const canManageUnmanaged = filteredUnmanaged
+  const sharedUnmanagedCount = filteredUnmanaged.filter(isSharedAgentsUnmanaged).length
   const managedDeleting = deletingIds.size > 0
   const unmanagedDeleting = deletingUnmanagedIds.size > 0
   const unmanagedAdopting = adoptingIds.size > 0
@@ -1499,6 +1512,7 @@ function SkillsTab({
     setBatchDeleteTargets(null)
     setMoveToPackTarget(null)
     setDeleteUnmanagedTarget(null)
+    setDeleteUnmanagedError(null)
   }, [detail.id, packFilter, scope])
 
   useEffect(() => {
@@ -1583,15 +1597,29 @@ function SkillsTab({
       let ok = 0
       let packResult: { packName: string; added: number } | null = null
       const adoptedSkillIds: string[] = []
+      const requiresIndividualReview: string[] = []
       const failed: string[] = []
-      for (const item of items) {
-        try {
-          const skillId = await skillApiV2.executeAdopt(detail.id, item.id, defaultAgentDetailAdoptMode(item), null)
-          adoptedSkillIds.push(skillId)
+      const itemsById = new Map(items.map((item) => [item.id, item]))
+      const result = await skillApiV2.executeAdoptBatch(items.map((item) => ({
+        agentId: adoptOwnerAgentId(detail.id, item),
+        unmanagedId: item.id,
+        option: defaultAgentDetailAdoptMode(item),
+        renamedId: null,
+      })))
+      for (const itemResult of result.items) {
+        const item = itemsById.get(itemResult.unmanagedId)
+        const name = item?.inferredSkillId || (item ? pathBasename(item.path) : '') || itemResult.unmanagedId
+        if (itemResult.skillId !== null) {
+          adoptedSkillIds.push(itemResult.skillId)
           ok += 1
-        } catch (e) {
-          failed.push(`${item.inferredSkillId || pathBasename(item.path) || item.id}: ${skillErrorMessage(t, e)}`)
+        } else if (isAdoptOptionUnavailableError(itemResult.error)) {
+          requiresIndividualReview.push(name)
+        } else {
+          failed.push(`${name}: ${skillErrorMessage(t, itemResult.error)}`)
         }
+      }
+      if (result.finalizationError) {
+        failed.push(`批量刷新失败: ${skillErrorMessage(t, result.finalizationError)}`)
       }
       try {
         packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds)
@@ -1602,11 +1630,23 @@ function SkillsTab({
       setSelectedUnmanagedIds(new Set())
       setUnmanagedSelectionMode(false)
       const packNotice = packResult
-        ? `，已同步 ${packResult.added} 个到「${packResult.packName}」`
+        ? t('skills.batchAdoptPack.packSynced', { count: packResult.added, pack: packResult.packName })
         : ''
-      setLocalNotice(`已接管 ${ok} 个 Skill${packNotice}${failed.length ? `，${failed.length} 个失败` : ''}`)
-      if (failed.length === 0) state.setError(null)
-      if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
+      setLocalNotice(t('skills.batchAdoptPack.complete', {
+        adopted: ok,
+        review: requiresIndividualReview.length,
+        failed: failed.length,
+        packNotice,
+      }))
+      const messages: string[] = []
+      if (requiresIndividualReview.length > 0) {
+        messages.push(t('skills.batchAdoptPack.individualReviewRequired', {
+          count: requiresIndividualReview.length,
+          names: requiresIndividualReview.join(t('skills.batchAdoptPack.nameSeparator')),
+        }))
+      }
+      if (failed.length > 0) messages.push(failed.slice(0, 3).join('\n'))
+      state.setError(messages.length > 0 ? messages.join('\n') : null)
     } catch (e) {
       state.setError(skillErrorMessage(t, e))
     } finally {
@@ -1617,21 +1657,22 @@ function SkillsTab({
   const deleteUnmanaged = async (item: UnmanagedItemDto) => {
     const name = item.inferredSkillId || pathBasename(item.path) || item.id
     setDeletingUnmanagedIds(new Set([item.id]))
-    setLocalNotice(`正在删除 Skill「${name}」...`)
+    setDeleteUnmanagedError(null)
+    setLocalNotice(t('skills.agentManagement.unmanagedDelete.deleting', { name }))
     state.setError(null)
     try {
-      await skillApiV2.deleteUnmanagedAgentSkill(detail.id, item.id)
+      await skillApiV2.deleteUnmanagedAgentSkill(adoptOwnerAgentId(detail.id, item), item.id)
       await refreshAgentSkills()
       setSelectedUnmanagedIds((current) => {
         const next = new Set(current)
         next.delete(item.id)
         return next
       })
-      setLocalNotice(`已删除 Skill「${name}」`)
+      setLocalNotice(t('skills.agentManagement.unmanagedDelete.deleted', { name }))
       state.setError(null)
       return true
     } catch (e) {
-      state.setError(skillErrorMessage(t, e))
+      setDeleteUnmanagedError(skillErrorMessage(t, e))
       return false
     } finally {
       setDeletingUnmanagedIds(new Set())
@@ -1821,6 +1862,11 @@ function SkillsTab({
 
       {scope === 'unmanaged' && showUnmanaged && (
         <>
+          {sharedUnmanagedCount > 0 && (
+            <div className="sm2__notice sm2__notice--info">
+              {t('skills.agentManagement.sharedDirectoryNotice', { count: sharedUnmanagedCount })}
+            </div>
+          )}
           {filteredUnmanaged.length === 0 ? (
             <div className="sm2__empty sm2__empty--compact sm2__unmanaged-empty">
               <span>
@@ -1846,7 +1892,10 @@ function SkillsTab({
                 deletingIds={deletingUnmanagedIds}
                 onToggle={toggleUnmanaged}
                 onAdopt={onAdopt}
-                onDelete={setDeleteUnmanagedTarget}
+                onDelete={(item) => {
+                  setDeleteUnmanagedError(null)
+                  setDeleteUnmanagedTarget(item)
+                }}
                 onOpenSkillDetail={onOpenSkillDetail}
               />
               {shownUnmanaged.length < filteredUnmanaged.length && (
@@ -1904,19 +1953,29 @@ function SkillsTab({
       )}
       {deleteUnmanagedTarget && (
         <PreviewDialog
-          title={`删除 Skill「${deleteUnmanagedTarget.inferredSkillId || pathBasename(deleteUnmanagedTarget.path) || deleteUnmanagedTarget.id}」？`}
-          confirmLabel="直接删除"
-          busyLabel="删除中"
+          title={t('skills.agentManagement.unmanagedDelete.title', {
+            name: deleteUnmanagedTarget.inferredSkillId || pathBasename(deleteUnmanagedTarget.path) || deleteUnmanagedTarget.id,
+          })}
+          confirmLabel={t('skills.agentManagement.unmanagedDelete.confirm')}
+          busyLabel={t('skills.agentManagement.unmanagedDelete.busy')}
+          modalClassName="sm2__modal--unmanaged-delete"
           destructive
           busy={deletingUnmanagedIds.has(deleteUnmanagedTarget.id)}
-          onCancel={() => setDeleteUnmanagedTarget(null)}
+          onCancel={() => {
+            setDeleteUnmanagedError(null)
+            setDeleteUnmanagedTarget(null)
+          }}
           onConfirm={async () => {
             const ok = await deleteUnmanaged(deleteUnmanagedTarget)
-            if (ok) setDeleteUnmanagedTarget(null)
+            if (ok) {
+              setDeleteUnmanagedError(null)
+              setDeleteUnmanagedTarget(null)
+            }
           }}
         >
-          <p>这会删除当前 Agent 中的本地 Skill 目录，不会写入中心库，也无法从中心库恢复。</p>
+          <p>{t('skills.agentManagement.unmanagedDelete.description')}</p>
           <code>{deleteUnmanagedTarget.path}</code>
+          {deleteUnmanagedError && <div className="sm2__error sm2__modal-inline-error">{deleteUnmanagedError}</div>}
         </PreviewDialog>
       )}
       {installDialogOpen && (
@@ -2014,6 +2073,11 @@ function BatchAdoptPackDialog({
             <span>{t('skills.batchAdoptPack.summary')}</span>
             <code>{visibleItems.map((item) => item.inferredSkillId || pathBasename(item.path) || item.id).join(', ')}{remaining > 0 ? ` +${remaining}` : ''}</code>
           </div>
+        </div>
+
+        <div className="sm2-adopt__impact sm2-adopt__impact--warn">
+          <strong>{t('skills.batchAdoptPack.strategyTitle')}</strong>
+          <span>{t('skills.batchAdoptPack.strategyHint')}</span>
         </div>
 
         <section className="sm2-adopt__section">
@@ -3094,13 +3158,13 @@ function UnmanagedSkillCollection({
               )}
               <div>
                 <strong>{name}</strong>
-                <span>{unmanagedReasonLabel(t, u.reason)}</span>
+                <span>{unmanagedReasonLabel(t, u.reason)}{unmanagedSourceLabel(t, u) ? ` · ${unmanagedSourceLabel(t, u)}` : ''}</span>
                 <code>{u.path}</code>
               </div>
               <div className="sm2__object-row-actions">
                 <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(e) => {
                   e.stopPropagation()
-                  onAdopt(agentId, u.id)
+                  onAdopt(adoptOwnerAgentId(agentId, u), u.id)
                 }}>
                   接管
                 </ActionButton>
@@ -3153,13 +3217,16 @@ function UnmanagedSkillCollection({
                 <strong>{name}</strong>
                 <span>{unmanagedReasonLabel(t, u.reason)}</span>
               </div>
-              <span className="sm2__tag sm2__tag--unmanaged">未管理</span>
+              <div className="sm2__tag-row">
+                {unmanagedSourceLabel(t, u) && <span className="sm2__tag sm2__tag--shared">{unmanagedSourceLabel(t, u)}</span>}
+                <span className="sm2__tag sm2__tag--unmanaged">未管理</span>
+              </div>
             </div>
             <code>{u.path}</code>
             <div className="sm2__agent-skill-card-actions">
               <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(e) => {
                 e.stopPropagation()
-                onAdopt(agentId, u.id)
+                onAdopt(adoptOwnerAgentId(agentId, u), u.id)
               }}>
                 接管
               </ActionButton>
@@ -3252,7 +3319,25 @@ function isManagedCopyBlocker(blocker: ConflictBlocker) {
 }
 
 function defaultAgentDetailAdoptMode(item: UnmanagedItemDto) {
-  return item.agentId === 'agents' || isSharedAgentsSkillsPath(item.path) ? 'import_link' : 'import_keep'
+  if (item.agentId === SHARED_SKILLS_AGENT_ID) return 'import_cleanup'
+  return isSharedAgentsSkillsPath(item.path) ? 'import_link' : 'import_keep'
+}
+
+function adoptOwnerAgentId(detailAgentId: string, item: UnmanagedItemDto) {
+  return item.agentId || detailAgentId
+}
+
+function unmanagedVisibleForAgent(agentId: string, item: UnmanagedItemDto) {
+  if (item.agentId === agentId) return true
+  return agentId === 'codex' && item.agentId === SHARED_SKILLS_AGENT_ID
+}
+
+function isSharedAgentsUnmanaged(item: UnmanagedItemDto) {
+  return item.agentId === SHARED_SKILLS_AGENT_ID || isSharedAgentsSkillsPath(item.path)
+}
+
+function unmanagedSourceLabel(t: Parameters<typeof unmanagedReasonLabel>[0], item: UnmanagedItemDto) {
+  return isSharedAgentsUnmanaged(item) ? unmanagedReasonLabel(t, 'shared_agents_directory') : ''
 }
 
 function isSharedAgentsSkillsPath(path: string) {
@@ -3292,22 +3377,7 @@ function initials(value: string) {
 }
 
 function McpTab({ detail }: { detail: AgentDetail }) {
-  if (detail.mcpServers.length === 0)
-    return <div className="sm2__empty sm2__empty--compact">未配置 MCP 服务器</div>
-  return (
-    <section className="sm2__panel">
-      {detail.mcpServers.map((m) => (
-        <div key={m.name} className="sm2__object-row sm2__object-row--path">
-          <div>
-            <strong>{m.name}</strong>
-            <span>{m.valid ? '有效' : m.message || '异常'}</span>
-            <code>{m.command} {m.args.join(' ')}</code>
-          </div>
-          <span className={`sm2__tag sm2__tag--${m.valid ? 'ok' : 'conflict'}`}>{m.valid ? '有效' : '异常'}</span>
-        </div>
-      ))}
-    </section>
-  )
+  return <McpManagementTab detail={detail} />
 }
 
 function PluginsTab({ detail }: { detail: AgentDetail }) {

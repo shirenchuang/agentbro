@@ -5,6 +5,9 @@ import { skillErrorMessage } from '../components/skills-v2/skillLabels'
 const unavailableAdoptError = new Error(
   "Adopt option 'import_keep' is not allowed for 'fsd-alipay-business-skill'. Re-run preview and choose one of the suggested actions.",
 )
+const unmanagedAgentMismatchError = new Error(
+  "Unmanaged item 'unm-agents-Users-me--agents-skills-bird' does not belong to agent 'codex'.",
+)
 
 describe('skill error labels', () => {
   afterEach(async () => {
@@ -20,5 +23,16 @@ describe('skill error labels', () => {
   ])('localizes unavailable adoption options in %s', async (language, expected) => {
     await i18n.changeLanguage(language)
     expect(skillErrorMessage(i18n.t, unavailableAdoptError)).toBe(expected)
+  })
+
+  it.each([
+    ['zh', '该未管理 Skill 不属于 Agent「codex」，请重新扫描后重试。'],
+    ['en', "This unmanaged Skill does not belong to Agent 'codex'. Rescan and try again."],
+    ['ja', 'この未管理 Skill は Agent「codex」に属していません。再スキャンしてからもう一度お試しください。'],
+    ['ko', "이 관리되지 않는 Skill은 Agent 'codex'에 속하지 않습니다. 다시 스캔한 뒤 재시도하세요."],
+    ['tr', "Bu yönetilmeyen Skill, 'codex' Agent'ına ait değil. Yeniden tarayıp tekrar deneyin."],
+  ])('localizes unmanaged Agent mismatch errors in %s', async (language, expected) => {
+    await i18n.changeLanguage(language)
+    expect(skillErrorMessage(i18n.t, unmanagedAgentMismatchError)).toBe(expected)
   })
 })

@@ -3622,8 +3622,54 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
+  it('uses the shared owner and keeps deletion errors visible inside the confirmation dialog', async () => {
+    const sharedItem = {
+      id: 'unmanaged-shared-bird',
+      agentId: 'agents',
+      itemType: 'skill' as const,
+      path: '/Users/me/.agents/skills/bird',
+      inferredSkillId: 'bird',
+      hash: null,
+      reason: 'shared_agents_directory',
+    }
+    useSkillStoreV2.setState({
+      selectedAgentId: 'codex',
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+      },
+      agents: [
+        { id: 'codex', displayName: 'Codex', iconKey: 'codex', enabled: true, skillsDir: '/Users/me/.codex/skills', version: null, latestVersion: null, installed: true, managedSkillCount: 1, unmanagedSkillCount: 1 } as AgentSummary,
+      ],
+      unmanaged: [sharedItem],
+    })
+    const mismatch = new Error(
+      "Unmanaged item 'unmanaged-shared-bird' does not belong to agent 'agents'.",
+    )
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockRejectedValue(mismatch)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除 bird' }))
+
+    const dialog = screen.getByRole('dialog', { name: '删除 Skill「bird」？' })
+    expect(dialog).toHaveClass('sm2__modal--unmanaged-delete')
+    fireEvent.click(within(dialog).getByRole('button', { name: '直接删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', 'unmanaged-shared-bird'))
+    expect(await within(dialog).findByText('该未管理 Skill 不属于 Agent「agents」，请重新扫描后重试。')).toBeInTheDocument()
+    expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
-    const execute = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    const execute = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+      items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
+      finalizationError: null,
+    })
     const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -3640,14 +3686,75 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
 
     expect(screen.getByRole('heading', { name: '批量接管 1 个 Skill' })).toBeInTheDocument()
+    expect(screen.getByText('批量接管适用范围')).toBeInTheDocument()
+    expect(screen.getByText(/需要你决定保留中心版本、覆盖中心库或重命名/)).toBeInTheDocument()
     expect(screen.getByText('是否将接管的 Skill 同步到技能包？')).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /同时同步到技能包/ })).not.toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
     await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith('claude-code', 'unmanaged-1', 'import_keep', null)
+      expect(execute).toHaveBeenCalledWith([{
+        agentId: 'claude-code',
+        unmanagedId: 'unmanaged-1',
+        option: 'import_keep',
+        renamedId: null,
+      }])
     })
     expect(listUnmanaged).toHaveBeenCalled()
+  })
+
+  it('explains which batch adoption conflicts require individual review', async () => {
+    const conflicts = [
+      {
+        id: 'unmanaged-ant-skill-creator',
+        agentId: 'claude-code',
+        itemType: 'skill' as const,
+        path: '/c/skills/ant-skill-creator',
+        inferredSkillId: 'ant-skill-creator',
+        hash: 'different-ant-hash',
+        reason: 'same_name_as_center_skill',
+      },
+      {
+        id: 'unmanaged-dws',
+        agentId: 'claude-code',
+        itemType: 'skill' as const,
+        path: '/c/skills/dws',
+        inferredSkillId: 'dws',
+        hash: 'different-dws-hash',
+        reason: 'same_name_as_center_skill',
+      },
+    ]
+    useSkillStoreV2.setState({ unmanaged: conflicts })
+    const unavailable = new Error(
+      "Adopt option 'import_keep' is not allowed for 'conflict'. Re-run preview and choose one of the suggested actions.",
+    )
+    const execute = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+      items: conflicts.map((item) => ({
+        unmanagedId: item.id,
+        skillId: null,
+        error: unavailable.message,
+      })),
+      finalizationError: null,
+    })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue(conflicts)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (3)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+
+    expect(screen.getByText('批量接管适用范围')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    await waitFor(() => expect(execute).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/以下 2 个 Skill 需要单独确认，批量接管已跳过：ant-skill-creator、dws/)).toBeInTheDocument()
+    expect(screen.getByText(/分别点击对应卡片上的「接管」/)).toBeInTheDocument()
+    expect(screen.getByText('批量接管完成：已接管 0 个，需单独确认 2 个，失败 0 个')).toBeInTheDocument()
+    expect(screen.queryByText(/当前选择的接管方式已不可用/)).not.toBeInTheDocument()
   })
 
   it('syncs successfully batch-adopted unmanaged skills into an existing skill pack', async () => {
@@ -3662,7 +3769,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
         { id: 'agent-tools', name: 'Agent Tools', description: 'Daily agent tools', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true },
       ],
     })
-    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+      items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
+      finalizationError: null,
+    })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
       id: 'agent-tools',
@@ -3712,7 +3822,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
   })
 
   it('creates a skill pack from successfully batch-adopted unmanaged skills', async () => {
-    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('manual-skill')
+    vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+      items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
+      finalizationError: null,
+    })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
       id: 'pack-manual',
