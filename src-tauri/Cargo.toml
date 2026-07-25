@@ -1,6 +1,6 @@
 [package]
 name = "agentbro"
-version = "2.9.0"
+version = "2.10.0"
 description = "Your AI agents' best bro — monitor, manage, and supercharge every coding agent from one native app"
 authors = ["AgentBro"]
 license = "Apache-2.0"
