@@ -254,7 +254,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
         "kimi" => return Some(agent_paths::kimi_code_home_for(home).join("skills")),
-        "doubao" => "Doubao/skills",
+        "doubao" => return Some(agent_paths::doubao_user_skills_dir_for(home)),
         "deepseek" => ".deepseek/skills",
         "workbuddy" => ".workbuddy/skills",
         "zcode" => ".zcode/skills",
@@ -278,6 +278,9 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
 /// Resolve every skill root OpenClaw can load from local filesystem sources,
 /// ordered from highest precedence to lowest.
 pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
+    if agent == "doubao" {
+        return agent_paths::doubao_skill_dirs_for(home);
+    }
     if agent != "openclaw" {
         if table().iter().all(|m| m.id != agent) {
             return agent_paths::paths_for_agent(agent).skill_dirs;
@@ -297,6 +300,9 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
 }
 
 pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
+    if agent == "doubao" {
+        return vec![agent_paths::doubao_user_skills_dir_for(home)];
+    }
     if agent == "openclaw" {
         return vec![
             openclaw_workspace_dir(home).join("skills"),
@@ -309,6 +315,19 @@ pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
         .into_iter()
         .filter(|path| path != &shared)
         .collect()
+}
+
+pub fn agent_read_only_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
+    if agent == "doubao" {
+        return agent_paths::doubao_builtin_skill_dirs_for(home);
+    }
+    Vec::new()
+}
+
+pub fn is_read_only_agent_skill_path(home: &Path, agent: &str, path: &Path) -> bool {
+    agent_read_only_skill_dirs(home, agent)
+        .into_iter()
+        .any(|root| path.strip_prefix(root).is_ok())
 }
 
 /// Runtime status includes the program and Agent-owned residual capabilities;
@@ -532,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn doubao_is_visible_and_uses_user_skills_dir() {
+    fn doubao_is_visible_and_separates_user_and_builtin_skills() {
         assert!(visible_agent_ids().iter().any(|id| id == "doubao"));
         assert_eq!(display_name("doubao"), "Doubao");
         assert_eq!(icon_key("doubao"), "doubao");
@@ -542,6 +561,27 @@ mod tests {
             agent_skills_dir(home, "doubao"),
             Some(home.join("Doubao/skills"))
         );
+        assert_eq!(
+            agent_owned_skill_dirs(home, "doubao"),
+            vec![home.join("Doubao/skills")]
+        );
+        let builtin = home.join(
+            "Library/Application Support/Doubao/Default/.doubao/agent_mode/workspace/.skills",
+        );
+        assert_eq!(
+            agent_skill_dirs(home, "doubao"),
+            vec![home.join("Doubao/skills"), builtin.clone()]
+        );
+        assert!(is_read_only_agent_skill_path(
+            home,
+            "doubao",
+            &builtin.join("browser-task")
+        ));
+        assert!(!is_read_only_agent_skill_path(
+            home,
+            "doubao",
+            &home.join("Doubao/skills/custom")
+        ));
     }
 
     #[cfg(target_os = "windows")]

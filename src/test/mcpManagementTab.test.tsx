@@ -105,6 +105,14 @@ function inspectionReport(
         description: 'Search query',
         required: true,
       }],
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+        },
+        required: ['query'],
+      },
+      outputSchema: null,
       annotations: {
         readOnly: true,
         destructive: false,
@@ -281,6 +289,140 @@ describe('McpManagementTab', () => {
     fireEvent.click(screen.getByRole('tab', { name: '日志' }))
     expect(screen.getByText('启动或连接')).toBeInTheDocument()
     expect(screen.getByText('发现 Tools')).toBeInTheDocument()
+  })
+
+  it('renders Tools as a compact searchable list without repeating parameter prose', async () => {
+    const baseTool = inspectionReport().tools[0]
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+    vi.spyOn(skillApiV2, 'inspectMcpServer').mockImplementation(
+      async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId, {
+        tools: [{
+          ...baseTool,
+          name: 'get_scene_info',
+          title: null,
+          description: 'Get detailed scene information. Parameters: - user_prompt: telemetry context',
+          inputs: [{
+            name: 'user_prompt',
+            valueType: 'string',
+            description: 'Telemetry context',
+            required: true,
+          }],
+          inputSchema: {
+            type: 'object',
+            properties: {
+              user_prompt: { type: 'string' },
+            },
+            required: ['user_prompt'],
+          },
+          annotations: {
+            readOnly: null,
+            destructive: null,
+            idempotent: null,
+            openWorld: null,
+          },
+          hasAnnotations: false,
+        }],
+      }),
+    )
+    vi.spyOn(skillApiV2, 'cancelMcpInspection').mockResolvedValue()
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Tools/ })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('tab', { name: /Tools/ }))
+
+    expect(screen.getByText('Get detailed scene information.')).toBeInTheDocument()
+    expect(screen.queryByText(/Parameters:/i)).not.toBeInTheDocument()
+    expect(screen.getByText('user_prompt')).toBeInTheDocument()
+    expect(document.querySelector('.sm2__mcp-tool-risk-summary')).toHaveTextContent('1 风险未知')
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+    expect(screen.queryByText('get_scene_info')).not.toBeInTheDocument()
+    expect(screen.getByText('没有匹配的 Tool')).toBeInTheDocument()
+  })
+
+  it('runs a Tool in a one-shot operation and renders the result', async () => {
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+    vi.spyOn(skillApiV2, 'inspectMcpServer').mockImplementation(
+      async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId),
+    )
+    vi.spyOn(skillApiV2, 'cancelMcpInspection').mockResolvedValue()
+    vi.spyOn(skillApiV2, 'cancelMcpOperation').mockResolvedValue()
+    const call = vi.spyOn(skillApiV2, 'callMcpTool').mockResolvedValue({
+      operationId: 'tool-operation',
+      kind: 'tool',
+      name: 'search',
+      category: 'success',
+      durationMs: 31,
+      result: {
+        content: [{ type: 'text', text: 'Found one result' }],
+        structuredContent: { count: 1 },
+        isError: false,
+      },
+      warnings: [],
+    })
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Tools/ })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('tab', { name: /Tools/ }))
+    fireEvent.click(screen.getByRole('button', { name: '测试调用' }))
+    fireEvent.change(screen.getByLabelText('调用参数（JSON）'), {
+      target: { value: '{"query":"Blender"}' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '调用 Tool' }))
+
+    await waitFor(() => expect(call).toHaveBeenCalledWith(
+      'codex',
+      'context7',
+      expect.any(String),
+      'search',
+      { query: 'Blender' },
+    ))
+    expect(await screen.findByText('Found one result')).toBeInTheDocument()
+    expect(screen.getByText('结构化结果')).toBeInTheDocument()
+  })
+
+  it('previews a Prompt without sending it to a model', async () => {
+    vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+    vi.spyOn(skillApiV2, 'inspectMcpServer').mockImplementation(
+      async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId),
+    )
+    vi.spyOn(skillApiV2, 'cancelMcpInspection').mockResolvedValue()
+    vi.spyOn(skillApiV2, 'cancelMcpOperation').mockResolvedValue()
+    const preview = vi.spyOn(skillApiV2, 'getMcpPrompt').mockResolvedValue({
+      operationId: 'prompt-operation',
+      kind: 'prompt',
+      name: 'summarize',
+      category: 'success',
+      durationMs: 17,
+      result: {
+        description: 'Generated prompt',
+        messages: [{
+          role: 'user',
+          content: { type: 'text', text: 'Summarize Blender' },
+        }],
+      },
+      warnings: [],
+    })
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Prompts/ })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('tab', { name: /Prompts/ }))
+    fireEvent.click(screen.getByRole('button', { name: '预览 Prompt' }))
+    fireEvent.change(screen.getByLabelText(/topic/), { target: { value: 'Blender' } })
+    fireEvent.click(screen.getByRole('button', { name: '生成预览' }))
+
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(
+      'codex',
+      'context7',
+      expect.any(String),
+      'summarize',
+      { topic: 'Blender' },
+    ))
+    expect(await screen.findByText('Summarize Blender')).toBeInTheDocument()
+    expect(screen.getByText('user')).toBeInTheDocument()
   })
 
   it('cancels a running inspection when the drawer closes', async () => {

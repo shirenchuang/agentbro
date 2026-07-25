@@ -258,6 +258,7 @@ pub struct AgentSummary {
     pub installed: bool,
     pub managed_skill_count: usize,
     pub unmanaged_skill_count: usize,
+    pub read_only_skill_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -623,6 +624,7 @@ pub struct UnmanagedItemDto {
     pub inferred_skill_id: Option<String>,
     pub hash: Option<String>,
     pub reason: String,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -635,6 +637,7 @@ pub struct AgentSkillInventoryAgent {
     pub installed: bool,
     pub managed_count: usize,
     pub unmanaged_count: usize,
+    pub read_only_count: usize,
     pub importable_count: usize,
     pub items: Vec<AgentSkillInventoryItem>,
 }
@@ -648,6 +651,7 @@ pub struct AgentSkillInventoryItem {
     pub name: String,
     pub path: String,
     pub managed: bool,
+    pub read_only: bool,
     pub can_import: bool,
     pub status: String,
     pub status_label: String,

@@ -54,6 +54,13 @@ pub struct AdoptBatchItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteUnmanagedAgentSkillFailure {
+    pub unmanaged_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AdoptBatchItemResult {
     pub unmanaged_id: String,
     pub skill_id: Option<String>,
@@ -65,6 +72,13 @@ pub struct AdoptBatchItemResult {
 pub struct AdoptBatchResult {
     pub items: Vec<AdoptBatchItemResult>,
     pub finalization_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteUnmanagedAgentSkillsResult {
+    pub deleted: usize,
+    pub failures: Vec<DeleteUnmanagedAgentSkillFailure>,
 }
 
 impl Service {
@@ -398,6 +412,7 @@ impl Service {
             return Ok(AgentScanResult {
                 managed: 0,
                 unmanaged: 0,
+                read_only: 0,
             });
         }
         let now = db::now_iso();
@@ -426,6 +441,7 @@ impl Service {
 
         let mut managed = 0usize;
         let mut unmanaged = 0usize;
+        let mut read_only = 0usize;
         let mut seen_skill_ids = BTreeSet::new();
         for skills_dir in skill_dirs {
             if !skills_dir.is_dir() {
@@ -445,40 +461,39 @@ impl Service {
                         self.refresh_target_status(&target_id, &skill_id, &path)?;
                     }
                     None => {
-                        // is the inferred skill id known in center?
                         let center_known = self.skill_id_known(&inferred)?;
-                        let reason = if is_shared_agents_skill_path(&self.home, &path) {
+                        let path_is_read_only =
+                            agent_meta::is_read_only_agent_skill_path(&self.home, agent_id, &path);
+                        let reason = if path_is_read_only {
+                            "agent_builtin_read_only"
+                        } else if is_shared_agents_skill_path(&self.home, &path) {
                             "shared_agents_directory"
                         } else if center_known {
                             "same_name_as_center_skill"
                         } else {
                             "not_in_center_library"
                         };
-                        if center_known {
-                            // same-name center skill exists — possible quick adopt
-                            unmanaged += 1;
-                            self.record_unmanaged(
-                                agent_id,
-                                &path,
-                                &inferred,
-                                Some(fsutil::hash_dir(&path)),
-                                reason,
-                            )?;
+                        if path_is_read_only {
+                            read_only += 1;
                         } else {
                             unmanaged += 1;
-                            self.record_unmanaged(
-                                agent_id,
-                                &path,
-                                &inferred,
-                                Some(fsutil::hash_dir(&path)),
-                                reason,
-                            )?;
                         }
+                        self.record_unmanaged(
+                            agent_id,
+                            &path,
+                            &inferred,
+                            Some(fsutil::hash_dir(&path)),
+                            reason,
+                        )?;
                     }
                 }
             }
         }
-        Ok(AgentScanResult { managed, unmanaged })
+        Ok(AgentScanResult {
+            managed,
+            unmanaged,
+            read_only,
+        })
     }
 
     fn ensure_agent_row(&self, agent_id: &str) -> Result<bool, String> {
@@ -822,9 +837,11 @@ impl Service {
     }
     fn count_unmanaged(&self) -> Result<usize, String> {
         self.db.with_conn(|c| {
-            c.query_row("SELECT COUNT(*) FROM unmanaged_items", [], |r| {
-                r.get::<_, i64>(0)
-            })
+            c.query_row(
+                "SELECT COUNT(*) FROM unmanaged_items WHERE reason <> 'agent_builtin_read_only'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .map(|n| n as usize)
             .map_err(|e| e.to_string())
         })
@@ -1185,6 +1202,7 @@ impl Service {
             })?;
             let managed_skill_count = self.count_agent_targets(id)?;
             let unmanaged_skill_count = self.count_agent_unmanaged(id)?;
+            let read_only_skill_count = self.count_agent_read_only(id)?;
             out.push(AgentSummary {
                 id: id.clone(),
                 display_name: agent_meta::display_name(id),
@@ -1196,6 +1214,7 @@ impl Service {
                 installed,
                 managed_skill_count,
                 unmanaged_skill_count,
+                read_only_skill_count,
             });
         }
         Ok(out)
@@ -1215,7 +1234,20 @@ impl Service {
     fn count_agent_unmanaged(&self, agent_id: &str) -> Result<usize, String> {
         self.db.with_conn(|c| {
             c.query_row(
-                "SELECT COUNT(*) FROM unmanaged_items WHERE agent_id = ?1",
+                "SELECT COUNT(*) FROM unmanaged_items
+                 WHERE agent_id = ?1 AND reason <> 'agent_builtin_read_only'",
+                params![agent_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
+            .map_err(|e| e.to_string())
+        })
+    }
+    fn count_agent_read_only(&self, agent_id: &str) -> Result<usize, String> {
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM unmanaged_items
+                 WHERE agent_id = ?1 AND reason = 'agent_builtin_read_only'",
                 params![agent_id],
                 |r| r.get::<_, i64>(0),
             )
@@ -1242,6 +1274,7 @@ impl Service {
                         inferred_skill_id: r.get(4)?,
                         hash: r.get(5)?,
                         reason: r.get(6)?,
+                        read_only: r.get::<_, String>(6)? == "agent_builtin_read_only",
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -1283,6 +1316,7 @@ impl Service {
                         name,
                         path,
                         managed: true,
+                        read_only: false,
                         can_import: false,
                         status,
                         status_label: "已管理".to_string(),
@@ -1320,7 +1354,13 @@ impl Service {
                 .zip(item.hash.as_ref())
                 .map(|(center, local)| center == local)
                 .unwrap_or(false);
-            let (status, status_label, can_import) = if center_hash.is_none() {
+            let (status, status_label, can_import) = if item.read_only {
+                (
+                    "builtin_read_only".to_string(),
+                    "内置只读".to_string(),
+                    false,
+                )
+            } else if center_hash.is_none() {
                 ("unmanaged".to_string(), "未管理".to_string(), true)
             } else if hash_matches {
                 (
@@ -1345,6 +1385,7 @@ impl Service {
                     name: skill_id,
                     path: item.path,
                     managed: false,
+                    read_only: item.read_only,
                     can_import,
                     status,
                     status_label,
@@ -1365,7 +1406,11 @@ impl Service {
                         .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                 });
                 let managed_count = items.iter().filter(|item| item.managed).count();
-                let unmanaged_count = items.iter().filter(|item| !item.managed).count();
+                let unmanaged_count = items
+                    .iter()
+                    .filter(|item| !item.managed && !item.read_only)
+                    .count();
+                let read_only_count = items.iter().filter(|item| item.read_only).count();
                 let importable_count = items.iter().filter(|item| item.can_import).count();
                 AgentSkillInventoryAgent {
                     agent_id: agent.id,
@@ -1375,6 +1420,7 @@ impl Service {
                     installed: agent.installed,
                     managed_count,
                     unmanaged_count,
+                    read_only_count,
                     importable_count,
                     items,
                 }
@@ -3051,6 +3097,12 @@ impl Service {
         unmanaged_id: &str,
     ) -> Result<AdoptPreview, String> {
         let item = self.find_unmanaged(unmanaged_id)?;
+        if item.read_only {
+            return Err(format!(
+                "Agent-provided built-in Skill '{}' is read-only and cannot be adopted or replaced.",
+                item.inferred_skill_id.as_deref().unwrap_or(unmanaged_id)
+            ));
+        }
         let _path = Path::new(&item.path);
         let inferred = item.inferred_skill_id.clone().unwrap_or_default();
         let _center = self.center_path()?;
@@ -3181,6 +3233,146 @@ impl Service {
             finalization_error: (!finalization_errors.is_empty())
                 .then(|| finalization_errors.join("\n")),
         })
+    }
+
+    pub fn takeover_center_agent_skills(
+        &self,
+        agent_id: &str,
+        unmanaged_ids: Vec<String>,
+    ) -> Result<AdoptBatchResult, String> {
+        let mut results = Vec::with_capacity(unmanaged_ids.len());
+        let mut changed = false;
+        for unmanaged_id in unmanaged_ids {
+            match self.takeover_center_agent_skill_inner(agent_id, &unmanaged_id) {
+                Ok(skill_id) => {
+                    changed = true;
+                    results.push(AdoptBatchItemResult {
+                        unmanaged_id,
+                        skill_id: Some(skill_id),
+                        error: None,
+                    });
+                }
+                Err(error) => results.push(AdoptBatchItemResult {
+                    unmanaged_id,
+                    skill_id: None,
+                    error: Some(error),
+                }),
+            }
+        }
+
+        let finalization_error = if changed {
+            let scan_error = self.scan_one_agent_into_db(agent_id).err();
+            self.refresh_snapshot_best_effort();
+            scan_error
+        } else {
+            None
+        };
+
+        Ok(AdoptBatchResult {
+            items: results,
+            finalization_error,
+        })
+    }
+
+    fn takeover_center_agent_skill_inner(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+    ) -> Result<String, String> {
+        let item = self.find_unmanaged(unmanaged_id)?;
+        if item.agent_id.as_deref() != Some(agent_id) {
+            return Err(format!(
+                "Unmanaged item '{}' does not belong to agent '{}'.",
+                unmanaged_id, agent_id
+            ));
+        }
+        if item.item_type != "agent_skill" && item.item_type != "skill" {
+            return Err("Only unmanaged skills can be taken over here.".to_string());
+        }
+        if item.reason != "same_name_as_center_skill" {
+            return Err("The unmanaged skill is not present in the center library.".to_string());
+        }
+
+        let skill_id = item
+            .inferred_skill_id
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "The unmanaged skill has no valid skill id.".to_string())?;
+        let center = self
+            .skill_row(&skill_id)?
+            .ok_or_else(|| format!("Center skill '{}' no longer exists.", skill_id))?;
+        let center_path = Path::new(&center.center_path);
+        if !fsutil::is_skill_dir(center_path) {
+            return Err(format!(
+                "Center skill '{}' is unavailable on disk; the agent copy was preserved.",
+                skill_id
+            ));
+        }
+
+        let target_path = Path::new(&item.path);
+        let allowed = agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
+            .into_iter()
+            .any(|root| unmanaged_delete_path_allowed(&root, target_path));
+        if !allowed {
+            return Err(format!(
+                "Refusing to take over unmanaged skill outside '{}' skill roots: {}",
+                agent_id,
+                target_path.display()
+            ));
+        }
+        if !fsutil::is_skill_dir(target_path) {
+            return Err(format!(
+                "Agent skill '{}' is unavailable on disk.",
+                target_path.display()
+            ));
+        }
+        let normalized_center_path = fsutil::normalized_path(center_path);
+        if fsutil::resolved_symlink_target(target_path)
+            .is_some_and(|resolved| fsutil::normalized_path(&resolved) == normalized_center_path)
+        {
+            self.upsert_target_managed(agent_id, &skill_id, target_path, "link", "link")?;
+            return Ok(skill_id);
+        }
+        if fsutil::normalized_path(target_path) == normalized_center_path {
+            return Err("The agent path and center skill path are the same.".to_string());
+        }
+
+        let parent = target_path
+            .parent()
+            .ok_or_else(|| format!("Target path '{}' has no parent.", target_path.display()))?;
+        let token = uuid_short();
+        let pending_link = parent.join(format!(".agentbro-takeover-link-{token}"));
+        let backup = parent.join(format!(".agentbro-takeover-backup-{token}"));
+        if !fsutil::try_symlink(center_path, &pending_link)? {
+            return Err(format!(
+                "Could not create a symlink for '{}'; the agent copy was preserved.",
+                skill_id
+            ));
+        }
+        if let Err(error) = std::fs::rename(target_path, &backup) {
+            let _ = fsutil::remove_path(&pending_link);
+            return Err(format!(
+                "Could not prepare '{}' for takeover: {}",
+                target_path.display(),
+                error
+            ));
+        }
+        if let Err(error) = std::fs::rename(&pending_link, target_path) {
+            let _ = fsutil::remove_path(&pending_link);
+            let _ = std::fs::rename(&backup, target_path);
+            return Err(format!(
+                "Could not activate the symlink for '{}': {}",
+                skill_id, error
+            ));
+        }
+        if let Err(error) =
+            self.upsert_target_managed(agent_id, &skill_id, target_path, "link", "link")
+        {
+            let _ = fsutil::remove_path(target_path);
+            let _ = std::fs::rename(&backup, target_path);
+            return Err(error);
+        }
+        let _ = fsutil::remove_path(&backup);
+        Ok(skill_id)
     }
 
     fn execute_adopt_agent_skill_inner(
@@ -3349,6 +3541,40 @@ impl Service {
         agent_id: &str,
         unmanaged_id: &str,
     ) -> Result<(), String> {
+        self.remove_unmanaged_agent_skill(agent_id, unmanaged_id)?;
+        self.scan_one_agent_into_db(agent_id)?;
+        self.refresh_snapshot_best_effort();
+        Ok(())
+    }
+
+    pub fn delete_unmanaged_agent_skills(
+        &self,
+        agent_id: &str,
+        unmanaged_ids: Vec<String>,
+    ) -> Result<DeleteUnmanagedAgentSkillsResult, String> {
+        let mut deleted = 0usize;
+        let mut failures = Vec::new();
+        for unmanaged_id in unmanaged_ids {
+            match self.remove_unmanaged_agent_skill(agent_id, &unmanaged_id) {
+                Ok(()) => deleted += 1,
+                Err(error) => failures.push(DeleteUnmanagedAgentSkillFailure {
+                    unmanaged_id,
+                    error,
+                }),
+            }
+        }
+        if deleted > 0 {
+            self.scan_one_agent_into_db(agent_id)?;
+            self.refresh_snapshot_best_effort();
+        }
+        Ok(DeleteUnmanagedAgentSkillsResult { deleted, failures })
+    }
+
+    fn remove_unmanaged_agent_skill(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+    ) -> Result<(), String> {
         let item = self.find_unmanaged(unmanaged_id)?;
         if item.agent_id.as_deref() != Some(agent_id) {
             return Err(format!(
@@ -3358,6 +3584,12 @@ impl Service {
         }
         if item.item_type != "agent_skill" && item.item_type != "skill" {
             return Err("Only unmanaged skills can be deleted here.".to_string());
+        }
+        if item.read_only {
+            return Err(format!(
+                "Agent-provided built-in Skill '{}' is read-only and cannot be deleted.",
+                item.inferred_skill_id.as_deref().unwrap_or(unmanaged_id)
+            ));
         }
 
         let path = Path::new(&item.path);
@@ -3381,8 +3613,6 @@ impl Service {
             .map(|_| ())
             .map_err(|e| e.to_string())
         })?;
-        self.scan_one_agent_into_db(agent_id)?;
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -3453,6 +3683,7 @@ impl Service {
                         inferred_skill_id: r.get(4)?,
                         hash: r.get(5)?,
                         reason: r.get(6)?,
+                        read_only: r.get::<_, String>(6)? == "agent_builtin_read_only",
                     })
                 },
             )
@@ -4303,15 +4534,8 @@ impl Service {
             .iter()
             .any(|id| id == &agent_id);
         let requested_mode = self.settings()?.default_distribute_mode;
-        let distribution = self.preview_distribute_skill(
-            if already_applied {
-                Vec::new()
-            } else {
-                other_skill_ids.clone()
-            },
-            vec![agent_id.clone()],
-            requested_mode,
-        )?;
+        let distribution =
+            self.preview_distribute_skill(Vec::new(), vec![agent_id.clone()], requested_mode)?;
 
         Ok(MoveDirectSkillToPackPreview {
             target_id: target_id.to_string(),
@@ -4333,21 +4557,12 @@ impl Service {
         &self,
         target_id: &str,
         pack_id: &str,
-        blocker_decisions: Vec<DistributionBlockerDecision>,
+        _blocker_decisions: Vec<DistributionBlockerDecision>,
     ) -> Result<MoveDirectSkillToPackPreview, String> {
-        let mut preview = self.preview_move_direct_skill_to_pack(target_id, pack_id)?;
+        let preview = self.preview_move_direct_skill_to_pack(target_id, pack_id)?;
         let (_, agent_id, target_path) = self.direct_target_for_pack_move(target_id)?;
         let previously_applied_agents = self.pack_applied_agent_ids(pack_id)?;
         let old_revision = self.pack_revision(pack_id)?;
-
-        preview.distribution.blocker_decisions = blocker_decisions;
-        if !preview.distribution.skill_ids.is_empty() {
-            preview.distribution = self.execute_distribute_skill_internal(
-                preview.distribution,
-                ClaimOrigin::Pack(pack_id.to_string()),
-                false,
-            )?;
-        }
 
         let next_revision = if preview.will_add_to_pack {
             let now = db::now_iso();
@@ -5185,6 +5400,7 @@ pub struct UpsertPackInput {
 pub struct AgentScanResult {
     pub managed: usize,
     pub unmanaged: usize,
+    pub read_only: usize,
 }
 
 struct SkillRow {

@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next'
-import type { TargetClaim } from '../../services/skillApiV2'
+import type { ConflictBlocker, TargetClaim } from '../../services/skillApiV2'
 
 const SOURCE_TYPE_KEYS: Record<string, string> = {
   'skills.sh': 'skills_sh',
@@ -39,6 +39,38 @@ export function targetClaimLabel(t: TFunction, claim?: Pick<TargetClaim, 'claimT
 export function unmanagedReasonLabel(t: TFunction, reason?: string | null): string {
   if (!reason) return ''
   return t(`skills.reason.${reason}`, { defaultValue: reason })
+}
+
+export function distributionBlockerReason(t: TFunction, blocker: ConflictBlocker): string {
+  const unmanaged = blocker.reason.match(/^An unmanaged '([^']+)' already exists at the target path\. Adopt\/overwrite\/rename it first\.$/)
+  if (unmanaged) {
+    return t('skills.blocker.unmanagedExists', {
+      skillId: unmanaged[1],
+      defaultValue: blocker.reason,
+    })
+  }
+  const managedCopy = blocker.reason.match(/^Managed copy '([^']+)' has local changes\. Choose whether the center library or the agent copy should win before (redistributing|converting)\.$/)
+  if (managedCopy) {
+    return t(`skills.blocker.${managedCopy[2] === 'converting' ? 'managedCopyBeforeConvert' : 'managedCopyBeforeRedistribute'}`, {
+      skillId: managedCopy[1],
+      defaultValue: blocker.reason,
+    })
+  }
+  const missingCenterSkill = blocker.reason.match(/^Skill '([^']+)' is not in the center library\.$/)
+  if (missingCenterSkill) {
+    return t('skills.blocker.notInCenterLibrary', {
+      skillId: missingCenterSkill[1],
+      defaultValue: blocker.reason,
+    })
+  }
+  const unknownAgentDirectory = blocker.reason.match(/^Agent '([^']+)' has no known skills directory\.$/)
+  if (unknownAgentDirectory) {
+    return t('skills.blocker.unknownAgentDirectory', {
+      agentId: unknownAgentDirectory[1],
+      defaultValue: blocker.reason,
+    })
+  }
+  return blocker.reason
 }
 
 export function skillErrorMessage(t: TFunction, error: unknown): string {

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   skillApiV2,
   type McpInspectionReport,
+  type McpInspectionPrompt,
   type McpInspectionTool,
+  type McpOperationResult,
   type McpServerEntry,
 } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
@@ -169,9 +171,21 @@ export function McpInspectorDrawer({
             </nav>
             <div className="sm2__mcp-inspector-content">
               {activeTab === 'overview' && <InspectorOverview report={report} />}
-              {activeTab === 'tools' && <InspectorTools report={report} />}
+              {activeTab === 'tools' && (
+                <InspectorTools
+                  agentId={agentId}
+                  serverName={server?.name || ''}
+                  report={report}
+                />
+              )}
               {activeTab === 'resources' && <InspectorResources report={report} />}
-              {activeTab === 'prompts' && <InspectorPrompts report={report} />}
+              {activeTab === 'prompts' && (
+                <InspectorPrompts
+                  agentId={agentId}
+                  serverName={server?.name || ''}
+                  report={report}
+                />
+              )}
               {activeTab === 'logs' && <InspectorLogs report={report} />}
             </div>
           </>
@@ -328,8 +342,29 @@ function InspectorMessages({
   )
 }
 
-function InspectorTools({ report }: { report: McpInspectionReport }) {
+function InspectorTools({
+  agentId,
+  serverName,
+  report,
+}: {
+  agentId: string
+  serverName: string
+  report: McpInspectionReport
+}) {
   const { t } = useTranslation()
+  const [query, setQuery] = useState('')
+  const [activeTool, setActiveTool] = useState<string | null>(null)
+  const unknownRiskCount = report.tools.filter((tool) => !tool.hasAnnotations).length
+  const filteredTools = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase()
+    if (!normalized) return report.tools
+    return report.tools.filter((tool) => (
+      tool.name.toLocaleLowerCase().includes(normalized)
+      || tool.title?.toLocaleLowerCase().includes(normalized)
+      || tool.description?.toLocaleLowerCase().includes(normalized)
+    ))
+  }, [query, report.tools])
+
   if (!report.capabilities.tools) {
     return <InspectorEmpty feature="Tools" />
   }
@@ -337,13 +372,67 @@ function InspectorTools({ report }: { report: McpInspectionReport }) {
     return <InspectorEmpty feature={t('skills.mcpManagement.inspector.tabs.tools')} supported />
   }
   return (
-    <div className="sm2__mcp-inspector-list">
-      {report.tools.map((tool) => <InspectorToolCard key={tool.name} tool={tool} />)}
+    <div className="sm2__mcp-inspector-tool-browser">
+      <div className="sm2__mcp-tool-toolbar">
+        <label className="sm2__mcp-inspector-search">
+          <span>{t('skills.mcpManagement.inspector.interaction.searchTools')}</span>
+          <input
+            type="search"
+            value={query}
+            placeholder={t('skills.mcpManagement.inspector.interaction.searchPlaceholder')}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <div className="sm2__mcp-tool-totals" aria-live="polite">
+          <span>
+            <strong>{filteredTools.length}</strong>
+            {' / '}
+            {report.tools.length}
+            {' Tools'}
+          </span>
+          {unknownRiskCount > 0 && (
+            <span className="sm2__mcp-tool-risk-summary">
+              <strong>{unknownRiskCount}</strong>
+              {' '}
+              {t('skills.mcpManagement.inspector.risk.unknown')}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="sm2__mcp-inspector-list sm2__mcp-tool-list">
+        {filteredTools.map((tool) => (
+          <InspectorToolCard
+            key={tool.name}
+            agentId={agentId}
+            serverName={serverName}
+            tool={tool}
+            expanded={activeTool === tool.name}
+            onToggle={() => setActiveTool((current) => current === tool.name ? null : tool.name)}
+          />
+        ))}
+        {filteredTools.length === 0 && (
+          <div className="sm2__mcp-inspector-filter-empty">
+            {t('skills.mcpManagement.inspector.interaction.noMatchingTools')}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-function InspectorToolCard({ tool }: { tool: McpInspectionTool }) {
+function InspectorToolCard({
+  agentId,
+  serverName,
+  tool,
+  expanded,
+  onToggle,
+}: {
+  agentId: string
+  serverName: string
+  tool: McpInspectionTool
+  expanded: boolean
+  onToggle: () => void
+}) {
   const { t } = useTranslation()
   const riskTags = [
     tool.annotations.readOnly === true && ['safe', t('skills.mcpManagement.inspector.risk.readOnly')],
@@ -351,44 +440,233 @@ function InspectorToolCard({ tool }: { tool: McpInspectionTool }) {
     tool.annotations.idempotent === true && ['neutral', t('skills.mcpManagement.inspector.risk.idempotent')],
     tool.annotations.openWorld === true && ['warning', t('skills.mcpManagement.inspector.risk.openWorld')],
   ].filter(Boolean) as [string, string][]
+  const requiredCount = tool.inputs.filter((input) => input.required).length
+  const visibleInputs = tool.inputs.slice(0, 5)
+  const hiddenInputCount = tool.inputs.length - visibleInputs.length
+  const description = formatToolDescription(tool.description)
   return (
-    <article className="sm2__mcp-inspector-card">
+    <article
+      className={`sm2__mcp-inspector-card sm2__mcp-tool-card${expanded ? ' sm2__mcp-tool-card--expanded' : ''}`}
+    >
       <div className="sm2__mcp-inspector-card-head">
         <div>
           <strong>{tool.title || tool.name}</strong>
           {tool.title && <code>{tool.name}</code>}
         </div>
-        <div className="sm2__mcp-inspector-risk-tags">
-          {tool.hasAnnotations ? (
-            riskTags.length > 0
-              ? riskTags.map(([tone, label]) => (
-                  <span key={label} className={`sm2__mcp-risk-tag sm2__mcp-risk-tag--${tone}`}>
-                    {label}
-                  </span>
-                ))
-              : <span className="sm2__mcp-risk-tag">{t('skills.mcpManagement.inspector.risk.declared')}</span>
-          ) : (
-            <span className="sm2__mcp-risk-tag sm2__mcp-risk-tag--warning">
-              {t('skills.mcpManagement.inspector.risk.unknown')}
-            </span>
+        <div className="sm2__mcp-inspector-card-actions">
+          {riskTags.length > 0 && (
+            <div className="sm2__mcp-inspector-risk-tags">
+              {riskTags.map(([tone, label]) => (
+                <span key={label} className={`sm2__mcp-risk-tag sm2__mcp-risk-tag--${tone}`}>
+                  {label}
+                </span>
+              ))}
+            </div>
           )}
+          <button
+            className="sm2__btn sm2__btn--small"
+            type="button"
+            aria-expanded={expanded}
+            onClick={onToggle}
+          >
+            {expanded
+              ? t('skills.mcpManagement.inspector.interaction.closeTest')
+              : t('skills.mcpManagement.inspector.interaction.testTool')}
+          </button>
         </div>
       </div>
-      {tool.description && <p>{tool.description}</p>}
+      {description && (
+        <p title={description !== tool.description ? tool.description || undefined : undefined}>
+          {description}
+        </p>
+      )}
       {tool.inputs.length > 0 && (
-        <div className="sm2__mcp-inspector-inputs">
-          <span>{t('skills.mcpManagement.inspector.parameters')}</span>
-          {tool.inputs.map((input) => (
-            <div key={input.name}>
-              <code>{input.name}</code>
-              <small>{input.valueType}</small>
-              {input.required && <em>{t('skills.mcpManagement.inspector.required')}</em>}
-              {input.description && <p>{input.description}</p>}
-            </div>
-          ))}
+        <div className="sm2__mcp-tool-input-summary">
+          <span>
+            {tool.inputs.length}
+            {' '}
+            {t('skills.mcpManagement.inspector.parameters')}
+            {requiredCount > 0 && (
+              <>
+                {' · '}
+                {requiredCount}
+                {' '}
+                {t('skills.mcpManagement.inspector.required')}
+              </>
+            )}
+          </span>
+          <div className="sm2__mcp-tool-input-chips">
+            {visibleInputs.map((input) => (
+              <span
+                key={input.name}
+                className="sm2__mcp-tool-input-chip"
+                title={input.description || undefined}
+              >
+                <code>{input.name}</code>
+                <small>{input.valueType}</small>
+                {input.required && <em aria-label={t('skills.mcpManagement.inspector.required')}>*</em>}
+              </span>
+            ))}
+            {hiddenInputCount > 0 && (
+              <span className="sm2__mcp-tool-input-more">+{hiddenInputCount}</span>
+            )}
+          </div>
         </div>
       )}
+      {expanded && (
+        <ToolRunner
+          agentId={agentId}
+          serverName={serverName}
+          tool={tool}
+        />
+      )}
     </article>
+  )
+}
+
+function ToolRunner({
+  agentId,
+  serverName,
+  tool,
+}: {
+  agentId: string
+  serverName: string
+  tool: McpInspectionTool
+}) {
+  const { t } = useTranslation()
+  const [argumentsText, setArgumentsText] = useState(() => (
+    JSON.stringify(createExampleArguments(tool.inputSchema), null, 2)
+  ))
+  const [loading, setLoading] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<McpOperationResult | null>(null)
+  const operationIdRef = useRef<string | null>(null)
+  const needsConfirmation = !tool.hasAnnotations
+    || tool.annotations.destructive !== false
+    || tool.annotations.openWorld === true
+
+  const cancel = useCallback(() => {
+    const operationId = operationIdRef.current
+    operationIdRef.current = null
+    if (operationId) {
+      void skillApiV2.cancelMcpOperation(operationId).catch(() => undefined)
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => cancel, [cancel])
+
+  const run = async (confirmed: boolean) => {
+    if (needsConfirmation && !confirmed) {
+      setConfirming(true)
+      return
+    }
+    let argumentsValue: Record<string, unknown>
+    try {
+      const parsed: unknown = JSON.parse(argumentsText)
+      if (!isRecord(parsed)) {
+        throw new Error(t('skills.mcpManagement.inspector.interaction.objectRequired'))
+      }
+      argumentsValue = parsed
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError))
+      return
+    }
+
+    cancel()
+    const operationId = createInspectionId()
+    operationIdRef.current = operationId
+    setConfirming(false)
+    setError(null)
+    setResult(null)
+    setLoading(true)
+    try {
+      const next = await skillApiV2.callMcpTool(
+        agentId,
+        serverName,
+        operationId,
+        tool.name,
+        argumentsValue,
+      )
+      if (operationIdRef.current === operationId) {
+        setResult(next)
+      }
+    } catch (nextError) {
+      if (operationIdRef.current === operationId) {
+        setError(String(nextError))
+      }
+    } finally {
+      if (operationIdRef.current === operationId) {
+        operationIdRef.current = null
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <div className="sm2__mcp-interaction">
+      <div className="sm2__mcp-interaction-head">
+        <div>
+          <strong>{t('skills.mcpManagement.inspector.interaction.testTitle')}</strong>
+          <span>{t('skills.mcpManagement.inspector.interaction.ephemeralNotice')}</span>
+        </div>
+        <details>
+          <summary>{t('skills.mcpManagement.inspector.interaction.viewSchema')}</summary>
+          <pre>{formatJson(tool.inputSchema)}</pre>
+        </details>
+      </div>
+      <label className="sm2__mcp-interaction-editor">
+        <span>{t('skills.mcpManagement.inspector.interaction.argumentsJson')}</span>
+        <textarea
+          value={argumentsText}
+          spellCheck={false}
+          disabled={loading}
+          onChange={(event) => {
+            setArgumentsText(event.target.value)
+            setConfirming(false)
+          }}
+        />
+      </label>
+      {confirming && (
+        <div className="sm2__mcp-interaction-confirm" role="alert">
+          <div>
+            <strong>{t('skills.mcpManagement.inspector.interaction.confirmTitle')}</strong>
+            <span>{t('skills.mcpManagement.inspector.interaction.confirmDescription')}</span>
+          </div>
+          <button
+            className="sm2__btn sm2__btn--small sm2__btn--danger"
+            type="button"
+            onClick={() => void run(true)}
+          >
+            {t('skills.mcpManagement.inspector.interaction.confirmCall')}
+          </button>
+        </div>
+      )}
+      {error && <McpInteractionError message={error} />}
+      <div className="sm2__mcp-interaction-actions">
+        {loading ? (
+          <button className="sm2__btn sm2__btn--small" type="button" onClick={cancel}>
+            {t('skills.mcpManagement.inspector.interaction.cancelCall')}
+          </button>
+        ) : (
+          <button
+            className="sm2__btn sm2__btn--small sm2__btn--primary"
+            type="button"
+            onClick={() => void run(false)}
+          >
+            {t('skills.mcpManagement.inspector.interaction.callTool')}
+          </button>
+        )}
+      </div>
+      {loading && (
+        <div className="sm2__mcp-interaction-running" role="status">
+          <span className="sm2__mcp-inspector-spinner" aria-hidden="true" />
+          {t('skills.mcpManagement.inspector.interaction.calling')}
+        </div>
+      )}
+      {result && <McpOperationOutput operation={result} />}
+    </div>
   )
 }
 
@@ -418,8 +696,17 @@ function InspectorResources({ report }: { report: McpInspectionReport }) {
   )
 }
 
-function InspectorPrompts({ report }: { report: McpInspectionReport }) {
+function InspectorPrompts({
+  agentId,
+  serverName,
+  report,
+}: {
+  agentId: string
+  serverName: string
+  report: McpInspectionReport
+}) {
   const { t } = useTranslation()
+  const [activePrompt, setActivePrompt] = useState<string | null>(null)
   if (!report.capabilities.prompts) {
     return <InspectorEmpty feature="Prompts" />
   }
@@ -435,6 +722,18 @@ function InspectorPrompts({ report }: { report: McpInspectionReport }) {
               <strong>{prompt.title || prompt.name}</strong>
               {prompt.title && <code>{prompt.name}</code>}
             </div>
+            <button
+              className="sm2__btn sm2__btn--small"
+              type="button"
+              aria-expanded={activePrompt === prompt.name}
+              onClick={() => setActivePrompt((current) => (
+                current === prompt.name ? null : prompt.name
+              ))}
+            >
+              {activePrompt === prompt.name
+                ? t('skills.mcpManagement.inspector.interaction.closePreview')
+                : t('skills.mcpManagement.inspector.interaction.previewPrompt')}
+            </button>
           </div>
           {prompt.description && <p>{prompt.description}</p>}
           {prompt.arguments.length > 0 && (
@@ -449,10 +748,244 @@ function InspectorPrompts({ report }: { report: McpInspectionReport }) {
               ))}
             </div>
           )}
+          {activePrompt === prompt.name && (
+            <PromptPreview
+              agentId={agentId}
+              serverName={serverName}
+              prompt={prompt}
+            />
+          )}
         </article>
       ))}
     </div>
   )
+}
+
+function PromptPreview({
+  agentId,
+  serverName,
+  prompt,
+}: {
+  agentId: string
+  serverName: string
+  prompt: McpInspectionPrompt
+}) {
+  const { t } = useTranslation()
+  const [argumentsValue, setArgumentsValue] = useState<Record<string, string>>(() => (
+    Object.fromEntries(prompt.arguments.map((argument) => [argument.name, '']))
+  ))
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<McpOperationResult | null>(null)
+  const operationIdRef = useRef<string | null>(null)
+
+  const cancel = useCallback(() => {
+    const operationId = operationIdRef.current
+    operationIdRef.current = null
+    if (operationId) {
+      void skillApiV2.cancelMcpOperation(operationId).catch(() => undefined)
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => cancel, [cancel])
+
+  const preview = async () => {
+    const missing = prompt.arguments.find(
+      (argument) => argument.required && !argumentsValue[argument.name]?.trim(),
+    )
+    if (missing) {
+      setError(t('skills.mcpManagement.inspector.interaction.requiredArgument', {
+        name: missing.name,
+      }))
+      return
+    }
+    cancel()
+    const operationId = createInspectionId()
+    operationIdRef.current = operationId
+    setError(null)
+    setResult(null)
+    setLoading(true)
+    try {
+      const next = await skillApiV2.getMcpPrompt(
+        agentId,
+        serverName,
+        operationId,
+        prompt.name,
+        argumentsValue,
+      )
+      if (operationIdRef.current === operationId) {
+        setResult(next)
+      }
+    } catch (nextError) {
+      if (operationIdRef.current === operationId) {
+        setError(String(nextError))
+      }
+    } finally {
+      if (operationIdRef.current === operationId) {
+        operationIdRef.current = null
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <div className="sm2__mcp-interaction">
+      <div className="sm2__mcp-interaction-head">
+        <div>
+          <strong>{t('skills.mcpManagement.inspector.interaction.previewTitle')}</strong>
+          <span>{t('skills.mcpManagement.inspector.interaction.promptNotice')}</span>
+        </div>
+      </div>
+      {prompt.arguments.length > 0 && (
+        <div className="sm2__mcp-prompt-fields">
+          {prompt.arguments.map((argument) => (
+            <label key={argument.name}>
+              <span>
+                {argument.name}
+                {argument.required && <em>{t('skills.mcpManagement.inspector.required')}</em>}
+              </span>
+              <input
+                value={argumentsValue[argument.name] || ''}
+                disabled={loading}
+                placeholder={argument.description || ''}
+                onChange={(event) => setArgumentsValue((current) => ({
+                  ...current,
+                  [argument.name]: event.target.value,
+                }))}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+      {error && <McpInteractionError message={error} />}
+      <div className="sm2__mcp-interaction-actions">
+        {loading ? (
+          <button className="sm2__btn sm2__btn--small" type="button" onClick={cancel}>
+            {t('skills.mcpManagement.inspector.interaction.cancelPreview')}
+          </button>
+        ) : (
+          <button
+            className="sm2__btn sm2__btn--small sm2__btn--primary"
+            type="button"
+            onClick={() => void preview()}
+          >
+            {t('skills.mcpManagement.inspector.interaction.generatePreview')}
+          </button>
+        )}
+      </div>
+      {loading && (
+        <div className="sm2__mcp-interaction-running" role="status">
+          <span className="sm2__mcp-inspector-spinner" aria-hidden="true" />
+          {t('skills.mcpManagement.inspector.interaction.previewing')}
+        </div>
+      )}
+      {result && <McpOperationOutput operation={result} />}
+    </div>
+  )
+}
+
+function McpInteractionError({ message }: { message: string }) {
+  const { t } = useTranslation()
+  return (
+    <div className="sm2__mcp-interaction-error" role="alert">
+      <strong>{t('skills.mcpManagement.inspector.interaction.failed')}</strong>
+      <span>{message}</span>
+    </div>
+  )
+}
+
+function McpOperationOutput({ operation }: { operation: McpOperationResult }) {
+  const { t } = useTranslation()
+  const result = isRecord(operation.result) ? operation.result : null
+  const content = result && Array.isArray(result.content) ? result.content : []
+  const messages = result && Array.isArray(result.messages) ? result.messages : []
+  const structuredContent = result?.structuredContent
+  const failed = operation.category === 'tool_error'
+
+  return (
+    <section className={`sm2__mcp-operation-output${failed ? ' sm2__mcp-operation-output--error' : ''}`}>
+      <header>
+        <div>
+          <span className="sm2__mcp-operation-output-dot" aria-hidden="true" />
+          <strong>
+            {failed
+              ? t('skills.mcpManagement.inspector.interaction.toolReturnedError')
+              : t('skills.mcpManagement.inspector.interaction.completed')}
+          </strong>
+        </div>
+        <small>{operation.durationMs} ms</small>
+      </header>
+      {content.map((item, index) => (
+        <OperationContent key={`content-${index}`} value={item} />
+      ))}
+      {messages.map((item, index) => (
+        <PromptMessage key={`message-${index}`} value={item} />
+      ))}
+      {structuredContent !== undefined && (
+        <div className="sm2__mcp-operation-structured">
+          <span>{t('skills.mcpManagement.inspector.interaction.structuredResult')}</span>
+          <pre>{formatJson(structuredContent)}</pre>
+        </div>
+      )}
+      {operation.warnings.map((warning, index) => (
+        <p key={`${warning}-${index}`} className="sm2__mcp-operation-warning">{warning}</p>
+      ))}
+      <details className="sm2__mcp-operation-raw">
+        <summary>{t('skills.mcpManagement.inspector.interaction.rawResponse')}</summary>
+        <pre>{formatJson(operation.result)}</pre>
+      </details>
+    </section>
+  )
+}
+
+function OperationContent({ value }: { value: unknown }) {
+  const { t } = useTranslation()
+  if (!isRecord(value)) {
+    return <pre className="sm2__mcp-operation-text">{formatJson(value)}</pre>
+  }
+  if (value.type === 'text' && typeof value.text === 'string') {
+    return <pre className="sm2__mcp-operation-text">{value.text}</pre>
+  }
+  if ((value.type === 'image' || value.type === 'audio') && typeof value.mimeType === 'string') {
+    return (
+      <div className="sm2__mcp-operation-media">
+        <strong>{value.type === 'image' ? 'Image' : 'Audio'}</strong>
+        <code>{value.mimeType}</code>
+        <span>{t('skills.mcpManagement.inspector.interaction.binaryResult')}</span>
+      </div>
+    )
+  }
+  return <pre className="sm2__mcp-operation-text">{formatJson(value)}</pre>
+}
+
+function PromptMessage({ value }: { value: unknown }) {
+  const { t } = useTranslation()
+  const message = isRecord(value) ? value : {}
+  const role = typeof message.role === 'string' ? message.role : 'message'
+  return (
+    <div className="sm2__mcp-prompt-message">
+      <span>{role}</span>
+      <div>
+        {renderPromptContent(message.content, t('skills.mcpManagement.inspector.interaction.emptyContent'))}
+      </div>
+    </div>
+  )
+}
+
+function renderPromptContent(value: unknown, emptyLabel: string) {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => (
+      <OperationContent key={`prompt-content-${index}`} value={item} />
+    ))
+  }
+  if (isRecord(value) && value.type === 'text' && typeof value.text === 'string') {
+    return <pre className="sm2__mcp-operation-text">{value.text}</pre>
+  }
+  if (value === undefined || value === null) {
+    return <span className="sm2__mcp-operation-empty">{emptyLabel}</span>
+  }
+  return <OperationContent value={value} />
 }
 
 function InspectorLogs({ report }: { report: McpInspectionReport }) {
@@ -502,6 +1035,61 @@ function InspectorEmpty({
       </p>
     </div>
   )
+}
+
+function createExampleArguments(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = isRecord(schema.properties) ? schema.properties : {}
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === 'string')
+      : [],
+  )
+  const result: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(properties)) {
+    const property = isRecord(value) ? value : {}
+    if (!required.has(name) && property.default === undefined) continue
+    result[name] = exampleSchemaValue(property)
+  }
+  return result
+}
+
+function formatToolDescription(description: string | null) {
+  if (!description) return null
+  const marker = description.search(/\s+Parameters\s*:/i)
+  const visible = marker >= 0 ? description.slice(0, marker) : description
+  return visible.replace(/\s+/g, ' ').trim()
+}
+
+function exampleSchemaValue(schema: Record<string, unknown>): unknown {
+  if (schema.default !== undefined) return schema.default
+  if (schema.example !== undefined) return schema.example
+  if (Array.isArray(schema.examples) && schema.examples.length > 0) return schema.examples[0]
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0]
+  switch (schema.type) {
+    case 'boolean':
+      return false
+    case 'integer':
+    case 'number':
+      return 0
+    case 'array':
+      return []
+    case 'object':
+      return createExampleArguments(schema)
+    default:
+      return ''
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function formatJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function formatBytes(size: number) {

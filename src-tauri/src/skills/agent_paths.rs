@@ -24,6 +24,40 @@ pub fn kimi_code_home_for(home: &Path) -> PathBuf {
     home.join(".kimi-code")
 }
 
+pub fn doubao_user_skills_dir_for(home: &Path) -> PathBuf {
+    home.join("Doubao").join("skills")
+}
+
+pub fn doubao_builtin_skill_dirs_for(home: &Path) -> Vec<PathBuf> {
+    let profiles_root = home
+        .join("Library")
+        .join("Application Support")
+        .join("Doubao");
+    let suffix = Path::new(".doubao")
+        .join("agent_mode")
+        .join("workspace")
+        .join(".skills");
+    let default_dir = profiles_root.join("Default").join(&suffix);
+    let mut dirs = vec![default_dir.clone()];
+    let mut discovered = std::fs::read_dir(&profiles_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join(&suffix))
+        .filter(|path| path != &default_dir && path.is_dir())
+        .collect::<Vec<_>>();
+    discovered.sort();
+    dirs.extend(discovered);
+    dedupe_paths(dirs)
+}
+
+pub fn doubao_skill_dirs_for(home: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![doubao_user_skills_dir_for(home)];
+    dirs.extend(doubao_builtin_skill_dirs_for(home));
+    dedupe_paths(dirs)
+}
+
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
     match agent {
@@ -76,7 +110,11 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
                 settings_file: None,
             }
         }
-        "doubao" => basic_skill_paths(&h, "Doubao/skills"),
+        "doubao" => SkillPaths {
+            skill_dirs: doubao_skill_dirs_for(&h),
+            mcp_config: None,
+            settings_file: None,
+        },
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),
@@ -359,6 +397,29 @@ fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doubao_skill_dirs_keep_the_user_root_first_and_discover_profiles() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-doubao-paths-{}", uuid::Uuid::new_v4()));
+        let profile_skill_dir = home
+            .join("Library/Application Support/Doubao/Profile 1")
+            .join(".doubao/agent_mode/workspace/.skills");
+        std::fs::create_dir_all(&profile_skill_dir).unwrap();
+
+        assert_eq!(
+            doubao_skill_dirs_for(&home),
+            vec![
+                home.join("Doubao/skills"),
+                home.join(
+                    "Library/Application Support/Doubao/Default/.doubao/agent_mode/workspace/.skills"
+                ),
+                profile_skill_dir,
+            ]
+        );
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

@@ -1,0 +1,71 @@
+name: Sync release back to dev
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-release:
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Merge released tag
+        id: merge
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported stable release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          if git merge-base --is-ancestor "$RELEASE_TAG" HEAD; then
+            echo "already_synced=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          sync_branch="chore/sync-${RELEASE_TAG}-to-dev"
+          git switch -c "$sync_branch"
+          git merge --no-ff "$RELEASE_TAG" -m "chore: sync ${RELEASE_TAG} back to dev"
+
+          echo "already_synced=false" >> "$GITHUB_OUTPUT"
+          echo "sync_branch=$sync_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Push sync branch
+        if: steps.merge.outputs.already_synced == 'false'
+        env:
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
+        run: git push --set-upstream origin "$SYNC_BRANCH"
+
+      - name: Open sync pull request
+        if: steps.merge.outputs.already_synced == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
+        run: |
+          existing_url="$(gh pr list --base dev --head "$SYNC_BRANCH" --state open --json url --jq '.[0].url // empty')"
+          if [[ -n "$existing_url" ]]; then
+            echo "Sync pull request already exists: $existing_url"
+            exit 0
+          fi
+
+          gh pr create \
+            --base dev \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync ${RELEASE_TAG} back to dev" \
+            --body "Synchronizes the stable ${RELEASE_TAG} release commit and version metadata back into \`dev\`."

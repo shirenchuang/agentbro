@@ -5,7 +5,7 @@ description: Use when releasing AgentBro from this repository: merging dev/main,
 
 # AgentBro Release
 
-Use this skill for AgentBro release work. Keep unrelated local changes out of commits.
+Use this repository-scoped skill for AgentBro release work. Keep unrelated local changes out of commits.
 
 ## Safety Rules
 
@@ -13,6 +13,7 @@ Use this skill for AgentBro release work. Keep unrelated local changes out of co
 - Never reuse or force-move an existing release tag. If a published release is wrong, make the next patch version.
 - Do not edit signing keys, certificates, entitlements, or release secrets.
 - Do not bump versions in feature PRs. Only bump for an actual release.
+- Do not leave `dev` behind the latest stable release. Every stable release must be merged back through a PR to `dev`.
 - If `gh` is not authenticated, use the public GitHub API with `curl` for read-only checks.
 
 ## Version Selection
@@ -51,7 +52,7 @@ pnpm release:check
 1. Fetch current remote state:
 
 ```bash
-git fetch origin main dev --no-tags
+git fetch origin main dev --tags
 ```
 
 2. If releasing from `dev`, merge it to `main` only after `dev` is pushed:
@@ -120,6 +121,44 @@ git ls-remote --tags origin refs/tags/vX.Y.Z
 ```bash
 git tag vX.Y.Z
 git push origin main vX.Y.Z
+```
+
+9. After the stable GitHub Release is published, verify that the
+   `Sync release back to dev` workflow opens a PR from
+   `chore/sync-vX.Y.Z-to-dev` into `dev`:
+
+```bash
+gh pr list \
+  --base dev \
+  --head chore/sync-vX.Y.Z-to-dev \
+  --state open
+```
+
+Review and merge that PR before accepting more feature PRs into `dev`. The PR
+must carry the release commit and all four version files back together; do not
+manually change only `package.json`.
+
+If the workflow is unavailable, create the equivalent sync PR manually:
+
+```bash
+git checkout dev
+git pull --ff-only origin dev
+git checkout -b chore/sync-vX.Y.Z-to-dev
+git merge --no-ff vX.Y.Z -m "chore: sync vX.Y.Z back to dev"
+git push -u origin chore/sync-vX.Y.Z-to-dev
+gh pr create \
+  --base dev \
+  --head chore/sync-vX.Y.Z-to-dev \
+  --title "chore: sync vX.Y.Z back to dev"
+```
+
+10. After the sync PR merges, confirm `dev` is not behind the latest stable
+    tag:
+
+```bash
+git checkout dev
+git pull --ff-only origin dev
+pnpm release:check
 ```
 
 ## Drafting Release Notes From the Diff

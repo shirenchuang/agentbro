@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import i18n from '../i18n'
-import { skillErrorMessage } from '../components/skills-v2/skillLabels'
+import { distributionBlockerReason, skillErrorMessage } from '../components/skills-v2/skillLabels'
 
 const unavailableAdoptError = new Error(
   "Adopt option 'import_keep' is not allowed for 'fsd-alipay-business-skill'. Re-run preview and choose one of the suggested actions.",
@@ -8,6 +8,12 @@ const unavailableAdoptError = new Error(
 const unmanagedAgentMismatchError = new Error(
   "Unmanaged item 'unm-agents-Users-me--agents-skills-bird' does not belong to agent 'codex'.",
 )
+const unmanagedDistributionBlocker = {
+  skillId: 'lark-approval',
+  agentId: 'zcode',
+  reason: "An unmanaged 'lark-approval' already exists at the target path. Adopt/overwrite/rename it first.",
+  existingPath: '/Users/me/.zcode/skills/lark-approval',
+}
 
 describe('skill error labels', () => {
   afterEach(async () => {
@@ -34,5 +40,16 @@ describe('skill error labels', () => {
   ])('localizes unmanaged Agent mismatch errors in %s', async (language, expected) => {
     await i18n.changeLanguage(language)
     expect(skillErrorMessage(i18n.t, unmanagedAgentMismatchError)).toBe(expected)
+  })
+
+  it.each([
+    ['zh', '目标路径已存在未管理的 Skill「lark-approval」。请选择覆盖安装或忽略此目标。'],
+    ['en', 'An unmanaged Skill “lark-approval” already exists at the target path. Choose overwrite or skip for this target.'],
+    ['ja', '対象パスには未管理の Skill「lark-approval」がすでに存在します。この対象を上書きするかスキップするか選択してください。'],
+    ['ko', '대상 경로에 관리되지 않는 Skill ‘lark-approval’이(가) 이미 있습니다. 이 대상을 덮어쓸지 건너뛸지 선택하세요.'],
+    ['tr', "Hedef yolda yönetilmeyen “lark-approval” Skill'i zaten var. Bu hedefin üzerine yazmayı veya hedefi atlamayı seçin."],
+  ])('localizes unmanaged distribution blockers in %s', async (language, expected) => {
+    await i18n.changeLanguage(language)
+    expect(distributionBlockerReason(i18n.t, unmanagedDistributionBlocker)).toBe(expected)
   })
 })

@@ -113,5 +113,5 @@ export function sortAgentSummaries(
 }
 
 function agentSkillWeight(agent: AgentSummary): number {
-  return agent.managedSkillCount * 2 + agent.unmanagedSkillCount
+  return agent.managedSkillCount * 2 + agent.unmanagedSkillCount + (agent.readOnlySkillCount ?? 0)
 }

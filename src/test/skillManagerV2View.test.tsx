@@ -2464,6 +2464,8 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByText('文件')).toBeInTheDocument()
     expect(screen.getAllByText('来源').length).toBeGreaterThan(0)
     expect(screen.getByText('Local documentation.')).toBeInTheDocument()
+    expect(document.body.querySelector('.sm2__markdown--skilldoc > :first-child')?.tagName).toBe('H1')
+    expect(document.body.querySelector('.sm2__skill-frontmatter')).toBeNull()
     fireEvent.click(screen.getByText('文件'))
     expect(document.body.querySelector('.sm2__filetree-pane')).not.toBeNull()
     expect(screen.getAllByText('find-skills').length).toBeGreaterThan(0)
@@ -2681,6 +2683,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     expect(await screen.findByText('Manual doc.')).toBeInTheDocument()
     expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill')
+    expect(document.body.querySelector('.sm2__markdown--skilldoc > :first-child')?.tagName).toBe('H1')
+    expect(document.body.querySelector('.sm2__skill-frontmatter')).toBeNull()
 
     fireEvent.click(screen.getByText('文件'))
     expect(document.body.querySelector('.sm2__filetree-pane')).not.toBeNull()
@@ -3382,6 +3386,50 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
   })
 
+  it('shows Doubao built-in skills separately without adopt or delete actions', async () => {
+    useSkillStoreV2.setState({
+      agents: [
+        {
+          ...makeSidebarAgent('doubao', 'Doubao'),
+          readOnlySkillCount: 1,
+        },
+      ],
+      selectedAgentId: 'doubao',
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'doubao',
+        displayName: 'Doubao',
+        iconKey: 'doubao',
+        skillsDir: '/Users/me/Doubao/skills',
+        skills: [],
+      },
+      unmanaged: [
+        {
+          id: 'doubao-builtin-browser-task',
+          agentId: 'doubao',
+          itemType: 'agent_skill',
+          path: '/Users/me/Library/Application Support/Doubao/Default/.doubao/agent_mode/workspace/.skills/browser-task',
+          inferredSkillId: 'browser-task',
+          hash: 'builtin-hash',
+          reason: 'agent_builtin_read_only',
+          readOnly: true,
+        },
+      ],
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (1)'))
+    fireEvent.click(screen.getByRole('button', { name: '内置 1' }))
+
+    expect(screen.getByText('browser-task')).toBeInTheDocument()
+    expect(screen.getByText(/1 个 Skill 由 Doubao 内置提供/)).toBeInTheDocument()
+    expect(screen.getAllByText('Agent 内置（只读）').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: '接管' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /删除 browser-task/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '批量管理' })).not.toBeInTheDocument()
+  })
+
   it('enters managed skill multi-select only after a batch action', async () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -3425,7 +3473,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       willAddToPack: true,
       otherMemberCount: 2,
       distribution: {
-        skillIds: ['frontend-design', 'source-check'],
+        skillIds: [],
         targetAgents: ['claude-code'],
         requestedMode: 'link',
         changes: [],
@@ -3447,7 +3495,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('heading', { name: '将直接分发归入技能包' })).toBeInTheDocument()
     await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'daily-pack'))
     expect(await screen.findByText('加入技能包成员')).toBeInTheDocument()
-    expect(screen.getByText(/其余 2 个成员生效/)).toBeInTheDocument()
+    expect(screen.getByText('不处理其他成员')).toBeInTheDocument()
+    expect(screen.getByText(/不会安装、更新或删除「Daily Pack」中的其他 2 个成员/)).toBeInTheDocument()
     expect(screen.getByText('切换为技能包控制')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '移动并交由技能包管理' }))
@@ -3665,6 +3714,44 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(useSkillStoreV2.getState().error).toBeNull()
   })
 
+  it('deletes selected unmanaged agent skills in a batch after confirmation', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [
+        ...useSkillStoreV2.getState().unmanaged,
+        {
+          id: 'unmanaged-2',
+          agentId: 'claude-code',
+          itemType: 'skill',
+          path: '/c/skills/another-skill',
+          inferredSkillId: 'another-skill',
+          hash: null,
+          reason: 'not_in_center_library',
+        },
+      ],
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkills').mockResolvedValue({ deleted: 2, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (3)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+    const dialog = screen.getByRole('dialog', { name: '确认批量删除未管理 Skill？' })
+    expect(dialog).toHaveTextContent('2 个未管理 Skill 将从当前 Agent 直接删除。')
+    expect(deleteUnmanaged).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2']))
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
     const execute = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
       items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
@@ -3701,6 +3788,74 @@ describe('Skill detail slider + agent page render without crashing', () => {
       }])
     })
     expect(listUnmanaged).toHaveBeenCalled()
+  })
+
+  it('takes over every same-name center skill in one action and preserves local-only skills', async () => {
+    const sameNameSkills = [
+      {
+        id: 'unmanaged-same',
+        agentId: 'claude-code',
+        itemType: 'skill' as const,
+        path: '/c/skills/same-skill',
+        inferredSkillId: 'same-skill',
+        hash: 'same-hash',
+        reason: 'same_name_as_center_skill',
+      },
+      {
+        id: 'unmanaged-conflict',
+        agentId: 'claude-code',
+        itemType: 'skill' as const,
+        path: '/c/skills/conflict-skill',
+        inferredSkillId: 'conflict-skill',
+        hash: 'agent-hash',
+        reason: 'same_name_as_center_skill',
+      },
+    ]
+    const localOnly = {
+      id: 'unmanaged-local',
+      agentId: 'claude-code',
+      itemType: 'skill' as const,
+      path: '/c/skills/local-only',
+      inferredSkillId: 'local-only',
+      hash: 'local-hash',
+      reason: 'not_in_center_library',
+    }
+    useSkillStoreV2.setState({ unmanaged: [...sameNameSkills, localOnly] })
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills').mockResolvedValue({
+      items: sameNameSkills.map((item) => ({
+        unmanagedId: item.id,
+        skillId: item.inferredSkillId,
+        error: null,
+      })),
+      finalizationError: null,
+    })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([localOnly])
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (4)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 3' }))
+
+    expect(screen.getAllByText('中心库已有同名 Skill').length).toBeGreaterThan(0)
+    expect(screen.queryByText('same_name_as_center_skill')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 2 个' }))
+
+    expect(screen.getByRole('heading', { name: '接管中心库已有的 2 个 Skill？' })).toBeInTheDocument()
+    expect(screen.getByText(/替换为指向中心库的软连接/)).toBeInTheDocument()
+    expect(screen.getByText('其余 1 个未管理 Skill 不在中心库中，将保持不变。')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '以中心库为准接管' }))
+
+    await waitFor(() => {
+      expect(takeover).toHaveBeenCalledWith('claude-code', [
+        'unmanaged-same',
+        'unmanaged-conflict',
+      ])
+    })
+    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
+    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(await screen.findByText('一键接管完成：已接管 2 个，失败 0 个；其他未管理 Skill 保持不变。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
   })
 
   it('explains which batch adoption conflicts require individual review', async () => {
@@ -4217,7 +4372,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Claude Code'))
     fireEvent.click(screen.getByText('预览影响'))
 
-    expect(await screen.findByText("目标路径已存在未管理的 Skill 'find-skills'。请先接管、覆盖或重命名。")).toBeInTheDocument()
+    expect(await screen.findByText('目标路径已存在未管理的 Skill「find-skills」。请选择覆盖安装或忽略此目标。')).toBeInTheDocument()
     expect(screen.queryByText(/An unmanaged/)).not.toBeInTheDocument()
     expect(screen.getAllByText('软连接').length).toBeGreaterThan(1)
     expect(screen.getByText(/真实路径/)).toBeInTheDocument()
@@ -4393,9 +4548,58 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const { container } = render(<AgentManagementPage />)
 
     fireEvent.click(screen.getByText('路径与设置'))
-    await waitFor(() => expect(container.querySelectorAll('.sm2__object-row--path')[1]).toHaveTextContent('2.1.179'))
+    await waitFor(() => expect(container.querySelectorAll('.sm2__config-facts > div')[1]).toHaveTextContent('2.1.179'))
     expect(screen.getByText('/Users/me/.claude/settings.json')).toBeInTheDocument()
     expect(screen.getByText('/Users/me/.claude/plugins/cache')).toBeInTheDocument()
+  })
+
+  it('formats, validates, edits, and reveals an Agent config resource', async () => {
+    const readConfig = vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({
+      path: '/c/config.json',
+      content: '{"enabled":false,"threshold":9007199254740993}',
+      revision: 'sha256:before',
+    })
+    const writeConfig = vi.spyOn(skillApiV2, 'writeAgentConfigFile').mockResolvedValue({
+      path: '/c/config.json',
+      content: '{\n  "enabled": true\n}\n',
+      revision: 'sha256:after',
+    })
+    const revealPath = vi.spyOn(skillApiV2, 'revealPath').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(screen.getByText('路径与设置'))
+    const configRow = screen.getByText('配置文件').closest('.sm2__config-resource')
+    expect(configRow).not.toBeNull()
+
+    fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json')
+    expect(editor).toHaveValue('{\n  "enabled": false,\n  "threshold": 9007199254740993\n}\n')
+    expect(screen.getByText('JSON 语法正确')).toBeInTheDocument()
+    expect(within(configRow as HTMLElement).queryByRole('button', { name: /复制/ })).not.toBeInTheDocument()
+
+    fireEvent.change(editor, { target: { value: '{"enabled":' } })
+    expect(screen.getByText('JSON 语法有误')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存更改' })).toBeDisabled()
+
+    fireEvent.change(editor, { target: { value: '{"enabled":true}' } })
+    fireEvent.click(screen.getByRole('button', { name: '格式化 JSON' }))
+    expect(editor).toHaveValue('{\n  "enabled": true\n}\n')
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+    await waitFor(() => expect(writeConfig).toHaveBeenCalledWith(
+      'claude-code',
+      '/c/config.json',
+      '{\n  "enabled": true\n}\n',
+      'sha256:before',
+    ))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('配置已保存，原文件已备份')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
+
+    fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '定位' }))
+    await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/c/config.json'))
   })
 
   it('shows hook bridge command details and open actions', async () => {
