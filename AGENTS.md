@@ -24,6 +24,36 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 Before any PR, all of these must be green: `pnpm lint`, `pnpm test:run`, `pnpm build`, `cargo check`.
 
+## Mandatory GitHub delivery workflow
+
+Use this workflow for every task that changes repository files, including bug fixes, features, refactors, tests, documentation, and configuration.
+
+Pure questions, explanations, code review, read-only diagnosis, and research do not require an Issue or PR unless they turn into a repository change.
+
+### Before editing
+
+1. Confirm GitHub access with `gh auth status` and inspect the current branch and worktree.
+2. Search open Issues for the same scope. Reuse an existing Issue only when it describes the requested work; otherwise create a focused Issue with context, goal, acceptance criteria, and constraints.
+3. Start from the latest `origin/dev` on a dedicated branch named `<agent>/issue-<number>-<slug>` (for example, `codex/issue-61-agent-github-workflow`). Never implement on `dev`, `main`, or an unrelated task branch.
+4. If another task owns the current branch or worktree, preserve it and use a separate git worktree.
+5. Do not edit files until the Issue exists and its number is known.
+
+### Finishing the task
+
+1. Run the required local checks and fix failures before publishing.
+2. Review the diff for unrelated edits and secrets, then create a Conventional Commit.
+3. Push the task branch and open a PR against `dev`. The PR body must contain `Closes #<issue-number>` so merging closes the Issue.
+4. Enable squash auto-merge with branch deletion:
+
+   ```bash
+   gh pr merge --auto --squash --delete-branch
+   ```
+
+5. Monitor required checks. If a check fails, diagnose it, update the same branch, and leave auto-merge enabled. Never bypass checks, force-push shared branches, or merge a failing PR.
+6. The task is complete only when the PR is merged (or when a concrete external blocker is reported). Report the Issue, PR, checks, and merge result.
+
+Do not create duplicate or empty Issues just to increase activity. The Issue and PR must represent real, reviewable work.
+
 ## Where to make changes
 
 | Goal | Files |

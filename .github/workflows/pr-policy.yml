@@ -1,0 +1,23 @@
+name: PR policy
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  issue-link:
+    name: Issue link
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a closing Issue reference
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if ! printf '%s\n' "$PR_BODY" | grep -Eiq '(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+([^0-9]|$)'; then
+            echo "::error::PR body must contain a closing reference such as 'Closes #61'."
+            exit 1
+          fi

@@ -116,8 +116,14 @@ Rust 格式与 lint:`cargo fmt --manifest-path src-tauri/Cargo.toml`、`cargo cl
 
 ## 5. 提交与分支
 
+- **所有会修改仓库文件的任务必须先走 Issue-first 流程。** Bug、需求、重构、测试、文档和配置修改都包含在内；纯问答、只读分析和 code review 不需要，除非后续转为实际修改。
+- 写文件前先搜索是否有同范围 Issue；没有就创建包含背景、目标、验收标准和约束的 Issue。Issue 编号确定之前不得开始修改。
+- 从最新 `origin/dev` 创建独立分支，命名为 `claude/issue-<编号>-<slug>`。如果当前分支属于其他任务，保留现场并使用独立 git worktree。
 - **PR 提到 `dev` 分支**,不是 `main`。`dev` 是集成分支,`main` 是 release 分支。
 - 提交信息走 [Conventional Commits](https://www.conventionalcommits.org/):`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`。
+- 完成本地检查后提交并推送；PR 正文必须写 `Closes #<Issue 编号>`。
+- 创建 PR 后执行 `gh pr merge --auto --squash --delete-branch`，持续跟进 CI；失败就修复同一分支，禁止绕过检查或合并红色 PR。只有 PR 已合并，或已明确报告外部阻塞，任务才算结束。
+- 不要为了增加活跃度创建重复、空白或与改动无关的 Issue；每个 Issue 和 PR 都必须对应真实、可审查的工作。
 - 不要在 PR 里 bump 版本号。版本号统一由 maintainer 在出 release 时更新,**且要四处同步**:
   - `package.json` 的 `version`
   - `src-tauri/tauri.conf.json` 的 `version`

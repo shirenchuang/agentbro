@@ -4,7 +4,7 @@
 
 ## 背景与动机
 
-<!-- 关联 Issue，或说明为什么需要这个改动。 -->
+Closes #<!-- 必填：填写对应 Issue 编号，例如 Closes #61 -->
 
 ## 实现方案
 
@@ -21,6 +21,7 @@
 ## Checklist
 
 - [ ] PR 目标分支是 `dev`，不是 `main`
+- [ ] PR 已通过 `Closes #<编号>` 关联对应 Issue
 - [ ] `pnpm lint` 已通过
 - [ ] `pnpm test:run` 已通过
 - [ ] `pnpm build` 已通过
