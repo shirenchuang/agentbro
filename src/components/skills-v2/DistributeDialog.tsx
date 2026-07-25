@@ -5,7 +5,7 @@ import { skillApiV2 } from '../../services/skillApiV2'
 import type { ConflictBlocker, DistributionPreview, AgentSummary, SkillSummary } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
 import { AgentIconBadge } from './AgentIconBadge'
-import { skillModeLabel } from './skillLabels'
+import { distributionBlockerReason, skillModeLabel } from './skillLabels'
 
 type BlockerDecision = 'overwrite' | 'agent_over_center' | 'skip'
 
@@ -13,16 +13,6 @@ const SHARED_SKILLS_AGENT_ID = 'agents'
 
 function blockerKey(blocker: ConflictBlocker) {
   return `${blocker.skillId}\u0000${blocker.agentId}`
-}
-
-function blockerReason(t: TFunction, blocker: ConflictBlocker) {
-  if (blocker.existingPath) {
-    return t('skills.blocker.unmanagedExists', {
-      skillId: blocker.skillId,
-      defaultValue: blocker.reason,
-    })
-  }
-  return blocker.reason
 }
 
 function distributionErrorMessage(t: TFunction, error: unknown) {
@@ -380,7 +370,7 @@ export function DistributeDialog({
                   </span>
                 )}
               </div>
-              <span className="sm2-distribute__change-reason">{blockerReason(t, b)}</span>
+              <span className="sm2-distribute__change-reason">{distributionBlockerReason(t, b)}</span>
               {b.existingPath && (
                 <div className="sm2-distribute__path-row">
                   <code>{b.existingPath}</code>

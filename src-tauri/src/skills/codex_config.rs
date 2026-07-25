@@ -117,6 +117,74 @@ pub fn parse_plugin_enabled_config(content: &str) -> HashMap<String, bool> {
     out
 }
 
+pub fn set_plugin_enabled(content: &str, plugin_id: &str, enabled: bool) -> Result<String, String> {
+    let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut section_start = None;
+    let mut section_end = lines.len();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(parts) = table_path(&strip_comment(line)) else {
+            continue;
+        };
+        if section_start.is_some() {
+            section_end = index;
+            break;
+        }
+        if plugin_name(&parts).as_deref() == Some(plugin_id) {
+            section_start = Some(index);
+        }
+    }
+
+    if let Some(start) = section_start {
+        let mut replaced = false;
+        for line in lines.iter_mut().take(section_end).skip(start + 1) {
+            let without_comment = strip_comment(line);
+            let Some((key, _)) = split_assignment(&without_comment) else {
+                continue;
+            };
+            if key.trim() == "enabled" {
+                let indent = line
+                    .chars()
+                    .take_while(|character| character.is_whitespace())
+                    .collect::<String>();
+                *line = format!("{indent}enabled = {enabled}");
+                replaced = true;
+            }
+        }
+        if !replaced {
+            lines.insert(start + 1, format!("enabled = {enabled}"));
+        }
+    } else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(format!("[plugins.\"{}\"]", escape_basic_string(plugin_id)));
+        lines.push(format!("enabled = {enabled}"));
+    }
+
+    let mut updated = lines.join("\n");
+    if content.ends_with('\n') || !updated.is_empty() {
+        updated.push('\n');
+    }
+    let actual = parse_plugin_enabled_config(&updated)
+        .get(plugin_id)
+        .copied();
+    if actual != Some(enabled) {
+        return Err(format!(
+            "Could not update Codex plugin '{plugin_id}' in config.toml"
+        ));
+    }
+    Ok(updated)
+}
+
+fn escape_basic_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 fn mcp_server_name(parts: &[String]) -> Option<String> {
     (parts.len() == 2 && parts[0] == "mcp_servers").then(|| parts[1].clone())
 }
@@ -413,5 +481,40 @@ enabled = false
         assert_eq!(plugins.get("documents@openai-primary-runtime"), Some(&true));
         assert_eq!(plugins.get("archived@openai-curated"), Some(&false));
         assert_eq!(plugins.len(), 2);
+    }
+
+    #[test]
+    fn updates_plugin_enablement_without_rewriting_other_sections() {
+        let content = r#"model = "gpt-5"
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true # previous state
+source = "runtime"
+
+[mcp_servers.context7]
+command = "npx"
+"#;
+        let updated =
+            set_plugin_enabled(content, "documents@openai-primary-runtime", false).unwrap();
+
+        assert!(updated.contains("model = \"gpt-5\""));
+        assert!(updated.contains("enabled = false"));
+        assert!(updated.contains("source = \"runtime\""));
+        assert!(updated.contains("[mcp_servers.context7]"));
+        assert_eq!(
+            parse_plugin_enabled_config(&updated).get("documents@openai-primary-runtime"),
+            Some(&false)
+        );
+    }
+
+    #[test]
+    fn adds_missing_plugin_table_with_escaped_id() {
+        let updated = set_plugin_enabled("model = \"gpt-5\"\n", "quote\"plugin", true).unwrap();
+
+        assert!(updated.contains("[plugins.\"quote\\\"plugin\"]"));
+        assert_eq!(
+            parse_plugin_enabled_config(&updated).get("quote\"plugin"),
+            Some(&true)
+        );
     }
 }

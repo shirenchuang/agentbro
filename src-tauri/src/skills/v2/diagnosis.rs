@@ -147,6 +147,9 @@ fn unmanaged_agent_skills(svc: &Service) -> Result<Vec<DiagnosisIssue>, String> 
     let items = svc.list_unmanaged()?;
     let mut out = Vec::new();
     for it in items {
+        if it.read_only {
+            continue;
+        }
         let display = it
             .agent_id
             .as_ref()
@@ -713,7 +716,7 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
         .as_ref()
         .map(|path| read_plugin_enabled_config(path))
         .unwrap_or_default();
-    let mut out = Vec::new();
+    let mut out = HashMap::new();
     for manifest in plugin_manifests(&cache, marker_dir) {
         let Ok(content) = std::fs::read_to_string(&manifest) else {
             continue;
@@ -734,17 +737,20 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
             .as_deref()
             .map(|source| format!("{id}@{source}"))
             .unwrap_or_else(|| id.clone());
+        if agent_id == "codex" && !enabled_plugins.contains_key(&config_key) {
+            continue;
+        }
         let enabled = enabled_plugins
             .get(&config_key)
             .or_else(|| enabled_plugins.get(&id))
             .copied()
             .unwrap_or(true);
-        let status_id = if agent_id == "codex" {
+        let status_id = if enabled_plugins.contains_key(&config_key) {
             config_key
         } else {
             id.clone()
         };
-        out.push(PluginStatus {
+        let plugin = PluginStatus {
             id: status_id,
             name: v
                 .pointer("/interface/displayName")
@@ -758,10 +764,128 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
             source: source
                 .map(|source| format!("{source_label}:{source}"))
                 .or_else(|| Some(source_label.to_string())),
-        });
+        };
+        let replace = out
+            .get(&plugin.id)
+            .and_then(|current: &PluginStatus| current.version.as_ref())
+            < plugin.version.as_ref();
+        if replace || !out.contains_key(&plugin.id) {
+            out.insert(plugin.id.clone(), plugin);
+        }
     }
+    if agent_id == "codex" {
+        for (id, enabled) in enabled_plugins {
+            out.entry(id.clone()).or_insert_with(|| {
+                let (name, marketplace) = split_plugin_config_key(&id);
+                PluginStatus {
+                    id,
+                    name,
+                    version: None,
+                    enabled,
+                    source: marketplace.map(|source| format!("codex-plugin:{source}")),
+                }
+            });
+        }
+    }
+    let mut out = out.into_values().collect::<Vec<_>>();
     out.sort_by_key(|plugin| plugin.name.to_lowercase());
     out
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PluginLocation {
+    pub root: PathBuf,
+    pub manifest: Option<PathBuf>,
+}
+
+pub(crate) fn find_plugin_location(
+    svc: &Service,
+    agent_id: &str,
+    plugin: &PluginStatus,
+) -> Option<PluginLocation> {
+    match agent_id {
+        "claude-code" => find_manifest_plugin_location(
+            &svc.home.join(".claude/plugins/cache"),
+            ".claude-plugin",
+            plugin,
+        ),
+        "codex" => find_manifest_plugin_location(
+            &svc.home.join(".codex/plugins/cache"),
+            ".codex-plugin",
+            plugin,
+        ),
+        "workbuddy" => find_manifest_plugin_location(
+            &svc.home.join(".workbuddy/plugins/marketplaces"),
+            ".codebuddy-plugin",
+            plugin,
+        ),
+        "zcode" => find_manifest_plugin_location(
+            &svc.home.join(".zcode/cli/plugins/cache"),
+            ".zcode-plugin",
+            plugin,
+        ),
+        "kimi" => find_kimi_plugin_location(svc, plugin),
+        _ => None,
+    }
+}
+
+fn find_manifest_plugin_location(
+    cache: &Path,
+    marker_dir: &str,
+    plugin: &PluginStatus,
+) -> Option<PluginLocation> {
+    let (requested_id, requested_source) = split_plugin_config_key(&plugin.id);
+    let manifest = plugin_manifests(cache, marker_dir)
+        .into_iter()
+        .filter_map(|manifest| {
+            let info = read_plugin_manifest_info(cache, &manifest)?;
+            if info.id != requested_id {
+                return None;
+            }
+            if requested_source
+                .as_deref()
+                .is_some_and(|source| info.source.as_deref() != Some(source))
+            {
+                return None;
+            }
+            let exact_version = plugin
+                .version
+                .as_deref()
+                .is_some_and(|version| info.version.as_deref() == Some(version));
+            Some((exact_version, info.version.unwrap_or_default(), manifest))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        .map(|(_, _, manifest)| manifest)?;
+    let root = manifest.parent()?.parent()?.to_path_buf();
+    Some(PluginLocation {
+        root,
+        manifest: Some(manifest),
+    })
+}
+
+fn find_kimi_plugin_location(svc: &Service, plugin: &PluginStatus) -> Option<PluginLocation> {
+    let kimi_home = crate::skills::agent_paths::kimi_code_home_for(&svc.home);
+    let installed = std::fs::read_to_string(kimi_home.join("plugins/installed.json")).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&installed).ok()?;
+    let entry = value
+        .get("plugins")
+        .and_then(|plugins| plugins.as_array())?
+        .iter()
+        .find(|entry| entry.get("id").and_then(|id| id.as_str()) == Some(&plugin.id))?;
+    let configured_root = entry.get("root").and_then(|root| root.as_str())?;
+    let root = PathBuf::from(configured_root);
+    let root = if root.is_absolute() {
+        root
+    } else {
+        kimi_home.join(root)
+    };
+    let manifest = [
+        root.join("kimi.plugin.json"),
+        root.join(".kimi-plugin/plugin.json"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file());
+    Some(PluginLocation { root, manifest })
 }
 
 fn read_zcode_plugins(svc: &Service) -> Vec<PluginStatus> {

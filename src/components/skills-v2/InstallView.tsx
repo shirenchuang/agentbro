@@ -2141,7 +2141,7 @@ function sharedAgentInventory(agents: AgentSkillInventoryAgent[]) {
 }
 
 function localSkillCount(agent: AgentSkillInventoryAgent) {
-  return agent.managedCount + agent.unmanagedCount
+  return agent.managedCount + agent.unmanagedCount + (agent.readOnlyCount ?? 0)
 }
 
 function pluralSkill(count: number) {
@@ -2302,7 +2302,7 @@ export function AgentSyncPanel({ onDone }: { onDone: InstallDoneHandler }) {
   }, [q])
 
   const pendingRows = useMemo(
-    () => allRows.filter(({ item }) => !item.managed || item.status === 'conflict'),
+    () => allRows.filter(({ item }) => (!item.managed && !item.readOnly) || item.status === 'conflict'),
     [allRows],
   )
   const baseRows = showManaged ? allRows : pendingRows
@@ -3310,7 +3310,7 @@ function AgentSkillDetailBody({ agent, item }: { agent: AgentSkillInventoryAgent
   ]
   const reason = unmanagedReasonLabel(t, item.reason)
   const mode = item.actualMode ? skillModeLabel(t, item.actualMode) : ''
-  const docDescription = extractSkillDescription(doc.content) || reason
+  const docDescription = extractSkillDescription(doc.content)
 
   useEffect(() => {
     let alive = true

@@ -418,7 +418,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         .first()
         .map(|path| path.display().to_string());
     let (installed_version, latest_version) = if installed {
-        version_info_for(&meta, include_latest).await
+        version_info_for(&meta, app_path.as_deref(), include_latest).await
     } else {
         (None, None)
     };
@@ -462,8 +462,16 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
 
 async fn version_info_for(
     meta: &ProgramMetadata,
+    app_path: Option<&str>,
     include_latest: bool,
 ) -> (Option<String>, Option<String>) {
+    if meta.kind == AgentProgramKind::App {
+        let installed = match app_path {
+            Some(path) => app_installed_version(path).await,
+            None => None,
+        };
+        return (installed, None);
+    }
     if meta.package_manager != Some("npm") {
         return (None, None);
     }
@@ -477,6 +485,33 @@ async fn version_info_for(
     let (installed, latest) =
         tokio::join!(npm_installed_version(package), npm_latest_version(package),);
     (installed, latest)
+}
+
+async fn app_installed_version(app_path: &str) -> Option<String> {
+    let info_plist = Path::new(app_path).join("Contents").join("Info.plist");
+    for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
+        let output = timeout(
+            Duration::from_secs(2),
+            Command::new("/usr/bin/plutil")
+                .args(["-extract", key, "raw", "-o", "-"])
+                .arg(&info_plist)
+                .output(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        if let Some(version) = String::from_utf8(output.stdout)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(version);
+        }
+    }
+    None
 }
 
 async fn npm_installed_version(package: &str) -> Option<String> {
@@ -1803,6 +1838,32 @@ mod tests {
             doubao.download_url,
             Some("https://www.doubao.com/download/desktop")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reads_the_installed_version_from_an_app_info_plist() {
+        let root =
+            std::env::temp_dir().join(format!("agentbro-app-version-{}", uuid::Uuid::new_v4()));
+        let app = root.join("Doubao.app");
+        let contents = app.join("Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        std::fs::write(
+            contents.join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>2.19.9</string>
+</dict></plist>"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            app_installed_version(&app.display().to_string()).await,
+            Some("2.19.9".to_string())
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

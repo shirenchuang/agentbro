@@ -3823,6 +3823,47 @@ async fn cancel_mcp_inspection_cmd(inspection_id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+async fn call_mcp_tool_cmd(
+    agent: String,
+    server_name: String,
+    operation_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+) -> Result<skills::mcp_management::McpOperationResult, String> {
+    skills::mcp_management::call_mcp_tool(
+        &agent,
+        &server_name,
+        &operation_id,
+        &tool_name,
+        arguments,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn get_mcp_prompt_cmd(
+    agent: String,
+    server_name: String,
+    operation_id: String,
+    prompt_name: String,
+    arguments: serde_json::Value,
+) -> Result<skills::mcp_management::McpOperationResult, String> {
+    skills::mcp_management::get_mcp_prompt(
+        &agent,
+        &server_name,
+        &operation_id,
+        &prompt_name,
+        arguments,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn cancel_mcp_operation_cmd(operation_id: String) -> Result<(), String> {
+    skills::mcp_management::cancel_mcp_operation(&operation_id)
+}
+
+#[tauri::command]
 async fn toggle_skill_cmd(skill_id: String, agent: String, enabled: bool) -> Result<(), String> {
     skills::installer::toggle_skill(&skill_id, &agent, enabled)
 }
@@ -6059,6 +6100,9 @@ pub fn run() {
             test_mcp_server_connection_cmd,
             inspect_mcp_server_cmd,
             cancel_mcp_inspection_cmd,
+            call_mcp_tool_cmd,
+            get_mcp_prompt_cmd,
+            cancel_mcp_operation_cmd,
             toggle_skill_cmd,
             read_skill_files,
             read_skill_file_content,
@@ -6155,6 +6199,7 @@ pub fn run() {
             skills::v2::commands::preview_adopt_agent_skill,
             skills::v2::commands::execute_adopt_agent_skill,
             skills::v2::commands::execute_adopt_agent_skills,
+            skills::v2::commands::takeover_center_agent_skills,
             skills::v2::commands::delete_unmanaged_agent_skill,
             skills::v2::commands::delete_unmanaged_agent_skills,
             skills::v2::commands::preview_sync_copy_target,
@@ -6178,6 +6223,12 @@ pub fn run() {
             skills::v2::commands::execute_move_direct_skill_to_pack,
             skills::v2::commands::list_managed_agents_v2,
             skills::v2::commands::get_agent_detail_v2,
+            skills::v2::commands::read_agent_config_file_v2,
+            skills::v2::commands::write_agent_config_file_v2,
+            skills::v2::commands::list_plugin_inventory_v2,
+            skills::v2::commands::get_plugin_detail_v2,
+            skills::v2::commands::read_plugin_file_v2,
+            skills::v2::commands::set_plugin_enabled_v2,
             skills::v2::commands::list_unmanaged_v2,
             skills::v2::commands::list_agent_skill_inventory_v2,
             skills::v2::commands::list_skill_projects_v2,

@@ -1374,7 +1374,7 @@ fn apply_pack_is_idempotent() {
 }
 
 #[test]
-fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
+fn moving_direct_skill_to_pack_only_replaces_the_current_skill_claim() {
     let (_home, svc, _lock) = fresh_service("move-direct-to-pack");
     let direct = write_skill(&svc.home.join("s"), "direct", "direct-skill", Some("v1"));
     let companion = write_skill(
@@ -1421,6 +1421,12 @@ fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
     let target_id = target.id.clone();
     let target_path = Path::new(&target.target_path);
     fs::write(target_path.join("reference.md"), "agent-local-change").unwrap();
+    let unmanaged_companion = write_skill(
+        &svc.home.join(".codex/skills"),
+        "companion-skill",
+        "companion-skill",
+        Some("unmanaged-agent-version"),
+    );
 
     let preview = svc
         .preview_move_direct_skill_to_pack(&target_id, "daily-pack")
@@ -1429,7 +1435,7 @@ fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
     assert!(!preview.already_applied);
     assert_eq!(preview.other_member_count, 1);
     assert!(preview.distribution.blockers.is_empty());
-    assert_eq!(preview.distribution.skill_ids, vec!["companion-skill"]);
+    assert!(preview.distribution.skill_ids.is_empty());
     svc.db
         .with_conn(|connection| {
             connection
@@ -1476,19 +1482,20 @@ fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
         moved.targets[0].claims[0].pack_id.as_deref(),
         Some("daily-pack")
     );
-    let installed_companion = svc.get_skill_detail("companion-skill").unwrap();
-    assert!(installed_companion.targets.iter().any(|installed| {
-        installed.agent_id == "codex"
-            && installed
-                .claims
-                .iter()
-                .any(|claim| claim.pack_id.as_deref() == Some("daily-pack"))
-    }));
+    assert!(svc
+        .get_skill_detail("companion-skill")
+        .unwrap()
+        .targets
+        .is_empty());
+    assert_eq!(
+        fs::read_to_string(unmanaged_companion.join("reference.md")).unwrap(),
+        "unmanaged-agent-version"
+    );
 
     let revoked = svc
         .remove_skill_pack_from_agent("daily-pack", "codex")
         .unwrap();
-    assert_eq!(revoked.removed_targets, 2);
+    assert_eq!(revoked.removed_targets, 1);
     assert!(svc
         .get_skill_detail("direct-skill")
         .unwrap()
@@ -1499,6 +1506,7 @@ fn moving_direct_skill_to_pack_replaces_claim_and_applies_pack() {
         .unwrap()
         .targets
         .is_empty());
+    assert!(unmanaged_companion.exists());
 }
 
 #[test]
@@ -3110,6 +3118,164 @@ fn adopt_conflict_can_use_center_as_source_of_truth() {
 
 #[test]
 #[cfg(unix)]
+fn one_click_takeover_links_center_skills_and_preserves_other_unmanaged_skills() {
+    let (_home, svc, _lock) = fresh_service("one-click-center-takeover");
+    for (skill_id, content) in [("same-skill", "shared"), ("conflict-skill", "center")] {
+        let source = write_skill(
+            &svc.home.join("incoming"),
+            skill_id,
+            skill_id,
+            Some(content),
+        );
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: source.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    let agent_root = svc.home.join(".zcode/skills");
+    let same = write_skill(&agent_root, "same-skill", "same-skill", Some("shared"));
+    let conflict = write_skill(
+        &agent_root,
+        "conflict-skill",
+        "conflict-skill",
+        Some("agent"),
+    );
+    let local_only = write_skill(&agent_root, "local-only", "local-only", Some("agent-only"));
+    svc.refresh().unwrap();
+
+    let unmanaged = svc.list_unmanaged().unwrap();
+    let id_for = |skill_id: &str| {
+        unmanaged
+            .iter()
+            .find(|item| item.inferred_skill_id.as_deref() == Some(skill_id))
+            .map(|item| item.id.clone())
+            .unwrap()
+    };
+    let same_id = id_for("same-skill");
+    let conflict_id = id_for("conflict-skill");
+    let local_only_id = id_for("local-only");
+
+    let wrong_agent = svc
+        .takeover_center_agent_skills("codex", vec![same_id.clone()])
+        .unwrap();
+    assert!(wrong_agent.items[0].skill_id.is_none());
+    assert!(wrong_agent.items[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("does not belong to agent")));
+    assert!(same.is_dir());
+    assert!(!same.is_symlink());
+
+    let result = svc
+        .takeover_center_agent_skills(
+            "zcode",
+            vec![same_id.clone(), conflict_id.clone(), local_only_id.clone()],
+        )
+        .unwrap();
+
+    assert_eq!(result.items.len(), 3);
+    assert_eq!(result.items[0].skill_id.as_deref(), Some("same-skill"));
+    assert_eq!(result.items[1].skill_id.as_deref(), Some("conflict-skill"));
+    assert!(result.items[2].skill_id.is_none());
+    assert!(result.items[2]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("not present in the center library")));
+    assert!(same.is_symlink());
+    assert!(conflict.is_symlink());
+    assert!(!local_only.is_symlink());
+    assert_eq!(
+        fs::read_to_string(conflict.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        fs::read_to_string(local_only.join("reference.md")).unwrap(),
+        "agent-only"
+    );
+    assert!(!svc.center_path().unwrap().join("local-only").exists());
+    assert_eq!(
+        svc.get_skill_detail("same-skill").unwrap().targets[0].actual_mode,
+        "link"
+    );
+    assert_eq!(
+        svc.get_skill_detail("conflict-skill").unwrap().targets[0].actual_mode,
+        "link"
+    );
+    let remaining = svc.list_unmanaged().unwrap();
+    assert!(remaining.iter().any(|item| item.id == local_only_id));
+    assert!(remaining.iter().all(|item| item.id != same_id));
+    assert!(remaining.iter().all(|item| item.id != conflict_id));
+}
+
+#[test]
+#[cfg(unix)]
+fn one_click_takeover_never_recreates_a_missing_center_skill_from_the_agent_copy() {
+    let (_home, svc, _lock) = fresh_service("one-click-missing-center");
+    let source = write_skill(
+        &svc.home.join("incoming"),
+        "center-missing",
+        "center-missing",
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let center = svc.center_path().unwrap().join("center-missing");
+    fs::remove_dir_all(&center).unwrap();
+    let agent = write_skill(
+        &svc.home.join(".zcode/skills"),
+        "center-missing",
+        "center-missing",
+        Some("agent"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == agent.display().to_string())
+        .unwrap();
+
+    let result = svc
+        .takeover_center_agent_skills("zcode", vec![unmanaged.id])
+        .unwrap();
+
+    assert!(result.items[0].skill_id.is_none());
+    assert!(result.items[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("unavailable on disk")));
+    assert!(agent.is_dir());
+    assert!(!agent.is_symlink());
+    assert_eq!(
+        fs::read_to_string(agent.join("reference.md")).unwrap(),
+        "agent"
+    );
+    assert!(!center.exists());
+}
+
+#[test]
+#[cfg(unix)]
 fn adopt_import_keep_preserves_symlink_mode_and_reports_resolved_path() {
     let (_home, svc, _lock) = fresh_service("adopt-keep-symlink");
     let source = write_skill(
@@ -3292,6 +3458,86 @@ fn agent_inventory_includes_unmanaged_agent_skill_items() {
     assert!(codex.items.iter().any(|item| {
         !item.managed && item.path == rogue.display().to_string() && item.status == "unmanaged"
     }));
+}
+
+#[test]
+fn doubao_scans_builtin_skills_as_read_only_and_keeps_user_skills_manageable() {
+    let (_home, svc, _lock) = fresh_service("doubao-builtin-skills");
+    let user_skill = write_skill(
+        &svc.home.join("Doubao/skills"),
+        "my-doubao-skill",
+        "my-doubao-skill",
+        Some("user"),
+    );
+    let builtin_skill = write_skill(
+        &svc.home.join(
+            "Library/Application Support/Doubao/Default/.doubao/agent_mode/workspace/.skills",
+        ),
+        "browser-task",
+        "browser-task",
+        Some("builtin"),
+    );
+
+    let scan = svc.scan_one_agent_into_db("doubao").unwrap();
+    assert_eq!(scan.managed, 0);
+    assert_eq!(scan.unmanaged, 1);
+    assert_eq!(scan.read_only, 1);
+
+    let items = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .filter(|item| item.agent_id.as_deref() == Some("doubao"))
+        .collect::<Vec<_>>();
+    let user_item = items
+        .iter()
+        .find(|item| item.path == user_skill.display().to_string())
+        .expect("user skill");
+    assert!(!user_item.read_only);
+    let builtin_item = items
+        .iter()
+        .find(|item| item.path == builtin_skill.display().to_string())
+        .expect("builtin skill");
+    assert!(builtin_item.read_only);
+    assert_eq!(builtin_item.reason, "agent_builtin_read_only");
+
+    let summary = svc
+        .list_managed_agents()
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.id == "doubao")
+        .expect("doubao summary");
+    assert_eq!(
+        summary.skills_dir,
+        Some(svc.home.join("Doubao/skills").display().to_string())
+    );
+    assert_eq!(summary.unmanaged_skill_count, 1);
+    assert_eq!(summary.read_only_skill_count, 1);
+
+    let inventory = svc
+        .list_agent_skill_inventory()
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.agent_id == "doubao")
+        .expect("doubao inventory");
+    assert_eq!(inventory.unmanaged_count, 1);
+    assert_eq!(inventory.read_only_count, 1);
+    assert!(inventory.items.iter().any(|item| {
+        item.path == builtin_skill.display().to_string()
+            && item.read_only
+            && !item.can_import
+            && item.status == "builtin_read_only"
+    }));
+
+    let adopt_error = svc
+        .preview_adopt_agent_skill("doubao", &builtin_item.id)
+        .expect_err("built-in skills cannot be adopted");
+    assert!(adopt_error.contains("read-only"));
+    let delete_error = svc
+        .delete_unmanaged_agent_skill("doubao", &builtin_item.id)
+        .expect_err("built-in skills cannot be deleted");
+    assert!(delete_error.contains("read-only"));
+    assert!(builtin_skill.exists());
 }
 
 #[test]
@@ -3525,6 +3771,148 @@ enabled = false
         .plugins
         .iter()
         .any(|plugin| plugin.id == "archived@openai-curated" && !plugin.enabled));
+}
+
+#[test]
+fn codex_plugin_inventory_ignores_cache_only_plugins_and_toggles_safely() {
+    let (_home, svc, _lock) = fresh_service("codex-plugin-management");
+    let codex_dir = svc.home.join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(
+        codex_dir.join("config.toml"),
+        r#"[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."archived@openai-curated"]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    for (source, id, version) in [
+        ("openai-primary-runtime", "documents", "26.723.12215"),
+        ("openai-curated", "archived", "0.1.0"),
+        ("openai-curated", "cached-only", "0.2.0"),
+    ] {
+        let manifest = codex_dir.join(format!(
+            "plugins/cache/{source}/{id}/{version}/.codex-plugin/plugin.json"
+        ));
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "name": id,
+                "version": version,
+                "description": format!("{id} plugin description"),
+                "author": { "name": "AgentBro Test" },
+                "interface": { "displayName": id }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        if id == "documents" {
+            let root = manifest.parent().unwrap().parent().unwrap();
+            fs::create_dir_all(root.join("skills/documents")).unwrap();
+            fs::write(root.join("skills/documents/SKILL.md"), "test").unwrap();
+        }
+    }
+
+    let inventory = crate::skills::plugin_management::list_plugins(&svc, "codex").unwrap();
+    assert_eq!(inventory.plugins.len(), 2);
+    assert!(inventory
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "documents@openai-primary-runtime" && plugin.enabled));
+    assert!(!inventory
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "cached-only@openai-curated"));
+
+    let detail = crate::skills::plugin_management::get_plugin_detail(
+        &svc,
+        "codex",
+        "documents@openai-primary-runtime",
+    )
+    .unwrap();
+    assert_eq!(
+        detail.description.as_deref(),
+        Some("documents plugin description")
+    );
+    assert_eq!(detail.author.as_deref(), Some("AgentBro Test"));
+    assert!(detail
+        .install_path
+        .as_deref()
+        .is_some_and(|path| path.ends_with("documents/26.723.12215")));
+    assert!(detail.file_count >= 4);
+    assert!(detail.files.is_some());
+
+    let updated = crate::skills::plugin_management::set_plugin_enabled(
+        &svc,
+        "codex",
+        "documents@openai-primary-runtime",
+        &inventory.revision,
+        false,
+    )
+    .unwrap();
+    assert!(updated
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "documents@openai-primary-runtime" && !plugin.enabled));
+    let config = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
+    assert_eq!(
+        crate::skills::codex_config::parse_plugin_enabled_config(&config)
+            .get("documents@openai-primary-runtime"),
+        Some(&false)
+    );
+}
+
+#[test]
+fn claude_plugin_inventory_toggles_the_source_qualified_config_key() {
+    let (_home, svc, _lock) = fresh_service("claude-plugin-management");
+    let claude_dir = svc.home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "enabledPlugins": {
+                "reviewer@agentbro": true
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let manifest =
+        claude_dir.join("plugins/cache/agentbro/reviewer/1.2.3/.claude-plugin/plugin.json");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    fs::write(
+        manifest,
+        serde_json::json!({
+            "name": "reviewer",
+            "displayName": "Reviewer Tools",
+            "version": "1.2.3"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let inventory = crate::skills::plugin_management::list_plugins(&svc, "claude-code").unwrap();
+    assert!(inventory
+        .plugins
+        .iter()
+        .any(|plugin| plugin.id == "reviewer@agentbro" && plugin.enabled));
+    crate::skills::plugin_management::set_plugin_enabled(
+        &svc,
+        "claude-code",
+        "reviewer@agentbro",
+        &inventory.revision,
+        false,
+    )
+    .unwrap();
+
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["enabledPlugins"]["reviewer@agentbro"], false);
 }
 
 #[test]

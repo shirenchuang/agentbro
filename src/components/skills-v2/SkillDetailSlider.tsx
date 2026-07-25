@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AnchorHTMLAttributes, MouseEvent, RefObject, UIEvent } from 'react'
+import type { MouseEvent, RefObject, UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { isTauri } from '../../services/tauriApi'
 import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
 import { PreviewDialog } from './PreviewDialog'
+import { isMarkdownPath } from './filePreview'
 import { extractSkillDescription as extractFrontmatterDescription, stripSkillFrontmatter as stripFrontmatter } from './frontmatter'
+import { MarkdownContent } from './MarkdownContent'
 
 type DetailTab = 'overview' | 'files' | 'agents' | 'source'
 type FileViewMode = 'preview' | 'source'
@@ -23,12 +21,14 @@ export interface SkillDetailFallback {
   name: string
   centerPath: string
   description?: string
+  currentHash?: string | null
   sourceType?: string
   sourceUri?: string | null
 }
 
 const STATUS_LABEL: Record<string, string> = {
   ok: '正常',
+  unmanaged: '未管理',
   conflict: '冲突',
   copy_outdated: '可更新',
   copy_modified: '已修改',
@@ -36,10 +36,6 @@ const STATUS_LABEL: Record<string, string> = {
   broken_link: '坏链接',
   missing: '失效',
   copyDiverged: '副本分叉',
-}
-
-const markdownComponents = {
-  a: MarkdownLink,
 }
 
 export function SkillDetailSlider({
@@ -546,8 +542,8 @@ function OverviewTab({
             <div className="sm2__empty sm2__empty--compact">读取说明文档…</div>
           ) : docContent ? (
             <>
-              <SkillFrontmatterIntro description={detail.frontmatter.description || detail.description} />
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{stripFrontmatter(docContent)}</ReactMarkdown>
+              <SkillFrontmatterIntro description={extractFrontmatterDescription(docContent) || detail.frontmatter.description || detail.description} />
+              <MarkdownContent content={stripFrontmatter(docContent)} />
             </>
           ) : (
             <div className="sm2__empty sm2__empty--compact">未找到说明文档</div>
@@ -594,7 +590,7 @@ function OverviewTab({
             {linkedCenter && detail.centerResolvedPath && (
               <CompactInfo label="真实源目录" value={detail.centerResolvedPath} mono />
             )}
-            <CompactInfo label="Hash" value={detail.currentHash} mono short />
+            {detail.currentHash && <CompactInfo label="Hash" value={detail.currentHash} mono short />}
           </div>
         </section>
 
@@ -691,7 +687,7 @@ function FilesTab({
                 {isSkillMarkdownPath(activeFile) && (
                   <SkillFrontmatterIntro description={extractFrontmatterDescription(fileContent)} compact />
                 )}
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{stripFrontmatter(fileContent || '（空）')}</ReactMarkdown>
+                <MarkdownContent content={stripFrontmatter(fileContent || '（空）')} />
               </div>
             ) : (
               <pre className="sm2__fileview-content selectable">{fileContent || '（空）'}</pre>
@@ -1321,31 +1317,6 @@ function CompactInfo({
   )
 }
 
-function MarkdownLink({ href, children, onClick, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
-  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    onClick?.(event)
-    if (event.defaultPrevented || !href || href.startsWith('#')) return
-    event.preventDefault()
-    openMarkdownHref(href)
-  }
-
-  return (
-    <a {...props} href={href} target="_blank" rel="noreferrer" onClick={handleClick}>
-      {children}
-    </a>
-  )
-}
-
-function openMarkdownHref(href: string) {
-  const target = href.trim()
-  if (!target || /^javascript:/i.test(target)) return
-  if (isTauri()) {
-    openShell(target).catch((err) => console.warn('[skills] open markdown link:', err))
-  } else {
-    window.open(target, '_blank', 'noopener,noreferrer')
-  }
-}
-
 function findFile(node: FileTreeNode | null, name: string): string | null {
   if (!node) return null
   if (node.name === name && node.nodeType === 'file') return node.path
@@ -1375,10 +1346,6 @@ function relativeFilePath(path: string, root: string): string {
   const prefix = `${normalizedRoot}/`
   if (normalizedPath.startsWith(prefix)) return normalizedPath.slice(prefix.length)
   return normalizedPath
-}
-
-function isMarkdownPath(path: string | null): boolean {
-  return Boolean(path && /\.(md|mdx|markdown)$/i.test(path))
 }
 
 function isSkillMarkdownPath(path: string | null): boolean {
@@ -1416,12 +1383,12 @@ function fallbackToSkillDetail(fallback: SkillDetailFallback): SkillDetail {
   return {
     id: fallback.id,
     name: fallback.name,
-    description: fallback.description || '这个 Skill 尚未接管到中心库，只能预览本地说明文档。',
+    description: fallback.description || '',
     skillType: 'skill',
     sourceType: fallback.sourceType || 'unmanaged_agent',
     sourceUri: fallback.sourceUri || fallback.centerPath,
     centerPath: fallback.centerPath,
-    currentHash: 'unmanaged',
+    currentHash: fallback.currentHash || '',
     status: 'unmanaged',
     installedAgents: [],
     frontmatter: {},

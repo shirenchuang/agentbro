@@ -19,6 +19,8 @@ const MCP_PROTOCOL_FALLBACKS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 const MCP_TEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MCP_INSPECTION_TIMEOUT: Duration = Duration::from_secs(20);
 const MCP_INSPECTION_STEP_TIMEOUT: Duration = Duration::from_secs(5);
+const MCP_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_OPERATION_MAX_RESULT_BYTES: usize = 2 * 1024 * 1024;
 const MCP_INSPECTION_MAX_PAGES: usize = 10;
 const MCP_INSPECTION_MAX_ITEMS: usize = 500;
 const REDACTED_VALUE: &str = "••••••••";
@@ -146,6 +148,8 @@ pub struct McpInspectionTool {
     pub title: Option<String>,
     pub description: Option<String>,
     pub inputs: Vec<McpInspectionInput>,
+    pub input_schema: Value,
+    pub output_schema: Option<Value>,
     pub annotations: McpInspectionToolAnnotations,
     pub has_annotations: bool,
 }
@@ -207,6 +211,18 @@ pub struct McpInspectionReport {
     pub steps: Vec<McpInspectionStep>,
     pub warnings: Vec<String>,
     pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOperationResult {
+    pub operation_id: String,
+    pub kind: String,
+    pub name: String,
+    pub category: String,
+    pub duration_ms: u64,
+    pub result: Value,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1622,7 +1638,7 @@ fn remove_codex_server_sections(content: &str, server_name: &str) -> (String, bo
     (next, removed)
 }
 
-fn validate_toml_shape(content: &str) -> Result<(), String> {
+pub(crate) fn validate_toml_shape(content: &str) -> Result<(), String> {
     let mut brackets = 0isize;
     for line in content.lines() {
         let clean = strip_toml_comment(line);
@@ -1997,6 +2013,202 @@ pub fn cancel_mcp_inspection(inspection_id: &str) -> Result<(), String> {
         signal.notify_one();
     }
     Ok(())
+}
+
+pub fn cancel_mcp_operation(operation_id: &str) -> Result<(), String> {
+    cancel_mcp_inspection(operation_id)
+}
+
+pub async fn call_mcp_tool(
+    agent_id: &str,
+    server_name: &str,
+    operation_id: &str,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<McpOperationResult, String> {
+    if tool_name.trim().is_empty() {
+        return Err("MCP tool name is required".to_string());
+    }
+    if !arguments.is_object() {
+        return Err("MCP tool arguments must be a JSON object".to_string());
+    }
+    run_mcp_operation(
+        agent_id,
+        server_name,
+        operation_id,
+        "tool",
+        tool_name,
+        "tools/call",
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": arguments,
+        }),
+    )
+    .await
+}
+
+pub async fn get_mcp_prompt(
+    agent_id: &str,
+    server_name: &str,
+    operation_id: &str,
+    prompt_name: &str,
+    arguments: Value,
+) -> Result<McpOperationResult, String> {
+    if prompt_name.trim().is_empty() {
+        return Err("MCP prompt name is required".to_string());
+    }
+    if !arguments.is_object() {
+        return Err("MCP prompt arguments must be a JSON object".to_string());
+    }
+    run_mcp_operation(
+        agent_id,
+        server_name,
+        operation_id,
+        "prompt",
+        prompt_name,
+        "prompts/get",
+        serde_json::json!({
+            "name": prompt_name,
+            "arguments": arguments,
+        }),
+    )
+    .await
+}
+
+async fn run_mcp_operation(
+    agent_id: &str,
+    server_name: &str,
+    operation_id: &str,
+    kind: &str,
+    name: &str,
+    method: &str,
+    params: Value,
+) -> Result<McpOperationResult, String> {
+    let config = config_for_agent(agent_id)
+        .ok_or_else(|| format!("Agent {agent_id} does not support MCP operations"))?;
+    let active = read_active_servers(&config)?;
+    let disabled = read_disabled_servers(agent_id)?;
+    let server = active
+        .get(server_name)
+        .or_else(|| disabled.get(server_name))
+        .ok_or_else(|| format!("MCP server not found: {server_name}"))?;
+    let validation =
+        validate_mcp_server_draft_inner(&config, &server.draft, Some(server_name), &HashSet::new());
+    if !validation.valid {
+        return Err(redact_message(&validation.message, &server.draft));
+    }
+
+    let signal = Arc::new(Notify::new());
+    {
+        let mut cancellations = inspection_cancellations()
+            .lock()
+            .map_err(|_| "MCP operation cancellation state is unavailable".to_string())?;
+        if let Some(previous) = cancellations.insert(operation_id.to_string(), signal.clone()) {
+            previous.notify_one();
+        }
+    }
+
+    let started = Instant::now();
+    let result = tokio::select! {
+        _ = signal.notified() => Err("MCP operation cancelled".to_string()),
+        result = tokio::time::timeout(
+            MCP_OPERATION_TIMEOUT,
+            perform_mcp_operation(
+                operation_id,
+                kind,
+                name,
+                method,
+                params,
+                &server.draft,
+                validation.warnings,
+            ),
+        ) => match result {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => Err(redact_message(&error.message, &server.draft)),
+            Err(_) => Err(format!(
+                "MCP operation timed out after {} seconds",
+                MCP_OPERATION_TIMEOUT.as_secs()
+            )),
+        },
+    };
+
+    if let Ok(mut cancellations) = inspection_cancellations().lock() {
+        cancellations.remove(operation_id);
+    }
+    result.map(|mut result| {
+        result.duration_ms = elapsed_ms(started);
+        result
+    })
+}
+
+async fn perform_mcp_operation(
+    operation_id: &str,
+    kind: &str,
+    name: &str,
+    method: &str,
+    params: Value,
+    draft: &McpServerDraft,
+    mut warnings: Vec<String>,
+) -> Result<McpOperationResult, TestFailure> {
+    let started = Instant::now();
+    let mut session = open_inspection_session(draft).await?;
+    let initialize = match initialize_inspection_session(&mut session).await {
+        Ok(value) => value,
+        Err(error) if error.category == "legacy_sse_required" => {
+            session.shutdown().await?;
+            session = open_legacy_inspection_session(draft).await?;
+            warnings.push("Streamable HTTP was unavailable; operation used legacy SSE".to_string());
+            initialize_inspection_session(&mut session).await?
+        }
+        Err(error) => return Err(error),
+    };
+    handshake_info(&initialize)?;
+    session.notify_initialized().await?;
+
+    let response = session.request(method, params).await;
+    if let Err(error) = session.shutdown().await {
+        warnings.push(redact_message(&error.message, draft));
+    }
+    let response = response?;
+    let result = response.get("result").cloned().ok_or_else(|| TestFailure {
+        category: "protocol_error",
+        message: format!("{method} response is missing a result"),
+    })?;
+    let result_size = serde_json::to_vec(&result)
+        .map_err(|error| TestFailure {
+            category: "protocol_error",
+            message: format!("Failed to encode MCP operation result: {error}"),
+        })?
+        .len();
+    if result_size > MCP_OPERATION_MAX_RESULT_BYTES {
+        return Err(TestFailure {
+            category: "response_too_large",
+            message: format!(
+                "MCP operation result exceeded the {} MB limit",
+                MCP_OPERATION_MAX_RESULT_BYTES / 1024 / 1024
+            ),
+        });
+    }
+    let category = if kind == "tool"
+        && result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        "tool_error"
+    } else {
+        "success"
+    };
+
+    Ok(McpOperationResult {
+        operation_id: operation_id.to_string(),
+        kind: kind.to_string(),
+        name: name.to_string(),
+        category: category.to_string(),
+        duration_ms: elapsed_ms(started),
+        result,
+        warnings,
+    })
 }
 
 pub async fn inspect_mcp_server(
@@ -2850,6 +3062,11 @@ fn normalize_inspection_tool(value: &Value) -> Option<McpInspectionTool> {
             .and_then(Value::as_str)
             .map(str::to_string),
         inputs,
+        input_schema: value
+            .get("inputSchema")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+        output_schema: value.get("outputSchema").cloned(),
         annotations: McpInspectionToolAnnotations {
             read_only: annotations
                 .and_then(|value| value.get("readOnlyHint"))
@@ -4244,6 +4461,48 @@ done"#
         }
     }
 
+    async fn fake_operation_mcp(Json(body): Json<Value>) -> Json<Value> {
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let result = match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => serde_json::json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {},
+                    "prompts": {}
+                },
+                "serverInfo": { "name": "fake-operation", "version": "1.0.0" }
+            }),
+            Some("tools/call") => serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": body.pointer("/params/arguments/query")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                }],
+                "structuredContent": {
+                    "received": body.pointer("/params/arguments/query")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                },
+                "isError": false
+            }),
+            Some("prompts/get") => serde_json::json!({
+                "description": "Generated preview",
+                "messages": [{
+                    "role": "user",
+                    "content": {
+                        "type": "text",
+                        "text": body.pointer("/params/arguments/topic")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    }
+                }]
+            }),
+            _ => Value::Null,
+        };
+        Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    }
+
     #[tokio::test]
     async fn streamable_http_test_initializes_and_lists_tools() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4299,11 +4558,84 @@ done"#
         assert_eq!(report.resources.len(), 1);
         assert_eq!(report.prompts.len(), 1);
         assert_eq!(report.tools[0].inputs[0].name, "query");
+        assert_eq!(
+            report.tools[0]
+                .input_schema
+                .pointer("/properties/query/type")
+                .and_then(Value::as_str),
+            Some("string")
+        );
         assert_eq!(report.tools[0].annotations.read_only, Some(true));
         assert!(report
             .warnings
             .iter()
             .any(|warning| warning.contains("risk annotations")));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn one_shot_operations_call_tools_and_preview_prompts() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", post(fake_operation_mcp)))
+                .await
+                .unwrap();
+        });
+        let draft = McpServerDraft {
+            name: "operations".to_string(),
+            transport: McpTransport::Http,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+            url: Some(format!("http://{address}/")),
+            headers: Vec::new(),
+        };
+
+        let tool = perform_mcp_operation(
+            "tool-operation",
+            "tool",
+            "echo",
+            "tools/call",
+            serde_json::json!({
+                "name": "echo",
+                "arguments": { "query": "hello" }
+            }),
+            &draft,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool.category, "success");
+        assert_eq!(
+            tool.result
+                .pointer("/structuredContent/received")
+                .and_then(Value::as_str),
+            Some("hello")
+        );
+
+        let prompt = perform_mcp_operation(
+            "prompt-operation",
+            "prompt",
+            "summarize",
+            "prompts/get",
+            serde_json::json!({
+                "name": "summarize",
+                "arguments": { "topic": "Blender" }
+            }),
+            &draft,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            prompt
+                .result
+                .pointer("/messages/0/content/text")
+                .and_then(Value::as_str),
+            Some("Blender")
+        );
         task.abort();
     }
 

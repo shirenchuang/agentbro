@@ -299,6 +299,7 @@ pub fn scan_agent_inventory(agent_id: String) -> Result<serde_json::Value, Strin
         "agentId": agent_id,
         "managed": result.managed,
         "unmanaged": result.unmanaged,
+        "readOnly": result.read_only,
     }))
 }
 
@@ -323,6 +324,14 @@ pub fn execute_adopt_agent_skill(
 #[tauri::command(async)]
 pub fn execute_adopt_agent_skills(items: Vec<AdoptBatchItem>) -> Result<AdoptBatchResult, String> {
     svc()?.execute_adopt_agent_skills(items)
+}
+
+#[tauri::command(async)]
+pub fn takeover_center_agent_skills(
+    agent_id: String,
+    unmanaged_ids: Vec<String>,
+) -> Result<AdoptBatchResult, String> {
+    svc()?.takeover_center_agent_skills(&agent_id, unmanaged_ids)
 }
 
 #[tauri::command(async)]
@@ -497,6 +506,72 @@ pub fn list_managed_agents_v2() -> Result<Vec<AgentSummary>, String> {
 #[tauri::command(async)]
 pub fn get_agent_detail_v2(agent_id: String) -> Result<AgentDetail, String> {
     Ok(svc()?.get_agent_detail(&agent_id)?)
+}
+
+#[tauri::command(async)]
+pub fn read_agent_config_file_v2(
+    agent_id: String,
+    path: String,
+) -> Result<crate::skills::config_file_editor::AgentConfigDocument, String> {
+    let service = svc()?;
+    crate::skills::config_file_editor::read_agent_config_file(&service, &agent_id, &path)
+}
+
+#[tauri::command(async)]
+pub fn write_agent_config_file_v2(
+    agent_id: String,
+    path: String,
+    content: String,
+    expected_revision: String,
+) -> Result<crate::skills::config_file_editor::AgentConfigDocument, String> {
+    let service = svc()?;
+    crate::skills::config_file_editor::write_agent_config_file(
+        &service,
+        &agent_id,
+        &path,
+        &content,
+        &expected_revision,
+    )
+}
+
+#[tauri::command(async)]
+pub fn list_plugin_inventory_v2(
+    agent_id: String,
+) -> Result<crate::skills::plugin_management::PluginInventory, String> {
+    let svc = svc()?;
+    crate::skills::plugin_management::list_plugins(&svc, &agent_id)
+}
+
+#[tauri::command(async)]
+pub fn get_plugin_detail_v2(
+    agent_id: String,
+    plugin_id: String,
+) -> Result<crate::skills::plugin_management::PluginDetail, String> {
+    let svc = svc()?;
+    crate::skills::plugin_management::get_plugin_detail(&svc, &agent_id, &plugin_id)
+}
+
+#[tauri::command(async)]
+pub fn read_plugin_file_v2(
+    agent_id: String,
+    plugin_id: String,
+    relative_path: String,
+) -> Result<crate::skills::plugin_management::PluginFileContent, String> {
+    let svc = svc()?;
+    crate::skills::plugin_management::read_plugin_file(&svc, &agent_id, &plugin_id, &relative_path)
+}
+
+#[tauri::command(async)]
+pub fn set_plugin_enabled_v2(
+    agent_id: String,
+    plugin_id: String,
+    revision: String,
+    enabled: bool,
+) -> Result<crate::skills::plugin_management::PluginInventory, String> {
+    let svc = svc()?;
+    crate::skills::plugin_management::set_plugin_enabled(
+        &svc, &agent_id, &plugin_id, &revision, enabled,
+    )
 }
 
 #[tauri::command(async)]

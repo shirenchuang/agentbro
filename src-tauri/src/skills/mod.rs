@@ -1,10 +1,12 @@
 pub mod agent_paths;
 pub mod codex_config;
+pub mod config_file_editor;
 pub mod explanation;
 pub mod frontmatter;
 pub mod installer;
 pub mod marketplace;
 pub mod mcp_management;
+pub mod plugin_management;
 pub mod registry;
 pub mod scanner;
 pub mod sync;

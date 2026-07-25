@@ -112,6 +112,7 @@ export interface AgentSummary {
   installed: boolean
   managedSkillCount: number
   unmanagedSkillCount: number
+  readOnlySkillCount?: number
 }
 
 export interface AgentSummaryLite {
@@ -268,6 +269,8 @@ export interface McpInspectionTool {
   title: string | null
   description: string | null
   inputs: McpInspectionInput[]
+  inputSchema: Record<string, unknown>
+  outputSchema: Record<string, unknown> | null
   annotations: McpInspectionToolAnnotations
   hasAnnotations: boolean
 }
@@ -321,12 +324,63 @@ export interface McpInspectionReport {
   suggestions: string[]
 }
 
+export interface McpOperationResult {
+  operationId: string
+  kind: 'tool' | 'prompt'
+  name: string
+  category: 'success' | 'tool_error'
+  durationMs: number
+  result: unknown
+  warnings: string[]
+}
+
 export interface PluginStatus {
   id: string
   name: string
   version: string | null
   enabled: boolean
   source: string | null
+}
+
+export interface PluginInventory {
+  agentId: string
+  configPath: string | null
+  revision: string
+  capabilities: {
+    editable: boolean
+    requiresNewSession: boolean
+  }
+  plugins: PluginStatus[]
+}
+
+export interface PluginFileNode {
+  name: string
+  nodeType: 'file' | 'directory' | 'symlink'
+  path: string
+  children: PluginFileNode[] | null
+  omittedCount: number | null
+}
+
+export interface PluginDetail extends PluginStatus {
+  description: string | null
+  author: string | null
+  homepage: string | null
+  license: string | null
+  installPath: string | null
+  manifestPath: string | null
+  files: PluginFileNode | null
+  fileCount: number
+  truncated: boolean
+}
+
+export interface PluginFileContent {
+  path: string
+  kind: 'text' | 'image' | 'binary'
+  mimeType: string | null
+  content: string | null
+  dataBase64: string | null
+  size: number
+  truncated: boolean
 }
 
 export interface AgentHealthIssue {
@@ -352,6 +406,12 @@ export interface AgentDetail {
   mcpServers: McpServerStatus[]
   plugins: PluginStatus[]
   health: AgentHealthIssue[]
+}
+
+export interface AgentConfigDocument {
+  path: string
+  content: string
+  revision: string
 }
 
 export interface SkillManagerOverview {
@@ -636,6 +696,7 @@ export interface UnmanagedItemDto {
   inferredSkillId: string | null
   hash: string | null
   reason: string
+  readOnly?: boolean
 }
 
 export interface AgentSkillInventoryItem {
@@ -645,6 +706,7 @@ export interface AgentSkillInventoryItem {
   name: string
   path: string
   managed: boolean
+  readOnly?: boolean
   canImport: boolean
   status: string
   statusLabel: string
@@ -662,6 +724,7 @@ export interface AgentSkillInventoryAgent {
   installed: boolean
   managedCount: number
   unmanagedCount: number
+  readOnlyCount?: number
   importableCount: number
   items: AgentSkillInventoryItem[]
 }
@@ -843,6 +906,19 @@ function demoMcpInventory(agent: string): McpInventory {
   }
 }
 
+function demoPluginInventory(agentId: string): PluginInventory {
+  return {
+    agentId,
+    configPath: null,
+    revision: 'demo-read-only',
+    capabilities: {
+      editable: false,
+      requiresNewSession: true,
+    },
+    plugins: [],
+  }
+}
+
 function demoMcpInspectionReport(
   serverName: string,
   inspectionId: string,
@@ -877,6 +953,17 @@ function demoMcpInspectionReport(
             required: true,
           },
         ],
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Search query',
+            },
+          },
+          required: ['query'],
+        },
+        outputSchema: null,
         annotations: {
           readOnly: true,
           destructive: false,
@@ -890,6 +977,11 @@ function demoMcpInspectionReport(
         title: 'Publish',
         description: 'Publish a prepared item.',
         inputs: [],
+        inputSchema: {
+          type: 'object',
+          additionalProperties: false,
+        },
+        outputSchema: null,
         annotations: {
           readOnly: false,
           destructive: true,
@@ -1087,7 +1179,9 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<DistributionPreview>('execute_distribute_skill', { preview }) : Promise.resolve(preview),
 
   scanAgentInventory: (agentId: string) =>
-    isTauriRuntime() ? invoke<{ agentId: string; managed: number; unmanaged: number }>('scan_agent_inventory', { agentId }) : Promise.resolve({ agentId, managed: 0, unmanaged: 0 }),
+    isTauriRuntime()
+      ? invoke<{ agentId: string; managed: number; unmanaged: number; readOnly?: number }>('scan_agent_inventory', { agentId })
+      : Promise.resolve({ agentId, managed: 0, unmanaged: 0, readOnly: 0 }),
 
   previewAdopt: (agentId: string, unmanagedId: string) =>
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
@@ -1098,6 +1192,13 @@ export const skillApiV2 = {
       ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items })
       : Promise.resolve({
         items: items.map((item) => ({ unmanagedId: item.unmanagedId, skillId: '', error: null })),
+        finalizationError: null,
+      }),
+  takeoverCenterSkills: (agentId: string, unmanagedIds: string[]) =>
+    isTauriRuntime()
+      ? invoke<AdoptBatchResult>('takeover_center_agent_skills', { agentId, unmanagedIds })
+      : Promise.resolve({
+        items: unmanagedIds.map((unmanagedId) => ({ unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
   deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
@@ -1157,6 +1258,40 @@ export const skillApiV2 = {
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
+  readAgentConfigFile: (agentId: string, path: string) =>
+    isTauriRuntime()
+      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })
+      : Promise.resolve({ path, content: '', revision: 'demo' }),
+  writeAgentConfigFile: (
+    agentId: string,
+    path: string,
+    content: string,
+    expectedRevision: string,
+  ) =>
+    isTauriRuntime()
+      ? invoke<AgentConfigDocument>('write_agent_config_file_v2', {
+          agentId,
+          path,
+          content,
+          expectedRevision,
+        })
+      : Promise.resolve({ path, content, revision: `${expectedRevision}-saved` }),
+  listPluginInventory: (agentId: string) =>
+    isTauriRuntime()
+      ? invoke<PluginInventory>('list_plugin_inventory_v2', { agentId })
+      : Promise.resolve(demoPluginInventory(agentId)),
+  getPluginDetail: (agentId: string, pluginId: string) =>
+    isTauriRuntime()
+      ? invoke<PluginDetail>('get_plugin_detail_v2', { agentId, pluginId })
+      : Promise.reject(new Error('Plugin details are only available in the AgentBro app.')),
+  readPluginFile: (agentId: string, pluginId: string, relativePath: string) =>
+    isTauriRuntime()
+      ? invoke<PluginFileContent>('read_plugin_file_v2', { agentId, pluginId, relativePath })
+      : Promise.reject(new Error('Plugin files are only available in the AgentBro app.')),
+  setPluginEnabled: (agentId: string, pluginId: string, revision: string, enabled: boolean) =>
+    isTauriRuntime()
+      ? invoke<PluginInventory>('set_plugin_enabled_v2', { agentId, pluginId, revision, enabled })
+      : Promise.resolve(demoPluginInventory(agentId)),
   listMcpInventory: (agent: string) =>
     isTauriRuntime()
       ? invoke<McpInventory>('list_mcp_inventory_cmd', { agent })
@@ -1206,6 +1341,64 @@ export const skillApiV2 = {
   cancelMcpInspection: (inspectionId: string) =>
     isTauriRuntime()
       ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId })
+      : Promise.resolve(),
+  callMcpTool: (
+    agent: string,
+    serverName: string,
+    operationId: string,
+    toolName: string,
+    argumentsValue: Record<string, unknown>,
+  ) =>
+    isTauriRuntime()
+      ? invoke<McpOperationResult>('call_mcp_tool_cmd', {
+        agent,
+        serverName,
+        operationId,
+        toolName,
+        arguments: argumentsValue,
+      })
+      : Promise.resolve({
+        operationId,
+        kind: 'tool' as const,
+        name: toolName,
+        category: 'success' as const,
+        durationMs: 24,
+        result: {
+          content: [{ type: 'text', text: 'Demo tool result' }],
+          isError: false,
+        },
+        warnings: [],
+      }),
+  getMcpPrompt: (
+    agent: string,
+    serverName: string,
+    operationId: string,
+    promptName: string,
+    argumentsValue: Record<string, string>,
+  ) =>
+    isTauriRuntime()
+      ? invoke<McpOperationResult>('get_mcp_prompt_cmd', {
+        agent,
+        serverName,
+        operationId,
+        promptName,
+        arguments: argumentsValue,
+      })
+      : Promise.resolve({
+        operationId,
+        kind: 'prompt' as const,
+        name: promptName,
+        category: 'success' as const,
+        durationMs: 18,
+        result: {
+          description: 'Demo prompt preview',
+          messages: [{ role: 'user', content: { type: 'text', text: 'Demo prompt message' } }],
+        },
+        warnings: [],
+      }),
+  cancelMcpOperation: (operationId: string) =>
+    isTauriRuntime()
+      ? invoke<void>('cancel_mcp_operation_cmd', { operationId })
       : Promise.resolve(),
   listUnmanaged: () => (isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
   listAgentSkillInventory: () =>
