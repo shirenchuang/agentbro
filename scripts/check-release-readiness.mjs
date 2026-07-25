@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -76,6 +77,38 @@ function countPresentEnv(names) {
   return names.filter((name) => process.env[name]?.trim()).length
 }
 
+function gitOutput(args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function stableVersion(value) {
+  const match = value.match(/^v?(\d+)\.(\d+)\.(\d+)$/)
+  return match ? match.slice(1).map(Number) : null
+}
+
+function compareVersions(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return 0
+}
+
+function latestStableTag() {
+  const override = process.env.RELEASE_CHECK_LATEST_STABLE_TAG?.trim()
+  if (override) return override
+  return gitOutput(['tag', '--list', 'v*', '--sort=-version:refname'])
+    .split(/\r?\n/)
+    .find((tag) => stableVersion(tag)) || ''
+}
+
 const pkg = readJson('package.json')
 const tauri = readJson('src-tauri/tauri.conf.json')
 const cargoToml = read('src-tauri/Cargo.toml')
@@ -108,6 +141,21 @@ if (tagVersion) {
     requireEqual('Git tag base version', tagVersion.split('-')[0], packageVersion.split('-')[0])
   } else {
     requireEqual('Git tag version', tagVersion, packageVersion)
+  }
+} else {
+  const branchName = process.env.GITHUB_BASE_REF || refName || gitOutput(['branch', '--show-current'])
+  const protectedDevelopmentBranches = new Set(['dev', 'develop', 'main', 'master'])
+  if (protectedDevelopmentBranches.has(branchName)) {
+    const latestTag = latestStableTag()
+    const current = stableVersion(packageVersion)
+    const latest = stableVersion(latestTag)
+    if (latest && current && compareVersions(current, latest) < 0) {
+      errors.push(
+        `package version ${packageVersion} is behind latest stable tag ${latestTag}; merge main back into dev after each release`,
+      )
+    } else if (!latestTag) {
+      warnings.push('No stable Git tag was found; branch version freshness could not be checked.')
+    }
   }
 }
 
