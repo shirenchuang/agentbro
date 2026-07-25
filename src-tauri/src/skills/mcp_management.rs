@@ -565,12 +565,7 @@ fn normalize_json_server(
             (McpTransport::Http, Some(url.to_string()))
         } else {
             let url = object.get("url").and_then(Value::as_str)?.to_string();
-            let transport = if explicit_type.as_deref() == Some("sse") {
-                McpTransport::Sse
-            } else {
-                McpTransport::Sse
-            };
-            (transport, Some(url))
+            (McpTransport::Sse, Some(url))
         }
     } else {
         let url = object.get("url").and_then(Value::as_str)?.to_string();
@@ -866,13 +861,12 @@ fn validate_mcp_server_draft_inner(
     match draft.transport {
         McpTransport::Stdio => {
             let command = nonempty(draft.command.as_deref());
-            if command.is_none() {
+            if let Some(command) = command {
+                if !command_available(command) {
+                    warnings.push(format!("Command not found in AgentBro's PATH: {command}"));
+                }
+            } else {
                 errors.push("A command is required for stdio MCP servers".to_string());
-            } else if !command_available(command.expect("checked command")) {
-                warnings.push(format!(
-                    "Command not found in AgentBro's PATH: {}",
-                    command.expect("checked command")
-                ));
             }
         }
         McpTransport::Http | McpTransport::Sse => {
