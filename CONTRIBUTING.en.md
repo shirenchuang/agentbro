@@ -116,7 +116,7 @@ One commit, one logical change. PRs that include "while I was here, I cleaned up
 4. Fill in the PR template and keep `Closes #<issue-number>` in the body; `PR policy / Issue link` validates it.
 5. CI runs `ci.yml` (lint + test + cargo check/clippy/fmt + cargo test) and `build.yml` (macOS dual-arch build). Both must be green.
 6. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to nudge maintainers in the PR.
-7. Merge is squash. Repository members may enable auto-merge in advance; the PR merges and deletes its task branch after every required check passes.
+7. Merge is squash. Repository members may enable auto-merge in advance; the PR merges and deletes its task branch after every required check passes. `Close linked Issues` closes Issues referenced in the body after the PR merges into `dev`.
 
 ---
 

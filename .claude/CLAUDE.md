@@ -122,7 +122,8 @@ Rust 格式与 lint:`cargo fmt --manifest-path src-tauri/Cargo.toml`、`cargo cl
 - **PR 提到 `dev` 分支**,不是 `main`。`dev` 是集成分支,`main` 是 release 分支。
 - 提交信息走 [Conventional Commits](https://www.conventionalcommits.org/):`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`。
 - 完成本地检查后提交并推送；PR 正文必须写 `Closes #<Issue 编号>`。
-- 创建 PR 后执行 `gh pr merge --auto --squash --delete-branch`，持续跟进 CI；失败就修复同一分支，禁止绕过检查或合并红色 PR。只有 PR 已合并，或已明确报告外部阻塞，任务才算结束。
+- 创建 PR 后执行 `gh pr merge --auto --squash --delete-branch`，持续跟进 CI；失败就修复同一分支，禁止绕过检查或合并红色 PR。
+- PR 合并后确认 `Close linked Issues` workflow 已关闭关联 Issue；如果仍为 open，执行 `gh issue close <编号> --reason completed` 兜底。只有 PR 已合并且 Issue 已关闭，或已明确报告外部阻塞，任务才算结束。
 - 不要为了增加活跃度创建重复、空白或与改动无关的 Issue；每个 Issue 和 PR 都必须对应真实、可审查的工作。
 - 不要在 PR 里 bump 版本号。版本号统一由 maintainer 在出 release 时更新,**且要四处同步**:
   - `package.json` 的 `version`

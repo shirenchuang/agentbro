@@ -42,7 +42,7 @@ Pure questions, explanations, code review, read-only diagnosis, and research do 
 
 1. Run the required local checks and fix failures before publishing.
 2. Review the diff for unrelated edits and secrets, then create a Conventional Commit.
-3. Push the task branch and open a PR against `dev`. The PR body must contain `Closes #<issue-number>` so merging closes the Issue.
+3. Push the task branch and open a PR against `dev`. The PR body must contain `Closes #<issue-number>` so the repository automation can close the Issue after the PR merges.
 4. Enable squash auto-merge with branch deletion:
 
    ```bash
@@ -50,7 +50,8 @@ Pure questions, explanations, code review, read-only diagnosis, and research do 
    ```
 
 5. Monitor required checks. If a check fails, diagnose it, update the same branch, and leave auto-merge enabled. Never bypass checks, force-push shared branches, or merge a failing PR.
-6. The task is complete only when the PR is merged (or when a concrete external blocker is reported). Report the Issue, PR, checks, and merge result.
+6. After the PR merges, verify that the linked Issue was closed by the `Close linked Issues` workflow. If it remains open, close it with `gh issue close <number> --reason completed` and report the fallback.
+7. The task is complete only when the PR is merged and its Issue is closed (or when a concrete external blocker is reported). Report the Issue, PR, checks, and merge result.
 
 Do not create duplicate or empty Issues just to increase activity. The Issue and PR must represent real, reviewable work.
 

@@ -1,21 +1,22 @@
-name: PR policy
+name: Close linked Issues
 
 on:
   pull_request:
     branches: [dev]
-    types: [opened, edited, synchronize, reopened]
+    types: [closed]
 
 permissions:
   contents: read
-  issues: read
+  issues: write
   pull-requests: read
 
 jobs:
-  issue-link:
-    name: Issue link
+  close-linked-issues:
+    name: Close linked Issues
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Require a closing Issue reference
+      - name: Close Issues referenced by the merged PR
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -23,14 +24,14 @@ jobs:
         run: |
           references="$(printf '%s\n' "$PR_BODY" | grep -Eio '(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' || true)"
           if [[ -z "$references" ]]; then
-            echo "::error::PR body must contain a closing reference such as 'Closes #61'."
-            exit 1
+            exit 0
           fi
 
           while read -r issue_number; do
             issue="$(gh api "repos/$GH_REPO/issues/$issue_number")"
-            if jq -e 'has("pull_request")' <<<"$issue" >/dev/null; then
-              echo "::error::#$issue_number is a pull request, not an Issue."
-              exit 1
+            if jq -e 'has("pull_request") or .state == "closed"' <<<"$issue" >/dev/null; then
+              continue
             fi
+            gh api --method PATCH "repos/$GH_REPO/issues/$issue_number" -f state=closed -f state_reason=completed >/dev/null
+            echo "Closed Issue #$issue_number"
           done < <(printf '%s\n' "$references" | grep -Eo '#[0-9]+' | tr -d '#' | sort -u)

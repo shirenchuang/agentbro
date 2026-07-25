@@ -116,7 +116,7 @@ chore: 升级 vitest 到 4.2
 4. 按 PR 模板填写内容，并在正文保留 `Closes #<Issue 编号>`；`PR policy / Issue link` 会校验它。
 5. CI 会跑 `ci.yml`(lint + test + cargo check/clippy/fmt + cargo test)和 `build.yml`(macOS 双架构构建)。两个都得绿。
 6. Review 节奏:工作日基本能在 48 小时内给到第一轮反馈。如果一周没人理,可以在 PR 里 @maintainer 提醒一下。
-7. Merge 用 squash；仓库成员可预先开启 auto-merge，所有必需检查通过后会自动合并并删除任务分支。
+7. Merge 用 squash；仓库成员可预先开启 auto-merge，所有必需检查通过后会自动合并并删除任务分支。`Close linked Issues` 会在 PR 合并进 `dev` 后关闭正文中关联的 Issue。
 
 ---
 
