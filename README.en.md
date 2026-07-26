@@ -3,11 +3,11 @@
 
   <h1>AgentBro</h1>
 
-  <p><strong>Make Agents Easier to Use</strong></p>
+  <p><strong>Your desktop control center for AI coding agents</strong></p>
 
   <p>
-    A native macOS Dynamic Island for AI coding agents.<br />
-    Bring permissions, questions, plans, quick replies, remote sessions, tool activity, completions, agent installs, hooks, and skills management into one lightweight desktop workspace.
+    Spend less time watching terminals and switching windows.<br />
+    Handle agent sessions, approvals, and questions from a floating workspace, then manage hooks, skills, MCP servers, plugins, API providers, and remote hosts in the same app.
   </p>
 
   <p>
@@ -22,82 +22,79 @@
 
   <p>
     <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111820" />
-    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-f5b84b" />
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-f5b84b" />
+    <img alt="Release" src="https://img.shields.io/github/v/release/shirenchuang/agentbro?color=0c6b63" />
     <img alt="Built with Tauri" src="https://img.shields.io/badge/Tauri-React%20%2B%20Rust-0c6b63" />
   </p>
 
   <p>
-    <strong>A local control center for AI coding agents: Claude Code, Codex, Gemini CLI, Cursor, Copilot, Kimi, Qoder, OpenCode, and more.</strong>
+    <strong>Available for macOS and Windows, with integrations for Claude Code, Codex, Gemini CLI, Cursor, Copilot, Kimi, OpenCode, ZCode, and more.</strong>
   </p>
 </div>
 
 <img src="docs/assets/screenshots/island-expanded.png" alt="AgentBro expanded Dynamic Island" width="100%" />
 
-## Quick Start
+## Download and get started
 
-```bash
-brew tap shirenchuang/tap && brew install --cask agentbro
-```
+| Platform | Recommended install | Other package |
+| --- | --- | --- |
+| macOS | `brew tap shirenchuang/tap && brew install --cask agentbro` | [Universal DMG](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg) · [China mirror](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg) |
+| Windows x64 | [Download the EXE installer](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64-setup.exe) | [MSI](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64.msi) |
 
-- Download: [`GitHub Releases`](https://github.com/shirenchuang/agentbro/releases) or the [latest China mirror DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg).
-- Connect an agent: open **Island -> Integration**, run **Hook Doctor**, then install the hook for the agent you use.
-- Contribute: start with [`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) or [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22).
+After installing, open **Island -> Integration**, run **Hook Doctor**, and install the hook for the agent you use. The Windows build is an early MVP: the floating workspace, hook transport, path detection, and Agent Management work, but unsigned installers may trigger a SmartScreen warning.
 
-If AgentBro saves you from bouncing between terminals, editors, and approval prompts, a star helps more AI coding agent users discover it.
+## What does AgentBro solve?
 
-## What Is AgentBro?
+AI coding agents can work for long stretches, but people still end up watching the terminal: waiting for permissions, answering questions, checking whether a task is stuck, and maintaining separate hooks, skills, MCP servers, and plugins for every tool. AgentBro puts those jobs behind one desktop entry point.
 
-AgentBro is a native macOS app that floats above your editor and terminal. It watches active sessions from AI coding agents such as Claude Code, Codex, and Gemini CLI, then collects the flow-breaking moments into a small Dynamic Island. You can approve permissions, answer questions, send quick replies, and forward agent events from remote SSH machines back to your local desktop.
+| When you are... | AgentBro can... |
+| --- | --- |
+| Running several agent sessions | Collect status, tool calls, subagents, token usage, and completion notices in the island. |
+| Waiting on an approval or question | Approve a permission, answer a question, confirm a plan, or send a quick reply without finding the original terminal. |
+| Maintaining several agent environments | Scan versions, paths, and hooks, then manage skills, MCP servers, plugins, and config files together. |
+| Switching models or API providers | Manage, test, and switch provider configs for Claude, Codex, Gemini, OpenCode, and Hermes. |
+| Running agents on a server | Bring remote sessions and hook events back over SSH and diagnose the connection in the same app. |
 
-Beyond the runtime island, AgentBro now includes an **Agent Management** workspace. It scans local CLIs and desktop agents, then gives you one local-first control panel for install state, versions, hooks, skills, MCP servers, plugins, and paths.
+Agent session events and local configuration do not need a cloud relay. The hook server uses a per-user local Unix socket on macOS and a local TCP endpoint on Windows. Update checks, marketplace downloads, SSH, and webhooks contact their respective services only when you use those features.
 
-## Logo Meaning
+## Demo videos
 
-The center of the AgentBro logo is shaped like a handshake. It represents the collaboration between humans and AI agents: not replacement, not remote control, but a bro-like companion that helps, nudges, and catches the moments that need attention. The outer `A` / `B` structure comes from the AgentBro initials and also resembles two connected agent nodes.
-
-## Demo Videos
-
-### Interaction Demo
+### Interaction demo
 
 https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
 
-### Theme Demo
+### Theme demo
 
 https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
-## Supported Themes
+## Core capabilities
 
-| Theme | ID | Style |
-| --- | --- | --- |
-| Midnight | `midnight` | Default dark theme for long coding sessions and low-light environments. |
-| AgentBro Classic | `ink-amber` | Warm brand theme with ink and amber contrast. |
-| Frosted Glass | `frosted-glass` | Light glass-style theme for bright desktops. |
-| Apple | `apple` | Clean macOS-style theme with a native, low-distraction feel. |
-| Smoke | `smoke` | Neutral light theme for calmer continuous monitoring. |
-| Ocean Mist | `ocean-mist` | Cool light theme with blue accents for state and actions. |
-| Warm Paper | `warm-paper` | Warm paper-like theme for softer desktop setups. |
-| Soft Lavender | `soft-lavender` | Gentle lavender theme with a lighter, lower-contrast feel. |
-| System | `system` | Follows the system light / dark appearance automatically. |
+### The island brings attention requests to your desktop
 
-## Main Features
+- Sessions have compact, hover, expanded, and detail views. Quiet Assistant mode keeps the island hidden until something needs you.
+- Handle permission requests, questions, plan approvals, completions, and errors in the floating window. Supported agents also accept quick replies.
+- Tool calls, file diffs, subagents, task summaries, context pressure, tokens, and rate limits update with the session.
+- Global shortcuts, sounds, quiet hours, multi-display placement, and terminal-focus suppression keep the window useful without making it noisy.
+- Important events can also be forwarded to DingTalk or Feishu webhooks.
 
-| Feature | Description |
-| --- | --- |
-| Dynamic Island | Compact, hover, expanded, and detail views for active agent sessions. |
-| Instant actions | Handle permission requests, questions, plan approvals, completions, and response cards in the island. |
-| Quick replies | Type a message directly in the island without switching back to the terminal. |
-| Task awareness | Show tool activity, subagent progress, task summaries, and token/rate-limit data where supported. |
-| Agent management | Scan local AI coding tools and review install state, versions, paths, hooks, skills, MCP servers, and plugins. |
-| Skill center | Adopt skills scattered across agent folders, then distribute them to agents or projects by symlink or copy. |
-| Pet mode | Switch the island into a pet status panel whose vitals react to context pressure and token usage. |
-| Pet Market | Browse community pets and install them with one click, powered by the abpets CLI. See [www.agentbro.net/pets](https://www.agentbro.net/pets). |
-| Hook integration | One-click hook installation, per-agent hook state and event toggles, plus Hook Doctor diagnostics. |
-| Desktop controls | Global shortcuts, sounds, notifications, themes, display placement, and terminal-focus suppression. |
-| Local-first | The hook server runs locally through `/tmp/agentbro.sock` or `127.0.0.1:17892`. |
-| SSH Remote | Forward agent events from remote SSH machines back to your local island for remote development. |
-| Webhook notifications | Send notifications to DingTalk / Feishu webhooks. |
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/assets/screenshots/island-permission.png" alt="Handle a permission request in the AgentBro island" width="100%" />
+      <sub>Handle approvals, questions, and plan confirmations without returning to the terminal.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/screenshots/island-detail.png" alt="AgentBro island session details" width="100%" />
+      <sub>Inspect tasks, tool calls, tokens, and session details.</sub>
+    </td>
+  </tr>
+</table>
 
-## Pet Market
+### Agent Monitor shows what an agent is doing
+
+Agent Monitor collects active and historical sessions. Inspect phases, tool timelines, approvals, questions, conversations, and raw hook events by project. If you manually enable Claude Code network monitoring, the local inspector can also show system prompts, messages, tools, responses, token usage, and KV cache statistics grouped by model and project. Network monitoring is off by default.
+
+## Pet market
 
 Beyond the island, AgentBro can switch the floating window into a **pet status panel**: a desktop pet follows your active agent, and its vitals react in real time to context pressure and token usage — so you can tell at a glance whether a session is relaxed or under strain.
 
@@ -111,15 +108,19 @@ Want to author your own pet? Use the [`shirenchuang/agentbro-pet`](https://githu
 
 <img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro Pet Market" width="100%" />
 
-## Agent Management
+The island includes Midnight, AgentBro Classic, Frosted Glass, Apple, Smoke, Ocean Mist, Warm Paper, and Soft Lavender themes. It can also follow the system light or dark appearance.
 
-If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode, and other tools side by side, AgentBro brings their installs, integrations, capability packs, and local config into one workspace. Open **Agent Management** in settings to access the Skill Library, Skill Install, Skill Packs, Projects, Agent Management, Diagnostics, and Settings pages.
+## Agent Management puts every agent capability in one place
 
-- Installs and versions: detect whether each CLI or desktop app is available, show current/latest versions, executable paths, config directories, and official install pages; supported CLIs can be installed or updated directly, while desktop apps open their download page.
-- Hook integration: install or remove hooks per agent, inspect bridge commands and config paths, and toggle event groups such as approvals, notifications, lifecycle, and activity.
-- Skill center: scan each agent's skills folder, adopt unmanaged skills into the center library, then distribute them to selected agents by symlink or copy.
-- Skill packs: group skills into reusable packs, apply or revoke them from an agent detail page, and resolve conflicts by overwriting, skipping, or keeping the agent copy.
-- MCP, plugins, and paths: review MCP servers, plugins, config files, skills folders, and health state in one place; the Projects page can also import repos and inspect project-level instructions and agent config.
+If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode, and other tools side by side, **Agent Management** brings their installs, integrations, and local configuration into one workspace.
+
+- Discover CLIs and desktop apps, with installed and available versions, executables, config directories, and official download pages. Supported CLIs can be installed, updated, or removed in place.
+- Install and repair hooks per agent, inspect bridge commands and config paths, and control approval, notification, lifecycle, and activity events separately.
+- Scan skills scattered across agent folders, adopt them into a center library, and distribute them to agents or projects by symlink or copy. Batch jobs, conflict decisions, and diagnostics stay visible.
+- Group common skills into reusable packs, apply them to several agents, and safely revoke them later.
+- Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls.
+- Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
+- Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
 
 <table>
   <tr>
@@ -144,13 +145,21 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
   </tr>
 </table>
 
-## Supported Agents
+## Agent Switch
 
-AgentBro supports agents at two levels: runtime hook adapters send session events into the island, while Agent Management scans a wider set of CLIs/apps, skills, MCP servers, plugins, and paths.
+Agent Switch manages API provider configuration for Claude, Codex, Gemini, OpenCode, and Hermes. Add or duplicate providers, switch the active config, test connectivity and latency, or preview and import existing providers, MCP servers, prompts, and skills from CC Switch.
+
+## SSH Remote
+
+Remote development does not need a separate monitoring setup. AgentBro can import hosts from `~/.ssh/config`, receive remote hook events through an SSH tunnel, show remote sessions locally, install or repair hooks, and run connection diagnostics. Sessions keep their host identity, so local work and tasks from several servers remain easy to distinguish.
+
+## Supported agents
+
+AgentBro supports agents at two levels. Runtime hook adapters send session events into the island, while Agent Management scans a wider set of CLIs, desktop apps, skills, MCP servers, plugins, and paths. Event coverage and interaction depth vary because each agent exposes different hooks.
 
 | Scope | Agents |
 | --- | --- |
-| Dynamic Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, Kiro |
+| Island / hook integration | Claude Code, Codex, Gemini CLI, Cursor / Cursor CLI, GitHub Copilot, Cline, Qoder / Qoder CLI, CodeBuddy / CodeBuddy CN, Qwen, Kimi, DeepSeek, OpenCode, Factory Droid, StepFun, AntiGravity, WorkBuddy, Hermes, Pi, Kiro, ZCode |
 | Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
 
@@ -158,16 +167,17 @@ Doubao support on macOS detects `/Applications/Doubao.app`, manages `~/Doubao/sk
 
 ## Roadmap
 
-AgentBro stays local-first. The current public release focuses on making the island, Agent Management, Skill center, hook integration, quick actions, and SSH Remote reliable. Future directions we want to explore include:
+AgentBro will remain local-first. The next priorities include:
 
 - Remote sync: sync settings, hooks, themes, prompts, skills, and remote host configuration across devices.
 - Skills community: discover, install, share, and update Skill Packs for different agents.
+- Windows: add code signing, automatic updates, and deeper interaction with more agents.
 - Pet ecosystem: ship more community pets, grow the Pet Market, and open up authoring and sharing of custom pets.
 - Team collaboration: shared configuration, team Skill Packs, access control, and clearer collaboration views.
 
-## Join The Community
+## Join the community
 
-If you use AgentBro or want to discuss upcoming Windows support, deeper agent integrations, Agent Monitor, Agent Switch, or the skills community, scan the QR code to add the maintainer on WeChat (mention **AgentBro community**), or join the **AgentBro Open Source Community** group chat directly.
+If you use AgentBro or want to discuss the Windows experience, deeper agent integrations, Agent Monitor, Agent Switch, or the skills community, scan the QR code to add the maintainer on WeChat (mention **AgentBro community**), or join the **AgentBro Open Source Community** group chat directly.
 
 <div align="center">
   <table>
@@ -184,47 +194,29 @@ If you use AgentBro or want to discuss upcoming Windows support, deeper agent in
   </table>
 </div>
 
-## Platform Support
+## Platform support
 
-AgentBro is currently developed, tested, and released for **macOS** first.
+Official releases now include downloadable artifacts for both macOS and Windows:
 
-Windows support is planned. The Tauri + React + Rust foundation is portable, but a good Windows release still needs dedicated work for floating window behavior, tray integration, shortcuts, terminal/editor focus detection, hook paths, installers, signing, and release automation.
+| Platform | Current status | Distribution |
+| --- | --- | --- |
+| macOS | Primary development and signed release platform, with the broadest feature coverage | Universal Apple Silicon / Intel DMG, Homebrew Cask, in-app updates |
+| Windows x64 | Early MVP with the floating window, TCP hooks, Windows path detection, Agent Management, skills, and installers working | NSIS `.exe`, MSI |
+| Linux | No official build | Not in the current release plan |
 
-Linux support is possible later, but it is not part of the first public release target.
+Windows still needs code signing, a smoother SmartScreen experience, automatic updates, and deeper interaction with some agents. A small number of features, including free-text replies to Codex Desktop, are unavailable because of Windows client API limitations. Session monitoring and basic hook interactions still work.
 
-## Installation
-
-### Homebrew Cask
-
-One-line install:
-
-```bash
-brew tap shirenchuang/tap && brew install --cask agentbro
-```
-
-Step-by-step install:
-
-```bash
-brew tap shirenchuang/tap
-brew install --cask agentbro
-```
-
-### Download a Release
-
-- 🌍 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) (all versions)
-- 🇨🇳 Mainland China mirror (faster): [latest DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
-
-## Local Development
+## Local development
 
 ### Prerequisites
 
-- macOS
-- Node.js
-- pnpm
+- macOS or Windows
+- Node.js 20+ and pnpm
 - Rust toolchain + Cargo
 - Tauri CLI: `cargo tauri --version`
+- Xcode Command Line Tools on macOS; Microsoft C++ Build Tools and WebView2 on Windows
 
-### Start The Project
+### Start the project
 
 ```bash
 git clone https://github.com/shirenchuang/agentbro.git
@@ -235,7 +227,7 @@ pnpm tauri:dev
 
 `pnpm tauri:dev` starts the Vite dev server on `http://localhost:1423` and opens the native AgentBro windows.
 
-### Browser-Only UI Development
+### Browser-only UI development
 
 ```bash
 pnpm dev
@@ -248,25 +240,26 @@ Open:
 
 The browser development view includes the Claude Hook UI Lab for testing static island states such as permission requests, plan approval, questions, completion, compact mode, list mode, and detail mode.
 
-### Common Commands
+### Common commands
 
 ```bash
-pnpm test:run      # Run tests once
-pnpm test          # Run tests in watch mode
-pnpm lint          # ESLint
-pnpm build         # Type-check and build frontend
-cargo check        # Check Rust backend
-pnpm tauri:build   # Build the Tauri app
-./build.sh         # Build universal macOS DMG
+pnpm test:run                                      # Run tests once
+pnpm test                                          # Run tests in watch mode
+pnpm lint                                          # ESLint
+pnpm build                                         # Type-check and build frontend
+cargo check --manifest-path src-tauri/Cargo.toml   # Check the Rust backend
+pnpm tauri:build                                   # Build the macOS app / DMG
+pnpm tauri:build:windows                           # Build Windows NSIS / MSI installers
+./build.sh                                         # Build the universal macOS DMG
 ```
 
-## Use With An Agent
+## Use with an agent
 
 1. Open AgentBro settings.
 2. If you only want the island integration, go to **Island -> Integration** and run **Hook Doctor**.
 3. Click **Install All Hooks**, or install the hook for the agent you use.
 4. If you want unified agent, skills, MCP, and plugin management, open **Agent Management**, then choose the **Agent Management** page.
-5. Select an agent to install, update, or open its install page; use the **Hooks** tab for hook setup and the **Skills** tab to scan, adopt, distribute, or remove skills.
+5. Select an agent to install or update it, then use the **Hooks**, **Skills**, **MCP**, or **Plugins** pages as needed.
 6. Restart the corresponding CLI session, then start Claude Code, Codex, Gemini CLI, or another supported agent.
 
 AgentBro will then show session state, tool activity, approvals, questions, plans, and completions in the island.
