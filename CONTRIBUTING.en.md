@@ -110,12 +110,13 @@ One commit, one logical change. PRs that include "while I was here, I cleaned up
 
 ## Pull request flow
 
-1. Fork → branch off `dev` → make your changes → run the four checks above.
-2. Open the PR against `dev`. Title should clearly state what changed (English or Chinese).
-3. Fill in the PR template: changes / motivation / implementation / verification / screenshots / checklist.
-4. CI runs `ci.yml` (lint + test + cargo check/clippy/fmt + cargo test) and `build.yml` (macOS dual-arch build). Both must be green.
-5. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to nudge maintainers in the PR.
-6. Merge is squash; maintainers normalize the commit message to Conventional Commits.
+1. Create or claim an Issue that matches the scope of the change.
+2. Fork → branch off `dev` → make your changes → run the four checks above.
+3. Open the PR against `dev`. Title should clearly state what changed (English or Chinese).
+4. Fill in the PR template and keep `Closes #<issue-number>` in the body; `PR policy / Issue link` validates it.
+5. CI runs `ci.yml` (lint + test + cargo check/clippy/fmt + cargo test) and `build.yml` (macOS dual-arch build). Both must be green.
+6. Review cadence: first response usually within 48 business hours. If a week passes with no reply, feel free to nudge maintainers in the PR.
+7. Merge is squash. Repository members may enable auto-merge in advance; the PR merges and deletes its task branch after every required check passes. `Close linked Issues` closes Issues referenced in the body after the PR merges into `dev`.
 
 ---
 
@@ -154,6 +155,7 @@ Edit `README.md` / `README.en.md` / `docs/*.md` directly. Don't add standalone R
 We encourage AI-assisted contributions — AgentBro is itself a tool for AI coding agents, so the philosophy is consistent.
 
 - **Use the project-level config.** Claude Code auto-loads [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Codex / Cursor / Aider / Copilot / Gemini CLI etc. read [`AGENTS.md`](AGENTS.md). Have your assistant read these *before* it starts editing — it saves a lot of misguided exploration.
+- **Create an Issue before code changes.** The assistant must create or link an Issue before editing, use a dedicated task branch, and close the loop with `Closes #<number>` in the PR. Pure questions and read-only analysis do not need an Issue.
 - **Disclose AI authorship honestly.** If a PR is mostly AI-generated, add a line like "Co-authored with <Agent name>" to the description. We don't discriminate — we just expect honesty.
 - **AI-generated code still has to pass the checks.** `pnpm lint`, `pnpm test:run`, `cargo check` must be green before you open the PR. PRs where the assistant skipped tests / ignored errors / didn't verify will be sent back.
 - **Don't let the AI touch brand assets, signing config, or the release pipeline.** These have trademark and security implications. See the [restricted areas list](.claude/CLAUDE.md#6-禁区不要动).

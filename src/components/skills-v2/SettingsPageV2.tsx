@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { open } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { skillModeLabel } from './skillLabels'
@@ -29,11 +28,6 @@ export function SettingsPageV2() {
     } finally {
       setBusy(false)
     }
-  }
-
-  const chooseCenter = async () => {
-    const dir = await open({ directory: true, multiple: false })
-    if (typeof dir === 'string') await update({ centerPath: dir })
   }
 
   const exportSnapshot = async () => {
@@ -70,17 +64,6 @@ export function SettingsPageV2() {
       <div className="sm2__main">
         {state.error && <div className="sm2__error">{state.error}</div>}
         {notice && <div className="sm2__notice sm2__notice--ok">{notice}</div>}
-
-        <div className="sm2__issue">
-          <h4 className="sm2__settings-label">中心库路径</h4>
-          <div className="sm2__settings-inline">
-            <input className="sm2__search" value={settings.centerPath} readOnly />
-            <button className="sm2__btn" onClick={chooseCenter} disabled={busy}>选择</button>
-          </div>
-          <p className="sm2__settings-help">
-            默认 ~/.agentbro/skills。修改后下次刷新生效。
-          </p>
-        </div>
 
         <div className="sm2__issue">
           <h4 className="sm2__settings-label">默认分发方式</h4>

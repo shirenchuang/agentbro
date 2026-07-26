@@ -154,6 +154,13 @@
     "shortcuts": "ショートカット",
     "agentMonitor": "Agent監視",
     "skillManager": "Agent管理",
+    "remoteServers": {
+      "title": "リモートサーバー",
+      "description": "Agent 管理、診断、Dynamic Island で共有する SSH 接続を一元管理します。",
+      "foundationTitle": "AgentBro 共通のサーバーディレクトリ",
+      "foundationDescription": "サーバーは一度だけ設定し、必要なワークスペースで選択できます。",
+      "islandConsumer": "Island"
+    },
     "agents": "エージェント",
     "switch": "Agent切替",
     "sshRemote": "SSHリモート",
@@ -299,7 +306,7 @@
       "open-settings": "設定を開く"
     },
     "sshRemoteDesc": "SSHトンネルを介してAgentBroをリモートマシンに接続します。",
-    "sshDescription": "AgentBroはリモートのエージェントイベントをローカルディスプレイに転送できます。リモートホストにAgentBro CLIヘルパーをインストールする必要があります。",
+    "sshDescription": "SSH でリモートマシンに接続し、Agent のセッション、Hooks、診断を AgentBro から一元管理します。",
     "sshPrerequisites": "前提条件",
     "sshPrerequisitesText": "各リモートホストにagentbro-remoteがインストールされており、SSHコンフィグでTCPポート転送が有効になっていることを確認してください。",
     "tcpPort": "TCPポート",
@@ -670,7 +677,8 @@
     "skillPickerConflict": "適用する前に {{count}} 件の競合を解決してください。",
     "skillPickerError": "スキルパックを更新できませんでした。{{error}}",
     "skillPickerLoading": "スキルパックを読み込み中…",
-    "skillPickerUnavailable": "利用不可"
+    "skillPickerUnavailable": "利用不可",
+    "skillPickerRemoteHint": "現在のスキルパックは {{name}} から取得しています。読み書きは必要に応じて SSH で行われ、リアルタイムイベント接続は不要です。"
   },
   "trial": {
     "expired": "トライアル期限切れ — すべての機能を使用するにはアップグレードしてください",
@@ -680,6 +688,31 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "runtimeEnvironment": {
+      "localName": "この Mac",
+      "localMeta": "ローカル",
+      "remoteMeta": "リモート",
+      "switchLabel": "実行環境を切り替え",
+      "switchHint": "AgentBro が Agent を管理する場所を選択します。",
+      "loading": "実行環境を更新中",
+      "localSection": "ローカル環境",
+      "remoteSection": "リモートサーバー",
+      "empty": "リモートサーバーが設定されていません。",
+      "reconnect": "再接続",
+      "addRemote": "リモートサーバーを追加",
+      "manageRemote": "サーバーを管理",
+      "currentLabel": "現在の実行環境：{{name}}",
+      "connected": "接続済み",
+      "connecting": "接続中",
+      "failed": "接続失敗",
+      "disconnected": "切断済み",
+      "liveConnected": "リアルタイム接続済み",
+      "liveConnecting": "リアルタイム接続中",
+      "liveFailed": "リアルタイム接続失敗",
+      "liveDisconnected": "リアルタイム未接続",
+      "liveConnectLabel": "{{name}} のリアルタイムイベント接続を開始",
+      "liveConnectHint": "リモートセッション、Hooks、Dynamic Island 用のリアルタイムイベント接続を開始します。スキル管理は引き続き必要に応じて SSH を使用します。"
+    },
     "pluginManagement": {
       "summary": "プラグイン状態の概要",
       "total": "すべて",

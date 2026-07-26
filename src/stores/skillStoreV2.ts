@@ -16,6 +16,7 @@ import type {
   MarketplaceBatchProgress,
 } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID } from './runtimeEnvironmentStore'
 
 export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
 export type SkillInstallTab = 'official' | 'agent' | 'local' | 'git'
@@ -60,6 +61,7 @@ export interface SkillFilters {
 }
 
 interface SkillV2State {
+  runtimeEnvironmentId: string
   activeTab: SkillManagerTab
   activeInstallTab: SkillInstallTab
   viewMode: SkillViewMode
@@ -94,6 +96,7 @@ interface SkillV2State {
 }
 
 interface SkillV2Actions {
+  switchRuntimeEnvironment: (id: string) => Promise<void>
   init: () => Promise<void>
   refresh: () => Promise<void>
   loadOverview: (force?: boolean) => Promise<void>
@@ -139,6 +142,7 @@ function ensureMarketplaceProgressListener() {
 }
 
 export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) => ({
+  runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
   activeTab: 'library',
   activeInstallTab: 'official',
   viewMode: 'cards',
@@ -171,6 +175,38 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   marketplaceInstallTask: null,
   customAgentDialogRequest: 0,
 
+  switchRuntimeEnvironment: async (id) => {
+    if (get().runtimeEnvironmentId === id) return
+    set({
+      runtimeEnvironmentId: id,
+      overview: null,
+      settings: null,
+      skills: [],
+      selectedSkillId: null,
+      selectedSkillDetail: null,
+      selectedPackId: null,
+      selectedPackDetail: null,
+      selectedAgentId: null,
+      selectedAgentDetail: null,
+      selectedProjectId: null,
+      selectedProjectDetail: null,
+      agents: [],
+      packs: [],
+      projects: [],
+      issues: [],
+      unmanaged: [],
+      error: null,
+      busyAction: null,
+      lastPreview: null,
+      initialized: false,
+      agentDetailLoading: false,
+      projectDetailLoading: false,
+      startupScanInFlight: false,
+      lastOverviewLoadedAt: 0,
+    })
+    await get().init()
+  },
+
   init: async () => {
     // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
     // then reads cached SQLite state. Startup scanning runs in the background
@@ -179,11 +215,13 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       if (!get().overview) await get().loadOverview(true)
       return
     }
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ loading: true, error: null })
     try {
       await skillApiV2.bootstrap()
       await get().loadOverview(true)
       await get().loadProjects(true)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ initialized: true })
 
       if (get().settings?.startupScan && !get().startupScanInFlight) {
@@ -193,26 +231,34 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
             await skillApiV2.init()
             await get().loadOverview(true)
           } catch (e) {
-            set({ error: String(e) })
+            if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+              set({ error: String(e) })
+            }
           } finally {
-            set((s) => ({
-              startupScanInFlight: false,
-              busyAction: s.busyAction === 'startupScan' ? null : s.busyAction,
-            }))
+            if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+              set((s) => ({
+                startupScanInFlight: false,
+                busyAction: s.busyAction === 'startupScan' ? null : s.busyAction,
+              }))
+            }
           }
         })()
       }
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ loading: false })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ loading: false })
+      }
     }
   },
   refresh: async () => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ loading: true, error: null })
     try {
       const overview = await skillApiV2.refreshOverview()
       const unmanaged = await skillApiV2.listUnmanaged()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({
         overview,
         skills: overview.skills,
@@ -228,10 +274,13 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ loading: false })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ loading: false })
+      }
     }
   },
   loadOverview: async (force = false) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     const now = Date.now()
     if (!force && get().overview && now - get().lastOverviewLoadedAt < OVERVIEW_CACHE_TTL_MS) {
       return
@@ -239,6 +288,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     try {
       const overview = await skillApiV2.overview()
       const unmanaged = await skillApiV2.listUnmanaged()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({
         overview,
         skills: overview.skills,
@@ -264,20 +314,24 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   setFilter: (key, value) =>
     set((s) => ({ filters: { ...s.filters, [key]: value } })),
   selectSkill: async (id) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ selectedSkillId: id, selectedSkillDetail: null })
     if (!id) return
     try {
       const detail = await skillApiV2.getSkillDetail(id)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ selectedSkillDetail: detail })
     } catch (e) {
       set({ error: String(e) })
     }
   },
   selectPack: async (id) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ selectedPackId: id, selectedPackDetail: null })
     if (!id) return
     try {
       const detail = await skillApiV2.getPackDetail(id)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ selectedPackDetail: detail })
     } catch (e) {
       set({ error: String(e) })
@@ -292,12 +346,14 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     else set({ selectedAgentDetail: null })
   },
   loadAgentDetail: async (agentId, force = false) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     if (!force && get().selectedAgentId === agentId && get().selectedAgentDetail && !get().agentDetailLoading) {
       return
     }
     set({ agentDetailLoading: true })
     try {
       const detail = await skillApiV2.getAgentDetail(agentId)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       if (get().selectedAgentId === agentId) {
         set({ selectedAgentDetail: detail })
       }
@@ -306,14 +362,19 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         set({ error: String(e) })
       }
     } finally {
-      if (get().selectedAgentId === agentId) {
+      if (
+        get().runtimeEnvironmentId === runtimeEnvironmentId
+        && get().selectedAgentId === agentId
+      ) {
         set({ agentDetailLoading: false })
       }
     }
   },
   loadProjects: async () => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     try {
       const projects = await skillApiV2.listProjects()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ projects })
       const selectedProjectId = get().selectedProjectId
       if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
@@ -324,10 +385,12 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   addProject: async (rootPath) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ projectDetailLoading: true, error: null })
     try {
       const detail = await skillApiV2.addProject(rootPath)
       const projects = await skillApiV2.listProjects()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({
         projects,
         selectedProjectId: detail.id,
@@ -336,13 +399,17 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ projectDetailLoading: false })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ projectDetailLoading: false })
+      }
     }
   },
   removeProject: async (projectId) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     try {
       await skillApiV2.removeProject(projectId)
       const projects = await skillApiV2.listProjects()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set((s) => ({
         projects,
         selectedProjectId: s.selectedProjectId === projectId ? null : s.selectedProjectId,
@@ -353,6 +420,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   selectProject: async (id) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     if (id && get().selectedProjectId === id && get().selectedProjectDetail && !get().projectDetailLoading) {
       return
     }
@@ -363,18 +431,23 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
     try {
       const detail = await skillApiV2.getProjectDetail(id)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ selectedProjectDetail: detail })
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ projectDetailLoading: false })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ projectDetailLoading: false })
+      }
     }
   },
   scanProject: async (projectId) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ projectDetailLoading: true, error: null })
     try {
       const detail = await skillApiV2.scanProject(projectId)
       const projects = await skillApiV2.listProjects()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({
         projects,
         selectedProjectId: detail.id,
@@ -383,32 +456,42 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ projectDetailLoading: false })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ projectDetailLoading: false })
+      }
     }
   },
   loadDiagnosisIssues: async () => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     try {
       const issues = await skillApiV2.listDiagnosisIssues()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ issues })
     } catch (e) {
       set({ error: String(e) })
     }
   },
   runDiagnosis: async () => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     set({ busyAction: 'diagnosis' })
     try {
       const issues = await skillApiV2.runDiagnosis()
       const unmanaged = await skillApiV2.listUnmanaged()
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ issues, unmanaged, lastOverviewLoadedAt: 0 })
     } catch (e) {
       set({ error: String(e) })
     } finally {
-      set({ busyAction: null })
+      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
+        set({ busyAction: null })
+      }
     }
   },
   updateSettings: async (patch) => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
     try {
       const next = await skillApiV2.updateSettings(patch)
+      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
       set({ settings: next })
     } catch (e) {
       set({ error: String(e) })

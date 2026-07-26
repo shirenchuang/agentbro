@@ -1260,6 +1260,118 @@ async fn probe_remote_host(
 }
 
 #[tauri::command]
+async fn remote_skill_manager_invoke(
+    state: tauri::State<'_, commands::AppState>,
+    id: String,
+    command: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let host = state
+        .remote_manager
+        .hosts()
+        .into_iter()
+        .find(|host| host.id == id)
+        .ok_or_else(|| format!("Host {id} not found"))?;
+    if command == "open_skill_path"
+        || command == "reveal_skill_path"
+        || command == "open_system_path"
+    {
+        let target = remote::skill_manager::invoke(&host, &command, args).await?;
+        let path = target
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Remote path response is missing path".to_string())?;
+        let parent = target
+            .get("parentPath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Remote path response is missing parentPath".to_string())?;
+        let name = target
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let is_directory = target
+            .get("isDirectory")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let reveal = command == "reveal_skill_path";
+        let directory = if is_directory && !reveal {
+            path
+        } else {
+            parent
+        };
+        let target_name = (!is_directory || reveal).then_some(name);
+        remote::terminal::launch_at_path(&host, directory, target_name)?;
+        return Ok(serde_json::Value::Null);
+    }
+    if command == "get_skill_explanation_cmd" {
+        let skill_id = args
+            .get("skillId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing skillId".to_string())?;
+        let lang = args
+            .get("lang")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing lang".to_string())?;
+        let cache_id = format!("remote:{}:{skill_id}", host.id);
+        let mut explanation = skills::explanation::get_cached(&cache_id, lang);
+        if let Some(ref mut value) = explanation {
+            value.skill_id = skill_id.to_string();
+        }
+        return serde_json::to_value(explanation).map_err(|error| error.to_string());
+    }
+    if command == "generate_skill_explanation_cmd" {
+        let skill_id = args
+            .get("skillId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing skillId".to_string())?;
+        let skill_path = args
+            .get("skillPath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing skillPath".to_string())?;
+        let lang = args
+            .get("lang")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing lang".to_string())?;
+        let refresh = args
+            .get("refresh")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let file_path = if skill_path.ends_with(".md") {
+            skill_path.to_string()
+        } else {
+            format!("{}/SKILL.md", skill_path.trim_end_matches('/'))
+        };
+        let content = remote::skill_manager::invoke(
+            &host,
+            "read_skill_file_content",
+            serde_json::json!({ "filePath": file_path }),
+        )
+        .await?
+        .as_str()
+        .ok_or_else(|| "Remote SKILL.md was not text".to_string())?
+        .to_string();
+        let temp_path = std::env::temp_dir().join(format!(
+            "agentbro-remote-skill-explanation-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&temp_path, content)
+            .map_err(|error| format!("Write remote Skill explanation input: {error}"))?;
+        let cache_id = format!("remote:{}:{skill_id}", host.id);
+        let generated = skills::explanation::generate(
+            &cache_id,
+            &temp_path.display().to_string(),
+            lang,
+            refresh,
+        );
+        let _ = std::fs::remove_file(&temp_path);
+        let mut explanation = generated?;
+        explanation.skill_id = skill_id.to_string();
+        return serde_json::to_value(explanation).map_err(|error| error.to_string());
+    }
+    remote::skill_manager::invoke(&host, &command, args).await
+}
+
+#[tauri::command]
 fn probe_codex_app_server() -> agents::codex::CodexAppServerProbe {
     agents::codex::probe_app_server_readiness()
 }
@@ -3494,7 +3606,7 @@ mod github_import_source_tests {
     }
 
     #[test]
-    fn github_install_writes_to_configured_v2_center() {
+    fn github_install_writes_to_fixed_agentbro_center() {
         let _lock = crate::skills::lock_shared_test_home();
         let previous_home = std::env::var_os("HOME");
         let suffix = SystemTime::now()
@@ -3505,7 +3617,7 @@ mod github_import_source_tests {
         fs::create_dir_all(&temp_home).unwrap();
         std::env::set_var("HOME", &temp_home);
 
-        let test_result = (|| -> Result<(String, bool, bool, bool), String> {
+        let test_result = (|| -> Result<(String, bool, bool, bool, bool), String> {
             let source = temp_home.join("repo").join("skills").join("github-skill");
             fs::create_dir_all(&source).map_err(|error| error.to_string())?;
             fs::write(
@@ -3513,11 +3625,12 @@ mod github_import_source_tests {
                 "---\nname: github-skill\ndescription: GitHub import test\n---\n",
             )
             .map_err(|error| error.to_string())?;
-            let center = temp_home.join("custom-center");
+            let requested_center = temp_home.join("custom-center");
+            let fixed_center = temp_home.join(".agentbro").join("skills");
             let sqlite = temp_home.join("skill-manager.db");
             let manager = Service::new(&sqlite, temp_home.clone())?;
             manager.update_settings(SettingsUpdate {
-                center_path: Some(center.display().to_string()),
+                center_path: Some(requested_center.display().to_string()),
                 sqlite_path: Some(sqlite.display().to_string()),
                 default_distribute_mode: None,
                 link_fail_policy: None,
@@ -3540,7 +3653,14 @@ mod github_import_source_tests {
                 .any(|skill| skill.id == imported_skill_id);
             Ok((
                 imported_skill_id.clone(),
-                center.join(&imported_skill_id).join("SKILL.md").is_file(),
+                fixed_center
+                    .join(&imported_skill_id)
+                    .join("SKILL.md")
+                    .is_file(),
+                requested_center
+                    .join(&imported_skill_id)
+                    .join("SKILL.md")
+                    .is_file(),
                 temp_home.join(".agents/skills").exists(),
                 listed,
             ))
@@ -3553,10 +3673,16 @@ mod github_import_source_tests {
         }
         let _ = fs::remove_dir_all(&temp_home);
 
-        let (imported_skill_id, exists_in_center, wrote_legacy_agents_path, listed) =
-            test_result.unwrap();
+        let (
+            imported_skill_id,
+            exists_in_fixed_center,
+            wrote_requested_center,
+            wrote_legacy_agents_path,
+            listed,
+        ) = test_result.unwrap();
         assert_eq!(imported_skill_id, "github-skill");
-        assert!(exists_in_center);
+        assert!(exists_in_fixed_center);
+        assert!(!wrote_requested_center);
         assert!(!wrote_legacy_agents_path);
         assert!(listed);
     }
@@ -6033,6 +6159,7 @@ pub fn run() {
             uninstall_remote_agent_hooks,
             check_remote_hooks,
             probe_remote_host,
+            remote_skill_manager_invoke,
             probe_codex_app_server,
             list_remote_installable_agents,
             get_remote_status,

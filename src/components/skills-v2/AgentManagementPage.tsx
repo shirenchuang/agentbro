@@ -8,6 +8,10 @@ import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgen
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
+import {
+  LOCAL_RUNTIME_ENVIRONMENT_ID,
+  useRuntimeEnvironmentStore,
+} from '../../stores/runtimeEnvironmentStore'
 import { AgentIconBadge } from './AgentIconBadge'
 import { AdoptDialog } from './AdoptDialog'
 import { PreviewDialog } from './PreviewDialog'
@@ -62,8 +66,14 @@ const PACK_PROGRESS_DONE_DISMISS_MS = 2400
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
-  const sessionList = useSessionStore((s) => s.sessionList)
+  const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const runtimeEnvironmentId = useRuntimeEnvironmentStore((s) => s.selectedEnvironmentId)
+  const sessionList = useMemo(() => (
+    runtimeEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
+      ? allSessions.filter((session) => !session.remoteHostId)
+      : allSessions.filter((session) => session.remoteHostId === runtimeEnvironmentId)
+  ), [allSessions, runtimeEnvironmentId])
   const agentUsageScores = useMemo(() => buildAgentUsageScores(sessionList, activeSessionId), [sessionList, activeSessionId])
   const agents = useMemo(() => sortAgentSummaries(
     state.agents.filter((agent) => agent.id !== SHARED_SKILLS_AGENT_ID),

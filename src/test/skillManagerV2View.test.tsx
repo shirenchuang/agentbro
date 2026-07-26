@@ -7,10 +7,16 @@ import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
 import { agentApi, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
 import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillDetail, SkillTargetDetail } from '../services/skillApiV2'
 import type { AgentType, SessionState } from '../types/agent'
+import { useConfigStore } from '../stores/configStore'
+import {
+  LOCAL_RUNTIME_ENVIRONMENT_ID,
+  useRuntimeEnvironmentStore,
+} from '../stores/runtimeEnvironmentStore'
 
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
@@ -1009,6 +1015,11 @@ describe('Local skill import', () => {
   beforeEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.clearAllMocks()
+    useConfigStore.setState({ remoteHostEntries: [] })
+    useRuntimeEnvironmentStore.setState({
+      selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+    })
   })
 
   it('passes link import mode when importing a local source folder as a symlink', async () => {
@@ -1174,6 +1185,69 @@ describe('Local skill import', () => {
 
     expect(await screen.findByText('没有检测到新增或变更，40 个 Skill 均无需重复导入。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '无需导入' })).toBeDisabled()
+  })
+
+  it('browses and imports paths from the selected remote server without opening the Mac dialog', async () => {
+    useConfigStore.setState({
+      remoteHostEntries: [{
+        id: 'ubuntu',
+        name: 'ubuntu',
+        sshTarget: 'agent@ubuntu',
+        port: 22,
+        remoteSocketPath: '/tmp/agentbro.sock',
+        autoConnect: false,
+        connectionStatus: 'disconnected',
+      }],
+    })
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: 'ubuntu' })
+    const browse = vi.spyOn(skillApiV2, 'browseRemoteSkillSources')
+      .mockResolvedValueOnce({
+        path: '/home/agent',
+        parentPath: null,
+        entries: [{
+          name: 'skills',
+          path: '/home/agent/skills',
+          entryType: 'directory',
+          hasSkillManifest: true,
+        }],
+      })
+      .mockResolvedValueOnce({
+        path: '/home/agent/skills',
+        parentPath: '/home/agent',
+        entries: [],
+      })
+    const previewAdd = vi.spyOn(skillApiV2, 'previewAddCenterSkill').mockResolvedValue({
+      centerPath: '/home/agent/.agents/skills',
+      candidates: [],
+      blockers: [],
+    })
+
+    const { LocalPanel } = await import('../components/skills-v2/InstallView')
+    render(<LocalPanel onDone={() => {}} />)
+
+    expect(screen.getByRole('heading', { name: '从 ubuntu 导入' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '浏览远程文件夹' }))
+
+    expect(await screen.findByRole('dialog', { name: '选择 ubuntu 上的文件夹' })).toBeInTheDocument()
+    await waitFor(() => expect(browse).toHaveBeenCalledWith('~'))
+    fireEvent.click(await screen.findByRole('button', { name: /skills.*Skill 文件夹/ }))
+    await waitFor(() => expect(screen.getByLabelText('远程目录路径')).toHaveValue('/home/agent/skills'))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
+
+    expect(screen.getByPlaceholderText('浏览或输入远程服务器上的目录 / .zip'))
+      .toHaveValue('/home/agent/skills')
+    expect(openDialog).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '预览导入' }))
+
+    await waitFor(() => {
+      expect(previewAdd).toHaveBeenCalledWith({
+        sourcePath: '/home/agent/skills',
+        sourceType: 'local_folder',
+        sourceUri: '/home/agent/skills',
+        importMode: 'copy',
+        sourceLocation: 'remote',
+      })
+    })
   })
 })
 
@@ -5938,6 +6012,15 @@ describe('Skill manager settings page', () => {
 
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/Users/mac/.agentbro/skill-manager/skill-manager.db'))
     expect(screen.getByText('已在 Finder 中定位 SQLite')).toBeInTheDocument()
+  })
+
+  it('does not expose a center library path editor', async () => {
+    const { SettingsPageV2 } = await import('../components/skills-v2/SettingsPageV2')
+
+    render(<SettingsPageV2 />)
+
+    expect(screen.queryByText('中心库路径')).not.toBeInTheDocument()
+    expect(screen.queryByText('默认 ~/.agentbro/skills。修改后下次刷新生效。')).not.toBeInTheDocument()
   })
 })
 

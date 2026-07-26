@@ -7,6 +7,7 @@ import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
+import { RuntimeEnvironmentSwitcher } from './RuntimeEnvironmentSwitcher'
 
 interface SidebarItem {
   id: string
@@ -33,6 +34,7 @@ const sidebarGroups: SidebarGroup[] = [
       { id: 'general', labelKey: 'settings.general', icon: '⚙', iconBg: '#8E8E93' },
       { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
       { id: 'skill-manager-v2', labelKey: 'settings.skillManager', icon: '🧩', iconBg: '#34C759' },
+      { id: 'remote-servers', labelKey: 'settings.remoteServers.title', icon: '>_', iconBg: '#009C95' },
     ],
   },
   {
@@ -185,6 +187,7 @@ export function SettingsSidebar({
   const toggleLabel = collapsed ? t('settings.expandSidebar', { defaultValue: 'Expand sidebar' }) : t('settings.collapseSidebar', { defaultValue: 'Collapse sidebar' })
   const sectionTitleById: Record<string, string> = {
     island: t('settings.island.title'),
+    'remote-servers': t('settings.remoteServers.title', { defaultValue: 'Remote Servers' }),
     monitor: t('settings.agentMonitor'),
     agents: t('settings.agents'),
     switch: t('settings.switch'),
@@ -234,7 +237,6 @@ export function SettingsSidebar({
       { id: 'market', label: t('settings.island.tabs.market', { defaultValue: 'Pet Market' }), icon: '🛒', iconBg: '#34C759' },
       { id: 'behavior', label: t('settings.island.tabs.behavior', { defaultValue: 'Behavior' }), icon: '⚡', iconBg: '#FF9500' },
       { id: 'integration', label: t('settings.island.tabs.integration', { defaultValue: 'Integration' }), icon: '⚙', iconBg: '#34C759' },
-      { id: 'remote', label: t('settings.island.tabs.remote', { defaultValue: 'SSH Remote' }), icon: '⇄', iconBg: '#00A8A8' },
       { id: 'notify', label: t('settings.island.tabs.notify', { defaultValue: 'Notifications' }), icon: '🔔', iconBg: '#FF3B30' },
       { id: 'keys', label: t('settings.island.tabs.keys', { defaultValue: 'Shortcuts' }), icon: '⌨', iconBg: '#8E8E93' },
       { id: 'advanced', label: t('settings.island.tabs.advanced', { defaultValue: 'Advanced' }), icon: '⚒', iconBg: '#636366' },
@@ -420,6 +422,10 @@ export function SettingsSidebar({
             </div>
           )}
         </div>
+        <RuntimeEnvironmentSwitcher
+          collapsed={collapsed}
+          onManageRemote={() => onSelect('remote-servers')}
+        />
       </nav>
     )
   }

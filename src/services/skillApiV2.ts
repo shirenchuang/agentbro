@@ -1,6 +1,24 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri as isTauriRuntime } from './tauriApi'
+import {
+  LOCAL_RUNTIME_ENVIRONMENT_ID,
+  useRuntimeEnvironmentStore,
+} from '../stores/runtimeEnvironmentStore'
+
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+  const usesLocalDiscovery = command === 'search_marketplace_skills'
+    || command === 'fetch_marketplace_skill_detail'
+  if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID || usesLocalDiscovery) {
+    return tauriInvoke<T>(command, args)
+  }
+  return tauriInvoke<T>('remote_skill_manager_invoke', {
+    id: environmentId,
+    command,
+    args: args ?? {},
+  })
+}
 
 // ── Skill Manager v2 DTO types ────────────────────────────────────
 
@@ -527,10 +545,24 @@ export interface AddCenterSkillInput {
   sourcePath: string
   sourceType: string
   sourceUri?: string | null
+  sourceLocation?: 'local' | 'remote'
   importedFromAgent?: string | null
   importedFromPath?: string | null
   multi?: boolean
   importMode?: 'copy' | 'link'
+}
+
+export interface RemoteSkillSourceEntry {
+  name: string
+  path: string
+  entryType: 'directory' | 'archive'
+  hasSkillManifest: boolean
+}
+
+export interface RemoteSkillSourceListing {
+  path: string
+  parentPath: string | null
+  entries: RemoteSkillSourceEntry[]
 }
 
 export interface AddCenterSkillCandidate {
@@ -1065,7 +1097,6 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<SkillManagerSettings>('skill_manager_update_settings', {
           update: {
-            centerPath: patch.centerPath ?? null,
             sqlitePath: patch.sqlitePath ?? null,
             defaultDistributeMode: patch.defaultDistributeMode ?? null,
             linkFailPolicy: patch.linkFailPolicy ?? null,
@@ -1097,6 +1128,10 @@ export const skillApiV2 = {
         }),
   readFileContent: (filePath: string) =>
     isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
+  browseRemoteSkillSources: (path = '~') =>
+    isTauriRuntime()
+      ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path })
+      : Promise.resolve({ path: '/home/agent', parentPath: null, entries: [] }),
   getSkillExplanation: (skillId: string, lang: string) =>
     isTauriRuntime() ? invoke<SkillExplanation | null>('get_skill_explanation_cmd', { skillId, lang }) : Promise.resolve(null),
   generateSkillExplanation: (skillId: string, skillPath: string, lang: string, refresh = false) =>

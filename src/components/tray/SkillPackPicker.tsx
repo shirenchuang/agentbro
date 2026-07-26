@@ -14,6 +14,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { AgentSummary, SkillPackSummary } from '../../services/skillApiV2'
 import { isTauri } from '../../services/tauriApi'
+import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import './SkillPackPicker.css'
 
@@ -53,6 +55,12 @@ async function closePicker() {
 
 export function SkillPackPicker() {
   const { t } = useTranslation()
+  const refreshEnvironments = useRuntimeEnvironmentStore((state) => state.refreshEnvironments)
+  const {
+    selectedEnvironmentId,
+    isLocal,
+    remoteHost,
+  } = useSelectedRuntimeEnvironment()
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [packs, setPacks] = useState<SkillPackSummary[]>([])
   const [appliedByAgent, setAppliedByAgent] = useState<Record<string, Set<string>>>({})
@@ -66,6 +74,7 @@ export function SkillPackPicker() {
   const interactionRevision = useRef(0)
   const agentDrag = useRef<AgentDragState | null>(null)
   const suppressAgentClick = useRef(false)
+  const environmentName = remoteHost?.name ?? selectedEnvironmentId
 
   const loadPickerData = useCallback(async (foreground: boolean) => {
     const revision = interactionRevision.current
@@ -118,6 +127,10 @@ export function SkillPackPicker() {
   useEffect(() => {
     void loadPickerData(true)
   }, [loadPickerData])
+
+  useEffect(() => {
+    if (isTauri()) void refreshEnvironments()
+  }, [refreshEnvironments])
 
   useEffect(() => {
     if (!isTauri()) return
@@ -280,7 +293,21 @@ export function SkillPackPicker() {
       <section className="skill-pack-picker__surface">
         <header className="skill-pack-picker__header">
           <div>
-            <span className="skill-pack-picker__kicker">{t('tray.skillPickerKicker')}</span>
+            <div className="skill-pack-picker__context">
+              <span className="skill-pack-picker__kicker">{t('tray.skillPickerKicker')}</span>
+              {!isLocal && (
+                <span
+                  className="skill-pack-picker__environment"
+                  role="status"
+                  aria-label={t('skills.runtimeEnvironment.currentLabel', { name: environmentName })}
+                  title={t('tray.skillPickerRemoteHint', { name: environmentName })}
+                >
+                  <span aria-hidden="true">&gt;_</span>
+                  <em>{t('skills.runtimeEnvironment.remoteMeta')}</em>
+                  <strong>{environmentName}</strong>
+                </span>
+              )}
+            </div>
             <h1>{t('tray.skillPickerTitle')}</h1>
             <p>{t('tray.skillPickerSubtitle')}</p>
           </div>

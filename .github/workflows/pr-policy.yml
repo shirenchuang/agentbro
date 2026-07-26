@@ -1,0 +1,36 @@
+name: PR policy
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  issue-link:
+    name: Issue link
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a closing Issue reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          references="$(printf '%s\n' "$PR_BODY" | grep -Eio '(^|[^[:alnum:]_])(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' || true)"
+          if [[ -z "$references" ]]; then
+            echo "::error::PR body must contain a closing reference such as 'Closes #61'."
+            exit 1
+          fi
+
+          while read -r issue_number; do
+            issue="$(gh api "repos/$GH_REPO/issues/$issue_number")"
+            if jq -e 'has("pull_request")' <<<"$issue" >/dev/null; then
+              echo "::error::#$issue_number is a pull request, not an Issue."
+              exit 1
+            fi
+          done < <(printf '%s\n' "$references" | grep -Eo '#[0-9]+' | tr -d '#' | sort -u)

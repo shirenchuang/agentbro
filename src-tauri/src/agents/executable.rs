@@ -400,6 +400,7 @@ fn candidate_dirs() -> Vec<PathBuf> {
         dirs.extend(nvm_node_bins(&home));
         dirs.extend(volta_bin(&home));
         dirs.extend(mise_shims(&home));
+        dirs.extend(vfox_node_bins(&home));
     }
 
     #[cfg(target_os = "windows")]
@@ -463,6 +464,32 @@ fn mise_shims(home: &Path) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
+fn vfox_node_bin_candidates(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".vfox").join("sdks").join("nodejs").join("bin"),
+        home.join(".version-fox")
+            .join("sdks")
+            .join("nodejs")
+            .join("bin"),
+    ]
+}
+
+fn vfox_node_bins(home: &Path) -> Vec<PathBuf> {
+    let mut candidates = vfox_node_bin_candidates(home);
+    if let Some(vfox_home) = std::env::var_os("VFOX_HOME") {
+        candidates.push(
+            PathBuf::from(vfox_home)
+                .join("sdks")
+                .join("nodejs")
+                .join("bin"),
+        );
+    }
+    candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 #[cfg(target_os = "windows")]
 fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
@@ -483,6 +510,21 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vfox_node_bins_include_current_and_legacy_global_links() {
+        let home = std::path::Path::new("/Users/example");
+        let candidates = super::vfox_node_bin_candidates(home);
+
+        assert_eq!(
+            candidates[0],
+            std::path::PathBuf::from("/Users/example/.vfox/sdks/nodejs/bin")
+        );
+        assert_eq!(
+            candidates[1],
+            std::path::PathBuf::from("/Users/example/.version-fox/sdks/nodejs/bin")
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_prefers_spawnable_node_shims() {

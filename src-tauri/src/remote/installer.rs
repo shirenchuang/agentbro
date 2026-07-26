@@ -1855,38 +1855,17 @@ fn command_check(
     }
 }
 
-struct SshResult {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
+pub(super) struct SshResult {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+    pub(super) exit_code: i32,
 }
 
-async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResult {
+pub(super) async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResult {
     use std::process::Stdio;
     use tokio::time::Duration;
 
-    let mut args = vec![
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
-        "-o".to_string(),
-        "StrictHostKeyChecking=accept-new".to_string(),
-    ];
-
-    if let Some(port) = host.port {
-        args.push("-p".to_string());
-        args.push(port.to_string());
-    }
-    if let Some(ref identity) = host.identity_file {
-        let t = identity.trim();
-        if !t.is_empty() {
-            args.push("-i".to_string());
-            args.push(super::path::expand_tilde(t));
-        }
-    }
-    args.push(host.ssh_target.clone());
-    args.push(command.to_string());
+    let args = ssh_command_args(host, command);
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
@@ -1918,7 +1897,92 @@ async fn run_ssh(host: &RemoteHost, command: &str, timeout_secs: u64) -> SshResu
     }
 }
 
-fn base64_encode(data: &[u8]) -> String {
+pub(super) async fn run_ssh_with_input(
+    host: &RemoteHost,
+    command: &str,
+    input: Vec<u8>,
+    timeout_secs: u64,
+) -> SshResult {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::Duration;
+
+    let args = ssh_command_args(host, command);
+    let mut child =
+        match tokio::process::Command::new(crate::agents::executable::command_path("ssh"))
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                return SshResult {
+                    stdout: String::new(),
+                    stderr: format!("SSH error: {error}"),
+                    exit_code: -1,
+                }
+            }
+        };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(error) = stdin.write_all(&input).await {
+            let _ = child.kill().await;
+            return SshResult {
+                stdout: String::new(),
+                stderr: format!("SSH upload error: {error}"),
+                exit_code: -1,
+            };
+        }
+    }
+
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
+        Ok(Ok(output)) => SshResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code().unwrap_or(-1),
+        },
+        Ok(Err(error)) => SshResult {
+            stdout: String::new(),
+            stderr: format!("SSH error: {error}"),
+            exit_code: -1,
+        },
+        Err(_) => SshResult {
+            stdout: String::new(),
+            stderr: format!("SSH timed out after {timeout_secs}s"),
+            exit_code: -1,
+        },
+    }
+}
+
+fn ssh_command_args(host: &RemoteHost, command: &str) -> Vec<String> {
+    let mut args = vec![
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=10".to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+    ];
+
+    if let Some(port) = host.port {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    if let Some(ref identity) = host.identity_file {
+        let t = identity.trim();
+        if !t.is_empty() {
+            args.push("-i".to_string());
+            args.push(super::path::expand_tilde(t));
+        }
+    }
+    args.push(host.ssh_target.clone());
+    args.push(command.to_string());
+    args
+}
+
+pub(super) fn base64_encode(data: &[u8]) -> String {
     // Standard base64 without padding newlines
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

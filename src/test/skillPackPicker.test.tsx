@@ -5,6 +5,11 @@ import i18n from '../i18n'
 import { skillApiV2 } from '../services/skillApiV2'
 import type { AgentSummary, SkillPackPickerData, SkillPackSummary } from '../services/skillApiV2'
 import { SkillPackPicker } from '../components/tray/SkillPackPicker'
+import { useConfigStore } from '../stores/configStore'
+import {
+  LOCAL_RUNTIME_ENVIRONMENT_ID,
+  useRuntimeEnvironmentStore,
+} from '../stores/runtimeEnvironmentStore'
 
 const hideWindow = vi.fn().mockResolvedValue(undefined)
 
@@ -69,6 +74,10 @@ describe('SkillPackPicker', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     await i18n.changeLanguage('zh')
+    useConfigStore.setState({ remoteHostEntries: [] })
+    useRuntimeEnvironmentStore.setState({
+      selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+    })
     vi.spyOn(skillApiV2, 'getSkillPackPickerData').mockResolvedValue(pickerData)
     vi.spyOn(skillApiV2, 'previewApplyPack')
     vi.spyOn(skillApiV2, 'executeApplyPack').mockImplementation(async (packId, targetAgents, requestedMode) => ({
@@ -103,6 +112,32 @@ describe('SkillPackPicker', () => {
     await waitFor(() => expect(skillApiV2.executeApplyPack).toHaveBeenCalledTimes(2))
     expect(skillApiV2.getSkillPackPickerData).toHaveBeenCalledTimes(1)
     expect(skillApiV2.previewApplyPack).not.toHaveBeenCalled()
+  })
+
+  it('marks the server when skill packs are managed remotely', async () => {
+    useConfigStore.setState({
+      remoteHostEntries: [{
+        id: 'ubuntu',
+        name: 'ubuntu',
+        sshTarget: 'agent@ubuntu',
+        port: 22,
+        remoteSocketPath: '/tmp/agentbro.sock',
+        autoConnect: false,
+        connectionStatus: 'disconnected',
+      }],
+    })
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: 'ubuntu' })
+
+    render(<SkillPackPicker />)
+
+    const environment = screen.getByRole('status', { name: '当前运行环境：ubuntu' })
+    expect(environment).toHaveTextContent('远程')
+    expect(environment).toHaveTextContent('ubuntu')
+    expect(environment).toHaveAttribute(
+      'title',
+      '当前技能包来自 ubuntu；读写会按需通过 SSH 完成，不依赖实时事件通道。',
+    )
+    expect(await screen.findByRole('checkbox', { name: /前端开发/ })).toBeInTheDocument()
   })
 
   it('places applied packs before unchecked packs', async () => {

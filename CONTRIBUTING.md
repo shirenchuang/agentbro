@@ -110,12 +110,13 @@ chore: 升级 vitest 到 4.2
 
 ## PR 流程
 
-1. Fork → 在 `dev` 上拉分支 → 改动 → 跑完上面四条检查。
-2. PR base 选 `dev`,标题写清楚改了什么(中英都可)。
-3. 按 PR 模板填:变更内容 / 背景与动机 / 实现方案 / 验证方式 / 截图 / Checklist。
-4. CI 会跑 `ci.yml`(lint + test + cargo check/clippy/fmt + cargo test)和 `build.yml`(macOS 双架构构建)。两个都得绿。
-5. Review 节奏:工作日基本能在 48 小时内给到第一轮反馈。如果一周没人理,可以在 PR 里 @maintainer 提醒一下。
-6. Merge 用 squash;commit message 由 maintainer 整理为 Conventional Commit 风格。
+1. 先创建或认领一个与改动范围一致的 Issue。
+2. Fork → 在 `dev` 上拉分支 → 改动 → 跑完上面四条检查。
+3. PR base 选 `dev`,标题写清楚改了什么(中英都可)。
+4. 按 PR 模板填写内容，并在正文保留 `Closes #<Issue 编号>`；`PR policy / Issue link` 会校验它。
+5. CI 会跑 `ci.yml`(lint + test + cargo check/clippy/fmt + cargo test)和 `build.yml`(macOS 双架构构建)。两个都得绿。
+6. Review 节奏:工作日基本能在 48 小时内给到第一轮反馈。如果一周没人理,可以在 PR 里 @maintainer 提醒一下。
+7. Merge 用 squash；仓库成员可预先开启 auto-merge，所有必需检查通过后会自动合并并删除任务分支。`Close linked Issues` 会在 PR 合并进 `dev` 后关闭正文中关联的 Issue。
 
 ---
 
@@ -154,6 +155,7 @@ chore: 升级 vitest 到 4.2
 我们鼓励用 AI 协作 —— AgentBro 自己就是为 AI Agent 服务的工具,理念一致。
 
 - **善用项目级配置**:Claude Code 用户进仓库就能加载 [`.claude/CLAUDE.md`](.claude/CLAUDE.md);Codex / Cursor / Aider / Copilot / Gemini CLI 等读 [`AGENTS.md`](AGENTS.md)。先让 Agent 读这两份再开始改代码,能省大量瞎猜成本。
+- **代码改动先建 Issue**:Agent 必须在写文件前创建或关联 Issue,使用独立任务分支,并在 PR 中用 `Closes #<编号>` 建立闭环。纯问答和只读分析不需要制造 Issue。
 - **PR 描述请如实标注**:如果整份 PR 主要由 AI 生成,在描述里加一句"Co-authored with <Agent 名>"或类似措辞。我们不歧视 AI,但要求诚实。
 - **AI 生成的代码也得自测**:`pnpm lint`、`pnpm test:run`、`cargo check` 全绿再提。AI 跳过测试 / 没看清错误 / 改完不验证的 PR 会被退回。
 - **不要让 AI 改品牌资产、签名配置、发布流程**。这些有商标和安全含义,需要人工判断。具体见 [禁区列表](.claude/CLAUDE.md#6-禁区不要动)。

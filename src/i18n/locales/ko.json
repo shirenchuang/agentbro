@@ -154,6 +154,13 @@
     "shortcuts": "단축키",
     "agentMonitor": "Agent 모니터",
     "skillManager": "Agent 관리",
+    "remoteServers": {
+      "title": "원격 서버",
+      "description": "Agent 관리, 진단, Dynamic Island에서 공유하는 SSH 연결을 한곳에서 관리합니다.",
+      "foundationTitle": "AgentBro 공용 서버 디렉터리",
+      "foundationDescription": "서버를 한 번만 설정하고 필요한 작업 공간에서 선택하세요.",
+      "islandConsumer": "Island"
+    },
     "agents": "에이전트",
     "switch": "Agent 전환",
     "sshRemote": "SSH 원격",
@@ -299,7 +306,7 @@
       "open-settings": "설정 열기"
     },
     "sshRemoteDesc": "SSH 터널을 통해 AgentBro를 원격 머신에 연결합니다.",
-    "sshDescription": "AgentBro는 원격 SSH 세션의 에이전트 이벤트를 로컬 디스플레이로 전달할 수 있습니다. 원격 호스트에 AgentBro CLI 도우미가 설치되어 있어야 합니다.",
+    "sshDescription": "SSH로 원격 시스템을 연결하여 Agent 세션, Hooks, 진단 상태를 AgentBro 한곳에서 관리합니다.",
     "sshPrerequisites": "전제 조건",
     "sshPrerequisitesText": "각 원격 호스트에 agentbro-remote가 설치되어 있고 SSH 설정에서 TCP 포트 포워딩이 활성화되어 있는지 확인하세요.",
     "tcpPort": "TCP 포트",
@@ -670,7 +677,8 @@
     "skillPickerConflict": "적용하기 전에 충돌 {{count}}개를 해결해야 합니다.",
     "skillPickerError": "스킬 팩을 업데이트하지 못했습니다. {{error}}",
     "skillPickerLoading": "스킬 팩 불러오는 중…",
-    "skillPickerUnavailable": "사용 불가"
+    "skillPickerUnavailable": "사용 불가",
+    "skillPickerRemoteHint": "현재 스킬 팩은 {{name}}에서 가져옵니다. 읽기와 쓰기는 필요할 때 SSH로 수행되며 실시간 이벤트 채널은 필요하지 않습니다."
   },
   "trial": {
     "expired": "체험 기간 만료 — 모든 기능을 잠금 해제하려면 업그레이드하세요",
@@ -680,6 +688,31 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "runtimeEnvironment": {
+      "localName": "이 Mac",
+      "localMeta": "로컬",
+      "remoteMeta": "원격",
+      "switchLabel": "실행 환경 전환",
+      "switchHint": "AgentBro가 Agent를 관리할 위치를 선택합니다.",
+      "loading": "실행 환경 새로 고침 중",
+      "localSection": "로컬 환경",
+      "remoteSection": "원격 서버",
+      "empty": "설정된 원격 서버가 없습니다.",
+      "reconnect": "다시 연결",
+      "addRemote": "원격 서버 추가",
+      "manageRemote": "서버 관리",
+      "currentLabel": "현재 실행 환경: {{name}}",
+      "connected": "연결됨",
+      "connecting": "연결 중",
+      "failed": "연결 실패",
+      "disconnected": "연결 끊김",
+      "liveConnected": "실시간 채널 연결됨",
+      "liveConnecting": "실시간 채널 연결 중",
+      "liveFailed": "실시간 채널 연결 실패",
+      "liveDisconnected": "실시간 채널 연결 안 됨",
+      "liveConnectLabel": "{{name}}의 실시간 이벤트 채널 연결",
+      "liveConnectHint": "원격 세션, Hooks 및 Dynamic Island용 실시간 이벤트 채널을 연결합니다. 스킬 관리는 계속 필요할 때 SSH를 사용합니다."
+    },
     "pluginManagement": {
       "summary": "플러그인 상태 요약",
       "total": "전체",

@@ -2,9 +2,9 @@
 
 #![cfg(test)]
 
-use crate::skills::v2::fsutil;
 use crate::skills::v2::models::*;
 use crate::skills::v2::service::{AdoptBatchItem, ClaimOrigin, Service, UpsertPackInput};
+use crate::skills::v2::{db, fsutil};
 use rusqlite::params;
 use std::fs;
 use std::io::Write;
@@ -4575,9 +4575,10 @@ fn settings_round_trip() {
     assert_eq!(updated.link_fail_policy, "copy");
     assert!(!updated.startup_scan);
 
-    let migrated = svc
+    let requested_center = svc.home.join("custom-center");
+    let unchanged = svc
         .update_settings(SettingsUpdate {
-            center_path: Some(svc.home.join(".agents/skills").display().to_string()),
+            center_path: Some(requested_center.display().to_string()),
             sqlite_path: None,
             default_distribute_mode: None,
             link_fail_policy: None,
@@ -4586,7 +4587,39 @@ fn settings_round_trip() {
             auto_sync_skill_packs: None,
         })
         .unwrap();
-    assert!(migrated.center_path.ends_with(".agentbro/skills"));
+    assert_eq!(
+        unchanged.center_path,
+        svc.home.join(".agentbro/skills").display().to_string()
+    );
+}
+
+#[test]
+fn settings_migrate_existing_custom_center_into_fixed_agentbro_center() {
+    let (_home, svc, _lock) = fresh_service("settings-center-migration");
+    let custom_center = svc.home.join("custom-center");
+    let source = write_skill(
+        &custom_center,
+        "legacy-skill",
+        "legacy-skill",
+        Some("legacy"),
+    );
+    let mut stored = serde_json::to_value(svc.settings().unwrap()).unwrap();
+    stored["centerPath"] = serde_json::Value::String(custom_center.display().to_string());
+    svc.db
+        .with_conn(|connection| db::save_settings_json(connection, &stored))
+        .unwrap();
+
+    let migrated = svc.settings().unwrap();
+
+    assert_eq!(
+        migrated.center_path,
+        svc.home.join(".agentbro/skills").display().to_string()
+    );
+    assert!(svc
+        .home
+        .join(".agentbro/skills/legacy-skill/SKILL.md")
+        .is_file());
+    assert!(source.join("SKILL.md").is_file());
 }
 
 #[test]
