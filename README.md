@@ -3,11 +3,11 @@
 
   <h1>AgentBro</h1>
 
-  <p><strong>让 Agent 更好用</strong></p>
+  <p><strong>你的 AI 编程 Agent 桌面控制台</strong></p>
 
   <p>
-    面向 AI 编程 Agent 的 macOS 灵动岛。<br />
-    把权限请求、问题、计划、工具调用、快速回复、远程会话、完成提醒，以及 Agent 安装、Hook 和 Skills 管理，收进一个轻巧的桌面工作台。
+    少盯终端，少切窗口。<br />
+    在一个悬浮工作台里处理 Agent 会话、审批与提问，并统一管理 Hooks、Skills、MCP、插件、API 供应商和远程主机。
   </p>
 
   <p>
@@ -22,38 +22,40 @@
 
   <p>
     <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111820" />
-    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-f5b84b" />
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-f5b84b" />
+    <img alt="Release" src="https://img.shields.io/github/v/release/shirenchuang/agentbro?color=0c6b63" />
     <img alt="Built with Tauri" src="https://img.shields.io/badge/Tauri-React%20%2B%20Rust-0c6b63" />
   </p>
 
   <p>
-    <strong>Claude Code / Codex / Gemini CLI / Cursor / Copilot / Kimi / Qoder / OpenCode 等 AI 编程 Agent 的本地控制台。</strong>
+    <strong>支持 macOS 与 Windows，接入 Claude Code、Codex、Gemini CLI、Cursor、Copilot、Kimi、OpenCode、ZCode 等 AI 编程 Agent。</strong>
   </p>
 </div>
 
 <img src="docs/assets/screenshots/island-expanded.png" alt="AgentBro 灵动岛展开视图" width="100%" />
 
-## 快速开始
+## 下载与开始使用
 
-```bash
-brew tap shirenchuang/tap && brew install --cask agentbro
-```
+| 平台 | 推荐安装方式 | 其他安装包 |
+| --- | --- | --- |
+| macOS | `brew tap shirenchuang/tap && brew install --cask agentbro` | [通用 DMG](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_universal.dmg) · [国内镜像](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg) |
+| Windows x64 | [下载安装程序（EXE）](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64-setup.exe) | [MSI](https://github.com/shirenchuang/agentbro/releases/latest/download/AgentBro_latest_x64.msi) |
 
-- 下载：[`GitHub Releases`](https://github.com/shirenchuang/agentbro/releases) 或 [国内最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)。
-- 接入：打开 **Island -> Integration**，运行 **Hook Doctor**，再安装你正在使用的 Agent Hook。
-- 贡献：看 [`good first issue`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) 或 [`help wanted`](https://github.com/shirenchuang/agentbro/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)。
+安装后打开 **Island -> Integration**，先运行 **Hook Doctor**，再给正在使用的 Agent 安装 Hook。Windows 安装包目前属于早期 MVP；核心悬浮窗、Hook 传输、路径探测和 Agent 管理已经可用，未签名安装包可能触发 SmartScreen 提示。
 
-如果 AgentBro 帮你减少了在终端、编辑器和权限弹窗之间来回切换的时间，欢迎点一个 Star，帮助更多 AI 编程 Agent 用户发现它。
+## AgentBro 解决什么问题？
 
-## AgentBro 是什么？
+AI 编程 Agent 已经能连续工作很久，但人仍要守着终端：等权限、回答问题、看任务有没有卡住，还要分别维护每个工具的 Hooks、Skills、MCP 和插件。AgentBro 把这些分散的操作放到一个桌面入口里。
 
-AgentBro 是一个悬浮在编辑器和终端上方的原生 macOS 应用。它会实时观察 Claude Code、Codex、Gemini CLI 等 AI 编程 Agent 的会话状态，把最容易打断心流的事情集中到一个灵动岛里处理。你可以直接在弹窗里批准权限、回答问题、回复消息，也可以把 SSH 远程机器上的 Agent 会话转发回本机查看。
+| 你正在做的事 | AgentBro 提供的能力 |
+| --- | --- |
+| 同时跑多个 Agent 会话 | 灵动岛聚合状态、工具调用、Subagent、Token 和完成提醒。 |
+| Agent 等待审批或输入 | 直接批准权限、回答问题、确认计划或快速回复，不必找回原终端。 |
+| 维护多套 Agent 环境 | 扫描安装状态、版本、路径和 Hook，并集中管理 Skills、MCP、插件与配置文件。 |
+| 切换模型或 API 供应商 | Agent Switch 管理 Claude、Codex、Gemini、OpenCode 和 Hermes 的供应商配置、测速与切换。 |
+| 在服务器上跑 Agent | 通过 SSH 把远程会话和 Hook 事件带回本机，并在同一处诊断连接。 |
 
-除了运行时浮窗，AgentBro 现在也提供 **Agent 管理** 工作台：自动扫描本机 CLI 和桌面 Agent，统一查看安装状态、版本、Hook、Skills、MCP、插件和路径配置，把散落在不同工具目录里的能力收拢到一个本地优先的控制面板。
-
-## Logo 含义
-
-AgentBro 的 Logo 中间是一个握手造型，代表人和 AI Agent 之间的协作关系：不是替代，也不是遥控，而是像 bro 一样在旁边接力、提醒、兜底。外层的 `A` / `B` 结构来自 AgentBro 的首字母，也像两个 Agent 节点连接在一起。
+Agent 会话事件和本地配置不需要云端中转。Hook Server 默认监听当前用户的本地 Unix Socket，Windows 使用本地 TCP 端点；更新检查、市场下载、SSH 和 Webhook 只会在你使用相应功能时访问对应服务。
 
 ## 演示视频
 
@@ -65,43 +67,38 @@ https://github.com/user-attachments/assets/df857822-ea0a-4745-a0b9-80f265f30dc6
 
 https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
-## 支持的主题
+## 核心能力
 
-| 主题 | ID | 风格 |
-| --- | --- | --- |
-| 午夜 | `midnight` | 默认深色主题，适合长时间编码和夜间使用。 |
-| AgentBro 经典 | `ink-amber` | 品牌经典暖色主题，强调墨色与琥珀色对比。 |
-| 磨砂玻璃 | `frosted-glass` | 轻量浅色玻璃质感，适合明亮桌面环境。 |
-| 苹果 | `apple` | 干净的 macOS 系统风格，低干扰、偏原生。 |
-| 烟灰 | `smoke` | 中性浅色主题，降低色彩刺激，适合持续监控。 |
-| 海雾 | `ocean-mist` | 冷色浅色主题，以蓝色强调状态与操作。 |
-| 暖纸 | `warm-paper` | 温暖纸感主题，适合偏柔和的桌面搭配。 |
-| 柔薰衣草 | `soft-lavender` | 柔和紫色主题，偏轻盈、低对比。 |
-| 跟随系统 | `system` | 跟随系统浅色 / 深色外观自动切换。 |
+### 灵动岛：把等待你的事情浮到桌面上
 
-## 主要功能
+- 会话有紧凑、悬停、展开和详情视图；只想在关键时刻出现，也可以使用“安静助手”模式。
+- 权限请求、问题、计划审批、完成结果和错误都能在浮窗里处理；支持的 Agent 还可以直接快速回复。
+- 工具调用、文件 Diff、Subagent、任务摘要、上下文压力、Token 和 Rate Limit 会跟随会话更新。
+- 支持全局快捷键、通知音、勿扰时段、多显示器位置和终端聚焦降噪。
+- 除了系统通知，关键事件也可以转发到钉钉或飞书 Webhook。
 
-| 功能 | 说明 |
-| --- | --- |
-| 灵动岛浮窗 | 支持紧凑、悬停、展开和详情视图，随时查看 Agent 状态。 |
-| 即时处理 | 在浮窗中处理权限请求、问题、计划审批、完成提醒和回复卡片。 |
-| 快速回复 | 不切回终端，也可以直接在弹窗里输入消息，继续和 Agent 对话。 |
-| 任务感知 | 展示工具调用、Subagent 活动、任务摘要，以及支持场景下的 Token / Rate Limit 信息。 |
-| Agent 管理 | 自动扫描本机 AI 编程工具，统一查看安装状态、版本、路径、Hook、Skills、MCP 和插件。 |
-| Skill 中心库 | 接管散落在不同 Agent 目录里的 Skills，并按软链接或拷贝分发到 Agent 或项目。 |
-| 宠物模式 | 把灵动岛切换成宠物状态面板，宠物活力随上下文压力和 Token 用量变化。 |
-| 宠物市场 | 浏览社区宠物、一键安装，由 abpets CLI 驱动。详见 [www.agentbro.net/pets](https://www.agentbro.net/pets)。 |
-| Hook 集成 | 一键安装 Hook，按 Agent 查看接入状态和事件开关，内置 Hook Doctor 诊断。 |
-| 桌面体验 | 支持全局快捷键、声音、通知、主题、显示器位置和终端焦点智能降噪。 |
-| 本地优先 | Hook Server 默认运行在本机，支持 `/tmp/agentbro-<uid>.sock` 或 `127.0.0.1:17894`。 |
-| SSH Remote | 支持把远程 SSH 机器上的 Agent 事件转发回本机灵动岛，适合远程开发场景。 |
-| Webhook 通知 | 支持钉钉 / 飞书 Webhook 通知。 |
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/assets/screenshots/island-permission.png" alt="在 AgentBro 灵动岛中处理权限请求" width="100%" />
+      <sub>审批、提问和计划确认不必切回终端。</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/screenshots/island-detail.png" alt="AgentBro 灵动岛会话详情" width="100%" />
+      <sub>查看任务、工具调用、Token 和会话详情。</sub>
+    </td>
+  </tr>
+</table>
+
+### Agent Monitor：看清 Agent 到底在做什么
+
+Agent Monitor 汇总当前和历史会话，可以按项目查看运行阶段、工具时间线、审批、问题、对话与原始 Hook 事件。手动开启 Claude Code 网络监控后，还能在本地 Inspector 中检查 system prompt、messages、tools、response、Token 用量和 KV cache，并按模型与项目汇总统计。网络监控默认关闭。
 
 ## 宠物市场
 
-除了灵动岛,AgentBro 还可以把浮窗切换成 **宠物状态面板**:一只桌面宠物会跟随当前活跃的 Agent,它的活力会随上下文压力和 Token 用量实时变化,让你一眼看出会话是轻松还是吃紧。
+除了灵动岛，AgentBro 还可以把浮窗切换成宠物状态面板。一只桌面宠物会跟随当前活跃的 Agent，它的活力会随上下文压力和 Token 用量实时变化，让你一眼看出会话是轻松还是吃紧。
 
-**宠物市场** 让你浏览社区贡献的宠物并一键安装,整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动(基于 Node.js v18+)。在设置面板的 **Island -> 宠物市场** 即可打开,也可以在网页上预览全部宠物:
+宠物市场支持浏览和一键安装社区宠物，整个流程由 [`abpets`](https://www.npmjs.com/package/abpets) CLI 驱动（Node.js v18+）。在设置面板的 **Island -> 宠物市场** 即可打开，也可以在网页上预览：
 
 👉 **[www.agentbro.net/pets](https://www.agentbro.net/pets)**
 
@@ -111,15 +108,19 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
 
 <img src="https://github.com/user-attachments/assets/efd1acc8-67bb-460f-b7c9-3faa490611f5" alt="AgentBro 宠物市场" width="100%" />
 
-## Agent 管理
+灵动岛目前内置午夜、AgentBro 经典、磨砂玻璃、苹果、烟灰、海雾、暖纸和柔薰衣草等主题，也可以跟随系统自动切换浅色与深色外观。
 
-如果你同时在用 Claude Code、Codex、Gemini CLI、Cursor、Kimi、豆包、Qoder、OpenCode 等工具，AgentBro 可以把这些 Agent 的安装、接入、能力包和本地配置收进同一个工作台。入口在设置里的 **Agent管理**，里面包含 Skill 库、安装 Skill、技能包、项目、Agent 管理、诊断与修复等页面。
+## Agent 管理：一处管理所有 Agent 能力
 
-- 安装与版本：检测 CLI / 桌面 App 是否可用、当前版本、最新版本、可执行文件、配置目录和官方安装页；支持的 CLI 可以直接安装或更新，不支持自动安装的 App 会打开下载页。
-- Hook 接入：按 Agent 安装 / 卸载 Hook，查看 Bridge 命令和配置路径，并按审批、通知、生命周期、活动等事件分组开关。
-- Skill 中心库：扫描每个 Agent 的 Skills 目录，把未管理的 Skill 接管到中心库，再按软链接或拷贝分发到指定 Agent。
-- 技能包：把一组 Skills 做成可复用包，在 Agent 详情页一键应用或撤销；遇到冲突时可以选择覆盖、跳过或以 Agent 现有副本为准。
-- MCP、插件与路径：同屏查看 MCP server、插件、配置文件、Skills 目录和健康状态；项目页还可以导入 repo，检查项目级指令文件和 Agent 配置。
+如果你同时在用 Claude Code、Codex、Gemini CLI、Cursor、Kimi、豆包、Qoder、OpenCode 等工具，**Agent管理** 可以把它们的安装、接入和本地配置收进同一个工作台。
+
+- 自动发现 CLI 与桌面 App，显示当前版本、可用更新、可执行文件、配置目录和官方安装页；支持的 CLI 可以直接安装、更新或卸载。
+- 按 Agent 安装和修复 Hook，查看 Bridge 命令与配置路径，并分别控制审批、通知、生命周期和活动事件。
+- 扫描散落在不同目录中的 Skills，接管到中心库后，用软链接或副本分发给 Agent 与项目；批量操作、冲突处理和诊断状态都有记录。
+- 把常用 Skills 组合成技能包，一键应用到多个 Agent，也能安全撤销。
+- 管理 stdio、HTTP 和 SSE MCP 服务，检查 tools、resources、prompts 与连接日志；调用工具前会显示参数和风险确认。
+- 查看 Codex、Claude Code、WorkBuddy、ZCode、Kimi 等 Agent 的插件，搜索、启停、检查清单和内置能力，并预览插件文件。
+- 在校验后编辑支持的 JSON 或文本配置文件；项目页可以导入仓库，检查项目级指令、Skills、MCP 和插件。
 
 <table>
   <tr>
@@ -144,13 +145,21 @@ https://github.com/user-attachments/assets/374d6e53-c126-41be-a593-4e5f63485602
   </tr>
 </table>
 
+## Agent Switch
+
+Agent Switch 用来管理 Claude、Codex、Gemini、OpenCode 和 Hermes 的 API 供应商配置。你可以添加或复制供应商、切换当前配置、检测连通性与延迟，也可以从 CC Switch 预览并导入已有的供应商、MCP、Prompt 和 Skill 数据。
+
+## SSH 远程
+
+远程开发不需要再开一套监控界面。AgentBro 可以从 `~/.ssh/config` 导入主机，通过 SSH 隧道接收远端 Hook 事件，并在本机查看远程会话、安装或修复 Hooks、运行诊断。连接信息和会话来源会保留主机标识，便于同时区分本地与多台服务器上的任务。
+
 ## 支持的 Agent
 
-AgentBro 对不同 Agent 的支持分为两层：运行时 Hook 适配器负责把会话事件送进灵动岛；Agent 管理会继续扫描更多 CLI / App、Skills、MCP、插件和路径。
+AgentBro 的支持分为两层。运行时 Hook 适配器负责把会话事件送进灵动岛；Agent 管理还会扫描更大范围的 CLI、桌面 App、Skills、MCP、插件和路径。各 Agent 公开的 Hook 能力不同，因此事件和交互深度会有差异。
 
 | 范围 | Agent |
 | --- | --- |
-| 灵动岛 / Hook 深度接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy、Hermes、Pi、Kiro |
+| 灵动岛 / Hook 接入 | Claude Code、Codex、Gemini CLI、Cursor / Cursor CLI、GitHub Copilot、Cline、Qoder / Qoder CLI、CodeBuddy / CodeBuddy CN、Qwen、Kimi、DeepSeek、OpenCode、Factory Droid、StepFun、AntiGravity、WorkBuddy、Hermes、Pi、Kiro、ZCode |
 | Agent 管理扫描 | 上面所有 Agent，另支持豆包、`.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
 | 项目级扫描 | 目前聚焦 Claude Code 与 Codex 常见项目配置：项目级 Skills、MCP、插件和指令文件 |
 
@@ -158,16 +167,17 @@ AgentBro 对不同 Agent 的支持分为两层：运行时 Hook 适配器负责�
 
 ## 路线图
 
-AgentBro 会坚持本地优先：当前公开版先把灵动岛、Agent 管理、Skill 中心库、Hook 集成、快速处理和 SSH Remote 做扎实。后续希望继续探索：
+AgentBro 会继续坚持本地优先。接下来的重点包括：
 
 - 远程同步：跨设备同步设置、Hook、主题、Prompt、Skills 和远程主机配置。
 - 技能社区：发现、安装、分享和更新面向不同 Agent 的 Skill Pack。
-- 宠物生态：上架更多社区宠物、丰富宠物市场,并开放自定义宠物的创作与分享流程。
+- Windows：完善代码签名、自动更新和更多 Agent 的深度交互。
+- 宠物生态：上架更多社区宠物，完善自定义宠物的创作与分享流程。
 - 团队协作：共享配置、团队 Skill 包、权限控制和更清晰的协作视图。
 
 ## 加入交流群
 
-如果你正在使用 AgentBro，或者想参与后续 Windows、更多 Agent 深度适配、Agent Monitor、Agent Switch、Skills 社区等模块讨论，可以扫码添加微信，备注 **AgentBro 交流群**，或直接扫码加入 **AgentBro 开源社区** 群聊。
+如果你正在使用 AgentBro，或者想讨论 Windows 体验、更多 Agent 适配、Agent Monitor、Agent Switch 和 Skills 社区，可以扫码添加微信，备注 **AgentBro 交流群**，或直接扫码加入 **AgentBro 开源社区** 群聊。
 
 <div align="center">
   <table>
@@ -186,44 +196,25 @@ AgentBro 会坚持本地优先：当前公开版先把灵动岛、Agent 管理�
 
 ## 平台支持
 
-AgentBro 当前优先开发和测试 **macOS** 版本，并提供早期 **Windows MVP** 安装包。
+macOS 与 Windows 都会随正式版本发布可下载产物：
 
-Windows 版本已经具备基础悬浮窗口、Hook 传输、路径探测和安装包构建能力，但仍属于早期支持；签名、SmartScreen 体验、自动更新和部分 Agent 深度集成还会继续完善。
+| 平台 | 当前状态 | 发布形式 |
+| --- | --- | --- |
+| macOS | 主要开发与签名发布平台，功能覆盖最完整 | Apple Silicon / Intel 通用 DMG、Homebrew Cask、应用内更新 |
+| Windows x64 | 早期 MVP，悬浮窗、TCP Hook、Windows 路径探测、Agent 管理、Skills 和安装包已可用 | NSIS `.exe`、MSI |
+| Linux | 暂无正式版本 | 尚未进入当前发布计划 |
 
-Linux 后续也可以支持，但不属于第一个公开版本的目标。
-
-## 安装
-
-### Homebrew Cask
-
-一行安装：
-
-```bash
-brew tap shirenchuang/tap && brew install --cask agentbro
-```
-
-分步安装：
-
-```bash
-brew tap shirenchuang/tap
-brew install --cask agentbro
-```
-
-### 下载发行版
-
-- 🇨🇳 macOS 国内直链（推荐，速度快）：[下载最新 DMG](https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg)
-- Windows 安装包：在 [GitHub Releases](https://github.com/shirenchuang/agentbro/releases) 下载 `AgentBro_latest_x64-setup.exe` 或 `AgentBro_latest_x64.msi`
-- 🌍 海外 / 全部版本：[GitHub Releases](https://github.com/shirenchuang/agentbro/releases)
+Windows 仍在完善代码签名、SmartScreen 体验、自动更新和部分 Agent 的深度交互。Codex Desktop 的自由文本回复等少数能力会因 Windows 客户端接口限制而不可用，但不会影响会话观察和基础 Hook 交互。
 
 ## 本地开发
 
 ### 环境要求
 
-- macOS
-- Node.js
-- pnpm
+- macOS 或 Windows
+- Node.js 20+ 与 pnpm
 - Rust toolchain + Cargo
 - Tauri CLI：`cargo tauri --version`
+- macOS 需要 Xcode Command Line Tools；Windows 需要 Microsoft C++ Build Tools 与 WebView2
 
 ### 启动项目
 
@@ -252,14 +243,14 @@ pnpm dev
 ### 常用命令
 
 ```bash
-pnpm test:run      # 运行测试
-pnpm test          # 监听模式运行测试
-pnpm lint          # ESLint
-pnpm build         # 类型检查并构建前端
-cargo check        # 检查 Rust 后端
-pnpm tauri:build   # 构建 Tauri 应用
-pnpm tauri:build:windows # 构建 Windows NSIS/MSI 安装包
-./build.sh         # 构建通用 macOS DMG
+pnpm test:run                                      # 运行测试
+pnpm test                                          # 监听模式运行测试
+pnpm lint                                          # ESLint
+pnpm build                                         # 类型检查并构建前端
+cargo check --manifest-path src-tauri/Cargo.toml   # 检查 Rust 后端
+pnpm tauri:build                                   # 构建 macOS app / DMG
+pnpm tauri:build:windows                           # 构建 Windows NSIS / MSI
+./build.sh                                         # 构建通用 macOS DMG
 ```
 
 ## 接入 Agent
@@ -268,7 +259,7 @@ pnpm tauri:build:windows # 构建 Windows NSIS/MSI 安装包
 2. 如果只想接入灵动岛，进入 **Island -> Integration**，运行 **Hook Doctor**。
 3. 点击 **Install All Hooks**，或只安装你正在使用的 Agent Hook。
 4. 如果想统一管理 Agent、Skills、MCP 和插件，进入 **Agent管理**，再选择 **Agent 管理** 页。
-5. 选择一个 Agent，安装 / 更新它，或打开安装页；在 **Hooks** 页安装 Hook，在 **Skills** 页扫描、接管、分发或删除 Skills。
+5. 选择一个 Agent，安装或更新它；再按需进入 **Hooks**、**Skills**、**MCP** 或 **插件** 页完成配置。
 6. 重启对应的 CLI 会话，再启动 Claude Code、Codex、Gemini CLI 或其他支持的 Agent。
 
 之后 AgentBro 会在灵动岛中展示会话状态、工具调用、权限请求、问题、计划和完成提醒。
