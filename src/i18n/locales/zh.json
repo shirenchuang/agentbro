@@ -143,6 +143,13 @@
     "shortcuts": "快捷键",
     "agentMonitor": "Agent监控",
     "skillManager": "Agent管理",
+    "remoteServers": {
+      "title": "远程服务器",
+      "description": "统一管理 Agent 管理、诊断和灵动岛共用的 SSH 连接。",
+      "foundationTitle": "AgentBro 共用一份服务器目录",
+      "foundationDescription": "每台服务器只需配置一次，之后可在各个工作区直接选择。",
+      "islandConsumer": "灵动岛"
+    },
     "agents": "Agent 与技能",
     "switch": "Agent Switch",
     "skills": "技能管理",
@@ -367,7 +374,7 @@
       "open-settings": "打开设置"
     },
     "sshRemoteDesc": "通过 SSH 隧道将 AgentBro 连接到远程机器。",
-    "sshDescription": "AgentBro 可以将远程 SSH 会话的 Agent 事件转发到本地显示。需要在远程主机上安装 AgentBro CLI 助手。",
+    "sshDescription": "通过 SSH 连接远程主机，让 AgentBro 在一个地方管理远程 Agent 会话、Hooks 和诊断状态。",
     "sshPrerequisites": "前提条件",
     "sshPrerequisitesText": "确保每台远程主机上已安装 agentbro-remote，且 SSH 配置中已启用 TCP 端口转发。",
     "tcpPort": "TCP 端口",
@@ -710,7 +717,8 @@
     "skillPickerConflict": "应用前需要处理 {{count}} 个冲突。",
     "skillPickerError": "技能包更新失败：{{error}}",
     "skillPickerLoading": "正在载入技能包…",
-    "skillPickerUnavailable": "暂不可用"
+    "skillPickerUnavailable": "暂不可用",
+    "skillPickerRemoteHint": "当前技能包来自 {{name}}；读写会按需通过 SSH 完成，不依赖实时事件通道。"
   },
   "trial": {
     "expired": "试用已过期 — 升级以解锁全部功能",
@@ -720,6 +728,31 @@
   "skills": {
     "title": "技能管理",
     "description": "管理 AI Agent 的 Skills、MCP 和插件，支持跨设备同步。",
+    "runtimeEnvironment": {
+      "localName": "这台 Mac",
+      "localMeta": "本机",
+      "remoteMeta": "远程",
+      "switchLabel": "切换运行环境",
+      "switchHint": "选择 AgentBro 当前管理 Agent 的位置。",
+      "loading": "正在刷新运行环境",
+      "localSection": "本机环境",
+      "remoteSection": "远程服务器",
+      "empty": "暂无已配置的远程服务器。",
+      "reconnect": "重新连接",
+      "addRemote": "添加远程服务器",
+      "manageRemote": "管理服务器",
+      "currentLabel": "当前运行环境：{{name}}",
+      "connected": "已连接",
+      "connecting": "连接中",
+      "failed": "连接失败",
+      "disconnected": "已断开",
+      "liveConnected": "实时通道已连接",
+      "liveConnecting": "正在连接实时通道",
+      "liveFailed": "实时通道连接失败",
+      "liveDisconnected": "实时通道未连接",
+      "liveConnectLabel": "连接 {{name}} 的实时事件通道",
+      "liveConnectHint": "连接远程会话、Hooks 和灵动岛的实时事件通道。Skill 管理仍会按需通过 SSH 访问。"
+    },
     "pluginManagement": {
       "summary": "插件状态摘要",
       "total": "全部",

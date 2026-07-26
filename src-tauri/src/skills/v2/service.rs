@@ -113,23 +113,25 @@ impl Service {
     }
 
     pub fn center_path(&self) -> Result<PathBuf, String> {
-        let s = self.settings()?;
-        Ok(fsutil::expand_tilde(&s.center_path))
+        self.settings()?;
+        Ok(fixed_center_path(&self.home))
     }
 
     pub fn settings(&self) -> Result<SkillManagerSettings, String> {
-        self.db.with_conn(|c| {
+        let (settings, previous_center) = self.db.with_conn(|c| {
             let v = db::load_settings_json(c);
             if v.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                let def = SkillManagerSettings::default();
+                let mut def = SkillManagerSettings::default();
+                normalize_fixed_center_path(&self.home, &mut def);
                 // persist defaults so the file mirror + DB agree
                 let val = serde_json::to_value(&def).map_err(|e| e.to_string())?;
                 db::save_settings_json(c, &val)?;
-                Ok(def)
+                Ok((def, None))
             } else {
                 let mut settings: SkillManagerSettings =
                     serde_json::from_value(v).map_err(|e| e.to_string())?;
-                if normalize_shared_agents_center_path(&self.home, &mut settings) {
+                let previous_center = normalize_fixed_center_path(&self.home, &mut settings);
+                if previous_center.is_some() {
                     let val = serde_json::to_value(&settings).map_err(|e| e.to_string())?;
                     db::save_settings_json(c, &val)?;
                     let _ = std::fs::write(
@@ -137,13 +139,17 @@ impl Service {
                         serde_json::to_string_pretty(&val).unwrap_or_default(),
                     );
                 }
-                Ok(settings)
+                Ok((settings, previous_center))
             }
-        })
+        })?;
+        if let Some(source) = previous_center {
+            migrate_center_skills_best_effort(&source, &fixed_center_path(&self.home));
+        }
+        Ok(settings)
     }
 
     pub fn update_settings(&self, update: SettingsUpdate) -> Result<SkillManagerSettings, String> {
-        let next = self.db.with_conn(|c| {
+        let (next, previous_center) = self.db.with_conn(|c| {
             // Read directly from this connection — calling self.settings() here
             // would re-lock the Mutex and self-deadlock.
             let raw = db::load_settings_json(c);
@@ -153,9 +159,6 @@ impl Service {
                 } else {
                     serde_json::from_value(raw).map_err(|e| e.to_string())?
                 };
-            if let Some(v) = update.center_path {
-                current.center_path = v;
-            }
             if let Some(v) = update.sqlite_path {
                 current.sqlite_path = v;
             }
@@ -174,7 +177,7 @@ impl Service {
             if let Some(v) = update.auto_sync_skill_packs {
                 current.auto_sync_skill_packs = v;
             }
-            normalize_shared_agents_center_path(&self.home, &mut current);
+            let previous_center = normalize_fixed_center_path(&self.home, &mut current);
             let val = serde_json::to_value(&current).map_err(|e| e.to_string())?;
             db::save_settings_json(c, &val)?;
             // mirror to file for human inspection
@@ -182,9 +185,12 @@ impl Service {
                 fsutil::settings_path(),
                 serde_json::to_string_pretty(&val).unwrap_or_default(),
             );
-            Ok(current)
+            Ok((current, previous_center))
         })?;
-        let center = fsutil::expand_tilde(&next.center_path);
+        let center = fixed_center_path(&self.home);
+        if let Some(source) = previous_center {
+            migrate_center_skills_best_effort(&source, &center);
+        }
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         self.refresh_snapshot_best_effort();
         Ok(next)
@@ -5516,18 +5522,56 @@ fn read_relative_file(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, String>
         .map_err(|e| format!("read {}: {}", path.display(), e))
 }
 
-fn normalize_shared_agents_center_path(home: &Path, settings: &mut SkillManagerSettings) -> bool {
+fn fixed_center_path(home: &Path) -> PathBuf {
+    home.join(".agentbro").join("skills")
+}
+
+fn normalize_fixed_center_path(
+    home: &Path,
+    settings: &mut SkillManagerSettings,
+) -> Option<PathBuf> {
     let configured = fsutil::normalized_path(&fsutil::expand_tilde(&settings.center_path));
-    let shared_agents = fsutil::normalized_path(&home.join(".agents").join("skills"));
-    if configured != shared_agents {
-        return false;
+    let fixed = fixed_center_path(home);
+    if configured == fsutil::normalized_path(&fixed) {
+        settings.center_path = fixed.to_string_lossy().to_string();
+        return None;
     }
-    settings.center_path = home
-        .join(".agentbro")
-        .join("skills")
-        .to_string_lossy()
-        .to_string();
-    true
+    settings.center_path = fixed.to_string_lossy().to_string();
+    Some(configured)
+}
+
+fn migrate_center_skills_best_effort(source: &Path, target: &Path) {
+    if fsutil::normalized_path(source) == fsutil::normalized_path(target) || !source.is_dir() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(target) {
+        log::warn!(
+            "Create fixed Skill center {} before migration failed: {}",
+            target.display(),
+            error
+        );
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(source) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let source_skill = entry.path();
+        if !fsutil::is_skill_dir(&source_skill) {
+            continue;
+        }
+        let target_skill = target.join(entry.file_name());
+        if target_skill.exists() || target_skill.symlink_metadata().is_ok() {
+            continue;
+        }
+        if let Err(error) = fsutil::copy_dir_recursive(&source_skill, &target_skill) {
+            log::warn!(
+                "Migrate Skill {} into fixed center failed: {}",
+                source_skill.display(),
+                error
+            );
+        }
+    }
 }
 
 fn existing_path_info(path: &Path) -> (Option<String>, Option<String>) {

@@ -60,9 +60,15 @@ body.skill-pack-picker-body {
   padding: 17px 18px 10px;
 }
 
+.skill-pack-picker__context {
+  display: flex;
+  min-height: 18px;
+  align-items: center;
+  gap: 8px;
+}
+
 .skill-pack-picker__kicker {
-  display: block;
-  margin-bottom: 3px;
+  display: inline-block;
   color: var(--picker-accent);
   font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 9px;
@@ -70,7 +76,48 @@ body.skill-pack-picker-body {
   letter-spacing: 0.16em;
 }
 
+.skill-pack-picker__environment {
+  display: inline-flex;
+  max-width: 170px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(41, 118, 223, 0.18);
+  border-radius: 7px;
+  background: rgba(41, 118, 223, 0.075);
+  color: #276bc7;
+  font-size: 8.5px;
+  line-height: 1;
+}
+
+.skill-pack-picker__environment > span {
+  flex: none;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: -0.08em;
+}
+
+.skill-pack-picker__environment em {
+  flex: none;
+  opacity: 0.72;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.skill-pack-picker__environment strong {
+  overflow: hidden;
+  color: #1e4f92;
+  font-size: inherit;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .skill-pack-picker__header h1 {
+  margin-top: 1px;
   font-size: 20px;
   font-weight: 720;
   letter-spacing: -0.035em;

@@ -151,6 +151,13 @@
     "shortcuts": "Kısayollar",
     "agentMonitor": "Agent İzleme",
     "skillManager": "Agent Yönetimi",
+    "remoteServers": {
+      "title": "Uzak Sunucular",
+      "description": "Agent yönetimi, tanılama ve Dynamic Island tarafından paylaşılan SSH bağlantılarını yönetin.",
+      "foundationTitle": "AgentBro için ortak sunucu dizini",
+      "foundationDescription": "Her sunucuyu bir kez yapılandırın, ardından çalıştığınız yerde seçin.",
+      "islandConsumer": "Island"
+    },
     "agents": "Ajanlar",
     "sshRemote": "SSH Uzak",
     "labs": "Laboratuvar",
@@ -287,7 +294,7 @@
       "open-settings": "Ayarları Aç"
     },
     "sshRemoteDesc": "SSH tünelleri aracılığıyla AgentBro'ı uzak makinelere bağlayın.",
-    "sshDescription": "AgentBro, uzak SSH oturumlarından ajan olaylarını yerel ekranınıza iletebilir. Uzak ana bilgisayarda AgentBro CLI yardımcısının yüklü olması gerekir.",
+    "sshDescription": "Uzak makineleri SSH ile bağlayarak Agent oturumlarını, Hook'ları ve tanılamayı AgentBro üzerinden tek yerde yönetin.",
     "sshPrerequisites": "Ön Koşullar",
     "sshPrerequisitesText": "Her uzak ana bilgisayarda agentbro-remote'un yüklü olduğundan ve SSH yapılandırmanızda TCP port yönlendirmesinin etkinleştirildiğinden emin olun.",
     "tcpPort": "TCP Portu",
@@ -564,7 +571,8 @@
     "skillPickerConflict": "Bu paket uygulanmadan önce {{count}} çakışmanın çözülmesi gerekiyor.",
     "skillPickerError": "Beceri paketi güncellenemedi. {{error}}",
     "skillPickerLoading": "Beceri paketleri yükleniyor…",
-    "skillPickerUnavailable": "Kullanılamıyor"
+    "skillPickerUnavailable": "Kullanılamıyor",
+    "skillPickerRemoteHint": "Geçerli beceri paketleri {{name}} sunucusundan geliyor. Okuma ve yazma işlemleri gerektiğinde SSH kullanır; canlı olay kanalı gerekmez."
   },
   "trial": {
     "expired": "Deneme süresi doldu — Tüm özelliklerin kilidini açmak için yükseltin",
@@ -572,6 +580,31 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "runtimeEnvironment": {
+      "localName": "Bu Mac",
+      "localMeta": "Yerel",
+      "remoteMeta": "Uzak",
+      "switchLabel": "Çalışma ortamını değiştir",
+      "switchHint": "AgentBro'nun Agent'ları yöneteceği yeri seçin.",
+      "loading": "Çalışma ortamları yenileniyor",
+      "localSection": "Yerel ortam",
+      "remoteSection": "Uzak sunucular",
+      "empty": "Yapılandırılmış uzak sunucu yok.",
+      "reconnect": "Yeniden bağlan",
+      "addRemote": "Uzak sunucu ekle",
+      "manageRemote": "Sunucuları yönet",
+      "currentLabel": "Geçerli çalışma ortamı: {{name}}",
+      "connected": "Bağlandı",
+      "connecting": "Bağlanıyor",
+      "failed": "Bağlantı başarısız",
+      "disconnected": "Bağlantı kesildi",
+      "liveConnected": "Canlı kanal bağlı",
+      "liveConnecting": "Canlı kanal bağlanıyor",
+      "liveFailed": "Canlı kanal bağlantısı başarısız",
+      "liveDisconnected": "Canlı kanal bağlı değil",
+      "liveConnectLabel": "{{name}} için canlı olay kanalını bağla",
+      "liveConnectHint": "Uzak oturumlar, Hooks ve Dynamic Island için canlı olay kanalını bağlar. Beceri yönetimi gerektiğinde SSH kullanmaya devam eder."
+    },
     "pluginManagement": {
       "summary": "Eklenti durumu özeti",
       "total": "Tümü",

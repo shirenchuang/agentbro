@@ -153,6 +153,13 @@
     "shortcuts": "Shortcuts",
     "agentMonitor": "Agent Monitor",
     "skillManager": "Agent Skills",
+    "remoteServers": {
+      "title": "Remote Servers",
+      "description": "Manage the shared SSH connections used by Agent management, diagnostics, and the Dynamic Island.",
+      "foundationTitle": "One server directory for AgentBro",
+      "foundationDescription": "Configure each server once, then select it wherever you work.",
+      "islandConsumer": "Island"
+    },
     "agents": "Agents & Skills",
     "switch": "Agent Switch",
     "skills": "Skill Management",
@@ -343,7 +350,7 @@
       "open-settings": "Open Settings"
     },
     "sshRemoteDesc": "Connect AgentBro to remote machines via SSH tunnels.",
-    "sshDescription": "AgentBro can forward agent events from remote SSH sessions back to your local display. This requires the AgentBro CLI helper to be installed on the remote host.",
+    "sshDescription": "Connect remote machines over SSH so AgentBro can manage their Agent sessions, Hooks, and diagnostics from one place.",
     "sshPrerequisites": "Prerequisites",
     "sshPrerequisitesText": "Ensure agentbro-remote is installed on each remote host and that TCP port forwarding is enabled in your SSH config.",
     "tcpPort": "TCP Port",
@@ -669,7 +676,8 @@
     "skillPickerConflict": "{{count}} conflict(s) need attention before this pack can be applied.",
     "skillPickerError": "Couldn't update this skill pack. {{error}}",
     "skillPickerLoading": "Loading skill packs…",
-    "skillPickerUnavailable": "Unavailable"
+    "skillPickerUnavailable": "Unavailable",
+    "skillPickerRemoteHint": "These skill packs come from {{name}}. Reads and writes use SSH on demand and do not require the live event channel."
   },
   "trial": {
     "expired": "Trial expired — Upgrade to unlock all features",
@@ -679,6 +687,31 @@
   "skills": {
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
+    "runtimeEnvironment": {
+      "localName": "This Mac",
+      "localMeta": "Local",
+      "remoteMeta": "Remote",
+      "switchLabel": "Switch runtime environment",
+      "switchHint": "Choose where AgentBro manages Agents.",
+      "loading": "Refreshing environments",
+      "localSection": "Local environment",
+      "remoteSection": "Remote servers",
+      "empty": "No remote servers configured.",
+      "reconnect": "Reconnect",
+      "addRemote": "Add remote server",
+      "manageRemote": "Manage servers",
+      "currentLabel": "Current runtime environment: {{name}}",
+      "connected": "Connected",
+      "connecting": "Connecting",
+      "failed": "Connection failed",
+      "disconnected": "Disconnected",
+      "liveConnected": "Live channel connected",
+      "liveConnecting": "Connecting live channel",
+      "liveFailed": "Live channel failed",
+      "liveDisconnected": "Live channel not connected",
+      "liveConnectLabel": "Connect the live event channel for {{name}}",
+      "liveConnectHint": "Connect the live event channel for remote sessions, Hooks, and Dynamic Island. Skill management still uses SSH on demand."
+    },
     "pluginManagement": {
       "summary": "Plugin status summary",
       "total": "Total",

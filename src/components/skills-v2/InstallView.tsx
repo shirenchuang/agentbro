@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { open } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
+import type { AddCenterSkillInput, AddCenterSkillPreview, AddCenterSkillDecision, AdoptPreview, AgentSkillInventoryAgent, AgentSkillInventoryItem, FileTreeNode, RemoteSkillSourceEntry, RemoteSkillSourceListing, SkillPackSummary, SkillSummary } from '../../services/skillApiV2'
 import type { MarketplaceBatchProgress, MarketplaceSkill, MarketplaceSkillDetail, GitHubRepoPreview } from '../../services/skillApiV2'
 import { AdoptDialog } from './AdoptDialog'
 import { AgentIconBadge } from './AgentIconBadge'
@@ -16,6 +16,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
 import { skillErrorMessage, skillModeLabel, unmanagedReasonLabel } from './skillLabels'
 import { extractSkillDescription, stripSkillFrontmatter } from './frontmatter'
+import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
@@ -28,6 +29,7 @@ const marketCache = new Map<string, { timestamp: number; data: MarketplaceSkill[
 export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: InstallDoneHandler }) {
   const [tab, setTab] = useState<Tab>('market')
   const [gitUrl, setGitUrl] = useState('')
+  const { isLocal } = useSelectedRuntimeEnvironment()
 
   const installFromSource = (source?: string) => {
     if (source) setGitUrl(source)
@@ -49,7 +51,7 @@ export function InstallView({ onBack, onDone }: { onBack: () => void; onDone: In
           本地 Agent 同步
         </button>
         <button className={`sm2__addtab${tab === 'local' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('local')}>
-          本地安装
+          {isLocal ? '本地安装' : '服务器导入'}
         </button>
         <button className={`sm2__addtab${tab === 'git' ? ' sm2__addtab--active' : ''}`} onClick={() => setTab('git')}>
           Git 安装
@@ -3737,6 +3739,11 @@ function importKey(item: AgentSkillInventoryItem) {
 // ── Local ────────────────────────────────────────────────────────
 
 export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
+  const {
+    selectedEnvironmentId,
+    isLocal,
+    remoteHost,
+  } = useSelectedRuntimeEnvironment()
   const [sourcePath, setSourcePath] = useState('')
   const [importMode, setImportMode] = useState<LocalImportMode>('copy')
   const [preview, setPreview] = useState<AddCenterSkillPreview | null>(null)
@@ -3745,20 +3752,43 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
   const [conflictResolutions, setConflictResolutions] = useState<Record<string, LocalConflictResolution>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [remotePickerKind, setRemotePickerKind] = useState<RemoteSourcePickerKind | null>(null)
+  const environmentName = remoteHost?.name ?? selectedEnvironmentId
 
   const chooseFolder = async () => {
+    if (!isLocal) {
+      setRemotePickerKind('directory')
+      return
+    }
     const dir = await open({ directory: true, multiple: false })
     if (typeof dir === 'string') setSourcePath(dir)
   }
   const chooseZip = async () => {
+    if (!isLocal) {
+      setRemotePickerKind('archive')
+      return
+    }
     const f = await open({ filters: [{ name: '压缩包', extensions: ['zip'] }], multiple: false })
     if (typeof f === 'string') setSourcePath(f)
   }
 
+  useEffect(() => {
+    setSourcePath('')
+    setPreview(null)
+    setRemotePickerKind(null)
+    setError(null)
+  }, [selectedEnvironmentId])
+
   const sourceType = sourcePath.trim().toLowerCase().endsWith('.zip') ? 'archive' : 'local_folder'
   const effectiveImportMode: LocalImportMode = sourceType === 'archive' ? 'copy' : importMode
   const sourceUri = sourceType === 'local_folder' ? sourcePath : undefined
-  const addInput = { sourcePath, sourceType, sourceUri, importMode: effectiveImportMode }
+  const addInput: AddCenterSkillInput = {
+    sourcePath,
+    sourceType,
+    sourceUri,
+    importMode: effectiveImportMode,
+    ...(!isLocal && { sourceLocation: 'remote' as const }),
+  }
 
   const runPreview = async () => {
     if (!sourcePath) {
@@ -3825,7 +3855,9 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           <div>
             <h3 className="sm2__install-h">确认导入预览</h3>
             <p className="sm2__install-sub">
-              将导入到中心库：{preview.centerPath || '中心 Skill 库'} · {effectiveImportMode === 'link' ? '软链到本地源目录' : '复制到中心库'}
+              将导入到中心库：{preview.centerPath || '中心 Skill 库'} · {effectiveImportMode === 'link'
+                ? `软链到${isLocal ? '本地' : '远程'}源目录`
+                : '复制到中心库'}
             </p>
           </div>
           <div className="sm2__local-preview-actions">
@@ -3902,23 +3934,34 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
 
   return (
     <div className="sm2__install-form">
-      <h3 className="sm2__install-h">从本地导入</h3>
-      <p className="sm2__install-sub">支持文件夹、压缩包；选择包含多个 Skill 的目录时会自动批量预览。</p>
+      <h3 className="sm2__install-h">{isLocal ? '从本地导入' : `从 ${environmentName} 导入`}</h3>
+      <p className="sm2__install-sub">
+        {isLocal
+          ? '支持文件夹、压缩包；选择包含多个 Skill 的目录时会自动批量预览。'
+          : `浏览 ${environmentName} 服务器上的文件夹或压缩包；所有读取与导入都在远程服务器完成。`}
+      </p>
 
       <div className="sm2__install-options">
         <button className="sm2__install-option" onClick={chooseFolder}>
-          <span className="sm2__install-option-icon">📁</span>
-          <span className="sm2__install-option-label">选择文件夹</span>
+          <span className="sm2__install-option-icon" aria-hidden="true">📁</span>
+          <span className="sm2__install-option-label">{isLocal ? '选择文件夹' : '浏览远程文件夹'}</span>
         </button>
         <button className="sm2__install-option" onClick={chooseZip}>
-          <span className="sm2__install-option-icon">🗜️</span>
-          <span className="sm2__install-option-label">选择压缩包 (.zip)</span>
+          <span className="sm2__install-option-icon" aria-hidden="true">🗜️</span>
+          <span className="sm2__install-option-label">{isLocal ? '选择压缩包 (.zip)' : '选择远程压缩包 (.zip)'}</span>
         </button>
       </div>
 
       <div className="sm2__field">
-        <label htmlFor="local-skill-source-path">来源路径</label>
-        <input id="local-skill-source-path" value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="选择或粘贴包含 SKILL.md 的目录 / .zip" />
+        <label htmlFor="local-skill-source-path">{isLocal ? '来源路径' : '远程来源路径'}</label>
+        <input
+          id="local-skill-source-path"
+          value={sourcePath}
+          onChange={(e) => setSourcePath(e.target.value)}
+          placeholder={isLocal
+            ? '选择或粘贴包含 SKILL.md 的目录 / .zip'
+            : '浏览或输入远程服务器上的目录 / .zip'}
+        />
       </div>
 
       {sourceType === 'local_folder' && (
@@ -3933,21 +3976,28 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
             />
             <span>
               <strong>复制导入</strong>
-              <em>把当前文件复制到中心库。适合稳定 Skill；之后修改原始目录不会自动同步。</em>
+              <em>
+                把当前文件复制到{isLocal ? '本机' : '远程服务器'}中心库。适合稳定 Skill；之后修改原始目录不会自动同步。
+              </em>
             </span>
           </label>
           <label className={`sm2__local-import-option${effectiveImportMode === 'link' ? ' sm2__local-import-option--active' : ''}`}>
             <input
               type="radio"
               name="local-import-mode"
-              aria-label="软链导入，本地目录作为源"
+              aria-label={`软链导入，${isLocal ? '本地' : '远程'}目录作为源`}
               checked={effectiveImportMode === 'link'}
               onChange={() => setImportMode('link')}
             />
             <span>
-              <strong>软链导入，本地目录作为源</strong>
-              <em>中心库链接到这个目录。以后改本地 Skill 会立即影响中心库；分发给 Agent 时也选择软连接，Agent 才会实时读到同一份源目录。</em>
-              <small>常见使用场景：本地已有 Skill，并且需要持续自己修改、调试、立即生效时，选择这个方式更合适。</small>
+              <strong>软链导入，{isLocal ? '本地' : '远程'}目录作为源</strong>
+              <em>
+                中心库链接到这个目录。以后修改{isLocal ? '本地' : '远程'} Skill 会立即影响中心库；分发给 Agent
+                时也选择软连接，Agent 才会实时读到同一份源目录。
+              </em>
+              <small>
+                常见使用场景：{isLocal ? '本地' : '远程服务器'}已有 Skill，并且需要持续修改、调试、立即生效时，选择这个方式更合适。
+              </small>
             </span>
           </label>
         </div>
@@ -3956,8 +4006,8 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
         {sourceType === 'archive'
           ? '压缩包会解压后复制导入中心库，不支持软链导入。'
           : effectiveImportMode === 'link'
-            ? '请保留这个本地源目录的位置。移动或删除源目录后，中心库和已软链分发的 Agent 都会变成坏链接。'
-            : '复制导入会保留一份中心库副本；后续要同步本地修改，需要重新导入或覆盖中心库。'}
+            ? `请保留这个${isLocal ? '本地' : '远程'}源目录的位置。移动或删除源目录后，中心库和已软链分发的 Agent 都会变成坏链接。`
+            : `复制导入会保留一份中心库副本；后续要同步${isLocal ? '本地' : '远程'}修改，需要重新导入或覆盖中心库。`}
       </div>
 
       {error && <div className="sm2__error" style={{ margin: 0 }}>{error}</div>}
@@ -3969,7 +4019,191 @@ export function LocalPanel({ onDone }: { onDone: InstallDoneHandler }) {
           {busy ? '处理中…' : '预览导入'}
         </button>
       </div>
+      {remotePickerKind && (
+        <RemoteSourcePicker
+          kind={remotePickerKind}
+          environmentName={environmentName}
+          onCancel={() => setRemotePickerKind(null)}
+          onSelect={(path) => {
+            setSourcePath(path)
+            setRemotePickerKind(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+type RemoteSourcePickerKind = 'directory' | 'archive'
+
+function RemoteSourcePicker({
+  kind,
+  environmentName,
+  onSelect,
+  onCancel,
+}: {
+  kind: RemoteSourcePickerKind
+  environmentName: string
+  onSelect: (path: string) => void
+  onCancel: () => void
+}) {
+  const [listing, setListing] = useState<RemoteSkillSourceListing | null>(null)
+  const [pathInput, setPathInput] = useState('~')
+  const [selectedArchive, setSelectedArchive] = useState<RemoteSkillSourceEntry | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadDirectory = useCallback(async (path: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await skillApiV2.browseRemoteSkillSources(path)
+      setListing(next)
+      setPathInput(next.path)
+      setSelectedArchive(null)
+    } catch (loadError) {
+      setError(String(loadError))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadDirectory('~')
+  }, [loadDirectory])
+
+  const visibleEntries = (listing?.entries ?? []).filter((entry) => (
+    entry.entryType === 'directory' || kind === 'archive'
+  ))
+  const selectedPath = kind === 'directory' ? listing?.path : selectedArchive?.path
+  const title = kind === 'directory'
+    ? `选择 ${environmentName} 上的文件夹`
+    : `选择 ${environmentName} 上的压缩包`
+
+  return (
+    <PreviewDialog
+      title={title}
+      modalClassName="sm2__modal--remote-source"
+      onCancel={onCancel}
+      onConfirm={() => {
+        if (selectedPath) onSelect(selectedPath)
+      }}
+      actions={(
+        <>
+          <button type="button" className="sm2__btn" onClick={onCancel}>取消</button>
+          <button
+            type="button"
+            className="sm2__btn sm2__btn--primary"
+            disabled={!selectedPath || loading}
+            onClick={() => {
+              if (selectedPath) onSelect(selectedPath)
+            }}
+          >
+            {kind === 'directory' ? '选择当前文件夹' : '选择压缩包'}
+          </button>
+        </>
+      )}
+    >
+      <div className="sm2__remote-source-context">
+        <span aria-hidden="true">&gt;_</span>
+        <div>
+          <strong>{environmentName}</strong>
+          <small>
+            {kind === 'directory'
+              ? '这里只显示远程服务器上的文件夹'
+              : '这里只显示远程服务器上的文件夹和 .zip 文件'}
+          </small>
+        </div>
+      </div>
+
+      <form
+        className="sm2__remote-source-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void loadDirectory(pathInput)
+        }}
+      >
+        <button
+          type="button"
+          className="sm2__remote-source-nav"
+          aria-label="远程主目录"
+          title="远程主目录"
+          onClick={() => void loadDirectory('~')}
+        >
+          ⌂
+        </button>
+        <button
+          type="button"
+          className="sm2__remote-source-nav"
+          aria-label="上一级目录"
+          title="上一级目录"
+          disabled={!listing?.parentPath || loading}
+          onClick={() => {
+            if (listing?.parentPath) void loadDirectory(listing.parentPath)
+          }}
+        >
+          ↑
+        </button>
+        <input
+          aria-label="远程目录路径"
+          value={pathInput}
+          onChange={(event) => setPathInput(event.target.value)}
+        />
+        <button type="submit" className="sm2__remote-source-go" disabled={loading || !pathInput.trim()}>
+          前往
+        </button>
+      </form>
+
+      <div className="sm2__remote-source-list" aria-busy={loading}>
+        {loading ? (
+          <div className="sm2__remote-source-empty">
+            <span className="sm2__spinner" aria-hidden="true" />
+            正在读取远程目录…
+          </div>
+        ) : error ? (
+          <div className="sm2__remote-source-error" role="alert">{error}</div>
+        ) : visibleEntries.length === 0 ? (
+          <div className="sm2__remote-source-empty">
+            {kind === 'directory' ? '这个目录下没有子文件夹' : '这个目录下没有文件夹或 .zip 文件'}
+          </div>
+        ) : (
+          visibleEntries.map((entry) => {
+            const selected = selectedArchive?.path === entry.path
+            return (
+              <button
+                key={entry.path}
+                type="button"
+                className={`sm2__remote-source-entry${selected ? ' sm2__remote-source-entry--selected' : ''}`}
+                aria-pressed={entry.entryType === 'archive' ? selected : undefined}
+                onClick={() => {
+                  if (entry.entryType === 'directory') {
+                    void loadDirectory(entry.path)
+                  } else {
+                    setSelectedArchive(entry)
+                  }
+                }}
+                onDoubleClick={() => {
+                  if (entry.entryType === 'archive') onSelect(entry.path)
+                }}
+              >
+                <span className={`sm2__remote-source-icon sm2__remote-source-icon--${entry.entryType}`} aria-hidden="true">
+                  {entry.entryType === 'directory' ? '▸' : 'ZIP'}
+                </span>
+                <span className="sm2__remote-source-entry-copy">
+                  <strong>{entry.name}</strong>
+                  <small>
+                    {entry.entryType === 'directory'
+                      ? entry.hasSkillManifest ? 'Skill 文件夹' : '文件夹'
+                      : '压缩包'}
+                  </small>
+                </span>
+                {entry.hasSkillManifest && <em>SKILL.md</em>}
+              </button>
+            )
+          })
+        )}
+      </div>
+    </PreviewDialog>
   )
 }
 

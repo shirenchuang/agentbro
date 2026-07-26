@@ -46,8 +46,8 @@ pub fn default_center_path() -> PathBuf {
 }
 
 /// Legacy roots that may contain skills from older AgentBro builds. v2 keeps
-/// them discoverable for migration/diagnosis, but new writes go to
-/// `default_center_path()` or the user-configured center path.
+/// them discoverable for migration/diagnosis, but new writes always go to
+/// `default_center_path()`.
 pub fn all_center_dirs() -> Vec<PathBuf> {
     vec![
         home().join(".agentbro").join("skills"),

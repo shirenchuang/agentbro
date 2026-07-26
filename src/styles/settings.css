@@ -394,7 +394,11 @@
 }
 
 .settings-sidebar--capability {
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
   padding: 16px 14px;
+  overflow: visible;
 }
 
 .settings-sidebar--capability .settings-sidebar__brand-home,
@@ -405,7 +409,10 @@
 .settings-capability-nav {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  flex: 1;
   gap: 6px;
+  overflow-y: auto;
 }
 
 .settings-capability-nav button,
@@ -504,6 +511,364 @@
   background: #0a84ff;
   color: #fff;
   font-size: 8px;
+}
+
+/* ── Runtime Environment Switcher ── */
+.runtime-environment {
+  position: relative;
+  flex: 0 0 auto;
+  padding-top: 12px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(40, 51, 77, 0.10);
+}
+
+.runtime-environment__trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 62px;
+  padding: 9px 10px;
+  border: 1px solid rgba(40, 51, 77, 0.11);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(239, 242, 249, 0.78));
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  box-shadow: 0 12px 28px rgba(31, 41, 71, 0.08), 0 1px 0 rgba(255, 255, 255, 0.92) inset;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.runtime-environment__trigger:hover {
+  border-color: rgba(10, 132, 255, 0.25);
+  box-shadow: 0 16px 34px rgba(31, 41, 71, 0.11), 0 1px 0 rgba(255, 255, 255, 0.96) inset;
+  transform: translateY(-1px);
+}
+
+.runtime-environment__trigger:focus-visible,
+.runtime-environment__option-main:focus-visible,
+.runtime-environment__reconnect:focus-visible,
+.runtime-environment__footer button:focus-visible {
+  outline: 2px solid var(--settings-accent);
+  outline-offset: 2px;
+}
+
+.runtime-environment__terminal,
+.runtime-environment__option-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #252c3a, #10141c);
+  color: #f7fbff;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Monaco, monospace;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: -0.08em;
+  box-shadow: 0 8px 18px rgba(15, 20, 29, 0.24), 0 1px 0 rgba(255, 255, 255, 0.16) inset;
+}
+
+.runtime-environment__terminal--local,
+.runtime-environment__option-icon--local {
+  background: linear-gradient(145deg, #157efb, #5446ed);
+  font-family: inherit;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.runtime-environment__terminal .runtime-environment__status-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  box-shadow: 0 0 0 3px rgba(248, 250, 255, 0.98);
+}
+
+.runtime-environment__copy,
+.runtime-environment__option-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.runtime-environment__name,
+.runtime-environment__option-copy strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 820;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-environment__meta,
+.runtime-environment__option-copy span {
+  overflow: hidden;
+  color: var(--settings-text-secondary);
+  font-size: 10.5px;
+  font-weight: 620;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-environment__chevron {
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  transition: transform 0.16s ease;
+}
+
+.runtime-environment__chevron--open {
+  transform: rotate(180deg);
+}
+
+.runtime-environment__status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: #aeaeb2;
+}
+
+.runtime-environment__status-dot--connected {
+  background: #34c759;
+}
+
+.runtime-environment__status-dot--connecting {
+  background: #ff9500;
+  animation: runtime-environment-pulse 1.25s ease-in-out infinite;
+}
+
+.runtime-environment__status-dot--failed {
+  background: #ff3b30;
+}
+
+.runtime-environment__status-dot--disconnected {
+  background: #aeaeb2;
+}
+
+.runtime-environment__popover {
+  position: absolute;
+  z-index: 80;
+  left: 0;
+  right: auto;
+  bottom: calc(100% + 10px);
+  width: 304px;
+  max-height: min(520px, calc(100vh - 150px));
+  padding: 10px;
+  overflow-y: auto;
+  border: 1px solid rgba(40, 51, 77, 0.14);
+  border-radius: 22px;
+  background: rgba(250, 251, 255, 0.96);
+  box-shadow: 0 26px 70px rgba(25, 33, 52, 0.22), 0 1px 0 rgba(255, 255, 255, 0.95) inset;
+  backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.runtime-environment__popover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px 10px;
+}
+
+.runtime-environment__popover-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.runtime-environment__popover-head strong {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.runtime-environment__popover-head span,
+.runtime-environment__empty {
+  color: var(--settings-text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.runtime-environment__spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-top: 2px;
+  border: 2px solid rgba(10, 132, 255, 0.18);
+  border-top-color: var(--settings-accent);
+  border-radius: 999px;
+  animation: runtime-environment-spin 0.7s linear infinite;
+}
+
+.runtime-environment__section-label {
+  padding: 8px 8px 5px;
+  color: var(--settings-text-secondary);
+  font-size: 9.5px;
+  font-weight: 820;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.runtime-environment__section-label--remote {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 5px;
+  border-top: 1px solid rgba(40, 51, 77, 0.08);
+}
+
+.runtime-environment__section-label em {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.runtime-environment__option {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  margin: 2px 0;
+  border-radius: 15px;
+  transition: background 0.15s ease;
+}
+
+.runtime-environment__option:hover {
+  background: rgba(12, 24, 48, 0.05);
+}
+
+.runtime-environment__option--selected {
+  background: rgba(10, 132, 255, 0.09);
+}
+
+.runtime-environment__option-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  min-height: 54px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  color: var(--settings-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.runtime-environment__option-icon {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+
+.runtime-environment__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 999px;
+  background: var(--settings-accent);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.runtime-environment__reconnect {
+  align-self: center;
+  padding: 5px 7px;
+  margin-right: 7px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.10);
+  color: var(--settings-accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9.5px;
+  font-weight: 780;
+}
+
+.runtime-environment__empty {
+  padding: 11px 10px 13px;
+}
+
+.runtime-environment__footer {
+  padding: 8px 2px 1px;
+  margin-top: 6px;
+  border-top: 1px solid rgba(40, 51, 77, 0.09);
+}
+
+.runtime-environment__footer button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--settings-accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.runtime-environment__footer button:hover {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.runtime-environment--collapsed {
+  padding-top: 10px;
+}
+
+.runtime-environment--collapsed .runtime-environment__trigger {
+  justify-content: center;
+  width: 50px;
+  min-height: 50px;
+  padding: 0;
+  margin: 0 auto;
+  border-radius: 16px;
+}
+
+.runtime-environment--collapsed .runtime-environment__terminal {
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+}
+
+.runtime-environment--collapsed .runtime-environment__copy,
+.runtime-environment--collapsed .runtime-environment__chevron {
+  display: none;
+}
+
+@keyframes runtime-environment-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes runtime-environment-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-environment__spinner,
+  .runtime-environment__status-dot--connecting {
+    animation: none;
+  }
 }
 
 @keyframes settings-task-pulse {
@@ -1687,19 +2052,248 @@
   transform: translateY(-1px);
 }
 
+/* ── Remote server directory ── */
+.remote-servers-section {
+  width: min(100%, 960px);
+}
+
+.remote-servers-section .setting-section__header {
+  margin-bottom: 18px;
+}
+
+.remote-servers-section .setting-section__title {
+  font-size: 30px;
+  letter-spacing: -0.045em;
+}
+
+.remote-servers-section .setting-section__description {
+  max-width: 760px;
+  font-size: 14px;
+}
+
+.remote-servers-section .setting-section__body {
+  gap: 18px;
+}
+
+.remote-servers-foundation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 15px;
+  padding: 16px 18px;
+  border: 1px solid rgba(37, 55, 87, 0.12);
+  border-radius: 18px;
+  background:
+    linear-gradient(115deg, rgba(17, 24, 39, 0.055), rgba(10, 132, 255, 0.035) 52%, rgba(255, 255, 255, 0.68)),
+    rgba(255, 255, 255, 0.62);
+  box-shadow: 0 12px 34px rgba(31, 41, 71, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.remote-servers-foundation__terminal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #202837, #0e131d);
+  color: #79e5db;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow: 0 10px 22px rgba(17, 24, 32, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.remote-servers-foundation__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.remote-servers-foundation__copy strong {
+  color: var(--settings-text-primary);
+  font-size: 15px;
+  font-weight: 790;
+}
+
+.remote-servers-foundation__copy > span {
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.remote-servers-foundation__stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-servers-foundation__stats > span {
+  display: grid;
+  min-width: 68px;
+  padding: 7px 10px;
+  border: 1px solid rgba(40, 51, 77, 0.09);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.66);
+  text-align: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.remote-servers-foundation__stats strong {
+  color: var(--settings-text-primary);
+  font-size: 16px;
+  font-weight: 860;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.remote-servers-foundation__stats small {
+  margin-top: 4px;
+  color: var(--settings-text-tertiary);
+  font-size: 9px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.remote-servers-foundation__stat--online strong {
+  color: #178544;
+}
+
+.remote-servers-infra {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1.18fr);
+  gap: 10px;
+}
+
+.remote-servers-infra__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 68px;
+  padding: 11px 13px;
+  border: 1px solid rgba(40, 51, 77, 0.10);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: 0 8px 24px rgba(31, 41, 71, 0.045), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.remote-servers-infra__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 10px;
+  background: rgba(10, 132, 255, 0.10);
+  color: #0a73d9;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.remote-servers-infra__icon--requirement {
+  background: rgba(34, 197, 94, 0.10);
+  color: #178544;
+}
+
+.remote-servers-infra__copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.remote-servers-infra__copy strong {
+  color: var(--settings-text-primary);
+  font-size: 12px;
+  font-weight: 790;
+}
+
+.remote-servers-infra__copy span {
+  color: var(--settings-text-secondary);
+  font-size: 10.5px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
+.remote-servers-infra__port.glass-input {
+  width: 78px;
+  min-width: 78px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 11px;
+  text-align: center;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+}
+
+.remote-servers-section .setting-group__header {
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+
+.remote-servers-section .setting-group__label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.remote-servers-section .settings-card {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 10px 28px rgba(31, 41, 71, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.remote-servers-section .setting-group {
+  padding: 9px;
+}
+
 /* ── SSH Host Card ── */
 .ssh-host-card {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 16px;
-  padding: 16px 0;
-  min-height: 62px;
+  gap: 12px;
+  min-height: 72px;
   min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid rgba(40, 51, 77, 0.10);
+  border-radius: 15px;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.90), rgba(247, 249, 253, 0.78));
+  box-shadow: 0 8px 22px rgba(31, 41, 71, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.88);
 }
 
 .ssh-host-card + .ssh-host-card {
-  border-top: 1px solid var(--settings-separator);
+  margin-top: 8px;
+}
+
+.ssh-host-card--connected {
+  border-color: rgba(34, 197, 94, 0.18);
+}
+
+.ssh-host-card--failed {
+  border-color: rgba(255, 59, 48, 0.20);
+}
+
+.ssh-host-card__terminal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #212938, #0f141d);
+  color: #dce9f8;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: -0.08em;
+  box-shadow: 0 8px 18px rgba(17, 24, 32, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .ssh-host-card__info {
@@ -1707,10 +2301,17 @@
   min-width: 0;
 }
 
+.ssh-host-card__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .ssh-host-card__name {
-  font-size: 15px;
+  font-size: 14px;
   color: var(--settings-text-primary);
-  font-weight: 720;
+  font-weight: 820;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1721,9 +2322,9 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 5px;
-  font-size: 13px;
+  gap: 7px;
+  margin-top: 4px;
+  font-size: 11px;
   color: var(--settings-text-secondary);
   font-family: 'SF Mono', 'Menlo', monospace;
   overflow-wrap: anywhere;
@@ -1737,7 +2338,8 @@
 .ssh-host-card__error {
   color: #c53030;
   font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
-  font-weight: 650;
+  font-size: 10px;
+  font-weight: 680;
 }
 
 .ssh-host-card__actions {
@@ -1752,48 +2354,81 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(154, 161, 174, 0.10);
   font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
-  font-weight: 720;
+  font-size: 9.5px;
+  font-weight: 760;
   white-space: nowrap;
 }
 
 .ssh-status__dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   background: #9aa1ae;
-  box-shadow: 0 0 0 3px rgba(154, 161, 174, 0.14);
 }
 
 .ssh-status--connected {
   color: #16823a;
+  background: rgba(34, 197, 94, 0.10);
 }
 
 .ssh-status--connected .ssh-status__dot {
   background: #22c55e;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
 }
 
 .ssh-status--connecting {
   color: #0b6cb8;
+  background: rgba(10, 132, 255, 0.10);
 }
 
 .ssh-status--connecting .ssh-status__dot {
   background: #0a84ff;
-  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.14);
 }
 
 .ssh-status--failed {
   color: #c53030;
+  background: rgba(255, 59, 48, 0.10);
 }
 
 .ssh-status--failed .ssh-status__dot {
   background: #ff3b30;
-  box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.14);
+}
+
+.ssh-host-card__primary {
+  min-width: 70px;
+  border-color: rgba(10, 132, 255, 0.25);
+  background: linear-gradient(135deg, #1689ff, #4964f4);
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(30, 112, 245, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.ssh-host-card__primary:hover {
+  border-color: rgba(10, 132, 255, 0.30);
+  background: linear-gradient(135deg, #218eff, #556df6);
+  color: #ffffff;
+}
+
+.ssh-host-card__primary--disconnect {
+  border-color: rgba(40, 51, 77, 0.11);
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--settings-text-secondary);
+  box-shadow: 0 7px 18px rgba(31, 41, 71, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.ssh-host-card__primary--disconnect:hover {
+  border-color: rgba(255, 59, 48, 0.18);
+  background: rgba(255, 248, 247, 0.92);
+  color: #b23a32;
 }
 
 .ssh-host-card--import {
-  padding: 14px 4px;
+  min-height: 58px;
+  padding: 11px 12px;
+  box-shadow: none;
 }
 
 .ssh-host-card--import .settings-mini-button {
@@ -1801,7 +2436,8 @@
 }
 
 .ssh-empty-state {
-  padding: 18px 8px;
+  padding: 22px 14px;
+  text-align: center;
 }
 
 .ssh-empty-state__title {
@@ -1820,30 +2456,35 @@
 .ssh-add-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
-  padding: 10px 0;
+  padding: 2px;
 }
 
 .ssh-import-list {
-  margin: -6px 0;
   max-height: min(520px, 48vh);
   overflow-y: auto;
-  padding-right: 4px;
 }
 
 .ssh-host-card__remove {
-  background: none;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
   color: var(--settings-text-tertiary);
   cursor: pointer;
-  padding: 4px;
   font-size: 14px;
-  border-radius: 4px;
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .ssh-host-card__remove:hover {
+  border-color: rgba(255, 59, 48, 0.14);
+  background: rgba(255, 59, 48, 0.07);
   color: var(--settings-danger);
 }
 
@@ -1854,8 +2495,8 @@
 
 .ssh-host-card__notice {
   width: 100%;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 7px 10px;
+  border-radius: 9px;
   font-size: var(--font-size-xs, 11px);
   line-height: 1.4;
 }
@@ -1888,7 +2529,9 @@
 }
 
 .settings-mini-button--active {
-  background: var(--settings-hover, rgba(0, 0, 0, 0.06));
+  border-color: rgba(10, 132, 255, 0.20);
+  background: rgba(10, 132, 255, 0.08);
+  color: #0a6fca;
 }
 
 .settings-mini-button--sm {
@@ -1900,10 +2543,10 @@
 /* ── Hooks Panel (inline under host card) ── */
 .ssh-hooks-panel {
   width: 100%;
-  padding: 10px 14px;
-  background: var(--settings-card-bg, rgba(0, 0, 0, 0.02));
-  border-radius: 8px;
-  border: 1px solid var(--settings-separator, rgba(0, 0, 0, 0.06));
+  padding: 12px 14px;
+  background: rgba(246, 249, 254, 0.84);
+  border-radius: 12px;
+  border: 1px solid rgba(40, 51, 77, 0.08);
 }
 
 .ssh-hooks-panel__header {
@@ -1943,10 +2586,10 @@
 
 .ssh-probe-panel {
   width: 100%;
-  padding: 10px 14px;
-  background: var(--settings-card-bg, rgba(0, 0, 0, 0.02));
-  border-radius: 8px;
-  border: 1px solid var(--settings-separator, rgba(0, 0, 0, 0.06));
+  padding: 12px 14px;
+  background: rgba(246, 249, 254, 0.84);
+  border-radius: 12px;
+  border: 1px solid rgba(40, 51, 77, 0.08);
 }
 
 .ssh-probe-panel__list {
@@ -1999,12 +2642,29 @@
 }
 
 @media (max-width: 720px) {
-  .ssh-host-card {
-    align-items: flex-start;
-    flex-direction: column;
+  .remote-servers-foundation {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .ssh-host-card__actions,
+  .remote-servers-foundation__stats {
+    grid-column: 1 / -1;
+    padding-left: 56px;
+  }
+
+  .remote-servers-infra {
+    grid-template-columns: 1fr;
+  }
+
+  .ssh-host-card {
+    align-items: flex-start;
+  }
+
+  .ssh-host-card__actions {
+    width: 100%;
+    padding-left: 52px;
+    justify-content: flex-start;
+  }
+
   .ssh-add-form {
     width: 100%;
   }
