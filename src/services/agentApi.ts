@@ -1,6 +1,35 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri as isTauriRuntime } from './tauriApi'
+import {
+  LOCAL_RUNTIME_ENVIRONMENT_ID,
+  useRuntimeEnvironmentStore,
+} from '../stores/runtimeEnvironmentStore'
+
+async function invoke<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+  if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID) {
+    return tauriInvoke<T>(command, args)
+  }
+  if (command === 'agent_open_download') {
+    return tauriInvoke<T>(command, args)
+  }
+  if (command === 'install_agent_hook' || command === 'uninstall_agent_hook') {
+    const remoteCommand = command === 'install_agent_hook'
+      ? 'install_remote_agent_hooks'
+      : 'uninstall_remote_agent_hooks'
+    const agentId = args?.toolName === 'cursor' ? 'cursor-cli' : args?.toolName
+    return tauriInvoke<T>(remoteCommand, {
+      id: environmentId,
+      agentId,
+    })
+  }
+  return tauriInvoke<T>('remote_skill_manager_invoke', {
+    id: environmentId,
+    command,
+    args: args ?? {},
+  })
+}
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'

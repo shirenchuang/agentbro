@@ -11,6 +11,7 @@ import { IslandSection } from './sections/IslandSection'
 import { AgentMonitorSection } from './sections/AgentMonitorSection'
 import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
+import { RemoteServersSection } from './sections/RemoteServersSection'
 import { SkillManagerSection } from '../skills-v2/SkillManagerSection'
 import { MarketplaceInstallTaskDock } from '../skills-v2/MarketplaceInstallTaskDock'
 import { useUpdater } from '../../hooks/useUpdater'
@@ -22,6 +23,7 @@ import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
   'general': GeneralSection,
+  'remote-servers': RemoteServersSection,
   'skill-manager-v2': SkillManagerSection,
 }
 

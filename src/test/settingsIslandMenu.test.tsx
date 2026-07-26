@@ -120,7 +120,7 @@ describe('settings island menu', () => {
     expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(true)
   })
 
-  it('places SSH Remote under Integration and keeps it separate from Advanced', async () => {
+  it('keeps SSH server management out of the Dynamic Island menu', async () => {
     const { container } = render(<SettingsApp onClose={vi.fn()} />)
 
     fireEvent.click(screen.getByText('settings.island.title'))
@@ -128,25 +128,33 @@ describe('settings island menu', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Overview/ })).toHaveClass('active'))
     const islandMenuLabels = Array.from(container.querySelectorAll('.settings-capability-nav button'))
       .map((button) => button.getAttribute('aria-label'))
-    const integrationIdx = islandMenuLabels.indexOf('Integration')
-    expect(integrationIdx).toBeGreaterThan(-1)
-    expect(islandMenuLabels.slice(integrationIdx, integrationIdx + 2)).toEqual(['Integration', 'SSH Remote'])
-
-    fireEvent.click(screen.getByRole('button', { name: /SSH Remote/ }))
-
-    await waitFor(() => expect(screen.getByText('settings.sshDescription')).toBeInTheDocument())
-
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-
-    await waitFor(() => expect(screen.getByText('Visual Signals')).toBeInTheDocument())
+    expect(islandMenuLabels).toContain('Integration')
+    expect(islandMenuLabels).not.toContain('SSH Remote')
     expect(screen.queryByText('settings.sshDescription')).not.toBeInTheDocument()
   })
 
-  it('keeps the SSH Remote host fallback working outside Tauri', async () => {
+  it('opens Remote Servers as an independent settings section', async () => {
     render(<SettingsApp onClose={vi.fn()} />)
 
-    fireEvent.click(screen.getByText('settings.island.title'))
-    fireEvent.click(screen.getByRole('button', { name: /SSH Remote/ }))
+    fireEvent.click(screen.getByText('settings.remoteServers.title'))
+
+    await waitFor(() => expect(screen.getByText('settings.listeningPortDesc')).toBeInTheDocument())
+    expect(screen.getByText('One server directory for AgentBro')).toBeInTheDocument()
+  })
+
+  it('places Remote Servers immediately after Agent management', () => {
+    const { container } = render(<SettingsApp onClose={vi.fn()} />)
+    const labels = Array.from(container.querySelectorAll('.settings-sidebar__item .settings-sidebar__label-text'))
+      .map((item) => item.textContent?.trim())
+
+    expect(labels.indexOf('settings.skillManager')).toBeLessThan(labels.indexOf('settings.remoteServers.title'))
+    expect(labels.indexOf('settings.remoteServers.title')).toBe(labels.indexOf('settings.skillManager') + 1)
+  })
+
+  it('keeps the independent Remote Servers host fallback working outside Tauri', async () => {
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('settings.remoteServers.title'))
 
     fireEvent.change(await screen.findByPlaceholderText('settings.name'), { target: { value: 'Dev Box' } })
     fireEvent.change(screen.getByPlaceholderText('user@host'), { target: { value: 'dev.example.com:2222' } })
