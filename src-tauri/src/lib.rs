@@ -3606,7 +3606,7 @@ mod github_import_source_tests {
     }
 
     #[test]
-    fn github_install_writes_to_configured_v2_center() {
+    fn github_install_writes_to_fixed_agentbro_center() {
         let _lock = crate::skills::lock_shared_test_home();
         let previous_home = std::env::var_os("HOME");
         let suffix = SystemTime::now()
@@ -3617,7 +3617,7 @@ mod github_import_source_tests {
         fs::create_dir_all(&temp_home).unwrap();
         std::env::set_var("HOME", &temp_home);
 
-        let test_result = (|| -> Result<(String, bool, bool, bool), String> {
+        let test_result = (|| -> Result<(String, bool, bool, bool, bool), String> {
             let source = temp_home.join("repo").join("skills").join("github-skill");
             fs::create_dir_all(&source).map_err(|error| error.to_string())?;
             fs::write(
@@ -3625,11 +3625,12 @@ mod github_import_source_tests {
                 "---\nname: github-skill\ndescription: GitHub import test\n---\n",
             )
             .map_err(|error| error.to_string())?;
-            let center = temp_home.join("custom-center");
+            let requested_center = temp_home.join("custom-center");
+            let fixed_center = temp_home.join(".agentbro").join("skills");
             let sqlite = temp_home.join("skill-manager.db");
             let manager = Service::new(&sqlite, temp_home.clone())?;
             manager.update_settings(SettingsUpdate {
-                center_path: Some(center.display().to_string()),
+                center_path: Some(requested_center.display().to_string()),
                 sqlite_path: Some(sqlite.display().to_string()),
                 default_distribute_mode: None,
                 link_fail_policy: None,
@@ -3652,7 +3653,14 @@ mod github_import_source_tests {
                 .any(|skill| skill.id == imported_skill_id);
             Ok((
                 imported_skill_id.clone(),
-                center.join(&imported_skill_id).join("SKILL.md").is_file(),
+                fixed_center
+                    .join(&imported_skill_id)
+                    .join("SKILL.md")
+                    .is_file(),
+                requested_center
+                    .join(&imported_skill_id)
+                    .join("SKILL.md")
+                    .is_file(),
                 temp_home.join(".agents/skills").exists(),
                 listed,
             ))
@@ -3665,10 +3673,16 @@ mod github_import_source_tests {
         }
         let _ = fs::remove_dir_all(&temp_home);
 
-        let (imported_skill_id, exists_in_center, wrote_legacy_agents_path, listed) =
-            test_result.unwrap();
+        let (
+            imported_skill_id,
+            exists_in_fixed_center,
+            wrote_requested_center,
+            wrote_legacy_agents_path,
+            listed,
+        ) = test_result.unwrap();
         assert_eq!(imported_skill_id, "github-skill");
-        assert!(exists_in_center);
+        assert!(exists_in_fixed_center);
+        assert!(!wrote_requested_center);
         assert!(!wrote_legacy_agents_path);
         assert!(listed);
     }
