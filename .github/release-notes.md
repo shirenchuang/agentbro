@@ -1,20 +1,20 @@
-# AgentBro v2.10.0
+# AgentBro v3.0.0
 
 ## English
 
-AgentBro v2.10.0 turns Agent settings into a hands-on control center for plugins, MCP servers, configuration files, and local Skills.
+AgentBro v3.0.0 turns Agent Management into a unified local-and-remote control center. Choose a runtime environment once, then use the same Skill Library, installation, skill packs, Agent inspection, and diagnostics against that machine.
 
 ### Highlights
 
-- **Complete plugin control center** - Discover installed plugins for Codex, Claude Code, WorkBuddy, ZCode, and Kimi; search and filter them, safely enable or disable supported plugins, inspect manifests and packaged capabilities, and preview Markdown, text, or image files without leaving AgentBro.
-- **Interactive MCP management and inspection** - Manage stdio, HTTP, and SSE servers while preserving configured secrets, inspect tools, resources, prompts, and connection logs, call tools with explicit arguments and risk confirmation, preview generated prompt messages without sending them to a model, and cancel operations that are no longer needed. This also documents the MCP management foundation introduced in v2.9.0 but omitted from its published notes.
-- **A more capable Agent configuration workspace** - See live installed app versions, open programs and configuration locations, edit supported JSON or text configuration files with validation and safe writes, and use clearer install, update, uninstall, and cleanup actions from the selected Agent.
-- **Safer, faster Skill organization** - Batch-delete managed or unmanaged Agent Skills, take over matching center-library Skills in one action, continue successful batch adoptions into an existing or new skill pack, and keep built-in Doubao Skills visible as a separate read-only group.
-- **Stronger release reliability** - Stable releases now carry complete Git history in build jobs, reject stale development-branch version metadata, and automatically open a pull request to synchronize each published release back to `dev`.
+- **One runtime switcher for the whole workspace** - Switch between the local Mac and configured SSH hosts from the lower-left environment control. Remote badges, connection state, and explicit connect actions remain visible throughout Agent Management, so every page makes its current target clear.
+- **Full Agent and Skill management over SSH** - The remote environment now supports the Skill Library, Skill installation, skill packs, Agent scanning, MCP and plugin inspection, diagnostics, configuration management, and a remote-only folder picker without replacing the familiar local interface.
+- **Dedicated remote server management** - SSH configuration now has its own settings page beside Agent Management. Configure a host once, connect when needed, diagnose the tunnel, and open a terminal directly at a detected remote directory.
+- **Safer and more reliable remote operations** - Remote writes never silently fall back to the local machine. The release also fixes oversized command payloads, atomic state-file replacement, Python 3.7 compatibility, Unicode filenames, disconnected-state feedback, and legacy center-library migration to the fixed `~/.agentbro/skills` location.
+- **Broader remote Agent discovery** - Remote scans now recognize OpenClaw workspaces and common user-level Node.js installations managed by NVM or fnm. Local executable discovery also recognizes current, legacy, and custom vfox Node.js SDK locations.
 
 ### Documentation
 
-- Release assets continue to include macOS universal DMGs, updater files, and Windows installer artifacts.
+- The Chinese and English READMEs now present AgentBro as a desktop control center, add direct macOS and Windows downloads, and document the island, Agent Monitor, Agent Management, Agent Switch, SSH Remote, supported agents, and platform status.
 
 ### Contributors
 
@@ -29,8 +29,8 @@ AgentBro v2.10.0 turns Agent settings into a hands-on control center for plugins
 ### Downloads
 
 - Recommended download: `AgentBro_latest_universal.dmg`
-- Versioned archive: `AgentBro_2.10.0_universal.dmg`
-- Stable Windows installers: `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`; prereleases use versioned installer names.
+- Versioned archive: `AgentBro_3.0.0_universal.dmg`
+- Stable Windows installers: `AgentBro_latest_x64-setup.exe` and `AgentBro_latest_x64.msi`.
 - Auto update files: `AgentBro.app.tar.gz` and `latest.json`
 - Mainland China mirror: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
@@ -41,19 +41,19 @@ AgentBro v2.10.0 turns Agent settings into a hands-on control center for plugins
 
 ## 中文
 
-AgentBro v2.10.0 将 Agent 设置升级为可直接管理插件、MCP 服务、配置文件和本地 Skill 的完整控制中心。
+AgentBro v3.0.0 将 Agent 管理升级为统一的本机与远程控制中心。只需选择一次运行环境，Skill 库、安装、技能包、Agent 检查和诊断就会统一作用于对应机器。
 
 ### 重点更新
 
-- **完整的插件控制中心** - 可发现 Codex、Claude Code、WorkBuddy、ZCode 与 Kimi 已安装的插件，支持搜索筛选、安全启停受支持的插件、查看清单与内置能力，并直接预览 Markdown、文本或图片文件。
-- **可交互的 MCP 管理与检查** - 可在保留已配置密钥的前提下管理 stdio、HTTP 和 SSE 服务，检查工具、资源、Prompt 与连接日志；还能在明确参数和风险确认后调用工具、预览但不发送给模型的 Prompt 消息，并取消不再需要的操作。本次说明也补录了 v2.9.0 已上线但未写入已发布说明的 MCP 管理基础能力。
-- **更强的 Agent 配置工作台** - 可查看本机应用的实时版本，打开程序与配置位置，通过校验和安全写入编辑受支持的 JSON 或文本配置文件，并在当前 Agent 中使用更清晰的安装、更新、卸载与清理操作。
-- **更安全高效的 Skill 整理** - 支持批量删除已管理或未管理的 Agent Skills，一键接管中心库中的同名 Skill，将批量接管成功的 Skill 继续同步到已有或新建技能包，并把豆包内置 Skill 单独显示为只读分组。
-- **更可靠的发布流程** - 构建任务会保留完整 Git 历史，开发分支版本元数据过期时会阻止发布，并在每个稳定版发布后自动创建回同步到 `dev` 的拉取请求。
+- **一个切换器控制整个工作区** - 可从左下角的运行环境入口在本机 Mac 与已配置的 SSH 主机之间切换。远程标识、连接状态和明确的连接按钮会贯穿 Agent 管理，让每个页面都清楚显示当前操作目标。
+- **通过 SSH 完整管理 Agent 与 Skill** - 远程环境现在支持 Skill 库、Skill 安装、技能包、Agent 扫描、MCP 与插件检查、诊断、配置管理，以及只浏览远程服务器的目录选择器，同时保留与本机一致的操作界面。
+- **独立的远程服务器管理** - SSH 配置从灵动岛设置中拆分为 Agent 管理旁的独立设置页。每台服务器只需配置一次，即可按需连接、诊断隧道，并让终端直接进入检测到的远程目录。
+- **更安全可靠的远程操作** - 远程写操作不会静默回退到本机。本次还修复了超长命令参数、状态文件原子替换、Python 3.7 兼容、Unicode 文件名、断线状态反馈，以及旧中心库迁移到固定 `~/.agentbro/skills` 目录等问题。
+- **更完整的远程 Agent 识别** - 远程扫描现在可识别 OpenClaw workspace，以及 NVM、fnm 管理的常见用户级 Node.js 安装。本机可执行文件扫描也新增了对当前、旧版和自定义 vfox Node.js SDK 路径的支持。
 
 ### 文档
 
-- 发布产物继续包含 macOS 通用 DMG、自动更新文件以及 Windows 安装包。
+- 中英文 README 现已统一将 AgentBro 介绍为桌面 Agent 控制中心，补充 macOS 与 Windows 直链下载，并完整说明灵动岛、Agent Monitor、Agent 管理、Agent Switch、SSH Remote、支持的 Agent 与平台状态。
 
 ### 贡献者
 
@@ -68,8 +68,8 @@ AgentBro v2.10.0 将 Agent 设置升级为可直接管理插件、MCP 服务、�
 ### 下载
 
 - 推荐下载: `AgentBro_latest_universal.dmg`
-- 版本归档: `AgentBro_2.10.0_universal.dmg`
-- 稳定版 Windows 安装包: `AgentBro_latest_x64-setup.exe` 与 `AgentBro_latest_x64.msi`; 预览版使用带版本号的安装包文件名。
+- 版本归档: `AgentBro_3.0.0_universal.dmg`
+- 稳定版 Windows 安装包: `AgentBro_latest_x64-setup.exe` 与 `AgentBro_latest_x64.msi`。
 - 自动更新文件: `AgentBro.app.tar.gz` 与 `latest.json`
 - 国内直链: `https://agentbro.oss-cn-hangzhou.aliyuncs.com/AgentBro_latest_universal.dmg`
 
