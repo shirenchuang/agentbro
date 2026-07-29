@@ -3763,6 +3763,55 @@ fn agent_detail_reads_zcode_nested_mcp_and_plugins() {
 }
 
 #[test]
+#[cfg(unix)]
+fn zcode_agent_detail_projects_shared_skills_as_inherited() {
+    let (_home, svc, _lock) = fresh_service("zcode-inherited-shared-skills");
+    let shared_root = svc.home.join(".agents/skills");
+    let local = write_skill(&shared_root, "shared-local", "shared-local", Some("shared"));
+    let source = write_skill(
+        &svc.home.join("skill-sources"),
+        "linked-source",
+        "shared-linked",
+        Some("linked"),
+    );
+    let linked = shared_root.join("shared-linked");
+    std::os::unix::fs::symlink(&source, &linked).unwrap();
+
+    svc.refresh().unwrap();
+
+    let detail = svc.get_agent_detail("zcode").unwrap();
+    assert!(detail.skills.is_empty());
+    assert_eq!(detail.inherited_skills.len(), 2);
+    assert!(detail.inherited_skills.iter().any(|skill| {
+        skill.skill_id == "shared-local"
+            && skill.path == local.display().to_string()
+            && skill.resolved_path.is_none()
+    }));
+    assert!(detail.inherited_skills.iter().any(|skill| {
+        skill.skill_id == "shared-linked"
+            && skill.path == linked.display().to_string()
+            && skill.resolved_path.as_deref() == Some(source.to_string_lossy().as_ref())
+    }));
+
+    let unmanaged = svc.list_unmanaged().unwrap();
+    assert_eq!(
+        unmanaged
+            .iter()
+            .filter(|item| item.agent_id.as_deref() == Some("agents"))
+            .count(),
+        2
+    );
+    assert!(!unmanaged
+        .iter()
+        .any(|item| item.agent_id.as_deref() == Some("zcode")));
+    assert!(svc
+        .get_agent_detail("claude-code")
+        .unwrap()
+        .inherited_skills
+        .is_empty());
+}
+
+#[test]
 fn agent_detail_reports_codex_toml_config_paths() {
     let (_home, svc, _lock) = fresh_service("codex-config-paths");
     let codex_dir = svc.home.join(".codex");

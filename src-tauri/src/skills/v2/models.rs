@@ -275,11 +275,21 @@ pub struct AgentDetail {
     pub plugin_dir: Option<String>,
     pub agent_dir: Option<String>,
     pub skills: Vec<SkillTargetDetail>,
+    pub inherited_skills: Vec<InheritedSkillDetail>,
     pub applied_packs: Vec<AppliedPackSummary>,
     pub available_packs: Vec<SkillPackSummary>,
     pub mcp_servers: Vec<McpServerStatus>,
     pub plugins: Vec<PluginStatus>,
     pub health: Vec<AgentHealthIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InheritedSkillDetail {
+    pub id: String,
+    pub skill_id: String,
+    pub path: String,
+    pub resolved_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
