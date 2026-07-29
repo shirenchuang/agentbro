@@ -5211,6 +5211,12 @@ impl Service {
                 claims,
             });
         }
+        let mut inherited_skills = self.inherited_skills_for_agent(agent_id)?;
+        inherited_skills.sort_by(|left, right| {
+            left.skill_id
+                .to_lowercase()
+                .cmp(&right.skill_id.to_lowercase())
+        });
 
         let applied_packs = self.applied_packs_for_agent(agent_id)?;
         let available_packs = self.list_skill_packs()?;
@@ -5257,12 +5263,65 @@ impl Service {
             plugin_dir,
             agent_dir,
             skills,
+            inherited_skills,
             applied_packs,
             available_packs,
             mcp_servers,
             plugins,
             health,
         })
+    }
+
+    fn inherited_skills_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<InheritedSkillDetail>, String> {
+        if agent_id != "zcode" {
+            return Ok(Vec::new());
+        }
+        let rows = self.db.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT 'target:' || id, skill_id, target_path
+                     FROM skill_targets
+                     WHERE agent_id = ?1
+                     UNION ALL
+                     SELECT 'unmanaged:' || id, COALESCE(inferred_skill_id, ''), path
+                     FROM unmanaged_items
+                     WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
+                     ORDER BY 3",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([SHARED_SKILLS_AGENT_ID], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            let mut values = Vec::new();
+            for row in rows {
+                values.push(row.map_err(|error| error.to_string())?);
+            }
+            Ok::<_, String>(values)
+        })?;
+        let mut seen_paths = BTreeSet::new();
+        Ok(rows
+            .into_iter()
+            .filter(|(_, _, path)| seen_paths.insert(path.clone()))
+            .map(|(id, skill_id, path)| InheritedSkillDetail {
+                id,
+                skill_id: if skill_id.trim().is_empty() {
+                    infer_name_from_path(&path)
+                } else {
+                    skill_id
+                },
+                resolved_path: resolved_target_path(&path),
+                path,
+            })
+            .collect())
     }
 
     fn applied_packs_for_agent(&self, agent_id: &str) -> Result<Vec<AppliedPackSummary>, String> {

@@ -98,4 +98,3 @@ Frontend tests cover:
 - Inherited cards expose no mutating actions.
 - Search, card/list mode, empty state, and tab switching remain functional.
 - Existing managed, unmanaged, and built-in behavior remains unchanged.
-

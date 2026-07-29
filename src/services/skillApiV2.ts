@@ -407,6 +407,13 @@ export interface AgentHealthIssue {
   severity: string
 }
 
+export interface InheritedSkillDetail {
+  id: string
+  skillId: string
+  path: string
+  resolvedPath: string | null
+}
+
 export interface AgentDetail {
   id: string
   displayName: string
@@ -419,6 +426,7 @@ export interface AgentDetail {
   pluginDir: string | null
   agentDir?: string | null
   skills: SkillTargetDetail[]
+  inheritedSkills?: InheritedSkillDetail[]
   appliedPacks: AppliedPackSummary[]
   availablePacks: SkillPackSummary[]
   mcpServers: McpServerStatus[]

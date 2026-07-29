@@ -6,7 +6,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
-import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
+import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, InheritedSkillDetail, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
@@ -23,7 +23,7 @@ import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from 
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
-type AgentSkillScope = 'managed' | 'unmanaged' | 'builtin'
+type AgentSkillScope = 'managed' | 'unmanaged' | 'inherited' | 'builtin'
 type AgentSkillPackFilter = 'all' | 'pack' | 'standalone'
 type AgentLibraryScope = 'uninstalled' | 'installed' | 'all'
 type InstallBlockerDecision = 'overwrite' | 'skip'
@@ -288,7 +288,7 @@ export function AgentManagementPage() {
     setNotice(null)
     state.setError(null)
     try {
-      const scanIds = agentId === 'codex' ? [agentId, SHARED_SKILLS_AGENT_ID] : [agentId]
+      const scanIds = ['codex', 'zcode'].includes(agentId) ? [agentId, SHARED_SKILLS_AGENT_ID] : [agentId]
       const results = await Promise.all(scanIds.map((id) => skillApiV2.scanAgentInventory(id)))
       const unmanaged = await skillApiV2.listUnmanaged()
       useSkillStoreV2.setState({ unmanaged })
@@ -1027,6 +1027,7 @@ function AgentDetailView({
   const observedSkills = useSkillStoreV2((s) => s.unmanaged).filter((u) => unmanagedVisibleForAgent(detail.id, u))
   const unmanaged = observedSkills.filter((item) => showUnmanaged && !isReadOnlyUnmanaged(item))
   const readOnlySkills = observedSkills.filter(isReadOnlyUnmanaged)
+  const inheritedSkills = detail.inheritedSkills ?? []
   const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
@@ -1047,7 +1048,7 @@ function AgentDetailView({
     : { label: updating ? '正在更新' : hasUpdate ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !hasUpdate, onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
-    { id: 'skills', label: `Skills (${detail.skills.length + unmanaged.length + readOnlySkills.length})` },
+    { id: 'skills', label: `Skills (${detail.skills.length + unmanaged.length + inheritedSkills.length + readOnlySkills.length})` },
     { id: 'mcp', label: `MCP (${detail.mcpServers.length})` },
     { id: 'plugins', label: `Plugins (${detail.plugins.length})` },
     { id: 'hooks', label: 'Hooks' },
@@ -1070,6 +1071,7 @@ function AgentDetailView({
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">
           <Stat value={detail.skills.length} label="已管理" />
           {showUnmanaged && <Stat value={unmanaged.length} label="未管理" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />}
+          {detail.id === 'zcode' && <Stat value={inheritedSkills.length} label={t('skills.agentManagement.inheritedSkills')} />}
           {readOnlySkills.length > 0 && <Stat value={readOnlySkills.length} label={t('skills.agentManagement.builtinSkills')} />}
           <Stat value={detail.appliedPacks.length} label="技能包" />
           <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
@@ -1127,6 +1129,7 @@ function AgentDetailView({
           <SkillsTab
             detail={detail}
             unmanaged={unmanaged}
+            inheritedSkills={inheritedSkills}
             readOnlySkills={readOnlySkills}
             showUnmanaged={showUnmanaged}
             busy={busy}
@@ -1176,6 +1179,7 @@ function OverviewTab({
   const unmanagedCount = observedSkills
     .filter((item) => showUnmanaged && !isReadOnlyUnmanaged(item)).length
   const readOnlyCount = observedSkills.filter(isReadOnlyUnmanaged).length
+  const inheritedCount = detail.inheritedSkills?.length ?? 0
   const appliedIds = new Set(detail.appliedPacks.map((p) => p.packId))
   const available = detail.availablePacks.filter((p) => !appliedIds.has(p.id))
   const validMcpCount = detail.mcpServers.filter((server) => server.valid).length
@@ -1224,11 +1228,13 @@ function OverviewTab({
     {
       id: 'skills',
       label: 'Skills',
-      value: detail.skills.length + readOnlyCount,
+      value: detail.skills.length + inheritedCount + readOnlyCount,
       unit: '可用',
       detail: unmanagedCount > 0
         ? `${unmanagedCount} 个待接管`
-        : readOnlyCount > 0 ? `${readOnlyCount} 个 Agent 内置只读` : '全部已纳入管理',
+        : inheritedCount > 0
+          ? `${inheritedCount} 个来自 .agents 共享继承`
+          : readOnlyCount > 0 ? `${readOnlyCount} 个 Agent 内置只读` : '全部已纳入管理',
       tab: 'skills',
       tone: unmanagedCount > 0 ? 'amber' : 'blue',
       progress: detail.skills.length + unmanagedCount === 0 ? 100 : detail.skills.length / (detail.skills.length + unmanagedCount) * 100,
@@ -1435,6 +1441,7 @@ function OverviewTab({
 function SkillsTab({
   detail,
   unmanaged,
+  inheritedSkills,
   readOnlySkills,
   showUnmanaged,
   busy,
@@ -1448,6 +1455,7 @@ function SkillsTab({
 }: {
   detail: AgentDetail
   unmanaged: UnmanagedItemDto[]
+  inheritedSkills: InheritedSkillDetail[]
   readOnlySkills: UnmanagedItemDto[]
   showUnmanaged: boolean
   busy: boolean
@@ -1514,6 +1522,16 @@ function SkillsTab({
         .includes(q),
     )
   }, [q, t, unmanaged])
+  const filteredInherited = useMemo(() => {
+    if (!q) return inheritedSkills
+    return inheritedSkills.filter((item) =>
+      [item.skillId, item.path, item.resolvedPath]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    )
+  }, [inheritedSkills, q])
   const filteredReadOnly = useMemo(() => {
     if (!q) return readOnlySkills
     return readOnlySkills.filter((item) =>
@@ -1531,6 +1549,7 @@ function SkillsTab({
     if (page !== 1) setPage(1)
   }
   const shownUnmanaged = filteredUnmanaged.slice(0, page * PAGE_SIZE)
+  const shownInherited = filteredInherited.slice(0, page * PAGE_SIZE)
   const shownReadOnly = filteredReadOnly.slice(0, page * PAGE_SIZE)
   const canManageUnmanaged = filteredUnmanaged
   const quickTakeoverCandidates = useMemo(
@@ -1559,6 +1578,10 @@ function SkillsTab({
     setDeleteUnmanagedTarget(null)
     setDeleteUnmanagedError(null)
   }, [detail.id, packFilter, scope])
+
+  useEffect(() => {
+    if (scope === 'inherited' && detail.id !== 'zcode') setScope('managed')
+  }, [detail.id, scope])
 
   useEffect(() => {
     if (!localNotice) return
@@ -1881,6 +1904,15 @@ function SkillsTab({
             未管理 {filteredUnmanaged.length}
           </button>
         )}
+        {detail.id === 'zcode' && (
+          <button
+            className={scope === 'inherited' ? 'active' : ''}
+            aria-selected={scope === 'inherited'}
+            onClick={() => setScope('inherited')}
+          >
+            {t('skills.agentManagement.inheritedSkills')} {filteredInherited.length}
+          </button>
+        )}
         {readOnlySkills.length > 0 && (
           <button
             className={scope === 'builtin' ? 'active' : ''}
@@ -2094,6 +2126,32 @@ function SkillsTab({
               {shownReadOnly.length < filteredReadOnly.length && (
                 <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
                   继续显示 {Math.min(PAGE_SIZE, filteredReadOnly.length - shownReadOnly.length)} 个
+                </button>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {scope === 'inherited' && detail.id === 'zcode' && (
+        <>
+          <div className="sm2__notice sm2__notice--info">
+            {t('skills.agentManagement.inheritedSkillsNotice')}
+          </div>
+          {filteredInherited.length === 0 ? (
+            <div className="sm2__empty sm2__empty--compact">
+              {t('skills.agentManagement.inheritedSkillsNoResults')}
+            </div>
+          ) : (
+            <>
+              <InheritedSkillCollection
+                skills={shownInherited}
+                mode={viewMode}
+                onOpenSkillDetail={onOpenSkillDetail}
+              />
+              {shownInherited.length < filteredInherited.length && (
+                <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
+                  继续显示 {Math.min(PAGE_SIZE, filteredInherited.length - shownInherited.length)} 个
                 </button>
               )}
             </>
@@ -3283,6 +3341,71 @@ function ManagedSkillListRow({
   )
 }
 
+function InheritedSkillCollection({
+  skills,
+  mode,
+  onOpenSkillDetail,
+}: {
+  skills: InheritedSkillDetail[]
+  mode: AgentSkillViewMode
+  onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
+}) {
+  const { t } = useTranslation()
+  if (mode === 'list') {
+    return (
+      <div className="sm2__agent-skill-list">
+        {skills.map((skill) => (
+          <div
+            key={skill.id}
+            className="sm2__object-row sm2__object-row--path sm2__object-row--clickable"
+            onClick={() => openInheritedSkill(skill, onOpenSkillDetail)}
+          >
+            <div>
+              <strong>{skill.skillId}</strong>
+              <span>{t('skills.agentManagement.inheritedSkillsSource')}</span>
+              <code title={skill.resolvedPath ?? undefined}>{skill.path}</code>
+            </div>
+            <span className="sm2__tag sm2__tag--shared">
+              {t('skills.agentManagement.inheritedSkills')}
+            </span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="sm2__agent-skill-grid">
+      {skills.map((skill) => (
+        <article
+          key={skill.id}
+          className="sm2__agent-skill-card sm2__agent-skill-card--clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => openInheritedSkill(skill, onOpenSkillDetail)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              openInheritedSkill(skill, onOpenSkillDetail)
+            }
+          }}
+        >
+          <div className="sm2__agent-skill-card-head">
+            <div className="sm2__agent-skill-icon">{initials(skill.skillId || 'SK')}</div>
+            <div className="sm2__agent-skill-card-titleline">
+              <strong>{skill.skillId}</strong>
+              <span>{t('skills.agentManagement.inheritedSkillsSource')}</span>
+            </div>
+            <span className="sm2__tag sm2__tag--shared">
+              {t('skills.agentManagement.inheritedSkills')}
+            </span>
+          </div>
+          <code title={skill.resolvedPath ?? undefined}>{skill.path}</code>
+        </article>
+      ))}
+    </div>
+  )
+}
+
 function UnmanagedSkillCollection({
   skills,
   mode,
@@ -3555,6 +3678,19 @@ function openUnmanagedSkill(
     currentHash: item.hash,
     sourceType: 'unmanaged_agent',
     sourceUri: item.path,
+  })
+}
+
+function openInheritedSkill(
+  item: InheritedSkillDetail,
+  onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void,
+) {
+  onOpenSkillDetail(item.skillId, {
+    id: item.skillId,
+    name: item.skillId,
+    centerPath: item.path,
+    sourceType: 'unmanaged_agent',
+    sourceUri: item.resolvedPath || item.path,
   })
 }
 

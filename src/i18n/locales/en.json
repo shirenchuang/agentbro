@@ -1222,6 +1222,10 @@
         "complete": "Takeover complete: {{adopted}} managed, {{failed}} failed. Other unmanaged Skills were unchanged.",
         "refreshFailed": "Refresh failed: {{error}}"
       },
+      "inheritedSkills": "Inherited",
+      "inheritedSkillsSource": ".agents shared directory",
+      "inheritedSkillsNotice": "ZCode reads ~/.agents/skills by default. This list shows Skills currently available from that shared directory; Codex, Kimi, and other Agents may use them too. This view only shows inheritance and does not treat them as private ZCode installations.",
+      "inheritedSkillsNoResults": "No Skills inherited from ~/.agents/skills were found.",
       "builtinSkills": "Built-in",
       "builtinSkillsNotice": "{{count}} Skills are provided by {{agent}} and shown read-only. AgentBro will not adopt, overwrite, or delete these files.",
       "builtinSkillsNoResults": "No built-in Skills match this search.",

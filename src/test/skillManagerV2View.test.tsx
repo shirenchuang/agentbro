@@ -3324,6 +3324,78 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
   })
 
+  it('shows ZCode shared skills in a read-only inherited scope', async () => {
+    const zcodeDetail: AgentDetail = {
+      ...agentDetail,
+      id: 'zcode',
+      displayName: 'ZCode',
+      iconKey: 'zcode',
+      skillsDir: '/Users/me/.zcode/skills',
+      skills: [],
+      inheritedSkills: [
+        {
+          id: 'unmanaged-shared-review',
+          skillId: 'shared-review',
+          path: '/Users/me/.agents/skills/shared-review',
+          resolvedPath: '/Users/me/.agentbro/skills/shared-review',
+        },
+        {
+          id: 'unmanaged-shared-writing',
+          skillId: 'shared-writing',
+          path: '/Users/me/.agents/skills/shared-writing',
+          resolvedPath: null,
+        },
+      ],
+    }
+    useSkillStoreV2.setState({
+      agents: [
+        { id: 'zcode', displayName: 'ZCode', iconKey: 'zcode', enabled: true, skillsDir: '/Users/me/.zcode/skills', version: '3.5.3', latestVersion: null, installed: true, managedSkillCount: 0, unmanagedSkillCount: 0 } as AgentSummary,
+      ],
+      selectedAgentId: 'zcode',
+      selectedAgentDetail: zcodeDetail,
+      unmanaged: [],
+    })
+    const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockImplementation(async (agentId) => ({
+      agentId,
+      managed: 0,
+      unmanaged: agentId === 'agents' ? 2 : 0,
+    }))
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(zcodeDetail)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(<AgentManagementPage />)
+
+    expect(screen.getByRole('button', { name: 'Skills (2)' })).toBeInTheDocument()
+    expect(screen.getByText('共享继承', { selector: '.sm2__stat span' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    const inheritedTab = screen.getByRole('button', { name: '共享继承 2' })
+    fireEvent.click(inheritedTab)
+
+    expect(inheritedTab).toHaveClass('active')
+    expect(screen.getByText(/ZCode 默认读取 ~\/.agents\/skills/)).toBeInTheDocument()
+    expect(screen.getAllByText('.agents 共享目录')).toHaveLength(2)
+    expect(screen.getByText('/Users/me/.agents/skills/shared-review')).toBeInTheDocument()
+    const inheritedCard = screen.getByText('shared-review').closest('article')
+    expect(inheritedCard).not.toBeNull()
+    expect(within(inheritedCard!).queryByText('接管')).not.toBeInTheDocument()
+    expect(within(inheritedCard!).queryByText('删除')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('搜索 Skill 名称 / 路径 / 来源 / 原因'), { target: { value: 'missing-skill' } })
+    expect(screen.getByText('没有找到从 ~/.agents/skills 继承的 Skill。')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('搜索 Skill 名称 / 路径 / 来源 / 原因'), { target: { value: '' } })
+    fireEvent.click(screen.getByText('列表'))
+    expect(container.querySelector('.sm2__agent-skill-list')).not.toBeNull()
+    expect(screen.getByText('/Users/me/.agents/skills/shared-writing')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '重新扫描此 Agent' }))
+    await waitFor(() => {
+      expect(scan).toHaveBeenCalledWith('zcode')
+      expect(scan).toHaveBeenCalledWith('agents')
+    })
+  })
+
   it('filters managed Agent skills by skill pack membership', async () => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
