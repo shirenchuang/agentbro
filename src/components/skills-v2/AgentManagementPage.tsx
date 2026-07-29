@@ -3832,7 +3832,8 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
   const { t } = useTranslation()
   const currentVersion = program?.installedVersion ?? detail.version
   const latestVersion = program?.latestVersion ?? detail.latestVersion
-  const executablePath = program?.binaryPath ?? program?.appPath ?? null
+  const executablePath = program?.appPath ?? program?.binaryPath ?? null
+  const executableIsApp = Boolean(program?.appPath)
   const skillsDir = detail.skillsDir ?? program?.skillsDir ?? null
   const [editorTarget, setEditorTarget] = useState<ConfigResource | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -3841,11 +3842,11 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
     const candidates: Array<Omit<ConfigResource, 'value' | 'editable'> & { value: string | null; editable?: boolean }> = [
       {
         id: 'executable',
-        label: program?.kind === 'app'
+        label: executableIsApp
           ? t('skills.agentManagement.pathSettings.resources.application')
           : t('skills.agentManagement.pathSettings.resources.executable'),
         value: executablePath,
-        kind: program?.kind === 'app' ? 'application' : 'executable',
+        kind: executableIsApp ? 'application' : 'executable',
       },
       {
         id: 'config-directory',
@@ -3894,9 +3895,9 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
     detail.configPath,
     detail.mcpConfigPath,
     detail.pluginDir,
+    executableIsApp,
     executablePath,
     program?.configDir,
-    program?.kind,
     skillsDir,
     t,
   ])

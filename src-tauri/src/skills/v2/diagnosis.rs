@@ -687,6 +687,9 @@ pub fn read_mcp_servers(svc: &Service, agent_id: &str) -> Vec<McpServerStatus> {
 }
 
 pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
+    if agent_id == "antigravity" {
+        return read_antigravity_plugins(svc);
+    }
     if agent_id == "workbuddy" {
         return read_workbuddy_plugins(svc);
     }
@@ -825,6 +828,7 @@ pub(crate) fn find_plugin_location(
             plugin,
         ),
         "kimi" => find_kimi_plugin_location(svc, plugin),
+        "antigravity" => find_antigravity_plugin_location(svc, plugin),
         _ => None,
     }
 }
@@ -886,6 +890,73 @@ fn find_kimi_plugin_location(svc: &Service, plugin: &PluginStatus) -> Option<Plu
     .into_iter()
     .find(|path| path.is_file());
     Some(PluginLocation { root, manifest })
+}
+
+fn read_antigravity_plugins(svc: &Service) -> Vec<PluginStatus> {
+    let root = svc.home.join(".gemini/config/plugins");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut plugins = entries
+        .flatten()
+        .filter_map(|entry| {
+            let plugin_root = entry.path();
+            if !plugin_root.is_dir() {
+                return None;
+            }
+            let content = std::fs::read_to_string(plugin_root.join("plugin.json")).ok()?;
+            let manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+            let fallback_id = entry.file_name().to_string_lossy().to_string();
+            let id = manifest
+                .get("name")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&fallback_id)
+                .to_string();
+            let name = manifest
+                .get("displayName")
+                .or_else(|| manifest.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            Some(PluginStatus {
+                id,
+                name,
+                version: manifest
+                    .get("version")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string),
+                enabled: true,
+                source: Some("antigravity-plugin".to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    plugins.sort_by_key(|plugin| plugin.name.to_lowercase());
+    plugins
+}
+
+fn find_antigravity_plugin_location(
+    svc: &Service,
+    plugin: &PluginStatus,
+) -> Option<PluginLocation> {
+    let root = svc.home.join(".gemini/config/plugins");
+    let entries = std::fs::read_dir(root).ok()?;
+    entries.flatten().find_map(|entry| {
+        let plugin_root = entry.path();
+        let manifest_path = plugin_root.join("plugin.json");
+        let content = std::fs::read_to_string(&manifest_path).ok()?;
+        let manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+        let fallback_id = entry.file_name().to_string_lossy().to_string();
+        let id = manifest
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&fallback_id);
+        (id == plugin.id).then_some(PluginLocation {
+            root: plugin_root,
+            manifest: Some(manifest_path),
+        })
+    })
 }
 
 fn read_zcode_plugins(svc: &Service) -> Vec<PluginStatus> {

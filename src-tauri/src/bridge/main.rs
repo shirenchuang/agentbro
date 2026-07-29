@@ -181,6 +181,10 @@ fn is_gemini_source(source: &str) -> bool {
     source == "gemini"
 }
 
+fn is_antigravity_source(source: &str) -> bool {
+    source == "antigravity"
+}
+
 fn permission_hook_output_gemini(decision: &str, reason: &str) -> serde_json::Value {
     match decision {
         "allow" => serde_json::json!({
@@ -202,6 +206,32 @@ fn permission_hook_output_gemini(decision: &str, reason: &str) -> serde_json::Va
         _ => serde_json::json!({
             "decision": { "behavior": "allow" }
         }),
+    }
+}
+
+fn permission_hook_output_antigravity(decision: &str, reason: &str) -> serde_json::Value {
+    match decision {
+        "allow" | "auto" => serde_json::json!({ "decision": "allow" }),
+        "deny" => serde_json::json!({
+            "decision": "deny",
+            "reason": if reason.is_empty() {
+                "Denied by user via AgentBro"
+            } else {
+                reason
+            }
+        }),
+        _ => serde_json::json!({
+            "decision": "ask",
+            "reason": "AgentBro could not resolve this permission request"
+        }),
+    }
+}
+
+fn antigravity_hook_output(event: &str) -> serde_json::Value {
+    if event == "Stop" {
+        serde_json::json!({ "decision": "stop" })
+    } else {
+        serde_json::json!({})
     }
 }
 
@@ -783,7 +813,14 @@ fn main() {
 
     let session_id = string_field(
         &data,
-        &["session_id", "sessionId", "task_id", "taskId", "id"],
+        &[
+            "session_id",
+            "sessionId",
+            "conversationId",
+            "task_id",
+            "taskId",
+            "id",
+        ],
     )
     .unwrap_or("unknown");
     let hook_event = forced_event
@@ -794,7 +831,9 @@ fn main() {
     let event_payload = cline_event_payload(&source, hook_event, &data);
     let cwd = string_field(&data, &["cwd"])
         .or_else(|| first_string_array_field(&data, "workspaceRoots"))
+        .or_else(|| first_string_array_field(&data, "workspacePaths"))
         .unwrap_or("");
+    let tool_call = data.get("toolCall");
     let tool_input = data
         .get("tool_input")
         .or_else(|| data.get("toolInput"))
@@ -806,6 +845,7 @@ fn main() {
         .or_else(|| event_payload.and_then(|payload| payload.get("input")))
         .or_else(|| event_payload.and_then(|payload| payload.get("arguments")))
         .or_else(|| event_payload.and_then(|payload| payload.get("args")))
+        .or_else(|| tool_call.and_then(|call| call.get("args")))
         .cloned()
         .unwrap_or(serde_json::json!({}));
     let tool_name = string_field_with_payload(
@@ -813,6 +853,11 @@ fn main() {
         event_payload,
         &["tool_name", "toolName", "tool", "name"],
     )
+    .or_else(|| {
+        tool_call
+            .and_then(|call| call.get("name"))
+            .and_then(|value| value.as_str())
+    })
     .unwrap_or("");
     let claude_pid = parent_process_id();
     let tty = get_tty();
@@ -885,6 +930,27 @@ fn main() {
         &["permission_mode", "permissionMode"],
     );
     copy_optional_field(obj, &data, "start_source", &["source"]);
+    copy_optional_field(
+        obj,
+        &data,
+        "artifact_directory_path",
+        &["artifactDirectoryPath"],
+    );
+    copy_optional_field(obj, &data, "step_idx", &["stepIdx"]);
+    copy_optional_field(obj, &data, "invocation_num", &["invocationNum"]);
+    copy_optional_field(obj, &data, "initial_num_steps", &["initialNumSteps"]);
+    copy_optional_field(obj, &data, "execution_num", &["executionNum"]);
+    copy_optional_field(obj, &data, "termination_reason", &["terminationReason"]);
+    copy_optional_field(obj, &data, "fully_idle", &["fullyIdle"]);
+    copy_optional_field(obj, &data, "error", &["error"]);
+    if is_antigravity_source(&source) {
+        if let Some(step_idx) = data.get("stepIdx").and_then(|value| value.as_u64()) {
+            obj.insert(
+                "tool_use_id".into(),
+                format!("antigravity-step-{step_idx}").into(),
+            );
+        }
+    }
 
     if data.get("rate_limits").is_some() || data.get("context_window").is_some() {
         obj.insert("event".into(), "StatusLineUpdate".into());
@@ -966,7 +1032,10 @@ fn main() {
         "PreToolUse" => {
             // AskUserQuestion: intercept at PreToolUse to provide updatedInput with answers.
             // updatedInput is only supported in PreToolUse hooks (not PermissionRequest).
-            if tool_name == "AskUserQuestion" && !is_codex_source(&source) {
+            if tool_name == "AskUserQuestion"
+                && !is_codex_source(&source)
+                && !is_antigravity_source(&source)
+            {
                 populate_ask_user_question_state(obj, &tool_input);
 
                 if let Some(resp) = send_and_maybe_receive(&state, true) {
@@ -1002,6 +1071,24 @@ fn main() {
                     let output = permission_hook_output_gemini(decision, reason);
                     println!("{}", output);
                 }
+                return;
+            }
+
+            if is_antigravity_source(&source) {
+                obj.insert("status".into(), "waiting_for_approval".into());
+                if !tool_name.is_empty() {
+                    obj.insert("tool".into(), tool_name.into());
+                }
+                obj.insert("tool_input".into(), tool_input);
+                let output = if let Some(resp) = send_and_maybe_receive(&state, true) {
+                    permission_hook_output_antigravity(
+                        resp["decision"].as_str().unwrap_or("ask"),
+                        resp["reason"].as_str().unwrap_or(""),
+                    )
+                } else {
+                    permission_hook_output_antigravity("ask", "")
+                };
+                println!("{}", output);
                 return;
             }
 
@@ -1493,6 +1580,9 @@ fn main() {
 
     // Send event (non-PermissionRequest path)
     send_and_maybe_receive(&state, false);
+    if is_antigravity_source(&source) {
+        println!("{}", antigravity_hook_output(hook_event));
+    }
 }
 
 #[cfg(test)]
@@ -1721,6 +1811,70 @@ mod tests {
             output["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["mode"],
             "acceptEdits"
         );
+    }
+
+    #[test]
+    fn antigravity_permission_output_uses_official_decisions() {
+        assert_eq!(
+            permission_hook_output_antigravity("allow", ""),
+            serde_json::json!({ "decision": "allow" })
+        );
+        assert_eq!(
+            permission_hook_output_antigravity("deny", "Not approved"),
+            serde_json::json!({
+                "decision": "deny",
+                "reason": "Not approved"
+            })
+        );
+        assert_eq!(
+            permission_hook_output_antigravity("ask", "")["decision"],
+            "ask"
+        );
+    }
+
+    #[test]
+    fn antigravity_non_permission_hooks_always_return_json() {
+        assert_eq!(
+            antigravity_hook_output("PostToolUse"),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            antigravity_hook_output("PreInvocation"),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            antigravity_hook_output("PostInvocation"),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            antigravity_hook_output("Stop"),
+            serde_json::json!({ "decision": "stop" })
+        );
+    }
+
+    #[test]
+    fn antigravity_documented_fields_are_available_to_normalization() {
+        let data = serde_json::json!({
+            "conversationId": "conversation-1",
+            "workspacePaths": ["/workspace/project"],
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": "pnpm test"
+                }
+            }
+        });
+
+        assert_eq!(
+            string_field(&data, &["session_id", "conversationId"]),
+            Some("conversation-1")
+        );
+        assert_eq!(
+            first_string_array_field(&data, "workspacePaths"),
+            Some("/workspace/project")
+        );
+        assert_eq!(data["toolCall"]["name"], "run_command");
+        assert_eq!(data["toolCall"]["args"]["CommandLine"], "pnpm test");
     }
 
     #[test]

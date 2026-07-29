@@ -92,13 +92,16 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: Some(h.join(".cursor").join("mcp.json")),
             settings_file: Some(h.join(".cursor").join("mcp.json")),
         },
-        "agents" | "antigravity" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => {
-            SkillPaths {
-                skill_dirs: vec![h.join(".agents").join("skills")],
-                mcp_config: None,
-                settings_file: None,
-            }
-        }
+        "antigravity" => SkillPaths {
+            skill_dirs: vec![h.join(".gemini").join("config").join("skills")],
+            mcp_config: Some(h.join(".gemini").join("config").join("mcp_config.json")),
+            settings_file: Some(h.join(".gemini").join("config").join("hooks.json")),
+        },
+        "agents" | "cline" | "deep-agents" | "dexto" | "firebender" | "warp" => SkillPaths {
+            skill_dirs: vec![h.join(".agents").join("skills")],
+            mcp_config: None,
+            settings_file: None,
+        },
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
@@ -319,6 +322,7 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
         "kimi" | "kimi-code-cli" => Some(kimi_code_home_for(&h).join("plugins").join("managed")),
         "workbuddy" => Some(h.join(".workbuddy").join("plugins")),
         "zcode" => Some(h.join(".zcode").join("cli").join("plugins").join("cache")),
+        "antigravity" => Some(h.join(".gemini").join("config").join("plugins")),
         _ => custom_agent_plugin_dir(agent),
     }
 }
