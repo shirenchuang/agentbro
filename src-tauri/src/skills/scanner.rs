@@ -578,6 +578,7 @@ fn scan_plugins(agent: &str, results: &mut Vec<ScannedSkill>) {
             home.join(".codex").join("plugins").join("cache"),
         ],
         "zcode" => vec![home.join(".zcode/cli/plugins/cache")],
+        "antigravity" => vec![home.join(".gemini/config/plugins")],
         _ => Vec::new(),
     };
     for root in roots {
@@ -625,6 +626,10 @@ fn scan_plugin_candidate(path: &Path, agent: &str, results: &mut Vec<ScannedSkil
                 .join("plugin.json")
                 .exists()
                 .then(|| path.join(".zcode-plugin").join("plugin.json"))
+        })
+        .or_else(|| {
+            (agent == "antigravity" && path.join("plugin.json").exists())
+                .then(|| path.join("plugin.json"))
         });
 
     if manifest_path.is_none() {

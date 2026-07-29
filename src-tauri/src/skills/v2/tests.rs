@@ -3603,6 +3603,72 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
 }
 
 #[test]
+fn antigravity_agent_detail_uses_official_customization_paths() {
+    let (_home, svc, _lock) = fresh_service("antigravity-official-paths");
+    let config_dir = svc.home.join(".gemini/config");
+    let skills_dir = config_dir.join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(config_dir.join("hooks.json"), "{}").unwrap();
+    fs::write(
+        config_dir.join("mcp_config.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plugin_root = config_dir.join("plugins/reviewer");
+    fs::create_dir_all(&plugin_root).unwrap();
+    fs::write(
+        plugin_root.join("plugin.json"),
+        serde_json::json!({
+            "name": "reviewer",
+            "displayName": "Reviewer Tools",
+            "version": "1.0.0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("antigravity").unwrap();
+    let inventory = crate::skills::plugin_management::list_plugins(&svc, "antigravity").unwrap();
+
+    assert_eq!(detail.skills_dir, Some(skills_dir.display().to_string()));
+    assert_eq!(
+        detail.config_path,
+        Some(config_dir.join("hooks.json").display().to_string())
+    );
+    assert_eq!(
+        detail.mcp_config_path,
+        Some(config_dir.join("mcp_config.json").display().to_string())
+    );
+    assert_eq!(
+        detail.plugin_dir,
+        Some(config_dir.join("plugins").display().to_string())
+    );
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "filesystem" && server.valid));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "reviewer"
+            && plugin.name == "Reviewer Tools"
+            && plugin.enabled
+            && plugin.version.as_deref() == Some("1.0.0")
+    }));
+    assert!(!inventory.capabilities.editable);
+    assert_eq!(
+        inventory.config_path, None,
+        "Antigravity plugins are auto-discovered and have no documented enable config"
+    );
+}
+
+#[test]
 fn agent_detail_does_not_refresh_unrelated_agents() {
     let (_home, svc, _lock) = fresh_service("agent-detail-isolated");
     let metadata_dir = svc.home.join(".agentbro");

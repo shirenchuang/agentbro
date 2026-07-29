@@ -47,6 +47,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "claude-code",
         "codex",
         "gemini",
+        "antigravity",
         "cursor",
         "opencode",
         "openclaw",
@@ -112,6 +113,11 @@ fn table() -> &'static [AgentMeta] {
             id: "gemini",
             display_name: "Gemini CLI",
             icon_key: "gemini",
+        },
+        AgentMeta {
+            id: "antigravity",
+            display_name: "Antigravity",
+            icon_key: "antigravity",
         },
         AgentMeta {
             id: "cursor",
@@ -245,6 +251,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "claude-code" => ".claude/skills",
         "codex" => ".codex/skills",
         "gemini" => ".gemini/skills",
+        "antigravity" => ".gemini/config/skills",
         "cursor" => ".cursor/skills",
         "opencode" => ".opencode/skills",
         "qclaw" => ".qclaw/skills",
@@ -547,6 +554,19 @@ mod tests {
         assert_eq!(
             agent_skills_dir(home, "zcode"),
             Some(home.join(".zcode/skills"))
+        );
+    }
+
+    #[test]
+    fn antigravity_is_visible_and_uses_official_skills_dir() {
+        assert!(visible_agent_ids().iter().any(|id| id == "antigravity"));
+        assert_eq!(display_name("antigravity"), "Antigravity");
+        assert_eq!(icon_key("antigravity"), "antigravity");
+
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_skills_dir(home, "antigravity"),
+            Some(home.join(".gemini/config/skills"))
         );
     }
 
