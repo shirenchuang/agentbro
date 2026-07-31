@@ -2817,6 +2817,74 @@ fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
 }
 
 #[test]
+fn delete_unmanaged_agents_skill_removes_shared_copy() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-agent");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared",
+        "shared-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.agent_id.as_deref() == Some("agents") && u.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    svc.delete_unmanaged_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+
+    assert!(!shared.exists());
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn delete_unmanaged_agents_skill_rejects_shared_root_and_outside_paths() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-boundary");
+    let shared_root = svc.home.join(".agents/skills");
+    let shared = write_skill(&shared_root, "shared", "shared-skill", Some("v1"));
+    let outside = write_skill(
+        &svc.home.join("Documents"),
+        "outside",
+        "outside-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.agent_id.as_deref() == Some("agents") && u.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    for unsafe_path in [&shared_root, &outside] {
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE unmanaged_items SET path = ?1 WHERE id = ?2",
+                        params![unsafe_path.display().to_string(), unmanaged.id],
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = svc
+            .delete_unmanaged_agent_skill("agents", &unmanaged.id)
+            .unwrap_err();
+
+        assert!(error.contains("outside 'agents' skill roots"));
+        assert!(unsafe_path.exists());
+    }
+}
+
+#[test]
 fn delete_unmanaged_agent_skill_rejects_wrong_agent() {
     let (_home, svc, _lock) = fresh_service("delete-unmanaged-wrong-agent");
     let rogue = write_skill(
