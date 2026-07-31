@@ -3417,7 +3417,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(scan).toHaveBeenCalledTimes(1)
       expect(scan).toHaveBeenCalledWith(id)
     })
-    expect(screen.getByText(
+    expect(await screen.findByText(
       '扫描完成：此 Agent 已管理 0，未管理 0；.agents 共享目录已管理 0，未管理 2',
     )).toBeInTheDocument()
   })
