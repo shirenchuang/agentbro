@@ -1225,7 +1225,7 @@
       },
       "inheritedSkills": "공유 상속",
       "inheritedSkillsSource": ".agents 공유 디렉터리",
-      "inheritedSkillsNotice": "ZCode는 기본적으로 ~/.agents/skills를 읽습니다. 여기에는 공유 디렉터리에서 현재 사용할 수 있는 Skill이 표시되며 Codex, Kimi 등의 Agent에서도 함께 사용할 수 있습니다. 이 화면은 상속 관계만 표시하며 ZCode 전용 설치로 취급하지 않습니다.",
+      "inheritedSkillsNotice": "{{agent}}는 기본적으로 ~/.agents/skills를 읽습니다. 여기에는 공유 디렉터리에서 현재 사용할 수 있는 Skill이 표시되며 다른 Agent에서도 함께 사용할 수 있습니다. 이 화면은 상속 관계만 표시하며 {{agent}} 전용 설치로 취급하지 않습니다.",
       "inheritedSkillsNoResults": "~/.agents/skills에서 상속된 Skill을 찾을 수 없습니다.",
       "builtinSkills": "기본 제공",
       "builtinSkillsNotice": "{{count}}개의 Skill은 {{agent}}에서 기본 제공하며 읽기 전용으로 표시됩니다. AgentBro는 이 파일을 인계, 덮어쓰기 또는 삭제하지 않습니다.",

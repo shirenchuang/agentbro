@@ -294,12 +294,13 @@ pub fn execute_distribute_skill(
 #[tauri::command(async)]
 pub fn scan_agent_inventory(agent_id: String) -> Result<serde_json::Value, String> {
     let svc = svc()?;
-    let result = svc.scan_one_agent_into_db(&agent_id)?;
+    let result = svc.scan_agent_inventory_into_db(&agent_id)?;
     Ok(serde_json::json!({
         "agentId": agent_id,
         "managed": result.managed,
         "unmanaged": result.unmanaged,
         "readOnly": result.read_only,
+        "includedShared": result.included_shared,
     }))
 }
 

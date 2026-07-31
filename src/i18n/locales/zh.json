@@ -1265,7 +1265,7 @@
       },
       "inheritedSkills": "共享继承",
       "inheritedSkillsSource": ".agents 共享目录",
-      "inheritedSkillsNotice": "ZCode 默认读取 ~/.agents/skills。这里展示该共享目录中当前可用的 Skill；它们可能同时被 Codex、Kimi 等 Agent 使用。此处仅展示继承关系，不会将其视为 ZCode 私有安装项。",
+      "inheritedSkillsNotice": "{{agent}} 默认读取 ~/.agents/skills。这里展示该共享目录中当前可用的 Skill；它们也可能被其他 Agent 使用。此处仅展示继承关系，不会将其视为 {{agent}} 私有安装项。",
       "inheritedSkillsNoResults": "没有找到从 ~/.agents/skills 继承的 Skill。",
       "builtinSkills": "内置",
       "builtinSkillsNotice": "{{count}} 个 Skill 由 {{agent}} 内置提供，仅作只读展示。AgentBro 不会接管、覆盖或删除这些文件。",

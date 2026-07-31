@@ -1073,7 +1073,7 @@
       },
       "inheritedSkills": "Paylaşılan miras",
       "inheritedSkillsSource": ".agents paylaşılan dizini",
-      "inheritedSkillsNotice": "ZCode varsayılan olarak ~/.agents/skills dizinini okur. Burada paylaşılan dizinden kullanılabilen Skill'ler gösterilir; Codex, Kimi ve diğer Agent'lar da bunları kullanabilir. Bu görünüm yalnızca miras ilişkisini gösterir ve bunları ZCode'a özel kurulumlar olarak değerlendirmez.",
+      "inheritedSkillsNotice": "{{agent}} varsayılan olarak ~/.agents/skills dizinini okur. Burada paylaşılan dizinden kullanılabilen Skill'ler gösterilir; diğer Agent'lar da bunları kullanabilir. Bu görünüm yalnızca miras ilişkisini gösterir ve bunları {{agent}} özel kurulumları olarak değerlendirmez.",
       "inheritedSkillsNoResults": "~/.agents/skills dizininden miras alınan Skill bulunamadı.",
       "builtinSkills": "Yerleşik",
       "builtinSkillsNotice": "{{count}} Skill, {{agent}} tarafından sağlanır ve salt okunur gösterilir. AgentBro bu dosyaları devralmaz, üzerlerine yazmaz veya silmez.",

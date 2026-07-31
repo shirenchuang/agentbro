@@ -1225,7 +1225,7 @@
       },
       "inheritedSkills": "共有継承",
       "inheritedSkillsSource": ".agents 共有ディレクトリ",
-      "inheritedSkillsNotice": "ZCode はデフォルトで ~/.agents/skills を読み込みます。ここには共有ディレクトリから現在利用できる Skill が表示され、Codex、Kimi などの Agent でも同時に使用される場合があります。この画面は継承関係のみを表示し、ZCode 固有のインストールとしては扱いません。",
+      "inheritedSkillsNotice": "{{agent}} はデフォルトで ~/.agents/skills を読み込みます。ここには共有ディレクトリから現在利用できる Skill が表示され、他の Agent でも使用される場合があります。この画面は継承関係のみを表示し、{{agent}} 固有のインストールとしては扱いません。",
       "inheritedSkillsNoResults": "~/.agents/skills から継承された Skill が見つかりません。",
       "builtinSkills": "組み込み",
       "builtinSkillsNotice": "{{count}} 個の Skill は {{agent}} が提供する組み込み機能で、読み取り専用で表示されます。AgentBro はこれらのファイルを引き継ぎ、上書き、削除しません。",

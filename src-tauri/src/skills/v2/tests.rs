@@ -3764,8 +3764,8 @@ fn agent_detail_reads_zcode_nested_mcp_and_plugins() {
 
 #[test]
 #[cfg(unix)]
-fn zcode_agent_detail_projects_shared_skills_as_inherited() {
-    let (_home, svc, _lock) = fresh_service("zcode-inherited-shared-skills");
+fn shared_skill_consumers_project_shared_skills_as_inherited() {
+    let (_home, svc, _lock) = fresh_service("shared-skill-consumers");
     let shared_root = svc.home.join(".agents/skills");
     let local = write_skill(&shared_root, "shared-local", "shared-local", Some("shared"));
     let source = write_skill(
@@ -3776,22 +3776,38 @@ fn zcode_agent_detail_projects_shared_skills_as_inherited() {
     );
     let linked = shared_root.join("shared-linked");
     std::os::unix::fs::symlink(&source, &linked).unwrap();
+    let nested = write_skill(
+        &shared_root.join("package-wrapper/node_modules/_package@1.0.0"),
+        "nested-shared",
+        "nested-shared",
+        Some("nested"),
+    );
 
-    svc.refresh().unwrap();
+    for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        let scan = svc.scan_agent_inventory_into_db(agent_id).unwrap();
+        assert!(scan.included_shared, "{agent_id}");
+        assert!(scan.unmanaged >= 3, "{agent_id}");
 
-    let detail = svc.get_agent_detail("zcode").unwrap();
-    assert!(detail.skills.is_empty());
-    assert_eq!(detail.inherited_skills.len(), 2);
-    assert!(detail.inherited_skills.iter().any(|skill| {
-        skill.skill_id == "shared-local"
-            && skill.path == local.display().to_string()
-            && skill.resolved_path.is_none()
-    }));
-    assert!(detail.inherited_skills.iter().any(|skill| {
-        skill.skill_id == "shared-linked"
-            && skill.path == linked.display().to_string()
-            && skill.resolved_path.as_deref() == Some(source.to_string_lossy().as_ref())
-    }));
+        let detail = svc.get_agent_detail(agent_id).unwrap();
+        assert!(detail.inherits_shared_skills, "{agent_id}");
+        assert!(detail.skills.is_empty(), "{agent_id}");
+        assert_eq!(detail.inherited_skills.len(), 3, "{agent_id}");
+        assert!(detail.inherited_skills.iter().any(|skill| {
+            skill.skill_id == "shared-local"
+                && skill.path == local.display().to_string()
+                && skill.resolved_path.is_none()
+        }));
+        assert!(detail.inherited_skills.iter().any(|skill| {
+            skill.skill_id == "shared-linked"
+                && skill.path == linked.display().to_string()
+                && skill.resolved_path.as_deref() == Some(source.to_string_lossy().as_ref())
+        }));
+        assert!(detail.inherited_skills.iter().any(|skill| {
+            skill.skill_id == "nested-shared"
+                && skill.path == nested.display().to_string()
+                && skill.resolved_path.is_none()
+        }));
+    }
 
     let unmanaged = svc.list_unmanaged().unwrap();
     assert_eq!(
@@ -3799,16 +3815,18 @@ fn zcode_agent_detail_projects_shared_skills_as_inherited() {
             .iter()
             .filter(|item| item.agent_id.as_deref() == Some("agents"))
             .count(),
-        2
+        3
     );
-    assert!(!unmanaged
-        .iter()
-        .any(|item| item.agent_id.as_deref() == Some("zcode")));
-    assert!(svc
-        .get_agent_detail("claude-code")
-        .unwrap()
-        .inherited_skills
-        .is_empty());
+    for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        assert!(!unmanaged
+            .iter()
+            .any(|item| item.agent_id.as_deref() == Some(agent_id)
+                && item.path.starts_with(&shared_root.display().to_string())));
+    }
+
+    let non_consumer = svc.get_agent_detail("claude-code").unwrap();
+    assert!(!non_consumer.inherits_shared_skills);
+    assert!(non_consumer.inherited_skills.is_empty());
 }
 
 #[test]
