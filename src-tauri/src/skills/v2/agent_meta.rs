@@ -310,6 +310,9 @@ pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     if agent == "doubao" {
         return vec![agent_paths::doubao_user_skills_dir_for(home)];
     }
+    if agent == "agents" {
+        return vec![home.join(".agents").join("skills")];
+    }
     if agent == "openclaw" {
         return vec![
             openclaw_workspace_dir(home).join("skills"),
@@ -514,8 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn owned_skill_dirs_exclude_shared_agent_roots() {
+    fn owned_skill_dirs_include_shared_inventory_root() {
         let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_owned_skill_dirs(home, "agents"),
+            vec![home.join(".agents/skills")]
+        );
         assert_eq!(
             agent_owned_skill_dirs(home, "codex"),
             vec![home.join(".codex/skills")]
