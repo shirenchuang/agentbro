@@ -1197,7 +1197,8 @@
     },
     "agentManagement": {
       "scanComplete": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}",
-      "scanCompleteShared": "扫描完成（含 .agents 共享目录）：已管理 {{managed}}，未管理 {{unmanaged}}",
+      "scanCompleteShared": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}",
+      "scanCompleteSharedReadOnly": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}，内置只读 {{readOnly}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}，只读 {{sharedReadOnly}}",
       "scanCompleteReadOnly": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}，内置只读 {{readOnly}}",
       "sharedDirectoryNotice": "{{count}} 个 Skill 来自 .agents 共享目录。接管后会进入中心库，并从共享目录清理；后续请通过中心库或技能包控制分发。",
       "pathSettings": {

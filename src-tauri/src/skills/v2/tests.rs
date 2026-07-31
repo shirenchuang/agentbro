@@ -3834,6 +3834,12 @@ fn agent_detail_reads_zcode_nested_mcp_and_plugins() {
 #[cfg(unix)]
 fn shared_skill_consumers_project_shared_skills_as_inherited() {
     let (_home, svc, _lock) = fresh_service("shared-skill-consumers");
+    let codex_private = write_skill(
+        &svc.home.join(".codex/skills"),
+        "codex-private",
+        "codex-private",
+        Some("private"),
+    );
     let shared_root = svc.home.join(".agents/skills");
     let local = write_skill(&shared_root, "shared-local", "shared-local", Some("shared"));
     let source = write_skill(
@@ -3852,9 +3858,15 @@ fn shared_skill_consumers_project_shared_skills_as_inherited() {
     );
 
     for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        let agent_only = svc.scan_one_agent_into_db(agent_id).unwrap();
         let scan = svc.scan_agent_inventory_into_db(agent_id).unwrap();
         assert!(scan.included_shared, "{agent_id}");
-        assert!(scan.unmanaged >= 3, "{agent_id}");
+        assert_eq!(scan.managed, agent_only.managed, "{agent_id}");
+        assert_eq!(scan.unmanaged, agent_only.unmanaged, "{agent_id}");
+        assert_eq!(scan.read_only, agent_only.read_only, "{agent_id}");
+        assert_eq!(scan.shared_managed, 0, "{agent_id}");
+        assert_eq!(scan.shared_unmanaged, 3, "{agent_id}");
+        assert_eq!(scan.shared_read_only, 0, "{agent_id}");
 
         let detail = svc.get_agent_detail(agent_id).unwrap();
         assert!(detail.inherits_shared_skills, "{agent_id}");
@@ -3878,6 +3890,10 @@ fn shared_skill_consumers_project_shared_skills_as_inherited() {
     }
 
     let unmanaged = svc.list_unmanaged().unwrap();
+    assert!(unmanaged.iter().any(|item| {
+        item.agent_id.as_deref() == Some("codex")
+            && item.path == codex_private.display().to_string()
+    }));
     assert_eq!(
         unmanaged
             .iter()

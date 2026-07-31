@@ -294,13 +294,23 @@ export function AgentManagementPage() {
       await state.loadAgentDetail(agentId, true)
       await state.loadOverview(true)
       const readOnlyCount = result.readOnly ?? 0
+      const sharedReadOnlyCount = result.sharedReadOnly ?? 0
       setNotice(t(
-        readOnlyCount > 0
+        result.includedShared
+          ? readOnlyCount > 0 || sharedReadOnlyCount > 0
+            ? 'skills.agentManagement.scanCompleteSharedReadOnly'
+            : 'skills.agentManagement.scanCompleteShared'
+          : readOnlyCount > 0
           ? 'skills.agentManagement.scanCompleteReadOnly'
-          : result.includedShared
-          ? 'skills.agentManagement.scanCompleteShared'
           : 'skills.agentManagement.scanComplete',
-        { managed: result.managed, unmanaged: result.unmanaged, readOnly: readOnlyCount },
+        {
+          managed: result.managed,
+          unmanaged: result.unmanaged,
+          readOnly: readOnlyCount,
+          sharedManaged: result.sharedManaged ?? 0,
+          sharedUnmanaged: result.sharedUnmanaged ?? 0,
+          sharedReadOnly: sharedReadOnlyCount,
+        },
       ))
     } catch (e) {
       state.setError(String(e))

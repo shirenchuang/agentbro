@@ -1224,8 +1224,26 @@ export const skillApiV2 = {
 
   scanAgentInventory: (agentId: string) =>
     isTauriRuntime()
-      ? invoke<{ agentId: string; managed: number; unmanaged: number; readOnly?: number; includedShared?: boolean }>('scan_agent_inventory', { agentId })
-      : Promise.resolve({ agentId, managed: 0, unmanaged: 0, readOnly: 0, includedShared: false }),
+      ? invoke<{
+          agentId: string
+          managed: number
+          unmanaged: number
+          readOnly?: number
+          includedShared?: boolean
+          sharedManaged?: number
+          sharedUnmanaged?: number
+          sharedReadOnly?: number
+        }>('scan_agent_inventory', { agentId })
+      : Promise.resolve({
+          agentId,
+          managed: 0,
+          unmanaged: 0,
+          readOnly: 0,
+          includedShared: false,
+          sharedManaged: 0,
+          sharedUnmanaged: 0,
+          sharedReadOnly: 0,
+        }),
 
   previewAdopt: (agentId: string, unmanagedId: string) =>
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),

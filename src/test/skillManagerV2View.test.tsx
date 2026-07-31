@@ -3374,8 +3374,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockImplementation(async (agentId) => ({
       agentId,
       managed: 0,
-      unmanaged: 2,
+      unmanaged: 0,
+      readOnly: 0,
       includedShared: true,
+      sharedManaged: 0,
+      sharedUnmanaged: 2,
+      sharedReadOnly: 0,
     }))
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(consumerDetail)
@@ -3413,6 +3417,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(scan).toHaveBeenCalledTimes(1)
       expect(scan).toHaveBeenCalledWith(id)
     })
+    expect(screen.getByText(
+      '扫描完成：此 Agent 已管理 0，未管理 0；.agents 共享目录已管理 0，未管理 2',
+    )).toBeInTheDocument()
   })
 
   it('keeps the inherited scope visible for a consumer with an empty shared directory', async () => {
