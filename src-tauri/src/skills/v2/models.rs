@@ -275,6 +275,7 @@ pub struct AgentDetail {
     pub plugin_dir: Option<String>,
     pub agent_dir: Option<String>,
     pub skills: Vec<SkillTargetDetail>,
+    pub inherits_shared_skills: bool,
     pub inherited_skills: Vec<InheritedSkillDetail>,
     pub applied_packs: Vec<AppliedPackSummary>,
     pub available_packs: Vec<SkillPackSummary>,

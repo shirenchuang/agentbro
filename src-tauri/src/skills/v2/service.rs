@@ -419,6 +419,7 @@ impl Service {
                 managed: 0,
                 unmanaged: 0,
                 read_only: 0,
+                included_shared: false,
             });
         }
         let now = db::now_iso();
@@ -449,11 +450,21 @@ impl Service {
         let mut unmanaged = 0usize;
         let mut read_only = 0usize;
         let mut seen_skill_ids = BTreeSet::new();
+        let shared_skills_dir = self.home.join(".agents").join("skills");
         for skills_dir in skill_dirs {
+            if agent_meta::inherits_shared_agents_skills(agent_id)
+                && skills_dir == shared_skills_dir
+            {
+                continue;
+            }
             if !skills_dir.is_dir() {
                 continue;
             }
-            let skill_paths = discover_agent_skill_paths(&skills_dir, agent_id == "openclaw")?;
+            let skill_paths = discover_agent_skill_paths(
+                &skills_dir,
+                matches!(agent_id, "openclaw" | SHARED_SKILLS_AGENT_ID),
+                agent_id == SHARED_SKILLS_AGENT_ID,
+            )?;
             for path in skill_paths {
                 let inferred = fsutil::infer_skill_id(&path);
                 if !seen_skill_ids.insert(inferred.clone()) {
@@ -499,7 +510,20 @@ impl Service {
             managed,
             unmanaged,
             read_only,
+            included_shared: false,
         })
+    }
+
+    pub fn scan_agent_inventory_into_db(&self, agent_id: &str) -> Result<AgentScanResult, String> {
+        let mut result = self.scan_one_agent_into_db(agent_id)?;
+        if agent_meta::inherits_shared_agents_skills(agent_id) {
+            let shared = self.scan_one_agent_into_db(SHARED_SKILLS_AGENT_ID)?;
+            result.managed += shared.managed;
+            result.unmanaged += shared.unmanaged;
+            result.read_only += shared.read_only;
+            result.included_shared = true;
+        }
+        Ok(result)
     }
 
     fn ensure_agent_row(&self, agent_id: &str) -> Result<bool, String> {
@@ -5217,6 +5241,7 @@ impl Service {
                 .to_lowercase()
                 .cmp(&right.skill_id.to_lowercase())
         });
+        let inherits_shared_skills = agent_meta::inherits_shared_agents_skills(agent_id);
 
         let applied_packs = self.applied_packs_for_agent(agent_id)?;
         let available_packs = self.list_skill_packs()?;
@@ -5263,6 +5288,7 @@ impl Service {
             plugin_dir,
             agent_dir,
             skills,
+            inherits_shared_skills,
             inherited_skills,
             applied_packs,
             available_packs,
@@ -5276,7 +5302,7 @@ impl Service {
         &self,
         agent_id: &str,
     ) -> Result<Vec<InheritedSkillDetail>, String> {
-        if agent_id != "zcode" {
+        if !agent_meta::inherits_shared_agents_skills(agent_id) {
             return Ok(Vec::new());
         }
         let rows = self.db.with_conn(|connection| {
@@ -5466,6 +5492,7 @@ pub struct AgentScanResult {
     pub managed: usize,
     pub unmanaged: usize,
     pub read_only: usize,
+    pub included_shared: bool,
 }
 
 struct SkillRow {
@@ -6108,15 +6135,33 @@ fn upsert_source(
 
 // silence unused import warning when not needed
 
-fn discover_agent_skill_paths(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+fn discover_agent_skill_paths(
+    root: &Path,
+    recursive: bool,
+    include_dependency_dirs: bool,
+) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    discover_agent_skill_paths_inner(root, recursive, 0, &mut out)?;
+    discover_agent_skill_paths_inner(root, recursive, include_dependency_dirs, 0, &mut out)?;
+    out.sort_by(|left, right| {
+        let left_is_link = std::fs::symlink_metadata(left)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let right_is_link = std::fs::symlink_metadata(right)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        left_is_link
+            .cmp(&right_is_link)
+            .then_with(|| left.cmp(right))
+    });
+    let mut seen = BTreeSet::new();
+    out.retain(|path| seen.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf())));
     Ok(out)
 }
 
 fn discover_agent_skill_paths_inner(
     dir: &Path,
     recursive: bool,
+    include_dependency_dirs: bool,
     depth: usize,
     out: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
@@ -6126,7 +6171,9 @@ fn discover_agent_skill_paths_inner(
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+        let ignored =
+            fsutil::is_ignored_entry(&name) && !(include_dependency_dirs && name == "node_modules");
+        if ignored || name.starts_with('.') {
             continue;
         }
         let path = entry.path();
@@ -6138,7 +6185,13 @@ fn discover_agent_skill_paths_inner(
             continue;
         }
         if recursive {
-            discover_agent_skill_paths_inner(&path, recursive, depth + 1, out)?;
+            discover_agent_skill_paths_inner(
+                &path,
+                recursive,
+                include_dependency_dirs,
+                depth + 1,
+                out,
+            )?;
         }
     }
     Ok(())

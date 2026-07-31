@@ -289,10 +289,15 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
         return agent_paths::doubao_skill_dirs_for(home);
     }
     if agent != "openclaw" {
-        if table().iter().all(|m| m.id != agent) {
-            return agent_paths::paths_for_agent(agent).skill_dirs;
+        let mut dirs = if table().iter().all(|m| m.id != agent) {
+            agent_paths::paths_for_agent(agent).skill_dirs
+        } else {
+            agent_skills_dir(home, agent).into_iter().collect()
+        };
+        if inherits_shared_agents_skills(agent) {
+            dirs.push(home.join(".agents").join("skills"));
         }
-        return agent_skills_dir(home, agent).into_iter().collect();
+        return dedupe_paths(dirs);
     }
     let workspace = openclaw_workspace_dir(home);
     let mut dirs = vec![
@@ -304,6 +309,10 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     ];
     dirs.extend(openclaw_bundled_skill_dirs());
     dedupe_paths(dirs)
+}
+
+pub fn inherits_shared_agents_skills(agent: &str) -> bool {
+    matches!(agent, "codex" | "kimi" | "openclaw" | "zcode")
 }
 
 pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
@@ -520,9 +529,22 @@ mod tests {
             agent_owned_skill_dirs(home, "codex"),
             vec![home.join(".codex/skills")]
         );
+        assert!(agent_skill_dirs(home, "codex")
+            .iter()
+            .any(|path| path == &home.join(".agents/skills")));
         assert!(!agent_owned_skill_dirs(home, "openclaw")
             .iter()
             .any(|path| path == &home.join(".agents/skills")));
+    }
+
+    #[test]
+    fn shared_agents_skill_consumers_are_explicit() {
+        for agent in ["codex", "kimi", "openclaw", "zcode"] {
+            assert!(inherits_shared_agents_skills(agent), "{agent}");
+        }
+        for agent in ["claude-code", "cursor", "gemini", "agents"] {
+            assert!(!inherits_shared_agents_skills(agent), "{agent}");
+        }
     }
 
     #[test]

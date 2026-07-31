@@ -86,6 +86,11 @@ projection preserves:
 Rows are deduplicated by logical path and sorted by Skill ID. Non-consumers
 receive an empty inherited collection.
 
+Shared discovery also traverses bounded package-manager wrapper directories,
+including `node_modules`, because installed Skill packages can place the real
+`SKILL.md` below a top-level package shell. Canonically identical aliases are
+deduplicated.
+
 Agent-owned scans must not record the global shared root as that Agent's
 unmanaged inventory. OpenClaw still scans its private workspace and built-in
 roots, but the global `~/.agents/skills` root is represented only through the
