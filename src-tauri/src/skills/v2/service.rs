@@ -420,6 +420,9 @@ impl Service {
                 unmanaged: 0,
                 read_only: 0,
                 included_shared: false,
+                shared_managed: 0,
+                shared_unmanaged: 0,
+                shared_read_only: 0,
             });
         }
         let now = db::now_iso();
@@ -511,6 +514,9 @@ impl Service {
             unmanaged,
             read_only,
             included_shared: false,
+            shared_managed: 0,
+            shared_unmanaged: 0,
+            shared_read_only: 0,
         })
     }
 
@@ -518,10 +524,10 @@ impl Service {
         let mut result = self.scan_one_agent_into_db(agent_id)?;
         if agent_meta::inherits_shared_agents_skills(agent_id) {
             let shared = self.scan_one_agent_into_db(SHARED_SKILLS_AGENT_ID)?;
-            result.managed += shared.managed;
-            result.unmanaged += shared.unmanaged;
-            result.read_only += shared.read_only;
             result.included_shared = true;
+            result.shared_managed = shared.managed;
+            result.shared_unmanaged = shared.unmanaged;
+            result.shared_read_only = shared.read_only;
         }
         Ok(result)
     }
@@ -5493,6 +5499,9 @@ pub struct AgentScanResult {
     pub unmanaged: usize,
     pub read_only: usize,
     pub included_shared: bool,
+    pub shared_managed: usize,
+    pub shared_unmanaged: usize,
+    pub shared_read_only: usize,
 }
 
 struct SkillRow {

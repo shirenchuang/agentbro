@@ -301,6 +301,9 @@ pub fn scan_agent_inventory(agent_id: String) -> Result<serde_json::Value, Strin
         "unmanaged": result.unmanaged,
         "readOnly": result.read_only,
         "includedShared": result.included_shared,
+        "sharedManaged": result.shared_managed,
+        "sharedUnmanaged": result.shared_unmanaged,
+        "sharedReadOnly": result.shared_read_only,
     }))
 }
 
