@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, Command as TokioCommand};
+use tokio::process::Child;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -29,7 +29,7 @@ pub async fn spawn_and_connect_app_server(
     binary: &Path,
     startup_timeout: Duration,
 ) -> Result<CodexAppServerConnection, String> {
-    let mut command = TokioCommand::new(binary);
+    let mut command = crate::platform::process::background_tokio_command(binary);
     command
         .arg("app-server")
         .arg("--listen")

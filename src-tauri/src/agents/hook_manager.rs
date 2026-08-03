@@ -371,7 +371,7 @@ fn bridge_candidate_is_fresh(bridge: &Path) -> bool {
 fn bridge_candidate_can_run(bridge: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        return std::process::Command::new(bridge)
+        return crate::platform::process::background_command(bridge)
             .arg("--version")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
