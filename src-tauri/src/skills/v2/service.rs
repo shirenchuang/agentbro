@@ -24,6 +24,8 @@ const DEFAULT_SKILL_PACK_NAME: &str = "全量技能包";
 const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
     "中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。";
 
+type InheritedSkillRow = (String, String, String, bool, Option<String>, Option<String>);
+
 pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
@@ -3133,21 +3135,35 @@ impl Service {
         unmanaged_id: &str,
     ) -> Result<AdoptPreview, String> {
         let item = self.find_unmanaged(unmanaged_id)?;
+        self.validate_unmanaged_adopt_item(agent_id, unmanaged_id, &item)?;
         if item.read_only {
             return Err(format!(
                 "Agent-provided built-in Skill '{}' is read-only and cannot be adopted or replaced.",
                 item.inferred_skill_id.as_deref().unwrap_or(unmanaged_id)
             ));
         }
-        let _path = Path::new(&item.path);
+        let path = Path::new(&item.path);
+        if !fsutil::is_skill_dir(path) {
+            return Err(format!(
+                "Agent skill '{}' is unavailable on disk.",
+                path.display()
+            ));
+        }
+        let source_hash = fsutil::hash_dir(path);
+        let source_content_hash = fsutil::hash_dir_contents(path);
         let inferred = item.inferred_skill_id.clone().unwrap_or_default();
         let _center = self.center_path()?;
         let center_existing = self.skill_row(&inferred)?;
+        let center_live_state = center_existing
+            .as_ref()
+            .and_then(|row| shared_center_live_state(Path::new(&row.center_path)).ok());
         let can_quick = match &center_existing {
-            Some(row) => row.current_hash == item.hash.clone().unwrap_or_default(),
+            Some(_) => center_live_state
+                .as_ref()
+                .is_some_and(|state| state.content_hash == source_content_hash),
             None => true,
         };
-        let mut quick_options = vec![
+        let quick_options = vec![
             AdoptOption {
                 value: "import_keep".into(),
                 label: "Import to center, keep agent file as-is".into(),
@@ -3164,22 +3180,47 @@ impl Service {
                 destructive: true,
             },
         ];
-        if agent_id == SHARED_SKILLS_AGENT_ID {
-            quick_options = vec![AdoptOption {
-                value: "import_cleanup".into(),
-                label: "Import to center and remove the shared .agents copy".into(),
+        let shared_quick_options = vec![AdoptOption {
+            value: "import_cleanup".into(),
+            label: "Import to center and remove the shared .agents copy".into(),
+            destructive: true,
+        }];
+        let shared_conflict_options = vec![
+            AdoptOption {
+                value: "center_over_agent".into(),
+                label: "Use center skill and remove the shared .agents copy".into(),
                 destructive: true,
-            }];
-        }
+            },
+            AdoptOption {
+                value: "overwrite_center".into(),
+                label: "Overwrite center skill and remove the shared .agents copy".into(),
+                destructive: true,
+            },
+            AdoptOption {
+                value: "rename".into(),
+                label: "Import under a new id and remove the shared .agents copy".into(),
+                destructive: true,
+            },
+            AdoptOption {
+                value: "skip".into(),
+                label: "Keep as unmanaged".into(),
+                destructive: false,
+            },
+        ];
         Ok(AdoptPreview {
             agent_id: agent_id.to_string(),
             unmanaged_id: unmanaged_id.to_string(),
             skill_path: item.path.clone(),
             inferred_skill_id: inferred.clone(),
-            hash: item.hash.clone().unwrap_or_default(),
+            hash: source_hash,
             center_has_same_id: center_existing.is_some(),
             can_quick_adopt: can_quick,
-            options: if can_quick {
+            center_live_state,
+            options: if agent_id == SHARED_SKILLS_AGENT_ID && can_quick {
+                shared_quick_options
+            } else if agent_id == SHARED_SKILLS_AGENT_ID {
+                shared_conflict_options
+            } else if can_quick {
                 quick_options
             } else {
                 vec![
@@ -3430,6 +3471,10 @@ impl Service {
             return Ok(preview.inferred_skill_id.clone());
         }
         let src = Path::new(&preview.skill_path);
+        let shared_root = self.home.join(".agents").join("skills");
+        if agent_id == SHARED_SKILLS_AGENT_ID {
+            ensure_shared_adopt_source_unchanged(&shared_root, src, &preview.hash)?;
+        }
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let target_skill_id = match option {
@@ -3445,7 +3490,28 @@ impl Service {
 
         // 1. import into center (copy), recording agent_import source
         let dest = center.join(&target_skill_id);
-        let mut wrote_center = false;
+        if agent_id == SHARED_SKILLS_AGENT_ID
+            && preview.center_has_same_id
+            && option != "overwrite_center"
+            && option != "rename"
+        {
+            let expected = preview.center_live_state.as_ref().ok_or_else(|| {
+                "Center skill state is unavailable; the shared source was preserved. Preview the adoption again."
+                    .to_string()
+            })?;
+            ensure_shared_center_unchanged(&dest, expected)?;
+        }
+        let mut wrote_center = if agent_id == SHARED_SKILLS_AGENT_ID {
+            prepare_shared_cleanup_destination(
+                &shared_root,
+                src,
+                &dest,
+                &preview.hash,
+                option == "import_cleanup",
+            )?
+        } else {
+            false
+        };
         if dest.exists() {
             if option == "overwrite_center" {
                 fsutil::remove_path(&dest)?;
@@ -3471,7 +3537,14 @@ impl Service {
             fsutil::copy_dir_recursive(src, &dest)?;
             wrote_center = true;
         }
-        if wrote_center {
+        let expected_shared_center_state = if agent_id == SHARED_SKILLS_AGENT_ID {
+            Some(shared_center_live_state(&dest)?)
+        } else {
+            None
+        };
+        let record_center_import =
+            wrote_center || (agent_id == SHARED_SKILLS_AGENT_ID && option == "import_cleanup");
+        if record_center_import {
             let now = db::now_iso();
             let fm = fsutil::read_frontmatter(&dest);
             let hash = fsutil::hash_dir(&dest);
@@ -3505,6 +3578,26 @@ impl Service {
 
         // 2. optionally replace agent file
         match option {
+            "overwrite_center" | "rename" if agent_id == SHARED_SKILLS_AGENT_ID => {
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
+                fsutil::remove_path(src)?;
+            }
+            "center_over_agent" if agent_id == SHARED_SKILLS_AGENT_ID => {
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
+                fsutil::remove_path(src)?;
+            }
             "import_keep" | "overwrite_center" | "rename" => {
                 let actual_mode = existing_target_mode(src);
                 self.upsert_target_managed(
@@ -3556,6 +3649,13 @@ impl Service {
                         "Cleanup import is only available for shared .agents skills.".into(),
                     );
                 }
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
                 fsutil::remove_path(src)?;
             }
             _ => {}
@@ -3727,6 +3827,43 @@ impl Service {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("SKILL_UNMANAGED_STALE:{unmanaged_id}"))
         })
+    }
+
+    fn validate_unmanaged_adopt_item(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+        item: &UnmanagedItemDto,
+    ) -> Result<(), String> {
+        if item.agent_id.as_deref() != Some(agent_id) {
+            return Err(format!(
+                "Unmanaged item '{}' does not belong to agent '{}'.",
+                unmanaged_id, agent_id
+            ));
+        }
+        if item.item_type != "agent_skill" && item.item_type != "skill" {
+            return Err("Only unmanaged skills can be adopted here.".to_string());
+        }
+        if item.read_only {
+            return Ok(());
+        }
+
+        let path = Path::new(&item.path);
+        let allowed = if agent_id == SHARED_SKILLS_AGENT_ID {
+            shared_adopt_path_allowed(&self.home.join(".agents").join("skills"), path)
+        } else {
+            agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
+                .into_iter()
+                .any(|root| unmanaged_delete_path_allowed(&root, path))
+        };
+        if !allowed {
+            return Err(format!(
+                "Refusing to adopt unmanaged skill outside '{}' owned skill roots: {}",
+                agent_id,
+                path.display()
+            ));
+        }
+        Ok(())
     }
 
     // ── Copy sync (outdated / modified / diverged) ────────────────
@@ -5314,14 +5451,27 @@ impl Service {
         let rows = self.db.with_conn(|connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT 'target:' || id, skill_id, target_path
-                     FROM skill_targets
-                     WHERE agent_id = ?1
-                     UNION ALL
-                     SELECT 'unmanaged:' || id, COALESCE(inferred_skill_id, ''), path
-                     FROM unmanaged_items
-                     WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
-                     ORDER BY 3",
+                    "SELECT id, skill_id, path, managed, target_id, unmanaged_id
+                     FROM (
+                         SELECT 'target:' || id AS id,
+                                skill_id,
+                                target_path AS path,
+                                1 AS managed,
+                                id AS target_id,
+                                NULL AS unmanaged_id
+                         FROM skill_targets
+                         WHERE agent_id = ?1
+                         UNION ALL
+                         SELECT 'unmanaged:' || id AS id,
+                                COALESCE(inferred_skill_id, '') AS skill_id,
+                                path,
+                                0 AS managed,
+                                NULL AS target_id,
+                                id AS unmanaged_id
+                         FROM unmanaged_items
+                         WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
+                     )
+                     ORDER BY path, managed DESC, id",
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
@@ -5330,6 +5480,9 @@ impl Service {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })
                 .map_err(|error| error.to_string())?;
@@ -5339,20 +5492,33 @@ impl Service {
             }
             Ok::<_, String>(values)
         })?;
-        let mut seen_paths = BTreeSet::new();
-        Ok(rows
-            .into_iter()
-            .filter(|(_, _, path)| seen_paths.insert(path.clone()))
-            .map(|(id, skill_id, path)| InheritedSkillDetail {
-                id,
-                skill_id: if skill_id.trim().is_empty() {
-                    infer_name_from_path(&path)
-                } else {
-                    skill_id
+        let mut rows_by_path: BTreeMap<PathBuf, InheritedSkillRow> = BTreeMap::new();
+        for row in rows {
+            let key = fsutil::normalized_path(Path::new(&row.2));
+            match rows_by_path.get(&key) {
+                Some(existing) if existing.3 || !row.3 => {}
+                _ => {
+                    rows_by_path.insert(key, row);
+                }
+            }
+        }
+        Ok(rows_by_path
+            .into_values()
+            .map(
+                |(id, skill_id, path, managed, target_id, unmanaged_id)| InheritedSkillDetail {
+                    id,
+                    skill_id: if skill_id.trim().is_empty() {
+                        infer_name_from_path(&path)
+                    } else {
+                        skill_id
+                    },
+                    resolved_path: resolved_target_path(&path),
+                    path,
+                    managed,
+                    target_id,
+                    unmanaged_id,
                 },
-                resolved_path: resolved_target_path(&path),
-                path,
-            })
+            )
             .collect())
     }
 
@@ -5430,6 +5596,8 @@ pub struct AdoptPreview {
     pub center_has_same_id: bool,
     pub can_quick_adopt: bool,
     pub options: Vec<AdoptOption>,
+    #[serde(skip)]
+    center_live_state: Option<SharedCenterLiveState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5538,6 +5706,12 @@ struct ProjectRow {
     last_scanned_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SharedCenterLiveState {
+    path_state: String,
+    content_hash: String,
+}
+
 fn resolved_target_path(path: &str) -> Option<String> {
     fsutil::resolved_symlink_target(Path::new(path)).map(|p| p.display().to_string())
 }
@@ -5551,6 +5725,9 @@ fn existing_target_mode(path: &Path) -> &'static str {
 }
 
 fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
+    if path == root || root.is_symlink() {
+        return false;
+    }
     let root = fsutil::normalized_path(root);
     if path.is_symlink() {
         return path
@@ -5561,6 +5738,294 @@ fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
     }
     let path = fsutil::normalized_path(path);
     path.starts_with(&root) && path != root
+}
+
+fn shared_adopt_path_allowed(shared_root: &Path, path: &Path) -> bool {
+    let shared_parent_is_link = shared_root
+        .parent()
+        .is_some_and(|parent| parent.is_symlink());
+    !shared_parent_is_link && unmanaged_delete_path_allowed(shared_root, path)
+}
+
+fn shared_center_live_state(path: &Path) -> Result<SharedCenterLiveState, String> {
+    if !fsutil::is_skill_dir(path) {
+        return Err(format!(
+            "Center skill '{}' is unavailable or invalid.",
+            path.display()
+        ));
+    }
+    let path_state = if path.is_symlink() {
+        let target = fsutil::resolved_symlink_target(path).ok_or_else(|| {
+            format!(
+                "Center skill link '{}' is broken or unreadable.",
+                path.display()
+            )
+        })?;
+        format!("link:{}", fsutil::normalized_path(&target).display())
+    } else {
+        format!("directory:{}", fsutil::normalized_path(path).display())
+    };
+    Ok(SharedCenterLiveState {
+        path_state,
+        content_hash: fsutil::hash_dir_contents(path),
+    })
+}
+
+fn ensure_shared_center_unchanged(
+    path: &Path,
+    expected: &SharedCenterLiveState,
+) -> Result<(), String> {
+    let live = shared_center_live_state(path).map_err(|error| {
+        format!("{error} The shared source was preserved; preview the adoption again.")
+    })?;
+    if &live != expected {
+        return Err(format!(
+            "Center skill '{}' changed after preview; the shared source was preserved. Preview the adoption again.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_shared_adopt_source_unchanged(
+    shared_root: &Path,
+    path: &Path,
+    expected_hash: &str,
+) -> Result<(), String> {
+    if !shared_adopt_path_allowed(shared_root, path) {
+        return Err(format!(
+            "Shared skill '{}' is no longer below a trusted .agents skill root; the source was preserved.",
+            path.display()
+        ));
+    }
+    if !fsutil::is_skill_dir(path) {
+        return Err(format!(
+            "Shared skill '{}' changed or became unavailable after preview; the source was preserved.",
+            path.display()
+        ));
+    }
+    let live_hash = fsutil::hash_dir(path);
+    if live_hash != expected_hash {
+        return Err(format!(
+            "Shared skill '{}' changed after preview; the source was preserved. Preview the adoption again.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_shared_cleanup_ready(
+    shared_root: &Path,
+    source: &Path,
+    expected_source_hash: &str,
+    center: &Path,
+    expected_center_state: Option<&SharedCenterLiveState>,
+) -> Result<(), String> {
+    ensure_shared_adopt_source_unchanged(shared_root, source, expected_source_hash)?;
+    let expected_center_state = expected_center_state.ok_or_else(|| {
+        "Center skill state is unavailable; the shared source was preserved.".to_string()
+    })?;
+    ensure_shared_center_unchanged(center, expected_center_state)
+}
+
+fn prepare_shared_cleanup_destination(
+    shared_root: &Path,
+    source: &Path,
+    destination: &Path,
+    expected_hash: &str,
+    allow_detach: bool,
+) -> Result<bool, String> {
+    let source_resolved = fsutil::normalized_path(source);
+    let destination_resolved = fsutil::normalized_path(destination);
+    if source_resolved != destination_resolved {
+        if source_resolved.starts_with(&destination_resolved)
+            || destination_resolved.starts_with(&source_resolved)
+        {
+            return Err(format!(
+                "Refusing shared cleanup because center path '{}' overlaps source '{}'; the source was preserved.",
+                destination.display(),
+                source.display()
+            ));
+        }
+        return Ok(false);
+    }
+    if source.is_symlink() && !destination.is_symlink() {
+        return Ok(false);
+    }
+    if !destination.is_symlink() {
+        return Err(format!(
+            "Refusing shared cleanup because center path '{}' aliases source '{}' through a non-leaf path; the source was preserved.",
+            destination.display(),
+            source.display()
+        ));
+    }
+    if !allow_detach {
+        return Err(format!(
+            "Refusing shared cleanup because option cannot safely reuse center link '{}'; the source was preserved.",
+            destination.display()
+        ));
+    }
+
+    ensure_shared_adopt_source_unchanged(shared_root, source, expected_hash)?;
+    ensure_shared_detach_tree_copyable(source)?;
+    let expected_content_hash = fsutil::hash_dir_contents(source);
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "Center path '{}' has no parent; the shared source was preserved.",
+            destination.display()
+        )
+    })?;
+    let temporary = parent.join(format!(".agentbro-shared-detach-{}", uuid_short()));
+    fsutil::copy_dir_recursive(source, &temporary)?;
+    if let Err(error) = ensure_shared_adopt_source_unchanged(shared_root, source, expected_hash) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = ensure_shared_detach_tree_copyable(source) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = validate_shared_detached_copy(&temporary, &expected_content_hash) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = atomic_swap_paths(&temporary, destination) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(format!(
+            "Could not atomically activate detached center copy '{}': {}; the shared source was preserved.",
+            destination.display(),
+            error
+        ));
+    }
+    if let Err(validation_error) =
+        validate_shared_detached_copy(destination, &expected_content_hash)
+    {
+        return match atomic_swap_paths(&temporary, destination) {
+            Ok(()) => {
+                let _ = fsutil::remove_path(&temporary);
+                Err(format!(
+                    "{validation_error} The original center link was restored; the shared source was preserved."
+                ))
+            }
+            Err(rollback_error) => Err(format!(
+                "{validation_error} Could not restore the original center link: {rollback_error}; the shared source was preserved."
+            )),
+        };
+    }
+    if let Err(error) = fsutil::remove_path(&temporary) {
+        if atomic_swap_paths(&temporary, destination).is_ok() {
+            let _ = fsutil::remove_path(&temporary);
+        }
+        return Err(format!(
+            "Could not finalize detached center copy '{}': {}; the shared source was preserved.",
+            destination.display(),
+            error
+        ));
+    }
+    Ok(true)
+}
+
+fn ensure_shared_detach_tree_copyable(root: &Path) -> Result<(), String> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| format!("Could not inspect '{}': {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Could not inspect an entry in '{}': {error}",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Could not inspect '{}': {error}", path.display()))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "Cannot detach center skill because shared source entry '{}' is a symbolic link and would not be copied; the shared source was preserved.",
+                    path.display()
+                ));
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if !file_type.is_file() {
+                return Err(format!(
+                    "Cannot detach center skill because shared source entry '{}' has an unsupported file type; the shared source was preserved.",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_shared_detached_copy(path: &Path, expected_content_hash: &str) -> Result<(), String> {
+    if path.is_symlink()
+        || !fsutil::is_skill_dir(path)
+        || fsutil::hash_dir_contents(path) != expected_content_hash
+    {
+        return Err(format!(
+            "Detached center copy '{}' is invalid or incomplete; the shared source was preserved.",
+            path.display()
+        ));
+    }
+    ensure_shared_detach_tree_copyable(path)
+}
+
+#[cfg(target_os = "macos")]
+fn atomic_swap_paths(left: &Path, right: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", left.display()))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", right.display()))?;
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_SWAP,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn atomic_swap_paths(left: &Path, right: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", left.display()))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", right.display()))?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn atomic_swap_paths(_left: &Path, _right: &Path) -> Result<(), String> {
+    Err("Atomic center link detachment is unavailable on this platform.".to_string())
 }
 
 fn filesystem_target_mode(path: &Path) -> Option<String> {
