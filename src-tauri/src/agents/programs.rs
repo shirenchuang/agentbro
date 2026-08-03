@@ -403,16 +403,22 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = match &meta.kind {
         AgentProgramKind::Cli => which_agent_binary(&id, &meta),
+        AgentProgramKind::App if id == "antigravity" => which_agent_binary(&id, &meta),
         AgentProgramKind::App => None,
     };
     let app_path = match &meta.kind {
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
     };
-    let display_app_path = app_path
-        .clone()
-        .or_else(|| default_app_path_for_display(&id, &meta));
-    let installed = program_is_installed(&meta, binary_path.is_some(), app_path.is_some());
+    let display_app_path = if id == "antigravity" {
+        app_path.clone()
+    } else {
+        app_path
+            .clone()
+            .or_else(|| default_app_path_for_display(&id, &meta))
+    };
+    let installed =
+        program_is_installed_for_agent(&id, &meta, binary_path.is_some(), app_path.is_some());
     let skills_dir = agent_paths::paths_for_agent(&id)
         .skill_dirs
         .first()
@@ -651,7 +657,8 @@ async fn run_agent_command(
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     if operation == "uninstall"
-        && !program_is_installed(
+        && !program_is_installed_for_agent(
+            agent_id,
             &meta,
             find_agent_binary(agent_id, &meta).is_some(),
             installed_app_path(agent_id, &meta).is_some(),
@@ -1006,7 +1013,7 @@ fn which_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<String> 
 
 fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'static str> {
     let mut candidates = match agent_id {
-        "antigravity" => vec!["ag", "antigravity"],
+        "antigravity" => vec!["agy"],
         "cline" => vec!["code", "cursor"],
         "codebuddycn" | "codybuddycn" => vec!["codybuddycn", "codebuddy"],
         "cursor-cli" => vec!["cursor-agent"],
@@ -1053,6 +1060,19 @@ fn program_is_installed(meta: &ProgramMetadata, has_binary: bool, has_app: bool)
     }
 }
 
+fn program_is_installed_for_agent(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    has_binary: bool,
+    has_app: bool,
+) -> bool {
+    if agent_id == "antigravity" {
+        has_binary || has_app
+    } else {
+        program_is_installed(meta, has_binary, has_app)
+    }
+}
+
 fn app_path_candidates(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
     app_path_candidates_for_platform(agent_id, meta, RuntimePlatform::current())
 }
@@ -1091,10 +1111,12 @@ pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus
     let Some(meta) = metadata_for(agent_id) else {
         return AdapterStatus::Unavailable;
     };
-    let installed = match &meta.kind {
-        AgentProgramKind::Cli => find_agent_binary(agent_id, &meta).is_some(),
-        AgentProgramKind::App => installed_app_path(agent_id, &meta).is_some(),
-    };
+    let installed = program_is_installed_for_agent(
+        agent_id,
+        &meta,
+        find_agent_binary(agent_id, &meta).is_some(),
+        installed_app_path(agent_id, &meta).is_some(),
+    );
     if installed {
         AdapterStatus::Available
     } else {
@@ -1488,11 +1510,11 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.stepfun",
             "https://platform.stepfun.com",
         ),
-        "antigravity" => app(
-            "antigravity",
+        "antigravity" => app_no_uninstall(
+            "agy",
             "/Applications/Antigravity.app",
-            "~/.antigravity",
-            "https://antigravity.google",
+            "~/.gemini/config",
+            "https://antigravity.google/download",
         ),
         "workbuddy" => app(
             "workbuddy",
@@ -1840,6 +1862,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn antigravity_metadata_supports_desktop_and_agy_cli() {
+        let antigravity = metadata_for("antigravity").expect("antigravity metadata");
+
+        assert_eq!(antigravity.kind, AgentProgramKind::App);
+        assert_eq!(antigravity.binary, Some("agy"));
+        assert_eq!(antigravity.app_path, Some("/Applications/Antigravity.app"));
+        assert_eq!(antigravity.config_dir, Some("~/.gemini/config"));
+        assert_eq!(
+            antigravity.download_url,
+            Some("https://antigravity.google/download")
+        );
+        assert!(program_is_installed_for_agent(
+            "antigravity",
+            &antigravity,
+            true,
+            false
+        ));
+        assert!(program_is_installed_for_agent(
+            "antigravity",
+            &antigravity,
+            false,
+            true
+        ));
+        assert!(!program_is_installed_for_agent(
+            "antigravity",
+            &antigravity,
+            false,
+            false
+        ));
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn reads_the_installed_version_from_an_app_info_plist() {
@@ -1901,6 +1955,12 @@ mod tests {
         assert_eq!(
             binary_candidates_for_agent("cursor-cli", &cursor_cli),
             vec!["cursor-agent"]
+        );
+
+        let antigravity = metadata_for("antigravity").expect("antigravity metadata");
+        assert_eq!(
+            binary_candidates_for_agent("antigravity", &antigravity),
+            vec!["agy"]
         );
     }
 

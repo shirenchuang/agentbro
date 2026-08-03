@@ -294,12 +294,16 @@ pub fn execute_distribute_skill(
 #[tauri::command(async)]
 pub fn scan_agent_inventory(agent_id: String) -> Result<serde_json::Value, String> {
     let svc = svc()?;
-    let result = svc.scan_one_agent_into_db(&agent_id)?;
+    let result = svc.scan_agent_inventory_into_db(&agent_id)?;
     Ok(serde_json::json!({
         "agentId": agent_id,
         "managed": result.managed,
         "unmanaged": result.unmanaged,
         "readOnly": result.read_only,
+        "includedShared": result.included_shared,
+        "sharedManaged": result.shared_managed,
+        "sharedUnmanaged": result.shared_unmanaged,
+        "sharedReadOnly": result.shared_read_only,
     }))
 }
 
@@ -506,6 +510,11 @@ pub fn list_managed_agents_v2() -> Result<Vec<AgentSummary>, String> {
 #[tauri::command(async)]
 pub fn get_agent_detail_v2(agent_id: String) -> Result<AgentDetail, String> {
     Ok(svc()?.get_agent_detail(&agent_id)?)
+}
+
+#[tauri::command(async)]
+pub fn refresh_agent_skill_view_v2(agent_id: String) -> Result<AgentSkillViewSnapshot, String> {
+    svc()?.refresh_agent_skill_view(&agent_id)
 }
 
 #[tauri::command(async)]

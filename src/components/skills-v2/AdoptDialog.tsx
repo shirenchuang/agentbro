@@ -10,11 +10,13 @@ export function AdoptDialog({
   packs,
   onClose,
   onDone,
+  validateContext,
 }: {
   preview: AdoptPreview
   packs: SkillPackSummary[]
   onClose: () => void
   onDone: () => void | Promise<void>
+  validateContext?: () => void
 }) {
   const { t } = useTranslation()
   const editablePacks = useMemo(
@@ -30,11 +32,14 @@ export function AdoptDialog({
   const [packId, setPackId] = useState(() => editablePacks[0]?.id ?? '')
   const [newPackName, setNewPackName] = useState('')
   const [adoptedSkillId, setAdoptedSkillId] = useState<string | null>(null)
+  const [packUpdateCompleted, setPackUpdateCompleted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const selectedOption = preview.options.find((o) => o.value === option)
-  const optionCopy = selectedOption ? adoptOptionCopy(selectedOption) : null
+  const sharedOwner = preview.agentId === 'agents'
+  const optionCopy = selectedOption ? adoptOptionCopy(selectedOption, sharedOwner) : null
   const effectiveRenamedId = renamedId.trim() || `${preview.inferredSkillId}-import`
+  const changesFiles = Boolean(selectedOption?.destructive || (sharedOwner && option !== 'skip'))
   const packChoiceInvalid = addToPack && option !== 'skip' && (
     packMode === 'existing' ? !packId : !newPackName.trim()
   )
@@ -48,6 +53,7 @@ export function AdoptDialog({
     setBusy(true)
     setError(null)
     try {
+      validateContext?.()
       const skillId = adoptedSkillId || await skillApiV2.executeAdopt(
         preview.agentId,
         preview.unmanagedId,
@@ -55,11 +61,13 @@ export function AdoptDialog({
         option === 'rename' ? renamedId : null,
       )
       if (option !== 'skip' && !adoptedSkillId) setAdoptedSkillId(skillId)
-      if (addToPack && option !== 'skip') {
+      validateContext?.()
+      if (addToPack && option !== 'skip' && !packUpdateCompleted) {
         try {
           await addSkillToPack(skillId, packMode === 'existing'
             ? { kind: 'existing', packId }
-            : { kind: 'new', name: newPackName.trim() })
+            : { kind: 'new', name: newPackName.trim() }, validateContext)
+          setPackUpdateCompleted(true)
         } catch (e) {
           setError(t('skills.adoptPack.partialError', { error: skillErrorMessage(t, e) }))
           return
@@ -75,7 +83,13 @@ export function AdoptDialog({
 
   const close = () => {
     if (adoptedSkillId) {
+      setBusy(true)
+      setError(null)
       void Promise.resolve(onDone())
+        .catch((e) => {
+          setError(skillErrorMessage(t, e))
+          setBusy(false)
+        })
       return
     }
     onClose()
@@ -84,13 +98,15 @@ export function AdoptDialog({
   return (
     <PreviewDialog
       title={`接管 ${preview.inferredSkillId || '未命名 Skill'}`}
-      confirmLabel={adoptedSkillId && addToPack
-        ? t('skills.adoptPack.retry')
+      confirmLabel={adoptedSkillId
+        ? addToPack && !packUpdateCompleted
+          ? t('skills.adoptPack.retry')
+          : '重试刷新'
         : option === 'skip'
           ? '保持未管理'
           : '确认接管'}
       modalClassName="sm2__modal--adopt"
-      destructive={selectedOption?.destructive}
+      destructive={changesFiles}
       busy={busy}
       disabled={packChoiceInvalid}
       onConfirm={execute}
@@ -119,7 +135,7 @@ export function AdoptDialog({
           </div>
           <div className="sm2-adopt__options" role="radiogroup" aria-label="接管方式">
             {preview.options.map((o) => {
-              const copy = adoptOptionCopy(o)
+              const copy = adoptOptionCopy(o, sharedOwner)
               const active = option === o.value
               return (
                 <button
@@ -157,7 +173,11 @@ export function AdoptDialog({
               placeholder={`${preview.inferredSkillId}-import`}
               disabled={Boolean(adoptedSkillId)}
             />
-            <span>将以「{effectiveRenamedId}」写入中心库，原 Agent 文件会作为副本目标被管理。</span>
+            <span>
+              {sharedOwner
+                ? `将以「${effectiveRenamedId}」写入中心库，成功后清理 .agents/skills 中的原共享 Skill。`
+                : `将以「${effectiveRenamedId}」写入中心库，原 Agent 文件会作为副本目标被管理。`}
+            </span>
           </div>
         )}
 
@@ -246,8 +266,14 @@ export function AdoptDialog({
         )}
 
         {optionCopy && (
-          <div className={`sm2-adopt__impact${selectedOption?.destructive ? ' sm2-adopt__impact--warn' : ''}`}>
-            <strong>{selectedOption?.destructive ? '会改动 Agent 目录' : '不会删除现有文件'}</strong>
+          <div className={`sm2-adopt__impact${changesFiles ? ' sm2-adopt__impact--warn' : ''}`}>
+            <strong>
+              {sharedOwner && option !== 'skip'
+                ? '会清理 .agents 共享副本'
+                : selectedOption?.destructive
+                  ? '会改动 Agent 目录'
+                  : '不会删除现有文件'}
+            </strong>
             <span>{optionCopy.impact}</span>
           </div>
         )}
@@ -262,8 +288,13 @@ type AdoptPackSelection =
   | { kind: 'existing'; packId: string }
   | { kind: 'new'; name: string }
 
-async function addSkillToPack(skillId: string, selection: AdoptPackSelection) {
+async function addSkillToPack(
+  skillId: string,
+  selection: AdoptPackSelection,
+  validateContext?: () => void,
+) {
   if (selection.kind === 'new') {
+    validateContext?.()
     await skillApiV2.upsertPack({
       id: '',
       name: selection.name,
@@ -271,12 +302,16 @@ async function addSkillToPack(skillId: string, selection: AdoptPackSelection) {
       tags: [],
       skillIds: [skillId],
     })
+    validateContext?.()
     return
   }
 
+  validateContext?.()
   const pack = await skillApiV2.getPackDetail(selection.packId)
+  validateContext?.()
   const existingIds = pack.members.map((member) => member.skillId)
   if (existingIds.includes(skillId)) return
+  validateContext?.()
   await skillApiV2.upsertPack({
     id: pack.id,
     name: pack.name,
@@ -284,9 +319,13 @@ async function addSkillToPack(skillId: string, selection: AdoptPackSelection) {
     tags: pack.tags,
     skillIds: [...existingIds, skillId],
   })
+  validateContext?.()
 }
 
-function adoptOptionCopy(option: { value: string; label: string; destructive: boolean }) {
+function adoptOptionCopy(
+  option: { value: string; label: string; destructive: boolean },
+  sharedOwner = false,
+) {
   switch (option.value) {
     case 'import_keep':
       return {
@@ -321,6 +360,15 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         impact: '会删除 .agents/skills 里的原 Skill 文件夹；中心库会保留可管理副本。',
       }
     case 'center_over_agent':
+      if (sharedOwner) {
+        return {
+          title: '使用中心库版本，并清理共享副本',
+          shortLabel: '中心库为准',
+          description: '保留中心库已有 Skill，成功后删除 .agents/skills 中的同名共享副本。',
+          badge: '推荐',
+          impact: '不会改动中心库；会删除 .agents/skills 中的同名共享 Skill 文件夹。',
+        }
+      }
       return {
         title: '使用中心库版本接管',
         shortLabel: '中心库为准',
@@ -329,6 +377,15 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         impact: '不会改动中心库；会删除当前 Agent 目录中的同名 Skill 文件夹，再创建到中心库的链接。',
       }
     case 'overwrite_center':
+      if (sharedOwner) {
+        return {
+          title: '用共享副本覆盖中心库',
+          shortLabel: '共享副本为准',
+          description: '以 .agents 共享目录中的版本覆盖中心库，成功后删除原共享副本。',
+          badge: '覆盖',
+          impact: '会替换中心库同名 Skill，并删除 .agents/skills 中的原共享 Skill 文件夹。',
+        }
+      }
       return {
         title: '用当前文件覆盖中心库',
         shortLabel: '覆盖中心库',
@@ -337,6 +394,15 @@ function adoptOptionCopy(option: { value: string; label: string; destructive: bo
         impact: '会替换中心库同名 Skill 的内容，请确认当前 Agent 文件是正确版本。',
       }
     case 'rename':
+      if (sharedOwner) {
+        return {
+          title: '改名导入中心库，并清理共享副本',
+          shortLabel: '重命名导入',
+          description: '保留中心库已有同名 Skill，以新的 Skill ID 导入共享副本，成功后清理原共享目录。',
+          badge: '改名',
+          impact: '不会覆盖中心库已有 Skill；会删除 .agents/skills 中的原共享 Skill 文件夹。',
+        }
+      }
       return {
         title: '改名导入中心库',
         shortLabel: '重命名导入',

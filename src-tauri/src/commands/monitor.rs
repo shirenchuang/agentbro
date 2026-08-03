@@ -414,10 +414,12 @@ fn windows_path_eq(left: &str, right: &str) -> bool {
 #[cfg(target_os = "windows")]
 fn read_windows_user_path() -> Result<String, String> {
     let script = "[Environment]::GetEnvironmentVariable('Path', 'User')";
-    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .map_err(|e| format!("Failed to read user PATH: {e}"))?;
+    let output = crate::platform::process::background_command(
+        crate::agents::executable::command_path("powershell"),
+    )
+    .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    .output()
+    .map_err(|e| format!("Failed to read user PATH: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -432,10 +434,12 @@ fn write_windows_user_path(value: &str) -> Result<(), String> {
         "[Environment]::SetEnvironmentVariable('Path', {}, 'User')",
         powershell_literal(value)
     );
-    let output = std::process::Command::new(crate::agents::executable::command_path("powershell"))
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| format!("Failed to update user PATH: {e}"))?;
+    let output = crate::platform::process::background_command(
+        crate::agents::executable::command_path("powershell"),
+    )
+    .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    .output()
+    .map_err(|e| format!("Failed to update user PATH: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {

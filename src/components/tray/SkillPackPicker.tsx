@@ -115,6 +115,12 @@ export function SkillPackPicker() {
     }
   }, [])
 
+  const synchronizeAndLoadPickerData = useCallback(async (foreground: boolean) => {
+    await useRuntimeEnvironmentStore.persist.rehydrate()
+    if (isTauri()) await refreshEnvironments()
+    await loadPickerData(foreground)
+  }, [loadPickerData, refreshEnvironments])
+
   useEffect(() => {
     document.documentElement.classList.add('skill-pack-picker-body')
     document.body.classList.add('skill-pack-picker-body')
@@ -125,19 +131,18 @@ export function SkillPackPicker() {
   }, [])
 
   useEffect(() => {
-    void loadPickerData(true)
-  }, [loadPickerData])
-
-  useEffect(() => {
-    if (isTauri()) void refreshEnvironments()
-  }, [refreshEnvironments])
+    void synchronizeAndLoadPickerData(true)
+  }, [synchronizeAndLoadPickerData])
 
   useEffect(() => {
     if (!isTauri()) return
     let cancelled = false
     let unlisten: (() => void) | undefined
     void import('@tauri-apps/api/event')
-      .then(({ listen }) => listen('skill-pack-picker-shown', () => void loadPickerData(false)))
+      .then(({ listen }) => listen(
+        'skill-pack-picker-shown',
+        () => void synchronizeAndLoadPickerData(false),
+      ))
       .then((stopListening) => {
         if (cancelled) stopListening()
         else unlisten = stopListening
@@ -146,7 +151,7 @@ export function SkillPackPicker() {
       cancelled = true
       unlisten?.()
     }
-  }, [loadPickerData])
+  }, [synchronizeAndLoadPickerData])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {

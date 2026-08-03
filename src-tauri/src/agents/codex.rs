@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -229,7 +229,7 @@ pub fn probe_app_server_readiness() -> CodexAppServerProbe {
 }
 
 fn run_command_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<Output> {
-    let mut child = Command::new(binary)
+    let mut child = crate::platform::process::background_command(binary)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

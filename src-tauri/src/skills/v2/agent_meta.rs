@@ -47,6 +47,7 @@ pub fn managed_agent_ids() -> Vec<String> {
         "claude-code",
         "codex",
         "gemini",
+        "antigravity",
         "cursor",
         "opencode",
         "openclaw",
@@ -112,6 +113,11 @@ fn table() -> &'static [AgentMeta] {
             id: "gemini",
             display_name: "Gemini CLI",
             icon_key: "gemini",
+        },
+        AgentMeta {
+            id: "antigravity",
+            display_name: "Antigravity",
+            icon_key: "antigravity",
         },
         AgentMeta {
             id: "cursor",
@@ -245,6 +251,7 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "claude-code" => ".claude/skills",
         "codex" => ".codex/skills",
         "gemini" => ".gemini/skills",
+        "antigravity" => ".gemini/config/skills",
         "cursor" => ".cursor/skills",
         "opencode" => ".opencode/skills",
         "qclaw" => ".qclaw/skills",
@@ -282,10 +289,15 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
         return agent_paths::doubao_skill_dirs_for(home);
     }
     if agent != "openclaw" {
-        if table().iter().all(|m| m.id != agent) {
-            return agent_paths::paths_for_agent(agent).skill_dirs;
+        let mut dirs = if table().iter().all(|m| m.id != agent) {
+            agent_paths::paths_for_agent(agent).skill_dirs
+        } else {
+            agent_skills_dir(home, agent).into_iter().collect()
+        };
+        if inherits_shared_agents_skills(agent) {
+            dirs.push(home.join(".agents").join("skills"));
         }
-        return agent_skills_dir(home, agent).into_iter().collect();
+        return dedupe_paths(dirs);
     }
     let workspace = openclaw_workspace_dir(home);
     let mut dirs = vec![
@@ -299,9 +311,16 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     dedupe_paths(dirs)
 }
 
+pub fn inherits_shared_agents_skills(agent: &str) -> bool {
+    matches!(agent, "codex" | "kimi" | "openclaw" | "zcode")
+}
+
 pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
     if agent == "doubao" {
         return vec![agent_paths::doubao_user_skills_dir_for(home)];
+    }
+    if agent == "agents" {
+        return vec![home.join(".agents").join("skills")];
     }
     if agent == "openclaw" {
         return vec![
@@ -507,15 +526,32 @@ mod tests {
     }
 
     #[test]
-    fn owned_skill_dirs_exclude_shared_agent_roots() {
+    fn owned_skill_dirs_include_shared_inventory_root() {
         let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_owned_skill_dirs(home, "agents"),
+            vec![home.join(".agents/skills")]
+        );
         assert_eq!(
             agent_owned_skill_dirs(home, "codex"),
             vec![home.join(".codex/skills")]
         );
+        assert!(agent_skill_dirs(home, "codex")
+            .iter()
+            .any(|path| path == &home.join(".agents/skills")));
         assert!(!agent_owned_skill_dirs(home, "openclaw")
             .iter()
             .any(|path| path == &home.join(".agents/skills")));
+    }
+
+    #[test]
+    fn shared_agents_skill_consumers_are_explicit() {
+        for agent in ["codex", "kimi", "openclaw", "zcode"] {
+            assert!(inherits_shared_agents_skills(agent), "{agent}");
+        }
+        for agent in ["claude-code", "cursor", "gemini", "agents"] {
+            assert!(!inherits_shared_agents_skills(agent), "{agent}");
+        }
     }
 
     #[test]
@@ -547,6 +583,19 @@ mod tests {
         assert_eq!(
             agent_skills_dir(home, "zcode"),
             Some(home.join(".zcode/skills"))
+        );
+    }
+
+    #[test]
+    fn antigravity_is_visible_and_uses_official_skills_dir() {
+        assert!(visible_agent_ids().iter().any(|id| id == "antigravity"));
+        assert_eq!(display_name("antigravity"), "Antigravity");
+        assert_eq!(icon_key("antigravity"), "antigravity");
+
+        let home = Path::new("/Users/tester");
+        assert_eq!(
+            agent_skills_dir(home, "antigravity"),
+            Some(home.join(".gemini/config/skills"))
         );
     }
 

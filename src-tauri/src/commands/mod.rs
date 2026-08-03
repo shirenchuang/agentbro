@@ -39,7 +39,7 @@ use futures_util::{SinkExt, StreamExt};
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command as TokioCommand};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -870,7 +870,7 @@ async fn load_codex_usage_rate_limits_live_uncached() -> Option<UsageRateLimitSn
     }
 
     let binary = find_binary("codex")?;
-    let mut child = TokioCommand::new(binary)
+    let mut child = crate::platform::process::background_tokio_command(binary)
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3737,7 +3737,7 @@ async fn submit_codex_request_user_input_output(
         .ok_or_else(|| "Could not find codex CLI for app-server".to_string())?;
     let output = codex_request_user_input_output(answers);
 
-    let mut child = TokioCommand::new(binary)
+    let mut child = crate::platform::process::background_tokio_command(binary)
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5332,27 +5332,31 @@ fn set_launch_at_login_state(enabled: bool) -> Result<(), String> {
         let exe = std::env::current_exe()
             .map_err(|err| format!("Unable to resolve current executable: {err}"))?;
         let command = format!("\"{}\"", exe.display());
-        let output = std::process::Command::new(crate::agents::executable::command_path("reg"))
-            .args([
-                "add",
-                WINDOWS_RUN_KEY,
-                "/v",
-                WINDOWS_RUN_VALUE,
-                "/t",
-                "REG_SZ",
-                "/d",
-                &command,
-                "/f",
-            ])
-            .output()
-            .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
+        let output = crate::platform::process::background_command(
+            crate::agents::executable::command_path("reg"),
+        )
+        .args([
+            "add",
+            WINDOWS_RUN_KEY,
+            "/v",
+            WINDOWS_RUN_VALUE,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &command,
+            "/f",
+        ])
+        .output()
+        .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
         return reg_output_result(output, "Failed to enable Windows launch at login");
     }
 
-    let output = std::process::Command::new(crate::agents::executable::command_path("reg"))
-        .args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"])
-        .output()
-        .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
+    let output = crate::platform::process::background_command(
+        crate::agents::executable::command_path("reg"),
+    )
+    .args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"])
+    .output()
+    .map_err(|err| format!("Failed to update Windows startup registry: {err}"))?;
     if output.status.success() || !get_launch_at_login_state() {
         Ok(())
     } else {
@@ -5390,7 +5394,7 @@ fn get_launch_at_login_state() -> bool {
 
 #[cfg(target_os = "windows")]
 fn get_launch_at_login_state() -> bool {
-    std::process::Command::new(crate::agents::executable::command_path("reg"))
+    crate::platform::process::background_command(crate::agents::executable::command_path("reg"))
         .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
         .output()
         .map(|output| output.status.success())

@@ -28,6 +28,7 @@ pub enum JsonHookEntry {
 #[derive(Clone, Copy)]
 pub enum InstallationKind {
     JsonHooks { entry: JsonHookEntry, nested: bool },
+    AntigravityJsonHooks,
     ZcodeJsonHooks,
     YamlHooks,
     CursorSettings,
@@ -140,6 +141,14 @@ pub const BASIC_AGENT_EVENTS: &[HookEventDescriptor] = &[
     plain_event("PreToolUse"),
     plain_event("PostToolUse"),
     plain_event("Notification"),
+    plain_event("Stop"),
+];
+
+pub const ANTIGRAVITY_EVENTS: &[HookEventDescriptor] = &[
+    matcher_event("PreToolUse", "*", Some(21_600)),
+    matcher_event("PostToolUse", "*", None),
+    plain_event("PreInvocation"),
+    plain_event("PostInvocation"),
     plain_event("Stop"),
 ];
 
@@ -586,11 +595,33 @@ pub fn codex_profile() -> AgentIntegrationProfile {
 }
 
 pub fn antigravity_profile() -> AgentIntegrationProfile {
-    json_profile(
+    AgentIntegrationProfile {
+        id: "antigravity",
+        installation_kind: InstallationKind::AntigravityJsonHooks,
+        configuration_path: ".gemini/config/hooks.json",
+        activation_path: None,
+        source: "antigravity",
+        extra_args: &[],
+        events: ANTIGRAVITY_EVENTS,
+    }
+}
+
+pub fn remove_legacy_antigravity_hooks_at(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let profile = json_profile(
         "antigravity",
         ".antigravity/settings.json",
         BASIC_AGENT_EVENTS,
-    )
+    );
+    let mut settings = read_json_config_for_update(path)?;
+    let original = settings.clone();
+    strip_json_hooks_for_profile(&mut settings, &profile);
+    if settings != original {
+        hook_manager::write_json_config(path, &settings)?;
+    }
+    Ok(())
 }
 
 pub fn codebuddy_profile() -> AgentIntegrationProfile {
@@ -960,6 +991,10 @@ pub fn install_at(
         InstallationKind::JsonHooks { nested: false, .. } => {
             update_json_hooks(profile, path)?;
         }
+        InstallationKind::AntigravityJsonHooks => {
+            let command = managed_bridge_command(profile)?;
+            update_antigravity_json_hooks(profile, path, &command)?;
+        }
         InstallationKind::ZcodeJsonHooks => {
             let command = managed_bridge_command(profile)?;
             update_zcode_json_hooks(profile, path, &command)?;
@@ -1030,6 +1065,9 @@ fn install_at_labeled(
                 entries.push(flat_json_hook_entry(entry, &event, &command));
             }
             hook_manager::write_json_config(path, &settings)?;
+        }
+        InstallationKind::AntigravityJsonHooks => {
+            update_antigravity_json_hooks(profile, path, &command)?;
         }
         InstallationKind::ZcodeJsonHooks => {
             update_zcode_json_hooks(profile, path, &command)?;
@@ -1141,6 +1179,9 @@ pub fn uninstall_at(
         InstallationKind::JsonHooks { nested: false, .. } => {
             remove_json_hooks(profile, path)?;
         }
+        InstallationKind::AntigravityJsonHooks => {
+            remove_antigravity_json_hooks(profile, path)?;
+        }
         InstallationKind::ZcodeJsonHooks => {
             remove_zcode_json_hooks(profile, path)?;
         }
@@ -1187,6 +1228,9 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
         InstallationKind::JsonHooks { .. }
         | InstallationKind::YamlHooks
         | InstallationKind::KiroAgentFile => hook_manager::has_agentbro_hooks(path),
+        InstallationKind::AntigravityJsonHooks => {
+            antigravity_json_hooks_contain_profile(profile, path)
+        }
         InstallationKind::ZcodeJsonHooks => zcode_json_hooks_contain_profile(profile, path),
         InstallationKind::ExecutableHookFiles => executable_hook_files_installed(profile, path),
         InstallationKind::CursorSettings => cursor_settings_enabled(path),
@@ -1211,6 +1255,7 @@ pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookIns
 
     match profile.installation_kind {
         InstallationKind::JsonHooks { nested, .. } => json_hooks_health(profile, path, nested),
+        InstallationKind::AntigravityJsonHooks => antigravity_json_hooks_health(profile, path),
         InstallationKind::ZcodeJsonHooks => zcode_json_hooks_health(profile, path),
         InstallationKind::YamlHooks | InstallationKind::TomlHooks => {
             text_hooks_health(profile, path)
@@ -1382,7 +1427,7 @@ fn agentbro_event_command_is_current(
         InstallationKind::JsonHooks {
             entry: JsonHookEntry::CommandOnly,
             ..
-        }
+        } | InstallationKind::AntigravityJsonHooks
     ) {
         command_event_matches(command, event.name)
     } else {
@@ -1416,30 +1461,25 @@ fn command_event_matches(command: &str, event: &str) -> bool {
 }
 
 fn collect_json_agentbro_commands(value: &Value, commands: &mut Vec<String>) {
-    if let Some(entries) = value.as_array() {
-        for entry in entries {
-            collect_json_agentbro_commands(entry, commands);
+    match value {
+        Value::Array(entries) => {
+            for entry in entries {
+                collect_json_agentbro_commands(entry, commands);
+            }
         }
-        return;
-    }
-    if let Some(command) = value.get("command").and_then(Value::as_str) {
-        if is_agentbro_command(command) {
-            commands.push(command.to_string());
-        }
-    }
-    if let Some(hooks) = value.get("hooks").and_then(Value::as_array) {
-        for hook in hooks {
-            collect_json_agentbro_commands(hook, commands);
-        }
-    }
-    if let Some(hooks) = value.get("hooks").and_then(Value::as_object) {
-        for entries in hooks.values() {
-            if let Some(entries) = entries.as_array() {
-                for entry in entries {
-                    collect_json_agentbro_commands(entry, commands);
+        Value::Object(object) => {
+            if let Some(command) = object.get("command").and_then(Value::as_str) {
+                if is_agentbro_command(command) {
+                    commands.push(command.to_string());
+                }
+            }
+            for (key, child) in object {
+                if key != "command" {
+                    collect_json_agentbro_commands(child, commands);
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -1895,6 +1935,165 @@ fn remove_nested_json_hooks(
     let mut settings = hook_manager::read_json_config(path);
     strip_json_hooks_for_profile(&mut settings, profile);
     hook_manager::write_json_config(path, &settings)
+}
+
+const ANTIGRAVITY_AGENTBRO_HOOK: &str = "agentbro";
+
+fn update_antigravity_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut settings = read_json_config_for_update(path)?;
+    let root = settings
+        .as_object_mut()
+        .ok_or("Antigravity hooks configuration must be a JSON object")?;
+    if let Some(existing) = root.get(ANTIGRAVITY_AGENTBRO_HOOK) {
+        if !json_hook_contains_profile(existing, profile) {
+            return Err(format!(
+                "Antigravity hook name '{}' is already used by another integration",
+                ANTIGRAVITY_AGENTBRO_HOOK
+            )
+            .into());
+        }
+    }
+
+    let mut definition = serde_json::Map::new();
+    for event in effective_events(profile) {
+        let event_command = command_for_event(command, &event);
+        let mut handler = serde_json::json!({
+            "type": "command",
+            "command": event_command,
+        });
+        if let Some(timeout) = event.timeout {
+            handler["timeout"] = serde_json::json!(timeout);
+        }
+        let handlers = match event.template {
+            HookEntryTemplate::Matcher(matcher) => serde_json::json!([{
+                "matcher": matcher,
+                "hooks": [handler],
+            }]),
+            HookEntryTemplate::Plain => serde_json::json!([handler]),
+        };
+        definition.insert(event.name.to_string(), handlers);
+    }
+    root.insert(
+        ANTIGRAVITY_AGENTBRO_HOOK.to_string(),
+        Value::Object(definition),
+    );
+    hook_manager::write_json_config(path, &settings)
+}
+
+fn remove_antigravity_json_hooks(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut settings = read_json_config_for_update(path)?;
+    let root = settings
+        .as_object_mut()
+        .ok_or("Antigravity hooks configuration must be a JSON object")?;
+    if root
+        .get(ANTIGRAVITY_AGENTBRO_HOOK)
+        .is_some_and(|definition| json_hook_contains_profile(definition, profile))
+    {
+        root.remove(ANTIGRAVITY_AGENTBRO_HOOK);
+        hook_manager::write_json_config(path, &settings)?;
+    }
+    Ok(())
+}
+
+fn read_json_config_for_update(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = std::fs::read_to_string(path)?;
+    let value = serde_json::from_str::<Value>(&content)?;
+    if !value.is_object() {
+        return Err("JSON configuration root must be an object".into());
+    }
+    Ok(value)
+}
+
+fn antigravity_json_hooks_contain_profile(profile: &AgentIntegrationProfile, path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|settings| settings.get(ANTIGRAVITY_AGENTBRO_HOOK).cloned())
+        .is_some_and(|definition| json_hook_contains_profile(&definition, profile))
+}
+
+fn antigravity_json_hooks_health(
+    profile: &AgentIntegrationProfile,
+    path: &Path,
+) -> HookInstallHealth {
+    let settings = match read_json_health(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(definition) = settings
+        .get(ANTIGRAVITY_AGENTBRO_HOOK)
+        .and_then(Value::as_object)
+    else {
+        return HookInstallHealth::NotInstalled;
+    };
+    if !json_hook_contains_profile(&Value::Object(definition.clone()), profile) {
+        return HookInstallHealth::NotInstalled;
+    }
+    if definition
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .is_some_and(|enabled| !enabled)
+    {
+        return HookInstallHealth::NotInstalled;
+    }
+    if let Some(status) = bridge_health() {
+        return status;
+    }
+    if effective_events(profile)
+        .iter()
+        .any(|event| !antigravity_event_is_current(definition, profile, event))
+    {
+        return HookInstallHealth::NeedsReinstall;
+    }
+    HookInstallHealth::Installed
+}
+
+fn antigravity_event_is_current(
+    definition: &serde_json::Map<String, Value>,
+    profile: &AgentIntegrationProfile,
+    event: &HookEventDescriptor,
+) -> bool {
+    let Some(entries) = definition.get(event.name).and_then(Value::as_array) else {
+        return false;
+    };
+    match event.template {
+        HookEntryTemplate::Matcher(matcher) => entries.iter().any(|group| {
+            group.get("matcher").and_then(Value::as_str) == Some(matcher)
+                && group
+                    .get("hooks")
+                    .and_then(Value::as_array)
+                    .is_some_and(|hooks| {
+                        hooks.iter().any(|hook| {
+                            hook.get("command")
+                                .and_then(Value::as_str)
+                                .is_some_and(|candidate| {
+                                    agentbro_event_command_is_current(profile, event, candidate)
+                                })
+                        })
+                    })
+        }),
+        HookEntryTemplate::Plain => entries.iter().any(|handler| {
+            handler
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| {
+                    agentbro_event_command_is_current(profile, event, candidate)
+                })
+        }),
+    }
 }
 
 fn update_zcode_json_hooks(
@@ -3433,6 +3632,142 @@ name = "also keep"
             "/Users/me/.agentbro/bin/agentbro-bridge --source=qoder",
             "qoder"
         ));
+    }
+
+    #[test]
+    fn antigravity_profile_writes_named_official_hooks() {
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-antigravity-hooks-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "personal-linter": {
+                    "PostToolUse": [{
+                        "matcher": "run_command",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/usr/local/bin/personal-linter"
+                        }]
+                    }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let profile = antigravity_profile();
+        let command = "/usr/bin/env AGENTBRO_HOOK_PORT=17894 /Users/me/.agentbro/bin/agentbro-bridge --source antigravity";
+
+        update_antigravity_json_hooks(&profile, &path, command).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        update_antigravity_json_hooks(&profile, &path, command).unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        let settings: Value = serde_json::from_str(&second).unwrap();
+
+        assert_eq!(first, second);
+        assert!(settings.get("personal-linter").is_some());
+        assert_eq!(
+            settings["agentbro"]["PreToolUse"][0]["matcher"],
+            serde_json::json!("*")
+        );
+        assert!(settings["agentbro"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--event PreToolUse"));
+        assert!(
+            settings["agentbro"]["PostToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--event PostToolUse")
+        );
+        assert!(settings["agentbro"]["PreInvocation"][0]
+            .get("hooks")
+            .is_none());
+        assert!(settings["agentbro"]["Stop"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--event Stop"));
+
+        remove_antigravity_json_hooks(&profile, &path).unwrap();
+        let removed: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(removed.get("agentbro").is_none());
+        assert!(removed.get("personal-linter").is_some());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn antigravity_profile_rejects_an_unmanaged_name_collision() {
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-antigravity-conflict-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "agentbro": {
+                    "Stop": [{
+                        "type": "command",
+                        "command": "/usr/local/bin/not-agentbro"
+                    }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = update_antigravity_json_hooks(
+            &antigravity_profile(),
+            &path,
+            "/Users/me/.agentbro/bin/agentbro-bridge --source antigravity",
+        )
+        .expect_err("unmanaged collision must fail");
+
+        assert!(error.to_string().contains("already used"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_antigravity_cleanup_preserves_user_hooks() {
+        let path = std::env::temp_dir().join(format!(
+            "agentbro-antigravity-legacy-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "type": "command",
+                            "command": "/Users/me/.agentbro/bin/agentbro-bridge --source antigravity"
+                        },
+                        {
+                            "type": "command",
+                            "command": "/usr/local/bin/personal-hook"
+                        }
+                    ]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        remove_legacy_antigravity_hooks_at(&path).unwrap();
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["command"],
+            serde_json::json!("/usr/local/bin/personal-hook")
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

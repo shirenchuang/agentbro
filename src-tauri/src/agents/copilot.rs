@@ -26,7 +26,7 @@ impl CopilotAdapter {
     fn is_installed() -> bool {
         // Check for gh CLI with copilot extension
         if let Some(gh_path) = super::executable::find_binary("gh") {
-            return std::process::Command::new(gh_path)
+            return crate::platform::process::background_command(gh_path)
                 .args(["copilot", "--version"])
                 .output()
                 .map(|o| o.status.success())

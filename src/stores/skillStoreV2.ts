@@ -6,6 +6,7 @@ import type {
   SkillDetail,
   AgentSummary,
   AgentDetail,
+  AgentSkillViewSnapshot,
   SkillPackSummary,
   SkillPackDetail,
   DiagnosisIssue,
@@ -108,6 +109,8 @@ interface SkillV2Actions {
   selectPack: (id: string | null) => Promise<void>
   selectAgent: (id: string | null) => Promise<void>
   loadAgentDetail: (agentId: string, force?: boolean) => Promise<void>
+  applyAgentSkillViewSnapshot: (expectedRuntimeEnvironmentId: string, agentId: string, snapshot: AgentSkillViewSnapshot) => boolean
+  removeAgentSkillItems: (expectedRuntimeEnvironmentId: string, agentId: string, managedTargetIds: string[], unmanagedIds: string[]) => boolean
   loadProjects: (force?: boolean) => Promise<void>
   addProject: (rootPath: string) => Promise<void>
   removeProject: (projectId: string) => Promise<void>
@@ -369,6 +372,98 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         set({ agentDetailLoading: false })
       }
     }
+  },
+  applyAgentSkillViewSnapshot: (expectedRuntimeEnvironmentId, agentId, snapshot) => {
+    if (
+      get().runtimeEnvironmentId !== expectedRuntimeEnvironmentId
+      || get().selectedAgentId !== agentId
+      || snapshot.agentDetail.id !== agentId
+    ) {
+      return false
+    }
+    const overview = snapshot.overview
+    set({
+      selectedAgentDetail: snapshot.agentDetail,
+      agentDetailLoading: false,
+      overview,
+      skills: overview.skills,
+      agents: overview.agents,
+      packs: overview.packs,
+      issues: overview.issues,
+      unmanaged: snapshot.unmanaged,
+      settings: overview.settings,
+      lastOverviewLoadedAt: Date.now(),
+      initialized: true,
+    })
+    return true
+  },
+  removeAgentSkillItems: (expectedRuntimeEnvironmentId, agentId, managedTargetIds, unmanagedIds) => {
+    const current = get()
+    const detail = current.selectedAgentDetail
+    if (
+      current.runtimeEnvironmentId !== expectedRuntimeEnvironmentId
+      || current.selectedAgentId !== agentId
+      || detail?.id !== agentId
+    ) {
+      return false
+    }
+
+    const managedIds = new Set(managedTargetIds)
+    const unmanagedIdSet = new Set(unmanagedIds)
+    const managedTargets = [...detail.skills, ...detail.inheritedManagedSkills]
+      .filter((target) => managedIds.has(target.id))
+    const unmanagedItems = [...current.unmanaged, ...detail.inheritedUnmanagedSkills]
+      .filter((item, index, items) => unmanagedIdSet.has(item.id) && items.findIndex((candidate) => candidate.id === item.id) === index)
+    const removedTargetKeys = new Set(managedTargets.map((target) => `${target.skillId}\0${target.agentId}`))
+    const managedCounts = new Map<string, number>()
+    const unmanagedCounts = new Map<string, number>()
+    managedTargets.forEach((target) => managedCounts.set(target.agentId, (managedCounts.get(target.agentId) || 0) + 1))
+    unmanagedItems.forEach((item) => {
+      if (item.agentId) unmanagedCounts.set(item.agentId, (unmanagedCounts.get(item.agentId) || 0) + 1)
+    })
+
+    const overview = current.overview
+      ? {
+          ...current.overview,
+          metrics: {
+            ...current.overview.metrics,
+            targetCount: Math.max(0, current.overview.metrics.targetCount - managedTargets.length),
+            unmanagedCount: Math.max(0, current.overview.metrics.unmanagedCount - unmanagedItems.length),
+          },
+          skills: current.overview.skills.map((skill) => ({
+            ...skill,
+            installedAgents: skill.installedAgents.filter((installed) => !removedTargetKeys.has(`${skill.id}\0${installed.agentId}`)),
+          })),
+          agents: current.overview.agents.map((agent) => ({
+            ...agent,
+            managedSkillCount: Math.max(0, agent.managedSkillCount - (managedCounts.get(agent.id) || 0)),
+            unmanagedSkillCount: Math.max(0, agent.unmanagedSkillCount - (unmanagedCounts.get(agent.id) || 0)),
+          })),
+        }
+      : null
+    const skills = overview?.skills ?? current.skills.map((skill) => ({
+      ...skill,
+      installedAgents: skill.installedAgents.filter((installed) => !removedTargetKeys.has(`${skill.id}\0${installed.agentId}`)),
+    }))
+    const agents = overview?.agents ?? current.agents.map((agent) => ({
+      ...agent,
+      managedSkillCount: Math.max(0, agent.managedSkillCount - (managedCounts.get(agent.id) || 0)),
+      unmanagedSkillCount: Math.max(0, agent.unmanagedSkillCount - (unmanagedCounts.get(agent.id) || 0)),
+    }))
+
+    set({
+      selectedAgentDetail: {
+        ...detail,
+        skills: detail.skills.filter((target) => !managedIds.has(target.id)),
+        inheritedManagedSkills: detail.inheritedManagedSkills.filter((target) => !managedIds.has(target.id)),
+        inheritedUnmanagedSkills: detail.inheritedUnmanagedSkills.filter((item) => !unmanagedIdSet.has(item.id)),
+      },
+      overview,
+      skills,
+      agents,
+      unmanaged: current.unmanaged.filter((item) => !unmanagedIdSet.has(item.id)),
+    })
+    return true
   },
   loadProjects: async () => {
     const runtimeEnvironmentId = get().runtimeEnvironmentId

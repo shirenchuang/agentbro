@@ -140,6 +140,23 @@ describe('SkillPackPicker', () => {
     expect(await screen.findByRole('checkbox', { name: /前端开发/ })).toBeInTheDocument()
   })
 
+  it('rehydrates the local target before loading a previously remote picker', async () => {
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: 'ubuntu' })
+    window.localStorage.setItem('agentbro-runtime-environment', JSON.stringify({
+      state: { selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID },
+      version: 0,
+    }))
+
+    render(<SkillPackPicker />)
+
+    expect(await screen.findByRole('checkbox', { name: /前端开发/ })).toBeInTheDocument()
+    expect(useRuntimeEnvironmentStore.getState().selectedEnvironmentId).toBe(
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
+    )
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(skillApiV2.getSkillPackPickerData).toHaveBeenCalledTimes(1)
+  })
+
   it('places applied packs before unchecked packs', async () => {
     vi.mocked(skillApiV2.getSkillPackPickerData).mockResolvedValueOnce({
       ...pickerData,

@@ -419,6 +419,9 @@ export interface AgentDetail {
   pluginDir: string | null
   agentDir?: string | null
   skills: SkillTargetDetail[]
+  inheritsSharedSkills?: boolean
+  inheritedManagedSkills: SkillTargetDetail[]
+  inheritedUnmanagedSkills: UnmanagedItemDto[]
   appliedPacks: AppliedPackSummary[]
   availablePacks: SkillPackSummary[]
   mcpServers: McpServerStatus[]
@@ -439,6 +442,12 @@ export interface SkillManagerOverview {
   packs: SkillPackSummary[]
   issues: DiagnosisIssue[]
   settings: SkillManagerSettings
+}
+
+export interface AgentSkillViewSnapshot {
+  agentDetail: AgentDetail
+  overview: SkillManagerOverview
+  unmanaged: UnmanagedItemDto[]
 }
 
 export interface SkillPackPickerData {
@@ -1215,8 +1224,26 @@ export const skillApiV2 = {
 
   scanAgentInventory: (agentId: string) =>
     isTauriRuntime()
-      ? invoke<{ agentId: string; managed: number; unmanaged: number; readOnly?: number }>('scan_agent_inventory', { agentId })
-      : Promise.resolve({ agentId, managed: 0, unmanaged: 0, readOnly: 0 }),
+      ? invoke<{
+          agentId: string
+          managed: number
+          unmanaged: number
+          readOnly?: number
+          includedShared?: boolean
+          sharedManaged?: number
+          sharedUnmanaged?: number
+          sharedReadOnly?: number
+        }>('scan_agent_inventory', { agentId })
+      : Promise.resolve({
+          agentId,
+          managed: 0,
+          unmanaged: 0,
+          readOnly: 0,
+          includedShared: false,
+          sharedManaged: 0,
+          sharedUnmanaged: 0,
+          sharedReadOnly: 0,
+        }),
 
   previewAdopt: (agentId: string, unmanagedId: string) =>
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
@@ -1293,6 +1320,14 @@ export const skillApiV2 = {
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
+  refreshAgentSkillView: (agentId: string) =>
+    isTauriRuntime()
+      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId })
+      : Promise.all([
+          skillApiV2.getAgentDetail(agentId),
+          skillApiV2.overview(),
+          skillApiV2.listUnmanaged(),
+        ]).then(([agentDetail, overview, unmanaged]) => ({ agentDetail, overview, unmanaged })),
   readAgentConfigFile: (agentId: string, path: string) =>
     isTauriRuntime()
       ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })

@@ -360,6 +360,49 @@ mod tests {
     }
 
     #[test]
+    fn remote_batch_delete_and_composite_refresh_each_build_one_inventory() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-skill-manager-fast-delete-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = home.join(".codex/skills");
+        let ids = (0..42)
+            .map(|index| {
+                let name = format!("delete-{index:02}");
+                write_remote_skill(&root.join(&name), &name, "delete\n");
+                format!("codex::{name}")
+            })
+            .collect::<Vec<_>>();
+
+        let deleted = run_script_with_inventory_count(
+            &home,
+            "delete_unmanaged_agent_skills",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedIds": ids,
+            }),
+        );
+        assert_eq!(deleted["inventoryCalls"], 1);
+        assert_eq!(deleted["result"]["deleted"], 42);
+        assert!(deleted["result"]["failures"]
+            .as_array()
+            .expect("delete failures")
+            .is_empty());
+
+        let refreshed = run_script_with_inventory_count(
+            &home,
+            "refresh_agent_skill_view_v2",
+            serde_json::json!({ "agentId": "codex" }),
+        );
+        assert_eq!(refreshed["inventoryCalls"], 1);
+        assert_eq!(refreshed["result"]["agentDetail"]["id"], "codex");
+        assert!(refreshed["result"]["overview"]["agents"].is_array());
+        assert!(refreshed["result"]["unmanaged"].is_array());
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_response_sanitizes_surrogates() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-skill-manager-surrogate-test-{}",
@@ -438,12 +481,691 @@ mod tests {
         std::fs::remove_dir_all(home).expect("remove test home");
     }
 
+    #[test]
+    fn remote_shared_mutations_detach_center_links_and_validate_owners() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-detach-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let shared_root = home.join(".agents/skills");
+        let center = home.join(".agentbro/skills");
+        let shared = shared_root.join("same");
+        write_remote_skill(&shared, "Same", "same-v1\n");
+        std::fs::create_dir_all(&center).expect("center directory");
+        std::os::unix::fs::symlink(&shared, center.join("same")).expect("same-name center link");
+        std::os::unix::fs::symlink(&shared, center.join("alias")).expect("center alias link");
+        std::os::unix::fs::symlink(center.join("alias"), center.join("alias-chain"))
+            .expect("center alias chain");
+
+        let detail = run_script(
+            &home,
+            "get_agent_detail_v2",
+            serde_json::json!({ "agentId": "codex" }),
+        );
+        assert_eq!(detail["inheritsSharedSkills"], true);
+        assert!(detail.get("inheritedSkills").is_none());
+        let managed = detail["inheritedManagedSkills"]
+            .as_array()
+            .expect("managed shared skills");
+        assert_eq!(managed.len(), 1);
+        assert_eq!(managed[0]["id"], "agents::same");
+        assert_eq!(managed[0]["agentId"], "agents");
+        assert!(managed[0]["claims"]
+            .as_array()
+            .is_some_and(|value| !value.is_empty()));
+
+        run_script(
+            &home,
+            "delete_skill_target_distribution",
+            serde_json::json!({ "targetId": "agents::same" }),
+        );
+        assert!(!shared.exists());
+        for name in ["same", "alias", "alias-chain"] {
+            let detached = center.join(name);
+            assert!(detached.is_dir(), "{name}");
+            assert!(!detached.is_symlink(), "{name}");
+            assert_eq!(
+                std::fs::read_to_string(detached.join("SKILL.md")).expect("detached Skill"),
+                "---\nname: Same\n---\nsame-v1\n"
+            );
+        }
+
+        let adopt_source = shared_root.join("adopt-source");
+        write_remote_skill(&adopt_source, "Adopt Source", "adopt-v1\n");
+        let adopt_alias = center.join("adopt-alias");
+        std::os::unix::fs::symlink(&adopt_source, &adopt_alias).expect("adopt alias");
+        let adopted = run_script(
+            &home,
+            "execute_adopt_agent_skill",
+            serde_json::json!({
+                "agentId": "agents",
+                "unmanagedId": "agents::adopt-source",
+                "option": "import_cleanup",
+                "renamedId": null,
+            }),
+        );
+        assert_eq!(adopted, "adopt-source");
+        assert!(!adopt_source.exists());
+        assert!(center.join("adopt-source/SKILL.md").is_file());
+        assert!(adopt_alias.is_dir());
+        assert!(!adopt_alias.is_symlink());
+
+        let blocked = shared_root.join("blocked");
+        write_remote_skill(&blocked, "Blocked", "blocked-v1\n");
+        std::os::unix::fs::symlink(blocked.join("missing"), blocked.join("dangling"))
+            .expect("dangling nested link");
+        let blocked_center = center.join("blocked");
+        std::os::unix::fs::symlink(&blocked, &blocked_center).expect("blocked center link");
+        let blocked_error = run_script_error(
+            &home,
+            "delete_skill_target_distribution",
+            serde_json::json!({ "targetId": "agents::blocked" }),
+        );
+        assert!(!blocked_error.is_empty());
+        assert!(blocked.is_dir());
+        assert!(blocked_center.is_symlink());
+
+        let blocked_adopt = shared_root.join("blocked-adopt");
+        write_remote_skill(&blocked_adopt, "Blocked Adopt", "blocked-adopt-v1\n");
+        std::os::unix::fs::symlink(
+            blocked_adopt.join("missing"),
+            blocked_adopt.join("dangling"),
+        )
+        .expect("dangling adopt link");
+        let blocked_adopt_alias = center.join("blocked-adopt-alias");
+        std::os::unix::fs::symlink(&blocked_adopt, &blocked_adopt_alias)
+            .expect("blocked adopt alias");
+        let blocked_adopt_error = run_script_error(
+            &home,
+            "execute_adopt_agent_skill",
+            serde_json::json!({
+                "agentId": "agents",
+                "unmanagedId": "agents::blocked-adopt",
+                "option": "import_cleanup",
+                "renamedId": null,
+            }),
+        );
+        assert!(!blocked_adopt_error.is_empty());
+        assert!(blocked_adopt.is_dir());
+        assert!(blocked_adopt_alias.is_symlink());
+        assert!(!center.join("blocked-adopt").exists());
+        std::fs::remove_file(&blocked_adopt_alias).expect("remove blocked adopt alias");
+        std::fs::remove_dir_all(&blocked_adopt).expect("remove blocked adopt source");
+
+        let private = home.join(".claude/skills/private");
+        write_remote_skill(&private, "Private", "private-v1\n");
+        let owner_error = run_script_error(
+            &home,
+            "delete_unmanaged_agent_skill",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedId": "claude-code::private",
+            }),
+        );
+        assert!(owner_error.contains("does not belong to this Agent"));
+        assert!(private.is_dir());
+
+        let inventory_only = shared_root.join("inventory-only");
+        write_remote_skill(&inventory_only, "Inventory Only", "inventory-v1\n");
+        let shared_owner_error = run_script_error(
+            &home,
+            "delete_unmanaged_agent_skill",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedId": "agents::inventory-only",
+            }),
+        );
+        assert!(shared_owner_error.contains("does not belong to this Agent"));
+        assert!(inventory_only.is_dir());
+
+        let inventory = run_script(
+            &home,
+            "list_agent_skill_inventory_v2",
+            serde_json::json!({}),
+        );
+        let virtual_owner = inventory
+            .as_array()
+            .expect("Agent inventory")
+            .iter()
+            .find(|agent| agent["agentId"] == "agents")
+            .expect("virtual shared owner");
+        assert_eq!(virtual_owner["unmanagedCount"], 1);
+        let inventory_item = virtual_owner["items"]
+            .as_array()
+            .expect("virtual owner items")
+            .iter()
+            .find(|item| item["id"] == "agents::inventory-only")
+            .expect("shared unmanaged item");
+        assert_eq!(inventory_item["reason"], "shared_agents_directory");
+
+        let overview = run_script(&home, "skill_manager_overview", serde_json::json!({}));
+        let visible = overview["agents"].as_array().expect("visible Agents");
+        assert!(!visible.iter().any(|agent| agent["id"] == "agents"));
+        assert!(!visible.iter().any(|agent| agent["id"] == "zcode"));
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_shared_writes_reject_symlinked_roots() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-write-guard-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let center = home.join(".agentbro/skills/demo");
+        write_remote_skill(&center, "Demo", "center-v1\n");
+        let external_root = home.join("external-shared");
+        let external = external_root.join("demo");
+        write_remote_skill(&external, "Demo", "shared-v1\n");
+        std::fs::create_dir_all(home.join(".agents")).expect("shared parent");
+        std::os::unix::fs::symlink(&external_root, home.join(".agents/skills"))
+            .expect("shared root link");
+
+        for (command, args) in [
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({
+                    "targetId": "agents::demo",
+                    "action": "center_over_agent",
+                }),
+            ),
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({
+                    "targetId": "agents::demo",
+                    "action": "agent_over_center",
+                }),
+            ),
+            (
+                "execute_fix_diagnosis_issue",
+                serde_json::json!({
+                    "issueType": "copy_diverged",
+                    "entityId": "agents::demo",
+                }),
+            ),
+        ] {
+            let error = run_script_error(&home, command, args);
+            assert!(error.contains("symbolic-link parent"), "{error}");
+            assert_eq!(
+                std::fs::read_to_string(external.join("SKILL.md")).expect("shared Skill"),
+                "---\nname: Demo\n---\nshared-v1\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(center.join("SKILL.md")).expect("center Skill"),
+                "---\nname: Demo\n---\ncenter-v1\n"
+            );
+        }
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        let overlap_home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-overlap-guard-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let overlap_shared = overlap_home.join(".agents/skills/demo");
+        write_remote_skill(&overlap_shared, "Demo", "shared-v1\n");
+        std::fs::create_dir_all(overlap_home.join(".agentbro")).expect("center parent");
+        std::os::unix::fs::symlink(
+            overlap_home.join(".agents/skills"),
+            overlap_home.join(".agentbro/skills"),
+        )
+        .expect("overlapping center root");
+        let overlap_error = run_script_error(
+            &overlap_home,
+            "delete_skill_target_distribution",
+            serde_json::json!({ "targetId": "agents::demo" }),
+        );
+        assert!(overlap_error.contains("unsafe center root"));
+        assert!(overlap_shared.is_dir());
+        std::fs::remove_dir_all(overlap_home).expect("remove overlap test home");
+    }
+
+    #[test]
+    fn remote_shared_center_over_agent_requires_an_independent_center_skill() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-invalid-center-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let shared_root = home.join(".agents/skills");
+        let center = home.join(".agentbro/skills");
+        std::fs::create_dir_all(&center).expect("center directory");
+
+        let invalid_directory = center.join("invalid-directory");
+        std::fs::create_dir_all(&invalid_directory).expect("invalid center directory");
+        std::fs::write(invalid_directory.join("sentinel"), "keep-directory\n")
+            .expect("invalid center sentinel");
+        let regular_file = center.join("regular-file");
+        std::fs::write(&regular_file, "keep-file\n").expect("invalid center file");
+        let dangling_link = center.join("dangling-link");
+        std::os::unix::fs::symlink(center.join("missing"), &dangling_link)
+            .expect("dangling center link");
+
+        for skill_id in ["invalid-directory", "regular-file", "dangling-link"] {
+            let shared = shared_root.join(skill_id);
+            write_remote_skill(&shared, skill_id, "shared-v1\n");
+            let preview = run_script(
+                &home,
+                "preview_adopt_agent_skill",
+                serde_json::json!({
+                    "agentId": "agents",
+                    "unmanagedId": format!("agents::{skill_id}"),
+                }),
+            );
+            assert!(preview["options"]
+                .as_array()
+                .expect("adoption options")
+                .iter()
+                .all(|option| option["value"] != "center_over_agent"));
+            let error = run_script_error(
+                &home,
+                "execute_adopt_agent_skill",
+                serde_json::json!({
+                    "agentId": "agents",
+                    "unmanagedId": format!("agents::{skill_id}"),
+                    "option": "center_over_agent",
+                    "renamedId": null,
+                }),
+            );
+            assert!(error.contains("not allowed"), "{error}");
+            assert_eq!(
+                std::fs::read_to_string(shared.join("SKILL.md")).expect("shared Skill"),
+                format!("---\nname: {skill_id}\n---\nshared-v1\n")
+            );
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(invalid_directory.join("sentinel"))
+                .expect("invalid directory preserved"),
+            "keep-directory\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&regular_file).expect("regular file preserved"),
+            "keep-file\n"
+        );
+        assert!(dangling_link.is_symlink());
+        assert_eq!(
+            std::fs::read_link(&dangling_link).expect("dangling target"),
+            center.join("missing")
+        );
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_shared_copy_replacements_restore_destinations_on_faults() {
+        const FAIL_ACTIVATION: &str = r#"
+_agentbro_original_replace = os.replace
+def _agentbro_fail_activation(source, destination):
+    if pathlib.Path(source).name == "staged" and ".shared-skill-replace-" in str(source):
+        raise OSError("injected activation failure")
+    return _agentbro_original_replace(source, destination)
+os.replace = _agentbro_fail_activation
+"#;
+        const FAIL_STAGING_COPY: &str = r#"
+_agentbro_original_copytree = shutil.copytree
+def _agentbro_fail_staging_copy(source, destination, *args, **kwargs):
+    if pathlib.Path(destination).name == "staged" and ".shared-skill-replace-" in str(destination):
+        pathlib.Path(destination).mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(destination) / "partial").write_text("partial")
+        raise OSError("injected staging copy failure")
+    return _agentbro_original_copytree(source, destination, *args, **kwargs)
+shutil.copytree = _agentbro_fail_staging_copy
+"#;
+
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-atomic-copy-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let shared_root = home.join(".agents/skills");
+        let center_root = home.join(".agentbro/skills");
+
+        let adopt_source = shared_root.join("adopt");
+        let adopt_destination = center_root.join("adopt");
+        write_remote_skill(&adopt_source, "Adopt", "shared-adopt-v1\n");
+        std::fs::create_dir_all(&adopt_destination).expect("invalid adopt destination");
+        std::fs::write(adopt_destination.join("sentinel"), "old-adopt\n").expect("adopt sentinel");
+        let adopt_error = run_script_error_with_prelude(
+            &home,
+            "execute_adopt_agent_skill",
+            serde_json::json!({
+                "agentId": "agents",
+                "unmanagedId": "agents::adopt",
+                "option": "overwrite_center",
+                "renamedId": null,
+            }),
+            FAIL_ACTIVATION,
+        );
+        assert!(
+            adopt_error.contains("injected activation failure"),
+            "{adopt_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(adopt_destination.join("sentinel"))
+                .expect("old adopt destination"),
+            "old-adopt\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(adopt_source.join("SKILL.md")).expect("adopt source"),
+            "---\nname: Adopt\n---\nshared-adopt-v1\n"
+        );
+
+        let upload_center = center_root.join("upload");
+        let upload_shared = shared_root.join("upload");
+        write_remote_skill(&upload_center, "Upload", "old-center-v1\n");
+        write_remote_skill(&upload_shared, "Upload", "shared-v2\n");
+        let upload_error = run_script_error_with_prelude(
+            &home,
+            "execute_sync_copy_target",
+            serde_json::json!({
+                "targetId": "agents::upload",
+                "action": "agent_over_center",
+            }),
+            FAIL_ACTIVATION,
+        );
+        assert!(
+            upload_error.contains("injected activation failure"),
+            "{upload_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(upload_center.join("SKILL.md")).expect("old center"),
+            "---\nname: Upload\n---\nold-center-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(upload_shared.join("SKILL.md")).expect("upload source"),
+            "---\nname: Upload\n---\nshared-v2\n"
+        );
+
+        let download_center = center_root.join("download");
+        let download_shared = shared_root.join("download");
+        write_remote_skill(&download_center, "Download", "center-v2\n");
+        write_remote_skill(&download_shared, "Download", "old-shared-v1\n");
+        let download_error = run_script_error_with_prelude(
+            &home,
+            "execute_sync_copy_target",
+            serde_json::json!({
+                "targetId": "agents::download",
+                "action": "center_over_agent",
+            }),
+            FAIL_ACTIVATION,
+        );
+        assert!(
+            download_error.contains("injected activation failure"),
+            "{download_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(download_shared.join("SKILL.md"))
+                .expect("old shared destination"),
+            "---\nname: Download\n---\nold-shared-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(download_center.join("SKILL.md")).expect("download source"),
+            "---\nname: Download\n---\ncenter-v2\n"
+        );
+
+        let diagnosis_center = center_root.join("diagnosis");
+        let diagnosis_shared = shared_root.join("diagnosis");
+        write_remote_skill(&diagnosis_center, "Diagnosis", "center-v2\n");
+        write_remote_skill(&diagnosis_shared, "Diagnosis", "old-shared-v1\n");
+        let diagnosis_error = run_script_error_with_prelude(
+            &home,
+            "execute_fix_diagnosis_issue",
+            serde_json::json!({
+                "issueType": "copy_diverged",
+                "entityId": "agents::diagnosis",
+            }),
+            FAIL_ACTIVATION,
+        );
+        assert!(
+            diagnosis_error.contains("injected activation failure"),
+            "{diagnosis_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(diagnosis_shared.join("SKILL.md"))
+                .expect("old diagnosis destination"),
+            "---\nname: Diagnosis\n---\nold-shared-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(diagnosis_center.join("SKILL.md")).expect("diagnosis source"),
+            "---\nname: Diagnosis\n---\ncenter-v2\n"
+        );
+
+        for (command, args) in [
+            (
+                "execute_adopt_agent_skill",
+                serde_json::json!({
+                    "agentId": "agents",
+                    "unmanagedId": "agents::adopt",
+                    "option": "overwrite_center",
+                    "renamedId": null,
+                }),
+            ),
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({
+                    "targetId": "agents::upload",
+                    "action": "agent_over_center",
+                }),
+            ),
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({
+                    "targetId": "agents::download",
+                    "action": "center_over_agent",
+                }),
+            ),
+            (
+                "execute_fix_diagnosis_issue",
+                serde_json::json!({
+                    "issueType": "copy_diverged",
+                    "entityId": "agents::diagnosis",
+                }),
+            ),
+        ] {
+            let copy_error = run_script_error_with_prelude(&home, command, args, FAIL_STAGING_COPY);
+            assert!(
+                copy_error.contains("injected staging copy failure"),
+                "{command}: {copy_error}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(adopt_destination.join("sentinel"))
+                .expect("copy-fault adopt destination"),
+            "old-adopt\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(adopt_source.join("SKILL.md"))
+                .expect("copy-fault adopt source"),
+            "---\nname: Adopt\n---\nshared-adopt-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(upload_center.join("SKILL.md"))
+                .expect("copy-fault upload destination"),
+            "---\nname: Upload\n---\nold-center-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(upload_shared.join("SKILL.md"))
+                .expect("copy-fault upload source"),
+            "---\nname: Upload\n---\nshared-v2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(download_shared.join("SKILL.md"))
+                .expect("copy-fault download destination"),
+            "---\nname: Download\n---\nold-shared-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(download_center.join("SKILL.md"))
+                .expect("copy-fault download source"),
+            "---\nname: Download\n---\ncenter-v2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(diagnosis_shared.join("SKILL.md"))
+                .expect("copy-fault diagnosis destination"),
+            "---\nname: Diagnosis\n---\nold-shared-v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(diagnosis_center.join("SKILL.md"))
+                .expect("copy-fault diagnosis source"),
+            "---\nname: Diagnosis\n---\ncenter-v2\n"
+        );
+        assert!(recovery_artifacts(&center_root).is_empty());
+        assert!(recovery_artifacts(&shared_root).is_empty());
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_shared_alias_rollback_failure_retains_recovery_artifacts() {
+        const FAIL_ACTIVATION_AND_ROLLBACK: &str = r#"
+_agentbro_original_replace = os.replace
+def _agentbro_fail_activation_and_rollback(source, destination):
+    source_name = pathlib.Path(source).name
+    if source_name in ("staged", "backup") and ".shared-skill-replace-" in str(source):
+        raise OSError("injected alias replace failure")
+    return _agentbro_original_replace(source, destination)
+os.replace = _agentbro_fail_activation_and_rollback
+"#;
+
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-shared-alias-recovery-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = home.join(".agents/skills/source");
+        let center = home.join(".agentbro/skills");
+        let alias = center.join("alias");
+        write_remote_skill(&source, "Source", "shared-v1\n");
+        std::fs::create_dir_all(&center).expect("center directory");
+        std::os::unix::fs::symlink(&source, &alias).expect("center alias");
+
+        let error = run_script_error_with_prelude(
+            &home,
+            "delete_unmanaged_agent_skill",
+            serde_json::json!({
+                "agentId": "agents",
+                "unmanagedId": "agents::source",
+            }),
+            FAIL_ACTIVATION_AND_ROLLBACK,
+        );
+        assert!(error.contains("Recovery artifacts retained at"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(source.join("SKILL.md")).expect("shared source"),
+            "---\nname: Source\n---\nshared-v1\n"
+        );
+        assert!(!alias.exists());
+        assert!(!alias.is_symlink());
+        let recoveries = recovery_artifacts(&center);
+        assert_eq!(recoveries.len(), 1);
+        let recovery = &recoveries[0];
+        assert!(recovery.join("backup").is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(recovery.join("staged/SKILL.md"))
+                .expect("staged independent copy"),
+            "---\nname: Source\n---\nshared-v1\n"
+        );
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    fn write_remote_skill(path: &Path, name: &str, body: &str) {
+        std::fs::create_dir_all(path).expect("Skill directory");
+        std::fs::write(
+            path.join("SKILL.md"),
+            format!("---\nname: {name}\n---\n{body}"),
+        )
+        .expect("Skill markdown");
+    }
+
     fn run_script(home: &Path, command: &str, args: Value) -> Value {
         let script = render_script(command, args).expect("render remote script");
         run_rendered_script(home, &script)
     }
 
+    fn run_script_with_inventory_count(home: &Path, command: &str, args: Value) -> Value {
+        let script = render_script(command, args)
+            .expect("render remote script")
+            .replace(
+                "try:\n    RESPONSE = json_safe(dispatch())",
+                r#"_agentbro_original_inventory = inventory
+_agentbro_inventory_calls = 0
+def inventory():
+    global _agentbro_inventory_calls
+    _agentbro_inventory_calls += 1
+    return _agentbro_original_inventory()
+
+try:
+    _agentbro_result = dispatch()
+    RESPONSE = json_safe({
+        "result": _agentbro_result,
+        "inventoryCalls": _agentbro_inventory_calls,
+    })"#,
+            );
+        run_rendered_script(home, &script)
+    }
+
+    fn run_script_error(home: &Path, command: &str, args: Value) -> String {
+        let script = render_script(command, args).expect("render remote script");
+        let output = execute_rendered_script(home, &script);
+        assert!(
+            !output.status.success(),
+            "remote script unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    fn run_script_error_with_prelude(
+        home: &Path,
+        command: &str,
+        args: Value,
+        prelude: &str,
+    ) -> String {
+        let script = render_script(command, args)
+            .expect("render remote script")
+            .replace(
+                "\ntry:\n    RESPONSE = json_safe(dispatch())",
+                &format!("\n{prelude}\ntry:\n    RESPONSE = json_safe(dispatch())"),
+            );
+        let output = execute_rendered_script(home, &script);
+        assert!(
+            !output.status.success(),
+            "remote script unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    fn recovery_artifacts(root: &Path) -> Vec<std::path::PathBuf> {
+        if !root.is_dir() {
+            return Vec::new();
+        }
+        std::fs::read_dir(root)
+            .expect("recovery parent")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy().starts_with(".shared-skill-replace-")
+                })
+            })
+            .collect()
+    }
+
     fn run_rendered_script(home: &Path, script: &str) -> Value {
+        let output = execute_rendered_script(home, script);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let payload = stdout
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix(RESPONSE_MARKER))
+            .expect("marked response");
+        serde_json::from_str(payload).expect("response JSON")
+    }
+
+    fn execute_rendered_script(home: &Path, script: &str) -> std::process::Output {
         let mut child = Command::new("python3")
             .arg("-")
             .stdin(Stdio::piped())
@@ -459,18 +1181,6 @@ mod tests {
             .expect("remote script stdin")
             .write_all(script.as_bytes())
             .expect("write remote script");
-        let output = child.wait_with_output().expect("run remote script");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let payload = stdout
-            .lines()
-            .rev()
-            .find_map(|line| line.strip_prefix(RESPONSE_MARKER))
-            .expect("marked response");
-        serde_json::from_str(payload).expect("response JSON")
+        child.wait_with_output().expect("run remote script")
     }
 }

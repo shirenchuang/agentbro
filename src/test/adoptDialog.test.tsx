@@ -181,4 +181,142 @@ describe('single Skill adoption pack choice', () => {
       expect(onDone).toHaveBeenCalledTimes(1)
     })
   })
+
+  it('retries only the refresh after creating a new pack successfully', async () => {
+    const executeAdopt = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('bird')
+    const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...existingPackDetail,
+      id: 'new-pack',
+      name: '常用工具',
+      members: [
+        { skillId: 'bird', skillName: 'bird', required: true, sortOrder: 0, missing: false },
+      ],
+    })
+    const onDone = vi.fn()
+      .mockRejectedValueOnce(new Error('refresh failed'))
+      .mockResolvedValue(undefined)
+
+    render(
+      <AdoptDialog
+        preview={preview}
+        packs={[]}
+        onClose={() => {}}
+        onDone={onDone}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时加入技能包/ }))
+    fireEvent.change(screen.getByLabelText('技能包名称'), { target: { value: '常用工具' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    expect(await screen.findByText('refresh failed')).toBeInTheDocument()
+    expect(executeAdopt).toHaveBeenCalledTimes(1)
+    expect(upsertPack).toHaveBeenCalledTimes(1)
+    expect(onDone).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }))
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(2))
+    expect(executeAdopt).toHaveBeenCalledTimes(1)
+    expect(upsertPack).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries only the refresh after updating an existing pack successfully', async () => {
+    const executeAdopt = vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('bird')
+    const getPackDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(existingPackDetail)
+    const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...existingPackDetail,
+      members: [
+        ...existingPackDetail.members,
+        { skillId: 'bird', skillName: 'bird', required: true, sortOrder: 1, missing: false },
+      ],
+    })
+    const onDone = vi.fn()
+      .mockRejectedValueOnce(new Error('refresh failed'))
+      .mockResolvedValue(undefined)
+
+    render(
+      <AdoptDialog
+        preview={preview}
+        packs={[existingPack]}
+        onClose={() => {}}
+        onDone={onDone}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /同时加入技能包/ }))
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    expect(await screen.findByText('refresh failed')).toBeInTheDocument()
+    expect(executeAdopt).toHaveBeenCalledTimes(1)
+    expect(getPackDetail).toHaveBeenCalledTimes(1)
+    expect(upsertPack).toHaveBeenCalledTimes(1)
+    expect(onDone).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }))
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(2))
+    expect(executeAdopt).toHaveBeenCalledTimes(1)
+    expect(getPackDetail).toHaveBeenCalledTimes(1)
+    expect(upsertPack).toHaveBeenCalledTimes(1)
+  })
+
+  it('describes shared conflict choices as cleanup operations', () => {
+    const sharedConflictPreview: AdoptPreview = {
+      ...preview,
+      agentId: 'agents',
+      unmanagedId: 'shared-bird',
+      skillPath: '/Users/me/.agents/skills/bird',
+      centerHasSameId: true,
+      canQuickAdopt: false,
+      options: [
+        { value: 'center_over_agent', label: 'Use center and remove shared source', destructive: true },
+        { value: 'overwrite_center', label: 'Overwrite center and remove shared source', destructive: true },
+        { value: 'rename', label: 'Rename and remove shared source', destructive: false },
+      ],
+    }
+
+    render(
+      <AdoptDialog
+        preview={sharedConflictPreview}
+        packs={[]}
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    )
+
+    expect(screen.getByLabelText('中心库为准')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('不会改动中心库；会删除 .agents/skills 中的同名共享 Skill 文件夹。')).toBeInTheDocument()
+    expect(screen.getByText('会清理 .agents 共享副本')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('重命名导入'))
+
+    expect(screen.getByText('不会覆盖中心库已有 Skill；会删除 .agents/skills 中的原共享 Skill 文件夹。')).toBeInTheDocument()
+    expect(screen.getByText(/成功后清理 \.agents\/skills 中的原共享 Skill/)).toBeInTheDocument()
+    expect(screen.queryByText(/原 Agent 文件会作为副本目标被管理/)).not.toBeInTheDocument()
+  })
+
+  it('keeps post-adoption refresh errors visible when close retries refresh', async () => {
+    vi.spyOn(skillApiV2, 'executeAdopt').mockResolvedValue('bird')
+    const onDone = vi.fn().mockRejectedValue(new Error('refresh still failed'))
+    const onClose = vi.fn()
+
+    render(
+      <AdoptDialog
+        preview={preview}
+        packs={[]}
+        onClose={onClose}
+        onDone={onDone}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+    expect(await screen.findByText('refresh still failed')).toBeInTheDocument()
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '取消' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('refresh still failed')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
 })

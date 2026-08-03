@@ -21,6 +21,8 @@ ARGS = REQUEST.get("args") or {}
 HOME = pathlib.Path.home().resolve()
 STATE_PATH = HOME / ".agentbro" / "skill-manager-remote.json"
 FIXED_CENTER_PATH = HOME / ".agentbro" / "skills"
+SHARED_SKILLS_AGENT_ID = "agents"
+SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
 STATE_MUTATING_COMMANDS = {
     "skill_manager_bootstrap",
     "skill_manager_init",
@@ -34,6 +36,12 @@ STATE_MUTATING_COMMANDS = {
     "execute_adopt_agent_skill",
     "execute_adopt_agent_skills",
     "takeover_center_agent_skills",
+    "delete_unmanaged_agent_skill",
+    "delete_unmanaged_agent_skills",
+    "delete_skill_target_distribution",
+    "delete_skill_target_distributions",
+    "execute_sync_copy_target",
+    "execute_fix_diagnosis_issue",
     "execute_upsert_skill_pack",
     "execute_delete_skill_pack",
     "execute_apply_skill_pack",
@@ -565,6 +573,270 @@ def remove_path(path):
         shutil.rmtree(path)
 
 
+def path_present(path):
+    path = pathlib.Path(path)
+    return path.exists() or path.is_symlink()
+
+
+def verified_skill_hash(path, label):
+    path = pathlib.Path(path)
+    try:
+        if not path.is_dir() or not (path / "SKILL.md").is_file():
+            raise ValueError(label + " is not a readable Skill directory")
+        result = hash_dir(path)
+    except (OSError, RuntimeError) as error:
+        raise ValueError(label + " could not be verified") from error
+    if not result:
+        raise ValueError(label + " could not be verified")
+    return result
+
+
+def independent_center_skill_hash(path):
+    path = pathlib.Path(path)
+    try:
+        if (
+            FIXED_CENTER_PATH.is_symlink()
+            or normalized_lexical_path(path.parent)
+            != normalized_lexical_path(FIXED_CENTER_PATH)
+            or path.is_symlink()
+            or not path.is_dir()
+            or (path / "SKILL.md").is_symlink()
+        ):
+            return None
+        if any(item.is_symlink() for item in path.rglob("*")):
+            return None
+        return verified_skill_hash(path, "Center Skill")
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def atomic_replace_skill_directory(source, destination, after_replace=None):
+    source = pathlib.Path(source)
+    destination = pathlib.Path(destination)
+    expected_hash = verified_skill_hash(source, "Source Skill")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    recovery_root = pathlib.Path(tempfile.mkdtemp(
+        prefix=".shared-skill-replace-",
+        dir=str(destination.parent),
+    ))
+    staged = recovery_root / "staged"
+    backup = recovery_root / "backup"
+    failed_replacement = recovery_root / "failed-replacement"
+    keep_recovery = False
+    had_destination = path_present(destination)
+    try:
+        shutil.copytree(source, staged, symlinks=False)
+        if (
+            verified_skill_hash(staged, "Staged Skill") != expected_hash
+            or verified_skill_hash(source, "Source Skill") != expected_hash
+        ):
+            raise ValueError("Source Skill changed while its replacement was staged")
+        if had_destination:
+            os.replace(str(destination), str(backup))
+        try:
+            os.replace(str(staged), str(destination))
+            if verified_skill_hash(destination, "Replaced Skill") != expected_hash:
+                raise ValueError("Replaced Skill failed final verification")
+            if after_replace is not None:
+                after_replace()
+        except Exception as replace_error:
+            rollback_errors = []
+            if path_present(destination):
+                try:
+                    os.replace(str(destination), str(failed_replacement))
+                except Exception as error:
+                    rollback_errors.append("new destination could not be retained: " + str(error))
+            if had_destination:
+                if path_present(destination):
+                    rollback_errors.append("old destination is blocked by the new destination")
+                elif path_present(backup):
+                    try:
+                        os.replace(str(backup), str(destination))
+                    except Exception as error:
+                        rollback_errors.append("old destination could not be restored: " + str(error))
+                else:
+                    rollback_errors.append("old destination backup is missing")
+            elif path_present(destination):
+                rollback_errors.append("new destination could not be rolled back")
+            source_restored = False
+            try:
+                source_restored = (
+                    verified_skill_hash(source, "Source Skill") == expected_hash
+                )
+            except ValueError:
+                pass
+            if rollback_errors or not source_restored:
+                keep_recovery = True
+                detail = "; ".join(rollback_errors)
+                if not source_restored:
+                    detail = (detail + "; " if detail else "") + "source requires recovery"
+                raise ValueError(
+                    "Atomic Skill replacement failed. Recovery artifacts retained at "
+                    + str(recovery_root)
+                    + ": "
+                    + str(replace_error)
+                    + ("; " + detail if detail else "")
+                ) from replace_error
+            raise
+        if path_present(backup):
+            try:
+                remove_path(backup)
+            except Exception as cleanup_error:
+                keep_recovery = True
+                raise ValueError(
+                    "Atomic Skill replacement succeeded but its old destination backup "
+                    "could not be cleaned. Recovery artifacts retained at "
+                    + str(recovery_root)
+                    + ": "
+                    + str(cleanup_error)
+                ) from cleanup_error
+        return expected_hash
+    finally:
+        if recovery_root.exists() and not keep_recovery:
+            try:
+                shutil.rmtree(recovery_root)
+            except OSError:
+                pass
+
+
+def shared_skills_path():
+    return HOME / ".agents" / "skills"
+
+
+def normalized_lexical_path(path):
+    return pathlib.Path(os.path.abspath(os.path.normpath(str(path))))
+
+
+def paths_overlap(left, right):
+    left = pathlib.Path(left)
+    right = pathlib.Path(right)
+    for normalized_left, normalized_right in (
+        (normalized_lexical_path(left), normalized_lexical_path(right)),
+        (left.resolve(strict=False), right.resolve(strict=False)),
+    ):
+        if (
+            normalized_left == normalized_right
+            or normalized_left in normalized_right.parents
+            or normalized_right in normalized_left.parents
+        ):
+            return True
+    return False
+
+
+def shared_skill_mutation_path(path):
+    path = pathlib.Path(path)
+    shared_root = shared_skills_path()
+    shared_parent = shared_root.parent
+    if not path.is_absolute() or path.name in ("", ".", ".."):
+        raise ValueError("Shared Skill path must identify a leaf below ~/.agents/skills")
+    if shared_parent.is_symlink() or shared_root.is_symlink():
+        raise ValueError("Refusing to mutate a shared Skill through a symbolic-link parent")
+    if FIXED_CENTER_PATH.is_symlink() or paths_overlap(FIXED_CENTER_PATH, shared_root):
+        raise ValueError("Refusing to mutate a shared Skill through an unsafe center root")
+    normalized_root = shared_root.resolve(strict=False)
+    normalized_path = path.parent.resolve(strict=False) / path.name
+    if normalized_path == normalized_root:
+        raise ValueError("Shared Skill path must identify a leaf below ~/.agents/skills")
+    if normalized_root not in normalized_path.parents:
+        raise ValueError("Shared Skill path is outside the trusted ~/.agents/skills root")
+    return path
+
+
+def center_symlink_depends_on(path, dependency):
+    path = normalized_lexical_path(path)
+    dependency = normalized_lexical_path(dependency)
+    current = path
+    visited = set()
+    while current.is_symlink():
+        key = str(current)
+        if key in visited:
+            break
+        visited.add(key)
+        target = pathlib.Path(getattr(os, "readlink")(str(current)))
+        if not target.is_absolute():
+            target = current.parent / target
+        target = normalized_lexical_path(target)
+        if target == dependency or dependency in target.parents:
+            return True
+        current = target
+    try:
+        return path.resolve(strict=True) == dependency.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        return False
+
+
+def center_symlink_dependents(source):
+    center = center_path()
+    try:
+        entries = list(center.iterdir())
+    except (FileNotFoundError, PermissionError) as error:
+        raise ValueError("The center library cannot be inspected safely") from error
+    return sorted(
+        (
+            entry for entry in entries
+            if entry.is_symlink() and center_symlink_depends_on(entry, source)
+        ),
+        key=lambda entry: entry.name.lower(),
+    )
+
+
+def detach_center_symlink_dependents(source):
+    source = pathlib.Path(source)
+    dependents = center_symlink_dependents(source)
+    if not dependents:
+        return
+    source_hash = verified_skill_hash(source, "Shared Skill")
+    expected_dependents = []
+    for dependent in dependents:
+        if (
+            not dependent.is_symlink()
+            or not center_symlink_depends_on(dependent, source)
+        ):
+            raise ValueError("A dependent center Skill changed before it was detached")
+        expected_dependents.append((
+            dependent,
+            verified_skill_hash(dependent, "Dependent center Skill"),
+        ))
+    for dependent, expected_hash in expected_dependents:
+        if (
+            not dependent.is_symlink()
+            or verified_skill_hash(dependent, "Dependent center Skill") != expected_hash
+            or verified_skill_hash(source, "Shared Skill") != source_hash
+        ):
+            raise ValueError("A dependent center Skill changed before it was detached")
+        atomic_replace_skill_directory(dependent, dependent)
+        if (
+            dependent.is_symlink()
+            or verified_skill_hash(dependent, "Detached center Skill") != expected_hash
+        ):
+            raise ValueError("A detached center Skill failed final verification")
+    if (
+        verified_skill_hash(source, "Shared Skill") != source_hash
+        or center_symlink_dependents(source)
+    ):
+        raise ValueError("Not all dependent center Skills could be detached")
+
+
+def prepare_shared_target_write(path, center_source, replace_center=False):
+    path = shared_skill_mutation_path(path)
+    detach_center_symlink_dependents(path)
+    if replace_center:
+        detach_center_symlink_dependents(center_source)
+    path = shared_skill_mutation_path(path)
+    if paths_overlap(center_source, path):
+        raise ValueError("Center and shared Skill paths overlap after safe detachment")
+    return path
+
+
+def remove_shared_skill_path(path):
+    path = shared_skill_mutation_path(path)
+    detach_center_symlink_dependents(path)
+    path = shared_skill_mutation_path(path)
+    if center_symlink_dependents(path):
+        raise ValueError("Dependent center Skill links still reference the shared source")
+    remove_path(path)
+
+
 def copy_or_link(source, target, mode):
     target.parent.mkdir(parents=True, exist_ok=True)
     if mode == "link":
@@ -689,7 +961,84 @@ def inventory():
             "unmanagedSkillCount": unmanaged_count,
             "readOnlySkillCount": 0,
         })
+    shared_root = shared_skills_path()
+    for path in skill_directories(shared_root):
+        skill_id = path.name
+        if skill_id in skills:
+            actual_mode = "link" if path.is_symlink() else "copy"
+            source_hash = skills[skill_id]["currentHash"]
+            current_hash = hash_dir(path.resolve() if path.is_symlink() else path)
+            status = "ok" if source_hash == current_hash else "copyDiverged"
+            skills[skill_id]["installedAgents"].append({
+                "agentId": SHARED_SKILLS_AGENT_ID,
+                "displayName": ".agents",
+                "iconKey": SHARED_SKILLS_AGENT_ID,
+                "mode": actual_mode,
+                "status": status,
+            })
+            target = {
+                "id": SHARED_SKILLS_AGENT_ID + "::" + skill_id,
+                "skillId": skill_id,
+                "agentId": SHARED_SKILLS_AGENT_ID,
+                "targetPath": str(path),
+                "resolvedTargetPath": str(path.resolve(strict=False)),
+                "installMode": actual_mode,
+                "actualMode": actual_mode,
+                "sourceHash": source_hash,
+                "currentHash": current_hash,
+                "status": status,
+                "createdAt": now(),
+                "updatedAt": now(),
+                "claims": pack_claims(SHARED_SKILLS_AGENT_ID, skill_id),
+            }
+            targets[target["id"]] = target
+        else:
+            unmanaged_id = SHARED_SKILLS_AGENT_ID + "::" + skill_id
+            unmanaged.append({
+                "id": unmanaged_id,
+                "itemType": "skill",
+                "agentId": SHARED_SKILLS_AGENT_ID,
+                "path": str(path),
+                "inferredSkillId": skill_id,
+                "hash": hash_dir(path),
+                "reason": "shared_agents_directory",
+                "readOnly": False,
+            })
     return skills, agents, unmanaged, targets
+
+
+def shared_skill_projection(agent_id, unmanaged, targets):
+    if agent_id not in SHARED_SKILL_CONSUMERS:
+        return [], []
+    managed_by_path = {}
+    for target in sorted(
+        (item for item in targets.values()
+         if item["agentId"] == SHARED_SKILLS_AGENT_ID),
+        key=lambda item: (item["targetPath"], item["id"]),
+    ):
+        path = str(pathlib.Path(target["targetPath"]).resolve(strict=False))
+        managed_by_path.setdefault(path, target)
+    unmanaged_by_path = {}
+    for item in sorted(
+        (item for item in unmanaged
+         if item["agentId"] == SHARED_SKILLS_AGENT_ID),
+        key=lambda item: (item["path"], item["id"]),
+    ):
+        path = str(pathlib.Path(item["path"]).resolve(strict=False))
+        if path not in managed_by_path:
+            unmanaged_by_path.setdefault(path, item)
+    managed_skills = sorted(
+        managed_by_path.values(),
+        key=lambda item: (item["skillId"].lower(), item["targetPath"]),
+    )
+    unmanaged_skills = sorted(
+        unmanaged_by_path.values(),
+        key=lambda item: (
+            str(item.get("inferredSkillId") or pathlib.Path(item["path"]).name).lower(),
+            item["path"],
+        ),
+    )
+    return managed_skills, unmanaged_skills
 
 
 def pack_detail(pack_id, skills=None, agents=None):
@@ -768,8 +1117,7 @@ def pack_summary(detail):
     }
 
 
-def overview():
-    skills, agents, unmanaged, targets = inventory()
+def overview_from_inventory(skills, agents, unmanaged, targets):
     details = [pack_detail("default", skills, agents)]
     details.extend(
         pack_detail(pack_id, skills, agents)
@@ -790,6 +1138,10 @@ def overview():
         "issues": issues,
         "settings": STATE["settings"],
     }
+
+
+def overview():
+    return overview_from_inventory(*inventory())
 
 
 def file_tree(path):
@@ -1039,8 +1391,7 @@ def diagnosis(skills=None, agents=None, unmanaged=None, targets=None):
     return issues
 
 
-def unmanaged_inventory():
-    skills, agents, unmanaged, targets = inventory()
+def unmanaged_inventory_from_inventory(skills, agents, unmanaged, targets):
     by_agent = {agent["id"]: [] for agent in agents}
     for item in unmanaged:
         skill_id = item["inferredSkillId"] or pathlib.Path(item["path"]).name
@@ -1093,7 +1444,24 @@ def unmanaged_inventory():
             "importableCount": sum(1 for item in items if item["canImport"]),
             "items": sorted(items, key=lambda item: item["name"].lower()),
         })
+    shared_items = by_agent.get(SHARED_SKILLS_AGENT_ID, [])
+    result.append({
+        "agentId": SHARED_SKILLS_AGENT_ID,
+        "displayName": ".agents",
+        "iconKey": SHARED_SKILLS_AGENT_ID,
+        "skillsDir": str(shared_skills_path()),
+        "installed": shared_skills_path().is_dir(),
+        "managedCount": sum(1 for item in shared_items if item["managed"]),
+        "unmanagedCount": sum(1 for item in shared_items if not item["managed"]),
+        "readOnlyCount": sum(1 for item in shared_items if item.get("readOnly")),
+        "importableCount": sum(1 for item in shared_items if item["canImport"]),
+        "items": sorted(shared_items, key=lambda item: item["name"].lower()),
+    })
     return result
+
+
+def unmanaged_inventory():
+    return unmanaged_inventory_from_inventory(*inventory())
 
 
 def find_unmanaged(unmanaged_id):
@@ -1104,22 +1472,66 @@ def find_unmanaged(unmanaged_id):
     return item
 
 
+def remove_unmanaged_item(item, requested_agent_id):
+    owner = item.get("agentId")
+    if owner != requested_agent_id:
+        raise ValueError("Unmanaged Skill does not belong to this Agent")
+    if owner == SHARED_SKILLS_AGENT_ID:
+        remove_shared_skill_path(item["path"])
+        return
+    remove_path(pathlib.Path(item["path"]))
+
+
+def remove_target_distribution(target):
+    if target.get("agentId") == SHARED_SKILLS_AGENT_ID:
+        remove_shared_skill_path(target["targetPath"])
+        return
+    remove_path(pathlib.Path(target["targetPath"]))
+
+
 def adopt_preview(agent_id, unmanaged_id):
     item = find_unmanaged(unmanaged_id)
     if item["agentId"] != agent_id:
         raise ValueError("Unmanaged Skill does not belong to this Agent")
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        shared_skill_mutation_path(item["path"])
     skill_id = safe_id(item["inferredSkillId"])
     target = center_path() / skill_id
-    same_id = target.exists()
-    return {
-        "agentId": agent_id,
-        "unmanagedId": unmanaged_id,
-        "skillPath": item["path"],
-        "inferredSkillId": skill_id,
-        "hash": item["hash"],
-        "centerHasSameId": same_id,
-        "canQuickAdopt": not same_id,
-        "options": [
+    same_id = target.exists() or target.is_symlink()
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        if not same_id:
+            options = [{
+                "value": "import_cleanup",
+                "label": "Import to center and remove the shared .agents copy",
+                "destructive": True,
+            }]
+        else:
+            options = []
+            if independent_center_skill_hash(target):
+                options.append({
+                    "value": "center_over_agent",
+                    "label": "Use center skill and remove the shared .agents copy",
+                    "destructive": True,
+                })
+            options.extend([
+                {
+                    "value": "overwrite_center",
+                    "label": "Overwrite center skill and remove the shared .agents copy",
+                    "destructive": True,
+                },
+                {
+                    "value": "rename",
+                    "label": "Import under a new id and remove the shared .agents copy",
+                    "destructive": True,
+                },
+                {
+                    "value": "skip",
+                    "label": "Keep as unmanaged",
+                    "destructive": False,
+                },
+            ])
+    else:
+        options = [
             {
                 "value": "import_link",
                 "label": "导入中心库并链接",
@@ -1150,17 +1562,62 @@ def adopt_preview(agent_id, unmanaged_id):
                 "label": "跳过",
                 "destructive": False,
             },
-        ],
+        ]
+    return {
+        "agentId": agent_id,
+        "unmanagedId": unmanaged_id,
+        "skillPath": item["path"],
+        "inferredSkillId": skill_id,
+        "hash": item["hash"],
+        "centerHasSameId": same_id,
+        "canQuickAdopt": not same_id,
+        "options": options,
     }
 
 
 def execute_adopt(agent_id, unmanaged_id, option, renamed_id=None):
     preview = adopt_preview(agent_id, unmanaged_id)
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        allowed_options = [item["value"] for item in preview["options"]]
+        if option not in allowed_options:
+            raise ValueError("Adopt option is not allowed for a shared .agents Skill")
     if option == "skip":
         return ""
     source = pathlib.Path(preview["skillPath"])
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        source = shared_skill_mutation_path(source)
     skill_id = safe_id(renamed_id if option == "rename" else preview["inferredSkillId"])
     target = center_path() / skill_id
+    if agent_id == SHARED_SKILLS_AGENT_ID:
+        detach_center_symlink_dependents(source)
+        source = shared_skill_mutation_path(source)
+        target_present = target.exists() or target.is_symlink()
+        if target_present and option == "center_over_agent":
+            if not independent_center_skill_hash(target):
+                raise ValueError("Center Skill is not an independent readable Skill directory")
+            remove_shared_skill_path(source)
+            return skill_id
+        if target_present and option == "overwrite_center":
+            detach_center_symlink_dependents(target)
+        elif target_present:
+            raise ValueError("Center Skill already exists: " + skill_id)
+        atomic_replace_skill_directory(
+            source,
+            target,
+            after_replace=lambda: remove_shared_skill_path(source),
+        )
+        STATE["sources"][skill_id] = {
+            "sourceType": "agent_import",
+            "sourceUri": None,
+            "sourceRef": None,
+            "importedFromAgent": agent_id,
+            "importedFromPath": str(source),
+            "installedVia": "remote_adopt",
+            "createdAt": now(),
+            "updatedAt": now(),
+        }
+        save_state()
+        return skill_id
     if target.exists() and option == "center_over_agent":
         remove_path(source)
         copy_or_link(target, source, STATE["settings"]["defaultDistributeMode"])
@@ -1404,12 +1861,23 @@ def apply_pack(pack_id, target_agents, requested_mode, decisions=None):
     return result
 
 
-def agent_detail(agent_id):
+def agent_detail_from_inventory(
+    agent_id,
+    skills,
+    agents,
+    unmanaged,
+    targets,
+    available_packs=None,
+):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + agent_id)
-    skills, agents, _, targets = inventory()
     agent = next(item for item in agents if item["id"] == agent_id)
+    inherited_managed, inherited_unmanaged = shared_skill_projection(
+        agent_id,
+        unmanaged,
+        targets,
+    )
     applied = []
     for pack_id in applied_pack_ids(agent_id):
         detail = pack_detail(pack_id, skills, agents)
@@ -1426,11 +1894,37 @@ def agent_detail(agent_id):
         "pluginDir": str(agent_plugin_path(agent_id)),
         "agentDir": str(agent_skills_path(agent_id).parent),
         "skills": [item for item in targets.values() if item["agentId"] == agent_id],
+        "inheritsSharedSkills": agent_id in SHARED_SKILL_CONSUMERS,
+        "inheritedManagedSkills": inherited_managed,
+        "inheritedUnmanagedSkills": inherited_unmanaged,
         "appliedPacks": applied,
-        "availablePacks": overview()["packs"],
+        "availablePacks": available_packs if available_packs is not None else overview_from_inventory(
+            skills,
+            agents,
+            unmanaged,
+            targets,
+        )["packs"],
         "mcpServers": [],
         "plugins": [],
         "health": [],
+    }
+
+
+def agent_detail(agent_id):
+    return agent_detail_from_inventory(agent_id, *inventory())
+
+
+def agent_skill_view_snapshot(agent_id):
+    snapshot = inventory()
+    overview_value = overview_from_inventory(*snapshot)
+    return {
+        "agentDetail": agent_detail_from_inventory(
+            agent_id,
+            *snapshot,
+            available_packs=overview_value["packs"],
+        ),
+        "overview": overview_value,
+        "unmanaged": snapshot[2],
     }
 
 
@@ -2469,7 +2963,7 @@ def dispatch():
             if remove_linked:
                 for target in targets.values():
                     if target["skillId"] == skill_id:
-                        remove_path(pathlib.Path(target["targetPath"]))
+                        remove_target_distribution(target)
             remove_path(center_path() / skill_id)
             STATE["sources"].pop(skill_id, None)
             for pack in STATE["packs"].values():
@@ -2543,17 +3037,24 @@ def dispatch():
                 })
         return {"items": results, "finalizationError": None}
     if command in ("delete_unmanaged_agent_skill", "delete_unmanaged_agent_skills"):
+        requested_agent_id = args.get("agentId")
         ids = (
             [args["unmanagedId"]]
             if command == "delete_unmanaged_agent_skill"
             else args.get("unmanagedIds", [])
         )
+        unmanaged_by_id = {
+            item["id"]: item
+            for item in inventory()[2]
+        }
         failures = []
         deleted = 0
         for unmanaged_id in ids:
             try:
-                item = find_unmanaged(unmanaged_id)
-                remove_path(pathlib.Path(item["path"]))
+                item = unmanaged_by_id.get(unmanaged_id)
+                if not item:
+                    raise ValueError("Unmanaged Skill not found: " + unmanaged_id)
+                remove_unmanaged_item(item, requested_agent_id)
                 deleted += 1
             except Exception as error:
                 failures.append({"unmanagedId": unmanaged_id, "error": str(error)})
@@ -2576,11 +3077,23 @@ def dispatch():
             source = pathlib.Path(skill["centerPath"])
             destination = pathlib.Path(target["targetPath"])
             if action == "agent_over_center":
-                remove_path(source)
-                shutil.copytree(destination, source, symlinks=True)
+                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+                    destination = prepare_shared_target_write(
+                        destination,
+                        source,
+                        replace_center=True,
+                    )
+                    atomic_replace_skill_directory(destination, source)
+                else:
+                    remove_path(source)
+                    shutil.copytree(destination, source, symlinks=True)
             elif action == "center_over_agent":
-                remove_path(destination)
-                shutil.copytree(source, destination, symlinks=True)
+                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+                    destination = prepare_shared_target_write(destination, source)
+                    atomic_replace_skill_directory(source, destination)
+                else:
+                    remove_path(destination)
+                    shutil.copytree(source, destination, symlinks=True)
             skills, _, _, targets = inventory()
             target = targets[target_id]
             skill = skills[target["skillId"]]
@@ -2625,8 +3138,11 @@ def dispatch():
             if not target:
                 failures.append({"targetId": target_id, "error": "Target not found"})
                 continue
-            remove_path(pathlib.Path(target["targetPath"]))
-            deleted += 1
+            try:
+                remove_target_distribution(target)
+                deleted += 1
+            except Exception as error:
+                failures.append({"targetId": target_id, "error": str(error)})
         if command == "delete_skill_target_distribution":
             if failures:
                 raise ValueError(failures[0]["error"])
@@ -2768,6 +3284,8 @@ def dispatch():
         return overview()["agents"]
     if command == "get_agent_detail_v2":
         return agent_detail(args["agentId"])
+    if command == "refresh_agent_skill_view_v2":
+        return agent_skill_view_snapshot(args["agentId"])
     if command == "read_agent_config_file_v2":
         return config_document(args["path"])
     if command == "write_agent_config_file_v2":
@@ -2962,8 +3480,12 @@ def dispatch():
                 raise ValueError("Target not found")
             source = pathlib.Path(skills[target["skillId"]]["centerPath"])
             destination = pathlib.Path(target["targetPath"])
-            remove_path(destination)
-            shutil.copytree(source, destination, symlinks=True)
+            if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+                destination = prepare_shared_target_write(destination, source)
+                atomic_replace_skill_directory(source, destination)
+            else:
+                remove_path(destination)
+                shutil.copytree(source, destination, symlinks=True)
         return None
     if command == "execute_safe_fixes":
         return 0

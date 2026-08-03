@@ -9,7 +9,7 @@ use rusqlite::params;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Reuse the shared HOME lock from `skills` so v2 tests serialize against the
 /// legacy skill tests and `cargo test` is deterministic under parallelism.
@@ -69,6 +69,59 @@ fn fresh_service(label: &str) -> (TempHome, Service, std::sync::MutexGuard<'stat
     let svc = Service::new(&sqlite, fsutil::home()).unwrap();
     svc.init().unwrap();
     (home, svc, lock)
+}
+
+fn add_center_test_skill(svc: &Service, source_dir: &str, skill_id: &str) -> PathBuf {
+    let source = write_skill(
+        &svc.home.join("test-sources"),
+        source_dir,
+        skill_id,
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    PathBuf::from(svc.get_skill_detail(skill_id).unwrap().summary.center_path)
+}
+
+fn insert_shared_managed_target(
+    svc: &Service,
+    target_id: &str,
+    skill_id: &str,
+    target_path: &Path,
+    actual_mode: &str,
+) {
+    let source_hash = svc.get_skill_detail(skill_id).unwrap().summary.current_hash;
+    let current_hash = (actual_mode == "copy").then(|| fsutil::hash_dir(target_path));
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at)
+                     VALUES (?1, ?2, 'agents', ?3, ?4, ?4, ?5, ?6, 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    params![
+                        target_id,
+                        skill_id,
+                        target_path.display().to_string(),
+                        actual_mode,
+                        source_hash,
+                        current_hash,
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
 }
 
 // ── Hash stability ────────────────────────────────────────────────
@@ -2508,6 +2561,85 @@ fn delete_skill_target_distribution_removes_copy_and_db_target() {
 }
 
 #[test]
+fn delete_skill_target_distribution_cleans_only_matching_stale_inventory() {
+    let (_home, svc, _lock) = fresh_service("delete-target-incremental-inventory");
+    let src = write_skill(&svc.home.join("s"), "rev", "incremental-delete", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["incremental-delete".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target = svc.get_skill_detail("incremental-delete").unwrap().targets[0].clone();
+    let unrelated_path = svc.home.join(".codex/skills/unrelated-stale");
+    svc.db()
+        .with_conn(|connection| {
+            for (id, path) in [
+                ("unm-matching-stale", target.target_path.clone()),
+                ("unm-unrelated-stale", unrelated_path.display().to_string()),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO unmanaged_items(id, item_type, agent_id, path, inferred_skill_id, hash, reason, first_seen_at, last_seen_at)
+                         VALUES (?1, 'skill', 'codex', ?2, 'stale', NULL, 'not_in_center_library', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                        params![id, path],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    svc.delete_skill_target_distribution(&target.id).unwrap();
+
+    let remaining = svc.list_unmanaged().unwrap();
+    assert!(remaining.iter().all(|item| item.id != "unm-matching-stale"));
+    assert!(remaining
+        .iter()
+        .any(|item| item.id == "unm-unrelated-stale"));
+}
+
+#[test]
+fn refresh_agent_skill_view_reads_consistent_db_snapshot() {
+    let (_home, svc, _lock) = fresh_service("agent-skill-view-snapshot");
+    let unmanaged_path = write_skill(
+        &svc.home.join(".codex/skills"),
+        "view-unmanaged",
+        "view-unmanaged",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+
+    let snapshot = svc.refresh_agent_skill_view("codex").unwrap();
+
+    assert_eq!(snapshot.agent_detail.id, "codex");
+    assert_eq!(
+        snapshot.overview.metrics.unmanaged_count,
+        snapshot.unmanaged.len()
+    );
+    assert!(snapshot
+        .unmanaged
+        .iter()
+        .any(|item| item.path == unmanaged_path.display().to_string()));
+}
+
+#[test]
 fn delete_skill_target_distributions_removes_multiple_targets() {
     let (_home, svc, _lock) = fresh_service("delete-target-distributions");
     let src_one = write_skill(
@@ -2566,6 +2698,214 @@ fn delete_skill_target_distributions_removes_multiple_targets() {
         .unwrap()
         .targets
         .is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn delete_shared_managed_leaf_unlinks_only_target_and_preserves_center_skill() {
+    let (_home, svc, _lock) = fresh_service("delete-shared-managed-leaf");
+    let center = add_center_test_skill(&svc, "shared-managed-source", "shared-managed");
+    let shared_root = svc.home.join(".agents/skills");
+    fs::create_dir_all(&shared_root).unwrap();
+    let target_path = shared_root.join("shared-managed");
+    std::os::unix::fs::symlink(&center, &target_path).unwrap();
+    insert_shared_managed_target(
+        &svc,
+        "tgt-shared-managed-delete",
+        "shared-managed",
+        &target_path,
+        "link",
+    );
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
+                     VALUES ('clm-shared-managed-delete', 'tgt-shared-managed-delete', 'direct', NULL, '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let result = svc
+        .delete_skill_target_distributions(vec!["tgt-shared-managed-delete".to_string()])
+        .unwrap();
+
+    assert_eq!(result.deleted, 1);
+    assert!(result.failures.is_empty());
+    assert!(!target_path.exists());
+    assert!(!target_path.is_symlink());
+    assert!(fsutil::is_skill_dir(&center));
+    let detail = svc.get_skill_detail("shared-managed").unwrap();
+    assert!(detail.targets.is_empty());
+    assert_eq!(detail.summary.center_path, center.display().to_string());
+    let claim_count = svc
+        .db()
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM skill_target_claims WHERE id = 'clm-shared-managed-delete'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(claim_count, 0);
+}
+
+#[test]
+fn delete_shared_managed_skill_rejects_root_outside_and_traversal_paths() {
+    let (_home, svc, _lock) = fresh_service("delete-shared-managed-boundary");
+    add_center_test_skill(&svc, "shared-boundary-source", "shared-boundary");
+    let shared_root = svc.home.join(".agents/skills");
+    fs::create_dir_all(shared_root.join("nested")).unwrap();
+    let outside = write_skill(
+        &svc.home.join("Documents"),
+        "outside",
+        "outside-skill",
+        Some("outside"),
+    );
+    let traversal = shared_root
+        .join("nested")
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("Documents")
+        .join("outside");
+    insert_shared_managed_target(
+        &svc,
+        "tgt-shared-managed-boundary",
+        "shared-boundary",
+        &shared_root.join("initial"),
+        "copy",
+    );
+
+    for unsafe_path in [&shared_root, &outside, &traversal] {
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE skill_targets SET target_path = ?1 WHERE id = 'tgt-shared-managed-boundary'",
+                        [unsafe_path.display().to_string()],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let result = svc
+            .delete_skill_target_distributions(vec!["tgt-shared-managed-boundary".to_string()])
+            .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert_eq!(result.failures.len(), 1);
+        assert!(result.failures[0]
+            .error
+            .contains("trusted .agents skill root"));
+        let target_count = svc
+            .db()
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM skill_targets WHERE id = 'tgt-shared-managed-boundary'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(target_count, 1);
+        assert!(unsafe_path.exists());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn shared_managed_and_unmanaged_deletes_reject_symlinked_owner_boundaries() {
+    let (_home, svc, _lock) = fresh_service("delete-shared-symlinked-boundaries");
+    add_center_test_skill(&svc, "shared-symlink-source", "shared-symlink-managed");
+    let agents_root = svc.home.join(".agents");
+    let shared_root = agents_root.join("skills");
+    let managed_path = write_skill(
+        &shared_root,
+        "shared-managed",
+        "shared-symlink-managed",
+        Some("managed"),
+    );
+    let unmanaged_path = write_skill(
+        &shared_root,
+        "shared-unmanaged",
+        "shared-symlink-unmanaged",
+        Some("unmanaged"),
+    );
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged_id = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == unmanaged_path.display().to_string())
+        .map(|item| item.id)
+        .expect("shared unmanaged skill found");
+    insert_shared_managed_target(
+        &svc,
+        "tgt-shared-symlink-boundary",
+        "shared-symlink-managed",
+        &managed_path,
+        "copy",
+    );
+
+    let real_shared_root = svc.home.join("shared-skills-real");
+    fs::rename(&shared_root, &real_shared_root).unwrap();
+    std::os::unix::fs::symlink(&real_shared_root, &shared_root).unwrap();
+
+    let managed_root_error = svc
+        .delete_skill_target_distribution("tgt-shared-symlink-boundary")
+        .unwrap_err();
+    let unmanaged_root_error = svc
+        .delete_unmanaged_agent_skill("agents", &unmanaged_id)
+        .unwrap_err();
+    assert!(managed_root_error.contains("trusted .agents skill root"));
+    assert!(unmanaged_root_error.contains("outside 'agents' skill roots"));
+    assert!(managed_path.exists());
+    assert!(unmanaged_path.exists());
+
+    fs::remove_file(&shared_root).unwrap();
+    fs::rename(&real_shared_root, &shared_root).unwrap();
+    let real_agents_root = svc.home.join("agents-root-real");
+    fs::rename(&agents_root, &real_agents_root).unwrap();
+    std::os::unix::fs::symlink(&real_agents_root, &agents_root).unwrap();
+
+    let managed_parent_error = svc
+        .delete_skill_target_distribution("tgt-shared-symlink-boundary")
+        .unwrap_err();
+    let unmanaged_parent_error = svc
+        .delete_unmanaged_agent_skill("agents", &unmanaged_id)
+        .unwrap_err();
+    assert!(managed_parent_error.contains("trusted .agents skill root"));
+    assert!(unmanaged_parent_error.contains("outside 'agents' skill roots"));
+    assert!(managed_path.exists());
+    assert!(unmanaged_path.exists());
+    let target_count = svc
+        .db()
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM skill_targets WHERE id = 'tgt-shared-symlink-boundary'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(target_count, 1);
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .any(|item| item.id == unmanaged_id));
 }
 
 // ── Delete center skill preview ──────────────────────────────────
@@ -2817,6 +3157,164 @@ fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
 }
 
 #[test]
+fn delete_unmanaged_agent_skill_does_not_rewrite_recovery_snapshot() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-keeps-snapshot");
+    let rogue = write_skill(
+        &svc.home.join(".workbuddy/skills"),
+        "rogue",
+        "rogue-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == rogue.display().to_string())
+        .unwrap();
+    let snapshot_path = PathBuf::from(crate::skills::v2::snapshot::export_to_file(&svc).unwrap());
+    let before = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+
+    svc.delete_unmanaged_agent_skill("workbuddy", &unmanaged.id)
+        .unwrap();
+
+    let after = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn delete_skill_target_distributions_with_no_success_does_not_rewrite_snapshot() {
+    let (_home, svc, _lock) = fresh_service("delete-target-zero-keeps-snapshot");
+    let snapshot_path = PathBuf::from(crate::skills::v2::snapshot::export_to_file(&svc).unwrap());
+    let before = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+
+    let result = svc
+        .delete_skill_target_distributions(vec!["missing-target".to_string()])
+        .unwrap();
+
+    assert_eq!(result.deleted, 0);
+    assert_eq!(result.failures.len(), 1);
+    let after = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn delete_unmanaged_agents_skill_removes_shared_copy() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-agent");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared",
+        "shared-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.agent_id.as_deref() == Some("agents") && u.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    svc.delete_unmanaged_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+
+    assert!(!shared.exists());
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+#[cfg(unix)]
+fn delete_unmanaged_agents_skill_unlinks_leaf_without_deleting_resolved_target() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-link");
+    let external = write_skill(
+        &svc.home.join("external-skills"),
+        "shared-link-target",
+        "shared-link-target",
+        Some("external"),
+    );
+    let shared_root = svc.home.join(".agents/skills");
+    fs::create_dir_all(&shared_root).unwrap();
+    let shared_link = shared_root.join("shared-link");
+    std::os::unix::fs::symlink(&external, &shared_link).unwrap();
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| {
+            item.agent_id.as_deref() == Some("agents")
+                && item.path == shared_link.display().to_string()
+        })
+        .expect("shared unmanaged link found");
+
+    svc.delete_unmanaged_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+
+    assert!(!shared_link.exists());
+    assert!(!shared_link.is_symlink());
+    assert!(fsutil::is_skill_dir(&external));
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|item| item.id != unmanaged.id));
+}
+
+#[test]
+fn delete_unmanaged_agents_skill_rejects_shared_root_and_outside_paths() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-boundary");
+    let shared_root = svc.home.join(".agents/skills");
+    let shared = write_skill(&shared_root, "shared", "shared-skill", Some("v1"));
+    let outside = write_skill(
+        &svc.home.join("Documents"),
+        "outside",
+        "outside-skill",
+        Some("v1"),
+    );
+    fs::create_dir_all(shared_root.join("nested")).unwrap();
+    let traversal = shared_root
+        .join("nested")
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("Documents")
+        .join("outside");
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.agent_id.as_deref() == Some("agents") && u.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    for unsafe_path in [&shared_root, &outside, &traversal] {
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE unmanaged_items SET path = ?1 WHERE id = ?2",
+                        params![unsafe_path.display().to_string(), unmanaged.id],
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = svc
+            .delete_unmanaged_agent_skill("agents", &unmanaged.id)
+            .unwrap_err();
+
+        assert!(error.contains("outside 'agents' skill roots"));
+        assert!(unsafe_path.exists());
+    }
+}
+
+#[test]
 fn delete_unmanaged_agent_skill_rejects_wrong_agent() {
     let (_home, svc, _lock) = fresh_service("delete-unmanaged-wrong-agent");
     let rogue = write_skill(
@@ -2882,6 +3380,67 @@ fn delete_unmanaged_agent_skills_removes_multiple_local_copies() {
 }
 
 #[test]
+fn delete_unmanaged_agents_skills_partial_failure_preserves_failed_inventory() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-shared-partial");
+    let shared_root = svc.home.join(".agents/skills");
+    let removable = write_skill(
+        &shared_root,
+        "shared-removable",
+        "shared-removable",
+        Some("v1"),
+    );
+    let rejected = write_skill(
+        &shared_root,
+        "shared-rejected",
+        "shared-rejected",
+        Some("v1"),
+    );
+    let outside = write_skill(
+        &svc.home.join("Documents"),
+        "outside-preserved",
+        "outside-preserved",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let inventory = svc.list_unmanaged().unwrap();
+    let removable_id = inventory
+        .iter()
+        .find(|item| item.path == removable.display().to_string())
+        .map(|item| item.id.clone())
+        .expect("removable shared skill found");
+    let rejected_id = inventory
+        .iter()
+        .find(|item| item.path == rejected.display().to_string())
+        .map(|item| item.id.clone())
+        .expect("rejected shared skill found");
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE unmanaged_items SET path = ?1 WHERE id = ?2",
+                    params![outside.display().to_string(), rejected_id],
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let result = svc
+        .delete_unmanaged_agent_skills("agents", vec![removable_id.clone(), rejected_id.clone()])
+        .unwrap();
+
+    assert_eq!(result.deleted, 1);
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures[0].unmanaged_id, rejected_id);
+    assert!(!removable.exists());
+    assert!(outside.exists());
+    let remaining = svc.list_unmanaged().unwrap();
+    assert!(remaining.iter().all(|item| item.id != removable_id));
+    assert!(remaining.iter().any(|item| {
+        item.id == result.failures[0].unmanaged_id && item.path == outside.display().to_string()
+    }));
+}
+
+#[test]
 fn adopt_shared_agents_skill_copies_to_center_and_removes_source() {
     let (_home, svc, _lock) = fresh_service("adopt-shared-cleanup");
     let shared = write_skill(
@@ -2921,6 +3480,797 @@ fn adopt_shared_agents_skill_copies_to_center_and_removes_source() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn adopt_shared_agents_rejects_stale_quick_cleanup_after_source_changes() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-stale-quick-cleanup");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared-stale",
+        "shared-stale",
+        Some("original"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: shared.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+    let old_preview = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+    assert!(old_preview.can_quick_adopt);
+    assert!(old_preview
+        .options
+        .iter()
+        .any(|option| option.value == "import_cleanup"));
+
+    let center_reference = svc.center_path().unwrap().join("shared-stale/reference.md");
+    fs::write(&center_reference, "center changed without rescan").unwrap();
+    let center_changed_preview = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+    assert!(!center_changed_preview.can_quick_adopt);
+    assert!(!center_changed_preview
+        .options
+        .iter()
+        .any(|option| option.value == "import_cleanup"));
+    let center_changed_error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(center_changed_error.contains("not allowed"));
+    assert!(shared.is_dir(), "a concurrent center edit preserves source");
+    fs::write(&center_reference, "original").unwrap();
+    assert!(
+        svc.preview_adopt_agent_skill("agents", &unmanaged.id)
+            .unwrap()
+            .can_quick_adopt
+    );
+
+    fs::write(shared.join("reference.md"), "changed after preview").unwrap();
+    let error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+
+    assert!(error.contains("not allowed"));
+    assert_eq!(
+        fs::read_to_string(shared.join("reference.md")).unwrap(),
+        "changed after preview"
+    );
+    assert_eq!(
+        fs::read_to_string(svc.center_path().unwrap().join("shared-stale/reference.md")).unwrap(),
+        "original"
+    );
+    assert_ne!(fsutil::hash_dir(&shared), old_preview.hash);
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_rejects_symlinked_shared_root_that_aliases_center() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-root-alias");
+    let source = write_skill(
+        &svc.home.join("sources"),
+        "root-alias",
+        "root-alias",
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let center = svc.center_path().unwrap();
+    let center_skill = center.join("root-alias");
+    let shared_parent = svc.home.join(".agents");
+    fs::create_dir_all(&shared_parent).unwrap();
+    let shared_root = shared_parent.join("skills");
+    std::os::unix::fs::symlink(&center, &shared_root).unwrap();
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let shared_path = shared_root.join("root-alias");
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared_path.display().to_string())
+        .expect("center alias is detected as unmanaged shared inventory");
+
+    let preview_error = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap_err();
+    assert!(preview_error.contains("outside 'agents' owned skill roots"));
+    let execute_error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(execute_error.contains("outside 'agents' owned skill roots"));
+    assert!(shared_root.is_symlink());
+    assert!(center_skill.is_dir());
+    assert_eq!(
+        fs::read_to_string(center_skill.join("reference.md")).unwrap(),
+        "center"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_rejects_symlinked_agents_parent() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-parent-link");
+    let external_agents = svc.home.join("external-agents");
+    let shared = write_skill(
+        &external_agents.join("skills"),
+        "parent-link",
+        "parent-link",
+        Some("external"),
+    );
+    std::os::unix::fs::symlink(&external_agents, svc.home.join(".agents")).unwrap();
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| {
+            item.path
+                == svc
+                    .home
+                    .join(".agents/skills/parent-link")
+                    .display()
+                    .to_string()
+        })
+        .expect("shared inventory through parent link is detected");
+
+    let preview_error = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap_err();
+    assert!(preview_error.contains("outside 'agents' owned skill roots"));
+    let execute_error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(execute_error.contains("outside 'agents' owned skill roots"));
+    assert!(shared.is_dir());
+    assert!(!svc.center_path().unwrap().join("parent-link").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_unlinks_leaf_alias_to_existing_center_directory() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-leaf-center-alias");
+    let source = write_skill(
+        &svc.home.join("sources"),
+        "leaf-center-alias",
+        "leaf-center-alias",
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let center_skill = svc.center_path().unwrap().join("leaf-center-alias");
+    assert!(center_skill.is_dir());
+    assert!(!center_skill.is_symlink());
+    let shared_root = svc.home.join(".agents/skills");
+    fs::create_dir_all(&shared_root).unwrap();
+    let shared_link = shared_root.join("leaf-center-alias");
+    std::os::unix::fs::symlink(&center_skill, &shared_link).unwrap();
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared_link.display().to_string())
+        .expect("leaf alias is detected as shared unmanaged inventory");
+
+    svc.execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap();
+
+    assert!(!shared_link.exists());
+    assert!(!shared_link.is_symlink());
+    assert!(center_skill.is_dir());
+    assert!(!center_skill.is_symlink());
+    assert_eq!(
+        fs::read_to_string(center_skill.join("reference.md")).unwrap(),
+        "center"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_detaches_center_link_before_removing_source() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-center-link");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "linked-center-source-folder",
+        "linked-center",
+        Some("shared"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: shared.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+    let center_skill = svc.center_path().unwrap().join("linked-center");
+    assert!(center_skill.is_symlink());
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("linked center source is projected as shared unmanaged");
+    let preview = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap();
+    assert!(preview.can_quick_adopt);
+    assert!(preview
+        .options
+        .iter()
+        .any(|option| option.value == "import_cleanup"));
+    let rename_error = svc
+        .execute_adopt_agent_skill(
+            "agents",
+            &unmanaged.id,
+            "rename",
+            Some("renamed-linked-center".to_string()),
+        )
+        .unwrap_err();
+    assert!(rename_error.contains("not allowed"));
+    assert!(shared.is_dir());
+    assert!(center_skill.is_symlink());
+
+    svc.execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap();
+
+    assert!(!shared.exists());
+    assert!(!center_skill.is_symlink());
+    assert!(center_skill.is_dir());
+    assert_eq!(
+        fs::read_to_string(center_skill.join("reference.md")).unwrap(),
+        "shared"
+    );
+    let detail = svc.get_skill_detail("linked-center").unwrap();
+    assert!(detail.targets.is_empty());
+    let source = svc
+        .db()
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT source_type, imported_from_agent
+                     FROM skill_sources WHERE skill_id = 'linked-center'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(source.0, "agent_import");
+    assert_eq!(source.1.as_deref(), Some("agents"));
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_refuses_to_detach_a_skill_with_symlinked_skill_md() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-symlinked-skill-md");
+    let shared = svc.home.join(".agents/skills/symlinked-skill-md");
+    fs::create_dir_all(&shared).unwrap();
+    let external_skill_md = svc.home.join("external-skill.md");
+    fs::write(
+        &external_skill_md,
+        "---\nname: symlinked-skill-md\ndescription: linked manifest\n---\n# linked\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&external_skill_md, shared.join("SKILL.md")).unwrap();
+    fs::write(shared.join("reference.md"), "shared").unwrap();
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: shared.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+    let center_skill = svc.center_path().unwrap().join("symlinked-skill-md");
+    assert!(center_skill.is_symlink());
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("shared skill with linked manifest is detected");
+
+    let error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+
+    assert!(error.contains("symbolic link"));
+    assert!(shared.is_dir());
+    assert!(shared.join("SKILL.md").is_symlink());
+    assert!(center_skill.is_symlink());
+    assert!(fsutil::is_skill_dir(&center_skill));
+    assert_eq!(
+        fs::read_to_string(center_skill.join("reference.md")).unwrap(),
+        "shared"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_retry_repairs_metadata_after_detach_transaction_failure() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-detach-retry");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "metadata-source-folder",
+        "metadata-retry",
+        Some("shared"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: shared.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![],
+    )
+    .unwrap();
+    let center_skill = svc.center_path().unwrap().join("metadata-retry");
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("linked shared source found");
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER fail_shared_metadata
+                     BEFORE UPDATE ON skills
+                     WHEN OLD.id = 'metadata-retry'
+                     BEGIN
+                       SELECT RAISE(FAIL, 'injected metadata failure');
+                     END;",
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let first_error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(first_error.contains("injected metadata failure"));
+    assert!(shared.is_dir());
+    assert!(center_skill.is_dir());
+    assert!(!center_skill.is_symlink());
+    let source_type = svc
+        .db()
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT source_type FROM skill_sources WHERE skill_id = 'metadata-retry'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(source_type, "local_folder");
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute_batch("DROP TRIGGER fail_shared_metadata;")
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    svc.execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap();
+
+    assert!(!shared.exists());
+    assert!(center_skill.is_dir());
+    assert!(!center_skill.is_symlink());
+    let detail = svc.get_skill_detail("metadata-retry").unwrap();
+    assert!(detail.targets.is_empty());
+    let source = svc
+        .db()
+        .with_conn(|connection| {
+            connection
+                .query_row(
+                    "SELECT source_type, imported_from_agent
+                     FROM skill_sources WHERE skill_id = 'metadata-retry'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert_eq!(source.0, "agent_import");
+    assert_eq!(source.1.as_deref(), Some("agents"));
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_rename_collision_does_not_detach_existing_center_link() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-rename-alias");
+    let original = write_skill(
+        &svc.home.join("sources"),
+        "rename-alias",
+        "rename-alias",
+        Some("center"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: original.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "rename-alias",
+        "rename-alias",
+        Some("shared"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: shared.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("link".to_string()),
+        },
+        vec![AddCenterSkillDecision {
+            skill_id: "rename-alias".to_string(),
+            proposed_skill_id: Some("rename-alias-destination".to_string()),
+            resolution: "create".to_string(),
+        }],
+    )
+    .unwrap();
+    let destination = svc.center_path().unwrap().join("rename-alias-destination");
+    assert!(destination.is_symlink());
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("shared conflict found");
+    assert!(
+        !svc.preview_adopt_agent_skill("agents", &unmanaged.id)
+            .unwrap()
+            .can_quick_adopt
+    );
+
+    let error = svc
+        .execute_adopt_agent_skill(
+            "agents",
+            &unmanaged.id,
+            "rename",
+            Some("rename-alias-destination".to_string()),
+        )
+        .unwrap_err();
+
+    assert!(error.contains("cannot safely reuse center link"));
+    assert!(shared.is_dir());
+    assert!(destination.is_symlink());
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "shared"
+    );
+}
+
+#[test]
+fn adopt_shared_agents_conflicts_always_remove_the_shared_source() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-conflicts");
+    let source_root = svc.home.join("sources");
+    for skill_id in ["shared-center-wins", "shared-overwrite", "shared-rename"] {
+        let source = write_skill(&source_root, skill_id, skill_id, Some("center"));
+        svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: source.display().to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    }
+
+    let shared_root = svc.home.join(".agents/skills");
+    let center_wins = write_skill(
+        &shared_root,
+        "shared-center-wins",
+        "shared-center-wins",
+        Some("shared"),
+    );
+    let overwrite = write_skill(
+        &shared_root,
+        "shared-overwrite",
+        "shared-overwrite",
+        Some("shared"),
+    );
+    let rename = write_skill(
+        &shared_root,
+        "shared-rename",
+        "shared-rename",
+        Some("shared"),
+    );
+    svc.scan_one_agent_into_db("agents").unwrap();
+
+    for (path, option, renamed_id) in [
+        (&center_wins, "center_over_agent", None),
+        (&overwrite, "overwrite_center", None),
+        (&rename, "rename", Some("shared-renamed")),
+    ] {
+        let unmanaged = svc
+            .list_unmanaged()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.path == path.display().to_string())
+            .expect("shared conflict remains available until adopted");
+        let preview = svc
+            .preview_adopt_agent_skill("agents", &unmanaged.id)
+            .unwrap();
+        assert!(!preview.can_quick_adopt);
+        let selected = preview
+            .options
+            .iter()
+            .find(|candidate| candidate.value == option)
+            .expect("shared conflict option");
+        assert!(selected.label.contains("remove the shared .agents copy"));
+
+        svc.execute_adopt_agent_skill(
+            "agents",
+            &unmanaged.id,
+            option,
+            renamed_id.map(str::to_string),
+        )
+        .unwrap();
+
+        assert!(
+            !path.exists() && !path.is_symlink(),
+            "{option} must remove the shared source"
+        );
+    }
+
+    let center = svc.center_path().unwrap();
+    assert_eq!(
+        fs::read_to_string(center.join("shared-center-wins/reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        fs::read_to_string(center.join("shared-overwrite/reference.md")).unwrap(),
+        "shared"
+    );
+    assert_eq!(
+        fs::read_to_string(center.join("shared-rename/reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        fs::read_to_string(center.join("shared-renamed/reference.md")).unwrap(),
+        "shared"
+    );
+    for skill_id in ["shared-center-wins", "shared-overwrite", "shared-renamed"] {
+        assert!(
+            svc.get_skill_detail(skill_id).unwrap().targets.is_empty(),
+            "{skill_id} must not create a managed shared target"
+        );
+    }
+    let detail = svc.get_agent_detail("codex").unwrap();
+    assert!(detail.inherited_managed_skills.is_empty());
+    assert!(detail.inherited_unmanaged_skills.is_empty());
+}
+
+#[test]
+fn adopt_shared_agents_skill_rejects_wrong_owner_and_item_type() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-validation");
+    let shared = write_skill(
+        &svc.home.join(".agents/skills"),
+        "shared-validation",
+        "shared-validation",
+        Some("v1"),
+    );
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+
+    let preview_error = svc
+        .preview_adopt_agent_skill("codex", &unmanaged.id)
+        .unwrap_err();
+    assert!(preview_error.contains("does not belong to agent"));
+    let execute_error = svc
+        .execute_adopt_agent_skill("codex", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(execute_error.contains("does not belong to agent"));
+    assert!(shared.is_dir());
+    assert!(!svc
+        .center_path()
+        .unwrap()
+        .join("shared-validation")
+        .exists());
+
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute(
+                    "UPDATE unmanaged_items SET item_type = 'plugin' WHERE id = ?1",
+                    params![unmanaged.id],
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let preview_error = svc
+        .preview_adopt_agent_skill("agents", &unmanaged.id)
+        .unwrap_err();
+    assert!(preview_error.contains("Only unmanaged skills"));
+    let execute_error = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap_err();
+    assert!(execute_error.contains("Only unmanaged skills"));
+    assert!(shared.is_dir());
+    assert!(!svc
+        .center_path()
+        .unwrap()
+        .join("shared-validation")
+        .exists());
+}
+
+#[test]
+fn adopt_shared_agents_skill_rejects_root_and_traversal_paths_without_copying_or_deleting() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-path-validation");
+    let shared_root = svc.home.join(".agents/skills");
+    let shared = write_skill(
+        &shared_root,
+        "shared-path-validation",
+        "shared-path-validation",
+        Some("v1"),
+    );
+    let traversal_parent = shared_root.join("wrapper");
+    fs::create_dir_all(&traversal_parent).unwrap();
+    let outside = write_skill(
+        &svc.home.join("Documents"),
+        "outside-shared",
+        "outside-shared",
+        Some("outside"),
+    );
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared.display().to_string())
+        .expect("shared unmanaged skill found");
+    let traversal = traversal_parent.join("../../../Documents/outside-shared");
+
+    for unsafe_path in [&shared_root, &traversal] {
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE unmanaged_items SET path = ?1 WHERE id = ?2",
+                        params![unsafe_path.display().to_string(), unmanaged.id],
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let preview_error = svc
+            .preview_adopt_agent_skill("agents", &unmanaged.id)
+            .unwrap_err();
+        assert!(preview_error.contains("outside 'agents' owned skill roots"));
+        let execute_error = svc
+            .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+            .unwrap_err();
+        assert!(execute_error.contains("outside 'agents' owned skill roots"));
+        assert!(shared_root.is_dir());
+        assert!(outside.is_dir());
+        assert!(!svc
+            .center_path()
+            .unwrap()
+            .join("shared-path-validation")
+            .exists());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn adopt_shared_agents_symlink_removes_only_the_link() {
+    let (_home, svc, _lock) = fresh_service("adopt-shared-symlink");
+    let source = write_skill(
+        &svc.home.join("external"),
+        "shared-symlink",
+        "shared-symlink",
+        Some("v1"),
+    );
+    let shared_root = svc.home.join(".agents/skills");
+    fs::create_dir_all(&shared_root).unwrap();
+    let shared_link = shared_root.join("shared-symlink");
+    std::os::unix::fs::symlink(&source, &shared_link).unwrap();
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == shared_link.display().to_string())
+        .expect("shared symlink unmanaged skill found");
+
+    let adopted = svc
+        .execute_adopt_agent_skill("agents", &unmanaged.id, "import_cleanup", None)
+        .unwrap();
+
+    assert_eq!(adopted, "shared-symlink");
+    assert!(!shared_link.exists());
+    assert!(!shared_link.is_symlink());
+    assert!(source.is_dir(), "the symlink target must be preserved");
+    assert!(svc
+        .center_path()
+        .unwrap()
+        .join("shared-symlink/SKILL.md")
+        .is_file());
 }
 
 #[test]
@@ -3603,6 +4953,72 @@ fn agent_detail_reports_mcp_plugins_and_path_health() {
 }
 
 #[test]
+fn antigravity_agent_detail_uses_official_customization_paths() {
+    let (_home, svc, _lock) = fresh_service("antigravity-official-paths");
+    let config_dir = svc.home.join(".gemini/config");
+    let skills_dir = config_dir.join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(config_dir.join("hooks.json"), "{}").unwrap();
+    fs::write(
+        config_dir.join("mcp_config.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plugin_root = config_dir.join("plugins/reviewer");
+    fs::create_dir_all(&plugin_root).unwrap();
+    fs::write(
+        plugin_root.join("plugin.json"),
+        serde_json::json!({
+            "name": "reviewer",
+            "displayName": "Reviewer Tools",
+            "version": "1.0.0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let detail = svc.get_agent_detail("antigravity").unwrap();
+    let inventory = crate::skills::plugin_management::list_plugins(&svc, "antigravity").unwrap();
+
+    assert_eq!(detail.skills_dir, Some(skills_dir.display().to_string()));
+    assert_eq!(
+        detail.config_path,
+        Some(config_dir.join("hooks.json").display().to_string())
+    );
+    assert_eq!(
+        detail.mcp_config_path,
+        Some(config_dir.join("mcp_config.json").display().to_string())
+    );
+    assert_eq!(
+        detail.plugin_dir,
+        Some(config_dir.join("plugins").display().to_string())
+    );
+    assert!(detail
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == "filesystem" && server.valid));
+    assert!(detail.plugins.iter().any(|plugin| {
+        plugin.id == "reviewer"
+            && plugin.name == "Reviewer Tools"
+            && plugin.enabled
+            && plugin.version.as_deref() == Some("1.0.0")
+    }));
+    assert!(!inventory.capabilities.editable);
+    assert_eq!(
+        inventory.config_path, None,
+        "Antigravity plugins are auto-discovered and have no documented enable config"
+    );
+}
+
+#[test]
 fn agent_detail_does_not_refresh_unrelated_agents() {
     let (_home, svc, _lock) = fresh_service("agent-detail-isolated");
     let metadata_dir = svc.home.join(".agentbro");
@@ -3694,6 +5110,234 @@ fn agent_detail_reads_zcode_nested_mcp_and_plugins() {
             && !plugin.enabled
             && plugin.source.as_deref() == Some("zcode-plugin:official")
     }));
+}
+
+#[test]
+fn shared_skill_projection_reports_state_ids_and_prefers_managed_same_path() {
+    let (_home, svc, _lock) = fresh_service("shared-skill-projection-state");
+    let shared_root = svc.home.join(".agents/skills");
+    let managed_path = write_skill(
+        &shared_root,
+        "shared-managed",
+        "shared-managed",
+        Some("managed"),
+    );
+    let unmanaged_path = write_skill(
+        &shared_root,
+        "shared-unmanaged",
+        "shared-unmanaged",
+        Some("unmanaged"),
+    );
+    svc.scan_one_agent_into_db("agents").unwrap();
+    let inventory = svc.list_unmanaged().unwrap();
+    let stale_managed_id = inventory
+        .iter()
+        .find(|item| item.path == managed_path.display().to_string())
+        .map(|item| item.id.clone())
+        .expect("managed path starts with a stale unmanaged projection");
+    let unmanaged_item = inventory
+        .iter()
+        .find(|item| item.path == unmanaged_path.display().to_string())
+        .cloned()
+        .expect("unmanaged shared skill found");
+    let unmanaged_id = unmanaged_item.id.clone();
+
+    let source = write_skill(
+        &svc.home.join("sources"),
+        "shared-managed",
+        "shared-managed",
+        Some("managed"),
+    );
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let source_hash = fsutil::hash_dir(&source);
+    let managed_hash = fsutil::hash_dir(&managed_path);
+    svc.db()
+        .with_conn(|connection| {
+            let normalized_duplicate = shared_root
+                .join("missing-segment")
+                .join("..")
+                .join("shared-managed");
+            connection
+                .execute(
+                    "UPDATE unmanaged_items SET path = ?1 WHERE id = ?2",
+                    params![normalized_duplicate.display().to_string(), stale_managed_id],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at)
+                     VALUES ('tgt-shared-managed', 'shared-managed', 'agents', ?1, 'copy', 'copy', ?2, ?3, 'ok', ?4, ?4)",
+                    params![
+                        managed_path.display().to_string(),
+                        source_hash,
+                        managed_hash,
+                        "2026-01-01T00:00:00Z",
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "INSERT INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
+                     VALUES ('clm-shared-managed', 'tgt-shared-managed', 'direct', NULL, '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        let detail = svc.get_agent_detail(agent_id).unwrap();
+        assert_eq!(detail.inherited_managed_skills.len(), 1, "{agent_id}");
+        assert_eq!(detail.inherited_unmanaged_skills.len(), 1, "{agent_id}");
+
+        let managed = detail
+            .inherited_managed_skills
+            .iter()
+            .find(|skill| skill.target_path == managed_path.display().to_string())
+            .expect("managed shared projection");
+        assert_eq!(managed.id, "tgt-shared-managed", "{agent_id}");
+        assert_eq!(managed.skill_id, "shared-managed", "{agent_id}");
+        assert_eq!(managed.agent_id, "agents", "{agent_id}");
+        assert_eq!(managed.install_mode, "copy", "{agent_id}");
+        assert_eq!(managed.actual_mode, "copy", "{agent_id}");
+        assert_eq!(managed.source_hash, source_hash, "{agent_id}");
+        assert_eq!(
+            managed.current_hash.as_deref(),
+            Some(managed_hash.as_str()),
+            "{agent_id}"
+        );
+        assert_eq!(managed.status, "ok", "{agent_id}");
+        assert_eq!(managed.created_at, "2026-01-01T00:00:00Z", "{agent_id}");
+        assert_eq!(managed.updated_at, "2026-01-01T00:00:00Z", "{agent_id}");
+        assert_eq!(managed.claims.len(), 1, "{agent_id}");
+        assert_eq!(managed.claims[0].id, "clm-shared-managed", "{agent_id}");
+        assert_eq!(managed.claims[0].claim_type, "direct", "{agent_id}");
+        assert_eq!(managed.claims[0].pack_id, None, "{agent_id}");
+
+        let unmanaged = detail
+            .inherited_unmanaged_skills
+            .iter()
+            .find(|skill| skill.path == unmanaged_path.display().to_string())
+            .expect("unmanaged shared projection");
+        assert_eq!(unmanaged.id, unmanaged_id, "{agent_id}");
+        assert_eq!(unmanaged.item_type, unmanaged_item.item_type, "{agent_id}");
+        assert_eq!(unmanaged.agent_id.as_deref(), Some("agents"), "{agent_id}");
+        assert_eq!(
+            unmanaged.inferred_skill_id, unmanaged_item.inferred_skill_id,
+            "{agent_id}"
+        );
+        assert_eq!(unmanaged.hash, unmanaged_item.hash, "{agent_id}");
+        assert_eq!(unmanaged.reason, unmanaged_item.reason, "{agent_id}");
+        assert_eq!(unmanaged.read_only, unmanaged_item.read_only, "{agent_id}");
+        assert!(
+            detail
+                .inherited_unmanaged_skills
+                .iter()
+                .all(|item| { item.id != stale_managed_id }),
+            "managed projection must win normalized-path deduplication for {agent_id}"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn shared_skill_consumers_project_shared_skills_as_inherited() {
+    let (_home, svc, _lock) = fresh_service("shared-skill-consumers");
+    let codex_private = write_skill(
+        &svc.home.join(".codex/skills"),
+        "codex-private",
+        "codex-private",
+        Some("private"),
+    );
+    let shared_root = svc.home.join(".agents/skills");
+    let local = write_skill(&shared_root, "shared-local", "shared-local", Some("shared"));
+    let source = write_skill(
+        &svc.home.join("skill-sources"),
+        "linked-source",
+        "shared-linked",
+        Some("linked"),
+    );
+    let linked = shared_root.join("shared-linked");
+    std::os::unix::fs::symlink(&source, &linked).unwrap();
+    let nested = write_skill(
+        &shared_root.join("package-wrapper/node_modules/_package@1.0.0"),
+        "nested-shared",
+        "nested-shared",
+        Some("nested"),
+    );
+
+    for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        let agent_only = svc.scan_one_agent_into_db(agent_id).unwrap();
+        let scan = svc.scan_agent_inventory_into_db(agent_id).unwrap();
+        assert!(scan.included_shared, "{agent_id}");
+        assert_eq!(scan.managed, agent_only.managed, "{agent_id}");
+        assert_eq!(scan.unmanaged, agent_only.unmanaged, "{agent_id}");
+        assert_eq!(scan.read_only, agent_only.read_only, "{agent_id}");
+        assert_eq!(scan.shared_managed, 0, "{agent_id}");
+        assert_eq!(scan.shared_unmanaged, 3, "{agent_id}");
+        assert_eq!(scan.shared_read_only, 0, "{agent_id}");
+
+        let detail = svc.get_agent_detail(agent_id).unwrap();
+        assert!(detail.inherits_shared_skills, "{agent_id}");
+        assert!(detail.skills.is_empty(), "{agent_id}");
+        assert!(detail.inherited_managed_skills.is_empty(), "{agent_id}");
+        assert_eq!(detail.inherited_unmanaged_skills.len(), 3, "{agent_id}");
+        assert!(detail.inherited_unmanaged_skills.iter().any(|skill| {
+            skill.inferred_skill_id.as_deref() == Some("shared-local")
+                && skill.agent_id.as_deref() == Some("agents")
+                && skill.path == local.display().to_string()
+                && !skill.read_only
+        }));
+        assert!(detail.inherited_unmanaged_skills.iter().any(|skill| {
+            skill.inferred_skill_id.as_deref() == Some("shared-linked")
+                && skill.agent_id.as_deref() == Some("agents")
+                && skill.path == linked.display().to_string()
+                && !skill.read_only
+        }));
+        assert!(detail.inherited_unmanaged_skills.iter().any(|skill| {
+            skill.inferred_skill_id.as_deref() == Some("nested-shared")
+                && skill.agent_id.as_deref() == Some("agents")
+                && skill.path == nested.display().to_string()
+                && !skill.read_only
+        }));
+    }
+
+    let unmanaged = svc.list_unmanaged().unwrap();
+    assert!(unmanaged.iter().any(|item| {
+        item.agent_id.as_deref() == Some("codex")
+            && item.path == codex_private.display().to_string()
+    }));
+    assert_eq!(
+        unmanaged
+            .iter()
+            .filter(|item| item.agent_id.as_deref() == Some("agents"))
+            .count(),
+        3
+    );
+    for agent_id in ["codex", "kimi", "openclaw", "zcode"] {
+        assert!(!unmanaged
+            .iter()
+            .any(|item| item.agent_id.as_deref() == Some(agent_id)
+                && item.path.starts_with(&shared_root.display().to_string())));
+    }
+
+    let non_consumer = svc.get_agent_detail("claude-code").unwrap();
+    assert!(!non_consumer.inherits_shared_skills);
+    assert!(non_consumer.inherited_managed_skills.is_empty());
+    assert!(non_consumer.inherited_unmanaged_skills.is_empty());
 }
 
 #[test]

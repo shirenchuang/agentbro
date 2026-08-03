@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSkillStoreV2, filteredSkills } from '../stores/skillStoreV2'
-import type { AgentDetail, SkillSummary, SkillManagerOverview, UnmanagedItemDto } from '../services/skillApiV2'
+import type { AgentDetail, SkillSummary, SkillManagerOverview, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
@@ -50,6 +50,8 @@ function makeAgentDetail(id: string): AgentDetail {
     mcpConfigPath: null,
     pluginDir: null,
     skills: [],
+    inheritedManagedSkills: [],
+    inheritedUnmanagedSkills: [],
     appliedPacks: [],
     availablePacks: [],
     mcpServers: [],
@@ -373,5 +375,105 @@ describe('skillStoreV2 overview shape', () => {
     expect(overview.metrics.centerSkillCount).toBe(3)
     expect(overview.skills[0].id).toBe('test-driven-development')
     expect(overview.settings.defaultDistributeMode).toBe('link')
+  })
+})
+
+describe('skillStoreV2 Agent Skill delete reconciliation', () => {
+  const regularTarget: SkillTargetDetail = {
+    id: 'target-codex',
+    skillId: 'regular',
+    agentId: 'codex',
+    targetPath: '/Users/me/.codex/skills/regular',
+    resolvedTargetPath: null,
+    installMode: 'link',
+    actualMode: 'link',
+    sourceHash: 'hash',
+    currentHash: null,
+    status: 'ok',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    claims: [],
+  }
+  const sharedTarget: SkillTargetDetail = {
+    ...regularTarget,
+    id: 'target-shared',
+    skillId: 'shared',
+    agentId: 'agents',
+    targetPath: '/Users/me/.agents/skills/shared',
+  }
+  const regularUnmanaged: UnmanagedItemDto = {
+    id: 'unmanaged-codex',
+    itemType: 'skill',
+    agentId: 'codex',
+    path: '/Users/me/.codex/skills/unmanaged',
+    inferredSkillId: 'unmanaged',
+    hash: null,
+    reason: 'not_in_center_library',
+  }
+  const sharedUnmanaged: UnmanagedItemDto = {
+    ...regularUnmanaged,
+    id: 'unmanaged-shared',
+    agentId: 'agents',
+    path: '/Users/me/.agents/skills/unmanaged-shared',
+  }
+
+  beforeEach(() => {
+    const detail = makeAgentDetail('codex')
+    detail.skills = [regularTarget]
+    detail.inheritedManagedSkills = [sharedTarget]
+    detail.inheritedUnmanagedSkills = [sharedUnmanaged]
+    const overview = makeOverview({
+      metrics: { centerSkillCount: 2, targetCount: 2, unmanagedCount: 2, issueCount: 0 },
+      agents: [{
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        enabled: true,
+        skillsDir: '/Users/me/.codex/skills',
+        version: null,
+        latestVersion: null,
+        installed: true,
+        managedSkillCount: 1,
+        unmanagedSkillCount: 1,
+      }],
+    })
+    useSkillStoreV2.setState({
+      runtimeEnvironmentId: 'local',
+      selectedAgentId: 'codex',
+      selectedAgentDetail: detail,
+      overview,
+      agents: overview.agents,
+      unmanaged: [regularUnmanaged, sharedUnmanaged],
+    })
+  })
+
+  it('removes successful regular and inherited items atomically', () => {
+    const applied = useSkillStoreV2.getState().removeAgentSkillItems(
+      'local',
+      'codex',
+      ['target-shared'],
+      ['unmanaged-shared'],
+    )
+
+    expect(applied).toBe(true)
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.skills).toEqual([regularTarget])
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.inheritedManagedSkills).toEqual([])
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.inheritedUnmanagedSkills).toEqual([])
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([regularUnmanaged])
+    expect(useSkillStoreV2.getState().overview?.metrics).toMatchObject({ targetCount: 1, unmanagedCount: 1 })
+  })
+
+  it('rejects snapshots from a stale runtime or Agent', () => {
+    const snapshot = {
+      agentDetail: makeAgentDetail('codex'),
+      overview: makeOverview(),
+      unmanaged: [],
+    }
+
+    expect(useSkillStoreV2.getState().applyAgentSkillViewSnapshot('remote', 'codex', snapshot)).toBe(false)
+    expect(useSkillStoreV2.getState().applyAgentSkillViewSnapshot('local', 'claude-code', snapshot)).toBe(false)
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.skills).toEqual([regularTarget])
+    expect(useSkillStoreV2.getState().applyAgentSkillViewSnapshot('local', 'codex', snapshot)).toBe(true)
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.skills).toEqual([])
   })
 })

@@ -419,6 +419,10 @@ impl Service {
                 managed: 0,
                 unmanaged: 0,
                 read_only: 0,
+                included_shared: false,
+                shared_managed: 0,
+                shared_unmanaged: 0,
+                shared_read_only: 0,
             });
         }
         let now = db::now_iso();
@@ -449,11 +453,21 @@ impl Service {
         let mut unmanaged = 0usize;
         let mut read_only = 0usize;
         let mut seen_skill_ids = BTreeSet::new();
+        let shared_skills_dir = self.home.join(".agents").join("skills");
         for skills_dir in skill_dirs {
+            if agent_meta::inherits_shared_agents_skills(agent_id)
+                && skills_dir == shared_skills_dir
+            {
+                continue;
+            }
             if !skills_dir.is_dir() {
                 continue;
             }
-            let skill_paths = discover_agent_skill_paths(&skills_dir, agent_id == "openclaw")?;
+            let skill_paths = discover_agent_skill_paths(
+                &skills_dir,
+                matches!(agent_id, "openclaw" | SHARED_SKILLS_AGENT_ID),
+                agent_id == SHARED_SKILLS_AGENT_ID,
+            )?;
             for path in skill_paths {
                 let inferred = fsutil::infer_skill_id(&path);
                 if !seen_skill_ids.insert(inferred.clone()) {
@@ -499,7 +513,23 @@ impl Service {
             managed,
             unmanaged,
             read_only,
+            included_shared: false,
+            shared_managed: 0,
+            shared_unmanaged: 0,
+            shared_read_only: 0,
         })
+    }
+
+    pub fn scan_agent_inventory_into_db(&self, agent_id: &str) -> Result<AgentScanResult, String> {
+        let mut result = self.scan_one_agent_into_db(agent_id)?;
+        if agent_meta::inherits_shared_agents_skills(agent_id) {
+            let shared = self.scan_one_agent_into_db(SHARED_SKILLS_AGENT_ID)?;
+            result.included_shared = true;
+            result.shared_managed = shared.managed;
+            result.shared_unmanaged = shared.unmanaged;
+            result.shared_read_only = shared.read_only;
+        }
+        Ok(result)
     }
 
     fn ensure_agent_row(&self, agent_id: &str) -> Result<bool, String> {
@@ -697,6 +727,17 @@ impl Service {
 
     pub fn overview(&self) -> Result<SkillManagerOverview, String> {
         self.overview_with_target_refresh(false)
+    }
+
+    pub fn refresh_agent_skill_view(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentSkillViewSnapshot, String> {
+        Ok(AgentSkillViewSnapshot {
+            agent_detail: self.get_agent_detail(agent_id)?,
+            overview: self.overview()?,
+            unmanaged: self.list_unmanaged()?,
+        })
     }
 
     pub fn skill_pack_picker_data(&self) -> Result<SkillPackPickerData, String> {
@@ -2401,18 +2442,17 @@ impl Service {
     }
 
     pub fn delete_skill_target_distribution(&self, target_id: &str) -> Result<(), String> {
-        let agent_id = self.db.with_conn(|c| {
+        let exists = self.db.with_conn(|c| {
             c.query_row(
-                "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                "SELECT 1 FROM skill_targets WHERE id = ?1",
                 params![target_id],
-                |r| r.get::<_, String>(0),
+                |_| Ok(()),
             )
             .optional()
             .map_err(|e| e.to_string())
         })?;
-        let agent_id = agent_id.ok_or_else(|| format!("Target not found: {target_id}"))?;
+        exists.ok_or_else(|| format!("Target not found: {target_id}"))?;
         self.remove_target_completely(target_id)?;
-        self.scan_one_agent_into_db(&agent_id)?;
         self.refresh_snapshot_best_effort();
         Ok(())
     }
@@ -2423,19 +2463,18 @@ impl Service {
     ) -> Result<DeleteSkillTargetDistributionsResult, String> {
         let mut deleted = 0usize;
         let mut failures = Vec::new();
-        let mut affected_agents = BTreeSet::new();
 
         for target_id in target_ids {
-            let agent_id = self.db.with_conn(|c| {
+            let exists = self.db.with_conn(|c| {
                 c.query_row(
-                    "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                    "SELECT 1 FROM skill_targets WHERE id = ?1",
                     params![target_id],
-                    |r| r.get::<_, String>(0),
+                    |_| Ok(()),
                 )
                 .optional()
                 .map_err(|e| e.to_string())
             })?;
-            let Some(agent_id) = agent_id else {
+            if exists.is_none() {
                 failures.push(DeleteSkillTargetDistributionFailure {
                     target_id,
                     error: "Target not found".to_string(),
@@ -2445,7 +2484,6 @@ impl Service {
             match self.remove_target_completely(&target_id) {
                 Ok(()) => {
                     deleted += 1;
-                    affected_agents.insert(agent_id);
                 }
                 Err(error) => {
                     failures.push(DeleteSkillTargetDistributionFailure { target_id, error })
@@ -2453,34 +2491,53 @@ impl Service {
             }
         }
 
-        for agent_id in affected_agents {
-            self.scan_one_agent_into_db(&agent_id)?;
+        if deleted > 0 {
+            self.refresh_snapshot_best_effort();
         }
-        self.refresh_snapshot_best_effort();
         Ok(DeleteSkillTargetDistributionsResult { deleted, failures })
     }
 
     /// Remove a target's file/link AND all its DB rows (claims cascade).
     fn remove_target_completely(&self, target_id: &str) -> Result<(), String> {
-        let target_path = self.db.with_conn(|c| {
+        let target = self.db.with_conn(|c| {
             c.query_row(
-                "SELECT target_path FROM skill_targets WHERE id = ?1",
+                "SELECT agent_id, target_path FROM skill_targets WHERE id = ?1",
                 params![target_id],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())
         })?;
-        if let Some(p) = target_path {
-            fsutil::remove_path(Path::new(&p))?;
+        if let Some((agent_id, target_path)) = target.as_ref() {
+            let target_path = Path::new(target_path);
+            if agent_id == SHARED_SKILLS_AGENT_ID
+                && !shared_skill_mutation_path_allowed(
+                    &self.home.join(".agents").join("skills"),
+                    target_path,
+                )
+            {
+                return Err(format!(
+                    "Refusing to delete shared managed skill outside the trusted .agents skill root: {}",
+                    target_path.display()
+                ));
+            }
+            fsutil::remove_path(target_path)?;
         }
-        self.db.with_conn(|c| {
-            c.execute(
-                "DELETE FROM skill_targets WHERE id = ?1",
-                params![target_id],
-            )
-            .map_err(|e| e.to_string())
-        })?;
+        if let Some((agent_id, target_path)) = target.as_ref() {
+            self.db.transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM unmanaged_items WHERE agent_id = ?1 AND path = ?2",
+                    params![agent_id, target_path],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM skill_targets WHERE id = ?1",
+                    params![target_id],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -3103,21 +3160,35 @@ impl Service {
         unmanaged_id: &str,
     ) -> Result<AdoptPreview, String> {
         let item = self.find_unmanaged(unmanaged_id)?;
+        self.validate_unmanaged_adopt_item(agent_id, unmanaged_id, &item)?;
         if item.read_only {
             return Err(format!(
                 "Agent-provided built-in Skill '{}' is read-only and cannot be adopted or replaced.",
                 item.inferred_skill_id.as_deref().unwrap_or(unmanaged_id)
             ));
         }
-        let _path = Path::new(&item.path);
+        let path = Path::new(&item.path);
+        if !fsutil::is_skill_dir(path) {
+            return Err(format!(
+                "Agent skill '{}' is unavailable on disk.",
+                path.display()
+            ));
+        }
+        let source_hash = fsutil::hash_dir(path);
+        let source_content_hash = fsutil::hash_dir_contents(path);
         let inferred = item.inferred_skill_id.clone().unwrap_or_default();
         let _center = self.center_path()?;
         let center_existing = self.skill_row(&inferred)?;
+        let center_live_state = center_existing
+            .as_ref()
+            .and_then(|row| shared_center_live_state(Path::new(&row.center_path)).ok());
         let can_quick = match &center_existing {
-            Some(row) => row.current_hash == item.hash.clone().unwrap_or_default(),
+            Some(_) => center_live_state
+                .as_ref()
+                .is_some_and(|state| state.content_hash == source_content_hash),
             None => true,
         };
-        let mut quick_options = vec![
+        let quick_options = vec![
             AdoptOption {
                 value: "import_keep".into(),
                 label: "Import to center, keep agent file as-is".into(),
@@ -3134,22 +3205,47 @@ impl Service {
                 destructive: true,
             },
         ];
-        if agent_id == SHARED_SKILLS_AGENT_ID {
-            quick_options = vec![AdoptOption {
-                value: "import_cleanup".into(),
-                label: "Import to center and remove the shared .agents copy".into(),
+        let shared_quick_options = vec![AdoptOption {
+            value: "import_cleanup".into(),
+            label: "Import to center and remove the shared .agents copy".into(),
+            destructive: true,
+        }];
+        let shared_conflict_options = vec![
+            AdoptOption {
+                value: "center_over_agent".into(),
+                label: "Use center skill and remove the shared .agents copy".into(),
                 destructive: true,
-            }];
-        }
+            },
+            AdoptOption {
+                value: "overwrite_center".into(),
+                label: "Overwrite center skill and remove the shared .agents copy".into(),
+                destructive: true,
+            },
+            AdoptOption {
+                value: "rename".into(),
+                label: "Import under a new id and remove the shared .agents copy".into(),
+                destructive: true,
+            },
+            AdoptOption {
+                value: "skip".into(),
+                label: "Keep as unmanaged".into(),
+                destructive: false,
+            },
+        ];
         Ok(AdoptPreview {
             agent_id: agent_id.to_string(),
             unmanaged_id: unmanaged_id.to_string(),
             skill_path: item.path.clone(),
             inferred_skill_id: inferred.clone(),
-            hash: item.hash.clone().unwrap_or_default(),
+            hash: source_hash,
             center_has_same_id: center_existing.is_some(),
             can_quick_adopt: can_quick,
-            options: if can_quick {
+            center_live_state,
+            options: if agent_id == SHARED_SKILLS_AGENT_ID && can_quick {
+                shared_quick_options
+            } else if agent_id == SHARED_SKILLS_AGENT_ID {
+                shared_conflict_options
+            } else if can_quick {
                 quick_options
             } else {
                 vec![
@@ -3400,6 +3496,10 @@ impl Service {
             return Ok(preview.inferred_skill_id.clone());
         }
         let src = Path::new(&preview.skill_path);
+        let shared_root = self.home.join(".agents").join("skills");
+        if agent_id == SHARED_SKILLS_AGENT_ID {
+            ensure_shared_adopt_source_unchanged(&shared_root, src, &preview.hash)?;
+        }
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let target_skill_id = match option {
@@ -3415,7 +3515,28 @@ impl Service {
 
         // 1. import into center (copy), recording agent_import source
         let dest = center.join(&target_skill_id);
-        let mut wrote_center = false;
+        if agent_id == SHARED_SKILLS_AGENT_ID
+            && preview.center_has_same_id
+            && option != "overwrite_center"
+            && option != "rename"
+        {
+            let expected = preview.center_live_state.as_ref().ok_or_else(|| {
+                "Center skill state is unavailable; the shared source was preserved. Preview the adoption again."
+                    .to_string()
+            })?;
+            ensure_shared_center_unchanged(&dest, expected)?;
+        }
+        let mut wrote_center = if agent_id == SHARED_SKILLS_AGENT_ID {
+            prepare_shared_cleanup_destination(
+                &shared_root,
+                src,
+                &dest,
+                &preview.hash,
+                option == "import_cleanup",
+            )?
+        } else {
+            false
+        };
         if dest.exists() {
             if option == "overwrite_center" {
                 fsutil::remove_path(&dest)?;
@@ -3441,7 +3562,14 @@ impl Service {
             fsutil::copy_dir_recursive(src, &dest)?;
             wrote_center = true;
         }
-        if wrote_center {
+        let expected_shared_center_state = if agent_id == SHARED_SKILLS_AGENT_ID {
+            Some(shared_center_live_state(&dest)?)
+        } else {
+            None
+        };
+        let record_center_import =
+            wrote_center || (agent_id == SHARED_SKILLS_AGENT_ID && option == "import_cleanup");
+        if record_center_import {
             let now = db::now_iso();
             let fm = fsutil::read_frontmatter(&dest);
             let hash = fsutil::hash_dir(&dest);
@@ -3475,6 +3603,26 @@ impl Service {
 
         // 2. optionally replace agent file
         match option {
+            "overwrite_center" | "rename" if agent_id == SHARED_SKILLS_AGENT_ID => {
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
+                fsutil::remove_path(src)?;
+            }
+            "center_over_agent" if agent_id == SHARED_SKILLS_AGENT_ID => {
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
+                fsutil::remove_path(src)?;
+            }
             "import_keep" | "overwrite_center" | "rename" => {
                 let actual_mode = existing_target_mode(src);
                 self.upsert_target_managed(
@@ -3526,6 +3674,13 @@ impl Service {
                         "Cleanup import is only available for shared .agents skills.".into(),
                     );
                 }
+                ensure_shared_cleanup_ready(
+                    &shared_root,
+                    src,
+                    &preview.hash,
+                    &dest,
+                    expected_shared_center_state.as_ref(),
+                )?;
                 fsutil::remove_path(src)?;
             }
             _ => {}
@@ -3548,8 +3703,6 @@ impl Service {
         unmanaged_id: &str,
     ) -> Result<(), String> {
         self.remove_unmanaged_agent_skill(agent_id, unmanaged_id)?;
-        self.scan_one_agent_into_db(agent_id)?;
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -3568,10 +3721,6 @@ impl Service {
                     error,
                 }),
             }
-        }
-        if deleted > 0 {
-            self.scan_one_agent_into_db(agent_id)?;
-            self.refresh_snapshot_best_effort();
         }
         Ok(DeleteUnmanagedAgentSkillsResult { deleted, failures })
     }
@@ -3599,9 +3748,13 @@ impl Service {
         }
 
         let path = Path::new(&item.path);
-        let allowed = agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
-            .into_iter()
-            .any(|root| unmanaged_delete_path_allowed(&root, path));
+        let allowed = if agent_id == SHARED_SKILLS_AGENT_ID {
+            shared_skill_mutation_path_allowed(&self.home.join(".agents").join("skills"), path)
+        } else {
+            agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
+                .into_iter()
+                .any(|root| unmanaged_delete_path_allowed(&root, path))
+        };
         if !allowed {
             return Err(format!(
                 "Refusing to delete unmanaged skill outside '{}' skill roots: {}",
@@ -3697,6 +3850,43 @@ impl Service {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("SKILL_UNMANAGED_STALE:{unmanaged_id}"))
         })
+    }
+
+    fn validate_unmanaged_adopt_item(
+        &self,
+        agent_id: &str,
+        unmanaged_id: &str,
+        item: &UnmanagedItemDto,
+    ) -> Result<(), String> {
+        if item.agent_id.as_deref() != Some(agent_id) {
+            return Err(format!(
+                "Unmanaged item '{}' does not belong to agent '{}'.",
+                unmanaged_id, agent_id
+            ));
+        }
+        if item.item_type != "agent_skill" && item.item_type != "skill" {
+            return Err("Only unmanaged skills can be adopted here.".to_string());
+        }
+        if item.read_only {
+            return Ok(());
+        }
+
+        let path = Path::new(&item.path);
+        let allowed = if agent_id == SHARED_SKILLS_AGENT_ID {
+            shared_skill_mutation_path_allowed(&self.home.join(".agents").join("skills"), path)
+        } else {
+            agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
+                .into_iter()
+                .any(|root| unmanaged_delete_path_allowed(&root, path))
+        };
+        if !allowed {
+            return Err(format!(
+                "Refusing to adopt unmanaged skill outside '{}' owned skill roots: {}",
+                agent_id,
+                path.display()
+            ));
+        }
+        Ok(())
     }
 
     // ── Copy sync (outdated / modified / diverged) ────────────────
@@ -5161,56 +5351,22 @@ impl Service {
                 .map(|path| path.display().to_string())
         });
 
-        let targets = self.db.with_conn(|c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT id, skill_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at
-                     FROM skill_targets WHERE agent_id = ?1 ORDER BY target_path",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([agent_id], |r| {
-                    Ok(TargetRow {
-                        id: r.get(0)?,
-                        skill_id: r.get(1)?,
-                        agent_id: agent_id.to_string(),
-                        target_path: r.get(2)?,
-                        install_mode: r.get(3)?,
-                        actual_mode: r.get(4)?,
-                        source_hash: r.get(5)?,
-                        current_hash: r.get(6)?,
-                        status: r.get(7)?,
-                        created_at: r.get(8)?,
-                        updated_at: r.get(9)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r.map_err(|e| e.to_string())?);
-            }
-            Ok::<_, String>(v)
-        })?;
-
-        let mut skills = Vec::new();
-        for t in targets {
-            let claims = self.claims_for_target(&t.id).unwrap_or_default();
-            skills.push(SkillTargetDetail {
-                id: t.id,
-                skill_id: t.skill_id,
-                agent_id: t.agent_id,
-                resolved_target_path: resolved_target_path(&t.target_path),
-                target_path: t.target_path,
-                install_mode: t.install_mode,
-                actual_mode: t.actual_mode,
-                source_hash: t.source_hash,
-                current_hash: t.current_hash,
-                status: t.status,
-                created_at: t.created_at,
-                updated_at: t.updated_at,
-                claims,
-            });
-        }
+        let skills = self.skill_targets_for_agent(agent_id)?;
+        let (mut inherited_managed_skills, mut inherited_unmanaged_skills) =
+            self.inherited_skills_for_agent(agent_id)?;
+        inherited_managed_skills.sort_by(|left, right| {
+            left.skill_id
+                .to_lowercase()
+                .cmp(&right.skill_id.to_lowercase())
+                .then_with(|| left.target_path.cmp(&right.target_path))
+        });
+        inherited_unmanaged_skills.sort_by(|left, right| {
+            unmanaged_skill_name(left)
+                .to_lowercase()
+                .cmp(&unmanaged_skill_name(right).to_lowercase())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let inherits_shared_skills = agent_meta::inherits_shared_agents_skills(agent_id);
 
         let applied_packs = self.applied_packs_for_agent(agent_id)?;
         let available_packs = self.list_skill_packs()?;
@@ -5257,11 +5413,127 @@ impl Service {
             plugin_dir,
             agent_dir,
             skills,
+            inherits_shared_skills,
+            inherited_managed_skills,
+            inherited_unmanaged_skills,
             applied_packs,
             available_packs,
             mcp_servers,
             plugins,
             health,
+        })
+    }
+
+    fn skill_targets_for_agent(&self, agent_id: &str) -> Result<Vec<SkillTargetDetail>, String> {
+        let targets = self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, skill_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at
+                     FROM skill_targets WHERE agent_id = ?1 ORDER BY target_path, id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([agent_id], |r| {
+                    Ok(TargetRow {
+                        id: r.get(0)?,
+                        skill_id: r.get(1)?,
+                        agent_id: agent_id.to_string(),
+                        target_path: r.get(2)?,
+                        install_mode: r.get(3)?,
+                        actual_mode: r.get(4)?,
+                        source_hash: r.get(5)?,
+                        current_hash: r.get(6)?,
+                        status: r.get(7)?,
+                        created_at: r.get(8)?,
+                        updated_at: r.get(9)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r.map_err(|e| e.to_string())?);
+            }
+            Ok::<_, String>(v)
+        })?;
+
+        let mut skills = Vec::new();
+        for t in targets {
+            let claims = self.claims_for_target(&t.id)?;
+            skills.push(SkillTargetDetail {
+                id: t.id,
+                skill_id: t.skill_id,
+                agent_id: t.agent_id,
+                resolved_target_path: resolved_target_path(&t.target_path),
+                target_path: t.target_path,
+                install_mode: t.install_mode,
+                actual_mode: t.actual_mode,
+                source_hash: t.source_hash,
+                current_hash: t.current_hash,
+                status: t.status,
+                created_at: t.created_at,
+                updated_at: t.updated_at,
+                claims,
+            });
+        }
+        Ok(skills)
+    }
+
+    fn inherited_skills_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<(Vec<SkillTargetDetail>, Vec<UnmanagedItemDto>), String> {
+        if !agent_meta::inherits_shared_agents_skills(agent_id) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut managed_by_path = BTreeMap::new();
+        for target in self.skill_targets_for_agent(SHARED_SKILLS_AGENT_ID)? {
+            managed_by_path
+                .entry(fsutil::normalized_path(Path::new(&target.target_path)))
+                .or_insert(target);
+        }
+        let mut unmanaged_by_path = BTreeMap::new();
+        for item in self.unmanaged_items_for_agent(SHARED_SKILLS_AGENT_ID)? {
+            let path = fsutil::normalized_path(Path::new(&item.path));
+            if !managed_by_path.contains_key(&path) {
+                unmanaged_by_path.entry(path).or_insert(item);
+            }
+        }
+        Ok((
+            managed_by_path.into_values().collect(),
+            unmanaged_by_path.into_values().collect(),
+        ))
+    }
+
+    fn unmanaged_items_for_agent(&self, agent_id: &str) -> Result<Vec<UnmanagedItemDto>, String> {
+        self.db.with_conn(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, item_type, agent_id, path, inferred_skill_id, hash, reason
+                     FROM unmanaged_items
+                     WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
+                     ORDER BY path, id",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([agent_id], |row| {
+                    let reason = row.get::<_, String>(6)?;
+                    Ok(UnmanagedItemDto {
+                        id: row.get(0)?,
+                        item_type: row.get(1)?,
+                        agent_id: row.get(2)?,
+                        path: row.get(3)?,
+                        inferred_skill_id: row.get(4)?,
+                        hash: row.get(5)?,
+                        read_only: reason == "agent_builtin_read_only",
+                        reason,
+                    })
+                })
+                .map_err(|error| error.to_string())?;
+            let mut values = Vec::new();
+            for row in rows {
+                values.push(row.map_err(|error| error.to_string())?);
+            }
+            Ok(values)
         })
     }
 
@@ -5339,6 +5611,8 @@ pub struct AdoptPreview {
     pub center_has_same_id: bool,
     pub can_quick_adopt: bool,
     pub options: Vec<AdoptOption>,
+    #[serde(skip)]
+    center_live_state: Option<SharedCenterLiveState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5407,6 +5681,10 @@ pub struct AgentScanResult {
     pub managed: usize,
     pub unmanaged: usize,
     pub read_only: usize,
+    pub included_shared: bool,
+    pub shared_managed: usize,
+    pub shared_unmanaged: usize,
+    pub shared_read_only: usize,
 }
 
 struct SkillRow {
@@ -5443,6 +5721,12 @@ struct ProjectRow {
     last_scanned_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SharedCenterLiveState {
+    path_state: String,
+    content_hash: String,
+}
+
 fn resolved_target_path(path: &str) -> Option<String> {
     fsutil::resolved_symlink_target(Path::new(path)).map(|p| p.display().to_string())
 }
@@ -5455,7 +5739,22 @@ fn existing_target_mode(path: &Path) -> &'static str {
     }
 }
 
+fn unmanaged_skill_name(item: &UnmanagedItemDto) -> &str {
+    item.inferred_skill_id
+        .as_deref()
+        .filter(|skill_id| !skill_id.trim().is_empty())
+        .or_else(|| {
+            Path::new(&item.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+        })
+        .unwrap_or(&item.path)
+}
+
 fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
+    if path == root || root.is_symlink() {
+        return false;
+    }
     let root = fsutil::normalized_path(root);
     if path.is_symlink() {
         return path
@@ -5466,6 +5765,294 @@ fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
     }
     let path = fsutil::normalized_path(path);
     path.starts_with(&root) && path != root
+}
+
+fn shared_skill_mutation_path_allowed(shared_root: &Path, path: &Path) -> bool {
+    let shared_parent_is_link = shared_root
+        .parent()
+        .is_some_and(|parent| parent.is_symlink());
+    !shared_parent_is_link && unmanaged_delete_path_allowed(shared_root, path)
+}
+
+fn shared_center_live_state(path: &Path) -> Result<SharedCenterLiveState, String> {
+    if !fsutil::is_skill_dir(path) {
+        return Err(format!(
+            "Center skill '{}' is unavailable or invalid.",
+            path.display()
+        ));
+    }
+    let path_state = if path.is_symlink() {
+        let target = fsutil::resolved_symlink_target(path).ok_or_else(|| {
+            format!(
+                "Center skill link '{}' is broken or unreadable.",
+                path.display()
+            )
+        })?;
+        format!("link:{}", fsutil::normalized_path(&target).display())
+    } else {
+        format!("directory:{}", fsutil::normalized_path(path).display())
+    };
+    Ok(SharedCenterLiveState {
+        path_state,
+        content_hash: fsutil::hash_dir_contents(path),
+    })
+}
+
+fn ensure_shared_center_unchanged(
+    path: &Path,
+    expected: &SharedCenterLiveState,
+) -> Result<(), String> {
+    let live = shared_center_live_state(path).map_err(|error| {
+        format!("{error} The shared source was preserved; preview the adoption again.")
+    })?;
+    if &live != expected {
+        return Err(format!(
+            "Center skill '{}' changed after preview; the shared source was preserved. Preview the adoption again.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_shared_adopt_source_unchanged(
+    shared_root: &Path,
+    path: &Path,
+    expected_hash: &str,
+) -> Result<(), String> {
+    if !shared_skill_mutation_path_allowed(shared_root, path) {
+        return Err(format!(
+            "Shared skill '{}' is no longer below a trusted .agents skill root; the source was preserved.",
+            path.display()
+        ));
+    }
+    if !fsutil::is_skill_dir(path) {
+        return Err(format!(
+            "Shared skill '{}' changed or became unavailable after preview; the source was preserved.",
+            path.display()
+        ));
+    }
+    let live_hash = fsutil::hash_dir(path);
+    if live_hash != expected_hash {
+        return Err(format!(
+            "Shared skill '{}' changed after preview; the source was preserved. Preview the adoption again.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_shared_cleanup_ready(
+    shared_root: &Path,
+    source: &Path,
+    expected_source_hash: &str,
+    center: &Path,
+    expected_center_state: Option<&SharedCenterLiveState>,
+) -> Result<(), String> {
+    ensure_shared_adopt_source_unchanged(shared_root, source, expected_source_hash)?;
+    let expected_center_state = expected_center_state.ok_or_else(|| {
+        "Center skill state is unavailable; the shared source was preserved.".to_string()
+    })?;
+    ensure_shared_center_unchanged(center, expected_center_state)
+}
+
+fn prepare_shared_cleanup_destination(
+    shared_root: &Path,
+    source: &Path,
+    destination: &Path,
+    expected_hash: &str,
+    allow_detach: bool,
+) -> Result<bool, String> {
+    let source_resolved = fsutil::normalized_path(source);
+    let destination_resolved = fsutil::normalized_path(destination);
+    if source_resolved != destination_resolved {
+        if source_resolved.starts_with(&destination_resolved)
+            || destination_resolved.starts_with(&source_resolved)
+        {
+            return Err(format!(
+                "Refusing shared cleanup because center path '{}' overlaps source '{}'; the source was preserved.",
+                destination.display(),
+                source.display()
+            ));
+        }
+        return Ok(false);
+    }
+    if source.is_symlink() && !destination.is_symlink() {
+        return Ok(false);
+    }
+    if !destination.is_symlink() {
+        return Err(format!(
+            "Refusing shared cleanup because center path '{}' aliases source '{}' through a non-leaf path; the source was preserved.",
+            destination.display(),
+            source.display()
+        ));
+    }
+    if !allow_detach {
+        return Err(format!(
+            "Refusing shared cleanup because option cannot safely reuse center link '{}'; the source was preserved.",
+            destination.display()
+        ));
+    }
+
+    ensure_shared_adopt_source_unchanged(shared_root, source, expected_hash)?;
+    ensure_shared_detach_tree_copyable(source)?;
+    let expected_content_hash = fsutil::hash_dir_contents(source);
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "Center path '{}' has no parent; the shared source was preserved.",
+            destination.display()
+        )
+    })?;
+    let temporary = parent.join(format!(".agentbro-shared-detach-{}", uuid_short()));
+    fsutil::copy_dir_recursive(source, &temporary)?;
+    if let Err(error) = ensure_shared_adopt_source_unchanged(shared_root, source, expected_hash) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = ensure_shared_detach_tree_copyable(source) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = validate_shared_detached_copy(&temporary, &expected_content_hash) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = atomic_swap_paths(&temporary, destination) {
+        let _ = fsutil::remove_path(&temporary);
+        return Err(format!(
+            "Could not atomically activate detached center copy '{}': {}; the shared source was preserved.",
+            destination.display(),
+            error
+        ));
+    }
+    if let Err(validation_error) =
+        validate_shared_detached_copy(destination, &expected_content_hash)
+    {
+        return match atomic_swap_paths(&temporary, destination) {
+            Ok(()) => {
+                let _ = fsutil::remove_path(&temporary);
+                Err(format!(
+                    "{validation_error} The original center link was restored; the shared source was preserved."
+                ))
+            }
+            Err(rollback_error) => Err(format!(
+                "{validation_error} Could not restore the original center link: {rollback_error}; the shared source was preserved."
+            )),
+        };
+    }
+    if let Err(error) = fsutil::remove_path(&temporary) {
+        if atomic_swap_paths(&temporary, destination).is_ok() {
+            let _ = fsutil::remove_path(&temporary);
+        }
+        return Err(format!(
+            "Could not finalize detached center copy '{}': {}; the shared source was preserved.",
+            destination.display(),
+            error
+        ));
+    }
+    Ok(true)
+}
+
+fn ensure_shared_detach_tree_copyable(root: &Path) -> Result<(), String> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| format!("Could not inspect '{}': {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Could not inspect an entry in '{}': {error}",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Could not inspect '{}': {error}", path.display()))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "Cannot detach center skill because shared source entry '{}' is a symbolic link and would not be copied; the shared source was preserved.",
+                    path.display()
+                ));
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if !file_type.is_file() {
+                return Err(format!(
+                    "Cannot detach center skill because shared source entry '{}' has an unsupported file type; the shared source was preserved.",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_shared_detached_copy(path: &Path, expected_content_hash: &str) -> Result<(), String> {
+    if path.is_symlink()
+        || !fsutil::is_skill_dir(path)
+        || fsutil::hash_dir_contents(path) != expected_content_hash
+    {
+        return Err(format!(
+            "Detached center copy '{}' is invalid or incomplete; the shared source was preserved.",
+            path.display()
+        ));
+    }
+    ensure_shared_detach_tree_copyable(path)
+}
+
+#[cfg(target_os = "macos")]
+fn atomic_swap_paths(left: &Path, right: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", left.display()))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", right.display()))?;
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_SWAP,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn atomic_swap_paths(left: &Path, right: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", left.display()))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| format!("Path '{}' contains a null byte.", right.display()))?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn atomic_swap_paths(_left: &Path, _right: &Path) -> Result<(), String> {
+    Err("Atomic center link detachment is unavailable on this platform.".to_string())
 }
 
 fn filesystem_target_mode(path: &Path) -> Option<String> {
@@ -6049,15 +6636,33 @@ fn upsert_source(
 
 // silence unused import warning when not needed
 
-fn discover_agent_skill_paths(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+fn discover_agent_skill_paths(
+    root: &Path,
+    recursive: bool,
+    include_dependency_dirs: bool,
+) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    discover_agent_skill_paths_inner(root, recursive, 0, &mut out)?;
+    discover_agent_skill_paths_inner(root, recursive, include_dependency_dirs, 0, &mut out)?;
+    out.sort_by(|left, right| {
+        let left_is_link = std::fs::symlink_metadata(left)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let right_is_link = std::fs::symlink_metadata(right)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        left_is_link
+            .cmp(&right_is_link)
+            .then_with(|| left.cmp(right))
+    });
+    let mut seen = BTreeSet::new();
+    out.retain(|path| seen.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf())));
     Ok(out)
 }
 
 fn discover_agent_skill_paths_inner(
     dir: &Path,
     recursive: bool,
+    include_dependency_dirs: bool,
     depth: usize,
     out: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
@@ -6067,7 +6672,9 @@ fn discover_agent_skill_paths_inner(
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if fsutil::is_ignored_entry(&name) || name.starts_with('.') {
+        let ignored =
+            fsutil::is_ignored_entry(&name) && !(include_dependency_dirs && name == "node_modules");
+        if ignored || name.starts_with('.') {
             continue;
         }
         let path = entry.path();
@@ -6079,7 +6686,13 @@ fn discover_agent_skill_paths_inner(
             continue;
         }
         if recursive {
-            discover_agent_skill_paths_inner(&path, recursive, depth + 1, out)?;
+            discover_agent_skill_paths_inner(
+                &path,
+                recursive,
+                include_dependency_dirs,
+                depth + 1,
+                out,
+            )?;
         }
     }
     Ok(())

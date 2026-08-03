@@ -116,7 +116,7 @@ fn detect_copilot() -> DetectedTool {
     let config_dir = find_config_dir(&[".config/github-copilot"]);
 
     let copilot_available = gh_path.as_ref().is_some_and(|path| {
-        std::process::Command::new(path)
+        crate::platform::process::background_command(path)
             .args(["copilot", "--version"])
             .output()
             .map(|o| o.status.success())

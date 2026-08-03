@@ -95,6 +95,14 @@ pub struct SkillManagerOverview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentSkillViewSnapshot {
+    pub agent_detail: AgentDetail,
+    pub overview: SkillManagerOverview,
+    pub unmanaged: Vec<UnmanagedItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
@@ -275,6 +283,9 @@ pub struct AgentDetail {
     pub plugin_dir: Option<String>,
     pub agent_dir: Option<String>,
     pub skills: Vec<SkillTargetDetail>,
+    pub inherits_shared_skills: bool,
+    pub inherited_managed_skills: Vec<SkillTargetDetail>,
+    pub inherited_unmanaged_skills: Vec<UnmanagedItemDto>,
     pub applied_packs: Vec<AppliedPackSummary>,
     pub available_packs: Vec<SkillPackSummary>,
     pub mcp_servers: Vec<McpServerStatus>,
