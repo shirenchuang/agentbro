@@ -24,6 +24,8 @@ const DEFAULT_SKILL_PACK_NAME: &str = "全量技能包";
 const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
     "中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。";
 
+type InheritedSkillRow = (String, String, String, bool, Option<String>, Option<String>);
+
 pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
@@ -5490,10 +5492,7 @@ impl Service {
             }
             Ok::<_, String>(values)
         })?;
-        let mut rows_by_path: BTreeMap<
-            PathBuf,
-            (String, String, String, bool, Option<String>, Option<String>),
-        > = BTreeMap::new();
+        let mut rows_by_path: BTreeMap<PathBuf, InheritedSkillRow> = BTreeMap::new();
         for row in rows {
             let key = fsutil::normalized_path(Path::new(&row.2));
             match rows_by_path.get(&key) {
