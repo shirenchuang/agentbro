@@ -1281,6 +1281,25 @@
       "builtinSkills": "内置只读",
       "builtinSkillsNotice": "{{count}} 个 Skill 由 {{agent}} 内置提供，仅作只读展示。AgentBro 不会接管、覆盖或删除这些文件。",
       "builtinSkillsNoResults": "没有匹配的内置 Skill。",
+      "actions": {
+        "delete": "删除",
+        "deleting": "删除中",
+        "deleteNamed": "删除 {{name}}",
+        "deletingNamed": "删除中 {{name}}",
+        "adopt": "接管",
+        "preparingAdopt": "准备接管",
+        "adopting": "接管中",
+        "batchSelect": "批量选择",
+        "selected": "已选择 {{count}} 个",
+        "selectCurrent": "选择当前",
+        "selectCurrentAdoptable": "选择当前可接管",
+        "clear": "清空",
+        "batchDelete": "批量删除 {{count}} 个",
+        "adoptToCenter": "接管到中心库",
+        "cancelSelection": "取消多选",
+        "batchManage": "批量管理",
+        "selectNamed": "选择 {{name}}"
+      },
       "unmanagedDelete": {
         "title": "删除 Skill「{{name}}」？",
         "confirm": "直接删除",
@@ -1288,6 +1307,16 @@
         "description": "这会删除当前 Agent 中的本地 Skill 目录，不会写入中心库，也无法从中心库恢复。",
         "deleting": "正在删除 Skill「{{name}}」...",
         "deleted": "已删除 Skill「{{name}}」"
+      },
+      "sharedDelete": {
+        "managedTitle": "移除共享的已管理 Skill？",
+        "unmanagedTitle": "永久删除共享的未管理 Skill？",
+        "confirm": "从共享目录删除",
+        "busy": "删除中...",
+        "managedDescription": "这会从 ~/.agents/skills 移除 {{count}} 个已管理 Skill，所有读取该共享目录的 Agent 都将无法再使用它。",
+        "managedPreserved": "中心库中的 Skill 会保留，之后仍可重新分发。",
+        "unmanagedDescription": "这会从 ~/.agents/skills 永久删除 {{count}} 个未管理 Skill，所有读取该共享目录的 Agent 都会受到影响。",
+        "unmanagedPermanent": "这些 Skill 不会复制到中心库，AgentBro 无法恢复；如果需要保留，请改用接管。"
       },
       "packFilter": {
         "label": "技能包归属",

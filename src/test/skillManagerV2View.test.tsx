@@ -62,6 +62,37 @@ function makeTarget(overrides: Partial<SkillTargetDetail> = {}): SkillTargetDeta
   }
 }
 
+function makeSharedTarget(skillId: string, overrides: Partial<SkillTargetDetail> = {}): SkillTargetDetail {
+  return makeTarget({
+    id: `target-${skillId}`,
+    skillId,
+    agentId: 'agents',
+    targetPath: `/Users/me/.agents/skills/${skillId}`,
+    resolvedTargetPath: `/Users/me/.agentbro/skills/${skillId}`,
+    claims: [{
+      id: `claim-${skillId}`,
+      claimType: 'direct',
+      packId: null,
+      packName: null,
+      createdAt: '2026-01-01T00:00:00Z',
+    }],
+    ...overrides,
+  })
+}
+
+function makeSharedUnmanaged(skillId: string, overrides: Partial<UnmanagedItemDto> = {}): UnmanagedItemDto {
+  return {
+    id: `raw-${skillId}`,
+    itemType: 'skill',
+    agentId: 'agents',
+    path: `/Users/me/.agents/skills/${skillId}`,
+    inferredSkillId: skillId,
+    hash: `hash-${skillId}`,
+    reason: 'not_in_center_library',
+    ...overrides,
+  }
+}
+
 function makeSidebarAgent(id: string, displayName: string, counts: { managed?: number; unmanaged?: number } = {}): AgentSummary {
   return {
     id,
@@ -2665,6 +2696,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
         claims: [{ id: 'claim-1', claimType: 'direct', packId: null, packName: null, createdAt: '2026-01-01T00:00:00Z' }],
       },
     ],
+    inheritedManagedSkills: [],
+    inheritedUnmanagedSkills: [],
     appliedPacks: [],
     availablePacks: [],
     mcpServers: [],
@@ -3354,26 +3387,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir,
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-review',
-          skillId: 'shared-review',
-          path: '/Users/me/.agents/skills/shared-review',
-          resolvedPath: '/Users/me/.agentbro/skills/shared-review',
-          managed: true,
-          targetId: 'target-shared-review',
-          unmanagedId: null,
-        },
-        {
-          id: 'unmanaged-shared-writing',
-          skillId: 'shared-writing',
-          path: '/Users/me/.agents/skills/shared-writing',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-writing',
-        },
-      ],
+      inheritedManagedSkills: [makeSharedTarget('shared-review')],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-writing')],
     }
     useSkillStoreV2.setState({
       agents: [
@@ -3442,13 +3457,21 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(inheritedCard?.querySelector('.sm2__agent-skill-icon')).not.toBeNull()
     expect(inheritedCard?.querySelector('.sm2__agent-skill-card-titleline')).not.toBeNull()
     expect(inheritedCard?.querySelector('code')).toHaveTextContent('/Users/me/.agents/skills/shared-review')
-    expect(within(inheritedCard!).getByText('共享继承', { selector: '.sm2__source-pill' })).toBeInTheDocument()
-    expect(within(inheritedCard!).getByText('已管理')).toBeInTheDocument()
-    expect(within(inheritedCard!).queryByRole('button', { name: /查看详情/ })).not.toBeInTheDocument()
-    expect(within(inheritedCard!).queryByText('接管到中心库')).not.toBeInTheDocument()
-    expect(within(inheritedCard!).queryByText('删除')).not.toBeInTheDocument()
+    expect(within(inheritedCard!).getByText('软连接', { selector: '.sm2__source-pill' })).toBeInTheDocument()
+    expect(within(inheritedCard!).getByText('正常')).toBeInTheDocument()
+    expect(within(inheritedCard!).getByRole('button', { name: '删除 shared-review' })).toBeInTheDocument()
     expect(within(inheritedCard!).queryByRole('checkbox')).not.toBeInTheDocument()
-    expect(within(inheritedCard!).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(inheritedCard!).queryByRole('button', { name: /归入技能包/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量选择' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新增SKILL' })).not.toBeInTheDocument()
+
+    fireEvent.click(within(inheritedCard!).getByRole('button', { name: '删除 shared-review' }))
+    expect(document.body.querySelector('.sm2__slideover--skill-detail')).toBeNull()
+    const sharedDeleteDialog = screen.getByRole('heading', { name: '移除共享的已管理 Skill？' }).closest<HTMLElement>('[role="dialog"]')
+    expect(sharedDeleteDialog).not.toBeNull()
+    expect(within(sharedDeleteDialog!).getByText(/所有读取该共享目录的 Agent/)).toBeInTheDocument()
+    expect(within(sharedDeleteDialog!).getByText(/中心库中的 Skill 会保留/)).toBeInTheDocument()
+    fireEvent.click(within(sharedDeleteDialog!).getByRole('button', { name: '取消' }))
 
     fireEvent.click(screen.getByText('列表'))
     const managedInheritedRow = screen.getByText('/Users/me/.agents/skills/shared-review').closest<HTMLElement>('.sm2__object-row')
@@ -3456,8 +3479,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(managedInheritedRow).toHaveClass('sm2__object-row--path', 'sm2__object-row--clickable')
     expect(managedInheritedRow).toHaveAttribute('role', 'button')
     expect(managedInheritedRow).toHaveAttribute('tabindex', '0')
-    expect(managedInheritedRow).toHaveTextContent('.agents 共享目录 · 已管理')
-    expect(within(managedInheritedRow!).queryByRole('button')).not.toBeInTheDocument()
+    expect(managedInheritedRow).toHaveTextContent('软连接 · 正常 · 直接分发')
+    expect(within(managedInheritedRow!).getByRole('button', { name: '删除 shared-review' })).toBeInTheDocument()
     fireEvent.click(screen.getByText('卡片'))
 
     fireEvent.change(screen.getByPlaceholderText('搜索 Skill 名称 / 路径 / 来源 / 原因'), { target: { value: 'missing-skill' } })
@@ -3478,14 +3501,15 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(unmanagedCard?.querySelector('.sm2__agent-skill-icon')).not.toBeNull()
     expect(unmanagedCard?.querySelector('.sm2__agent-skill-card-titleline')).not.toBeNull()
     expect(unmanagedCard?.querySelector('code')).toHaveTextContent('/Users/me/.agents/skills/shared-writing')
-    expect(within(unmanagedCard!).getByText('共享继承', { selector: '.sm2__source-pill' })).toBeInTheDocument()
+    expect(within(unmanagedCard!).getByText('.agents 共享目录', { selector: '.sm2__source-pill' })).toBeInTheDocument()
     expect(within(unmanagedCard!).getByText('未管理')).toBeInTheDocument()
-    expect(within(unmanagedCard!).getByRole('button', { name: '接管到中心库' })).toBeInTheDocument()
-    expect(within(unmanagedCard!).queryByRole('button', { name: /查看详情/ })).not.toBeInTheDocument()
-    expect(within(unmanagedCard!).queryByText('删除')).not.toBeInTheDocument()
+    expect(within(unmanagedCard!).getByRole('button', { name: '接管' })).toBeInTheDocument()
+    expect(within(unmanagedCard!).getByRole('button', { name: '删除 shared-writing' })).toBeInTheDocument()
     expect(within(unmanagedCard!).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /一键接管/ })).not.toBeInTheDocument()
 
-    fireEvent.click(within(unmanagedCard!).getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(within(unmanagedCard!).getByRole('button', { name: '接管' }))
     expect(document.body.querySelector('.sm2__slideover--skill-detail')).toBeNull()
     await waitFor(() => {
       expect(previewAdopt).toHaveBeenCalledTimes(1)
@@ -3503,8 +3527,49 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(inheritedRow).toHaveClass('sm2__object-row--path', 'sm2__object-row--clickable')
     expect(inheritedRow).toHaveAttribute('role', 'button')
     expect(inheritedRow).toHaveAttribute('tabindex', '0')
-    expect(inheritedRow).toHaveTextContent('.agents 共享目录 · 未管理')
-    expect(within(inheritedRow!).getByRole('button', { name: '接管到中心库' })).toBeInTheDocument()
+    expect(inheritedRow).toHaveTextContent('未在中心库 · .agents 共享目录')
+    expect(within(inheritedRow!).getByRole('button', { name: '接管' })).toBeInTheDocument()
+    expect(within(inheritedRow!).getByRole('button', { name: '删除 shared-writing' })).toBeInTheDocument()
+  })
+
+  it('renders shared managed and unmanaged actions from the English action translations', async () => {
+    await i18n.changeLanguage('en')
+    useSkillStoreV2.setState({
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      selectedAgentId: 'codex',
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [makeSharedTarget('shared-review')],
+        inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-writing')],
+      },
+      unmanaged: [],
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Inherited 2' }))
+
+    expect(screen.getByRole('button', { name: 'Delete shared-review' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Multi-select' }))
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select current' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete 0 Skills' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel selection' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unmanaged 1' }))
+    expect(screen.getByRole('button', { name: 'Adopt' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete shared-writing' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Batch manage' }))
+    expect(screen.getByRole('button', { name: 'Select current adoptable' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Adopt into center library' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel selection' })).toBeInTheDocument()
   })
 
   it('deduplicates the top-level Skills count by logical Skill ID across Agent and shared sources', async () => {
@@ -3518,15 +3583,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
         iconKey: 'codex',
         skillsDir: '/Users/me/.codex/skills',
         inheritsSharedSkills: true,
-        inheritedSkills: [{
-          id: 'shared-release-checklist',
-          skillId: 'release-checklist',
-          path: '/Users/me/.agents/skills/release-checklist',
-          resolvedPath: '/Users/me/.agentbro/skills/release-checklist',
-          managed: true,
-          targetId: 'shared-release-checklist',
-          unmanagedId: null,
-        }],
+        inheritedManagedSkills: [makeSharedTarget('release-checklist')],
+        inheritedUnmanagedSkills: [],
       },
       unmanaged: [],
     })
@@ -3539,7 +3597,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '共享继承 1' })).toBeInTheDocument()
   })
 
-  it('opens inherited Skill details without exposing Agent mutation controls', async () => {
+  it('opens shared managed Skill details through the standard managed card', async () => {
     const consumerDetail: AgentDetail = {
       ...agentDetail,
       id: 'codex',
@@ -3548,17 +3606,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'target-shared-review',
-          skillId: 'shared-review',
-          path: '/Users/me/.agents/skills/shared-review',
-          resolvedPath: '/Users/me/.agentbro/skills/shared-review',
-          managed: true,
-          targetId: 'target-shared-review',
-          unmanagedId: null,
-        },
-      ],
+      inheritedManagedSkills: [makeSharedTarget('shared-review')],
+      inheritedUnmanagedSkills: [],
     }
     useSkillStoreV2.setState({
       agents: [makeSidebarAgent('codex', 'Codex')],
@@ -3605,10 +3654,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(within(slider).getByRole('button', { name: '文件' })).toBeInTheDocument()
     expect(within(slider).getByRole('button', { name: '来源' })).toBeInTheDocument()
     expect(slider.querySelector('.sm2__detail-pills .sm2__tag--ok')).toHaveTextContent('正常')
-    expect(within(slider).queryByRole('button', { name: 'Agent (1)' })).not.toBeInTheDocument()
-    expect(within(slider).queryByRole('button', { name: '同步中心库' })).not.toBeInTheDocument()
-    expect(within(slider).queryByRole('button', { name: /删除/ })).not.toBeInTheDocument()
-    expect(getSkillDetail).not.toHaveBeenCalled()
+    expect(getSkillDetail).toHaveBeenCalledWith('shared-review')
   })
 
   it('keeps shared adoption open when the Agent detail refresh fails without adopting twice', async () => {
@@ -3620,17 +3666,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-retry',
-          skillId: 'shared-retry',
-          path: '/Users/me/.agents/skills/shared-retry',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-retry',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-retry')],
     }
     useSkillStoreV2.setState({
       overview: makeOverview(),
@@ -3658,7 +3695,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       .mockRejectedValueOnce(new Error('shared detail refresh failed'))
       .mockResolvedValue({
         ...consumerDetail,
-        inheritedSkills: [],
+        inheritedUnmanagedSkills: [],
       })
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
 
@@ -3667,7 +3704,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认接管' }))
 
     await waitFor(() => expect(getAgentDetail).toHaveBeenCalledTimes(1))
@@ -3691,17 +3728,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-retry',
-          skillId: 'shared-retry',
-          path: '/Users/me/.agents/skills/shared-retry',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-retry',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-retry')],
     }
     useSkillStoreV2.setState({
       overview: makeOverview(),
@@ -3727,7 +3755,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue({
       ...consumerDetail,
-      inheritedSkills: [],
+      inheritedUnmanagedSkills: [],
     })
     const overview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
 
@@ -3736,7 +3764,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
     const overviewCallsBeforeAdopt = overview.mock.calls.length
     overview.mockRejectedValueOnce(new Error('shared overview refresh failed'))
@@ -3763,17 +3791,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-runtime',
-          skillId: 'shared-runtime',
-          path: '/Users/me/.agents/skills/shared-runtime',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-runtime',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
     }
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
@@ -3807,7 +3826,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     await waitFor(() => expect(previewAdopt).toHaveBeenCalledTimes(1))
 
     act(() => {
@@ -3828,17 +3847,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-runtime',
-          skillId: 'shared-runtime',
-          path: '/Users/me/.agents/skills/shared-runtime',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-runtime',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
     }
     const localOverview = makeOverview()
     useSkillStoreV2.setState({
@@ -3881,7 +3891,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     const getAgentDetail = vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue({
       ...consumerDetail,
-      inheritedSkills: [],
+      inheritedUnmanagedSkills: [],
     })
     const overview = vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
 
@@ -3890,7 +3900,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: /同时加入技能包/ }))
     fireEvent.click(await screen.findByRole('button', { name: '确认接管' }))
     await waitFor(() => expect(executeAdopt).toHaveBeenCalledTimes(1))
@@ -3922,17 +3932,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-runtime',
-          skillId: 'shared-runtime',
-          path: '/Users/me/.agents/skills/shared-runtime',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-runtime',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
     }
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
@@ -3969,7 +3970,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
     const overviewCallsBeforeAdopt = overview.mock.calls.length
     fireEvent.click(confirmAdopt)
@@ -3982,7 +3983,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       displayName: remoteAgent.displayName,
       skillsDir: '/home/me/.codex/skills',
       inheritsSharedSkills: false,
-      inheritedSkills: [],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [],
     }
     const remoteOverview = {
       ...makeOverview(),
@@ -4011,7 +4013,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       })
       resolveDetail({
         ...consumerDetail,
-        inheritedSkills: [],
+        inheritedUnmanagedSkills: [],
       })
     })
 
@@ -4032,17 +4034,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-runtime',
-          skillId: 'shared-runtime',
-          path: '/Users/me/.agents/skills/shared-runtime',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-runtime',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-runtime')],
     }
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
@@ -4069,7 +4062,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue({
       ...consumerDetail,
-      inheritedSkills: [],
+      inheritedUnmanagedSkills: [],
     })
     let resolveOverview: (overview: ReturnType<typeof makeOverview>) => void = () => {}
     const overviewPromise = new Promise<ReturnType<typeof makeOverview>>((resolve) => {
@@ -4082,7 +4075,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skills (1)' }))
     fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
     fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
-    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管' }))
     const confirmAdopt = await screen.findByRole('button', { name: '确认接管' })
     const overviewCallsBeforeAdopt = overview.mock.calls.length
     overview.mockReturnValueOnce(overviewPromise)
@@ -4096,7 +4089,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       displayName: remoteAgent.displayName,
       skillsDir: '/home/me/.codex/skills',
       inheritsSharedSkills: false,
-      inheritedSkills: [],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [],
     }
     const remoteOverview = {
       ...makeOverview(),
@@ -4160,7 +4154,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
         iconKey: 'codex',
         skillsDir: '/Users/me/.codex/skills',
         inheritsSharedSkills: true,
-        inheritedSkills: [],
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [],
       },
       unmanaged: [],
     })
@@ -4178,15 +4173,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
   })
 
   it('keeps shared status paging within the selected source', async () => {
-    const inheritedSkills = Array.from({ length: 29 }, (_, index) => ({
-      id: `unmanaged-shared-${index}`,
-      skillId: `shared-${index}`,
-      path: `/Users/me/.agents/skills/shared-${index}`,
-      resolvedPath: null,
-      managed: false,
-      targetId: null,
-      unmanagedId: `raw-shared-${index}`,
-    }))
+    const inheritedUnmanagedSkills = Array.from(
+      { length: 29 },
+      (_, index) => makeSharedUnmanaged(`shared-${index}`),
+    )
     useSkillStoreV2.setState({
       agents: [makeSidebarAgent('codex', 'Codex')],
       selectedAgentId: 'codex',
@@ -4198,7 +4188,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
         skillsDir: '/Users/me/.codex/skills',
         skills: [],
         inheritsSharedSkills: true,
-        inheritedSkills,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills,
       },
       unmanaged: [],
     })
@@ -4216,12 +4207,58 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '未管理 29' })).toBeInTheDocument()
   })
 
+  it('resets managed paging when the pack filter changes', async () => {
+    const inheritedManagedSkills = Array.from({ length: 29 }, (_, index) =>
+      makeSharedTarget(`shared-pack-${index}`, {
+        claims: [{
+          id: `claim-pack-${index}`,
+          claimType: 'pack',
+          packId: 'shared-pack',
+          packName: 'Shared Pack',
+          createdAt: '2026-01-01T00:00:00Z',
+        }],
+      }),
+    )
+    useSkillStoreV2.setState({
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      selectedAgentId: 'codex',
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        skillsDir: '/Users/me/.codex/skills',
+        skills: [],
+        inheritsSharedSkills: true,
+        inheritedManagedSkills,
+        inheritedUnmanagedSkills: [],
+      },
+      unmanaged: [],
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (29)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 29' }))
+
+    expect(screen.getByText('shared-pack-27')).toBeInTheDocument()
+    expect(screen.queryByText('shared-pack-28')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '继续显示 1 个' }))
+    expect(screen.getByText('shared-pack-28')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('技能包归属'), { target: { value: 'pack' } })
+
+    expect(screen.queryByText('shared-pack-28')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '继续显示 1 个' })).toBeInTheDocument()
+  })
+
   it('does not expose shared inventory as inherited or unmanaged for a non-consumer', async () => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
         ...agentDetail,
         inheritsSharedSkills: false,
-        inheritedSkills: [],
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [],
       },
       unmanaged: [
         {
@@ -4256,17 +4293,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillsDir: '/Users/me/.codex/skills',
       skills: [],
       inheritsSharedSkills: true,
-      inheritedSkills: [
-        {
-          id: 'unmanaged-shared-reset',
-          skillId: 'shared-reset',
-          path: '/Users/me/.agents/skills/shared-reset',
-          resolvedPath: null,
-          managed: false,
-          targetId: null,
-          unmanagedId: 'raw-shared-reset',
-        },
-      ],
+      inheritedManagedSkills: [],
+      inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-reset')],
     }
     useSkillStoreV2.setState({
       agents: [
@@ -4291,7 +4319,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
         selectedAgentDetail: {
           ...agentDetail,
           inheritsSharedSkills: false,
-          inheritedSkills: [],
+          inheritedManagedSkills: [],
+          inheritedUnmanagedSkills: [],
         },
         unmanaged: [
           {
@@ -4716,6 +4745,77 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByLabelText('选择 release-checklist')).toBeChecked()
   })
 
+  it('confirms global impact before deleting a shared managed Skill by its target ID', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [makeSharedTarget('shared-review', { id: 'target-shared-review' })],
+        inheritedUnmanagedSkills: [],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 shared-review' }))
+
+    const dialog = screen.getByRole('dialog', { name: '移除共享的已管理 Skill？' })
+    expect(dialog).toHaveTextContent('所有读取该共享目录的 Agent 都将无法再使用它')
+    expect(dialog).toHaveTextContent('中心库中的 Skill 会保留')
+    expect(deleteTargets).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
+
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review']))
+  })
+
+  it('batch deletes shared managed Skills through the standard selection controls', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [
+          makeSharedTarget('shared-review', { id: 'target-shared-review' }),
+          makeSharedTarget('shared-writing', { id: 'target-shared-writing' }),
+        ],
+        inheritedUnmanagedSkills: [],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 2, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+
+    const dialog = screen.getByRole('dialog', { name: '移除共享的已管理 Skill？' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
+
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review', 'target-shared-writing']))
+  })
+
   it('deletes an unmanaged agent skill from the skill card after confirmation', async () => {
     const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
@@ -4735,6 +4835,42 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', 'unmanaged-1'))
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('permanently deletes a shared unmanaged Skill with owner agents after confirmation', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [makeSharedUnmanaged('shared-writing')],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 shared-writing' }))
+
+    const dialog = screen.getByRole('dialog', { name: '永久删除共享的未管理 Skill？' })
+    expect(dialog).toHaveTextContent('所有读取该共享目录的 Agent 都会受到影响')
+    expect(dialog).toHaveTextContent('不会复制到中心库')
+    expect(deleteUnmanaged).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', 'raw-shared-writing'))
   })
 
   it('keeps unmanaged deletion errors visible inside the confirmation dialog', async () => {
@@ -4816,6 +4952,97 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2']))
     expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
     expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('batch deletes shared unmanaged Skills with owner agents', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [
+          makeSharedUnmanaged('shared-writing'),
+          makeSharedUnmanaged('shared-review'),
+        ],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkills').mockResolvedValue({ deleted: 2, failures: [] })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+
+    const dialog = screen.getByRole('dialog', { name: '永久删除共享的未管理 Skill？' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
+
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing', 'raw-shared-review']))
+  })
+
+  it('batch adopts shared unmanaged Skills through the standard flow with owner agents', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedManagedSkills: [],
+        inheritedUnmanagedSkills: [
+          makeSharedUnmanaged('shared-writing'),
+          makeSharedUnmanaged('shared-review'),
+        ],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const execute = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+      items: [
+        { unmanagedId: 'raw-shared-writing', skillId: 'shared-writing', error: null },
+        { unmanagedId: 'raw-shared-review', skillId: 'shared-review', error: null },
+      ],
+      finalizationError: null,
+    })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
+
+    await waitFor(() => expect(execute).toHaveBeenCalledWith([
+      {
+        agentId: 'agents',
+        unmanagedId: 'raw-shared-writing',
+        option: 'import_cleanup',
+        renamedId: null,
+      },
+      {
+        agentId: 'agents',
+        unmanagedId: 'raw-shared-review',
+        option: 'import_cleanup',
+        renamedId: null,
+      },
+    ]))
   })
 
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {

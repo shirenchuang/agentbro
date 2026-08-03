@@ -1241,6 +1241,25 @@
       "builtinSkills": "組み込み読み取り専用",
       "builtinSkillsNotice": "{{count}} 個の Skill は {{agent}} が提供する組み込み機能で、読み取り専用で表示されます。AgentBro はこれらのファイルを引き継ぎ、上書き、削除しません。",
       "builtinSkillsNoResults": "検索条件に一致する組み込み Skill はありません。",
+      "actions": {
+        "delete": "削除",
+        "deleting": "削除中...",
+        "deleteNamed": "{{name}} を削除",
+        "deletingNamed": "{{name}} を削除中",
+        "adopt": "取り込む",
+        "preparingAdopt": "取り込みを準備中...",
+        "adopting": "取り込み中...",
+        "batchSelect": "複数選択",
+        "selected": "{{count}} 件選択済み",
+        "selectCurrent": "現在の項目を選択",
+        "selectCurrentAdoptable": "現在取り込み可能な項目を選択",
+        "clear": "クリア",
+        "batchDelete": "{{count}} 件の Skill を削除",
+        "adoptToCenter": "センターライブラリへ取り込む",
+        "cancelSelection": "選択をキャンセル",
+        "batchManage": "一括管理",
+        "selectNamed": "{{name}} を選択"
+      },
       "unmanagedDelete": {
         "title": "Skill「{{name}}」を削除しますか？",
         "confirm": "完全に削除",
@@ -1248,6 +1267,16 @@
         "description": "現在の Agent からローカル Skill ディレクトリを削除します。センターライブラリには追加されず、そこから復元することもできません。",
         "deleting": "Skill「{{name}}」を削除しています...",
         "deleted": "Skill「{{name}}」を削除しました"
+      },
+      "sharedDelete": {
+        "managedTitle": "共有の管理済み Skill を削除しますか？",
+        "unmanagedTitle": "共有の未管理 Skill を完全に削除しますか？",
+        "confirm": "共有ディレクトリから削除",
+        "busy": "削除中...",
+        "managedDescription": "~/.agents/skills から管理済み Skill {{count}} 個を削除します。共有ディレクトリを読み込むすべての Agent で利用できなくなります。",
+        "managedPreserved": "センターライブラリの Skill は保持され、後で再配布できます。",
+        "unmanagedDescription": "~/.agents/skills から未管理 Skill {{count}} 個を完全に削除します。共有ディレクトリを読み込むすべての Agent に影響します。",
+        "unmanagedPermanent": "Skill はセンターライブラリにコピーされず、AgentBro から復元できません。保持する場合は取り込みを使用してください。"
       },
       "packFilter": {
         "label": "パック所属",

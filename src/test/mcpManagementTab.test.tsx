@@ -24,6 +24,8 @@ const detail: AgentDetail = {
   mcpConfigPath: '/Users/me/.codex/config.toml',
   pluginDir: null,
   skills: [],
+  inheritedManagedSkills: [],
+  inheritedUnmanagedSkills: [],
   appliedPacks: [],
   availablePacks: [],
   mcpServers: [],

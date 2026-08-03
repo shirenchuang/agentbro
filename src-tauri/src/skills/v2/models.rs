@@ -276,24 +276,13 @@ pub struct AgentDetail {
     pub agent_dir: Option<String>,
     pub skills: Vec<SkillTargetDetail>,
     pub inherits_shared_skills: bool,
-    pub inherited_skills: Vec<InheritedSkillDetail>,
+    pub inherited_managed_skills: Vec<SkillTargetDetail>,
+    pub inherited_unmanaged_skills: Vec<UnmanagedItemDto>,
     pub applied_packs: Vec<AppliedPackSummary>,
     pub available_packs: Vec<SkillPackSummary>,
     pub mcp_servers: Vec<McpServerStatus>,
     pub plugins: Vec<PluginStatus>,
     pub health: Vec<AgentHealthIssue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InheritedSkillDetail {
-    pub id: String,
-    pub skill_id: String,
-    pub path: String,
-    pub resolved_path: Option<String>,
-    pub managed: bool,
-    pub target_id: Option<String>,
-    pub unmanaged_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

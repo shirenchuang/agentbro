@@ -79,5 +79,50 @@ describe('i18n locale completeness', () => {
       '기본 제공 읽기 전용',
       'Yerleşik salt okunur',
     ])
+
+    const sharedDeleteKeys = [
+      'managedTitle',
+      'unmanagedTitle',
+      'confirm',
+      'busy',
+      'managedDescription',
+      'managedPreserved',
+      'unmanagedDescription',
+      'unmanagedPermanent',
+    ]
+    for (const locale of locales) {
+      const sharedDelete = locale.sharedDelete as Record<string, unknown>
+      for (const key of sharedDeleteKeys) {
+        expect(sharedDelete[key], key).toEqual(expect.any(String))
+        expect(String(sharedDelete[key]).trim(), key).not.toBe('')
+      }
+    }
+
+    const actionKeys = [
+      'delete',
+      'deleting',
+      'deleteNamed',
+      'deletingNamed',
+      'adopt',
+      'preparingAdopt',
+      'adopting',
+      'batchSelect',
+      'selected',
+      'selectCurrent',
+      'selectCurrentAdoptable',
+      'clear',
+      'batchDelete',
+      'adoptToCenter',
+      'cancelSelection',
+      'batchManage',
+      'selectNamed',
+    ]
+    for (const locale of locales) {
+      const actions = locale.actions as Record<string, unknown>
+      for (const key of actionKeys) {
+        expect(actions[key], key).toEqual(expect.any(String))
+        expect(String(actions[key]).trim(), key).not.toBe('')
+      }
+    }
   })
 })
