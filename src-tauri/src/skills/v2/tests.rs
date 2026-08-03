@@ -9,7 +9,7 @@ use rusqlite::params;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Reuse the shared HOME lock from `skills` so v2 tests serialize against the
 /// legacy skill tests and `cargo test` is deterministic under parallelism.
@@ -2561,6 +2561,85 @@ fn delete_skill_target_distribution_removes_copy_and_db_target() {
 }
 
 #[test]
+fn delete_skill_target_distribution_cleans_only_matching_stale_inventory() {
+    let (_home, svc, _lock) = fresh_service("delete-target-incremental-inventory");
+    let src = write_skill(&svc.home.join("s"), "rev", "incremental-delete", Some("v1"));
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: src.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: None,
+        },
+        vec![],
+    )
+    .unwrap();
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["incremental-delete".to_string()],
+            vec!["codex".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target = svc.get_skill_detail("incremental-delete").unwrap().targets[0].clone();
+    let unrelated_path = svc.home.join(".codex/skills/unrelated-stale");
+    svc.db()
+        .with_conn(|connection| {
+            for (id, path) in [
+                ("unm-matching-stale", target.target_path.clone()),
+                ("unm-unrelated-stale", unrelated_path.display().to_string()),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO unmanaged_items(id, item_type, agent_id, path, inferred_skill_id, hash, reason, first_seen_at, last_seen_at)
+                         VALUES (?1, 'skill', 'codex', ?2, 'stale', NULL, 'not_in_center_library', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                        params![id, path],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    svc.delete_skill_target_distribution(&target.id).unwrap();
+
+    let remaining = svc.list_unmanaged().unwrap();
+    assert!(remaining.iter().all(|item| item.id != "unm-matching-stale"));
+    assert!(remaining
+        .iter()
+        .any(|item| item.id == "unm-unrelated-stale"));
+}
+
+#[test]
+fn refresh_agent_skill_view_reads_consistent_db_snapshot() {
+    let (_home, svc, _lock) = fresh_service("agent-skill-view-snapshot");
+    let unmanaged_path = write_skill(
+        &svc.home.join(".codex/skills"),
+        "view-unmanaged",
+        "view-unmanaged",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+
+    let snapshot = svc.refresh_agent_skill_view("codex").unwrap();
+
+    assert_eq!(snapshot.agent_detail.id, "codex");
+    assert_eq!(
+        snapshot.overview.metrics.unmanaged_count,
+        snapshot.unmanaged.len()
+    );
+    assert!(snapshot
+        .unmanaged
+        .iter()
+        .any(|item| item.path == unmanaged_path.display().to_string()));
+}
+
+#[test]
 fn delete_skill_target_distributions_removes_multiple_targets() {
     let (_home, svc, _lock) = fresh_service("delete-target-distributions");
     let src_one = write_skill(
@@ -3075,6 +3154,50 @@ fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+fn delete_unmanaged_agent_skill_does_not_rewrite_recovery_snapshot() {
+    let (_home, svc, _lock) = fresh_service("delete-unmanaged-keeps-snapshot");
+    let rogue = write_skill(
+        &svc.home.join(".workbuddy/skills"),
+        "rogue",
+        "rogue-skill",
+        Some("v1"),
+    );
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.path == rogue.display().to_string())
+        .unwrap();
+    let snapshot_path = PathBuf::from(crate::skills::v2::snapshot::export_to_file(&svc).unwrap());
+    let before = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+
+    svc.delete_unmanaged_agent_skill("workbuddy", &unmanaged.id)
+        .unwrap();
+
+    let after = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn delete_skill_target_distributions_with_no_success_does_not_rewrite_snapshot() {
+    let (_home, svc, _lock) = fresh_service("delete-target-zero-keeps-snapshot");
+    let snapshot_path = PathBuf::from(crate::skills::v2::snapshot::export_to_file(&svc).unwrap());
+    let before = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+
+    let result = svc
+        .delete_skill_target_distributions(vec!["missing-target".to_string()])
+        .unwrap();
+
+    assert_eq!(result.deleted, 0);
+    assert_eq!(result.failures.len(), 1);
+    let after = fs::metadata(&snapshot_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
 }
 
 #[test]

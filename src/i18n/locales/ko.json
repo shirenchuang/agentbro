@@ -1160,6 +1160,7 @@
       "scanCompleteShared": "스캔 완료: 이 Agent는 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}; .agents 공유 디렉터리는 관리됨 {{sharedManaged}}, 관리되지 않음 {{sharedUnmanaged}}",
       "scanCompleteSharedReadOnly": "스캔 완료: 이 Agent는 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}, 기본 제공 읽기 전용 {{readOnly}}; .agents 공유 디렉터리는 관리됨 {{sharedManaged}}, 관리되지 않음 {{sharedUnmanaged}}, 읽기 전용 {{sharedReadOnly}}",
       "scanCompleteReadOnly": "스캔 완료: 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}, 기본 제공 읽기 전용 {{readOnly}}",
+      "deleteRefreshFailed": "삭제는 완료되었지만 목록을 새로 고치지 못했습니다: {{error}}. 개요를 새로 고치거나 이 Agent를 다시 스캔하세요.",
       "sharedDirectoryNotice": "{{count}}개의 Skill이 .agents 공유 디렉터리에 있습니다. 인계 후 중앙 라이브러리로 이동되고 공유 디렉터리에서는 제거됩니다. 이후 배포는 중앙 라이브러리 또는 스킬 팩에서 관리하세요.",
       "pathSettings": {
         "tab": "경로 및 설정",

@@ -1159,6 +1159,7 @@
       "scanCompleteShared": "Scan complete: this Agent has {{managed}} managed and {{unmanaged}} unmanaged; the .agents shared directory has {{sharedManaged}} managed and {{sharedUnmanaged}} unmanaged",
       "scanCompleteSharedReadOnly": "Scan complete: this Agent has {{managed}} managed, {{unmanaged}} unmanaged, and {{readOnly}} built-in read-only; the .agents shared directory has {{sharedManaged}} managed, {{sharedUnmanaged}} unmanaged, and {{sharedReadOnly}} read-only",
       "scanCompleteReadOnly": "Scan complete: {{managed}} managed, {{unmanaged}} unmanaged, {{readOnly}} built-in read-only",
+      "deleteRefreshFailed": "Deletion completed, but the list could not be refreshed: {{error}}. Refresh the overview or rescan this Agent.",
       "sharedDirectoryNotice": "{{count}} Skills are from the .agents shared directory. After adoption, they will be moved into the center library and removed from the shared directory. Manage future distribution through the center library or skill packs.",
       "pathSettings": {
         "tab": "Paths & settings",

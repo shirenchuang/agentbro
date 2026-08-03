@@ -95,6 +95,14 @@ pub struct SkillManagerOverview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentSkillViewSnapshot {
+    pub agent_detail: AgentDetail,
+    pub overview: SkillManagerOverview,
+    pub unmanaged: Vec<UnmanagedItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,

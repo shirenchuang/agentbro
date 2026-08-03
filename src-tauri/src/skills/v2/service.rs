@@ -729,6 +729,17 @@ impl Service {
         self.overview_with_target_refresh(false)
     }
 
+    pub fn refresh_agent_skill_view(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentSkillViewSnapshot, String> {
+        Ok(AgentSkillViewSnapshot {
+            agent_detail: self.get_agent_detail(agent_id)?,
+            overview: self.overview()?,
+            unmanaged: self.list_unmanaged()?,
+        })
+    }
+
     pub fn skill_pack_picker_data(&self) -> Result<SkillPackPickerData, String> {
         self.init_if_needed()?;
         let agents = self
@@ -2431,18 +2442,17 @@ impl Service {
     }
 
     pub fn delete_skill_target_distribution(&self, target_id: &str) -> Result<(), String> {
-        let agent_id = self.db.with_conn(|c| {
+        let exists = self.db.with_conn(|c| {
             c.query_row(
-                "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                "SELECT 1 FROM skill_targets WHERE id = ?1",
                 params![target_id],
-                |r| r.get::<_, String>(0),
+                |_| Ok(()),
             )
             .optional()
             .map_err(|e| e.to_string())
         })?;
-        let agent_id = agent_id.ok_or_else(|| format!("Target not found: {target_id}"))?;
+        exists.ok_or_else(|| format!("Target not found: {target_id}"))?;
         self.remove_target_completely(target_id)?;
-        self.scan_one_agent_into_db(&agent_id)?;
         self.refresh_snapshot_best_effort();
         Ok(())
     }
@@ -2453,19 +2463,18 @@ impl Service {
     ) -> Result<DeleteSkillTargetDistributionsResult, String> {
         let mut deleted = 0usize;
         let mut failures = Vec::new();
-        let mut affected_agents = BTreeSet::new();
 
         for target_id in target_ids {
-            let agent_id = self.db.with_conn(|c| {
+            let exists = self.db.with_conn(|c| {
                 c.query_row(
-                    "SELECT agent_id FROM skill_targets WHERE id = ?1",
+                    "SELECT 1 FROM skill_targets WHERE id = ?1",
                     params![target_id],
-                    |r| r.get::<_, String>(0),
+                    |_| Ok(()),
                 )
                 .optional()
                 .map_err(|e| e.to_string())
             })?;
-            let Some(agent_id) = agent_id else {
+            if exists.is_none() {
                 failures.push(DeleteSkillTargetDistributionFailure {
                     target_id,
                     error: "Target not found".to_string(),
@@ -2475,7 +2484,6 @@ impl Service {
             match self.remove_target_completely(&target_id) {
                 Ok(()) => {
                     deleted += 1;
-                    affected_agents.insert(agent_id);
                 }
                 Err(error) => {
                     failures.push(DeleteSkillTargetDistributionFailure { target_id, error })
@@ -2483,10 +2491,9 @@ impl Service {
             }
         }
 
-        for agent_id in affected_agents {
-            self.scan_one_agent_into_db(&agent_id)?;
+        if deleted > 0 {
+            self.refresh_snapshot_best_effort();
         }
-        self.refresh_snapshot_best_effort();
         Ok(DeleteSkillTargetDistributionsResult { deleted, failures })
     }
 
@@ -2501,8 +2508,8 @@ impl Service {
             .optional()
             .map_err(|e| e.to_string())
         })?;
-        if let Some((agent_id, target_path)) = target {
-            let target_path = Path::new(&target_path);
+        if let Some((agent_id, target_path)) = target.as_ref() {
+            let target_path = Path::new(target_path);
             if agent_id == SHARED_SKILLS_AGENT_ID
                 && !shared_skill_mutation_path_allowed(
                     &self.home.join(".agents").join("skills"),
@@ -2516,13 +2523,21 @@ impl Service {
             }
             fsutil::remove_path(target_path)?;
         }
-        self.db.with_conn(|c| {
-            c.execute(
-                "DELETE FROM skill_targets WHERE id = ?1",
-                params![target_id],
-            )
-            .map_err(|e| e.to_string())
-        })?;
+        if let Some((agent_id, target_path)) = target.as_ref() {
+            self.db.transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM unmanaged_items WHERE agent_id = ?1 AND path = ?2",
+                    params![agent_id, target_path],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM skill_targets WHERE id = ?1",
+                    params![target_id],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -3688,8 +3703,6 @@ impl Service {
         unmanaged_id: &str,
     ) -> Result<(), String> {
         self.remove_unmanaged_agent_skill(agent_id, unmanaged_id)?;
-        self.scan_one_agent_into_db(agent_id)?;
-        self.refresh_snapshot_best_effort();
         Ok(())
     }
 
@@ -3708,12 +3721,6 @@ impl Service {
                     error,
                 }),
             }
-        }
-        if deleted > 0 && failures.is_empty() {
-            self.scan_one_agent_into_db(agent_id)?;
-        }
-        if deleted > 0 {
-            self.refresh_snapshot_best_effort();
         }
         Ok(DeleteUnmanagedAgentSkillsResult { deleted, failures })
     }

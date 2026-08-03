@@ -360,6 +360,49 @@ mod tests {
     }
 
     #[test]
+    fn remote_batch_delete_and_composite_refresh_each_build_one_inventory() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-skill-manager-fast-delete-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = home.join(".codex/skills");
+        let ids = (0..42)
+            .map(|index| {
+                let name = format!("delete-{index:02}");
+                write_remote_skill(&root.join(&name), &name, "delete\n");
+                format!("codex::{name}")
+            })
+            .collect::<Vec<_>>();
+
+        let deleted = run_script_with_inventory_count(
+            &home,
+            "delete_unmanaged_agent_skills",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedIds": ids,
+            }),
+        );
+        assert_eq!(deleted["inventoryCalls"], 1);
+        assert_eq!(deleted["result"]["deleted"], 42);
+        assert!(deleted["result"]["failures"]
+            .as_array()
+            .expect("delete failures")
+            .is_empty());
+
+        let refreshed = run_script_with_inventory_count(
+            &home,
+            "refresh_agent_skill_view_v2",
+            serde_json::json!({ "agentId": "codex" }),
+        );
+        assert_eq!(refreshed["inventoryCalls"], 1);
+        assert_eq!(refreshed["result"]["agentDetail"]["id"], "codex");
+        assert!(refreshed["result"]["overview"]["agents"].is_array());
+        assert!(refreshed["result"]["unmanaged"].is_array());
+
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_response_sanitizes_surrogates() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-skill-manager-surrogate-test-{}",
@@ -1033,6 +1076,28 @@ os.replace = _agentbro_fail_activation_and_rollback
 
     fn run_script(home: &Path, command: &str, args: Value) -> Value {
         let script = render_script(command, args).expect("render remote script");
+        run_rendered_script(home, &script)
+    }
+
+    fn run_script_with_inventory_count(home: &Path, command: &str, args: Value) -> Value {
+        let script = render_script(command, args)
+            .expect("render remote script")
+            .replace(
+                "try:\n    RESPONSE = json_safe(dispatch())",
+                r#"_agentbro_original_inventory = inventory
+_agentbro_inventory_calls = 0
+def inventory():
+    global _agentbro_inventory_calls
+    _agentbro_inventory_calls += 1
+    return _agentbro_original_inventory()
+
+try:
+    _agentbro_result = dispatch()
+    RESPONSE = json_safe({
+        "result": _agentbro_result,
+        "inventoryCalls": _agentbro_inventory_calls,
+    })"#,
+            );
         run_rendered_script(home, &script)
     }
 

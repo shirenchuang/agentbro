@@ -6350,6 +6350,7 @@ pub fn run() {
             skills::v2::commands::execute_move_direct_skill_to_pack,
             skills::v2::commands::list_managed_agents_v2,
             skills::v2::commands::get_agent_detail_v2,
+            skills::v2::commands::refresh_agent_skill_view_v2,
             skills::v2::commands::read_agent_config_file_v2,
             skills::v2::commands::write_agent_config_file_v2,
             skills::v2::commands::list_plugin_inventory_v2,

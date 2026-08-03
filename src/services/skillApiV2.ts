@@ -444,6 +444,12 @@ export interface SkillManagerOverview {
   settings: SkillManagerSettings
 }
 
+export interface AgentSkillViewSnapshot {
+  agentDetail: AgentDetail
+  overview: SkillManagerOverview
+  unmanaged: UnmanagedItemDto[]
+}
+
 export interface SkillPackPickerData {
   agents: AgentSummary[]
   packs: SkillPackSummary[]
@@ -1314,6 +1320,14 @@ export const skillApiV2 = {
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
+  refreshAgentSkillView: (agentId: string) =>
+    isTauriRuntime()
+      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId })
+      : Promise.all([
+          skillApiV2.getAgentDetail(agentId),
+          skillApiV2.overview(),
+          skillApiV2.listUnmanaged(),
+        ]).then(([agentDetail, overview, unmanaged]) => ({ agentDetail, overview, unmanaged })),
   readAgentConfigFile: (agentId: string, path: string) =>
     isTauriRuntime()
       ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })

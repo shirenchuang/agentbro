@@ -1117,8 +1117,7 @@ def pack_summary(detail):
     }
 
 
-def overview():
-    skills, agents, unmanaged, targets = inventory()
+def overview_from_inventory(skills, agents, unmanaged, targets):
     details = [pack_detail("default", skills, agents)]
     details.extend(
         pack_detail(pack_id, skills, agents)
@@ -1139,6 +1138,10 @@ def overview():
         "issues": issues,
         "settings": STATE["settings"],
     }
+
+
+def overview():
+    return overview_from_inventory(*inventory())
 
 
 def file_tree(path):
@@ -1388,8 +1391,7 @@ def diagnosis(skills=None, agents=None, unmanaged=None, targets=None):
     return issues
 
 
-def unmanaged_inventory():
-    skills, agents, unmanaged, targets = inventory()
+def unmanaged_inventory_from_inventory(skills, agents, unmanaged, targets):
     by_agent = {agent["id"]: [] for agent in agents}
     for item in unmanaged:
         skill_id = item["inferredSkillId"] or pathlib.Path(item["path"]).name
@@ -1456,6 +1458,10 @@ def unmanaged_inventory():
         "items": sorted(shared_items, key=lambda item: item["name"].lower()),
     })
     return result
+
+
+def unmanaged_inventory():
+    return unmanaged_inventory_from_inventory(*inventory())
 
 
 def find_unmanaged(unmanaged_id):
@@ -1855,11 +1861,17 @@ def apply_pack(pack_id, target_agents, requested_mode, decisions=None):
     return result
 
 
-def agent_detail(agent_id):
+def agent_detail_from_inventory(
+    agent_id,
+    skills,
+    agents,
+    unmanaged,
+    targets,
+    available_packs=None,
+):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + agent_id)
-    skills, agents, unmanaged, targets = inventory()
     agent = next(item for item in agents if item["id"] == agent_id)
     inherited_managed, inherited_unmanaged = shared_skill_projection(
         agent_id,
@@ -1886,10 +1898,33 @@ def agent_detail(agent_id):
         "inheritedManagedSkills": inherited_managed,
         "inheritedUnmanagedSkills": inherited_unmanaged,
         "appliedPacks": applied,
-        "availablePacks": overview()["packs"],
+        "availablePacks": available_packs if available_packs is not None else overview_from_inventory(
+            skills,
+            agents,
+            unmanaged,
+            targets,
+        )["packs"],
         "mcpServers": [],
         "plugins": [],
         "health": [],
+    }
+
+
+def agent_detail(agent_id):
+    return agent_detail_from_inventory(agent_id, *inventory())
+
+
+def agent_skill_view_snapshot(agent_id):
+    snapshot = inventory()
+    overview_value = overview_from_inventory(*snapshot)
+    return {
+        "agentDetail": agent_detail_from_inventory(
+            agent_id,
+            *snapshot,
+            available_packs=overview_value["packs"],
+        ),
+        "overview": overview_value,
+        "unmanaged": snapshot[2],
     }
 
 
@@ -3008,11 +3043,17 @@ def dispatch():
             if command == "delete_unmanaged_agent_skill"
             else args.get("unmanagedIds", [])
         )
+        unmanaged_by_id = {
+            item["id"]: item
+            for item in inventory()[2]
+        }
         failures = []
         deleted = 0
         for unmanaged_id in ids:
             try:
-                item = find_unmanaged(unmanaged_id)
+                item = unmanaged_by_id.get(unmanaged_id)
+                if not item:
+                    raise ValueError("Unmanaged Skill not found: " + unmanaged_id)
                 remove_unmanaged_item(item, requested_agent_id)
                 deleted += 1
             except Exception as error:
@@ -3243,6 +3284,8 @@ def dispatch():
         return overview()["agents"]
     if command == "get_agent_detail_v2":
         return agent_detail(args["agentId"])
+    if command == "refresh_agent_skill_view_v2":
+        return agent_skill_view_snapshot(args["agentId"])
     if command == "read_agent_config_file_v2":
         return config_document(args["path"])
     if command == "write_agent_config_file_v2":

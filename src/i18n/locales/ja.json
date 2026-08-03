@@ -1160,6 +1160,7 @@
       "scanCompleteShared": "スキャン完了：この Agent は管理済み {{managed}}、未管理 {{unmanaged}}；.agents 共有ディレクトリは管理済み {{sharedManaged}}、未管理 {{sharedUnmanaged}}",
       "scanCompleteSharedReadOnly": "スキャン完了：この Agent は管理済み {{managed}}、未管理 {{unmanaged}}、組み込み読み取り専用 {{readOnly}}；.agents 共有ディレクトリは管理済み {{sharedManaged}}、未管理 {{sharedUnmanaged}}、読み取り専用 {{sharedReadOnly}}",
       "scanCompleteReadOnly": "スキャン完了：管理済み {{managed}}、未管理 {{unmanaged}}、組み込み読み取り専用 {{readOnly}}",
+      "deleteRefreshFailed": "削除は完了しましたが、一覧を更新できませんでした：{{error}}。概要を更新するか、この Agent を再スキャンしてください。",
       "sharedDirectoryNotice": "{{count}} 個の Skill は .agents 共有ディレクトリにあります。引き継ぎ後はセンターライブラリに移動し、共有ディレクトリから削除されます。以後はセンターライブラリまたはスキルパックから配布を管理してください。",
       "pathSettings": {
         "tab": "パスと設定",

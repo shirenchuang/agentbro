@@ -1008,6 +1008,7 @@
       "scanCompleteShared": "Tarama tamamlandı: bu Agent için {{managed}} yönetilen ve {{unmanaged}} yönetilmeyen; .agents paylaşılan dizininde {{sharedManaged}} yönetilen ve {{sharedUnmanaged}} yönetilmeyen",
       "scanCompleteSharedReadOnly": "Tarama tamamlandı: bu Agent için {{managed}} yönetilen, {{unmanaged}} yönetilmeyen ve {{readOnly}} yerleşik salt okunur; .agents paylaşılan dizininde {{sharedManaged}} yönetilen, {{sharedUnmanaged}} yönetilmeyen ve {{sharedReadOnly}} salt okunur",
       "scanCompleteReadOnly": "Tarama tamamlandı: {{managed}} yönetilen, {{unmanaged}} yönetilmeyen, {{readOnly}} yerleşik salt okunur",
+      "deleteRefreshFailed": "Silme tamamlandı ancak liste yenilenemedi: {{error}}. Genel bakışı yenileyin veya bu Agent'ı yeniden tarayın.",
       "sharedDirectoryNotice": "{{count}} Skill .agents paylaşılan dizininden geliyor. Devralındıktan sonra merkez kütüphaneye taşınır ve paylaşılan dizinden kaldırılır. Sonraki dağıtımları merkez kütüphane veya Skill paketleri üzerinden yönetin.",
       "pathSettings": {
         "tab": "Yollar ve ayarlar",
