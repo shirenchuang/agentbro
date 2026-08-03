@@ -513,6 +513,11 @@ pub fn get_agent_detail_v2(agent_id: String) -> Result<AgentDetail, String> {
 }
 
 #[tauri::command(async)]
+pub fn refresh_agent_skill_view_v2(agent_id: String) -> Result<AgentSkillViewSnapshot, String> {
+    svc()?.refresh_agent_skill_view(&agent_id)
+}
+
+#[tauri::command(async)]
 pub fn read_agent_config_file_v2(
     agent_id: String,
     path: String,

@@ -1200,6 +1200,7 @@
       "scanCompleteShared": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}",
       "scanCompleteSharedReadOnly": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}，内置只读 {{readOnly}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}，只读 {{sharedReadOnly}}",
       "scanCompleteReadOnly": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}，内置只读 {{readOnly}}",
+      "deleteRefreshFailed": "删除已完成，但列表刷新失败：{{error}}。可手动刷新总览或重新扫描此 Agent。",
       "sharedDirectoryNotice": "{{count}} 个 Skill 来自 .agents 共享目录。接管后会进入中心库，并从共享目录清理；后续请通过中心库或技能包控制分发。",
       "pathSettings": {
         "tab": "路径与设置",

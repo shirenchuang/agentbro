@@ -1579,6 +1579,7 @@ function SkillsTab({
   const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
   const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
   const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
+  const reconciliationGenerationRef = useRef(0)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
@@ -1651,12 +1652,14 @@ function SkillsTab({
   const unmanagedDeleting = deletingUnmanagedIds.size > 0
   const unmanagedAdopting = adoptingIds.size > 0
   const actionBusy = busy || managedDeleting || unmanagedDeleting || unmanagedAdopting
+  const collectionBusy = busy || unmanagedAdopting
   const moveToPackOptions = useMemo(
     () => packOptionsForMove(detail, state.packs),
     [detail, state.packs],
   )
 
   useEffect(() => {
+    reconciliationGenerationRef.current += 1
     setManagedSelectionMode(false)
     setUnmanagedSelectionMode(false)
     setSelectedManagedIds(new Set())
@@ -1704,6 +1707,33 @@ function SkillsTab({
     await state.loadOverview(true)
   }
 
+  const reconcileDeletedAgentSkills = (agentId: string, runtimeEnvironmentId: string) => {
+    const generation = reconciliationGenerationRef.current + 1
+    reconciliationGenerationRef.current = generation
+    void (async () => {
+      let lastError: unknown = null
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const snapshot = await skillApiV2.refreshAgentSkillView(agentId)
+          if (reconciliationGenerationRef.current !== generation) return
+          useSkillStoreV2.getState().applyAgentSkillViewSnapshot(runtimeEnvironmentId, agentId, snapshot)
+          return
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (
+        reconciliationGenerationRef.current === generation
+        && useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId
+        && useSkillStoreV2.getState().selectedAgentId === agentId
+      ) {
+        state.setError(t('skills.agentManagement.deleteRefreshFailed', {
+          error: skillErrorMessage(t, lastError),
+        }))
+      }
+    })()
+  }
+
   const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[]) => {
     const uniqueSkillIds = uniqueValues(skillIds)
     if (selection.kind === 'none' || uniqueSkillIds.length === 0) return null
@@ -1737,7 +1767,9 @@ function SkillsTab({
   const deleteManaged = async (targets: AgentDetail['skills']) => {
     if (targets.length === 0) return
     const ids = targets.map((target) => target.id)
-    setDeletingIds(new Set(ids))
+    const runtimeEnvironmentId = state.runtimeEnvironmentId
+    const agentId = detail.id
+    setDeletingIds((current) => new Set([...current, ...ids]))
     setLocalNotice(`正在删除 ${targets.length} 个 Skill 分发...`)
     state.setError(null)
     try {
@@ -1745,16 +1777,24 @@ function SkillsTab({
       const result = await skillApiV2.deleteSkillTargetDistributions(ids)
       const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
       const failedIds = new Set(result.failures.map((failure) => failure.targetId))
-      await refreshAgentSkills()
+      const deletedIds = ids.filter((id) => !failedIds.has(id))
+      useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, deletedIds, [])
       setSelectedManagedIds(failedIds)
       setManagedSelectionMode(failedIds.size > 0)
       setLocalNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
+      if (deletedIds.length > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
     } catch (e) {
-      state.setError(String(e))
+      if (useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId) {
+        state.setError(String(e))
+      }
     } finally {
-      setDeletingIds(new Set())
+      setDeletingIds((current) => {
+        const next = new Set(current)
+        ids.forEach((id) => next.delete(id))
+        return next
+      })
     }
   }
 
@@ -1869,38 +1909,20 @@ function SkillsTab({
 
   const deleteUnmanaged = async (items: UnmanagedItemDto[]) => {
     if (items.length === 0) return false
+    const runtimeEnvironmentId = state.runtimeEnvironmentId
+    const agentId = detail.id
     const itemNames = new Map(items.map((item) => [item.id, item.inferredSkillId || pathBasename(item.path) || item.id]))
     const itemIds = new Set(items.map((item) => item.id))
-    setDeletingUnmanagedIds(itemIds)
+    setDeletingUnmanagedIds((current) => new Set([...current, ...itemIds]))
     setDeleteUnmanagedError(null)
     setLocalNotice(items.length === 1
       ? t('skills.agentManagement.unmanagedDelete.deleting', { name: itemNames.get(items[0].id) })
       : `正在删除 ${items.length} 个未管理 Skill...`)
     state.setError(null)
 
-    if (items.length === 1) {
-      const item = items[0]
-      try {
-        await skillApiV2.deleteUnmanagedAgentSkill(adoptOwnerAgentId(detail.id, item), item.id)
-        await refreshAgentSkills()
-        setSelectedUnmanagedIds((current) => {
-          const next = new Set(current)
-          next.delete(item.id)
-          return next
-        })
-        setLocalNotice(t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(item.id) }))
-        state.setError(null)
-        return true
-      } catch (e) {
-        setDeleteUnmanagedError(skillErrorMessage(t, e))
-        return false
-      } finally {
-        setDeletingUnmanagedIds(new Set())
-      }
-    }
-
     const deletedIds = new Set<string>()
     const failed: string[] = []
+    const failedIds = new Set<string>()
     const itemsByOwner = new Map<string, UnmanagedItemDto[]>()
     items.forEach((item) => {
       const owner = adoptOwnerAgentId(detail.id, item)
@@ -1909,30 +1931,32 @@ function SkillsTab({
     for (const [owner, ownerItems] of itemsByOwner) {
       try {
         const result = await skillApiV2.deleteUnmanagedAgentSkills(owner, ownerItems.map((item) => item.id))
-        const failedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
+        const ownerFailedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
         ownerItems.forEach((item) => {
-          if (!failedIds.has(item.id)) deletedIds.add(item.id)
+          if (ownerFailedIds.has(item.id)) failedIds.add(item.id)
+          else deletedIds.add(item.id)
         })
-        failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${failure.error}`))
+        failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${skillErrorMessage(t, failure.error)}`))
       } catch (e) {
         failed.push(`${owner}: ${skillErrorMessage(t, e)}`)
+        ownerItems.forEach((item) => failedIds.add(item.id))
       }
     }
-    try {
-      await refreshAgentSkills()
-    } catch (e) {
-      failed.push(`刷新列表: ${skillErrorMessage(t, e)}`)
-    }
-    setSelectedUnmanagedIds((current) => {
-      const next = new Set(current)
-      deletedIds.forEach((id) => next.delete(id))
-      return next
-    })
+    useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, [], [...deletedIds])
+    setSelectedUnmanagedIds(failedIds)
     if (failed.length === 0) setUnmanagedSelectionMode(false)
-    setLocalNotice(`已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
+    setUnmanagedSelectionMode(failedIds.size > 0)
+    setLocalNotice(items.length === 1 && deletedIds.size === 1
+      ? t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(items[0].id) })
+      : `已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
     if (failed.length === 0) state.setError(null)
     if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
-    setDeletingUnmanagedIds(new Set())
+    if (deletedIds.size > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
+    setDeletingUnmanagedIds((current) => {
+      const next = new Set(current)
+      itemIds.forEach((id) => next.delete(id))
+      return next
+    })
     return deletedIds.size === items.length
   }
 
@@ -1951,8 +1975,9 @@ function SkillsTab({
   const deletingSingleSharedUnmanaged = deleteUnmanagedTarget ? isSharedAgentsUnmanaged(deleteUnmanagedTarget) : false
   const confirmBatchDelete = async () => {
     if (!batchDeleteTargets || batchDeleteTargets.length === 0) return
-    await deleteManaged(batchDeleteTargets)
+    const targets = batchDeleteTargets
     setBatchDeleteTargets(null)
+    await deleteManaged(targets)
   }
   const applyPackFromRail = async (packId: string, agentId: string) => {
     const pack = detail.availablePacks.find((item) => item.id === packId)
@@ -2170,7 +2195,7 @@ function SkillsTab({
             selectable={managedSelectionMode}
             selectedIds={selectedManagedIds}
             deletingIds={deletingIds}
-            busy={actionBusy}
+            busy={collectionBusy}
             emptyMessage={source === 'shared'
               ? t('skills.agentManagement.inheritedManagedNoResults')
               : q || packFilter !== 'all'
@@ -2215,7 +2240,7 @@ function SkillsTab({
                 skills={shownUnmanaged}
                 mode={viewMode}
                 agentId={source === 'shared' ? SHARED_SKILLS_AGENT_ID : detail.id}
-                busy={actionBusy}
+                busy={collectionBusy}
                 selectable={unmanagedSelectionMode}
                 selectedIds={selectedUnmanagedIds}
                 adoptingIds={adoptingIds}
@@ -2257,7 +2282,7 @@ function SkillsTab({
                 skills={shownReadOnly}
                 mode={viewMode}
                 agentId={detail.id}
-                busy={actionBusy}
+                busy={collectionBusy}
                 selectable={false}
                 selectedIds={new Set<string>()}
                 adoptingIds={adoptingIds}
@@ -2359,8 +2384,8 @@ function SkillsTab({
           onCancel={() => setBatchDeleteUnmanagedTargets(null)}
           onConfirm={async () => {
             const items = batchDeleteUnmanagedTargets
-            await deleteUnmanaged(items)
             setBatchDeleteUnmanagedTargets(null)
+            await deleteUnmanaged(items)
           }}
         >
           {deletingSharedUnmanaged ? (
@@ -2412,11 +2437,10 @@ function SkillsTab({
             setDeleteUnmanagedTarget(null)
           }}
           onConfirm={async () => {
-            const ok = await deleteUnmanaged([deleteUnmanagedTarget])
-            if (ok) {
-              setDeleteUnmanagedError(null)
-              setDeleteUnmanagedTarget(null)
-            }
+            const item = deleteUnmanagedTarget
+            setDeleteUnmanagedError(null)
+            setDeleteUnmanagedTarget(null)
+            await deleteUnmanaged([item])
           }}
         >
           <p>{deletingSingleSharedUnmanaged
