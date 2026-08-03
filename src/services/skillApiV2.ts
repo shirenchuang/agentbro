@@ -412,6 +412,9 @@ export interface InheritedSkillDetail {
   skillId: string
   path: string
   resolvedPath: string | null
+  managed: boolean
+  targetId: string | null
+  unmanagedId: string | null
 }
 
 export interface AgentDetail {

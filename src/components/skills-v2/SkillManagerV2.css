@@ -11965,6 +11965,17 @@
   background: var(--sm2-agent-surface);
 }
 
+.sm2--agents .sm2__agent-skill-source-tabs {
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: var(--sm2-agent-blue-soft);
+}
+
+.sm2--agents .sm2__agent-skill-source-tabs button {
+  min-width: 116px;
+  font-weight: 780;
+}
+
 .sm2--agents .sm2__agent-pack-rail {
   display: grid;
   gap: 10px;

@@ -24,6 +24,8 @@ export interface SkillDetailFallback {
   currentHash?: string | null
   sourceType?: string
   sourceUri?: string | null
+  status?: string
+  readOnly?: boolean
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -74,6 +76,7 @@ export function SkillDetailSlider({
   const [skillDocPath, setSkillDocPath] = useState<string | null>(null)
   const [skillDocContent, setSkillDocContent] = useState('')
   const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
+  const readOnly = fallbackSkill?.readOnly === true
 
   useEffect(() => {
     if (!open || !skillId) return
@@ -92,53 +95,63 @@ export function SkillDetailSlider({
     setCopyMenu(null)
     setSelectedDeleteTargetIds(new Set())
     setBatchDeleteTargetIds(null)
-    skillApiV2
-      .getSkillDetail(skillId)
-      .then((d) => {
+    const loadFallbackDetail = async (fallback: SkillDetailFallback) => {
+      const d = fallbackToSkillDetail(fallback)
+      setDetail(d)
+      const fallbackDocPath = `${fallback.centerPath}/SKILL.md`
+      setSkillDocPath(fallbackDocPath)
+      try {
+        const files = await skillApiV2.readFileTree(fallback.centerPath)
+        const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
+        setDetail({ ...d, files })
+        setSkillDocPath(skillMd)
+        setActiveFile(skillMd)
+        const content = await skillApiV2.readFileContent(skillMd)
+        setSkillDocContent(content)
+        setFileContent(content)
+      } catch {
+        try {
+          const content = await skillApiV2.readFileContent(fallbackDocPath)
+          setActiveFile(fallbackDocPath)
+          setSkillDocContent(content)
+          setFileContent(content)
+        } catch {
+          setSkillDocContent('')
+          setFileContent('')
+        }
+      }
+    }
+    const loadDetail = async () => {
+      if (readOnly && fallbackSkill) {
+        await loadFallbackDetail(fallbackSkill)
+        return
+      }
+      try {
+        const d = await skillApiV2.getSkillDetail(skillId)
         setDetail(d)
         const skillMd = findFile(d.files, 'SKILL.md')
         setSkillDocPath(skillMd)
         if (skillMd) {
           loadFile(skillMd)
-          skillApiV2.readFileContent(skillMd).then(setSkillDocContent).catch(() => setSkillDocContent(''))
+          try {
+            setSkillDocContent(await skillApiV2.readFileContent(skillMd))
+          } catch {
+            setSkillDocContent('')
+          }
         } else {
           setSkillDocContent('')
         }
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!fallbackSkill) {
           setError(String(e))
           return
         }
-        const d = fallbackToSkillDetail(fallbackSkill)
-        setDetail(d)
-        const fallbackDocPath = `${fallbackSkill.centerPath}/SKILL.md`
-        setSkillDocPath(fallbackDocPath)
-        return skillApiV2.readFileTree(fallbackSkill.centerPath)
-          .then(async (files) => {
-            const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
-            setDetail({ ...d, files })
-            setSkillDocPath(skillMd)
-            setActiveFile(skillMd)
-            const content = await skillApiV2.readFileContent(skillMd)
-            setSkillDocContent(content)
-            setFileContent(content)
-          })
-          .catch(() => skillApiV2
-            .readFileContent(fallbackDocPath)
-            .then((content) => {
-              setActiveFile(fallbackDocPath)
-              setSkillDocContent(content)
-              setFileContent(content)
-            })
-            .catch(() => {
-              setSkillDocContent('')
-              setFileContent('')
-            }))
-      })
-      .finally(() => setLoading(false))
+        await loadFallbackDetail(fallbackSkill)
+      }
+    }
+    void loadDetail().finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, skillId, fallbackSkill?.centerPath])
+  }, [open, skillId, fallbackSkill?.centerPath, readOnly])
 
   useEffect(() => {
     if (!copyMenu) return
@@ -283,7 +296,7 @@ export function SkillDetailSlider({
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'files', label: '文件' },
-    { id: 'agents', label: `Agent (${detail?.targets.length || 0})` },
+    ...(readOnly ? [] : [{ id: 'agents' as const, label: `Agent (${detail?.targets.length || 0})` }]),
     { id: 'source', label: '来源' },
   ]
 
@@ -327,7 +340,7 @@ export function SkillDetailSlider({
       actions={
         summary && (
           <>
-            {onDistribute && (
+            {!readOnly && onDistribute && (
               <button className="sm2__btn sm2__btn--primary" onClick={() => onDistribute(summary)}>
                 分发
               </button>
@@ -335,7 +348,7 @@ export function SkillDetailSlider({
             <button className="sm2__btn sm2__btn--ghost" onClick={() => skillApiV2.openPath(summary.centerPath)}>
               打开目录
             </button>
-            {onDelete && (
+            {!readOnly && onDelete && (
               <button className="sm2__btn sm2__btn--danger" onClick={() => onDelete(summary.id)}>
                 删除
               </button>
@@ -395,7 +408,7 @@ export function SkillDetailSlider({
               onSelect={loadFile}
             />
           )}
-          {tab === 'agents' && (
+          {!readOnly && tab === 'agents' && (
             <AgentsTab
               detail={detail}
               syncing={syncing}
@@ -1389,7 +1402,7 @@ function fallbackToSkillDetail(fallback: SkillDetailFallback): SkillDetail {
     sourceUri: fallback.sourceUri || fallback.centerPath,
     centerPath: fallback.centerPath,
     currentHash: fallback.currentHash || '',
-    status: 'unmanaged',
+    status: fallback.status || 'unmanaged',
     installedAgents: [],
     frontmatter: {},
     files: null,

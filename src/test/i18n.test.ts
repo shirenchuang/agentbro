@@ -3,6 +3,7 @@ import en from '../i18n/locales/en.json'
 import zh from '../i18n/locales/zh.json'
 import ja from '../i18n/locales/ja.json'
 import ko from '../i18n/locales/ko.json'
+import tr from '../i18n/locales/tr.json'
 
 function flatKeys(obj: Record<string, unknown>, prefix = ''): string[] {
   return Object.entries(obj).flatMap(([k, v]) => {
@@ -44,5 +45,39 @@ describe('i18n locale completeness', () => {
 
   it('ko tray.quit is translated', () => {
     expect(ko.tray.quit).not.toBe(en.tray.quit)
+  })
+
+  it('all five locales cover layered Agent Skill scope copy', () => {
+    const keys = [
+      'skillSource',
+      'skillStatus',
+      'agentSkills',
+      'managedSkills',
+      'unmanagedSkills',
+      'inheritedManagedNoResults',
+      'inheritedUnmanagedNoResults',
+      'sharedAdoptAction',
+      'sharedAdoptBusy',
+      'sharedViewDetails',
+      'builtinSkills',
+    ]
+    const locales = [en, zh, ja, ko, tr].map(
+      (locale) => locale.skills.agentManagement as Record<string, unknown>,
+    )
+
+    for (const locale of locales) {
+      for (const key of keys) {
+        expect(locale[key], key).toEqual(expect.any(String))
+        expect(String(locale[key]).trim(), key).not.toBe('')
+      }
+    }
+
+    expect(locales.map((locale) => locale.builtinSkills)).toEqual([
+      'Built-in read-only',
+      '内置只读',
+      '組み込み読み取り専用',
+      '기본 제공 읽기 전용',
+      'Yerleşik salt okunur',
+    ])
   })
 })

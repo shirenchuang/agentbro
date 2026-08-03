@@ -291,6 +291,9 @@ pub struct InheritedSkillDetail {
     pub skill_id: String,
     pub path: String,
     pub resolved_path: Option<String>,
+    pub managed: bool,
+    pub target_id: Option<String>,
+    pub unmanaged_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
