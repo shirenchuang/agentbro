@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! AgentBro Hook Bridge
 //!
 //! A lightweight compiled binary that Claude Code hooks call.

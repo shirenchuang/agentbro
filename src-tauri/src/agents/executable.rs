@@ -246,7 +246,7 @@ fn which_all(binary: &str) -> Vec<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     let command = "which";
 
-    std::process::Command::new(command)
+    crate::platform::process::background_command(command)
         .arg(binary)
         .output()
         .ok()
@@ -293,7 +293,7 @@ pub fn interactive_login_shell_vars(vars: &[&str]) -> Vec<(String, String)> {
         return Vec::new();
     }
     let shell = user_shell();
-    let output = match std::process::Command::new(&shell)
+    let output = match crate::platform::process::background_command(&shell)
         .args(["-lic", "env"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -318,7 +318,7 @@ fn shell_var(var: &str, interactive: bool) -> Option<String> {
     let shell = user_shell();
     let cmd = shell_var_fallback_cmd(var);
     let shell_mode = if interactive { "-lic" } else { "-lc" };
-    let output = std::process::Command::new(&shell)
+    let output = crate::platform::process::background_command(&shell)
         .args([shell_mode, &cmd])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -342,7 +342,7 @@ fn login_shell_path() -> Option<Vec<PathBuf>> {
     } else {
         "printf '%s' \"$PATH\""
     };
-    let output = std::process::Command::new(shell)
+    let output = crate::platform::process::background_command(shell)
         .args(["-lc", cmd])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
