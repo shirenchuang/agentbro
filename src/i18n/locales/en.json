@@ -1240,6 +1240,25 @@
       "builtinSkills": "Built-in read-only",
       "builtinSkillsNotice": "{{count}} Skills are provided by {{agent}} and shown read-only. AgentBro will not adopt, overwrite, or delete these files.",
       "builtinSkillsNoResults": "No built-in Skills match this search.",
+      "actions": {
+        "delete": "Delete",
+        "deleting": "Deleting...",
+        "deleteNamed": "Delete {{name}}",
+        "deletingNamed": "Deleting {{name}}",
+        "adopt": "Adopt",
+        "preparingAdopt": "Preparing adoption...",
+        "adopting": "Adopting...",
+        "batchSelect": "Multi-select",
+        "selected": "{{count}} selected",
+        "selectCurrent": "Select current",
+        "selectCurrentAdoptable": "Select current adoptable",
+        "clear": "Clear",
+        "batchDelete": "Delete {{count}} Skills",
+        "adoptToCenter": "Adopt into center library",
+        "cancelSelection": "Cancel selection",
+        "batchManage": "Batch manage",
+        "selectNamed": "Select {{name}}"
+      },
       "unmanagedDelete": {
         "title": "Delete Skill \"{{name}}\"?",
         "confirm": "Delete Permanently",
@@ -1247,6 +1266,16 @@
         "description": "This deletes the local Skill directory from the current Agent. It will not be added to the center library and cannot be restored from there.",
         "deleting": "Deleting Skill \"{{name}}\"...",
         "deleted": "Deleted Skill \"{{name}}\""
+      },
+      "sharedDelete": {
+        "managedTitle": "Remove shared managed Skill?",
+        "unmanagedTitle": "Permanently delete shared unmanaged Skill?",
+        "confirm": "Delete from shared directory",
+        "busy": "Deleting...",
+        "managedDescription": "This removes {{count}} managed Skill from ~/.agents/skills. Every Agent that reads the shared directory will stop seeing it.",
+        "managedPreserved": "The Skill remains in the center library and can be distributed again later.",
+        "unmanagedDescription": "This permanently deletes {{count}} unmanaged Skill from ~/.agents/skills. Every Agent that reads the shared directory is affected.",
+        "unmanagedPermanent": "The Skill is not copied to the center library and cannot be restored by AgentBro. Adopt it instead if you want to keep it."
       },
       "packFilter": {
         "label": "Pack membership",

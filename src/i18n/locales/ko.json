@@ -1241,6 +1241,25 @@
       "builtinSkills": "기본 제공 읽기 전용",
       "builtinSkillsNotice": "{{count}}개의 Skill은 {{agent}}에서 기본 제공하며 읽기 전용으로 표시됩니다. AgentBro는 이 파일을 인계, 덮어쓰기 또는 삭제하지 않습니다.",
       "builtinSkillsNoResults": "검색과 일치하는 기본 제공 Skill이 없습니다.",
+      "actions": {
+        "delete": "삭제",
+        "deleting": "삭제 중...",
+        "deleteNamed": "{{name}} 삭제",
+        "deletingNamed": "{{name}} 삭제 중",
+        "adopt": "인계",
+        "preparingAdopt": "인계 준비 중...",
+        "adopting": "인계 중...",
+        "batchSelect": "다중 선택",
+        "selected": "{{count}}개 선택됨",
+        "selectCurrent": "현재 항목 선택",
+        "selectCurrentAdoptable": "현재 인계 가능한 항목 선택",
+        "clear": "지우기",
+        "batchDelete": "Skill {{count}}개 삭제",
+        "adoptToCenter": "중앙 라이브러리로 인계",
+        "cancelSelection": "선택 취소",
+        "batchManage": "일괄 관리",
+        "selectNamed": "{{name}} 선택"
+      },
       "unmanagedDelete": {
         "title": "Skill \"{{name}}\"을(를) 삭제하시겠습니까?",
         "confirm": "영구 삭제",
@@ -1248,6 +1267,16 @@
         "description": "현재 Agent에서 로컬 Skill 디렉터리를 삭제합니다. 중앙 라이브러리에 추가되지 않으며 중앙 라이브러리에서 복원할 수도 없습니다.",
         "deleting": "Skill \"{{name}}\" 삭제 중...",
         "deleted": "Skill \"{{name}}\"을(를) 삭제했습니다"
+      },
+      "sharedDelete": {
+        "managedTitle": "공유 관리 Skill을 제거하시겠습니까?",
+        "unmanagedTitle": "공유 미관리 Skill을 영구 삭제하시겠습니까?",
+        "confirm": "공유 디렉터리에서 삭제",
+        "busy": "삭제 중...",
+        "managedDescription": "~/.agents/skills에서 관리 Skill {{count}}개를 제거합니다. 공유 디렉터리를 읽는 모든 Agent에서 더 이상 사용할 수 없습니다.",
+        "managedPreserved": "중앙 라이브러리의 Skill은 유지되며 나중에 다시 배포할 수 있습니다.",
+        "unmanagedDescription": "~/.agents/skills에서 미관리 Skill {{count}}개를 영구 삭제합니다. 공유 디렉터리를 읽는 모든 Agent가 영향을 받습니다.",
+        "unmanagedPermanent": "Skill은 중앙 라이브러리에 복사되지 않으며 AgentBro에서 복원할 수 없습니다. 보관하려면 인계를 사용하세요."
       },
       "packFilter": {
         "label": "팩 소속",

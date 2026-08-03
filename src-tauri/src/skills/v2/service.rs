@@ -24,8 +24,6 @@ const DEFAULT_SKILL_PACK_NAME: &str = "全量技能包";
 const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
     "中心库全部 Skills。无需维护成员，应用时按当前中心库全量分发。";
 
-type InheritedSkillRow = (String, String, String, bool, Option<String>, Option<String>);
-
 pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
@@ -2494,17 +2492,29 @@ impl Service {
 
     /// Remove a target's file/link AND all its DB rows (claims cascade).
     fn remove_target_completely(&self, target_id: &str) -> Result<(), String> {
-        let target_path = self.db.with_conn(|c| {
+        let target = self.db.with_conn(|c| {
             c.query_row(
-                "SELECT target_path FROM skill_targets WHERE id = ?1",
+                "SELECT agent_id, target_path FROM skill_targets WHERE id = ?1",
                 params![target_id],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())
         })?;
-        if let Some(p) = target_path {
-            fsutil::remove_path(Path::new(&p))?;
+        if let Some((agent_id, target_path)) = target {
+            let target_path = Path::new(&target_path);
+            if agent_id == SHARED_SKILLS_AGENT_ID
+                && !shared_skill_mutation_path_allowed(
+                    &self.home.join(".agents").join("skills"),
+                    target_path,
+                )
+            {
+                return Err(format!(
+                    "Refusing to delete shared managed skill outside the trusted .agents skill root: {}",
+                    target_path.display()
+                ));
+            }
+            fsutil::remove_path(target_path)?;
         }
         self.db.with_conn(|c| {
             c.execute(
@@ -3699,8 +3709,10 @@ impl Service {
                 }),
             }
         }
-        if deleted > 0 {
+        if deleted > 0 && failures.is_empty() {
             self.scan_one_agent_into_db(agent_id)?;
+        }
+        if deleted > 0 {
             self.refresh_snapshot_best_effort();
         }
         Ok(DeleteUnmanagedAgentSkillsResult { deleted, failures })
@@ -3729,9 +3741,13 @@ impl Service {
         }
 
         let path = Path::new(&item.path);
-        let allowed = agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
-            .into_iter()
-            .any(|root| unmanaged_delete_path_allowed(&root, path));
+        let allowed = if agent_id == SHARED_SKILLS_AGENT_ID {
+            shared_skill_mutation_path_allowed(&self.home.join(".agents").join("skills"), path)
+        } else {
+            agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
+                .into_iter()
+                .any(|root| unmanaged_delete_path_allowed(&root, path))
+        };
         if !allowed {
             return Err(format!(
                 "Refusing to delete unmanaged skill outside '{}' skill roots: {}",
@@ -3850,7 +3866,7 @@ impl Service {
 
         let path = Path::new(&item.path);
         let allowed = if agent_id == SHARED_SKILLS_AGENT_ID {
-            shared_adopt_path_allowed(&self.home.join(".agents").join("skills"), path)
+            shared_skill_mutation_path_allowed(&self.home.join(".agents").join("skills"), path)
         } else {
             agent_meta::agent_owned_skill_dirs(&self.home, agent_id)
                 .into_iter()
@@ -5328,61 +5344,20 @@ impl Service {
                 .map(|path| path.display().to_string())
         });
 
-        let targets = self.db.with_conn(|c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT id, skill_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at
-                     FROM skill_targets WHERE agent_id = ?1 ORDER BY target_path",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([agent_id], |r| {
-                    Ok(TargetRow {
-                        id: r.get(0)?,
-                        skill_id: r.get(1)?,
-                        agent_id: agent_id.to_string(),
-                        target_path: r.get(2)?,
-                        install_mode: r.get(3)?,
-                        actual_mode: r.get(4)?,
-                        source_hash: r.get(5)?,
-                        current_hash: r.get(6)?,
-                        status: r.get(7)?,
-                        created_at: r.get(8)?,
-                        updated_at: r.get(9)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r.map_err(|e| e.to_string())?);
-            }
-            Ok::<_, String>(v)
-        })?;
-
-        let mut skills = Vec::new();
-        for t in targets {
-            let claims = self.claims_for_target(&t.id).unwrap_or_default();
-            skills.push(SkillTargetDetail {
-                id: t.id,
-                skill_id: t.skill_id,
-                agent_id: t.agent_id,
-                resolved_target_path: resolved_target_path(&t.target_path),
-                target_path: t.target_path,
-                install_mode: t.install_mode,
-                actual_mode: t.actual_mode,
-                source_hash: t.source_hash,
-                current_hash: t.current_hash,
-                status: t.status,
-                created_at: t.created_at,
-                updated_at: t.updated_at,
-                claims,
-            });
-        }
-        let mut inherited_skills = self.inherited_skills_for_agent(agent_id)?;
-        inherited_skills.sort_by(|left, right| {
+        let skills = self.skill_targets_for_agent(agent_id)?;
+        let (mut inherited_managed_skills, mut inherited_unmanaged_skills) =
+            self.inherited_skills_for_agent(agent_id)?;
+        inherited_managed_skills.sort_by(|left, right| {
             left.skill_id
                 .to_lowercase()
                 .cmp(&right.skill_id.to_lowercase())
+                .then_with(|| left.target_path.cmp(&right.target_path))
+        });
+        inherited_unmanaged_skills.sort_by(|left, right| {
+            unmanaged_skill_name(left)
+                .to_lowercase()
+                .cmp(&unmanaged_skill_name(right).to_lowercase())
+                .then_with(|| left.path.cmp(&right.path))
         });
         let inherits_shared_skills = agent_meta::inherits_shared_agents_skills(agent_id);
 
@@ -5432,7 +5407,8 @@ impl Service {
             agent_dir,
             skills,
             inherits_shared_skills,
-            inherited_skills,
+            inherited_managed_skills,
+            inherited_unmanaged_skills,
             applied_packs,
             available_packs,
             mcp_servers,
@@ -5441,85 +5417,117 @@ impl Service {
         })
     }
 
+    fn skill_targets_for_agent(&self, agent_id: &str) -> Result<Vec<SkillTargetDetail>, String> {
+        let targets = self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, skill_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at
+                     FROM skill_targets WHERE agent_id = ?1 ORDER BY target_path, id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([agent_id], |r| {
+                    Ok(TargetRow {
+                        id: r.get(0)?,
+                        skill_id: r.get(1)?,
+                        agent_id: agent_id.to_string(),
+                        target_path: r.get(2)?,
+                        install_mode: r.get(3)?,
+                        actual_mode: r.get(4)?,
+                        source_hash: r.get(5)?,
+                        current_hash: r.get(6)?,
+                        status: r.get(7)?,
+                        created_at: r.get(8)?,
+                        updated_at: r.get(9)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r.map_err(|e| e.to_string())?);
+            }
+            Ok::<_, String>(v)
+        })?;
+
+        let mut skills = Vec::new();
+        for t in targets {
+            let claims = self.claims_for_target(&t.id)?;
+            skills.push(SkillTargetDetail {
+                id: t.id,
+                skill_id: t.skill_id,
+                agent_id: t.agent_id,
+                resolved_target_path: resolved_target_path(&t.target_path),
+                target_path: t.target_path,
+                install_mode: t.install_mode,
+                actual_mode: t.actual_mode,
+                source_hash: t.source_hash,
+                current_hash: t.current_hash,
+                status: t.status,
+                created_at: t.created_at,
+                updated_at: t.updated_at,
+                claims,
+            });
+        }
+        Ok(skills)
+    }
+
     fn inherited_skills_for_agent(
         &self,
         agent_id: &str,
-    ) -> Result<Vec<InheritedSkillDetail>, String> {
+    ) -> Result<(Vec<SkillTargetDetail>, Vec<UnmanagedItemDto>), String> {
         if !agent_meta::inherits_shared_agents_skills(agent_id) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
-        let rows = self.db.with_conn(|connection| {
+        let mut managed_by_path = BTreeMap::new();
+        for target in self.skill_targets_for_agent(SHARED_SKILLS_AGENT_ID)? {
+            managed_by_path
+                .entry(fsutil::normalized_path(Path::new(&target.target_path)))
+                .or_insert(target);
+        }
+        let mut unmanaged_by_path = BTreeMap::new();
+        for item in self.unmanaged_items_for_agent(SHARED_SKILLS_AGENT_ID)? {
+            let path = fsutil::normalized_path(Path::new(&item.path));
+            if !managed_by_path.contains_key(&path) {
+                unmanaged_by_path.entry(path).or_insert(item);
+            }
+        }
+        Ok((
+            managed_by_path.into_values().collect(),
+            unmanaged_by_path.into_values().collect(),
+        ))
+    }
+
+    fn unmanaged_items_for_agent(&self, agent_id: &str) -> Result<Vec<UnmanagedItemDto>, String> {
+        self.db.with_conn(|connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT id, skill_id, path, managed, target_id, unmanaged_id
-                     FROM (
-                         SELECT 'target:' || id AS id,
-                                skill_id,
-                                target_path AS path,
-                                1 AS managed,
-                                id AS target_id,
-                                NULL AS unmanaged_id
-                         FROM skill_targets
-                         WHERE agent_id = ?1
-                         UNION ALL
-                         SELECT 'unmanaged:' || id AS id,
-                                COALESCE(inferred_skill_id, '') AS skill_id,
-                                path,
-                                0 AS managed,
-                                NULL AS target_id,
-                                id AS unmanaged_id
-                         FROM unmanaged_items
-                         WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
-                     )
-                     ORDER BY path, managed DESC, id",
+                    "SELECT id, item_type, agent_id, path, inferred_skill_id, hash, reason
+                     FROM unmanaged_items
+                     WHERE agent_id = ?1 AND item_type IN ('skill', 'agent_skill')
+                     ORDER BY path, id",
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map([SHARED_SKILLS_AGENT_ID], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, bool>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                    ))
+                .query_map([agent_id], |row| {
+                    let reason = row.get::<_, String>(6)?;
+                    Ok(UnmanagedItemDto {
+                        id: row.get(0)?,
+                        item_type: row.get(1)?,
+                        agent_id: row.get(2)?,
+                        path: row.get(3)?,
+                        inferred_skill_id: row.get(4)?,
+                        hash: row.get(5)?,
+                        read_only: reason == "agent_builtin_read_only",
+                        reason,
+                    })
                 })
                 .map_err(|error| error.to_string())?;
             let mut values = Vec::new();
             for row in rows {
                 values.push(row.map_err(|error| error.to_string())?);
             }
-            Ok::<_, String>(values)
-        })?;
-        let mut rows_by_path: BTreeMap<PathBuf, InheritedSkillRow> = BTreeMap::new();
-        for row in rows {
-            let key = fsutil::normalized_path(Path::new(&row.2));
-            match rows_by_path.get(&key) {
-                Some(existing) if existing.3 || !row.3 => {}
-                _ => {
-                    rows_by_path.insert(key, row);
-                }
-            }
-        }
-        Ok(rows_by_path
-            .into_values()
-            .map(
-                |(id, skill_id, path, managed, target_id, unmanaged_id)| InheritedSkillDetail {
-                    id,
-                    skill_id: if skill_id.trim().is_empty() {
-                        infer_name_from_path(&path)
-                    } else {
-                        skill_id
-                    },
-                    resolved_path: resolved_target_path(&path),
-                    path,
-                    managed,
-                    target_id,
-                    unmanaged_id,
-                },
-            )
-            .collect())
+            Ok(values)
+        })
     }
 
     fn applied_packs_for_agent(&self, agent_id: &str) -> Result<Vec<AppliedPackSummary>, String> {
@@ -5724,6 +5732,18 @@ fn existing_target_mode(path: &Path) -> &'static str {
     }
 }
 
+fn unmanaged_skill_name(item: &UnmanagedItemDto) -> &str {
+    item.inferred_skill_id
+        .as_deref()
+        .filter(|skill_id| !skill_id.trim().is_empty())
+        .or_else(|| {
+            Path::new(&item.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+        })
+        .unwrap_or(&item.path)
+}
+
 fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
     if path == root || root.is_symlink() {
         return false;
@@ -5740,7 +5760,7 @@ fn unmanaged_delete_path_allowed(root: &Path, path: &Path) -> bool {
     path.starts_with(&root) && path != root
 }
 
-fn shared_adopt_path_allowed(shared_root: &Path, path: &Path) -> bool {
+fn shared_skill_mutation_path_allowed(shared_root: &Path, path: &Path) -> bool {
     let shared_parent_is_link = shared_root
         .parent()
         .is_some_and(|parent| parent.is_symlink());
@@ -5792,7 +5812,7 @@ fn ensure_shared_adopt_source_unchanged(
     path: &Path,
     expected_hash: &str,
 ) -> Result<(), String> {
-    if !shared_adopt_path_allowed(shared_root, path) {
+    if !shared_skill_mutation_path_allowed(shared_root, path) {
         return Err(format!(
             "Shared skill '{}' is no longer below a trusted .agents skill root; the source was preserved.",
             path.display()

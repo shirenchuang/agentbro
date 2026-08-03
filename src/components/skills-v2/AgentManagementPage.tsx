@@ -6,7 +6,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
-import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, InheritedSkillDetail, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
+import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
@@ -1102,15 +1102,23 @@ function AgentDetailView({
   const observedSkills = useSkillStoreV2((s) => s.unmanaged).filter((u) => u.agentId === detail.id)
   const unmanaged = observedSkills.filter((item) => showUnmanaged && !isReadOnlyUnmanaged(item))
   const readOnlySkills = observedSkills.filter(isReadOnlyUnmanaged)
-  const inheritedSkills = detail.inheritedSkills ?? []
-  const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkills.length > 0
+  const inheritedManagedSkills = detail.inheritedManagedSkills ?? []
+  const inheritedUnmanagedSkills = detail.inheritedUnmanagedSkills ?? []
+  const inheritedSkillCount = inheritedManagedSkills.length + inheritedUnmanagedSkills.length
+  const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkillCount > 0
   const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
   const installedVersion = program?.installedVersion ?? detail.version
   const latestVersion = program?.latestVersion ?? detail.latestVersion
-  const logicalSkillCount = countLogicalAgentSkills(detail.skills, unmanaged, inheritedSkills, readOnlySkills)
+  const logicalSkillCount = countLogicalAgentSkills(
+    detail.skills,
+    unmanaged,
+    inheritedManagedSkills,
+    inheritedUnmanagedSkills,
+    readOnlySkills,
+  )
   const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
   const updateLabel = !installed
@@ -1148,7 +1156,7 @@ function AgentDetailView({
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">
           <Stat value={detail.skills.length} label="已管理" />
           {showUnmanaged && <Stat value={unmanaged.length} label="未管理" tone={unmanaged.length > 0 ? 'warn' : 'ok'} />}
-          {inheritsSharedSkills && <Stat value={inheritedSkills.length} label={t('skills.agentManagement.inheritedSkills')} />}
+          {inheritsSharedSkills && <Stat value={inheritedSkillCount} label={t('skills.agentManagement.inheritedSkills')} />}
           {readOnlySkills.length > 0 && <Stat value={readOnlySkills.length} label={t('skills.agentManagement.builtinSkills')} />}
           <Stat value={detail.appliedPacks.length} label="技能包" />
           <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
@@ -1207,7 +1215,8 @@ function AgentDetailView({
             key={detail.id}
             detail={detail}
             unmanaged={unmanaged}
-            inheritedSkills={inheritedSkills}
+            inheritedManagedSkills={inheritedManagedSkills}
+            inheritedUnmanagedSkills={inheritedUnmanagedSkills}
             readOnlySkills={readOnlySkills}
             showUnmanaged={showUnmanaged}
             busy={busy}
@@ -1257,7 +1266,7 @@ function OverviewTab({
   const unmanagedCount = observedSkills
     .filter((item) => showUnmanaged && !isReadOnlyUnmanaged(item)).length
   const readOnlyCount = observedSkills.filter(isReadOnlyUnmanaged).length
-  const inheritedCount = detail.inheritedSkills?.length ?? 0
+  const inheritedCount = (detail.inheritedManagedSkills?.length ?? 0) + (detail.inheritedUnmanagedSkills?.length ?? 0)
   const appliedIds = new Set(detail.appliedPacks.map((p) => p.packId))
   const available = detail.availablePacks.filter((p) => !appliedIds.has(p.id))
   const validMcpCount = detail.mcpServers.filter((server) => server.valid).length
@@ -1519,7 +1528,8 @@ function OverviewTab({
 function SkillsTab({
   detail,
   unmanaged,
-  inheritedSkills,
+  inheritedManagedSkills,
+  inheritedUnmanagedSkills,
   readOnlySkills,
   showUnmanaged,
   busy,
@@ -1533,7 +1543,8 @@ function SkillsTab({
 }: {
   detail: AgentDetail
   unmanaged: UnmanagedItemDto[]
-  inheritedSkills: InheritedSkillDetail[]
+  inheritedManagedSkills: AgentDetail['skills']
+  inheritedUnmanagedSkills: UnmanagedItemDto[]
   readOnlySkills: UnmanagedItemDto[]
   showUnmanaged: boolean
   busy: boolean
@@ -1571,19 +1582,29 @@ function SkillsTab({
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
   const [packApplyProgress, setPackApplyProgress] = useState<PackApplyProgress | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
-  const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkills.length > 0
+  const inheritedSkillCount = inheritedManagedSkills.length + inheritedUnmanagedSkills.length
+  const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkillCount > 0
+  const activeManagedSkills = source === 'agent' ? detail.skills : inheritedManagedSkills
+  const activeUnmanagedSkills = source === 'agent' ? unmanaged : inheritedUnmanagedSkills
+  const capabilities = {
+    addSkill: source === 'agent',
+    managePackRail: source === 'agent',
+    moveToPack: source === 'agent',
+    quickTakeover: source === 'agent',
+  }
   const q = query.trim().toLowerCase()
   const searchedManaged = useMemo(() => {
-    if (!q) return detail.skills
-    return detail.skills.filter((s) =>
+    if (!q) return activeManagedSkills
+    return activeManagedSkills.filter((s) =>
       [
+        s.skillId,
         s.targetPath,
         s.status,
         s.actualMode,
         ...s.claims.map((claim) => claim.packName || claim.claimType),
       ].filter(Boolean).join(' ').toLowerCase().includes(q),
     )
-  }, [q, detail.skills])
+  }, [activeManagedSkills, q])
   const packFilterCounts = useMemo(() => {
     const pack = searchedManaged.filter(hasSkillPackClaim).length
     return { all: searchedManaged.length, pack, standalone: searchedManaged.length - pack }
@@ -1593,34 +1614,15 @@ function SkillsTab({
     return searchedManaged.filter((skill) => packFilter === 'pack' ? hasSkillPackClaim(skill) : !hasSkillPackClaim(skill))
   }, [packFilter, searchedManaged])
   const filteredUnmanaged = useMemo(() => {
-    if (!q) return unmanaged
-    return unmanaged.filter((u) =>
+    if (!q) return activeUnmanagedSkills
+    return activeUnmanagedSkills.filter((u) =>
       [u.inferredSkillId, u.path, u.reason, unmanagedReasonLabel(t, u.reason), unmanagedSourceLabel(t, u)]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(q),
     )
-  }, [q, t, unmanaged])
-  const inheritedManaged = useMemo(
-    () => inheritedSkills.filter((item) => item.managed),
-    [inheritedSkills],
-  )
-  const inheritedUnmanaged = useMemo(
-    () => inheritedSkills.filter((item) => !item.managed),
-    [inheritedSkills],
-  )
-  const selectedInherited = status === 'managed' ? inheritedManaged : inheritedUnmanaged
-  const filteredInherited = useMemo(() => {
-    if (!q) return selectedInherited
-    return selectedInherited.filter((item) =>
-      [item.skillId, item.path, item.resolvedPath]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(q),
-    )
-  }, [q, selectedInherited])
+  }, [activeUnmanagedSkills, q, t])
   const filteredReadOnly = useMemo(() => {
     if (!q) return readOnlySkills
     return readOnlySkills.filter((item) =>
@@ -1631,14 +1633,14 @@ function SkillsTab({
         .includes(q),
     )
   }, [q, readOnlySkills, t])
-  const [pageResetKey, setPageResetKey] = useState(`${q}|${detail.id}|${source}|${status}`)
-  const currentResetKey = `${q}|${detail.id}|${source}|${status}`
+  const [pageResetKey, setPageResetKey] = useState(`${q}|${detail.id}|${source}|${status}|${packFilter}`)
+  const currentResetKey = `${q}|${detail.id}|${source}|${status}|${packFilter}`
   if (pageResetKey !== currentResetKey) {
     setPageResetKey(currentResetKey)
     if (page !== 1) setPage(1)
   }
+  const shownManaged = filteredManaged.slice(0, page * PAGE_SIZE)
   const shownUnmanaged = filteredUnmanaged.slice(0, page * PAGE_SIZE)
-  const shownInherited = filteredInherited.slice(0, page * PAGE_SIZE)
   const shownReadOnly = filteredReadOnly.slice(0, page * PAGE_SIZE)
   const canManageUnmanaged = filteredUnmanaged
   const quickTakeoverCandidates = useMemo(
@@ -1742,9 +1744,10 @@ function SkillsTab({
       const targetNames = new Map(targets.map((target) => [target.id, pathBasename(target.targetPath) || target.skillId]))
       const result = await skillApiV2.deleteSkillTargetDistributions(ids)
       const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
+      const failedIds = new Set(result.failures.map((failure) => failure.targetId))
       await refreshAgentSkills()
-      setSelectedManagedIds(new Set())
-      setManagedSelectionMode(false)
+      setSelectedManagedIds(failedIds)
+      setManagedSelectionMode(failedIds.size > 0)
       setLocalNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
@@ -1943,6 +1946,9 @@ function SkillsTab({
 
   const selectedManaged = filteredManaged.filter((item) => selectedManagedIds.has(item.id))
   const selectedUnmanaged = filteredUnmanaged.filter((item) => selectedUnmanagedIds.has(item.id))
+  const deletingSharedManaged = batchDeleteTargets?.some(isSharedManagedSkill) ?? false
+  const deletingSharedUnmanaged = batchDeleteUnmanagedTargets?.some(isSharedAgentsUnmanaged) ?? false
+  const deletingSingleSharedUnmanaged = deleteUnmanagedTarget ? isSharedAgentsUnmanaged(deleteUnmanagedTarget) : false
   const confirmBatchDelete = async () => {
     if (!batchDeleteTargets || batchDeleteTargets.length === 0) return
     await deleteManaged(batchDeleteTargets)
@@ -2008,7 +2014,7 @@ function SkillsTab({
               if (status === 'builtin') setStatus('managed')
             }}
           >
-            {t('skills.agentManagement.inheritedSkills')} {inheritedSkills.length}
+            {t('skills.agentManagement.inheritedSkills')} {inheritedSkillCount}
           </button>
         </div>
       )}
@@ -2018,7 +2024,7 @@ function SkillsTab({
           aria-pressed={status === 'managed'}
           onClick={() => setStatus('managed')}
         >
-          {t('skills.agentManagement.managedSkills')} {source === 'shared' ? inheritedManaged.length : detail.skills.length}
+          {t('skills.agentManagement.managedSkills')} {activeManagedSkills.length}
         </button>
         {(source === 'shared' || showUnmanaged) && (
           <button
@@ -2026,7 +2032,7 @@ function SkillsTab({
             aria-pressed={status === 'unmanaged'}
             onClick={() => setStatus('unmanaged')}
           >
-            {t('skills.agentManagement.unmanagedSkills')} {source === 'shared' ? inheritedUnmanaged.length : unmanaged.length}
+            {t('skills.agentManagement.unmanagedSkills')} {activeUnmanagedSkills.length}
           </button>
         )}
         {source === 'agent' && readOnlySkills.length > 0 && (
@@ -2039,7 +2045,7 @@ function SkillsTab({
           </button>
         )}
       </div>
-      {source === 'agent' && status === 'managed' && (
+      {capabilities.managePackRail && status === 'managed' && (
         <AgentPackToggleRail
           detail={detail}
           busy={actionBusy || confirmingPackApply}
@@ -2050,7 +2056,7 @@ function SkillsTab({
       <div className="sm2__toolbar sm2__toolbar--inset sm2__toolbar--split">
         <input className="sm2__search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 Skill 名称 / 路径 / 来源 / 原因" />
         <div className="sm2__agent-skill-actions">
-          {source === 'agent' && status === 'managed' && (
+          {status === 'managed' && (
             <label className="sm2__agent-skill-pack-filter">
               <span>{t('skills.agentManagement.packFilter.label')}</span>
               <select
@@ -2064,72 +2070,76 @@ function SkillsTab({
               </select>
             </label>
           )}
-          {source === 'agent' && status === 'managed' ? (
+          {status === 'managed' ? (
             <>
-              <button className="sm2__btn sm2__btn--primary" disabled={actionBusy || state.skills.length === 0} onClick={() => setInstallDialogOpen(true)}>
-                新增SKILL
-              </button>
+              {capabilities.addSkill && (
+                <button className="sm2__btn sm2__btn--primary" disabled={actionBusy || state.skills.length === 0} onClick={() => setInstallDialogOpen(true)}>
+                  新增SKILL
+                </button>
+              )}
               {managedSelectionMode ? (
               <>
-                <span>已选择 {selectedManagedIds.size} 个</span>
+                <span>{t('skills.agentManagement.actions.selected', { count: selectedManagedIds.size })}</span>
                 <button className="sm2__btn" disabled={filteredManaged.length === 0 || actionBusy} onClick={() => setSelectedManagedIds(new Set(filteredManaged.map((item) => item.id)))}>
-                  选择当前
+                  {t('skills.agentManagement.actions.selectCurrent')}
                 </button>
                 <button className="sm2__btn" disabled={selectedManagedIds.size === 0 || actionBusy} onClick={() => setSelectedManagedIds(new Set())}>
-                  清空
+                  {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel="删除中" onClick={() => setBatchDeleteTargets(selectedManaged)}>
-                  批量删除 {selectedManaged.length} 个
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteTargets(selectedManaged)}>
+                  {t('skills.agentManagement.actions.batchDelete', { count: selectedManaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
                   setSelectedManagedIds(new Set())
                   setManagedSelectionMode(false)
                 }}>
-                  取消多选
+                  {t('skills.agentManagement.actions.cancelSelection')}
                 </button>
               </>
               ) : (
                 <button className="sm2__btn" disabled={filteredManaged.length === 0 || actionBusy} onClick={() => setManagedSelectionMode(true)}>
-                  批量选择
+                  {t('skills.agentManagement.actions.batchSelect')}
                 </button>
               )}
             </>
-          ) : source === 'agent' && status === 'unmanaged' ? (
+          ) : status === 'unmanaged' ? (
             unmanagedSelectionMode ? (
               <>
-                <span>已选择 {selectedUnmanagedIds.size} 个</span>
+                <span>{t('skills.agentManagement.actions.selected', { count: selectedUnmanagedIds.size })}</span>
                 <button className="sm2__btn" disabled={canManageUnmanaged.length === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set(canManageUnmanaged.map((item) => item.id)))}>
-                  选择当前可接管
+                  {t('skills.agentManagement.actions.selectCurrentAdoptable')}
                 </button>
                 <button className="sm2__btn" disabled={selectedUnmanagedIds.size === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set())}>
-                  清空
+                  {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel="接管中" onClick={() => setBatchAdoptItems(selectedUnmanaged)}>
-                  接管到中心库
+                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => setBatchAdoptItems(selectedUnmanaged)}>
+                  {t('skills.agentManagement.actions.adoptToCenter')}
                 </ActionButton>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel="删除中" onClick={() => setBatchDeleteUnmanagedTargets(selectedUnmanaged)}>
-                  批量删除 {selectedUnmanaged.length} 个
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteUnmanagedTargets(selectedUnmanaged)}>
+                  {t('skills.agentManagement.actions.batchDelete', { count: selectedUnmanaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
                   setSelectedUnmanagedIds(new Set())
                   setUnmanagedSelectionMode(false)
                 }}>
-                  取消多选
+                  {t('skills.agentManagement.actions.cancelSelection')}
                 </button>
               </>
             ) : (
               <>
-                <ActionButton
-                  className="sm2__btn sm2__btn--primary"
-                  disabled={quickTakeoverCandidates.length === 0 || actionBusy}
-                  busy={unmanagedAdopting}
-                  busyLabel={t('skills.agentManagement.quickTakeover.busy')}
-                  onClick={() => setQuickTakeoverItems(quickTakeoverCandidates)}
-                >
-                  {t('skills.agentManagement.quickTakeover.action', { count: quickTakeoverCandidates.length })}
-                </ActionButton>
+                {capabilities.quickTakeover && (
+                  <ActionButton
+                    className="sm2__btn sm2__btn--primary"
+                    disabled={quickTakeoverCandidates.length === 0 || actionBusy}
+                    busy={unmanagedAdopting}
+                    busyLabel={t('skills.agentManagement.quickTakeover.busy')}
+                    onClick={() => setQuickTakeoverItems(quickTakeoverCandidates)}
+                  >
+                    {t('skills.agentManagement.quickTakeover.action', { count: quickTakeoverCandidates.length })}
+                  </ActionButton>
+                )}
                 <button className="sm2__btn" disabled={canManageUnmanaged.length === 0 || actionBusy} onClick={() => setUnmanagedSelectionMode(true)}>
-                  批量管理
+                  {t('skills.agentManagement.actions.batchManage')}
                 </button>
               </>
             )
@@ -2146,30 +2156,54 @@ function SkillsTab({
         local
       />
 
-      {source === 'agent' && status === 'managed' && (
-        <ManagedSkillCollection
-          skills={filteredManaged}
-          mode={viewMode}
-          selectable={managedSelectionMode}
-          selectedIds={selectedManagedIds}
-          deletingIds={deletingIds}
-          busy={actionBusy}
-          emptyMessage={q || packFilter !== 'all' ? t('skills.agentManagement.packFilter.noResults') : undefined}
-          onToggle={toggleManaged}
-          onDelete={(skill) => deleteManaged([skill])}
-          onMoveToPack={moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
-          onOpenSkillDetail={onOpenSkillDetail}
-        />
+      {source === 'shared' && inheritsSharedSkills && status !== 'builtin' && (
+        <div className="sm2__notice sm2__notice--info">
+          {t('skills.agentManagement.inheritedSkillsNotice', { agent: detail.displayName })}
+        </div>
       )}
 
-      {source === 'agent' && status === 'unmanaged' && showUnmanaged && (
+      {status === 'managed' && (
+        <>
+          <ManagedSkillCollection
+            skills={shownManaged}
+            mode={viewMode}
+            selectable={managedSelectionMode}
+            selectedIds={selectedManagedIds}
+            deletingIds={deletingIds}
+            busy={actionBusy}
+            emptyMessage={source === 'shared'
+              ? t('skills.agentManagement.inheritedManagedNoResults')
+              : q || packFilter !== 'all'
+                ? t('skills.agentManagement.packFilter.noResults')
+                : undefined}
+            onToggle={toggleManaged}
+            onDelete={(skill) => {
+              if (source === 'shared') setBatchDeleteTargets([skill])
+              else void deleteManaged([skill])
+            }}
+            onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
+            onOpenSkillDetail={onOpenSkillDetail}
+          />
+          {shownManaged.length < filteredManaged.length && (
+            <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
+              继续显示 {Math.min(PAGE_SIZE, filteredManaged.length - shownManaged.length)} 个
+            </button>
+          )}
+        </>
+      )}
+
+      {status === 'unmanaged' && (source === 'shared' || showUnmanaged) && (
         <>
           {filteredUnmanaged.length === 0 ? (
             <div className="sm2__empty sm2__empty--compact sm2__unmanaged-empty">
               <span>
-                {unmanaged.length === 0 ? '没有未管理 Skill。若刚手动安装过，可以重新扫描。' : '没有匹配的未管理 Skill'}
+                {source === 'shared'
+                  ? t('skills.agentManagement.inheritedUnmanagedNoResults')
+                  : unmanaged.length === 0
+                    ? '没有未管理 Skill。若刚手动安装过，可以重新扫描。'
+                    : '没有匹配的未管理 Skill'}
               </span>
-              {unmanaged.length === 0 && (
+              {source === 'agent' && unmanaged.length === 0 && (
                 <ActionButton className="sm2__btn" disabled={busy} onClick={() => onScan(detail.id)} busy={scanning} busyLabel="正在扫描">
                   {scanning ? '正在扫描' : '重新扫描此 Agent'}
                 </ActionButton>
@@ -2180,7 +2214,7 @@ function SkillsTab({
               <UnmanagedSkillCollection
                 skills={shownUnmanaged}
                 mode={viewMode}
-                agentId={detail.id}
+                agentId={source === 'shared' ? SHARED_SKILLS_AGENT_ID : detail.id}
                 busy={actionBusy}
                 selectable={unmanagedSelectionMode}
                 selectedIds={selectedUnmanagedIds}
@@ -2244,51 +2278,31 @@ function SkillsTab({
         </>
       )}
 
-      {source === 'shared' && inheritsSharedSkills && status !== 'builtin' && (
-        <>
-          <div className="sm2__notice sm2__notice--info">
-            {t('skills.agentManagement.inheritedSkillsNotice', { agent: detail.displayName })}
-          </div>
-          {filteredInherited.length === 0 ? (
-            <div className="sm2__empty sm2__empty--compact">
-              {t(
-                status === 'managed'
-                  ? 'skills.agentManagement.inheritedManagedNoResults'
-                  : 'skills.agentManagement.inheritedUnmanagedNoResults',
-              )}
-            </div>
-          ) : (
-            <>
-              <InheritedSkillCollection
-                skills={shownInherited}
-                mode={viewMode}
-                busy={actionBusy}
-                adoptingUnmanagedId={adoptingUnmanagedId}
-                onAdopt={onAdopt}
-                onOpenSkillDetail={onOpenSkillDetail}
-              />
-              {shownInherited.length < filteredInherited.length && (
-                <button className="sm2__btn sm2__btn--ghost sm2__load-more" onClick={() => setPage((p) => p + 1)}>
-                  继续显示 {Math.min(PAGE_SIZE, filteredInherited.length - shownInherited.length)} 个
-                </button>
-              )}
-            </>
-          )}
-        </>
-      )}
-
       {batchDeleteTargets && (
         <PreviewDialog
-          title="确认批量删除 Skill？"
-          confirmLabel="确认删除"
-          busyLabel="删除中"
+          title={deletingSharedManaged
+            ? t('skills.agentManagement.sharedDelete.managedTitle')
+            : '确认批量删除 Skill？'}
+          confirmLabel={deletingSharedManaged
+            ? t('skills.agentManagement.sharedDelete.confirm')
+            : '确认删除'}
+          busyLabel={deletingSharedManaged
+            ? t('skills.agentManagement.sharedDelete.busy')
+            : '删除中'}
           destructive
           busy={managedDeleting}
           disabled={batchDeleteTargets.length === 0}
           onCancel={() => setBatchDeleteTargets(null)}
           onConfirm={confirmBatchDelete}
         >
-          <p>{batchDeleteTargets.length}个SKILL 将从当前Agent直接删除，您后续仍旧可以从中心库安装</p>
+          {deletingSharedManaged ? (
+            <>
+              <p>{t('skills.agentManagement.sharedDelete.managedDescription', { count: batchDeleteTargets.length })}</p>
+              <p>{t('skills.agentManagement.sharedDelete.managedPreserved')}</p>
+            </>
+          ) : (
+            <p>{batchDeleteTargets.length}个SKILL 将从当前Agent直接删除，您后续仍旧可以从中心库安装</p>
+          )}
         </PreviewDialog>
       )}
       {batchAdoptItems && (
@@ -2330,9 +2344,15 @@ function SkillsTab({
       )}
       {batchDeleteUnmanagedTargets && (
         <PreviewDialog
-          title="确认批量删除未管理 Skill？"
-          confirmLabel="确认删除"
-          busyLabel="删除中"
+          title={deletingSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
+            : '确认批量删除未管理 Skill？'}
+          confirmLabel={deletingSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.confirm')
+            : '确认删除'}
+          busyLabel={deletingSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.busy')
+            : '删除中'}
           destructive
           busy={unmanagedDeleting}
           disabled={batchDeleteUnmanagedTargets.length === 0}
@@ -2343,8 +2363,17 @@ function SkillsTab({
             setBatchDeleteUnmanagedTargets(null)
           }}
         >
-          <p><strong>{batchDeleteUnmanagedTargets.length}</strong> 个未管理 Skill 将从当前 Agent 直接删除。</p>
-          <p>这些 Skill 不会写入中心库，删除后无法从 AgentBro 恢复。</p>
+          {deletingSharedUnmanaged ? (
+            <>
+              <p>{t('skills.agentManagement.sharedDelete.unmanagedDescription', { count: batchDeleteUnmanagedTargets.length })}</p>
+              <p>{t('skills.agentManagement.sharedDelete.unmanagedPermanent')}</p>
+            </>
+          ) : (
+            <>
+              <p><strong>{batchDeleteUnmanagedTargets.length}</strong> 个未管理 Skill 将从当前 Agent 直接删除。</p>
+              <p>这些 Skill 不会写入中心库，删除后无法从 AgentBro 恢复。</p>
+            </>
+          )}
         </PreviewDialog>
       )}
       {moveToPackTarget && (
@@ -2364,11 +2393,17 @@ function SkillsTab({
       )}
       {deleteUnmanagedTarget && (
         <PreviewDialog
-          title={t('skills.agentManagement.unmanagedDelete.title', {
-            name: deleteUnmanagedTarget.inferredSkillId || pathBasename(deleteUnmanagedTarget.path) || deleteUnmanagedTarget.id,
-          })}
-          confirmLabel={t('skills.agentManagement.unmanagedDelete.confirm')}
-          busyLabel={t('skills.agentManagement.unmanagedDelete.busy')}
+          title={deletingSingleSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
+            : t('skills.agentManagement.unmanagedDelete.title', {
+              name: deleteUnmanagedTarget.inferredSkillId || pathBasename(deleteUnmanagedTarget.path) || deleteUnmanagedTarget.id,
+            })}
+          confirmLabel={deletingSingleSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.confirm')
+            : t('skills.agentManagement.unmanagedDelete.confirm')}
+          busyLabel={deletingSingleSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.busy')
+            : t('skills.agentManagement.unmanagedDelete.busy')}
           modalClassName="sm2__modal--unmanaged-delete"
           destructive
           busy={deletingUnmanagedIds.has(deleteUnmanagedTarget.id)}
@@ -2384,7 +2419,10 @@ function SkillsTab({
             }
           }}
         >
-          <p>{t('skills.agentManagement.unmanagedDelete.description')}</p>
+          <p>{deletingSingleSharedUnmanaged
+            ? t('skills.agentManagement.sharedDelete.unmanagedDescription', { count: 1 })
+            : t('skills.agentManagement.unmanagedDelete.description')}</p>
+          {deletingSingleSharedUnmanaged && <p>{t('skills.agentManagement.sharedDelete.unmanagedPermanent')}</p>}
           <code>{deleteUnmanagedTarget.path}</code>
           {deleteUnmanagedError && <div className="sm2__error sm2__modal-inline-error">{deleteUnmanagedError}</div>}
         </PreviewDialog>
@@ -3496,6 +3534,8 @@ function ManagedSkillCard({
   const name = pathBasename(skill.targetPath) || skill.id
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
+  const deleteLabel = t('skills.agentManagement.actions.delete')
+  const deletingLabel = t('skills.agentManagement.actions.deleting')
   return (
     <AgentSkillCard
       name={name}
@@ -3521,16 +3561,18 @@ function ManagedSkillCard({
             {t('skills.moveToPack.action')}
           </button>
         )}
-        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
+        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel={deletingLabel} aria-label={t(deleting
+          ? 'skills.agentManagement.actions.deletingNamed'
+          : 'skills.agentManagement.actions.deleteNamed', { name })} onClick={(e) => {
           e.stopPropagation()
           onDelete(skill)
         }}>
-          删除
+          {deleteLabel}
         </ActionButton>
       </>}
       selectable={selectable}
       selected={selected}
-      selectionLabel={`选择 ${name}`}
+      selectionLabel={t('skills.agentManagement.actions.selectNamed', { name })}
       selectionDisabled={busy}
       deleting={deleting}
       onToggle={() => onToggle(skill.id)}
@@ -3564,6 +3606,8 @@ function ManagedSkillListRow({
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   const name = pathBasename(skill.targetPath) || skill.id
   const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
+  const deleteLabel = t('skills.agentManagement.actions.delete')
+  const deletingLabel = t('skills.agentManagement.actions.deleting')
   return (
     <AgentSkillListRow
       name={name}
@@ -3578,117 +3622,23 @@ function ManagedSkillListRow({
             {t('skills.moveToPack.action')}
           </button>
         )}
-        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
+        <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel={deletingLabel} aria-label={t(deleting
+          ? 'skills.agentManagement.actions.deletingNamed'
+          : 'skills.agentManagement.actions.deleteNamed', { name })} onClick={(e) => {
           e.stopPropagation()
           onDelete(skill)
         }}>
-          删除
+          {deleteLabel}
         </ActionButton>
       </>}
       selectable={selectable}
       selected={selected}
-      selectionLabel={`选择 ${name}`}
+      selectionLabel={t('skills.agentManagement.actions.selectNamed', { name })}
       selectionDisabled={busy}
       deleting={deleting}
       onToggle={() => onToggle(skill.id)}
       onOpen={() => onOpenSkillDetail(skill.skillId)}
     />
-  )
-}
-
-function InheritedSkillCollection({
-  skills,
-  mode,
-  busy,
-  adoptingUnmanagedId,
-  onAdopt,
-  onOpenSkillDetail,
-}: {
-  skills: InheritedSkillDetail[]
-  mode: AgentSkillViewMode
-  busy: boolean
-  adoptingUnmanagedId: string | null
-  onAdopt: (agentId: string, unmanagedId: string) => void
-  onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
-}) {
-  const { t } = useTranslation()
-  if (mode === 'list') {
-    return (
-      <div className="sm2__agent-skill-list">
-        {skills.map((skill) => {
-          const adopting = skill.unmanagedId !== null && adoptingUnmanagedId === skill.unmanagedId
-          return (
-            <AgentSkillListRow
-              key={skill.id}
-              name={skill.skillId}
-              description={`${t('skills.agentManagement.inheritedSkillsSource')} · ${t(skill.managed
-                ? 'skills.agentManagement.managedSkills'
-                : 'skills.agentManagement.unmanagedSkills')}`}
-              path={skill.path}
-              pathTitle={skill.resolvedPath ?? undefined}
-              actions={!skill.managed && skill.unmanagedId ? (
-                <ActionButton
-                  className="sm2__btn sm2__btn--primary"
-                  disabled={busy && adoptingUnmanagedId !== skill.unmanagedId}
-                  busy={adopting}
-                  busyLabel={t('skills.agentManagement.sharedAdoptBusy')}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onAdopt(SHARED_SKILLS_AGENT_ID, skill.unmanagedId!)
-                  }}
-                >
-                  {t('skills.agentManagement.sharedAdoptAction')}
-                </ActionButton>
-              ) : undefined}
-              adopting={adopting}
-              onOpen={() => openInheritedSkill(skill, onOpenSkillDetail)}
-            />
-          )
-        })}
-      </div>
-    )
-  }
-
-  return (
-    <div className="sm2__agent-skill-grid">
-      {skills.map((skill) => {
-        const adopting = skill.unmanagedId !== null && adoptingUnmanagedId === skill.unmanagedId
-        return (
-          <AgentSkillCard
-            key={skill.id}
-            name={skill.skillId}
-            description={t('skills.agentManagement.inheritedSkillsSource')}
-            path={skill.path}
-            pathTitle={skill.resolvedPath ?? undefined}
-            status={(
-              <span className={`sm2__tag sm2__tag--${skill.managed ? 'managed' : 'unmanaged'}`}>
-                {t(skill.managed
-                  ? 'skills.agentManagement.managedSkills'
-                  : 'skills.agentManagement.unmanagedSkills')}
-              </span>
-            )}
-            metadata={<span className="sm2__source-pill">{t('skills.agentManagement.inheritedSkills')}</span>}
-            actions={!skill.managed && skill.unmanagedId ? (
-              <ActionButton
-                className="sm2__btn sm2__btn--primary"
-                disabled={busy && adoptingUnmanagedId !== skill.unmanagedId}
-                busy={adopting}
-                busyLabel={t('skills.agentManagement.sharedAdoptBusy')}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onAdopt(SHARED_SKILLS_AGENT_ID, skill.unmanagedId!)
-                }}
-              >
-                {t('skills.agentManagement.sharedAdoptAction')}
-              </ActionButton>
-            ) : undefined}
-            adopting={adopting}
-            unmanaged={!skill.managed}
-            onOpen={() => openInheritedSkill(skill, onOpenSkillDetail)}
-          />
-        )
-      })}
-    </div>
   )
 }
 
@@ -3732,17 +3682,19 @@ function UnmanagedSkillCollection({
         const sourceLabel = unmanagedSourceLabel(t, u)
         const actions = readOnly ? undefined : (
           <>
-            <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(event) => {
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel={t('skills.agentManagement.actions.preparingAdopt')} onClick={(event) => {
               event.stopPropagation()
               onAdopt(adoptOwnerAgentId(agentId, u), u.id)
             }}>
-              接管
+              {t('skills.agentManagement.actions.adopt')}
             </ActionButton>
-            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(event) => {
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel={t('skills.agentManagement.actions.deleting')} aria-label={t(deleting
+              ? 'skills.agentManagement.actions.deletingNamed'
+              : 'skills.agentManagement.actions.deleteNamed', { name })} onClick={(event) => {
               event.stopPropagation()
               onDelete(u)
             }}>
-              删除
+              {t('skills.agentManagement.actions.delete')}
             </ActionButton>
           </>
         )
@@ -3757,7 +3709,7 @@ function UnmanagedSkillCollection({
               actions={actions}
               selectable={selectable && !readOnly}
               selected={selectable && selectedIds.has(u.id)}
-              selectionLabel={`选择 ${name}`}
+              selectionLabel={t('skills.agentManagement.actions.selectNamed', { name })}
               selectionDisabled={busy}
               deleting={deleting}
               adopting={adopting}
@@ -3781,7 +3733,7 @@ function UnmanagedSkillCollection({
             actions={actions}
             selectable={selectable && !readOnly}
             selected={selectable && selectedIds.has(u.id)}
-            selectionLabel={`选择 ${name}`}
+            selectionLabel={t('skills.agentManagement.actions.selectNamed', { name })}
             selectionDisabled={busy}
             deleting={deleting}
             adopting={adopting}
@@ -3813,13 +3765,15 @@ function uniqueValues(values: string[]) {
 function countLogicalAgentSkills(
   managed: AgentDetail['skills'],
   unmanaged: UnmanagedItemDto[],
-  inherited: InheritedSkillDetail[],
+  inheritedManaged: AgentDetail['skills'],
+  inheritedUnmanaged: UnmanagedItemDto[],
   readOnly: UnmanagedItemDto[],
 ) {
   return new Set([
     ...managed.map((item) => item.skillId || item.id),
     ...unmanaged.map((item) => item.inferredSkillId || item.id),
-    ...inherited.map((item) => item.skillId || item.id),
+    ...inheritedManaged.map((item) => item.skillId || item.id),
+    ...inheritedUnmanaged.map((item) => item.inferredSkillId || item.id),
     ...readOnly.map((item) => item.inferredSkillId || item.id),
   ].filter(Boolean)).size
 }
@@ -3896,6 +3850,10 @@ function isSharedAgentsUnmanaged(item: UnmanagedItemDto) {
   return item.agentId === SHARED_SKILLS_AGENT_ID || isSharedAgentsSkillsPath(item.path)
 }
 
+function isSharedManagedSkill(item: AgentDetail['skills'][number]) {
+  return item.agentId === SHARED_SKILLS_AGENT_ID || isSharedAgentsSkillsPath(item.targetPath)
+}
+
 function isReadOnlyUnmanaged(item: UnmanagedItemDto) {
   return item.readOnly === true || item.reason === 'agent_builtin_read_only'
 }
@@ -3921,21 +3879,6 @@ function openUnmanagedSkill(
     currentHash: item.hash,
     sourceType: 'unmanaged_agent',
     sourceUri: item.path,
-  })
-}
-
-function openInheritedSkill(
-  item: InheritedSkillDetail,
-  onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void,
-) {
-  onOpenSkillDetail(item.skillId, {
-    id: item.skillId,
-    name: item.skillId,
-    centerPath: item.path,
-    sourceType: 'unmanaged_agent',
-    sourceUri: item.resolvedPath || item.path,
-    status: item.managed ? 'ok' : 'unmanaged',
-    readOnly: true,
   })
 }
 

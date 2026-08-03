@@ -1089,6 +1089,25 @@
       "builtinSkills": "Yerleşik salt okunur",
       "builtinSkillsNotice": "{{count}} Skill, {{agent}} tarafından sağlanır ve salt okunur gösterilir. AgentBro bu dosyaları devralmaz, üzerlerine yazmaz veya silmez.",
       "builtinSkillsNoResults": "Bu aramayla eşleşen yerleşik Skill yok.",
+      "actions": {
+        "delete": "Sil",
+        "deleting": "Siliniyor...",
+        "deleteNamed": "{{name}} öğesini sil",
+        "deletingNamed": "{{name}} siliniyor",
+        "adopt": "Devral",
+        "preparingAdopt": "Devralma hazırlanıyor...",
+        "adopting": "Devralınıyor...",
+        "batchSelect": "Çoklu seçim",
+        "selected": "{{count}} seçili",
+        "selectCurrent": "Geçerli öğeleri seç",
+        "selectCurrentAdoptable": "Devralınabilir geçerli öğeleri seç",
+        "clear": "Temizle",
+        "batchDelete": "{{count}} Skill'i sil",
+        "adoptToCenter": "Merkez kütüphaneye devral",
+        "cancelSelection": "Seçimi iptal et",
+        "batchManage": "Toplu yönet",
+        "selectNamed": "{{name}} öğesini seç"
+      },
       "unmanagedDelete": {
         "title": "\"{{name}}\" Skill silinsin mi?",
         "confirm": "Kalıcı Olarak Sil",
@@ -1096,6 +1115,16 @@
         "description": "Bu işlem, yerel Skill dizinini geçerli Agent'tan siler. Merkez kütüphaneye eklenmez ve oradan geri yüklenemez.",
         "deleting": "\"{{name}}\" Skill siliniyor...",
         "deleted": "\"{{name}}\" Skill silindi"
+      },
+      "sharedDelete": {
+        "managedTitle": "Paylaşılan yönetilen Skill kaldırılsın mı?",
+        "unmanagedTitle": "Paylaşılan yönetilmeyen Skill kalıcı olarak silinsin mi?",
+        "confirm": "Paylaşılan dizinden sil",
+        "busy": "Siliniyor...",
+        "managedDescription": "Bu işlem ~/.agents/skills içinden {{count}} yönetilen Skill'i kaldırır. Paylaşılan dizini okuyan tüm Agent'lar artık onu göremez.",
+        "managedPreserved": "Skill merkez kütüphanede kalır ve daha sonra yeniden dağıtılabilir.",
+        "unmanagedDescription": "Bu işlem ~/.agents/skills içinden {{count}} yönetilmeyen Skill'i kalıcı olarak siler. Paylaşılan dizini okuyan tüm Agent'lar etkilenir.",
+        "unmanagedPermanent": "Skill merkez kütüphaneye kopyalanmaz ve AgentBro tarafından geri yüklenemez. Saklamak istiyorsanız bunun yerine devralın."
       },
       "packFilter": {
         "label": "Paket üyeliği",
