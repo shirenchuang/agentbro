@@ -1285,6 +1285,7 @@ describe('Local skill import', () => {
 describe('Agent sync local agent chips', () => {
   beforeEach(() => {
     cleanup()
+    vi.restoreAllMocks()
   })
 
   it('shows a task-focused pending inbox by default and hides managed skills', async () => {
