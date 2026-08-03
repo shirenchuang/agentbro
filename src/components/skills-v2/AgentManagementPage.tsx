@@ -3240,6 +3240,167 @@ function AgentSkillInstallDialog({
   )
 }
 
+type AgentSkillItemProps = {
+  name: string
+  description: string
+  path: string
+  pathTitle?: string
+  status?: ReactNode
+  metadata?: ReactNode
+  actions?: ReactNode
+  selectable?: boolean
+  selected?: boolean
+  selectionLabel?: string
+  selectionDisabled?: boolean
+  deleting?: boolean
+  adopting?: boolean
+  unmanaged?: boolean
+  onToggle?: () => void
+  onOpen: () => void
+}
+
+function AgentSkillCard({
+  name,
+  description,
+  path,
+  pathTitle,
+  status,
+  metadata,
+  actions,
+  selectable = false,
+  selected = false,
+  selectionLabel,
+  selectionDisabled = false,
+  deleting = false,
+  adopting = false,
+  unmanaged = false,
+  onToggle,
+  onOpen,
+}: AgentSkillItemProps) {
+  const className = [
+    'sm2__agent-skill-card',
+    'sm2__agent-skill-card--clickable',
+    selected && 'sm2__agent-skill-card--selected',
+    deleting && 'sm2__agent-skill-card--deleting',
+    adopting && 'sm2__agent-skill-card--adopting',
+    unmanaged && 'sm2__agent-skill-card--unmanaged',
+  ].filter(Boolean).join(' ')
+  return (
+    <article
+      className={className}
+      role="button"
+      tabIndex={0}
+      aria-busy={deleting || adopting || undefined}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      <div className={`sm2__agent-skill-card-head${selectable ? ' sm2__agent-skill-card-head--selectable' : ''}`}>
+        {selectable && onToggle && selectionLabel && (
+          <input
+            type="checkbox"
+            className="sm2__agent-skill-select"
+            aria-label={selectionLabel}
+            checked={selected}
+            disabled={selectionDisabled}
+            onClick={(event) => event.stopPropagation()}
+            onChange={onToggle}
+          />
+        )}
+        <div className="sm2__agent-skill-icon">{initials(name || 'SK')}</div>
+        <div className="sm2__agent-skill-card-titleline">
+          <strong>{name}</strong>
+          <span>{description}</span>
+        </div>
+        {status && <div className="sm2__tag-row">{status}</div>}
+      </div>
+      {metadata && <div className="sm2__agent-skill-meta">{metadata}</div>}
+      <code title={pathTitle}>{path}</code>
+      {actions && (
+        <div
+          className="sm2__agent-skill-card-actions"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {actions}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function AgentSkillListRow({
+  name,
+  description,
+  path,
+  pathTitle,
+  status,
+  actions,
+  selectable = false,
+  selected = false,
+  selectionLabel,
+  selectionDisabled = false,
+  deleting = false,
+  adopting = false,
+  onToggle,
+  onOpen,
+}: AgentSkillItemProps) {
+  const className = [
+    'sm2__object-row',
+    'sm2__object-row--path',
+    'sm2__object-row--clickable',
+    selected && 'sm2__object-row--selected',
+    deleting && 'sm2__object-row--deleting',
+    adopting && 'sm2__object-row--adopting',
+  ].filter(Boolean).join(' ')
+  return (
+    <div
+      className={className}
+      role="button"
+      tabIndex={0}
+      aria-busy={deleting || adopting || undefined}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      {selectable && onToggle && selectionLabel && (
+        <input
+          type="checkbox"
+          className="sm2__agent-skill-select"
+          aria-label={selectionLabel}
+          checked={selected}
+          disabled={selectionDisabled}
+          onClick={(event) => event.stopPropagation()}
+          onChange={onToggle}
+        />
+      )}
+      <div>
+        <strong>{name}</strong>
+        <span>{description}</span>
+        <code title={pathTitle}>{path}</code>
+      </div>
+      {(status || actions) && (
+        <div
+          className="sm2__object-row-actions"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {status}
+          {actions}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ManagedSkillCollection({
   skills,
   mode,
@@ -3336,36 +3497,12 @@ function ManagedSkillCard({
   const claims = skill.claims.map((c) => targetClaimLabel(t, c)).filter(Boolean)
   const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
   return (
-    <article
-      className={`sm2__agent-skill-card sm2__agent-skill-card--clickable${selected ? ' sm2__agent-skill-card--selected' : ''}${deleting ? ' sm2__agent-skill-card--deleting' : ''}`}
-      role="button"
-      tabIndex={0}
-      aria-busy={deleting || undefined}
-      onClick={() => onOpenSkillDetail(skill.skillId)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') onOpenSkillDetail(skill.skillId)
-      }}
-    >
-      <div className={`sm2__agent-skill-card-head${selectable ? ' sm2__agent-skill-card-head--selectable' : ''}`}>
-        {selectable && (
-          <input
-            type="checkbox"
-            className="sm2__agent-skill-select"
-            aria-label={`选择 ${name}`}
-            checked={selected}
-            disabled={busy}
-            onClick={(e) => e.stopPropagation()}
-            onChange={() => onToggle(skill.id)}
-          />
-        )}
-        <div className="sm2__agent-skill-icon">{initials(name)}</div>
-        <div className="sm2__agent-skill-card-titleline">
-          <strong>{name}</strong>
-          <span>{claims.length > 0 ? claims.join(' / ') : targetClaimLabel(t, null)}</span>
-        </div>
-        <span className={`sm2__tag sm2__tag--${skill.status}`}>{skillStatusLabel(t, skill.status)}</span>
-      </div>
-      <div className="sm2__agent-skill-meta">
+    <AgentSkillCard
+      name={name}
+      description={claims.length > 0 ? claims.join(' / ') : targetClaimLabel(t, null)}
+      path={skill.targetPath}
+      status={<span className={`sm2__tag sm2__tag--${skill.status}`}>{skillStatusLabel(t, skill.status)}</span>}
+      metadata={<>
         <span className="sm2__source-pill">{skillModeLabel(t, skill.actualMode)}</span>
         {skill.claims.length > 0
           ? skill.claims.map((claim) => (
@@ -3374,9 +3511,8 @@ function ManagedSkillCard({
             </span>
           ))
           : <span className="sm2__source-pill sm2__source-pill--claim-direct">{targetClaimLabel(t, null)}</span>}
-      </div>
-      <code>{skill.targetPath}</code>
-      <div className="sm2__agent-skill-card-actions">
+      </>}
+      actions={<>
         {directlyDistributed && onMoveToPack && (
           <button className="sm2__btn sm2__btn--pack" aria-label={`${t('skills.moveToPack.action')} ${name}`} disabled={busy} onClick={(event) => {
             event.stopPropagation()
@@ -3391,8 +3527,15 @@ function ManagedSkillCard({
         }}>
           删除
         </ActionButton>
-      </div>
-    </article>
+      </>}
+      selectable={selectable}
+      selected={selected}
+      selectionLabel={`选择 ${name}`}
+      selectionDisabled={busy}
+      deleting={deleting}
+      onToggle={() => onToggle(skill.id)}
+      onOpen={() => onOpenSkillDetail(skill.skillId)}
+    />
   )
 }
 
@@ -3422,24 +3565,11 @@ function ManagedSkillListRow({
   const name = pathBasename(skill.targetPath) || skill.id
   const directlyDistributed = skill.claims.some((claim) => claim.claimType === 'direct')
   return (
-    <div className={`sm2__object-row sm2__object-row--path sm2__object-row--clickable${selected ? ' sm2__object-row--selected' : ''}${deleting ? ' sm2__object-row--deleting' : ''}`} aria-busy={deleting || undefined} onClick={() => onOpenSkillDetail(skill.skillId)}>
-      {selectable && (
-        <input
-          type="checkbox"
-          className="sm2__agent-skill-select"
-          aria-label={`选择 ${name}`}
-          checked={selected}
-          disabled={busy}
-          onClick={(e) => e.stopPropagation()}
-          onChange={() => onToggle(skill.id)}
-        />
-      )}
-      <div>
-        <strong>{name}</strong>
-        <span>{skillModeLabel(t, skill.actualMode)} · {skillStatusLabel(t, skill.status)} · {claims.join(' / ')}</span>
-        <code>{skill.targetPath}</code>
-      </div>
-      <div className="sm2__object-row-actions">
+    <AgentSkillListRow
+      name={name}
+      description={`${skillModeLabel(t, skill.actualMode)} · ${skillStatusLabel(t, skill.status)} · ${claims.join(' / ')}`}
+      path={skill.targetPath}
+      actions={<>
         {directlyDistributed && onMoveToPack && (
           <button className="sm2__btn sm2__btn--pack" aria-label={`${t('skills.moveToPack.action')} ${name}`} disabled={busy} onClick={(event) => {
             event.stopPropagation()
@@ -3454,8 +3584,15 @@ function ManagedSkillListRow({
         }}>
           删除
         </ActionButton>
-      </div>
-    </div>
+      </>}
+      selectable={selectable}
+      selected={selected}
+      selectionLabel={`选择 ${name}`}
+      selectionDisabled={busy}
+      deleting={deleting}
+      onToggle={() => onToggle(skill.id)}
+      onOpen={() => onOpenSkillDetail(skill.skillId)}
+    />
   )
 }
 
@@ -3478,35 +3615,22 @@ function InheritedSkillCollection({
   if (mode === 'list') {
     return (
       <div className="sm2__agent-skill-list">
-        {skills.map((skill) => (
-          <div
-            key={skill.id}
-            className="sm2__object-row sm2__object-row--path"
-          >
-            <div>
-              <strong>{skill.skillId}</strong>
-              <span>{t('skills.agentManagement.inheritedSkillsSource')}</span>
-              <code title={skill.resolvedPath ?? undefined}>{skill.path}</code>
-            </div>
-            <div className="sm2__object-row-actions">
-              <span className={`sm2__tag sm2__tag--${skill.managed ? 'managed' : 'unmanaged'}`}>
-                {t(skill.managed
-                  ? 'skills.agentManagement.managedSkills'
-                  : 'skills.agentManagement.unmanagedSkills')}
-              </span>
-              <button
-                type="button"
-                className="sm2__btn"
-                aria-label={`${t('skills.agentManagement.sharedViewDetails')} ${skill.skillId}`}
-                onClick={() => openInheritedSkill(skill, onOpenSkillDetail)}
-              >
-                {t('skills.agentManagement.sharedViewDetails')}
-              </button>
-              {!skill.managed && skill.unmanagedId && (
+        {skills.map((skill) => {
+          const adopting = skill.unmanagedId !== null && adoptingUnmanagedId === skill.unmanagedId
+          return (
+            <AgentSkillListRow
+              key={skill.id}
+              name={skill.skillId}
+              description={`${t('skills.agentManagement.inheritedSkillsSource')} · ${t(skill.managed
+                ? 'skills.agentManagement.managedSkills'
+                : 'skills.agentManagement.unmanagedSkills')}`}
+              path={skill.path}
+              pathTitle={skill.resolvedPath ?? undefined}
+              actions={!skill.managed && skill.unmanagedId ? (
                 <ActionButton
                   className="sm2__btn sm2__btn--primary"
                   disabled={busy && adoptingUnmanagedId !== skill.unmanagedId}
-                  busy={adoptingUnmanagedId === skill.unmanagedId}
+                  busy={adopting}
                   busyLabel={t('skills.agentManagement.sharedAdoptBusy')}
                   onClick={(event) => {
                     event.stopPropagation()
@@ -3515,48 +3639,40 @@ function InheritedSkillCollection({
                 >
                   {t('skills.agentManagement.sharedAdoptAction')}
                 </ActionButton>
-              )}
-            </div>
-          </div>
-        ))}
+              ) : undefined}
+              adopting={adopting}
+              onOpen={() => openInheritedSkill(skill, onOpenSkillDetail)}
+            />
+          )
+        })}
       </div>
     )
   }
 
   return (
     <div className="sm2__agent-skill-grid">
-      {skills.map((skill) => (
-        <article
-          key={skill.id}
-          className={`sm2__agent-skill-card${skill.managed ? '' : ' sm2__agent-skill-card--unmanaged'}${adoptingUnmanagedId === skill.unmanagedId ? ' sm2__agent-skill-card--adopting' : ''}`}
-        >
-          <div className="sm2__agent-skill-card-head">
-            <div className="sm2__agent-skill-icon">{initials(skill.skillId || 'SK')}</div>
-            <div className="sm2__agent-skill-card-titleline">
-              <strong>{skill.skillId}</strong>
-              <span>{t('skills.agentManagement.inheritedSkillsSource')}</span>
-            </div>
-            <span className={`sm2__tag sm2__tag--${skill.managed ? 'managed' : 'unmanaged'}`}>
-              {t(skill.managed
-                ? 'skills.agentManagement.managedSkills'
-                : 'skills.agentManagement.unmanagedSkills')}
-            </span>
-          </div>
-          <code title={skill.resolvedPath ?? undefined}>{skill.path}</code>
-          <div className="sm2__agent-skill-card-actions">
-            <button
-              type="button"
-              className="sm2__btn"
-              aria-label={`${t('skills.agentManagement.sharedViewDetails')} ${skill.skillId}`}
-              onClick={() => openInheritedSkill(skill, onOpenSkillDetail)}
-            >
-              {t('skills.agentManagement.sharedViewDetails')}
-            </button>
-            {!skill.managed && skill.unmanagedId && (
+      {skills.map((skill) => {
+        const adopting = skill.unmanagedId !== null && adoptingUnmanagedId === skill.unmanagedId
+        return (
+          <AgentSkillCard
+            key={skill.id}
+            name={skill.skillId}
+            description={t('skills.agentManagement.inheritedSkillsSource')}
+            path={skill.path}
+            pathTitle={skill.resolvedPath ?? undefined}
+            status={(
+              <span className={`sm2__tag sm2__tag--${skill.managed ? 'managed' : 'unmanaged'}`}>
+                {t(skill.managed
+                  ? 'skills.agentManagement.managedSkills'
+                  : 'skills.agentManagement.unmanagedSkills')}
+              </span>
+            )}
+            metadata={<span className="sm2__source-pill">{t('skills.agentManagement.inheritedSkills')}</span>}
+            actions={!skill.managed && skill.unmanagedId ? (
               <ActionButton
                 className="sm2__btn sm2__btn--primary"
                 disabled={busy && adoptingUnmanagedId !== skill.unmanagedId}
-                busy={adoptingUnmanagedId === skill.unmanagedId}
+                busy={adopting}
                 busyLabel={t('skills.agentManagement.sharedAdoptBusy')}
                 onClick={(event) => {
                   event.stopPropagation()
@@ -3565,10 +3681,13 @@ function InheritedSkillCollection({
               >
                 {t('skills.agentManagement.sharedAdoptAction')}
               </ActionButton>
-            )}
-          </div>
-        </article>
-      ))}
+            ) : undefined}
+            adopting={adopting}
+            unmanaged={!skill.managed}
+            onOpen={() => openInheritedSkill(skill, onOpenSkillDetail)}
+          />
+        )
+      })}
     </div>
   )
 }
@@ -3603,125 +3722,73 @@ function UnmanagedSkillCollection({
   onOpenSkillDetail: (skillId: string, fallback?: SkillDetailFallback | null) => void
 }) {
   const { t } = useTranslation()
-  if (mode === 'list') {
-    return (
-      <div className="sm2__agent-skill-list">
-        {skills.map((u) => {
-          const name = u.inferredSkillId || pathBasename(u.path) || u.id
-          const readOnly = isReadOnlyUnmanaged(u)
-          const adopting = adoptingUnmanagedId === u.id || adoptingIds.has(u.id)
-          const deleting = deletingIds.has(u.id)
-          return (
-            <div
-              key={u.id}
-              className={`sm2__object-row sm2__object-row--path sm2__object-row--clickable${selectable && selectedIds.has(u.id) ? ' sm2__object-row--selected' : ''}${adopting ? ' sm2__object-row--adopting' : ''}${deleting ? ' sm2__object-row--deleting' : ''}`}
-              aria-busy={adopting || deleting || undefined}
-              onClick={() => openUnmanagedSkill(u, onOpenSkillDetail)}
-            >
-              {selectable && !readOnly && (
-                <input
-                  type="checkbox"
-                  className="sm2__agent-skill-select"
-                  aria-label={`选择 ${name}`}
-                  checked={selectedIds.has(u.id)}
-                  disabled={busy}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => onToggle(u.id)}
-                />
-              )}
-              <div>
-                <strong>{name}</strong>
-                <span>{unmanagedReasonLabel(t, u.reason)}{unmanagedSourceLabel(t, u) ? ` · ${unmanagedSourceLabel(t, u)}` : ''}</span>
-                <code>{u.path}</code>
-              </div>
-              <div className="sm2__object-row-actions">
-                {readOnly ? (
-                  <span className="sm2__tag sm2__tag--shared">{unmanagedReasonLabel(t, u.reason)}</span>
-                ) : (
-                  <>
-                    <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(e) => {
-                      e.stopPropagation()
-                      onAdopt(adoptOwnerAgentId(agentId, u), u.id)
-                    }}>
-                      接管
-                    </ActionButton>
-                    <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
-                      e.stopPropagation()
-                      onDelete(u)
-                    }}>
-                      删除
-                    </ActionButton>
-                  </>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    )
-  }
-
   return (
-    <div className="sm2__agent-skill-grid">
+    <div className={mode === 'list' ? 'sm2__agent-skill-list' : 'sm2__agent-skill-grid'}>
       {skills.map((u) => {
         const name = u.inferredSkillId || pathBasename(u.path) || u.id
         const readOnly = isReadOnlyUnmanaged(u)
         const adopting = adoptingUnmanagedId === u.id || adoptingIds.has(u.id)
         const deleting = deletingIds.has(u.id)
+        const sourceLabel = unmanagedSourceLabel(t, u)
+        const actions = readOnly ? undefined : (
+          <>
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(event) => {
+              event.stopPropagation()
+              onAdopt(adoptOwnerAgentId(agentId, u), u.id)
+            }}>
+              接管
+            </ActionButton>
+            <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(event) => {
+              event.stopPropagation()
+              onDelete(u)
+            }}>
+              删除
+            </ActionButton>
+          </>
+        )
+        if (mode === 'list') {
+          return (
+            <AgentSkillListRow
+              key={u.id}
+              name={name}
+              description={`${unmanagedReasonLabel(t, u.reason)}${sourceLabel ? ` · ${sourceLabel}` : ''}`}
+              path={u.path}
+              status={readOnly ? <span className="sm2__tag sm2__tag--shared">{unmanagedReasonLabel(t, u.reason)}</span> : undefined}
+              actions={actions}
+              selectable={selectable && !readOnly}
+              selected={selectable && selectedIds.has(u.id)}
+              selectionLabel={`选择 ${name}`}
+              selectionDisabled={busy}
+              deleting={deleting}
+              adopting={adopting}
+              onToggle={() => onToggle(u.id)}
+              onOpen={() => openUnmanagedSkill(u, onOpenSkillDetail)}
+            />
+          )
+        }
         return (
-          <article
+          <AgentSkillCard
             key={u.id}
-            className={`sm2__agent-skill-card sm2__agent-skill-card--unmanaged sm2__agent-skill-card--clickable${selectable && selectedIds.has(u.id) ? ' sm2__agent-skill-card--selected' : ''}${adopting ? ' sm2__agent-skill-card--adopting' : ''}${deleting ? ' sm2__agent-skill-card--deleting' : ''}`}
-            aria-busy={adopting || deleting || undefined}
-            role="button"
-            tabIndex={0}
-            onClick={() => openUnmanagedSkill(u, onOpenSkillDetail)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') openUnmanagedSkill(u, onOpenSkillDetail)
-            }}
-          >
-            <div className={`sm2__agent-skill-card-head${selectable ? ' sm2__agent-skill-card-head--selectable' : ''}`}>
-              {selectable && !readOnly && (
-                <input
-                  type="checkbox"
-                  className="sm2__agent-skill-select"
-                  aria-label={`选择 ${name}`}
-                  checked={selectedIds.has(u.id)}
-                  disabled={busy}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => onToggle(u.id)}
-                />
-              )}
-              <div className="sm2__agent-skill-icon">{initials(name || 'SK')}</div>
-              <div className="sm2__agent-skill-card-titleline">
-                <strong>{name}</strong>
-                <span>{unmanagedReasonLabel(t, u.reason)}</span>
-              </div>
-              <div className="sm2__tag-row">
-                {unmanagedSourceLabel(t, u) && <span className="sm2__tag sm2__tag--shared">{unmanagedSourceLabel(t, u)}</span>}
-                <span className={`sm2__tag sm2__tag--${readOnly ? 'shared' : 'unmanaged'}`}>
-                  {readOnly ? unmanagedReasonLabel(t, u.reason) : '未管理'}
-                </span>
-              </div>
-            </div>
-            <code>{u.path}</code>
-            {!readOnly && (
-              <div className="sm2__agent-skill-card-actions">
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={busy && !adopting} busy={adopting} busyLabel="准备接管" onClick={(e) => {
-                  e.stopPropagation()
-                  onAdopt(adoptOwnerAgentId(agentId, u), u.id)
-                }}>
-                  接管
-                </ActionButton>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={busy && !deleting} busy={deleting} busyLabel="删除中" aria-label={deleting ? `删除中 ${name}` : `删除 ${name}`} onClick={(e) => {
-                  e.stopPropagation()
-                  onDelete(u)
-                }}>
-                  删除
-                </ActionButton>
-              </div>
+            name={name}
+            description={unmanagedReasonLabel(t, u.reason)}
+            path={u.path}
+            status={(
+              <span className={`sm2__tag sm2__tag--${readOnly ? 'shared' : 'unmanaged'}`}>
+                {readOnly ? unmanagedReasonLabel(t, u.reason) : '未管理'}
+              </span>
             )}
-          </article>
+            metadata={sourceLabel ? <span className="sm2__source-pill">{sourceLabel}</span> : undefined}
+            actions={actions}
+            selectable={selectable && !readOnly}
+            selected={selectable && selectedIds.has(u.id)}
+            selectionLabel={`选择 ${name}`}
+            selectionDisabled={busy}
+            deleting={deleting}
+            adopting={adopting}
+            unmanaged
+            onToggle={() => onToggle(u.id)}
+            onOpen={() => openUnmanagedSkill(u, onOpenSkillDetail)}
+          />
         )
       })}
     </div>
