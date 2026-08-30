@@ -13,6 +13,7 @@ import { useThemeStore } from '../stores/themeStore'
 import type { SoundChoice } from '../stores/configStore'
 import type { SessionState, DiffContent, AgentType, ToolStatus, ChatMessage, RateLimitInfo } from '../types/agent'
 import { energyIntervalMs, getAppEnergyMode } from '../utils/energyPolicy'
+import { agentRunStateFromSession } from '../utils/agentRunState'
 
 type Unlisten = () => void
 type TauriInitScope = string | null
@@ -174,7 +175,7 @@ function buildDiffFromToolInput(name: string, input: Record<string, unknown>): D
   return undefined
 }
 
-function transformSession(bs: BackendSession): SessionState {
+export function transformSession(bs: BackendSession): SessionState {
   // Preserve existing chatHistory/subagents/activeTools from the store
   // so that replaceAllSessions doesn't wipe them on each backend update
   const existing = useSessionStore.getState().sessions[bs.id]
@@ -184,7 +185,7 @@ function transformSession(bs: BackendSession): SessionState {
     : (existing?.subagents ?? [])
   const lastUserMessage = bs.lastUserMessage ?? existing?.lastUserMessage
 
-  return {
+  const session: SessionState = {
     id: bs.id,
     agentType: bs.agentType as AgentType,
     engineLabel: bs.engineLabel ?? undefined,
@@ -284,6 +285,11 @@ function transformSession(bs: BackendSession): SessionState {
     lastUserMessageAt: lastUserMessage === existing?.lastUserMessage ? existing?.lastUserMessageAt : undefined,
     responseText: bs.lastResponse ?? undefined,
     description: bs.lastThought ?? bs.description ?? undefined,
+  }
+
+  return {
+    ...session,
+    runState: bs.runState ?? agentRunStateFromSession(session),
   }
 }
 

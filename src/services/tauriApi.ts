@@ -2,7 +2,7 @@
  * Typed wrappers for Tauri commands with graceful browser-dev-mode fallbacks.
  */
 
-import type { RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
+import type { AgentRunState, RateLimitInfo, SessionNotice, SessionState } from '../types/agent'
 import type { ThemeConfig } from '../types/theme'
 import type { PetMetadata } from '../types/pet'
 import { useConfigStore } from '../stores/configStore'
@@ -77,6 +77,7 @@ export interface BackendSession {
   cwd: string
   terminal: string
   phase: string
+  runState?: AgentRunState | null
   startedAt: number
   duration: number
   tokens: { input: number; output: number; cacheRead: number; cacheCreate: number }

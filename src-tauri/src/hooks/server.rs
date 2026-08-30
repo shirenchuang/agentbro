@@ -15,7 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{oneshot, Mutex};
 
 use super::session_store::{
-    ContextWindowInfo, PendingPermission, PendingPlan, PendingQuestion,
+    AgentRunStatus, ContextWindowInfo, PendingPermission, PendingPlan, PendingQuestion,
     QuestionItem as PendingQuestionItem, QuestionOption as PendingQuestionOption, RateLimitInfo,
     SessionPhase, SessionStore, SubagentInfo, SubagentStopUpdate,
 };
@@ -1962,6 +1962,12 @@ impl HookServer {
                         if subagent.status == "running" {
                             subagent.status = "completed".to_string();
                         }
+                    }
+                    if s.phase == SessionPhase::Ready {
+                        s.run_state.status = AgentRunStatus::Completed;
+                        s.run_state.phase = Some("done".to_string());
+                        s.run_state.current_action = Some(truncated.clone());
+                        s.run_state.updated_at = chrono::Utc::now().to_rfc3339();
                     }
                 });
                 Self::refresh_cache_ttl_from_transcript(store, session_id, _raw);

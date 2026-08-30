@@ -14,6 +14,7 @@ import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getStringField, parseToolInput } from '../../utils/permissionPreview'
 import { getToolActivityLabel } from '../../utils/toolLabels'
+import { statusFromSession } from '../../utils/agentRunState'
 import { RateLimitBar } from './RateLimitBar'
 import { SpriteCanvas } from './SpriteCanvas'
 import './CollapsedBar.css'
@@ -79,6 +80,20 @@ const PHASE_LABELS: Record<SessionPhase, string> = {
   done: 'notch.taskComplete',
   error: 'notch.error',
   interrupted: 'notch.interrupted',
+}
+
+const RUN_STATUS_LABELS: Partial<Record<NonNullable<SessionState['runState']>['status'], string>> = {
+  starting: 'notch.working',
+  running: 'notch.working',
+  waiting_permission: 'notch.needsApproval',
+  waiting_input: 'notch.waitingInput',
+  error: 'notch.error',
+  completed: 'notch.taskComplete',
+  cancelled: 'notch.interrupted',
+}
+
+function runStatus(session: SessionState): NonNullable<SessionState['runState']>['status'] {
+  return session.runState?.status ?? statusFromSession(session)
 }
 
 function isGenericProcessingDescription(text: string | undefined): boolean {
@@ -167,9 +182,10 @@ type WaitingSummary = {
 
 function getWaitingSummary(session: SessionState, t: (key: string, options?: Record<string, unknown>) => string): WaitingSummary | null {
   const project = session.project || 'Session'
+  const status = runStatus(session)
 
-  if (session.pendingPermission || session.phase === 'waiting_approval') {
-    const toolName = session.pendingPermission?.toolName
+  if (session.pendingPermission || status === 'waiting_permission' || session.phase === 'waiting_approval') {
+    const toolName = session.pendingPermission?.toolName || session.runState?.currentAction
     const parsedInput = parseToolInput(session.pendingPermission?.toolInput)
     const target = session.pendingPermission?.diff?.filePath
       || getStringField(parsedInput, ['file_path', 'filePath', 'path', 'url', 'command', 'query', 'pattern', 'raw'])
@@ -182,7 +198,7 @@ function getWaitingSummary(session: SessionState, t: (key: string, options?: Rec
     }
   }
 
-  if (session.pendingQuestion || session.phase === 'waiting_input') {
+  if (session.pendingQuestion || status === 'waiting_input' || session.phase === 'waiting_input') {
     return {
       project,
       label: t('notch.waitingInput', { defaultValue: 'Waiting for input' }),
@@ -213,14 +229,16 @@ function CollapsedWaitingStatus({ summary }: { summary: WaitingSummary }) {
 function getCarouselSlides(session: SessionState, t: (key: string) => string): string[] {
   const slides: string[] = [session.project]
 
-  if (session.lastToolName) {
+  if (session.runState?.currentAction && !isGenericProcessingDescription(session.runState.currentAction)) {
+    slides.push(session.runState.currentAction.split('\n')[0])
+  } else if (session.lastToolName) {
     const target = session.lastToolTarget ? `: ${session.lastToolTarget}` : ''
     slides.push(`${getToolActivityLabel(t, session.lastToolName)}${target}`)
   } else if (session.description && !isGenericProcessingDescription(session.description)) {
     slides.push(session.description.split('\n')[0])
   }
 
-  const statusKey = PHASE_LABELS[session.phase]
+  const statusKey = RUN_STATUS_LABELS[runStatus(session)] || PHASE_LABELS[session.phase]
   const status = statusKey ? t(statusKey) : session.phase
   if (status && status !== slides[0]) slides.push(status)
 
@@ -320,16 +338,16 @@ export function CollapsedBar({ sessions, panelState, rateLimits, usageSnapshots,
   const isExpanded = panelState !== 'collapsed'
   const updateAvailable = useUpdateStore((s) => s.availableVersion)
   const alertCount = sessions.filter(s => computePriority(s) >= PRIORITY.attention).length
-  const workingCount = sessions.filter(s => s.phase === 'processing' || s.phase === 'compacting').length
+  const workingCount = sessions.filter(s => runStatus(s) === 'running').length
   const waitingCount = sessions.filter(sessionNeedsAttention).length
   const allIdle = sessions.length > 0 && sessions.every(s => computePriority(s) <= PRIORITY.idle)
   const showTips = tipsEnabled && (sessions.length === 0 || allIdle)
   const emptyText = focusFilteredEmpty ? t('notch.noSessionInFocus') : t('notch.waitingForSessions')
   const showBrandEmpty = sessions.length === 0 && !focusFilteredEmpty && !showTips
-  const isCompacting = lead?.phase === 'compacting'
-  const isThinking = lead?.phase === 'processing' && !lead?.lastToolName
+  const isCompacting = lead?.runState?.phase === 'compacting' || lead?.phase === 'compacting'
+  const isThinking = lead ? runStatus(lead) === 'running' && !lead.runState?.currentAction && !lead.lastToolName : false
   const isYolo = lead?.isYoloMode
-  const hasError = lead?.phase === 'error'
+  const hasError = lead ? runStatus(lead) === 'error' : false
   const effectiveRateLimits = selectEffectiveRateLimits(sessions, lead, rateLimits, usageSnapshots)
   const shouldShowUsageQuota = usageQueryEnabled && showUsageQuota && Boolean(effectiveRateLimits)
   const ratePct = shouldShowUsageQuota ? effectiveRateLimits?.fiveHourUsage : undefined

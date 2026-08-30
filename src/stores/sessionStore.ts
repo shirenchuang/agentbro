@@ -1,13 +1,14 @@
 /* AgentBro — Session State Management (Zustand) */
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useConfigStore } from './configStore'
-import type { AgentEvent, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, AgentRunState, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
 import { sessionMatchesLegacyCwdExclusion, sessionMatchesSilenceRule } from '../utils/sessionSilence'
 import { isCodexTitleMetadata } from '../utils/codexMetadata'
 import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
+import { agentRunStateFromSession, runStateForLegacyEvent } from '../utils/agentRunState'
 
 // Debounce helper
 function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
@@ -757,6 +758,19 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
       }
 
+      // Keep the provider-neutral lifecycle state alongside the legacy fields
+      // while adapters continue to emit the existing hook event contract.
+      if (event.type !== 'session_end' && event.sessionId) {
+        const session = sessions[event.sessionId]
+        if (session) {
+          const runState: AgentRunState = event.type === 'permission_request'
+            && session.phase === 'processing'
+            ? agentRunStateFromSession(session)
+            : runStateForLegacyEvent(event, session.runState, session) ?? agentRunStateFromSession(session)
+          sessions[event.sessionId] = { ...session, runState }
+        }
+      }
+
       return { sessions, sessionList: toList(sessions), panelState, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
     })
     // Trigger debounced save after update
@@ -827,7 +841,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           ? 'compacting'
           : basePhase
         const enteredEffectiveIdle = phase === 'idle' && existing?.phase !== 'idle'
-        const s: SessionState = {
+        const baseSession: SessionState = {
           ...incoming,
           phase,
           description: phase === 'compacting'
@@ -868,6 +882,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               ?? (enteredDone ? (existing ? now : sessionActivityAnchor(incoming, now)) : undefined)
             : incoming.taskCompletedAt,
           lastActivityAt: incoming.lastActivityAt ?? (activityChanged ? now : existing?.lastActivityAt),
+        }
+        const s: SessionState = {
+          ...baseSession,
+          runState: incoming.runState ?? agentRunStateFromSession(baseSession, now),
         }
         sessions[s.id] = s
         if (isRemoteSession(s) && s.phase === 'processing' && lastUserMessageChanged) {

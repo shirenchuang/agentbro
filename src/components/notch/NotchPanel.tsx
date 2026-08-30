@@ -15,6 +15,7 @@ import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
 import { primaryModifierPressed } from '../../utils/platform'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
+import { filterCodexSessions } from '../../utils/agentRunState'
 import { CollapsedBar } from './CollapsedBar'
 import { UpdateBanner } from './UpdateBanner'
 import { HoverList } from './HoverList'
@@ -414,16 +415,22 @@ export function NotchPanel() {
     }
   }, [followFocus, sessions])
 
+  const codexSessions = useMemo(() => {
+    const filtered = filterCodexSessions(sessions)
+    // Keep manually supplied legacy snapshots usable while the backend rolls
+    // out the normalized runState field. Live snapshots are always filtered.
+    return sessions.some((session) => session.runState) ? filtered : sessions
+  }, [sessions])
   const visibleSessions = useMemo(
-    () => getFollowFocusVisibleSessions(sessions, followFocus, focusedSessionIds),
-    [focusedSessionIds, followFocus, sessions],
+    () => getFollowFocusVisibleSessions(codexSessions, followFocus, focusedSessionIds),
+    [codexSessions, focusedSessionIds, followFocus],
   )
   const displayedSessions = useMemo(() => (
     islandMonitorSubagents
       ? visibleSessions
       : visibleSessions.map((session) => ({ ...session, subagents: [] }))
   ), [islandMonitorSubagents, visibleSessions])
-  const focusFilteredEmpty = followFocus && focusedSessionIds !== null && sessions.length > 0 && visibleSessions.length === 0
+  const focusFilteredEmpty = followFocus && focusedSessionIds !== null && codexSessions.length > 0 && visibleSessions.length === 0
 
   const markActiveBlockingOverlayInline = useCallback(() => {
     const overlay = useSessionStore.getState().activeOverlay
@@ -554,8 +561,8 @@ export function NotchPanel() {
 
   // Track sessions needing blocking attention.
   const blockingAttentionCount = useMemo(
-    () => sessions.filter(sessionNeedsAttention).length,
-    [sessions],
+    () => visibleSessions.filter(sessionNeedsAttention).length,
+    [visibleSessions],
   )
 
   const activePriority = useMemo(
@@ -564,14 +571,14 @@ export function NotchPanel() {
   )
 
   const interaction = useMemo(() => deriveIslandInteraction({
-    sessions,
+    sessions: visibleSessions,
     panelState,
     activeOverlay,
     interactionMode,
     persistentIdleHidden,
     keepCompactAfterActive,
     wakeSilenced: Date.now() < wakeSilencedUntil,
-  }), [sessions, panelState, activeOverlay, interactionMode, persistentIdleHidden, keepCompactAfterActive, wakeSilencedUntil])
+  }), [visibleSessions, panelState, activeOverlay, interactionMode, persistentIdleHidden, keepCompactAfterActive, wakeSilencedUntil])
 
   // Auto-expand on new blocking attention, and collapse shortly after it resolves.
   const prevAttentionRef = useRef(0)

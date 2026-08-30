@@ -12,6 +12,45 @@ export type AgentType =
 
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 
+/** Provider-neutral lifecycle status used by the Island and Agent Monitor. */
+export type AgentRunStatus =
+  | 'idle'
+  | 'starting'
+  | 'running'
+  | 'waiting_input'
+  | 'waiting_permission'
+  | 'blocked'
+  | 'rate_limited'
+  | 'error'
+  | 'completed'
+  | 'cancelled'
+  | 'unknown'
+
+export interface AgentRunState {
+  agent: string
+  sessionId?: string
+  status: AgentRunStatus
+  phase?: string
+  currentAction?: string
+  startedAt?: string
+  updatedAt: string
+}
+
+/** Normalized lifecycle events consumed by views instead of provider payloads. */
+export type AgentRunEvent =
+  | { type: 'session_started'; agent: string; sessionId: string; startedAt?: string }
+  | { type: 'status_changed'; status: AgentRunStatus; phase?: string; currentAction?: string }
+  | { type: 'tool_started'; toolName: string; toolTarget?: string }
+  | { type: 'tool_finished'; toolName: string; toolTarget?: string; status: Extract<ToolStatus, 'success' | 'error' | 'interrupted'> }
+  | { type: 'waiting_input'; question?: string }
+  | { type: 'permission_requested'; toolName?: string }
+  | { type: 'rate_limited'; phase?: string; currentAction?: string }
+  | { type: 'error'; message?: string }
+  | { type: 'completed'; summary?: string }
+  | { type: 'usage_updated' }
+
+export type UnifiedAgentEvent = AgentRunEvent
+
 export type SessionPhase =
   | 'ready'
   | 'idle'
@@ -167,6 +206,8 @@ export interface SessionState {
   cwd?: string
   terminal: string
   phase: SessionPhase
+  /** Normalized lifecycle state; legacy phase remains for compatibility. */
+  runState?: AgentRunState
   startedAt: number
   idleSince?: number
   unattendedSince?: number // timestamp when session entered a waiting state

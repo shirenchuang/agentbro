@@ -23,6 +23,50 @@ pub enum SessionPhase {
     Interrupted,
 }
 
+/// Provider-neutral lifecycle status exposed with every session snapshot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    Idle,
+    Starting,
+    Running,
+    WaitingInput,
+    WaitingPermission,
+    Blocked,
+    RateLimited,
+    Error,
+    Completed,
+    Cancelled,
+    #[default]
+    Unknown,
+}
+
+fn session_phase_name(phase: &SessionPhase) -> &'static str {
+    match phase {
+        SessionPhase::Ready => "ready",
+        SessionPhase::Idle => "idle",
+        SessionPhase::Processing => "processing",
+        SessionPhase::WaitingApproval => "waiting_approval",
+        SessionPhase::WaitingInput => "waiting_input",
+        SessionPhase::Compacting => "compacting",
+        SessionPhase::Done => "done",
+        SessionPhase::Error => "error",
+        SessionPhase::Interrupted => "interrupted",
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunState {
+    pub agent: String,
+    pub session_id: Option<String>,
+    pub status: AgentRunStatus,
+    pub phase: Option<String>,
+    pub current_action: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+}
+
 impl SessionPhase {
     /// Check whether transitioning from `self` to `next` is valid.
     pub fn can_transition_to(&self, next: &SessionPhase) -> bool {
@@ -291,6 +335,8 @@ pub struct SessionState {
     pub cwd: String,
     pub terminal: String,
     pub phase: SessionPhase,
+    #[serde(default)]
+    pub run_state: AgentRunState,
     pub started_at: i64,
     pub duration: i64,
     pub tokens: TokenUsage,
@@ -337,7 +383,7 @@ impl SessionState {
         cwd: String,
         terminal: String,
     ) -> Self {
-        Self {
+        let mut session = Self {
             id,
             agent_type,
             engine_label: None,
@@ -347,6 +393,7 @@ impl SessionState {
             cwd,
             terminal,
             phase: SessionPhase::Ready,
+            run_state: AgentRunState::default(),
             started_at: Utc::now().timestamp(),
             duration: 0,
             tokens: TokenUsage::default(),
@@ -382,6 +429,68 @@ impl SessionState {
             last_thought: None,
             is_yolo_mode: false,
             model: None,
+        };
+        session.refresh_run_state();
+        session.run_state.status = AgentRunStatus::Starting;
+        session
+    }
+
+    pub fn refresh_run_state(&mut self) {
+        let response_completed = self.phase == SessionPhase::Ready
+            && self.run_state.status == AgentRunStatus::Completed
+            && self.last_response.is_some();
+        let status = if response_completed {
+            AgentRunStatus::Completed
+        } else if self.pending_permission.is_some()
+            || self.pending_plan.is_some()
+            || self.phase == SessionPhase::WaitingApproval
+        {
+            AgentRunStatus::WaitingPermission
+        } else if self.pending_question.is_some() || self.phase == SessionPhase::WaitingInput {
+            AgentRunStatus::WaitingInput
+        } else {
+            match self.phase {
+                SessionPhase::Processing | SessionPhase::Compacting => AgentRunStatus::Running,
+                SessionPhase::Error => AgentRunStatus::Error,
+                SessionPhase::Done => AgentRunStatus::Completed,
+                SessionPhase::Interrupted => AgentRunStatus::Cancelled,
+                SessionPhase::Ready | SessionPhase::Idle => AgentRunStatus::Idle,
+                SessionPhase::WaitingApproval | SessionPhase::WaitingInput => {
+                    AgentRunStatus::Unknown
+                }
+            }
+        };
+        let phase = Some(if response_completed {
+            "done".to_string()
+        } else {
+            session_phase_name(&self.phase).to_string()
+        });
+        let current_action = self
+            .last_tool_name
+            .as_ref()
+            .map(|tool| match self.last_tool_target.as_deref() {
+                Some(target) if !target.is_empty() => format!("{tool}: {target}"),
+                _ => tool.clone(),
+            })
+            .or_else(|| self.description.clone());
+        let started_at = chrono::DateTime::<Utc>::from_timestamp(self.started_at, 0)
+            .map(|value| value.to_rfc3339());
+        let changed = self.run_state.agent != self.agent_type
+            || self.run_state.session_id.as_deref() != Some(self.id.as_str())
+            || self.run_state.status != status
+            || self.run_state.phase != phase
+            || self.run_state.current_action != current_action
+            || self.run_state.started_at != started_at;
+        if changed || self.run_state.updated_at.is_empty() {
+            self.run_state = AgentRunState {
+                agent: self.agent_type.clone(),
+                session_id: Some(self.id.clone()),
+                status,
+                phase,
+                current_action,
+                started_at,
+                updated_at: Utc::now().to_rfc3339(),
+            };
         }
     }
 
@@ -807,6 +916,7 @@ impl SessionStore {
             .map(|entry| {
                 let mut s = entry.value().clone();
                 s.update_duration();
+                s.refresh_run_state();
                 s
             })
             .collect()
@@ -866,6 +976,7 @@ impl SessionStore {
         self.sessions.get(session_id).map(|s| {
             let mut session = s.value().clone();
             session.update_duration();
+            session.refresh_run_state();
             session
         })
     }
@@ -1119,5 +1230,29 @@ mod tests {
 
         assert_eq!(store.get_all_sessions().len(), 1);
         assert!(store.get_session("s1").is_some());
+    }
+
+    #[test]
+    fn session_snapshot_exposes_provider_neutral_run_state() {
+        let store = seeded_store();
+        store.update_session("s1", |session| {
+            session.phase = SessionPhase::Processing;
+            session.last_tool_name = Some("Bash".to_string());
+            session.last_tool_target = Some("pnpm test".to_string());
+        });
+
+        let session = store.get_session("s1").expect("session should exist");
+        assert_eq!(session.run_state.agent, "claude-code");
+        assert_eq!(session.run_state.status, AgentRunStatus::Running);
+        assert_eq!(session.run_state.phase.as_deref(), Some("processing"));
+        assert_eq!(
+            session.run_state.current_action.as_deref(),
+            Some("Bash: pnpm test")
+        );
+        assert!(!session.run_state.updated_at.is_empty());
+
+        let json = serde_json::to_value(session).expect("session should serialize");
+        assert_eq!(json["runState"]["status"], "running");
+        assert_eq!(json["runState"]["sessionId"], "s1");
     }
 }

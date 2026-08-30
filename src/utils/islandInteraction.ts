@@ -1,4 +1,5 @@
 import type { OverlayItem, PanelState, SessionState } from '../types/agent'
+import { statusFromSession } from './agentRunState'
 
 export type IslandOuterState = 'hidden' | 'micro' | 'compact' | 'expanded'
 export type IslandInteractionMode = 'persistent' | 'minimal'
@@ -43,11 +44,18 @@ export function isRemoteSession(session: SessionState): boolean {
 }
 
 export function sessionHasVisibleActivity(session: SessionState): boolean {
-  return !isRemoteSession(session) && (session.phase === 'processing' || session.phase === 'compacting')
+  if (isRemoteSession(session)) return false
+  return session.runState
+    ? session.runState.status === 'running'
+    : session.phase === 'processing' || session.phase === 'compacting'
 }
 
 export function sessionNeedsAttention(session: SessionState): boolean {
-  return session.phase === 'waiting_approval'
+  const status = session.runState?.status ?? statusFromSession(session)
+  return status === 'waiting_permission'
+    || status === 'waiting_input'
+    || status === 'error'
+    || session.phase === 'waiting_approval'
     || session.phase === 'waiting_input'
     || session.phase === 'error'
     || Boolean(session.pendingPermission)
