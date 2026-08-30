@@ -49,14 +49,11 @@ pub fn labels(language: &str) -> MenuBarLabels {
 pub fn build_tray_menu<M: Manager<Wry>>(manager: &M, language: &str) -> tauri::Result<Menu<Wry>> {
     let labels = labels(language);
     let show_item = MenuItemBuilder::with_id("show", labels.open).build(manager)?;
-    let skill_packs =
-        MenuItemBuilder::with_id(SKILL_PACK_PICKER_ID, labels.skill_packs).build(manager)?;
     let settings_item = MenuItemBuilder::with_id("settings", labels.settings).build(manager)?;
     let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(manager)?;
 
     MenuBuilder::new(manager)
         .item(&show_item)
-        .item(&skill_packs)
         .item(&settings_item)
         .separator()
         .item(&quit_item)

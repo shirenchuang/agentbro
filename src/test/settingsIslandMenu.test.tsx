@@ -57,6 +57,10 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
+vi.mock('../components/settings/sections/AgentMonitorSection', () => ({
+  AgentMonitorSection: () => <section><h2>Tasks</h2></section>,
+}))
+
 describe('settings island menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -78,6 +82,43 @@ describe('settings island menu', () => {
     })
   })
 
+  it('shows only the Control Tower primary navigation', () => {
+    const { container } = render(<SettingsApp onClose={vi.fn()} />)
+    const visibleLabels = Array.from(
+      container.querySelectorAll('.settings-sidebar__item:not([hidden]) .settings-sidebar__label-text'),
+    ).map((item) => item.textContent?.trim())
+
+    expect(visibleLabels).toEqual(['Tasks', 'Usage', 'Settings'])
+    expect(screen.getByText('settings.skillManager')).not.toBeVisible()
+    expect(screen.getByText('settings.remoteServers.title')).not.toBeVisible()
+    expect(screen.getByText('settings.island.title')).not.toBeVisible()
+  })
+
+  it('switches between Tasks, Usage, and Settings', async () => {
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Usage' }))
+    expect(await screen.findByRole('heading', { name: 'Usage' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('settings.language')).toBeInTheDocument())
+  })
+
+  it('keeps first-run analytics consent without exposing Pet choices', async () => {
+    useConfigStore.setState({
+      analyticsEnabled: false,
+      analyticsConsentPromptCompleted: false,
+    })
+    render(<SettingsApp onClose={vi.fn()} />)
+
+    expect(screen.queryByRole('radio', { name: /settings.surfacePet/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
+
+    await waitFor(() => expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(true))
+    expect(useConfigStore.getState().analyticsEnabled).toBe(true)
+    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(true)
+  })
+
   it('uses the left settings menu for island pages instead of top tabs', async () => {
     const { container } = render(<SettingsApp onClose={vi.fn()} />)
 
@@ -95,29 +136,6 @@ describe('settings island menu', () => {
     expect(screen.getByRole('radiogroup', { name: '展示模式' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: '灵动岛' })).toHaveAttribute('aria-checked', 'true')
     expect(container.querySelector('.island-tabs')).not.toBeInTheDocument()
-  })
-
-  it('completes first-run setup with surface mode and default analytics enabled', async () => {
-    useConfigStore.setState({
-      analyticsEnabled: false,
-      analyticsConsentPromptCompleted: false,
-      islandSurfaceMode: 'island',
-      islandPetWindowOrigin: { x: 12, y: 18 },
-    })
-    render(<SettingsApp onClose={vi.fn()} />)
-
-    fireEvent.click(screen.getByRole('radio', { name: /settings.surfacePet/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'settings.welcomeContinue' }))
-
-    await waitFor(() => expect(useConfigStore.getState().analyticsConsentPromptCompleted).toBe(true))
-    expect(useConfigStore.getState().analyticsEnabled).toBe(true)
-    expect(useConfigStore.getState().islandSurfaceMode).toBe('pet')
-    expect(useConfigStore.getState().islandPetWindowOrigin).toBe(null)
-    expect(tauriMocks.setIslandSurfaceOptions).toHaveBeenCalledWith({
-      islandSurfaceMode: 'pet',
-      islandPetScale: 72,
-    })
-    expect(tauriMocks.setAnalyticsEnabled).toHaveBeenCalledWith(true)
   })
 
   it('keeps SSH server management out of the Dynamic Island menu', async () => {

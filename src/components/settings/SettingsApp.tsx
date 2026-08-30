@@ -13,12 +13,10 @@ import { AboutSection } from './sections/AboutSection'
 import { SwitchSection } from './sections/SwitchSection'
 import { RemoteServersSection } from './sections/RemoteServersSection'
 import { SkillManagerSection } from '../skills-v2/SkillManagerSection'
-import { MarketplaceInstallTaskDock } from '../skills-v2/MarketplaceInstallTaskDock'
 import { useUpdater } from '../../hooks/useUpdater'
 import { useConfigStore } from '../../stores/configStore'
 import { isTauri } from '../../services/tauriApi'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
-import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import '../../styles/settings.css'
 
 const sections: Record<string, () => ReactNode> = {
@@ -36,13 +34,11 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
   const updater = useUpdater()
   const autoInstallUpdate = useConfigStore((s) => s.autoInstallUpdate)
   const analyticsConsentPromptCompleted = useConfigStore((s) => s.analyticsConsentPromptCompleted)
-  const [activeSection, setActiveSection] = useState('general')
+  const [activeSection, setActiveSection] = useState('tasks')
   const [activeIslandView, setActiveIslandView] = useState<IslandSettingsView>('overview')
   const [activeMonitorView, setActiveMonitorView] = useState<MonitorSettingsView>('overview')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [updateMinimized, setUpdateMinimized] = useState(false)
-  const skillActiveTab = useSkillStoreV2((state) => state.activeTab)
-  const skillInstallTab = useSkillStoreV2((state) => state.activeInstallTab)
   const SectionComponent = sections[activeSection] ?? GeneralSection
   const isMarketSection = activeSection === 'island' && activeIslandView === 'market'
   const isSkillManager = activeSection === 'skill-manager-v2'
@@ -66,13 +62,6 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
 
   const handleCloseRequest = async () => {
     if (await confirmCloseWhileDownloading()) onClose()
-  }
-
-  const openMarketplaceInstallTask = () => {
-    const skillStore = useSkillStoreV2.getState()
-    skillStore.setTab('install')
-    skillStore.setInstallTab('official')
-    setActiveSection('skill-manager-v2')
   }
 
   useEffect(() => {
@@ -142,7 +131,13 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.15 }}
           >
-            {activeSection === 'island' ? (
+            {activeSection === 'tasks' ? (
+              <AgentMonitorSection activeView="sessions" />
+            ) : activeSection === 'usage' ? (
+              <section className="setting-section">
+                <h2>{t('settings.usage', { defaultValue: 'Usage' })}</h2>
+              </section>
+            ) : activeSection === 'island' ? (
               <IslandSection activeView={activeIslandView} />
             ) : activeSection === 'monitor' ? (
               <AgentMonitorSection activeView={activeMonitorView} />
@@ -189,10 +184,6 @@ export function SettingsApp({ onClose }: SettingsAppProps) {
         />
       )}
       {!analyticsConsentPromptCompleted && <FirstRunWelcome />}
-      <MarketplaceInstallTaskDock
-        hidden={activeSection === 'skill-manager-v2' && skillActiveTab === 'install' && skillInstallTab === 'official'}
-        onOpen={openMarketplaceInstallTask}
-      />
     </div>
   )
 }

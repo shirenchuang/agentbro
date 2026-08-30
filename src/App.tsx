@@ -12,9 +12,7 @@ import './styles/globals.css'
 
 const ClaudeHookUiLab = lazy(() => import('./components/dev/ClaudeHookUiLab').then((module) => ({ default: module.ClaudeHookUiLab })))
 const NotchPanel = lazy(() => import('./components/notch/NotchPanel').then((module) => ({ default: module.NotchPanel })))
-const PetApp = lazy(() => import('./PetApp').then((module) => ({ default: module.PetApp })))
 const SettingsApp = lazy(() => import('./components/settings/SettingsApp').then((module) => ({ default: module.SettingsApp })))
-const SkillPackPicker = lazy(() => import('./components/tray/SkillPackPicker').then((module) => ({ default: module.SkillPackPicker })))
 
 // Fields whose source of truth lives in the Rust backend and is broadcast via
 // the `config-changed` event. We must NOT replay stale values from another
@@ -217,14 +215,9 @@ function App() {
   // Wait for detection
   if (windowLabel === null) return null
 
-  // Pet companion window — independent, only renders the pet sprite layer.
-  if (windowLabel === 'pet') {
-    return <Suspense fallback={null}><PetApp /></Suspense>
-  }
-
-  if (windowLabel === 'skill-pack-picker') {
-    return <Suspense fallback={null}><SkillPackPicker /></Suspense>
-  }
+  // Product Slimming keeps the underlying windows available for later cleanup
+  // but exposes no Pet or Skill Pack UI in the Control Tower shell.
+  if (windowLabel === 'pet' || windowLabel === 'skill-pack-picker') return null
 
   // Settings window
   if (windowLabel === 'settings') {

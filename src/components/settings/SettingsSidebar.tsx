@@ -12,8 +12,10 @@ import { RuntimeEnvironmentSwitcher } from './RuntimeEnvironmentSwitcher'
 interface SidebarItem {
   id: string
   labelKey: string
+  defaultLabel?: string
   icon: string
   iconBg: string
+  hidden?: boolean
 }
 
 interface SidebarGroup {
@@ -31,16 +33,18 @@ interface AgentDropTarget {
 const sidebarGroups: SidebarGroup[] = [
   {
     items: [
-      { id: 'general', labelKey: 'settings.general', icon: '⚙', iconBg: '#8E8E93' },
-      { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6' },
-      { id: 'skill-manager-v2', labelKey: 'settings.skillManager', icon: '🧩', iconBg: '#34C759' },
-      { id: 'remote-servers', labelKey: 'settings.remoteServers.title', icon: '>_', iconBg: '#009C95' },
+      { id: 'tasks', labelKey: 'settings.tasks', defaultLabel: 'Tasks', icon: '✓', iconBg: '#34C759' },
+      { id: 'usage', labelKey: 'settings.usage', defaultLabel: 'Usage', icon: '▥', iconBg: '#007AFF' },
+      { id: 'general', labelKey: 'settings.controlTowerSettings', defaultLabel: 'Settings', icon: '⚙', iconBg: '#8E8E93' },
+      { id: 'island', labelKey: 'settings.island.title', icon: '🏝', iconBg: '#5856D6', hidden: true },
+      { id: 'skill-manager-v2', labelKey: 'settings.skillManager', icon: '🧩', iconBg: '#34C759', hidden: true },
+      { id: 'remote-servers', labelKey: 'settings.remoteServers.title', icon: '>_', iconBg: '#009C95', hidden: true },
     ],
   },
   {
     labelKey: 'settings.agentBro',
     items: [
-      { id: 'about', labelKey: 'settings.about', icon: 'ℹ', iconBg: '#007AFF' },
+      { id: 'about', labelKey: 'settings.about', icon: 'ℹ', iconBg: '#007AFF', hidden: true },
     ],
   },
 ]
@@ -434,20 +438,22 @@ export function SettingsSidebar({
     <nav className={sidebarClassName}>
       {toggleSidebar}
       {sidebarGroups.map((group, gi) => (
-        <div key={gi}>
+        <div key={gi} hidden={group.items.every((item) => item.hidden)}>
           {gi > 0 && <div className="settings-sidebar__separator" />}
           {group.labelKey && <div className="settings-sidebar__group-label">{t(group.labelKey)}</div>}
           <div className="settings-sidebar__group">
             {group.items.map((item) => {
               const isActive = activeSection === item.id
+              const label = t(item.labelKey, { defaultValue: item.defaultLabel ?? item.labelKey })
               return (
                 <div
                   key={item.id}
                   role="button"
                   tabIndex={0}
+                  hidden={item.hidden}
                   className={`settings-sidebar__item ${isActive ? 'settings-sidebar__item--active' : ''}`}
-                  aria-label={t(item.labelKey)}
-                  title={t(item.labelKey)}
+                  aria-label={label}
+                  title={label}
                   onClick={() => {
                     if (item.id === 'skill-manager-v2' && marketplaceInstallTask) openSkillTab('install')
                     onSelect(item.id)
@@ -465,7 +471,7 @@ export function SettingsSidebar({
                   >
                     {item.icon}
                   </span>
-                  <span className="settings-sidebar__label-text">{t(item.labelKey)}</span>
+                  <span className="settings-sidebar__label-text">{label}</span>
                   {item.id === 'skill-manager-v2' && marketplaceTaskBadge && (
                     <span
                       className={`settings-sidebar__task-badge${marketplaceInstallTask?.busy ? ' settings-sidebar__task-badge--busy' : ''}`}
