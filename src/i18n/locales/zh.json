@@ -96,6 +96,7 @@
   },
   "settings": {
     "title": "设置",
+    "usage": "用量统计",
     "close": "关闭",
     "general": "通用",
     "market": {
@@ -495,6 +496,32 @@
     "authorizeUsage": "用量授权",
     "authorizing": "授权中...",
     "usageAuthStarted": "已打开终端授权，完成登录后点检测刷新状态。",
+    "codexUsage": {
+      "refresh": "刷新",
+      "quota": "Codex 配额",
+      "tokenUsage": "Codex Token 用量",
+      "today": "今天",
+      "days7": "近 7 天",
+      "days30": "近 30 天",
+      "input": "输入",
+      "output": "输出",
+      "cacheRead": "缓存读取",
+      "cacheCreate": "缓存写入",
+      "sessions": "{{count}} 个会话",
+      "sessionsScanned": "扫描了 {{count}} 个会话文件",
+      "tokenEvents": "{{count}} 条 Token 事件",
+      "noData": "尚未找到本地 Codex Token 用量数据",
+      "noQuota": "暂无 Codex 配额数据",
+      "desktopOnly": "Codex 用量需在桌面应用中查看",
+      "source": "来源",
+      "updatedAt": "更新于 {{time}}",
+      "resetAt": "{{time}} 重置",
+      "remainingLabel": "剩余 {{label}}",
+      "state": {
+        "failed": "获取失败",
+        "disabled": "已停用"
+      }
+    },
     "showCacheTTL": "显示缓存有效期",
     "showCacheTTLDesc": "显示 Claude Code 会话的 Prompt 缓存剩余时间",
     "hooks": "Hooks 管理",

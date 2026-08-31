@@ -6052,6 +6052,7 @@ pub fn run() {
             commands::get_sessions,
             commands::get_usage_rate_limits,
             commands::get_usage_snapshots,
+            commands::get_codex_usage_summary,
             commands::get_app_state_flags,
             commands::list_usage_providers,
             commands::authorize_usage_provider,

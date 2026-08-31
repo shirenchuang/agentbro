@@ -242,6 +242,37 @@ export interface UsageProviderStatus {
   canAuthorize: boolean
 }
 
+export interface CodexQuotaState {
+  state: 'ok' | 'unavailable' | 'failed' | 'disabled'
+  detail: string
+}
+
+export interface CodexTokenBucket {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreate: number
+  sessions: number
+}
+
+export interface CodexTokenUsageSummary {
+  today: CodexTokenBucket
+  days7: CodexTokenBucket
+  days30: CodexTokenBucket
+  source: string
+  sessionsScanned: number
+  tokenEvents: number
+  available: boolean
+  detail: string
+}
+
+export interface CodexUsageSummary {
+  quota: RateLimitInfo | null
+  quotaState: CodexQuotaState
+  tokenUsage: CodexTokenUsageSummary
+  computedAt: number
+}
+
 export interface CodexAppServerThreadSummary {
   id: string
   name?: string | null
@@ -408,6 +439,27 @@ export async function getUsageRateLimits(): Promise<RateLimitInfo | null> {
 export async function getUsageSnapshots(): Promise<RateLimitInfo[]> {
   if (!isTauri()) return []
   return invoke<RateLimitInfo[]>('get_usage_snapshots')
+}
+
+export async function getCodexUsageSummary(): Promise<CodexUsageSummary> {
+  if (!isTauri()) {
+    return {
+      quota: null,
+      quotaState: { state: 'unavailable', detail: 'Desktop app only' },
+      tokenUsage: {
+        today: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, sessions: 0 },
+        days7: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, sessions: 0 },
+        days30: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, sessions: 0 },
+        source: '',
+        sessionsScanned: 0,
+        tokenEvents: 0,
+        available: false,
+        detail: 'Desktop app only',
+      },
+      computedAt: Date.now(),
+    }
+  }
+  return invoke<CodexUsageSummary>('get_codex_usage_summary')
 }
 
 export interface AppStateFlags {
