@@ -1058,7 +1058,7 @@ fn upsert_codex_trust_state(
     let mut content = ensure_codex_hooks_feature(&existing);
     let headers = states
         .keys()
-        .map(|key| format!("[hooks.state.\"{}\"]", toml_basic_string(key)))
+        .map(|key| vec!["hooks".to_string(), "state".to_string(), key.to_string()])
         .collect::<BTreeSet<_>>();
     content = remove_toml_tables(&content, &headers)
         .trim_end()
@@ -1081,13 +1081,66 @@ fn toml_basic_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn remove_toml_tables(content: &str, table_headers: &BTreeSet<String>) -> String {
+/// Splits a table header's inner text into path segments, so headers that TOML
+/// considers identical compare equal regardless of how they were quoted. Codex
+/// itself serializes these tables as `["hooks"."state"."k"]`; matching on the
+/// raw text would leave those behind and the appended `[hooks.state."k"]` would
+/// then be a duplicate key, making the whole config file unparseable.
+fn toml_table_path(header_inner: &str) -> Vec<String> {
+    fn finish(current: &mut String, quoted: bool) -> String {
+        let segment = std::mem::take(current);
+        if quoted {
+            segment
+        } else {
+            segment.trim().to_string()
+        }
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = header_inner.chars();
+    let mut in_quotes = false;
+    let mut quoted = false;
+
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            match ch {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        current.push(escaped);
+                    }
+                }
+                '"' => in_quotes = false,
+                _ => current.push(ch),
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_quotes = true;
+                quoted = true;
+            }
+            '.' => {
+                let segment = finish(&mut current, quoted);
+                segments.push(segment);
+                quoted = false;
+            }
+            _ => current.push(ch),
+        }
+    }
+    segments.push(finish(&mut current, quoted));
+    segments
+}
+
+fn remove_toml_tables(content: &str, table_paths: &BTreeSet<Vec<String>>) -> String {
     let mut result = Vec::new();
     let mut skipping = false;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            skipping = table_headers.contains(trimmed);
+            // `[[array of tables]]` entries are allowed to repeat, so never drop them.
+            skipping = !trimmed.starts_with("[[")
+                && table_paths.contains(&toml_table_path(&trimmed[1..trimmed.len() - 1]));
         }
         if !skipping {
             result.push(line);
@@ -1151,6 +1204,93 @@ mod tests {
 
     fn success_status() -> std::process::ExitStatus {
         std::process::ExitStatus::from_raw(0)
+    }
+
+    fn table_path(segments: &[&str]) -> Vec<String> {
+        segments.iter().map(|segment| segment.to_string()).collect()
+    }
+
+    #[test]
+    fn toml_table_path_normalizes_quoting_styles() {
+        let expected = table_path(&["hooks", "state", "/tmp/hooks.json:stop:0:0"]);
+
+        assert_eq!(
+            toml_table_path("hooks.state.\"/tmp/hooks.json:stop:0:0\""),
+            expected
+        );
+        assert_eq!(
+            toml_table_path("\"hooks\".\"state\".\"/tmp/hooks.json:stop:0:0\""),
+            expected
+        );
+    }
+
+    #[test]
+    fn remove_toml_tables_drops_codex_quoted_table_form() {
+        let content = concat!(
+            "[features]\n",
+            "hooks = true\n",
+            "\n",
+            "[\"hooks\".\"state\".\"k\"]\n",
+            "trusted_hash = \"sha256:old\"\n",
+            "\n",
+            "[other]\n",
+            "keep = 1\n"
+        );
+        let targets = BTreeSet::from([table_path(&["hooks", "state", "k"])]);
+
+        let result = remove_toml_tables(content, &targets);
+
+        assert!(
+            !result.contains("sha256:old"),
+            "stale table kept:\n{result}"
+        );
+        assert!(result.contains("hooks = true"));
+        assert!(result.contains("keep = 1"));
+    }
+
+    #[test]
+    fn upsert_codex_trust_state_replaces_codex_written_tables() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentbro-codex-trust-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp config directory");
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            concat!(
+                "[features]\n",
+                "hooks = true\n",
+                "\n",
+                "[\"hooks\".\"state\".\"/tmp/hooks.json:stop:0:0\"]\n",
+                "trusted_hash = \"sha256:old\"\n"
+            ),
+        )
+        .expect("seed config");
+
+        let states = BTreeMap::from([(
+            "/tmp/hooks.json:stop:0:0".to_string(),
+            "sha256:new".to_string(),
+        )]);
+        upsert_codex_trust_state(&config_path, &states).expect("upsert trust state");
+
+        let written = std::fs::read_to_string(&config_path).expect("read config");
+        let expected = table_path(&["hooks", "state", "/tmp/hooks.json:stop:0:0"]);
+        let occurrences = written
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with('[')
+                    && trimmed.ends_with(']')
+                    && toml_table_path(&trimmed[1..trimmed.len() - 1]) == expected
+            })
+            .count();
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(occurrences, 1, "duplicate trust table:\n{written}");
+        assert!(written.contains("sha256:new"));
+        assert!(!written.contains("sha256:old"));
     }
 
     #[test]
