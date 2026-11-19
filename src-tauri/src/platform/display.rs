@@ -217,29 +217,15 @@ pub fn list_displays_inner(app: &tauri::AppHandle) -> Vec<DisplayInfo> {
 
 #[cfg(target_os = "macos")]
 fn cursor_position() -> Option<(f64, f64)> {
-    let output = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            r#"
-            use framework "AppKit"
-            set mouseLoc to current application's NSEvent's mouseLocation()
-            set x to mouseLoc's x as real
-            set y to mouseLoc's y as real
-            return (x as text) & "," & (y as text)
-        "#,
-        ])
-        .output()
-        .ok()?;
+    Some(macos_cursor_position())
+}
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut parts = stdout.trim().split(',');
-    let x = parts.next()?.parse::<f64>().ok()?;
-    let y = parts.next()?.parse::<f64>().ok()?;
-    Some((x, y))
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_cursor_position() -> (f64, f64) {
+    objc2::rc::autoreleasepool(|_| {
+        let point = objc2_app_kit::NSEvent::mouseLocation();
+        (point.x, point.y)
+    })
 }
 
 #[cfg(target_os = "windows")]

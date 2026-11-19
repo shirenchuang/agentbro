@@ -1725,42 +1725,11 @@ async fn should_suppress(
 
 #[tauri::command]
 async fn get_cursor_position() -> Result<(f64, f64), String> {
-    // Use osascript instead — more reliable, no dependencies
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                r#"
-                use framework "AppKit"
-                set mouseLoc to current application's NSEvent's mouseLocation()
-                set x to mouseLoc's x as real
-                set y to mouseLoc's y as real
-                return (x as text) & "," & (y as text)
-            "#,
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = stdout.trim().split(',').collect();
-        if parts.len() == 2 {
-            let x: f64 = parts[0]
-                .parse()
-                .map_err(|e: std::num::ParseFloatError| e.to_string())?;
-            let y: f64 = parts[1]
-                .parse()
-                .map_err(|e: std::num::ParseFloatError| e.to_string())?;
-            Ok((x, y))
-        } else {
-            Err("Failed to parse cursor position".to_string())
-        }
+        Ok(platform::display::macos_cursor_position())
     }
-    #[cfg(target_os = "windows")]
-    {
-        get_cursor_position_sync()
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         get_cursor_position_sync()
     }
