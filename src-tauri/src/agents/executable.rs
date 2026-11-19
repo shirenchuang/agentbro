@@ -27,10 +27,48 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
         find_windows_codex_cli_binary()
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        find_binary_generic("codex")
+            .or_else(|| find_chatgpt_bundled_codex(macos_application_dirs()).map(|(_, cli)| cli))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         find_binary_generic("codex")
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
+    find_chatgpt_bundled_codex(macos_application_dirs())
+        .map(|(app, _)| app)
+        .into_iter()
+        .chain(macos_application_dirs().map(|dir| dir.join("Codex.app")))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_dirs() -> impl Iterator<Item = PathBuf> {
+    std::iter::once(PathBuf::from("/Applications")).chain(
+        dirs::home_dir()
+            .into_iter()
+            .map(|home| home.join("Applications")),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn find_chatgpt_bundled_codex(
+    application_dirs: impl IntoIterator<Item = PathBuf>,
+) -> Option<(PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    application_dirs.into_iter().find_map(|dir| {
+        let app = dir.join("ChatGPT.app");
+        let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        let metadata = cli.metadata().ok()?;
+        (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -81,7 +119,7 @@ pub fn codex_desktop_app_user_model_ids() -> Vec<String> {
     Vec::new()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
     Vec::new()
 }
@@ -510,6 +548,31 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_executable_codex_inside_chatgpt_app() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = std::env::temp_dir().join(format!("agentbro-chatgpt-{}", uuid::Uuid::new_v4()));
+        let system_apps = temp.join("Applications");
+        let user_apps = temp.join("home/Applications");
+        let app = user_apps.join("ChatGPT.app");
+        let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        fs::create_dir_all(system_apps.join("ChatGPT.app")).unwrap();
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, "").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o644)).unwrap();
+        let app_dirs = [system_apps, user_apps];
+        let non_executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let executable = super::find_chatgpt_bundled_codex(app_dirs);
+        fs::remove_dir_all(temp).unwrap();
+
+        assert_eq!(non_executable, None);
+        assert_eq!(executable, Some((app, cli)));
+    }
+
     #[test]
     fn vfox_node_bins_include_current_and_legacy_global_links() {
         let home = std::path::Path::new("/Users/example");
