@@ -12,9 +12,28 @@ impl DeepSeekHarnessAdapter {
         Self
     }
 
-    fn profile() -> PathBuf {
+    pub(super) fn profile() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
         crate::skills::agent_paths::deepseek_harness_home_for(&home).join("profiles/desktop")
+    }
+
+    pub(super) fn plugin_enabled(manifest_path: &Path) -> bool {
+        let manifest: Option<Value> = std::fs::read(manifest_path)
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok());
+        manifest.is_some_and(|manifest| {
+            manifest
+                .pointer("/dsh/profile/bundles")
+                .and_then(Value::as_array)
+                .is_some_and(|bundles| bundles.iter().any(|bundle| bundle == PLUGIN))
+                && manifest_path.parent().is_some_and(|profile| {
+                    profile
+                        .join("node_modules")
+                        .join(PLUGIN)
+                        .join("index.js")
+                        .is_file()
+                })
+        })
     }
 
     fn command() -> Option<PathBuf> {
@@ -115,21 +134,7 @@ impl AgentAdapter for DeepSeekHarnessAdapter {
     }
 
     fn hooks_installed(&self) -> bool {
-        let profile = Self::profile();
-        let manifest: Option<Value> = std::fs::read(profile.join("package.json"))
-            .ok()
-            .and_then(|data| serde_json::from_slice(&data).ok());
-        manifest.is_some_and(|manifest| {
-            manifest
-                .pointer("/dsh/profile/bundles")
-                .and_then(Value::as_array)
-                .is_some_and(|bundles| bundles.iter().any(|bundle| bundle == PLUGIN))
-                && profile
-                    .join("node_modules")
-                    .join(PLUGIN)
-                    .join("index.js")
-                    .is_file()
-        })
+        Self::plugin_enabled(&Self::profile().join("package.json"))
     }
 
     fn parse_event(&self, raw: &Value) -> Result<AgentEvent, Box<dyn std::error::Error>> {

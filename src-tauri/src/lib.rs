@@ -595,6 +595,9 @@ async fn install_custom_agent_hook(
 ) -> Result<String, String> {
     let profile = agents::profiles::profile_for_agent(&profile_id)
         .ok_or_else(|| format!("Unknown hook profile: {}", profile_id))?;
+    if agents::profiles::uses_desktop_plugin(&profile) {
+        return Err(format!("{} requires its desktop profile", profile.id));
+    }
     let base_directory = std::path::PathBuf::from(expand_tilde_target(&install_directory));
     if !base_directory.is_dir() {
         return Err(format!(
@@ -846,6 +849,7 @@ async fn get_all_hook_status(
                 .and_then(|profile| agents::profiles::managed_bridge_command(profile).ok());
             let bridge_path = profile
                 .as_ref()
+                .filter(|profile| !agents::profiles::uses_desktop_plugin(profile))
                 .map(|_| display_path_with_home(&agents::hook_manager::bridge_binary_path()));
             serde_json::json!({
                 "toolId": tool_id,
@@ -859,6 +863,7 @@ async fn get_all_hook_status(
                 "configDir": config_dir,
                 "status": format!("{:?}", a.detect_status_now()),
                 "supportsEventSelection": supports_event_selection,
+                "supportsCustomInstall": profile.as_ref().is_some_and(|profile| !agents::profiles::uses_desktop_plugin(profile)),
                 "events": events,
                 "enabledEventNames": enabled_event_names,
                 "bridgeCommand": bridge_command,
@@ -5782,6 +5787,12 @@ pub fn run() {
                 let enabled_intent = startup_config_store.get().enabled_agents;
                 for adapter in startup_adapters.iter() {
                     let name = adapter.name();
+                    if agents::profiles::profile_for_agent(name)
+                        .as_ref()
+                        .is_some_and(agents::profiles::uses_desktop_plugin)
+                    {
+                        continue;
+                    }
                     let is_claude = name == "claude-code";
                     if !is_claude && !enabled_intent.iter().any(|a| a == name) {
                         continue;

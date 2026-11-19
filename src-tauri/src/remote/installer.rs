@@ -111,8 +111,8 @@ impl RemoteInstaller {
     /// Install hooks for a specific agent on the remote host via SSH
     pub async fn install_hooks_for_agent(host: &RemoteHost, agent_id: &str) -> InstallResult {
         let profile = match profiles::profile_for_agent(agent_id) {
-            Some(p) => p,
-            None => {
+            Some(p) if !profiles::uses_desktop_plugin(&p) => p,
+            _ => {
                 return InstallResult {
                     ok: false,
                     message: format!("Unknown agent: {}", agent_id),
@@ -144,8 +144,8 @@ impl RemoteInstaller {
     /// Remove hooks for a specific agent from the remote host via SSH
     pub async fn uninstall_hooks_for_agent(host: &RemoteHost, agent_id: &str) -> InstallResult {
         let profile = match profiles::profile_for_agent(agent_id) {
-            Some(p) => p,
-            None => {
+            Some(p) if !profiles::uses_desktop_plugin(&p) => p,
+            _ => {
                 return InstallResult {
                     ok: false,
                     message: format!("Unknown agent: {}", agent_id),

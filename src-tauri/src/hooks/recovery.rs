@@ -37,6 +37,9 @@ fn adapter_needs_restore(adapter: &dyn AgentAdapter, enabled_agents: &[String]) 
                 .unwrap_or(false)
         });
     };
+    if profiles::uses_desktop_plugin(&profile) {
+        return false;
+    }
 
     let is_enabled = enabled_agents.iter().any(|a| a == adapter.name());
 
