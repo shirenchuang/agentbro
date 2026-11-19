@@ -57,9 +57,11 @@ pub fn managed_agent_ids() -> Vec<String> {
         "autoclaw",
         "copilot",
         "qwen",
+        "qwenwork-cn",
         "kimi",
         "doubao",
         "deepseek",
+        "deepseek-harness",
         "workbuddy",
         "zcode",
         "windsurf",
@@ -165,6 +167,11 @@ fn table() -> &'static [AgentMeta] {
             icon_key: "qwen",
         },
         AgentMeta {
+            id: "qwenwork-cn",
+            display_name: "千问办公 (QwenWork)",
+            icon_key: "qwen",
+        },
+        AgentMeta {
             id: "kimi",
             display_name: "Kimi Code",
             icon_key: "kimi",
@@ -177,6 +184,11 @@ fn table() -> &'static [AgentMeta] {
         AgentMeta {
             id: "deepseek",
             display_name: "DeepSeek",
+            icon_key: "deepseek",
+        },
+        AgentMeta {
+            id: "deepseek-harness",
+            display_name: "DeepSeek Harness",
             icon_key: "deepseek",
         },
         AgentMeta {
@@ -260,9 +272,13 @@ pub fn agent_skills_dir(home: &std::path::Path, agent: &str) -> Option<PathBuf> 
         "autoclaw" => ".openclaw-autoclaw/skills",
         "copilot" => ".copilot/skills",
         "qwen" => ".qwen/skills",
+        "qwenwork-cn" => ".qwenworkcn/skills",
         "kimi" => return Some(agent_paths::kimi_code_home_for(home).join("skills")),
         "doubao" => return Some(agent_paths::doubao_user_skills_dir_for(home)),
         "deepseek" => ".deepseek/skills",
+        "deepseek-harness" => {
+            return Some(agent_paths::deepseek_harness_home_for(home).join("skills"))
+        }
         "workbuddy" => ".workbuddy/skills",
         "zcode" => ".zcode/skills",
         "windsurf" => ".windsurf/skills",
@@ -312,7 +328,10 @@ pub fn agent_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
 }
 
 pub fn inherits_shared_agents_skills(agent: &str) -> bool {
-    matches!(agent, "codex" | "kimi" | "openclaw" | "zcode")
+    matches!(
+        agent,
+        "codex" | "deepseek-harness" | "kimi" | "openclaw" | "zcode"
+    )
 }
 
 pub fn agent_owned_skill_dirs(home: &Path, agent: &str) -> Vec<PathBuf> {
@@ -526,6 +545,30 @@ mod tests {
     }
 
     #[test]
+    fn desktop_agents_use_their_own_skill_roots() {
+        let home = Path::new("/Users/tester");
+        for (id, path) in [
+            ("qwenwork-cn", ".qwenworkcn/skills"),
+            ("deepseek-harness", ".dsh/skills"),
+        ] {
+            assert!(visible_agent_ids().iter().any(|agent| agent == id));
+            assert_eq!(agent_owned_skill_dirs(home, id), vec![home.join(path)]);
+        }
+        assert_eq!(
+            agent_skill_dirs(home, "deepseek-harness"),
+            vec![home.join(".dsh/skills"), home.join(".agents/skills")]
+        );
+        assert_eq!(
+            agent_skill_dirs(home, "qwen"),
+            vec![home.join(".qwen/skills")]
+        );
+        assert_eq!(
+            agent_skill_dirs(home, "deepseek"),
+            vec![home.join(".deepseek/skills")]
+        );
+    }
+
+    #[test]
     fn owned_skill_dirs_include_shared_inventory_root() {
         let home = Path::new("/Users/tester");
         assert_eq!(
@@ -546,10 +589,10 @@ mod tests {
 
     #[test]
     fn shared_agents_skill_consumers_are_explicit() {
-        for agent in ["codex", "kimi", "openclaw", "zcode"] {
+        for agent in ["codex", "deepseek-harness", "kimi", "openclaw", "zcode"] {
             assert!(inherits_shared_agents_skills(agent), "{agent}");
         }
-        for agent in ["claude-code", "cursor", "gemini", "agents"] {
+        for agent in ["claude-code", "cursor", "gemini", "qwenwork-cn", "agents"] {
             assert!(!inherits_shared_agents_skills(agent), "{agent}");
         }
     }

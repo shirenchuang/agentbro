@@ -163,6 +163,8 @@ AgentBro supports agents at two levels. Runtime hook adapters send session event
 | Agent Management scan | Everything above, plus Doubao, the `.agents` shared folder, Junie, Windsurf, Augment, KiloCode, OB1, Amp, Aider, OpenClaw / QClaw / EasyClaw / AutoClaw, and custom agents |
 | Project-level scan | Currently focused on common Claude Code and Codex project config: project-level skills, MCP servers, plugins, and instruction files |
 
+On macOS, Agent Management recognizes DeepSeek Harness and QwenWork CN as separate desktop apps and manages skill folders under `~/.dsh/skills` and `~/.qwenworkcn/skills`. DeepSeek Harness also shows inherited skills from the default `~/.agents/skills` directory. The desktop integrations currently cover installation detection and Skill management.
+
 Doubao support on macOS detects `/Applications/Doubao.app`, manages `~/Doubao/skills`, and continues to cover Doubao's compatible `~/.agents/skills` through the central library. Doubao does not currently expose a public hook, so island activity is a best-effort inference from local processes and read-only metadata for two task-state directories; conversation contents are never read, and page synchronization can cause a brief false positive.
 
 ## Roadmap

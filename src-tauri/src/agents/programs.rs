@@ -399,7 +399,6 @@ async fn build_agent_list(
 
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
-    let is_kimi = id == "kimi";
     let meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = match &meta.kind {
         AgentProgramKind::Cli => which_agent_binary(&id, &meta),
@@ -419,10 +418,9 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     };
     let installed =
         program_is_installed_for_agent(&id, &meta, binary_path.is_some(), app_path.is_some());
-    let skills_dir = agent_paths::paths_for_agent(&id)
-        .skill_dirs
-        .first()
-        .map(|path| path.display().to_string());
+    let paths = agent_paths::paths_for_agent(&id);
+    let skill_path = paths.skill_dirs.first().map(PathBuf::as_path);
+    let skills_dir = skill_path.map(|path| path.display().to_string());
     let (installed_version, latest_version) = if installed {
         version_info_for(&meta, app_path.as_deref(), include_latest).await
     } else {
@@ -430,6 +428,13 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     };
     let update_available =
         versions_indicate_update(installed_version.as_deref(), latest_version.as_deref());
+    let config_dir = match id.as_str() {
+        "kimi" => Some(agent_paths::kimi_code_home().display().to_string()),
+        "deepseek-harness" => skill_path
+            .and_then(Path::parent)
+            .map(|path| path.display().to_string()),
+        _ => meta.config_dir.map(expand_home),
+    };
 
     AgentProgramInfo {
         id,
@@ -450,11 +455,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         installed_version,
         latest_version,
         binary_path,
-        config_dir: if is_kimi {
-            Some(agent_paths::kimi_code_home().display().to_string())
-        } else {
-            meta.config_dir.map(expand_home)
-        },
+        config_dir,
         app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
         install_command: meta.install_command.map(ToString::to_string),
@@ -1331,7 +1332,9 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "hermes" => "Hermes",
         "antigravity" => "Antigravity",
         "qwen" => "Qwen Code",
+        "qwenwork-cn" => "千问办公 (QwenWork)",
         "deepseek" => "DeepSeek",
+        "deepseek-harness" => "DeepSeek Harness",
         "kimi" => "Kimi Code",
         "doubao" => "Doubao",
         "droid" | "factory-droid" => "Factory Droid",
@@ -1364,6 +1367,8 @@ fn icon_for_agent(id: &str) -> String {
         "gemini-cli" => "gemini".to_string(),
         "cursor-cli" => "cursor".to_string(),
         "qoder-cli" => "qoder".to_string(),
+        "qwenwork-cn" => "qwen".to_string(),
+        "deepseek-harness" => "deepseek".to_string(),
         "factory-droid" => "factory-droid".to_string(),
         "easyclaw-v2" => "easyclaw".to_string(),
         other => other.to_string(),
@@ -1476,11 +1481,23 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "~/.qwen",
             "https://qwenlm.github.io",
         ),
+        "qwenwork-cn" => app(
+            "QwenWorkCN",
+            "/Applications/QwenWorkCN.app",
+            "~/.qwenworkcn",
+            "https://qwenwork.cn/",
+        ),
         "deepseek" => app(
             "deepseek",
             "/Applications/DeepSeek.app",
             "~/.deepseek",
             "https://www.deepseek.com",
+        ),
+        "deepseek-harness" => app(
+            "dsh",
+            "/Applications/DeepSeek Harness.app",
+            "~/.dsh",
+            "https://github.com/deepseek-ai/deepseek-harness/releases",
         ),
         "kimi" => cli(
             "kimi",
@@ -1724,6 +1741,21 @@ fn app_no_uninstall(
 mod tests {
     use super::*;
     use crate::skills::v2::agent_meta;
+
+    #[test]
+    fn standalone_desktop_agents_have_distinct_macos_bundles() {
+        for (id, path) in [
+            ("qwenwork-cn", "/Applications/QwenWorkCN.app"),
+            ("deepseek-harness", "/Applications/DeepSeek Harness.app"),
+            ("workbuddy", "/Applications/WorkBuddy.app"),
+        ] {
+            let meta = metadata_for(id).unwrap();
+            let candidates = app_path_candidates_for_platform(id, &meta, RuntimePlatform::Macos);
+            assert_eq!(meta.kind, AgentProgramKind::App);
+            assert!(candidates.iter().any(|candidate| candidate == path));
+            assert!(agent_paths::known_agent_ids().contains(&id));
+        }
+    }
 
     fn custom_claude_entry(config_root: String) -> registry::CustomAgentEntry {
         registry::CustomAgentEntry {
