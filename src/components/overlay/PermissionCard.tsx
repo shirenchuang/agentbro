@@ -7,6 +7,7 @@ import { setNotchFocusable, jumpToTerminal } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { getWritePermissionPreview, parseToolInput, shortenPath, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
 import { isCompactPermissionPrompt } from '../../utils/notificationLayout'
+import { supportsPersistentPermissionActions } from '../../utils/sessionCapabilities'
 import './PermissionCard.css'
 
 interface PermissionCardProps {
@@ -188,7 +189,7 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
   let parsedInput: Record<string, unknown> = {}
   parsedInput = parseToolInput(data.toolInput)
   const toolLabel = getToolActivityLabel(t, data.toolName)
-  const supportsPersistentActions = session.agentType !== 'codex'
+  const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
   const isCompactPermission = isCompactPermissionPrompt(overlay.data)
   const cardClassName = `overlay-card--permission${isCompactPermission ? ' overlay-card--permission-compact' : ''}`
   const actionsClassName = [
