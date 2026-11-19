@@ -277,23 +277,9 @@ fn is_local_port_listening(port: u16) -> bool {
 }
 
 fn codex_desktop_app_path() -> Option<PathBuf> {
-    codex_app_paths().into_iter().find(|path| path.exists())
-}
-
-fn codex_app_paths() -> Vec<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        super::executable::codex_desktop_app_candidates()
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut paths = vec![PathBuf::from("/Applications/Codex.app")];
-        if let Some(home) = dirs::home_dir() {
-            paths.push(home.join("Applications").join("Codex.app"));
-        }
-        paths
-    }
+    super::executable::codex_desktop_app_candidates()
+        .into_iter()
+        .find(|path| path.exists())
 }
 
 impl CodexAdapter {
