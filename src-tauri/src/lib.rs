@@ -5945,6 +5945,8 @@ pub fn run() {
 
             hooks::claude_desktop_watcher::start(session_store.clone(), app.handle().clone());
             hooks::doubao_watcher::start(session_store.clone());
+            #[cfg(target_os = "macos")]
+            hooks::qwenwork_watcher::start(session_store.clone());
             commands::start_codex_app_server_background_sync(
                 config_store.clone(),
                 session_store.clone(),

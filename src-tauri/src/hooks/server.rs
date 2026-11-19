@@ -1104,11 +1104,20 @@ impl HookServer {
 
                 // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
                 // approvals; other agents keep the existing five-minute fallback window.
-                let response =
-                    tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
+                let wait = tokio::time::timeout(Self::interaction_response_timeout(&raw), rx);
+                let harness = raw.get("agent").and_then(serde_json::Value::as_str)
+                    == Some("deepseek-harness");
+                let response = if harness {
+                    tokio::select! {
+                        reply = wait => reply.ok().and_then(Result::ok),
+                        _ = buf_reader.fill_buf() => None,
+                    }
+                } else {
+                    wait.await.ok().and_then(Result::ok)
+                };
 
                 match response {
-                    Ok(Ok(reply)) => {
+                    Some(reply) => {
                         // Send response back to the hook script
                         let write_result = match serde_json::to_string(&reply.response) {
                             Ok(json) => {
@@ -1133,6 +1142,13 @@ impl HookServer {
                             store.set_pending_permission(session_id, None);
                             store.update_phase(session_id, SessionPhase::Processing);
                         } else if let Err(err) = write_result {
+                            if harness {
+                                Self::clear_harness_permission(
+                                    &store,
+                                    session_id,
+                                    &resolved_tool_use_id,
+                                );
+                            }
                             log::warn!(
                                 "Permission response write failed for session {} tool {}: {}",
                                 session_id,
@@ -1141,11 +1157,19 @@ impl HookServer {
                             );
                         }
                     }
-                    _ => {
+                    None => {
                         // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
                         pending_map.remove(&resolved_tool_use_id);
-                        store.set_pending_permission(session_id, None);
+                        if harness {
+                            Self::clear_harness_permission(
+                                &store,
+                                session_id,
+                                &resolved_tool_use_id,
+                            );
+                        } else {
+                            store.set_pending_permission(session_id, None);
+                        }
                         log::warn!("Permission request timed out for session {}", session_id);
                     }
                 }
@@ -1356,6 +1380,22 @@ impl HookServer {
         }
 
         Ok(())
+    }
+
+    fn clear_harness_permission(store: &SessionStore, session_id: &str, tool_use_id: &str) {
+        store.update_session(session_id, |session| {
+            if session
+                .pending_permission
+                .as_ref()
+                .and_then(|permission| permission.tool_use_id.as_deref())
+                == Some(tool_use_id)
+            {
+                session.pending_permission = None;
+                if session.phase == SessionPhase::WaitingApproval {
+                    session.phase = SessionPhase::Processing;
+                }
+            }
+        });
     }
 
     /// Return recent raw hook events for a session, oldest first.
@@ -1577,6 +1617,9 @@ impl HookServer {
         if let Some(agent) = raw.get("agent").and_then(|v| v.as_str()) {
             let agent = canonical_agent_id(agent);
             if let Some(adapter) = adapters.iter().find(|adapter| adapter.name() == agent) {
+                if agent == "deepseek-harness" {
+                    return adapter.parse_event(raw).ok();
+                }
                 if let Ok(event) = adapter.parse_event(raw) {
                     return Some(event);
                 }
@@ -3486,6 +3529,97 @@ mod tests {
             .as_deref(),
             Some("call-date-1")
         );
+    }
+
+    #[tokio::test]
+    async fn harness_permission_round_trip_and_disconnect_clear_the_island() {
+        let store = Arc::new(SessionStore::new());
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let context = HookConnectionContext {
+            pending: pending.clone(),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(vec![Arc::new(
+                crate::agents::deepseek_harness::DeepSeekHarnessAdapter::new(),
+            )]),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let id = "deepseek-harness:fixture";
+        for (tool_id, reply) in [
+            ("allow", Some("allow")),
+            ("deny", Some("deny")),
+            ("disconnect", None),
+        ] {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(server, context.clone()));
+            let event = serde_json::json!({
+                "agent": "deepseek-harness",
+                "event": "permission_request",
+                "session_id": id,
+                "tool_name": "Test",
+                "tool_use_id": tool_id,
+                "tool_input": {"description": "A local test prompt"},
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !pending.lock().await.contains_key(tool_id) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                store.get_session(id).unwrap().phase,
+                SessionPhase::WaitingApproval
+            );
+            if let Some(decision) = reply {
+                let mut entries = pending.lock().await.remove(tool_id).unwrap();
+                let (ack, acknowledged) = oneshot::channel();
+                entries
+                    .pop()
+                    .unwrap()
+                    .tx
+                    .send(PermissionReply {
+                        response: PermissionResponse {
+                            decision: decision.to_string(),
+                            reason: None,
+                            always: None,
+                        },
+                        ack,
+                    })
+                    .ok()
+                    .unwrap();
+                let mut response = String::new();
+                BufReader::new(client)
+                    .read_line(&mut response)
+                    .await
+                    .unwrap();
+                let result: serde_json::Value = serde_json::from_str(&response).unwrap();
+                assert_eq!(result["decision"], decision);
+                assert!(acknowledged.await.unwrap().is_ok());
+            } else {
+                drop(client);
+            }
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                store.get_session(id).unwrap().phase,
+                SessionPhase::Processing
+            );
+            assert!(store.get_session(id).unwrap().pending_permission.is_none());
+        }
+        assert!(pending.lock().await.is_empty());
     }
 
     #[tokio::test]

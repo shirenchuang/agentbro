@@ -1102,6 +1102,10 @@ fn default_app_path_for_display(agent_id: &str, meta: &ProgramMetadata) -> Optio
     }
 }
 
+pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
+    installed_app_path(agent_id, &metadata_for(agent_id)?)
+}
+
 fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
     app_path_candidates(agent_id, meta)
         .into_iter()
