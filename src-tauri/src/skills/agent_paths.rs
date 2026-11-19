@@ -24,6 +24,19 @@ pub fn kimi_code_home_for(home: &Path) -> PathBuf {
     home.join(".kimi-code")
 }
 
+pub fn deepseek_harness_home_for(home: &Path) -> PathBuf {
+    if dirs::home_dir().as_deref() == Some(home) {
+        if let Some(path) = std::env::var("DSH_HOME")
+            .ok()
+            .map(|value| expand_home_with_base(home, &value))
+            .filter(|path| path.is_absolute())
+        {
+            return path;
+        }
+    }
+    home.join(".dsh")
+}
+
 pub fn doubao_user_skills_dir_for(home: &Path) -> PathBuf {
     home.join("Doubao").join("skills")
 }
@@ -105,6 +118,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
         "opencode" => basic_skill_paths(&h, ".opencode/skills"),
         "qoder" | "qoder-cli" => basic_skill_paths(&h, ".qoder/skills"),
         "qwen" => basic_skill_paths(&h, ".qwen/skills"),
+        "qwenwork-cn" => basic_skill_paths(&h, ".qwenworkcn/skills"),
         "kimi" | "kimi-code-cli" => {
             let kimi_home = kimi_code_home_for(&h);
             SkillPaths {
@@ -119,6 +133,7 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             settings_file: None,
         },
         "deepseek" => basic_skill_paths(&h, ".deepseek/skills"),
+        "deepseek-harness" => basic_skill_paths(&deepseek_harness_home_for(&h), "skills"),
         "droid" | "factory-droid" => basic_skill_paths(&h, ".factory/skills"),
         "stepfun" => basic_skill_paths(&h, ".stepfun/skills"),
         "codebuddy" => basic_skill_paths(&h, ".codebuddy/skills"),
@@ -274,9 +289,11 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "agents",
         "antigravity",
         "qwen",
+        "qwenwork-cn",
         "kimi",
         "doubao",
         "deepseek",
+        "deepseek-harness",
         "droid",
         "stepfun",
         "codebuddy",

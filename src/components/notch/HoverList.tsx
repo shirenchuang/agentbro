@@ -604,7 +604,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
   const writePreview = perm.toolName === 'Write'
     ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
     : null
-  const supportsPersistentActions = session.agentType !== 'codex'
+  const supportsPersistentActions = !['codex', 'deepseek-harness'].includes(session.agentType)
 
   const clearAfter = (work: Promise<void>) => {
     work
