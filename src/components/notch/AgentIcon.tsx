@@ -1,10 +1,12 @@
 /* Agent Icon — Per-agent colored icon */
 import type { AgentType } from '../../types/agent'
 import workbuddyIcon from '../../assets/cli-icons/workbuddy.png'
+import qwenIcon from '../../assets/cli-icons/qwen.png'
 import zcodeIcon from '../../assets/cli-icons/zcode.svg'
 import doubaoIcon from '../../assets/cli-icons/doubao.svg'
 
 const agentIcons: Partial<Record<AgentType, string>> = {
+  'qwenwork-cn': qwenIcon,
   workbuddy: workbuddyIcon,
   zcode: zcodeIcon,
   doubao: doubaoIcon,
@@ -15,6 +17,7 @@ const agentColors: Record<string, string> = {
   'cline': '#00B87A',
   'codex': '#10B981',
   'deepseek': '#2563EB',
+  'deepseek-harness': '#2563EB',
   'gemini-cli': '#6366F1',
   'cursor': '#3B82F6',
   'opencode': '#8B5CF6',
@@ -33,6 +36,7 @@ const agentLabels: Record<string, string> = {
   'cline': 'Cl',
   'codex': 'X',
   'deepseek': 'DS',
+  'deepseek-harness': 'DS',
   'gemini-cli': 'G',
   'cursor': 'Cu',
   'opencode': 'O',

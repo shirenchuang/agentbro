@@ -277,6 +277,7 @@ interface ToolHookStatus {
   status: string
   version?: string
   supportsEventSelection?: boolean
+  supportsCustomInstall?: boolean
   events?: HookEventStatus[]
   enabledEventNames?: string[]
   isCustom?: boolean
@@ -2214,7 +2215,7 @@ function IntegrationTab() {
       || a.label.localeCompare(b.label),
     )
   const customProfileOptions = tools
-    .filter((tool) => tool.adapterId || tool.name)
+    .filter((tool) => tool.supportsCustomInstall !== false && (tool.adapterId || tool.name))
     .map((tool) => ({
       id: tool.adapterId || tool.name,
       label: tool.displayName || tool.name,

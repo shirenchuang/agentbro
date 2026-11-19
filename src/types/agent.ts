@@ -7,6 +7,7 @@ export type AgentType =
   | 'qoder' | 'qoder-cli'
   | 'codebuddy' | 'codebuddycn'
   | 'qwen' | 'kimi' | 'doubao' | 'deepseek' | 'opencode'
+  | 'qwenwork-cn' | 'deepseek-harness'
   | 'droid' | 'stepfun' | 'antigravity'
   | 'workbuddy' | 'hermes' | 'pi' | 'kiro' | 'zcode'
 

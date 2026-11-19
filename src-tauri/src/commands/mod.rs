@@ -2430,6 +2430,10 @@ pub async fn respond_permission(
     always: Option<bool>,
 ) -> Result<(), String> {
     let always = always.unwrap_or(false);
+    let harness = session_id.starts_with("deepseek-harness:");
+    if harness && always {
+        return Err("DeepSeek Harness only supports one-time approval".to_string());
+    }
     log::info!(
         "Permission response: session={}, allowed={}, always={}",
         session_id,
@@ -2459,6 +2463,7 @@ pub async fn respond_permission(
 
     match hook_result {
         Ok(()) => Ok(()),
+        Err(error) if harness => Err(error.to_string()),
         Err(e) => {
             #[cfg(target_os = "windows")]
             {
@@ -3864,6 +3869,9 @@ pub async fn respond_auto_approve(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    if session_id.starts_with("deepseek-harness:") {
+        return Err("DeepSeek Harness requires a one-time user decision".to_string());
+    }
     log::info!("Auto-approve: session={}", session_id);
 
     let hook_result = state.hook_server.respond_auto_approve(&session_id).await;

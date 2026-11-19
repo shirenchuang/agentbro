@@ -1,4 +1,4 @@
-use super::hook_manager;
+use super::{deepseek_harness::DeepSeekHarnessAdapter, hook_manager, AgentAdapter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +36,7 @@ pub enum InstallationKind {
     ExecutableHookFiles,
     PluginFile,
     PluginDirectory,
+    DeepSeekHarnessPlugin,
     TomlHooks,
 }
 
@@ -118,9 +119,8 @@ impl HookEventCategory {
     pub fn for_event_name(name: &str) -> Self {
         match name {
             "PreToolUse" | "PermissionRequest" | "PermissionResult" | "PermissionDenied"
-            | "pre_tool_use" | "preToolUse" | "permissionRequest" | "permissionResult" => {
-                Self::Approvals
-            }
+            | "pre_tool_use" | "preToolUse" | "permissionRequest" | "permissionResult"
+            | "approval/request" => Self::Approvals,
             "Notification"
             | "UserPromptSubmit"
             | "user_prompt_submit"
@@ -128,7 +128,7 @@ impl HookEventCategory {
             | "userPromptSubmitted" => Self::Notifications,
             "SessionStart" | "SessionEnd" | "Stop" | "StopFailure" | "SubagentStart"
             | "SubagentStop" | "SubagentEnd" | "session_start" | "session_end" | "sessionStart"
-            | "sessionEnd" | "agentSpawn" => Self::Lifecycle,
+            | "sessionEnd" | "agentSpawn" | "turn/start" | "turn/end" => Self::Lifecycle,
             _ => Self::Activity,
         }
     }
@@ -867,11 +867,28 @@ pub fn deepseek_profile() -> AgentIntegrationProfile {
     }
 }
 
+fn deepseek_harness_profile() -> AgentIntegrationProfile {
+    const EVENTS: &[HookEventDescriptor] = &[
+        plain_event("turn/start"),
+        plain_event("turn/end"),
+        plain_event("approval/request"),
+    ];
+    AgentIntegrationProfile {
+        id: "deepseek-harness",
+        installation_kind: InstallationKind::DeepSeekHarnessPlugin,
+        configuration_path: ".dsh/profiles/desktop/package.json",
+        activation_path: None,
+        source: "deepseek-harness",
+        extra_args: &[],
+        events: EVENTS,
+    }
+}
+
 pub fn configuration_url(profile: &AgentIntegrationProfile) -> PathBuf {
-    if profile.id == "kimi" {
-        crate::skills::agent_paths::kimi_code_home().join("config.toml")
-    } else {
-        resolve_home_path(profile.configuration_path)
+    match profile.id {
+        "kimi" => crate::skills::agent_paths::kimi_code_home().join("config.toml"),
+        "deepseek-harness" => DeepSeekHarnessAdapter::profile().join("package.json"),
+        _ => resolve_home_path(profile.configuration_path),
     }
 }
 
@@ -891,6 +908,7 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "cursor" => Some(cursor_profile()),
         "cursor-cli" => Some(cursor_cli_profile()),
         "deepseek" => Some(deepseek_profile()),
+        "deepseek-harness" => Some(deepseek_harness_profile()),
         "droid" | "factory-droid" => Some(droid_profile()),
         "gemini" => Some(gemini_profile()),
         "hermes" => Some(hermes_profile()),
@@ -909,7 +927,14 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
 }
 
 pub fn supports_event_selection(profile: &AgentIntegrationProfile) -> bool {
-    !profile.events.is_empty()
+    !profile.events.is_empty() && !uses_desktop_plugin(profile)
+}
+
+pub fn uses_desktop_plugin(profile: &AgentIntegrationProfile) -> bool {
+    matches!(
+        profile.installation_kind,
+        InstallationKind::DeepSeekHarnessPlugin
+    )
 }
 
 pub fn event_statuses(profile: &AgentIntegrationProfile) -> Vec<HookEventStatus> {
@@ -982,7 +1007,9 @@ pub fn install_at(
     profile: &AgentIntegrationProfile,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    hook_manager::ensure_bridge_binary()?;
+    if !uses_desktop_plugin(profile) {
+        hook_manager::ensure_bridge_binary()?;
+    }
     match profile.installation_kind {
         InstallationKind::JsonHooks { nested: true, .. } => {
             let command = managed_bridge_command(profile)?;
@@ -1019,6 +1046,12 @@ pub fn install_at(
         }
         InstallationKind::PluginDirectory => {
             write_plugin_directory(profile, path)?;
+        }
+        InstallationKind::DeepSeekHarnessPlugin => {
+            if path != configuration_url(profile) {
+                return Err("DeepSeek Harness requires the desktop profile".into());
+            }
+            DeepSeekHarnessAdapter::new().install_hooks()?;
         }
         InstallationKind::TomlHooks => {
             update_toml_hooks(profile, path)?;
@@ -1212,6 +1245,12 @@ pub fn uninstall_at(
                 let _ = std::fs::remove_dir_all(path);
             }
         }
+        InstallationKind::DeepSeekHarnessPlugin => {
+            if path != configuration_url(profile) {
+                return Err("DeepSeek Harness requires the desktop profile".into());
+            }
+            DeepSeekHarnessAdapter::new().remove_hooks()?;
+        }
         InstallationKind::TomlHooks => {
             remove_toml_hooks(path)?;
         }
@@ -1242,6 +1281,7 @@ pub fn is_installed_at(profile: &AgentIntegrationProfile, path: &Path) -> bool {
             has_plugin && enabled
         }
         InstallationKind::PluginDirectory => contains_marker(path, profile),
+        InstallationKind::DeepSeekHarnessPlugin => DeepSeekHarnessAdapter::plugin_enabled(path),
         InstallationKind::TomlHooks => std::fs::read_to_string(path)
             .map(|content| super::toml_hooks::contains_managed(&content))
             .unwrap_or(false),
@@ -1265,6 +1305,10 @@ pub fn install_health(profile: &AgentIntegrationProfile, path: &Path) -> HookIns
         InstallationKind::ExecutableHookFiles => executable_hook_files_health(profile, path),
         InstallationKind::PluginFile => plugin_file_health(profile, path),
         InstallationKind::PluginDirectory => plugin_directory_health(profile, path),
+        InstallationKind::DeepSeekHarnessPlugin if is_installed_at(profile, path) => {
+            HookInstallHealth::Installed
+        }
+        InstallationKind::DeepSeekHarnessPlugin => HookInstallHealth::NotInstalled,
     }
 }
 
@@ -1635,6 +1679,9 @@ pub fn managed_bridge_command_labeled(
     engine_label: Option<&str>,
     config_root: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    if uses_desktop_plugin(profile) {
+        return Err("DeepSeek Harness uses a desktop plugin".into());
+    }
     let bridge = hook_manager::ensure_bridge_binary()?;
     let mut args = vec!["--source".to_string(), profile.source.to_string()];
     if cfg!(target_os = "windows") {
@@ -1740,14 +1787,14 @@ fn load_stored_hook_selections() -> StoredHookSelections {
 }
 
 fn selected_event_name_set(profile: &AgentIntegrationProfile) -> BTreeSet<String> {
-    if !supports_event_selection(profile) {
-        return BTreeSet::new();
-    }
     let valid_names: BTreeSet<String> = profile
         .events
         .iter()
         .map(|event| event.name.to_string())
         .collect();
+    if !supports_event_selection(profile) {
+        return valid_names;
+    }
     let stored_selections = load_stored_hook_selections();
     let Some(stored) = stored_selections.0.get(profile.id) else {
         return valid_names;

@@ -10,6 +10,7 @@ pub mod copilot;
 pub mod cursor;
 pub mod cursor_cli;
 pub mod deepseek;
+pub mod deepseek_harness;
 pub mod detection;
 pub mod droid;
 pub mod executable;
@@ -237,6 +238,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(qwen::QwenAdapter::new()),
         Box::new(kimi::KimiAdapter::new()),
         Box::new(deepseek::DeepSeekAdapter::new()),
+        Box::new(deepseek_harness::DeepSeekHarnessAdapter::new()),
         Box::new(opencode::OpenCodeAdapter::new()),
         Box::new(droid::DroidAdapter::new()),
         Box::new(stepfun::StepFunAdapter::new()),
@@ -272,6 +274,7 @@ impl_default_adapter!(
     cursor::CursorAdapter,
     cursor_cli::CursorCliAdapter,
     deepseek::DeepSeekAdapter,
+    deepseek_harness::DeepSeekHarnessAdapter,
     droid::DroidAdapter,
     gemini::GeminiAdapter,
     hermes::HermesAdapter,

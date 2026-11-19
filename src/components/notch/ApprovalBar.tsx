@@ -37,7 +37,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     : ''
   const selected = questionState.key === questionKey ? questionState.selected : []
   const answers = questionState.key === questionKey ? questionState.answers : {}
-  const supportsPersistentPermissionActions = session.agentType !== 'codex'
+  const supportsPersistentPermissionActions = !['codex', 'deepseek-harness'].includes(session.agentType)
 
   useEffect(() => {
     onDraftStateChange?.(hasDraft)

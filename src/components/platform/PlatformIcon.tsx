@@ -65,6 +65,7 @@ const imageIcons: Record<string, string> = {
   qoder: qoderCliIcon,
   'qoder-cli': qoderCliIcon,
   qwen: qwenCliIcon,
+  'qwenwork-cn': qwenCliIcon,
   stepfun: stepfunCliIcon,
   windsurf: windsurfIcon,
   workbuddy: workbuddyCliIcon,
@@ -74,6 +75,7 @@ const imageIcons: Record<string, string> = {
 }
 
 const glyphIcons: Record<string, string> = {
+  'deepseek-harness': 'DS',
   junie: 'JN',
   augment: 'AU',
   kilocode: 'KC',
