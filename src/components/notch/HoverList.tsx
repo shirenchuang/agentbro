@@ -17,6 +17,7 @@ import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { getStringField, getWritePermissionPreview, parseToolInput, WRITE_PERMISSION_PREVIEW_LINES } from '../../utils/permissionPreview'
+import { supportsPersistentPermissionActions } from '../../utils/sessionCapabilities'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { parseCodexTitleMetadata } from '../../utils/codexMetadata'
 import { DiffView } from './DiffView'
@@ -604,7 +605,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
   const writePreview = perm.toolName === 'Write'
     ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
     : null
-  const supportsPersistentActions = !['codex', 'deepseek-harness'].includes(session.agentType)
+  const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
 
   const clearAfter = (work: Promise<void>) => {
     work

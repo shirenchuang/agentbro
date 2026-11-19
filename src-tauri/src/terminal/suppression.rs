@@ -133,56 +133,37 @@ fn is_terminal_frontmost() -> bool {
             .unwrap_or(false);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        is_terminal_frontmost_macos()
+        macos_frontmost_bundle().is_some_and(|id| registry::is_terminal_bundle(&id))
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_terminal_frontmost_macos() -> bool {
-    let output = match std::process::Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#,
-        ])
-        .output()
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let bundle_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    registry::is_terminal_bundle(&bundle_id)
+        false
+    }
 }
 
 fn is_bundle_frontmost(expected_bundle_id: &str) -> bool {
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "macos")]
     {
-        let _ = expected_bundle_id;
-        return false;
+        macos_frontmost_bundle().as_deref() == Some(expected_bundle_id)
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(target_os = "macos"))]
     {
-        is_bundle_frontmost_macos(expected_bundle_id)
+        let _ = expected_bundle_id;
+        false
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn is_bundle_frontmost_macos(expected_bundle_id: &str) -> bool {
-    let output = match std::process::Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#,
-        ])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    String::from_utf8_lossy(&output.stdout).trim() == expected_bundle_id
+#[cfg(target_os = "macos")]
+fn macos_frontmost_bundle() -> Option<String> {
+    objc2::rc::autoreleasepool(|_| {
+        let bundle = objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .frontmostApplication()?
+            .bundleIdentifier()?;
+        Some(bundle.to_string())
+    })
 }
 
 fn is_agent_terminal_frontmost(
@@ -202,31 +183,20 @@ fn is_agent_terminal_frontmost(
         return terminal_pid_matches_frontmost(terminal_pid, frontmost_pid, tree);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        is_agent_terminal_frontmost_macos(terminal_pid)
+        objc2::rc::autoreleasepool(|_| {
+            objc2_app_kit::NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .and_then(|app| u32::try_from(app.processIdentifier()).ok())
+                == Some(terminal_pid)
+        })
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_agent_terminal_frontmost_macos(terminal_pid: u32) -> bool {
-    let output = match std::process::Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to get unix id of first application process whose frontmost is true"#,
-        ])
-        .output()
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let frontmost_pid: u32 = match String::from_utf8_lossy(&output.stdout).trim().parse() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    terminal_pid == frontmost_pid
+        let _ = terminal_pid;
+        false
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -15,6 +15,10 @@ export interface ComposerCapabilityOptions {
   codexDesktopRepliesSupported?: boolean
 }
 
+export function supportsPersistentPermissionActions(agentType: SessionState['agentType']): boolean {
+  return agentType !== 'codex' && agentType !== 'deepseek-harness'
+}
+
 function bundleIdMatchesCodexApp(termBundleId: string | undefined): boolean {
   if (!termBundleId) return false
   return termBundleId.toLowerCase().includes('openai.codex')

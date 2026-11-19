@@ -5,7 +5,7 @@ import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
+import { getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -37,7 +37,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     : ''
   const selected = questionState.key === questionKey ? questionState.selected : []
   const answers = questionState.key === questionKey ? questionState.answers : {}
-  const supportsPersistentPermissionActions = !['codex', 'deepseek-harness'].includes(session.agentType)
+  const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
 
   useEffect(() => {
     onDraftStateChange?.(hasDraft)
@@ -145,12 +145,12 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           <button className="approval-bar__btn approval-bar__btn--allow" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
             {t('notch.allowOnce')}
           </button>
-          {supportsPersistentPermissionActions && (
+          {supportsPersistentActions && (
             <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
               {t('notch.allowAlways')}
             </button>
           )}
-          {supportsPersistentPermissionActions && onAutoApprove && (
+          {supportsPersistentActions && onAutoApprove && (
             <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>
