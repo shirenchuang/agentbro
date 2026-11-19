@@ -3664,7 +3664,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(node).not.toBeNull()
       return node as HTMLElement
     })
-    expect(within(slider).getByRole('button', { name: '概览' })).toBeInTheDocument()
+    expect(await within(slider).findByRole('button', { name: '概览' })).toBeInTheDocument()
     expect(within(slider).getByRole('button', { name: '文件' })).toBeInTheDocument()
     expect(within(slider).getByRole('button', { name: '来源' })).toBeInTheDocument()
     expect(slider.querySelector('.sm2__detail-pills .sm2__tag--ok')).toHaveTextContent('正常')
