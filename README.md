@@ -171,6 +171,8 @@ macOS 和 Windows 的 Agent 管理可以单独识别 DeepSeek Harness 和千问�
 
 豆包 macOS 支持会检测 `/Applications/Doubao.app`、管理 `~/Doubao/skills`，并继续通过中心库覆盖豆包兼容的 `~/.agents/skills`。由于豆包目前没有公开 Hook，灵动岛中的任务状态来自本机进程与两个任务存储目录的只读元数据关联，不读取聊天内容；该状态属于尽力推断，页面同步可能造成短暂误报。
 
+Windows 用户可在「灵动岛 → 集成 → WSL Hook」选择已安装的发行版，为 Claude Code 或 Codex CLI 接入灵动岛。Hook 使用发行版默认用户的配置目录，通过 WSL 互操作调用 Windows 版 Bridge。灵动岛会标明发行版，点击箭头可以在该发行版的工作目录打开终端。
+
 ## 路线图
 
 AgentBro 会继续坚持本地优先。接下来的重点包括：

@@ -25,6 +25,8 @@
     "composerHintCodexApp": "Codex.app sessions can't receive messages from AgentBro yet.",
     "composerHintQoderApp": "Qoder.app sessions can't receive messages from AgentBro yet.",
     "composerHintRemote": "Remote sessions can't receive follow-ups from AgentBro — open the remote terminal to continue.",
+    "composerHintWsl": "Continue in a WSL terminal.",
+    "openWslTerminal": "Open WSL terminal",
     "composerHintNoTerminal": "This session has no terminal to type into.",
     "openHostApp": "Open app",
     "send": "Send",
@@ -95,6 +97,15 @@
     }
   },
   "settings": {
+    "wslHooks": {
+      "title": "WSL Hooks",
+      "distribution": "Distribution",
+      "select": "Select a distribution",
+      "noDistributions": "No WSL distributions found.",
+      "refresh": "Refresh",
+      "loading": "Checking WSL…",
+      "codexTrust": "If Codex asks you to review the hooks, use /hooks in the WSL session."
+    },
     "title": "Settings",
     "close": "Close",
     "petVitals": "Pet Vitals",

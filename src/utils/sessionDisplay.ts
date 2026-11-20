@@ -146,6 +146,7 @@ export function getSessionAppLabel(session: SessionState): string | null {
 }
 
 export function getSessionTerminalLabel(session: SessionState): string | null {
+  if (session.wslDistribution) return `WSL · ${session.wslDistribution}`
   const appLabel = getSessionAppLabel(session)
   if (appLabel) return null
 

@@ -136,6 +136,7 @@ export interface BackendSession {
   sessionTitle: string | null
   remoteHostId?: string | null
   remoteHostName?: string | null
+  wslDistribution?: string | null
   pid: number | null
   tty: string | null
   termProgram: string | null
@@ -398,6 +399,24 @@ export interface BackendAdapterInfo {
 export async function getSessions(): Promise<BackendSession[]> {
   if (!isTauri()) return []
   return invoke<BackendSession[]>('get_sessions')
+}
+
+export interface WslHookStatus {
+  agentId: 'claude-code' | 'codex'
+  installed: boolean
+  error: string | null
+}
+
+export function listWslDistributions(): Promise<string[]> {
+  return invoke<string[]>('list_wsl_distributions')
+}
+
+export function getWslHookStatus(distribution: string): Promise<WslHookStatus[]> {
+  return invoke<WslHookStatus[]>('get_wsl_hook_status', { distribution })
+}
+
+export function setWslHook(distribution: string, agentId: WslHookStatus['agentId'], install: boolean): Promise<void> {
+  return invoke('set_wsl_hook', { distribution, agentId, install })
 }
 
 export async function getUsageRateLimits(): Promise<RateLimitInfo | null> {

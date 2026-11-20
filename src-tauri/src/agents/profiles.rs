@@ -2407,11 +2407,66 @@ fn json_hook_contains_profile(value: &Value, profile: &AgentIntegrationProfile) 
 }
 
 fn agentbro_command_matches_profile(profile: &AgentIntegrationProfile, command: &str) -> bool {
-    if !is_agentbro_command(command) {
+    if !is_agentbro_command(command) || command.ends_with(" # AgentBro WSL") {
         return false;
     }
 
     profile.id == "claude-code" || command_source_matches(command, profile.source)
+}
+
+pub(crate) fn wsl_hooks_installed(settings: &Value, marker: &str) -> bool {
+    let mut commands = Vec::new();
+    collect_json_agentbro_commands(settings, &mut commands);
+    commands.iter().any(|command| is_wsl_hook(command, marker))
+}
+
+pub(crate) fn edit_wsl_hooks(
+    settings: &mut Value,
+    profile: &AgentIntegrationProfile,
+    marker: &str,
+    command: Option<&str>,
+) -> Result<(), String> {
+    if !settings.is_object()
+        || settings
+            .get("hooks")
+            .is_some_and(|hooks| !hooks.is_object())
+    {
+        return Err("Expected an object in the WSL Hook settings".to_string());
+    }
+    strip_json_hooks_matching(settings, |hook| {
+        hook.get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| is_wsl_hook(command, marker))
+    });
+    let Some(command) = command else {
+        return Ok(());
+    };
+    let root = settings
+        .as_object_mut()
+        .ok_or("Invalid WSL Hook settings")?;
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("Invalid WSL Hook settings")?;
+    for event in profile.events {
+        let groups = hooks
+            .entry(event.name)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| format!("Expected a list for the {} Hook", event.name))?;
+        let handler = flat_json_hook_entry(JsonHookEntry::TypedCommand, event, command);
+        let mut group = serde_json::json!({ "hooks": [handler] });
+        if let HookEntryTemplate::Matcher(matcher) = event.template {
+            group["matcher"] = matcher.into();
+        }
+        groups.push(group);
+    }
+    Ok(())
+}
+
+fn is_wsl_hook(command: &str, marker: &str) -> bool {
+    command.ends_with(" # AgentBro WSL") && command.contains(marker)
 }
 
 fn strip_json_hooks_for_profile(settings: &mut Value, profile: &AgentIntegrationProfile) {

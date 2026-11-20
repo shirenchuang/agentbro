@@ -544,7 +544,15 @@ fn parent_process_id() -> u32 {
 
 /// Connect to AgentBro: try Unix socket first, fall back to TCP
 fn connect() -> Option<Stream> {
-    let endpoint = agentbro_lib::hook_endpoint::current();
+    let mut endpoint = agentbro_lib::hook_endpoint::current();
+    if arg_value("--wsl-distro").is_some() {
+        if let Some(port) = arg_value("--hook-port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+        {
+            endpoint.tcp_port = port;
+        }
+    }
     #[cfg(unix)]
     {
         if let Ok(s) = UnixStream::connect(&endpoint.socket_path) {
@@ -861,8 +869,9 @@ fn main() {
             .and_then(|value| value.as_str())
     })
     .unwrap_or("");
-    let claude_pid = parent_process_id();
-    let tty = get_tty();
+    let wsl_distribution = arg_value("--wsl-distro");
+    let pid = wsl_distribution.is_none().then(parent_process_id);
+    let tty = wsl_distribution.is_none().then(get_tty).flatten();
     let engine_label =
         arg_value("--engine-label").or_else(|| std::env::var("AGENTBRO_ENGINE_LABEL").ok());
     let engine_config_root =
@@ -882,11 +891,14 @@ fn main() {
         "session_id": session_id,
         "cwd": cwd,
         "event": hook_event,
-        "pid": claude_pid,
+        "pid": pid,
         "tty": tty,
     });
 
     let obj = state.as_object_mut().unwrap();
+    if let Some(distribution) = wsl_distribution {
+        obj.insert("_wsl_distribution".into(), distribution.into());
+    }
     if let Some(label) = engine_label {
         obj.insert("engine_label".into(), label.into());
     }

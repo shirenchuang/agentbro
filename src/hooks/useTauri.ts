@@ -227,6 +227,7 @@ function transformSession(bs: BackendSession): SessionState {
     sessionTitle: bs.sessionTitle ?? undefined,
     remoteHostId: bs.remoteHostId ?? undefined,
     remoteHostName: bs.remoteHostName ?? undefined,
+    wslDistribution: bs.wslDistribution ?? undefined,
     pid: bs.pid ?? undefined,
     tty: bs.tty ?? undefined,
     termProgram: bs.termProgram ?? undefined,
