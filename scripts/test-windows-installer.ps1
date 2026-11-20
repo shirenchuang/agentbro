@@ -16,12 +16,6 @@ Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $listener.Start()
 $port = $listener.LocalEndpoint.Port
-if ($VerifyIsland) {
-    $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $debugListener.Start()
-    $debugPort = $debugListener.LocalEndpoint.Port
-    $debugListener.Stop()
-}
 $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 
@@ -65,21 +59,8 @@ $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsP
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
-$webViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-$webViewProfile = $env:WEBVIEW2_USER_DATA_FOLDER
-try {
-    if ($VerifyIsland) {
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$debugPort --remote-debugging-address=127.0.0.1"
-        $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $stage 'webview'
-    }
-    $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-} finally {
-    if ($VerifyIsland) {
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $webViewArguments
-        $env:WEBVIEW2_USER_DATA_FOLDER = $webViewProfile
-    }
-}
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 $bridge = $null
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
@@ -162,7 +143,10 @@ try {
     }
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
     if ($VerifyIsland) {
-        & (Join-Path $PSScriptRoot 'test-windows-island.ps1') -DebuggerPort $debugPort -ProjectName (Split-Path $stage -Leaf)
+        $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File (Join-Path $PSScriptRoot 'test-windows-island.ps1') `
+            -AppProcessId $app.Id -ProjectName (Split-Path $stage -Leaf)
+        if ($LASTEXITCODE -ne 0) { throw 'The installed Island did not pass the desktop interaction check' }
     }
     $bridge.StandardInput.Close()
     if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
