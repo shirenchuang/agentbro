@@ -229,7 +229,7 @@ try {
         return
     }
     if ($WslDeny) {
-        $point = Wait-IslandValue 'the native Deny target for the WSL Hook' {
+        $denyPoint = {
             $root = Find-VisibleIsland
             if (-not $root) { return }
             $target = Find-NamedControl $root 'Deny'
@@ -240,8 +240,21 @@ try {
             $hit = [Windows.Automation.AutomationElement]::FromPoint($candidate)
             if ($hit.Current.Name -eq 'Deny' -and [AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) { return $candidate }
         }
+        $null = Wait-IslandValue 'the native Deny target for the WSL Hook' $denyPoint
         [AgentBroSmokeMouse]::Click()
-        Write-Output "Clicked the native Deny button for the WSL Hook at $($point.X), $($point.Y)."
+        $feedback = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
+        $null = Wait-IslandValue 'the optional Claude denial feedback field' {
+            $root = Find-VisibleIsland
+            if ($root) {
+                foreach ($editor in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $feedback)) {
+                    if (-not $editor.Current.IsOffscreen) { return $editor }
+                }
+            }
+        }
+        $point = Wait-IslandValue 'the final Claude Deny target' $denyPoint
+        [AgentBroSmokeMouse]::Click()
+        Write-Output "Confirmed Deny for the WSL Claude Hook at $($point.X), $($point.Y)."
         return
     }
     if ($WslJump) {
