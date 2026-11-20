@@ -14,6 +14,8 @@ function Invoke-QwenWorkIslandCheck([string]$Mode, [string]$Title) {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $tester = [System.Diagnostics.Process]::Start($start)
     try {
         $stdout = $tester.StandardOutput.ReadToEndAsync()

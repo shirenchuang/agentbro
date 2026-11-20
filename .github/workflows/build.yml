@@ -226,14 +226,6 @@ jobs:
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
-      - name: Upload the failed desktop check
-        if: failure() && runner.environment == 'github-hosted'
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentbro-windows-desktop-failure
-          path: ${{ runner.temp }}/agentbro-island-failure.png
-          if-no-files-found: ignore
-
       - name: Inspect the official QwenWork Windows installation
         shell: pwsh
         timeout-minutes: 9
@@ -243,3 +235,11 @@ jobs:
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           ./scripts/probe-qwenwork-windows.ps1 -AgentBroInstaller $installer.FullName `
               -VerifyAgentBro:($env:BUILD_ARTIFACT_RUN -ne '44785880844')
+
+      - name: Upload the failed desktop check
+        if: failure() && runner.environment == 'github-hosted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-desktop-failure
+          path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore

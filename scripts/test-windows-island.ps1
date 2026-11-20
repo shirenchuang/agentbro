@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($QwenWorkMode) { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
@@ -140,6 +141,16 @@ function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
     $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 
+function Find-VisibleQwenWorkCard {
+    foreach ($card in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+        $state = $card.Current
+        if (-not $state.IsOffscreen -and ([string]$state.Name).Contains($ProjectName) -and
+            (Find-NamedControl $card 'Jump to terminal')) {
+            return $card
+        }
+    }
+}
+
 function Get-QwenWorkWindow {
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $_.MainWindowHandle -ne 0 -and $_.Path -and $_.Path.StartsWith("$QwenWorkRoot\", [StringComparison]::OrdinalIgnoreCase)
@@ -204,8 +215,7 @@ try {
 
     if ($QwenWorkMode) {
         $null = Wait-IslandValue "the visible QwenWork phase '$ProjectName'" {
-            $phase = Find-NamedControl $island $ProjectName
-            if ($phase -and -not $phase.Current.IsOffscreen) { return $phase }
+            Find-VisibleQwenWorkCard
         }
         $phaseLabel = if ($QwenWorkMode -eq 'Jump') { 'Waiting for confirmation' } else { $QwenWorkMode }
         Write-Output "Windows Island showed QwenWork task phase: $phaseLabel"
@@ -219,9 +229,7 @@ try {
             [AgentBroSmokeMouse]::ForegroundProcess() -ne $qwen.Id
         }
         $point = Wait-IslandValue 'a native click target for Jump to terminal' {
-            $card = $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition) |
-                Where-Object { -not $_.Current.IsOffscreen -and ([string]$_.Current.Name).Contains($ProjectName) } |
-                Select-Object -First 1
+            $card = Find-VisibleQwenWorkCard
             if (-not $card) { return }
             $jump = Find-NamedControl $card 'Jump to terminal'
             $candidate = [Windows.Point]::new(0, 0)
