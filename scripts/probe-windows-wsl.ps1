@@ -48,7 +48,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL Hook fixture settings' }
         'model = "fixture-model"' | & $wsl --distribution $distribution --exec /bin/sh -c 'cat > "$HOME/.codex/config.toml"'
         'printf "%s" "$PWD" > "$HOME/.agentbro-smoke-cwd"' |
-            & $wsl --distribution $distribution --exec /bin/sh -c 'cat >> "$HOME/.bashrc"'
+            & $wsl --distribution $distribution --exec /bin/sh -c 'tr -d "\r" >> "$HOME/.bashrc"'
         if ($LASTEXITCODE -ne 0) { throw 'Could not add the WSL workspace fixture' }
     }
 
@@ -117,11 +117,16 @@ try {
         Invoke-IslandCheck @('-WslJump')
         $jumpDeadline = (Get-Date).AddSeconds(20)
         do {
-            $opened = & $wsl --distribution $distribution --exec /bin/cat '/home/agentbro/.agentbro-smoke-cwd' 2>$null
+            $opened = (& $wsl --distribution $distribution --exec /bin/cat '/home/agentbro/.agentbro-smoke-cwd' 2>$null | Out-String).Trim()
             if ($opened -eq $projectPath) { break }
             Start-Sleep -Milliseconds 500
         } until ((Get-Date) -ge $jumpDeadline)
-        if ($opened -ne $projectPath) { throw "The WSL jump did not open $projectPath" }
+        if ($opened -ne $projectPath) {
+            Get-CimInstance Win32_Process -Filter "Name='wsl.exe'" |
+                Select-Object ProcessId, ParentProcessId, CommandLine | ConvertTo-Json -Compress
+            & $wsl --distribution $distribution --exec /bin/sh -c 'for p in /proc/[0-9]*/cwd; do printf "%s " "$p"; readlink -- "$p" 2>/dev/null || echo inaccessible; done; ls -lab "$HOME"'
+            throw "The WSL jump did not open $projectPath (marker: $opened)"
+        }
         Write-Output 'Windows Island opened the fixture project in the WSL terminal.'
         $claude = Read-WslFixtureConfig '/home/agentbro/.claude/settings.json' | ConvertFrom-Json -AsHashtable
         $permission = $claude.hooks.PermissionRequest | ForEach-Object { $_.hooks } |
