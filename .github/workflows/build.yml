@@ -184,6 +184,9 @@ jobs:
           & $testExecutable --exact agents::profiles::tests::workbuddy_ai_hooks_use_separate_settings_and_observe_confirmations
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact hooks::server::tests::workbuddy_sessions_outlive_the_hook_shell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

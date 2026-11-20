@@ -2872,7 +2872,13 @@ impl HookServer {
             return;
         };
 
-        let pid = if Self::is_remote_hook_event(raw) {
+        let is_workbuddy = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .and_then(crate::agents::workbuddy::WorkBuddyEdition::from_agent_id)
+            .is_some();
+        // WorkBuddy's bridge is launched by a short-lived hook shell. It does not own the session.
+        let pid = if Self::is_remote_hook_event(raw) || is_workbuddy {
             None
         } else {
             raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
@@ -3774,6 +3780,29 @@ mod tests {
         assert_eq!(session.terminal, "WorkBuddy AI");
         assert_eq!(session.phase, SessionPhase::WaitingInput);
         assert!(session.pending_permission.is_none());
+    }
+
+    #[test]
+    fn workbuddy_sessions_outlive_the_hook_shell() {
+        let store = SessionStore::new();
+        for agent in ["workbuddy", "workbuddy-ai"] {
+            store.get_or_create_session(agent, agent, "test-project", "/test-project", "WorkBuddy");
+            store.update_phase(agent, SessionPhase::Processing);
+            HookServer::update_session_metadata_from_raw(
+                &store,
+                &serde_json::json!({
+                    "session_id": agent,
+                    "agent": agent,
+                    "pid": u32::MAX,
+                }),
+            );
+        }
+
+        let sessions = store.get_all_sessions();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|session| session.phase == SessionPhase::Processing && session.pid.is_none()));
     }
 
     #[tokio::test]
