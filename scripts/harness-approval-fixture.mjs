@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { access, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 export const inject = ['sessions', 'approval']
@@ -15,7 +15,7 @@ export function apply(ctx) {
 }
 
 async function run(ctx, output) {
-  const session = ctx.sessions.create({ cwd: dirname(output) })
+  const session = ctx.sessions.create()
   session.append('turn/start', { turn: 1 })
   session.append('user/message', {
     id: randomUUID(),
