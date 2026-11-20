@@ -168,6 +168,9 @@ fn run_marketplace_skill_batch(
             }
         };
 
+    let checkout_commit = temp_root
+        .as_ref()
+        .and_then(|root| crate::skills::installer::read_checkout_commit(&root.join("repo")));
     let install_result = (|| {
         let service = svc()?;
         let mut items = Vec::with_capacity(total);
@@ -179,7 +182,7 @@ fn run_marketplace_skill_batch(
             let result =
                 crate::skills::installer::locate_skillssh_skill_dir(&repo_root, &skill.skill_id)
                     .and_then(|source_dir| {
-                        service.execute_add_center_skill(
+                        service.execute_add_center_skill_with_commit(
                             AddCenterSkillInput {
                                 source_path: source_dir.display().to_string(),
                                 source_type: "skillssh".to_string(),
@@ -190,6 +193,7 @@ fn run_marketplace_skill_batch(
                                 import_mode: Some("copy".to_string()),
                             },
                             Vec::new(),
+                            checkout_commit.as_deref(),
                         )
                     });
             match result {

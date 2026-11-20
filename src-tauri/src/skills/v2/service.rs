@@ -1933,13 +1933,29 @@ impl Service {
         &self,
         input: AddCenterSkillInput,
     ) -> Result<AddCenterSkillPreview, String> {
+        self.prepare_center_skill_import(&input, None)
+            .map(|(preview, _)| preview)
+    }
+
+    fn prepare_center_skill_import(
+        &self,
+        input: &AddCenterSkillInput,
+        checkout_commit: Option<&str>,
+    ) -> Result<(AddCenterSkillPreview, Option<String>), String> {
         let center = self.center_path()?;
         let expanded_src = fsutil::expand_tilde(&input.source_path);
-        let (src, _temp_root) = if is_remote_skill_source(&input) {
+        let (src, temp_root) = if is_remote_skill_source(input) {
             crate::skills::installer::resolve_external_skill_source(&input.source_path)?
         } else {
             (expanded_src, None)
         };
+        let source_ref = checkout_commit.map(str::to_string).or_else(|| {
+            if is_git_skill_source_path(&input.source_path) {
+                crate::skills::installer::read_checkout_commit(&temp_root.as_ref()?.join("repo"))
+            } else {
+                None
+            }
+        });
         let mut candidates = Vec::new();
         let mut blockers = Vec::new();
         let mut unchanged_count = 0;
@@ -2006,7 +2022,7 @@ impl Service {
                     let src_row = self.source_for_skill(&proposed)?;
                     let same_source = match &src_row {
                         Some(s) => sources_match_for_candidate(
-                            &input,
+                            input,
                             &dir,
                             &s.source_type,
                             s.source_uri.as_deref(),
@@ -2018,7 +2034,7 @@ impl Service {
                     };
                     if same_source {
                         let mode_matches =
-                            center_import_mode_matches(&input, &row.center_path, &dir);
+                            center_import_mode_matches(input, &row.center_path, &dir);
                         if mode_matches {
                             let content_matches = if input.import_mode.as_deref() == Some("link") {
                                 true
@@ -2031,7 +2047,11 @@ impl Service {
                                     source_hash,
                                 )
                             };
-                            if content_matches {
+                            let revision_matches = source_ref.as_deref().is_none_or(|commit| {
+                                src_row.as_ref().and_then(|s| s.source_ref.as_deref())
+                                    == Some(commit)
+                            });
+                            if content_matches && revision_matches {
                                 unchanged_count += 1;
                                 continue;
                             }
@@ -2067,13 +2087,15 @@ impl Service {
                 candidates.push(cand);
             }
         }
-        let _ = &center;
-        Ok(AddCenterSkillPreview {
-            candidates,
-            blockers,
-            unchanged_count,
-            center_path: center.display().to_string(),
-        })
+        Ok((
+            AddCenterSkillPreview {
+                candidates,
+                blockers,
+                unchanged_count,
+                center_path: center.display().to_string(),
+            },
+            source_ref,
+        ))
     }
 
     pub fn execute_add_center_skill(
@@ -2081,11 +2103,21 @@ impl Service {
         input: AddCenterSkillInput,
         decisions: Vec<AddCenterSkillDecision>,
     ) -> Result<AddCenterSkillResult, String> {
+        self.execute_add_center_skill_with_commit(input, decisions, None)
+    }
+
+    pub(crate) fn execute_add_center_skill_with_commit(
+        &self,
+        input: AddCenterSkillInput,
+        decisions: Vec<AddCenterSkillDecision>,
+        checkout_commit: Option<&str>,
+    ) -> Result<AddCenterSkillResult, String> {
         let _import_guard = self
             .center_import_lock
             .lock()
             .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
-        let preview = self.preview_add_center_skill(input.clone())?;
+        let (preview, source_ref) = self.prepare_center_skill_import(&input, checkout_commit)?;
+        let source_ref = source_ref.as_deref();
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let mut created = Vec::new();
@@ -2107,7 +2139,7 @@ impl Service {
                 }
                 Some("update") => {
                     // treat as overwrite
-                    self.write_skill_to_center(b, &center, &b.skill_id, &input)?;
+                    self.write_skill_to_center(b, &center, &b.skill_id, &input, source_ref)?;
                     updated.push(b.skill_id.clone());
                 }
                 Some("create") => {
@@ -2116,7 +2148,7 @@ impl Service {
                         .get(&b.skill_id)
                         .and_then(|d| d.proposed_skill_id.clone())
                         .unwrap_or_else(|| format!("{}-import", b.skill_id));
-                    self.write_skill_to_center(b, &center, &new_id, &input)?;
+                    self.write_skill_to_center(b, &center, &new_id, &input, source_ref)?;
                     created.push(new_id);
                 }
                 _ => {
@@ -2135,7 +2167,7 @@ impl Service {
                 continue;
             }
             if c.action == "update" {
-                self.write_skill_to_center(c, &center, &c.skill_id, &input)?;
+                self.write_skill_to_center(c, &center, &c.skill_id, &input, source_ref)?;
                 updated.push(c.skill_id.clone());
             } else {
                 // create — allow rename override
@@ -2145,12 +2177,12 @@ impl Service {
                     .filter(|s| !s.is_empty())
                 {
                     if new_id != c.skill_id {
-                        self.write_skill_to_center(c, &center, &new_id, &input)?;
+                        self.write_skill_to_center(c, &center, &new_id, &input, source_ref)?;
                         created.push(new_id);
                         continue;
                     }
                 }
-                self.write_skill_to_center(c, &center, &c.skill_id, &input)?;
+                self.write_skill_to_center(c, &center, &c.skill_id, &input, source_ref)?;
                 created.push(c.skill_id.clone());
             }
         }
@@ -2169,6 +2201,7 @@ impl Service {
         center: &Path,
         skill_id: &str,
         input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
     ) -> Result<(), String> {
         let dest = center.join(skill_id);
         let src = Path::new(&cand.source_dir);
@@ -2208,7 +2241,7 @@ impl Service {
             std::fs::rename(&pending, &dest)
                 .map_err(|error| format!("Activate Skill '{}': {error}", dest.display()))?;
             activated = true;
-            self.record_source_after_write(skill_id, &dest, src, input)
+            self.record_source_after_write(skill_id, &dest, src, input, source_ref)
         })();
 
         if let Err(error) = &result {
@@ -2269,6 +2302,7 @@ impl Service {
         dest: &Path,
         source_dir: &Path,
         input: &AddCenterSkillInput,
+        source_ref: Option<&str>,
     ) -> Result<(), String> {
         let fm = fsutil::read_frontmatter(dest);
         let hash = fsutil::hash_dir(dest);
@@ -2291,7 +2325,7 @@ impl Service {
                 skill_id,
                 &input.source_type,
                 source_uri.as_deref(),
-                None,
+                source_ref,
                 input.imported_from_agent.as_deref(),
                 input.imported_from_path.as_deref(),
                 "agentbro",
@@ -6594,9 +6628,14 @@ fn canonical_or_original(path: &Path) -> PathBuf {
 
 fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {
     matches!(input.source_type.as_str(), "github" | "git" | "skillssh")
-        || input.source_path.starts_with("github:")
-        || input.source_path.starts_with("https://github.com/")
-        || input.source_path.starts_with("http://github.com/")
+        || is_git_skill_source_path(&input.source_path)
+}
+
+fn is_git_skill_source_path(path: &str) -> bool {
+    path.starts_with("github:")
+        || path.starts_with("skillssh:")
+        || path.starts_with("https://github.com/")
+        || path.starts_with("http://github.com/")
 }
 
 fn is_local_folder_import(input: &AddCenterSkillInput) -> bool {

@@ -324,6 +324,36 @@ pub(crate) fn resolve_external_skill_source_with_token(
     resolve_install_source_with_token(source, github_token)
 }
 
+pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
+    let git_dir = repo_dir.join(".git");
+    if !git_dir.is_dir() {
+        return None;
+    }
+    let mut command = crate::platform::process::background_command(
+        crate::agents::executable::command_path("git"),
+    );
+    command
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .env_remove("GIT_COMMON_DIR")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout_named(
+        &mut command,
+        Duration::from_secs(5),
+        None,
+        "reading the Skill checkout commit",
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = std::str::from_utf8(&output.stdout).ok()?.trim();
+    (matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| commit.to_string())
+}
+
 pub(crate) fn resolve_github_repo_skills_with_cancel(
     source: &str,
     skill_ids: &[String],
