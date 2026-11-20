@@ -63,7 +63,7 @@ pnpm dev         # 仅浏览器 UI,适合调样式 → http://localhost:1423
 
 在 Windows x64 运行 `pnpm tauri:build:windows`。NSIS 和 MSI 安装包分别位于 `src-tauri/target/release/bundle/nsis/` 和 `src-tauri/target/release/bundle/msi/`。
 
-Windows 相关 PR 可从任务分支手动运行 [Build 工作流](https://github.com/shirenchuang/agentbro/actions/workflows/build.yml)。其中 `Smoke test installed Windows app` 在全新的 Windows runner 中安装 NSIS 包、启动程序并验证 TCP Hook 投递。
+Windows 相关 PR 可从任务分支手动运行 [Build 工作流](https://github.com/shirenchuang/agentbro/actions/workflows/build.yml)。其中 `Smoke test installed Windows app` 在全新的 Windows runner 中安装并启动 NSIS 包，验证 TCP Hook 投递，再用系统鼠标打开灵动岛的会话列表和详情。
 
 ### 提交前必跑
 

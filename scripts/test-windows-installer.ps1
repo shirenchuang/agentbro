@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)]
-    [string]$Installer
+    [string]$Installer,
+    [switch]$VerifyIsland
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,7 +61,6 @@ $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-$bridge = $null
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -73,6 +73,61 @@ function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     throw "Timed out waiting for $Description"
+}
+
+function Send-ClaudeToolEvent([string]$Executable, [string[]]$Arguments, [hashtable]$Event) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new($Executable)
+    foreach ($argument in $Arguments) {
+        $start.ArgumentList.Add($argument)
+    }
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $bridge = [System.Diagnostics.Process]::Start($start)
+    try {
+        $bridge.StandardInput.WriteLine(($Event | ConvertTo-Json -Compress))
+        $bridge.StandardInput.Close()
+        if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
+            throw "The Hook command failed while sending fixture $($Event.session_id)"
+        }
+    } finally {
+        if (-not $bridge.HasExited) {
+            Stop-Process -Id $bridge.Id -ErrorAction SilentlyContinue
+        }
+        $bridge.Dispose()
+    }
+    Wait-AppCondition 'AgentBro to receive the bridge tool event' {
+        (Test-Path -LiteralPath $logPath -PathType Leaf) -and
+            (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$($Event.session_id) tool=Read" -Quiet)
+    }
+}
+
+function Test-InstalledIsland([string]$ProjectName) {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
+    $scriptPath = Join-Path $PSScriptRoot 'test-windows-island.ps1'
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', $scriptPath,
+            '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
+        $start.ArgumentList.Add($argument)
+    }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $tester = [System.Diagnostics.Process]::Start($start)
+    try {
+        $output = $tester.StandardOutput.ReadToEndAsync()
+        $errors = $tester.StandardError.ReadToEndAsync()
+        if (-not $tester.WaitForExit(120000)) {
+            throw 'The installed Island desktop interaction check timed out'
+        }
+        Write-Output ($output.GetAwaiter().GetResult())
+        if ($tester.ExitCode -ne 0) {
+            throw "The installed Island did not pass the desktop interaction check: $($errors.GetAwaiter().GetResult())"
+        }
+    } finally {
+        if (-not $tester.HasExited) { Stop-Process -Id $tester.Id -ErrorAction SilentlyContinue }
+        $tester.Dispose()
+    }
 }
 
 try {
@@ -119,25 +174,21 @@ try {
         cwd = $stage
         tool_name = 'Read'
         tool_input = @{ file_path = (Join-Path $stage 'smoke.txt') }
-    } | ConvertTo-Json -Compress
-
-    $start = [System.Diagnostics.ProcessStartInfo]::new($bashPath)
-    $start.ArgumentList.Add('-c')
-    $start.ArgumentList.Add($bridgeHooks[0].command)
-    $start.UseShellExecute = $false
-    $start.RedirectStandardInput = $true
-    $bridge = [System.Diagnostics.Process]::Start($start)
-    $bridge.StandardInput.WriteLine($event)
-    $bridge.StandardInput.Close()
-    if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
-        throw 'The configured Claude Hook failed when run through Git Bash'
     }
 
-    Wait-AppCondition 'AgentBro to receive the bridge tool event' {
-        (Test-Path -LiteralPath $logPath -PathType Leaf) -and
-            (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$sessionId tool=Read" -Quiet)
-    }
+    Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
+    if ($VerifyIsland) {
+        # The Git Bash Hook can report a short-lived intermediary as its parent PID.
+        # The test PowerShell process stays alive as the parent of this UI fixture.
+        $projectName = "Island activity $PID"
+        $event.session_id = "$sessionId-island"
+        $event.cwd = Join-Path $stage $projectName
+        $event.tool_input.file_path = Join-Path $event.cwd 'smoke.txt'
+        $null = New-Item -ItemType Directory -Path $event.cwd
+        Send-ClaudeToolEvent $bridgePath @('--source', 'claude-code') $event
+        Test-InstalledIsland $projectName
+    }
 } catch {
     Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"
     Get-Process -Id $app.Id -ErrorAction SilentlyContinue |
@@ -161,9 +212,6 @@ try {
     }
     throw
 } finally {
-    if ($bridge -and -not $bridge.HasExited) {
-        Stop-Process -Id $bridge.Id -ErrorAction SilentlyContinue
-    }
     if (-not $app.HasExited) {
         Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
     }

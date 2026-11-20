@@ -17,6 +17,7 @@ on:
         options:
           - windows-latest
           - windows-2022
+          - windows-11-arm
 
 permissions:
   contents: read
@@ -195,6 +196,22 @@ jobs:
           github-token: ${{ inputs.windows_artifact_run && github.token || '' }}
           run-id: ${{ inputs.windows_artifact_run || github.run_id }}
 
+      - name: Clear first-sign-in setup on the hosted Windows 11 runner
+        if: inputs.windows_smoke_runner == 'windows-11-arm' && runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          $policy = 'HKCU:\Software\Policies\Microsoft\Windows\OOBE'
+          New-Item -Path $policy -Force | Out-Null
+          New-ItemProperty -Path $policy -Name DisablePrivacyExperience -PropertyType DWord -Value 1 -Force | Out-Null
+          $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Get-Process -Name WWAHost -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $session } |
+            Stop-Process
+          # The Start menu can open as Windows finishes the first sign-in.
+          Start-Sleep -Milliseconds 1500
+          (New-Object -ComObject WScript.Shell).SendKeys('{ESC}')
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -203,4 +220,12 @@ jobs:
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName
+          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland
+
+      - name: Upload the failed desktop check
+        if: failure() && runner.environment == 'github-hosted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-desktop-failure
+          path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore
