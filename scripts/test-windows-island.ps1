@@ -111,7 +111,16 @@ try {
             }
         }
     }
-    Move-ToElement $session
+    $point = Wait-IslandValue 'a clickable point on the fixture session' {
+        $candidate = [Windows.Point]::new()
+        if ($session.TryGetClickablePoint([ref]$candidate)) { $candidate }
+    }
+    if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+        throw 'Could not move the Windows cursor onto the session'
+    }
+    Start-Sleep -Milliseconds 250
+    $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
+    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name)"
     [AgentBroSmokeMouse]::Click()
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
@@ -131,11 +140,11 @@ try {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
                 Select-Object LocalizedControlType, Name, IsOffscreen, BoundingRectangle |
-                Format-Table -AutoSize
+                ConvertTo-Json -Depth 3 -Compress
         } else {
             Get-IslandWindows | Select-Object -ExpandProperty Current |
                 Select-Object Name, ClassName, IsOffscreen, BoundingRectangle |
-                Format-Table -AutoSize
+                ConvertTo-Json -Depth 3 -Compress
         }
     } catch {
         Write-Output "Could not read Island accessibility state: $_"
