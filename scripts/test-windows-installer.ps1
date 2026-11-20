@@ -132,8 +132,7 @@ function Send-ClaudeToolEvent([string]$Executable, [string[]]$Arguments, [hashta
         $bridge.Dispose()
     }
     Wait-AppCondition 'AgentBro to receive the bridge tool event' {
-        (Test-Path -LiteralPath $logPath -PathType Leaf) -and
-            (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$($Event.session_id) tool=Read" -Quiet)
+        Select-String -LiteralPath $stdoutPath -SimpleMatch "[ToolUse] session=$($Event.session_id) tool=Read" -Quiet
     }
 }
 
@@ -174,10 +173,9 @@ try {
     $hookReady = $true
     Wait-AppCondition 'the bridge and Claude Hook configuration to be deployed' {
         (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and
-            (Test-Path -LiteralPath $logPath -PathType Leaf) -and
-            (Select-String -LiteralPath $logPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
+            (Select-String -LiteralPath $stdoutPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
     }
-    Select-String -LiteralPath $logPath -SimpleMatch 'Startup:', 'Listening on TCP:' |
+    Select-String -LiteralPath $stdoutPath -SimpleMatch 'Startup:', 'Listening on TCP:' |
         Select-Object -ExpandProperty Line
     $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
     $bundledHashes = Get-FileHash -LiteralPath $bundledBridges.FullName
