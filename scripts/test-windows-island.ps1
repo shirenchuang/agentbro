@@ -215,6 +215,10 @@ try {
 
     if ($QwenWorkMode) {
         $null = Wait-IslandValue "the visible QwenWork phase '$ProjectName'" {
+            if ($QwenWorkMode -eq 'Completed') {
+                $completion = Find-NamedControl $island $ProjectName
+                if ($completion -and -not $completion.Current.IsOffscreen) { return $completion }
+            }
             Find-VisibleQwenWorkCard
         }
         $phaseLabel = if ($QwenWorkMode -eq 'Jump') { 'Waiting for confirmation' } else { $QwenWorkMode }
