@@ -8,6 +8,7 @@ use std::time::Duration;
 const AGENT: &str = "qwenwork-cn";
 const NAME: &str = "千问办公";
 const DATABASE: &str = "host-agent-responses.db";
+const FLASH_DATABASE: &str = "qwenwork.db";
 const STALE_MS: i64 = 30 * 60 * 1000;
 const DONE_MS: i64 = 20 * 1000;
 
@@ -35,6 +36,7 @@ pub fn start(store: Arc<SessionStore>) {
 #[derive(Debug)]
 struct Turn {
     session_id: String,
+    title: Option<String>,
     phase: SessionPhase,
     description: &'static str,
     updated: i64,
@@ -44,14 +46,22 @@ fn read_recent_turns(root: &Path, now: i64) -> HashMap<PathBuf, Option<Vec<Turn>
     database_paths(root)
         .into_iter()
         .map(|path| {
-            let turns = read_database(&path, now - STALE_MS).ok();
-            (path, turns)
+            let turns = if path.ends_with(FLASH_DATABASE) {
+                read_flash_database(&path, now - STALE_MS)
+            } else {
+                read_database(&path, now - STALE_MS)
+            };
+            (path, turns.ok())
         })
         .collect()
 }
 
 fn database_paths(root: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![root.join(DATABASE)];
+    let mut paths = vec![
+        root.join(DATABASE),
+        root.join(".harness/flash-cli/qwenwork")
+            .join(FLASH_DATABASE),
+    ];
     for (directory, suffix) in [("identities", "qwapp"), ("qwapp-identities", "")] {
         let Ok(entries) = std::fs::read_dir(root.join(directory)) else {
             continue;
@@ -112,6 +122,71 @@ fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
         }
         turns.push(Turn {
             session_id: format!("{AGENT}:{session_id}"),
+            title: None,
+            phase,
+            description,
+            updated,
+        });
+    }
+    Ok(turns)
+}
+
+fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(Duration::from_millis(100))?;
+    let mut query = connection.prepare(
+        "SELECT s.id, substr(s.title, 1, 120), s.time_updated,
+                COALESCE(answer.time_updated, prompt.time_created),
+                json_extract(answer.data, '$.time.completed'),
+                json_extract(answer.data, '$.finish'), json_extract(answer.data, '$.error.name')
+         FROM session s
+         JOIN message prompt ON prompt.id = (
+             SELECT m.id FROM message m
+             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'user'
+             ORDER BY m.time_created DESC, m.id DESC LIMIT 1
+         )
+         LEFT JOIN message answer ON answer.id = (
+             SELECT m.id FROM message m
+             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
+                 AND json_extract(m.data, '$.parentID') = prompt.id
+             ORDER BY m.time_created DESC, m.id DESC LIMIT 1
+         )
+         WHERE s.time_updated >= ?1 AND s.time_archived IS NULL AND s.parent_id IS NULL
+         ORDER BY s.time_updated DESC LIMIT 64",
+    )?;
+    let mut rows = query.query([since])?;
+    let mut turns = Vec::new();
+    while let Some(row) = rows.next()? {
+        let session_id = row.get::<_, String>(0)?;
+        if session_id.is_empty() || session_id.len() > 256 {
+            continue;
+        }
+        let title = row
+            .get::<_, Option<String>>(1)?
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        let session_updated: i64 = row.get(2)?;
+        let message_updated: i64 = row.get(3)?;
+        let completed: Option<i64> = row.get(4)?;
+        let finish: Option<String> = row.get(5)?;
+        let error: Option<String> = row.get(6)?;
+        let (phase, description, updated) = match (completed, finish.as_deref(), error.as_deref()) {
+            (_, _, Some("MessageAbortedError")) => {
+                (SessionPhase::Interrupted, "任务已取消", message_updated)
+            }
+            (_, _, Some(_)) => (SessionPhase::Error, "任务未完成", message_updated),
+            (Some(at), Some(reason), None) if !matches!(reason, "tool-calls" | "unknown") => {
+                (SessionPhase::Done, "任务已完成", at)
+            }
+            _ => (
+                SessionPhase::Processing,
+                "任务进行中",
+                session_updated.max(message_updated),
+            ),
+        };
+        turns.push(Turn {
+            session_id: format!("{AGENT}:flash:{session_id}"),
+            title,
             phase,
             description,
             updated,
@@ -158,7 +233,9 @@ fn reconcile(
         next.insert(id.to_string());
         let existing = store.get_session(id);
         if existing.as_ref().is_some_and(|session| {
-            session.phase == turn.phase && session.description.as_deref() == Some(turn.description)
+            session.phase == turn.phase
+                && session.description.as_deref() == Some(turn.description)
+                && session.session_title == turn.title
         }) {
             continue;
         }
@@ -167,6 +244,7 @@ fn reconcile(
         }
         store.update_session(id, |session| {
             session.term_bundle_id = Some("cn.qwenwork.desktop.mac".to_string());
+            session.session_title = turn.title.clone();
             session.phase = turn.phase.clone();
             session.description = Some(turn.description.to_string());
         });
@@ -185,6 +263,63 @@ mod tests {
         session_id TEXT NOT NULL, status TEXT NOT NULL,
         ordinal INTEGER NOT NULL, updated_at INTEGER NOT NULL
     );";
+
+    #[test]
+    fn flash_tasks_follow_the_latest_user_message_through_tool_steps() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro-qwenwork-{}", uuid::Uuid::new_v4()));
+        let flash_root = directory.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&flash_root).unwrap();
+        let database = Connection::open(flash_root.join(FLASH_DATABASE)).unwrap();
+        database
+            .execute_batch(
+                r#"CREATE TABLE session (
+                     id TEXT PRIMARY KEY, title TEXT, time_updated INTEGER,
+                     time_archived INTEGER, parent_id TEXT
+                   );
+                   CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                     time_updated INTEGER, data TEXT
+                   );
+                   INSERT INTO session VALUES ('s', '实际任务标题', 3000, NULL, NULL);
+                   INSERT INTO message VALUES
+                     ('u1', 's', 1000, 3000, '{"role":"user"}'),
+                     ('a1', 's', 1001, 2000,
+                      '{"role":"assistant","parentID":"u1","time":{"completed":2000},"finish":"stop"}'),
+                     ('u2', 's', 3000, 3000, '{"role":"user"}');"#,
+            )
+            .unwrap();
+        let store = SessionStore::new();
+        let mut visible = HashSet::new();
+        let mut cached = HashMap::new();
+        let mut observe = |now| {
+            let observed = read_recent_turns(&directory, now);
+            reconcile(&store, &mut visible, &mut cached, observed, now);
+            store.get_session("qwenwork-cn:flash:s")
+        };
+        let session = observe(3000).unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(session.session_title.as_deref(), Some("实际任务标题"));
+        database
+            .execute_batch(
+                r#"INSERT INTO message VALUES
+                   ('a2', 's', 3001, 4000,
+                    '{"role":"assistant","parentID":"u2","time":{"completed":4000},"finish":"tool-calls"}');"#,
+            )
+            .unwrap();
+        assert_eq!(observe(4000).unwrap().phase, SessionPhase::Processing);
+        database
+            .execute_batch(
+                r#"INSERT INTO message VALUES
+                   ('a3', 's', 4001, 5000,
+                    '{"role":"assistant","parentID":"u2","time":{"completed":5000},"finish":"stop"}');"#,
+            )
+            .unwrap();
+        assert_eq!(observe(5000).unwrap().phase, SessionPhase::Done);
+        assert!(observe(5000 + DONE_MS + 1).is_none());
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn mirrors_qwenwork_turn_phases_without_owning_approvals() {
