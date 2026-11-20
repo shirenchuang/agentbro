@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { ProjectManagementPage } from '../components/skills-v2/ProjectManagementPage'
 import { skillApiV2 } from '../services/skillApiV2'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
+import i18n from '../i18n'
 import type { ProjectDetail, SkillManagerOverview, SkillSummary } from '../services/skillApiV2'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
@@ -140,5 +141,51 @@ describe('ProjectManagementPage', () => {
     await waitFor(() => {
       expect(install).toHaveBeenCalledWith('project-1', 'codex', ['release-checklist'], 'link')
     })
+  })
+
+  it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {
+    await i18n.changeLanguage('en')
+    const project = makeProject()
+    const skillLock = {
+      version: 2,
+      revision: 'preview-digest',
+      error: null,
+      skills: [
+        { name: 'missing-skill', source: 'example/skills', reference: 'locked-commit', status: 'ready' },
+        { name: 'mismatch', source: 'example/skills', reference: 'main', status: 'ready' },
+        { name: 'other-source', source: 'package', reference: null, status: 'unsupported' },
+        { name: 'present', source: 'example/skills', reference: 'main', status: 'existing' },
+        { name: 'unselected', source: 'example/skills', reference: null, status: 'ready' },
+      ],
+    } satisfies NonNullable<ProjectDetail['skillLock']>
+    vi.mocked(skillApiV2.getProjectDetail)
+      .mockResolvedValueOnce({ ...project, skillLock })
+      .mockResolvedValue({
+        ...project,
+        skillLock: {
+          ...skillLock,
+          skills: skillLock.skills.map((skill) => skill.name === 'missing-skill'
+            ? { ...skill, status: 'existing' }
+            : skill),
+        },
+      })
+    const restore = vi.spyOn(skillApiV2, 'restoreProjectSkillLock').mockResolvedValue([
+      { name: 'missing-skill', error: null },
+      { name: 'mismatch', error: 'Downloaded Skill content does not match the lock file' },
+    ])
+    render(<ProjectManagementPage />)
+
+    expect(await screen.findByText('example/skills · locked-commit')).toBeInTheDocument()
+    expect(screen.getByText('Unsupported source or version')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore selected (0)' })).toBeDisabled()
+    expect(restore).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'missing-skill' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'mismatch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore selected (2)' }))
+
+    await waitFor(() => expect(restore).toHaveBeenCalledWith('project-1', 'preview-digest', ['missing-skill', 'mismatch']))
+    expect(await screen.findByText('Restored')).toBeInTheDocument()
+    expect(screen.getByText('Downloaded Skill content does not match the lock file')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'missing-skill' })).not.toBeInTheDocument()
   })
 })

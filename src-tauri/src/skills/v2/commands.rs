@@ -629,6 +629,19 @@ pub fn scan_skill_project_v2(project_id: String) -> Result<ProjectDetail, String
     svc()?.scan_project(&project_id)
 }
 
+#[tauri::command]
+pub async fn restore_project_skill_lock_v2(
+    project_id: String,
+    revision: String,
+    skill_names: Vec<String>,
+) -> Result<Vec<ProjectSkillRestoreResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        svc()?.restore_project_skill_lock(&project_id, &revision, skill_names)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command(async)]
 pub fn install_center_skills_to_project_v2(
     project_id: String,

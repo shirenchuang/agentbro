@@ -3,6 +3,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
+import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
 type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config'
 
@@ -231,6 +232,13 @@ function ProjectDetailView({
       </div>
 
       <ProjectInstallPanel detail={detail} />
+      {detail.skillLock && (
+        <ProjectSkillLockPanel
+          key={detail.id + ':' + detail.skillLock.revision}
+          projectId={detail.id}
+          lock={detail.skillLock}
+        />
+      )}
 
       <div className="sm2__subtabs">
         {tabs.map((item) => (

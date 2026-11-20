@@ -121,6 +121,7 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
+- Preview skills.sh project lock files and select missing GitHub Skills to restore to the project's .agents/skills directory. Restoration verifies the v2 content hash and preserves existing entries. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>

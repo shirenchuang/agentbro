@@ -5654,6 +5654,56 @@
   background: var(--card-bg, rgba(248, 250, 252, 0.78));
 }
 
+.sm2__project-skill-lock {
+  display: grid;
+  gap: 8px;
+}
+
+.sm2__project-skill-lock p,
+.sm2__project-lock-list {
+  margin: 0;
+}
+
+.sm2__project-lock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sm2__project-lock-actions label,
+.sm2__project-lock-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.sm2__project-lock-list {
+  padding: 0;
+  list-style: none;
+}
+
+.sm2__project-lock-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+}
+
+.sm2__project-lock-row code,
+.sm2__project-lock-error {
+  overflow-wrap: anywhere;
+}
+
+.sm2__project-lock-error {
+  grid-column: 1 / -1;
+  color: var(--danger, #b45353);
+}
+
 .sm2__project-install-controls {
   display: grid;
   grid-template-columns: minmax(140px, 0.8fr) 96px minmax(180px, 1.2fr) auto minmax(180px, 1.2fr) auto;

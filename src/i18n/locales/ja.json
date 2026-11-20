@@ -697,6 +697,21 @@
     "dismiss": "閉じる"
   },
   "skills": {
+    "projectLock": {
+      "selectAll": "復元可能な項目をすべて選択",
+      "restoring": "復元中…",
+      "restore": "選択項目を復元（{{count}}）",
+      "destination": "不足しているスキルを {{path}} に復元します。",
+      "empty": "このロックファイルにスキルはありません。",
+      "restored": "復元済み",
+      "status": {
+        "existing": "既存",
+        "ready": "復元可能",
+        "legacy": "旧形式のハッシュ",
+        "unsupported": "未対応のソースまたはバージョン",
+        "invalid": "無効な項目"
+      }
+    },
     "sourceUpdates": {
       "installedCommit": "インストール済みのコミット",
       "privateRepository": "プライベートリポジトリ",

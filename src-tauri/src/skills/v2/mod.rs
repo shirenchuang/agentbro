@@ -6,6 +6,7 @@ pub mod db;
 pub mod diagnosis;
 pub mod fsutil;
 pub mod models;
+mod project_lock;
 pub mod service;
 pub mod snapshot;
 #[cfg(test)]

@@ -121,6 +121,7 @@ Agent Monitor 汇总当前和历史会话，可以按项目查看运行阶段、
 - 管理 stdio、HTTP 和 SSE MCP 服务，检查 tools、resources、prompts 与连接日志；调用工具前会显示参数和风险确认。
 - 查看 Codex、Claude Code、WorkBuddy、ZCode、Kimi 等 Agent 的插件，搜索、启停、检查清单和内置能力，并预览插件文件。
 - 在校验后编辑支持的 JSON 或文本配置文件；项目页可以导入仓库，检查项目级指令、Skills、MCP 和插件。
+- 在项目页预览 skills.sh 锁文件，选择缺失的 GitHub Skill 并恢复到项目的 .agents/skills 目录。恢复时校验 v2 内容哈希，保留已有条目。 [skills.sh 锁文件格式](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
 
 <table>
   <tr>
