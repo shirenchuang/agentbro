@@ -70,11 +70,13 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        home().join(rest)
-    } else {
-        PathBuf::from(p)
+    if p == "~" {
+        return home();
     }
+    let relative = p.strip_prefix("~/");
+    #[cfg(windows)]
+    let relative = relative.or_else(|| p.strip_prefix("~\\"));
+    relative.map_or_else(|| PathBuf::from(p), |rest| home().join(rest))
 }
 
 pub fn normalized_path(path: &Path) -> PathBuf {
@@ -443,14 +445,24 @@ pub fn try_symlink(target: &Path, link: &Path) -> Result<bool, String> {
 
 /// Remove a file or symlink or directory tree at the given path.
 pub fn remove_path(path: &Path) -> Result<(), String> {
-    if path.is_symlink() {
-        fs::remove_file(path).map_err(|e| format!("remove link {}: {}", path.display(), e))
-    } else if path.is_dir() {
+    let file_type = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+
+        if file_type.is_symlink_dir() {
+            return fs::remove_dir(path)
+                .map_err(|e| format!("remove directory link {}: {e}", path.display()));
+        }
+    }
+    if file_type.is_dir() {
         fs::remove_dir_all(path).map_err(|e| format!("remove dir {}: {}", path.display(), e))
-    } else if path.exists() {
-        fs::remove_file(path).map_err(|e| format!("remove file {}: {}", path.display(), e))
     } else {
-        Ok(())
+        fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))
     }
 }
 

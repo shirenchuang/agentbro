@@ -111,6 +111,9 @@ jobs:
       - name: Build Tauri installers
         run: pnpm tauri:build:windows
 
+      - name: Test Windows skill paths
+        run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib skills::v2::tests::windows_skill_paths_
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

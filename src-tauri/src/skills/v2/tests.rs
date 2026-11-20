@@ -452,6 +452,38 @@ fn windows_center_link_import_falls_back_to_copy() {
 }
 
 #[test]
+#[cfg(windows)]
+fn windows_skill_paths_import_and_register_home_relative_paths() {
+    let (_home, svc, _lock) = fresh_service("windows-home-relative");
+    let project = svc.home.join("Local Project");
+    write_skill(&project, "review", "review", Some("v1"));
+
+    let result = svc
+        .execute_add_center_skill(
+            AddCenterSkillInput {
+                source_path: r"~\Local Project\review".to_string(),
+                source_type: "local_folder".to_string(),
+                source_uri: None,
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: None,
+            },
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(result.skill_ids, ["review"]);
+
+    let from_backslashes = svc.add_project(r"~\Local Project".to_string()).unwrap();
+    let from_slashes = svc.add_project("~/Local Project".to_string()).unwrap();
+    assert_eq!(from_backslashes.summary.id, from_slashes.summary.id);
+    assert_eq!(
+        Path::new(&from_backslashes.summary.root_path),
+        project.canonicalize().unwrap()
+    );
+}
+
+#[test]
 fn linked_center_skill_file_tree_expands_source_directory() {
     let (_home, svc, _lock) = fresh_service("add-link-tree");
     let src = write_skill(
@@ -3154,6 +3186,43 @@ fn delete_unmanaged_agent_skill_removes_local_copy_without_importing_center() {
         .unwrap()
         .iter()
         .all(|u| u.id != unmanaged.id));
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_skill_paths_remove_agent_directory_link_and_preserve_source() {
+    let (_home, svc, _lock) = fresh_service("windows-remove-skill-link");
+    let source = write_skill(&svc.home.join("shared"), "review", "review", Some("keep"));
+    let agent_root = svc.home.join(".claude").join("skills");
+    fs::create_dir_all(&agent_root).unwrap();
+    let link = agent_root.join("review");
+    std::os::windows::fs::symlink_dir(&source, &link).unwrap();
+    svc.refresh().unwrap();
+    let unmanaged = svc
+        .list_unmanaged()
+        .unwrap()
+        .into_iter()
+        .find(|item| {
+            item.agent_id.as_deref() == Some("claude-code") && Path::new(&item.path) == link
+        })
+        .expect("Claude Code directory link in the skill list");
+
+    svc.delete_unmanaged_agent_skill("claude-code", &unmanaged.id)
+        .unwrap();
+
+    assert_eq!(
+        fs::symlink_metadata(&link).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("reference.md")).unwrap(),
+        "keep"
+    );
+    assert!(svc
+        .list_unmanaged()
+        .unwrap()
+        .iter()
+        .all(|item| item.id != unmanaged.id));
 }
 
 #[test]
