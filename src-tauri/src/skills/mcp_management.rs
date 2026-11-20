@@ -4405,10 +4405,13 @@ $response = @{
             encoded,
         ];
 
-        tokio::time::timeout(MCP_TEST_TIMEOUT, async {
-            let connection = test_stdio_connection(&draft).await.unwrap();
-            assert_eq!(connection.server_name.as_deref(), Some("no-console"));
+        let connection = tokio::time::timeout(MCP_TEST_TIMEOUT, test_stdio_connection(&draft))
+            .await
+            .expect("Windows stdio MCP connection test timed out")
+            .unwrap();
+        assert_eq!(connection.server_name.as_deref(), Some("no-console"));
 
+        tokio::time::timeout(MCP_INSPECTION_TIMEOUT, async {
             let mut inspection = open_stdio_inspection_session(&draft).await.unwrap();
             let response = initialize_inspection_session(&mut inspection)
                 .await
@@ -4421,7 +4424,7 @@ $response = @{
             inspection.shutdown().await.unwrap();
         })
         .await
-        .expect("Windows stdio MCP probes must complete within the connection timeout");
+        .expect("Windows stdio MCP inspection timed out");
     }
 
     async fn fake_http_mcp(Json(body): Json<Value>) -> Json<Value> {
