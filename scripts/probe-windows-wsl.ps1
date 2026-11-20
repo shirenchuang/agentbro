@@ -30,7 +30,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The imported WSL 2 distribution could not start' }
 
     if ($VerifyIntegration) {
-        & $wsl --distribution $distribution --user root --exec useradd --create-home --shell /bin/bash agentbro
+        & $wsl --distribution $distribution --user root --exec /usr/sbin/useradd --create-home --shell /bin/bash agentbro
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL fixture user' }
         "[user]`ndefault=agentbro" | & $wsl --distribution $distribution --user root --exec /bin/sh -c 'cat >/etc/wsl.conf'
         if ($LASTEXITCODE -ne 0) { throw 'Could not configure the default WSL fixture user' }
