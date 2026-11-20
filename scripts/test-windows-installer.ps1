@@ -34,10 +34,10 @@ $logPath = Join-Path $env:LOCALAPPDATA 'com.agentbro.desktop\logs\agentbro.log'
 if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw "Installed executable is missing: $appPath"
 }
-$bundledBridge = Get-ChildItem -LiteralPath $installDir -Recurse -File | Where-Object {
+$bundledBridges = @(Get-ChildItem -LiteralPath $installDir -Recurse -File | Where-Object {
     $_.Name -in 'agentbro-bridge', 'agentbro-bridge.exe'
-} | Select-Object -First 1
-if (-not $bundledBridge) {
+})
+if ($bundledBridges.Count -eq 0) {
     throw 'The installed package is missing the bridge resource'
 }
 
@@ -64,8 +64,10 @@ try {
     Wait-AppCondition 'the bridge and Claude Hook configuration to be deployed' {
         (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and (Test-Path -LiteralPath $settingsPath -PathType Leaf)
     }
-    if ((Get-FileHash -LiteralPath $bridgePath).Hash -ne (Get-FileHash -LiteralPath $bundledBridge.FullName).Hash) {
-        throw 'The deployed bridge differs from the resource in the installed app'
+    $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
+    $bundledHashes = Get-FileHash -LiteralPath $bundledBridges.FullName
+    if ($deployedHash -notin $bundledHashes.Hash) {
+        throw 'The deployed bridge does not match any executable bundled by the installer'
     }
 
     $sessionId = "windows-installer-smoke-$PID"
