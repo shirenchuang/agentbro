@@ -30,7 +30,7 @@ pub struct Metadata {
     pub discovered_skills: Vec<DiscoveredSkill>,
     #[serde(default)]
     pub discovered_scanned_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
     #[serde(default)]
     pub custom_agents: Vec<CustomAgentEntry>,
