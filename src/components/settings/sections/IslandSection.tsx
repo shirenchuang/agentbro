@@ -1564,7 +1564,7 @@ function SoundTab() {
         >
           ▶
         </button>
-        <Toggle checked={rule.enabled} onChange={() => toggleSoundEvent(event.id, !rule.enabled)} disabled={!config.soundEnabled} />
+        <Toggle label={eventLabel} checked={rule.enabled} onChange={() => toggleSoundEvent(event.id, !rule.enabled)} disabled={!config.soundEnabled} />
       </div>
     )
   }

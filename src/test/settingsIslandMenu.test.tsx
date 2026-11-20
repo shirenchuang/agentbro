@@ -231,9 +231,12 @@ describe('settings island menu', () => {
 
     fireEvent.click(screen.getByText('settings.island.title'))
 
-    await waitFor(() => expect(screen.getByText('settings.tipsEnabled')).toBeInTheDocument())
-    const tipsRow = screen.getByText('settings.tipsEnabled').closest('.setting-row')
-    fireEvent.click(tipsRow!.querySelector('[role="switch"]')!)
+    const tipsToggle = await screen.findByRole('switch', { name: 'settings.tipsEnabled' })
+    expect(tipsToggle).toHaveAccessibleDescription('settings.tipsEnabledDesc')
+    expect(tipsToggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(tipsToggle)
+    expect(tipsToggle).toHaveAccessibleName('settings.tipsEnabled')
+    expect(tipsToggle).toHaveAttribute('aria-checked', 'false')
 
     expect(tauriMocks.setIslandFeatureFlags).toHaveBeenCalledWith(expect.objectContaining({
       tipsEnabled: false,
@@ -378,6 +381,7 @@ describe('settings island menu', () => {
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     const row = (await screen.findByText('会话开始')).closest('.sound-event-row')!
+    expect(screen.getByRole('switch', { name: '会话开始' })).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(row.querySelector('.sound-event-row__play')!)
 
     await waitFor(() => expect(tauriMocks.previewSound).toHaveBeenCalledWith('session-start', 'builtin:hero'))
