@@ -6,12 +6,24 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      windows_artifact_run:
+        description: Existing Build run ID for an installer-only smoke test
+        type: string
+      windows_smoke_runner:
+        description: Windows image for the installer smoke test
+        type: choice
+        default: windows-latest
+        options:
+          - windows-latest
+          - windows-2022
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ !inputs.windows_artifact_run }}
     name: Build macOS (${{ matrix.arch }})
     runs-on: macos-15
     strategy:
@@ -72,6 +84,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
+    if: ${{ !inputs.windows_artifact_run }}
     name: Build Windows installers
     runs-on: windows-latest
 
@@ -156,8 +169,12 @@ jobs:
 
   smoke-windows:
     name: Smoke test installed Windows app
-    runs-on: windows-latest
+    if: ${{ !cancelled() && (inputs.windows_artifact_run || needs.build-windows.result == 'success') }}
+    runs-on: ${{ inputs.windows_smoke_runner || 'windows-latest' }}
     needs: build-windows
+    permissions:
+      actions: read
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +183,8 @@ jobs:
         with:
           name: agentbro-windows-installers
           path: windows-installers
+          github-token: ${{ inputs.windows_artifact_run && github.token || '' }}
+          run-id: ${{ inputs.windows_artifact_run || github.run_id }}
 
       - name: Install and exercise the Windows app
         shell: pwsh

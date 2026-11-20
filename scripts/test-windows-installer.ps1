@@ -56,7 +56,10 @@ $fixtureSettings = @{
 }
 $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding utf8
 
-$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru
+$stdoutPath = Join-Path $stage 'agentbro.stdout.log'
+$stderrPath = Join-Path $stage 'agentbro.stderr.log'
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 $bridge = $null
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
@@ -136,8 +139,25 @@ try {
     }
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
 } catch {
-    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
-        Get-Content -LiteralPath $logPath -Tail 30
+    Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"
+    Get-Process -Id $app.Id -ErrorAction SilentlyContinue |
+        Select-Object Id, SessionId, CPU, Responding, MainWindowTitle |
+        Format-List
+    Get-CimInstance Win32_Process -Filter "ParentProcessId = $($app.Id)" -ErrorAction SilentlyContinue |
+        Select-Object Name, ProcessId, SessionId |
+        Format-Table
+    Get-NetTCPConnection -OwningProcess $app.Id -State Listen -ErrorAction SilentlyContinue |
+        Select-Object LocalAddress, LocalPort |
+        Format-Table
+    $webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
+    Write-Output 'WebView2 Runtime versions:'
+    Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Name
+    foreach ($diagnosticLog in @($logPath, $stdoutPath, $stderrPath)) {
+        if (Test-Path -LiteralPath $diagnosticLog -PathType Leaf) {
+            Write-Output "Last lines of $diagnosticLog"
+            Get-Content -LiteralPath $diagnosticLog -Tail 30
+        }
     }
     throw
 } finally {
