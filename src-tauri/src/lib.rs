@@ -5805,8 +5805,8 @@ pub fn run() {
                             });
                         }
                         log::info!(
-                            "  session {}: project={}, title={:?}",
-                            &ds.session_id[..8.min(ds.session_id.len())],
+                            "  session {:.8}: project={}, title={:?}",
+                            ds.session_id,
                             ds.project,
                             ds.session_title,
                         );
