@@ -3231,7 +3231,7 @@ async fn import_github_repo_skills(
     let mut imported = Vec::new();
     if !active_selections.is_empty() {
         let clone_source = github_repo_clone_source(&repo);
-        let (repo_root, temp_root) = skills::installer::resolve_external_skill_source_with_token(
+        let (repo_root, _temp_root) = skills::installer::resolve_external_skill_source_with_token(
             &clone_source,
             github_token.as_deref(),
         )?;
@@ -3276,9 +3276,6 @@ async fn import_github_repo_skills(
             }
             Ok::<(), String>(())
         })();
-        if let Some(root) = temp_root {
-            let _ = std::fs::remove_dir_all(root);
-        }
         if let Err(error) = &install_result {
             log::warn!("GitHub Skill import failed: {error}");
         }

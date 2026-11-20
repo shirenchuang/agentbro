@@ -170,76 +170,66 @@ fn run_marketplace_skill_batch(
 
     let checkout_commit = temp_root
         .as_ref()
-        .and_then(|root| crate::skills::installer::read_checkout_commit(&root.join("repo")));
-    let install_result = (|| {
-        let service = svc()?;
-        let mut items = Vec::with_capacity(total);
-        for skill in skills {
-            if cancel.load(Ordering::Relaxed) {
-                break;
+        .and_then(|root| crate::skills::installer::read_checkout_commit(&root.path().join("repo")));
+    let service = svc()?;
+    let mut items = Vec::with_capacity(total);
+    for skill in skills {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        emit_progress("installing", Some(skill.item_id.clone()), items.len(), None);
+        let result =
+            crate::skills::installer::locate_skillssh_skill_dir(&repo_root, &skill.skill_id)
+                .and_then(|source_dir| {
+                    service.execute_add_center_skill_with_commit(
+                        AddCenterSkillInput {
+                            source_path: source_dir.display().to_string(),
+                            source_type: "skillssh".to_string(),
+                            source_uri: Some(skill.source_uri.clone()),
+                            imported_from_agent: None,
+                            imported_from_path: None,
+                            multi: Some(false),
+                            import_mode: Some("copy".to_string()),
+                        },
+                        Vec::new(),
+                        checkout_commit.as_deref(),
+                    )
+                });
+        match result {
+            Ok(installed) => {
+                let installed_id = installed
+                    .skill_ids
+                    .first()
+                    .or_else(|| installed.updated.first())
+                    .cloned()
+                    .unwrap_or_else(|| skill.skill_id.clone());
+                items.push(MarketplaceBatchItemResult {
+                    item_id: skill.item_id.clone(),
+                    skill_id: installed_id,
+                    success: true,
+                    error: None,
+                });
+                emit_progress("success", Some(skill.item_id), items.len(), None);
             }
-            emit_progress("installing", Some(skill.item_id.clone()), items.len(), None);
-            let result =
-                crate::skills::installer::locate_skillssh_skill_dir(&repo_root, &skill.skill_id)
-                    .and_then(|source_dir| {
-                        service.execute_add_center_skill_with_commit(
-                            AddCenterSkillInput {
-                                source_path: source_dir.display().to_string(),
-                                source_type: "skillssh".to_string(),
-                                source_uri: Some(skill.source_uri.clone()),
-                                imported_from_agent: None,
-                                imported_from_path: None,
-                                multi: Some(false),
-                                import_mode: Some("copy".to_string()),
-                            },
-                            Vec::new(),
-                            checkout_commit.as_deref(),
-                        )
-                    });
-            match result {
-                Ok(installed) => {
-                    let installed_id = installed
-                        .skill_ids
-                        .first()
-                        .or_else(|| installed.updated.first())
-                        .cloned()
-                        .unwrap_or_else(|| skill.skill_id.clone());
-                    items.push(MarketplaceBatchItemResult {
-                        item_id: skill.item_id.clone(),
-                        skill_id: installed_id,
-                        success: true,
-                        error: None,
-                    });
-                    emit_progress("success", Some(skill.item_id), items.len(), None);
-                }
-                Err(error) => {
-                    items.push(MarketplaceBatchItemResult {
-                        item_id: skill.item_id.clone(),
-                        skill_id: skill.skill_id,
-                        success: false,
-                        error: Some(error.clone()),
-                    });
-                    emit_progress("failed", Some(skill.item_id), items.len(), Some(error));
-                }
+            Err(error) => {
+                items.push(MarketplaceBatchItemResult {
+                    item_id: skill.item_id.clone(),
+                    skill_id: skill.skill_id,
+                    success: false,
+                    error: Some(error.clone()),
+                });
+                emit_progress("failed", Some(skill.item_id), items.len(), Some(error));
             }
         }
-        let cancelled = cancel.load(Ordering::Relaxed);
-        emit_progress(
-            if cancelled { "cancelled" } else { "completed" },
-            None,
-            items.len(),
-            None,
-        );
-        Ok::<MarketplaceBatchInstallResult, String>(MarketplaceBatchInstallResult {
-            items,
-            cancelled,
-        })
-    })();
-
-    if let Some(root) = temp_root {
-        let _ = std::fs::remove_dir_all(root);
     }
-    install_result
+    let cancelled = cancel.load(Ordering::Relaxed);
+    emit_progress(
+        if cancelled { "cancelled" } else { "completed" },
+        None,
+        items.len(),
+        None,
+    );
+    Ok(MarketplaceBatchInstallResult { items, cancelled })
 }
 
 #[tauri::command(async)]

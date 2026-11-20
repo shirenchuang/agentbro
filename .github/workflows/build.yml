@@ -111,7 +111,7 @@ jobs:
       - name: Build Tauri installers
         run: pnpm tauri:build:windows
 
-      - name: Test Windows skill paths
+      - name: Test Windows Skill paths and imports
         shell: pwsh
         run: |
           $testExecutable = cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
@@ -131,6 +131,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable skills::v2::tests::windows_skill_paths_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact skills::v2::tests::add_center_skill_from_zip
           exit $LASTEXITCODE
 
       - name: Upload artifact
