@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const SHARED_SKILLS_AGENT_ID: &str = "agents";
 const DEFAULT_SKILL_PACK_ID: &str = "default";
@@ -27,6 +27,7 @@ const DEFAULT_SKILL_PACK_DESCRIPTION: &str =
 pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
+    center_import_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,7 +85,11 @@ pub struct DeleteUnmanagedAgentSkillsResult {
 impl Service {
     pub fn new(sqlite_path: &Path, home: PathBuf) -> Result<Self, String> {
         let db = Arc::new(Db::open(sqlite_path)?);
-        let service = Service { db, home };
+        let service = Service {
+            db,
+            home,
+            center_import_lock: Mutex::new(()),
+        };
         service.recover_interrupted_pack_syncs()?;
         Ok(service)
     }
@@ -2076,6 +2081,10 @@ impl Service {
         input: AddCenterSkillInput,
         decisions: Vec<AddCenterSkillDecision>,
     ) -> Result<AddCenterSkillResult, String> {
+        let _import_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
         let preview = self.preview_add_center_skill(input.clone())?;
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
@@ -2098,7 +2107,7 @@ impl Service {
                 }
                 Some("update") => {
                     // treat as overwrite
-                    self.write_skill_to_center(b, &center, input.clone())?;
+                    self.write_skill_to_center(b, &center, &b.skill_id, &input)?;
                     updated.push(b.skill_id.clone());
                 }
                 Some("create") => {
@@ -2107,7 +2116,7 @@ impl Service {
                         .get(&b.skill_id)
                         .and_then(|d| d.proposed_skill_id.clone())
                         .unwrap_or_else(|| format!("{}-import", b.skill_id));
-                    self.write_skill_to_center_renamed(b, &center, &new_id, input.clone())?;
+                    self.write_skill_to_center(b, &center, &new_id, &input)?;
                     created.push(new_id);
                 }
                 _ => {
@@ -2126,7 +2135,7 @@ impl Service {
                 continue;
             }
             if c.action == "update" {
-                self.write_skill_to_center(c, &center, input.clone())?;
+                self.write_skill_to_center(c, &center, &c.skill_id, &input)?;
                 updated.push(c.skill_id.clone());
             } else {
                 // create — allow rename override
@@ -2136,12 +2145,12 @@ impl Service {
                     .filter(|s| !s.is_empty())
                 {
                     if new_id != c.skill_id {
-                        self.write_skill_to_center_renamed(c, &center, &new_id, input.clone())?;
+                        self.write_skill_to_center(c, &center, &new_id, &input)?;
                         created.push(new_id);
                         continue;
                     }
                 }
-                self.write_skill_to_center(c, &center, input.clone())?;
+                self.write_skill_to_center(c, &center, &c.skill_id, &input)?;
                 created.push(c.skill_id.clone());
             }
         }
@@ -2158,34 +2167,71 @@ impl Service {
         &self,
         cand: &AddCenterSkillCandidate,
         center: &Path,
-        input: AddCenterSkillInput,
+        skill_id: &str,
+        input: &AddCenterSkillInput,
     ) -> Result<(), String> {
-        let dest = center.join(&cand.skill_id);
+        let dest = center.join(skill_id);
         let src = Path::new(&cand.source_dir);
-        // overwrite if exists
-        if dest.exists() || dest.is_symlink() {
-            fsutil::remove_path(&dest)?;
+        if input.import_mode.as_deref() == Some("link") && fsutil::is_path_within(&dest, src) {
+            return Err(format!(
+                "Cannot link '{}' to a source inside the Skill directory being replaced.",
+                dest.display()
+            ));
         }
-        self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(&cand.skill_id, &dest, src, input)?;
-        Ok(())
-    }
 
-    fn write_skill_to_center_renamed(
-        &self,
-        cand: &AddCenterSkillCandidate,
-        center: &Path,
-        new_id: &str,
-        input: AddCenterSkillInput,
-    ) -> Result<(), String> {
-        let dest = center.join(new_id);
-        let src = Path::new(&cand.source_dir);
-        if dest.exists() || dest.is_symlink() {
-            fsutil::remove_path(&dest)?;
+        let staging = center.join(format!(".agentbro-import-{}.tmp", uuid_short()));
+        std::fs::create_dir(&staging)
+            .map_err(|error| format!("Prepare Skill import '{}': {error}", staging.display()))?;
+        let pending = staging.join("incoming");
+        let backup = staging.join("previous");
+        let mut saved_previous = false;
+        let mut activated = false;
+
+        let result = (|| {
+            self.write_center_directory(src, &pending, input)?;
+            if !fsutil::is_skill_dir(&pending) {
+                return Err(format!(
+                    "The imported Skill '{}' is missing SKILL.md.",
+                    src.display()
+                ));
+            }
+            match std::fs::rename(&dest, &backup) {
+                Ok(()) => saved_previous = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Back up existing Skill '{}': {error}",
+                        dest.display()
+                    ));
+                }
+            }
+            std::fs::rename(&pending, &dest)
+                .map_err(|error| format!("Activate Skill '{}': {error}", dest.display()))?;
+            activated = true;
+            self.record_source_after_write(skill_id, &dest, src, input)
+        })();
+
+        if let Err(error) = &result {
+            let restore = (|| {
+                if activated {
+                    std::fs::rename(&dest, &pending)?;
+                }
+                if saved_previous {
+                    std::fs::rename(&backup, &dest)?;
+                }
+                Ok::<(), std::io::Error>(())
+            })();
+            if let Err(restore_error) = restore {
+                return Err(format!(
+                    "{error} Restoration failed: {restore_error}. Import recovery files are at '{}'.",
+                    staging.display()
+                ));
+            }
         }
-        self.write_center_directory(src, &dest, &input)?;
-        self.record_source_after_write(new_id, &dest, src, input)?;
-        Ok(())
+        if let Err(error) = fsutil::remove_path(&staging) {
+            log::warn!("Could not clean up Skill import staging directory: {error}");
+        }
+        result
     }
 
     fn write_center_directory(
@@ -2222,12 +2268,12 @@ impl Service {
         skill_id: &str,
         dest: &Path,
         source_dir: &Path,
-        input: AddCenterSkillInput,
+        input: &AddCenterSkillInput,
     ) -> Result<(), String> {
         let fm = fsutil::read_frontmatter(dest);
         let hash = fsutil::hash_dir(dest);
         let now = db::now_iso();
-        let source_uri = source_uri_for_candidate(&input, source_dir);
+        let source_uri = source_uri_for_candidate(input, source_dir);
         self.db.transaction(|tx| {
             upsert_skill_full(
                 tx,
