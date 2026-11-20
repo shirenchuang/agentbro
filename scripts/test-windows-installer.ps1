@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)]
-    [string]$Installer
+    [string]$Installer,
+    [switch]$VerifyIsland
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,12 @@ Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $listener.Start()
 $port = $listener.LocalEndpoint.Port
+if ($VerifyIsland) {
+    $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $debugListener.Start()
+    $debugPort = $debugListener.LocalEndpoint.Port
+    $debugListener.Stop()
+}
 $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 
@@ -58,8 +65,18 @@ $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsP
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
-$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+$webViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+try {
+    if ($VerifyIsland) {
+        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$debugPort --remote-debugging-address=127.0.0.1"
+    }
+    $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+} finally {
+    if ($VerifyIsland) {
+        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $webViewArguments
+    }
+}
 $bridge = $null
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
@@ -138,6 +155,9 @@ try {
             (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$sessionId tool=Read" -Quiet)
     }
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
+    if ($VerifyIsland) {
+        & (Join-Path $PSScriptRoot 'test-windows-island.ps1') -DebuggerPort $debugPort -ProjectName (Split-Path $stage -Leaf)
+    }
 } catch {
     Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"
     Get-Process -Id $app.Id -ErrorAction SilentlyContinue |

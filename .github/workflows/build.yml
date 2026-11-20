@@ -203,4 +203,4 @@ jobs:
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName
+          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland
