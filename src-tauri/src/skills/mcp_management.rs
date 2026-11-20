@@ -4053,7 +4053,11 @@ fn redact_message(message: &str, draft: &McpServerDraft) -> String {
         }
     }
     if redacted.len() > 1600 {
-        redacted.truncate(1600);
+        let mut end = 1600;
+        while !redacted.is_char_boundary(end) {
+            end -= 1;
+        }
+        redacted.truncate(end);
         redacted.push('…');
     }
     redacted
@@ -4075,6 +4079,21 @@ mod tests {
             url: None,
             headers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn diagnostic_redaction_keeps_utf8_boundary_after_masking_secrets() {
+        let mut draft = stdio_draft("remote", "agent");
+        draft.env.push(McpConfigValue {
+            key: "TOKEN".to_string(),
+            value: Some("example-token".to_string()),
+            secret: true,
+            configured: true,
+        });
+        let prefix = "a".repeat(1596);
+        let message = format!("example-token{prefix}中🙂");
+
+        assert_eq!(redact_message(&message, &draft), format!("***{prefix}…"));
     }
 
     fn config(kind: ConfigKind) -> AgentConfig {
