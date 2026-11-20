@@ -219,9 +219,9 @@ describe('McpManagementTab', () => {
       async (_agent, _serverName, inspectionId) => inspectionReport(inspectionId),
     )
     vi.spyOn(skillApiV2, 'cancelMcpInspection').mockResolvedValue()
-    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockResolvedValue(
-      inventory([{ ...remote, enabled: false }]),
-    )
+    let finishToggle!: (result: McpInventory) => void
+    const pendingToggle = new Promise<McpInventory>((resolve) => { finishToggle = resolve })
+    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockReturnValue(pendingToggle)
     const remove = vi.spyOn(skillApiV2, 'deleteMcpServer').mockResolvedValue(inventory([]))
 
     render(<McpManagementTab detail={detail} />)
@@ -246,7 +246,7 @@ describe('McpManagementTab', () => {
       null,
     ))
 
-    fireEvent.click(screen.getByRole('button', { name: '检查' }))
+    fireEvent.click(await screen.findByRole('button', { name: '检查' }))
     await waitFor(() => expect(inspect).toHaveBeenCalledWith(
       'codex',
       'remote',
@@ -259,13 +259,23 @@ describe('McpManagementTab', () => {
     expect(screen.getByText('Search')).toBeInTheDocument()
     expect(screen.getByText('只读')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('switch', { name: '启用或停用 remote' }))
-    await waitFor(() => expect(toggle).toHaveBeenCalledWith('codex', 'remote', 'sha256:one', false))
+    const toggleSwitch = screen.getByRole('switch', { name: '启用或停用 remote' })
+    fireEvent.click(toggleSwitch)
+    fireEvent.click(toggleSwitch)
+    expect(toggle).toHaveBeenCalledTimes(1)
+    expect(toggle).toHaveBeenCalledWith('codex', 'remote', 'sha256:one', false)
+    expect(toggleSwitch).toBeDisabled()
+    expect(toggleSwitch).toHaveAttribute('aria-busy', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    finishToggle({ ...inventory([{ ...remote, enabled: false }]), revision: 'sha256:two' })
+    const deleteButton = screen.getByRole('button', { name: '删除' })
+    await waitFor(() => expect(deleteButton).toBeEnabled())
+    expect(toggleSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(toggleSwitch).toBeEnabled()
+    fireEvent.click(deleteButton)
     const dialog = screen.getByRole('dialog', { name: '删除 MCP「remote」？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }))
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('codex', 'remote', 'sha256:one'))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('codex', 'remote', 'sha256:two'))
     expect(await screen.findByText('还没有 MCP 服务器')).toBeInTheDocument()
   })
 
