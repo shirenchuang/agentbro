@@ -161,6 +161,19 @@ function Send-WorkBuddyHook([string]$Event, [hashtable]$Extra) {
     if ($LASTEXITCODE -ne 0) { throw "The configured '$Event' command did not run under Git Bash" }
 }
 
+function Start-InstalledAgentBro {
+    $process = Start-Process -FilePath (Join-Path $agentBroRoot 'agentbro.exe') -PassThru
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $process.Id -ErrorAction SilentlyContinue
+        if ($ready) { break }
+        if ($process.HasExited) { throw 'AgentBro exited before starting the hook listener' }
+        Start-Sleep -Milliseconds 500
+    } until ((Get-Date) -ge $deadline)
+    if (-not $ready) { throw 'AgentBro hook listener did not start' }
+    return $process
+}
+
 try {
     $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
     if (-not (Test-Path -LiteralPath $gitBash)) { throw "Git Bash is missing: $gitBash" }
@@ -172,15 +185,7 @@ try {
     $agentBroRoot = Join-Path $env:RUNNER_TEMP "AgentBro WorkBuddy $Edition smoke"
     $agentBroSetup = Start-Process -FilePath $AgentBroInstaller -ArgumentList "/S /D=$agentBroRoot" -PassThru
     if (-not $agentBroSetup.WaitForExit(90000) -or $agentBroSetup.ExitCode -ne 0) { throw 'AgentBro install failed' }
-    $agentBro = Start-Process -FilePath (Join-Path $agentBroRoot 'agentbro.exe') -PassThru
-    $deadline = (Get-Date).AddSeconds(60)
-    do {
-        $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $agentBro.Id -ErrorAction SilentlyContinue
-        if ($ready) { break }
-        if ($agentBro.HasExited) { throw 'AgentBro exited before starting the hook listener' }
-        Start-Sleep -Milliseconds 500
-    } until ((Get-Date) -ge $deadline)
-    if (-not $ready) { throw 'AgentBro hook listener did not start' }
+    $agentBro = Start-InstalledAgentBro
 
     Invoke-IslandCheck Detect $editionName
     New-Item -ItemType Directory -Path $profileRoot -Force | Out-Null
@@ -211,6 +216,10 @@ try {
     }
     Send-WorkBuddyHook Stop @{ last_assistant_message = 'WorkBuddy finished the test task' }
     Invoke-IslandCheck Completed 'WorkBuddy finished the test task'
+    Send-WorkBuddyHook SessionEnd @{}
+    Stop-Process -Id $agentBro.Id
+    if (-not $agentBro.WaitForExit(15000)) { throw 'AgentBro did not exit before the reinstall check' }
+    $agentBro = Start-InstalledAgentBro
     Invoke-IslandCheck Uninstall $editionName
 
     $settings = Read-InertSettings $settingsPath
