@@ -244,6 +244,9 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(stepfun::StepFunAdapter::new()),
         Box::new(antigravity::AntiGravityAdapter::new()),
         Box::new(workbuddy::WorkBuddyAdapter::new()),
+        Box::new(workbuddy::WorkBuddyAdapter::for_edition(
+            workbuddy::WorkBuddyEdition::Global,
+        )),
         Box::new(hermes::HermesAdapter::new()),
         Box::new(pi::PiAdapter::new()),
         Box::new(kiro::KiroAdapter::new()),

@@ -8,6 +8,7 @@ import doubaoIcon from '../../assets/cli-icons/doubao.svg'
 const agentIcons: Partial<Record<AgentType, string>> = {
   'qwenwork-cn': qwenIcon,
   workbuddy: workbuddyIcon,
+  'workbuddy-ai': workbuddyIcon,
   zcode: zcodeIcon,
   doubao: doubaoIcon,
 }
@@ -25,6 +26,7 @@ const agentColors: Record<string, string> = {
   'qoder': '#EC4899',
   'codebuddy': '#14B8A6',
   'workbuddy': '#16C8A7',
+  'workbuddy-ai': '#16C8A7',
   'copilot': '#6B7280',
   'kiro': '#F59E0B',
   'zcode': '#F8FAFC',
@@ -44,6 +46,7 @@ const agentLabels: Record<string, string> = {
   'qoder': 'Q',
   'codebuddy': 'B',
   'workbuddy': 'WB',
+  'workbuddy-ai': 'WB',
   'copilot': 'Co',
   'kiro': 'K',
   'zcode': 'Z',

@@ -2710,6 +2710,8 @@ fn native_app_bundle_matches_session(session: &SessionState, bundle_id: &str) ->
             | ("stepfun", "com.stepfun.app")
             | ("opencode", "ai.opencode.desktop")
             | ("workbuddy", "com.workbuddy.workbuddy")
+            | ("workbuddy", "com.tencent.workbuddy.mac")
+            | ("workbuddy-ai", "com.workbuddy.workbuddy-ai")
     )
 }
 
@@ -2736,6 +2738,8 @@ fn is_known_ide_or_agent_host_bundle(bundle_id: &str) -> bool {
         || lower == "com.stepfun.app"
         || lower == "ai.opencode.desktop"
         || lower == "com.workbuddy.workbuddy"
+        || lower == "com.tencent.workbuddy.mac"
+        || lower == "com.workbuddy.workbuddy-ai"
 }
 
 fn is_ide_terminal_session(session: &SessionState) -> bool {
@@ -4285,7 +4289,16 @@ pub async fn jump_to_terminal(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     #[cfg(target_os = "windows")]
-    if session.agent_type == "qwenwork-cn" {
+    if matches!(
+        session.agent_type.as_str(),
+        "qwenwork-cn" | "workbuddy" | "workbuddy-ai"
+    ) {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
+    }
+    #[cfg(target_os = "macos")]
+    if matches!(session.agent_type.as_str(), "workbuddy" | "workbuddy-ai")
+        && app_host_bundle_id(&session).is_none()
+    {
         return crate::agents::programs::open_agent_app(&session.agent_type);
     }
     if is_codex_desktop_session(&session) {

@@ -178,6 +178,12 @@ jobs:
           & $testExecutable --exact $qwenworkTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::programs::tests::windows_workbuddy_launchers_match_the_two_installer_editions
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::profiles::tests::workbuddy_ai_hooks_use_separate_settings_and_observe_confirmations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

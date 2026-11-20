@@ -1,4 +1,7 @@
-use super::{deepseek_harness::DeepSeekHarnessAdapter, hook_manager, AgentAdapter};
+use super::{
+    deepseek_harness::DeepSeekHarnessAdapter, hook_manager, workbuddy::WorkBuddyEdition,
+    AgentAdapter,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -501,11 +504,11 @@ pub const QODER_EVENTS: &[HookEventDescriptor] = &[
 ];
 
 pub const WORKBUDDY_EVENTS: &[HookEventDescriptor] = &[
+    matcher_event("PermissionRequest", "*", Some(21_600)),
     plain_event("UserPromptSubmit"),
     matcher_event("PreToolUse", "*", None),
     matcher_event("PostToolUse", "*", None),
     matcher_event("PostToolUseFailure", "*", None),
-    matcher_event("PermissionRequest", "*", Some(21_600)),
     matcher_event("PermissionDenied", "*", None),
     matcher_event("Notification", "*", None),
     plain_event("Stop"),
@@ -734,18 +737,23 @@ pub fn stepfun_profile() -> AgentIntegrationProfile {
     json_profile("stepfun", ".stepfun/settings.json", BASIC_AGENT_EVENTS)
 }
 
-pub fn workbuddy_profile() -> AgentIntegrationProfile {
+pub(super) fn workbuddy_profile(edition: WorkBuddyEdition) -> AgentIntegrationProfile {
+    let (configuration_path, events) = match edition {
+        WorkBuddyEdition::China => (".workbuddy/settings.json", WORKBUDDY_EVENTS),
+        // The international desktop client handles confirmations in its own window.
+        WorkBuddyEdition::Global => (".workbuddy-ai/settings.json", &WORKBUDDY_EVENTS[1..]),
+    };
     AgentIntegrationProfile {
-        id: "workbuddy",
+        id: edition.id(),
         installation_kind: InstallationKind::JsonHooks {
             entry: JsonHookEntry::TypedCommand,
             nested: true,
         },
-        configuration_path: ".workbuddy/settings.json",
+        configuration_path,
         activation_path: None,
-        source: "workbuddy",
+        source: edition.id(),
         extra_args: &[],
-        events: WORKBUDDY_EVENTS,
+        events,
     }
 }
 
@@ -920,7 +928,8 @@ pub fn profile_for_agent(id: &str) -> Option<AgentIntegrationProfile> {
         "qoder-cli" => Some(qoder_cli_profile()),
         "qwen" => Some(qwen_profile()),
         "stepfun" => Some(stepfun_profile()),
-        "workbuddy" => Some(workbuddy_profile()),
+        "workbuddy" => Some(workbuddy_profile(WorkBuddyEdition::China)),
+        "workbuddy-ai" => Some(workbuddy_profile(WorkBuddyEdition::Global)),
         "zcode" => Some(zcode_profile()),
         _ => None,
     }
@@ -1693,7 +1702,9 @@ pub fn managed_bridge_command_labeled(
 
 fn bridge_path_for_command(profile: &AgentIntegrationProfile, bridge: &Path) -> String {
     let path = bridge.to_string_lossy();
-    if cfg!(target_os = "windows") && profile.id == "claude-code" {
+    if cfg!(target_os = "windows")
+        && matches!(profile.id, "claude-code" | "workbuddy" | "workbuddy-ai")
+    {
         windows_shell_path(&path)
     } else {
         path.into_owned()
@@ -1741,7 +1752,7 @@ fn bridge_command_for(
 }
 
 fn windows_shell_path(path: &str) -> String {
-    // Claude Code's shell-form hooks can run in Git Bash, where backslashes are escapes.
+    // Git Bash treats Windows path separators as escapes in shell-form hooks.
     if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
         return format!("//{}", unc_path.replace('\\', "/"));
     }
@@ -4006,7 +4017,7 @@ name = "also keep"
 
     #[test]
     fn workbuddy_profile_uses_settings_json_nested_hooks() {
-        let profile = workbuddy_profile();
+        let profile = workbuddy_profile(WorkBuddyEdition::China);
         assert_eq!(profile.configuration_path, ".workbuddy/settings.json");
         assert!(matches!(
             profile.installation_kind,
@@ -4062,6 +4073,28 @@ name = "also keep"
         assert!(updated["hooks"].get("PermissionRequest").is_some());
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workbuddy_ai_hooks_use_separate_settings_and_observe_confirmations() {
+        let domestic = profile_for_agent("workbuddy").unwrap();
+        let global = profile_for_agent("workbuddy-ai").unwrap();
+
+        assert!(configuration_url(&domestic).ends_with(".workbuddy/settings.json"));
+        assert!(configuration_url(&global).ends_with(".workbuddy-ai/settings.json"));
+        assert_eq!(global.source, "workbuddy-ai");
+        assert!(global
+            .events
+            .iter()
+            .any(|event| event.name == "Notification"));
+        assert!(!global
+            .events
+            .iter()
+            .any(|event| event.name == "PermissionRequest"));
+        assert!(domestic
+            .events
+            .iter()
+            .any(|event| event.name == "PermissionRequest"));
     }
 
     #[test]

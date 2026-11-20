@@ -555,8 +555,11 @@ fn config_for_agent(home: &Path, agent_id: &str) -> Option<PluginConfig> {
     let (path, kind) = match agent_id {
         "codex" => (home.join(".codex/config.toml"), PluginConfigKind::Codex),
         "claude-code" => (home.join(".claude/settings.json"), PluginConfigKind::Json),
-        "workbuddy" => (
-            home.join(".workbuddy/settings.json"),
+        "workbuddy" | "workbuddy-ai" => (
+            home.join(
+                crate::agents::workbuddy::WorkBuddyEdition::from_agent_id(agent_id)?.profile_dir(),
+            )
+            .join("settings.json"),
             PluginConfigKind::Json,
         ),
         "zcode" => (home.join(".zcode/cli/config.json"), PluginConfigKind::Zcode),

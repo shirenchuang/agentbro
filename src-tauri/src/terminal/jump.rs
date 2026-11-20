@@ -1354,6 +1354,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
                 "com.stepfun.app" => "com.stepfun.app",
                 "ai.opencode.desktop" => "ai.opencode.desktop",
                 "com.workbuddy.workbuddy" => "com.workbuddy.workbuddy",
+                "com.tencent.workbuddy.mac" => "com.tencent.workbuddy.mac",
+                "com.workbuddy.workbuddy-ai" => "com.workbuddy.workbuddy-ai",
                 _ => return None,
             });
         }
@@ -1367,7 +1369,8 @@ fn native_bundle_for_context(ctx: &JumpContext) -> Option<&'static str> {
         Some("codebuddycn") | Some("codybuddycn") => Some("com.tencent.codebuddy.cn"),
         Some("stepfun") => Some("com.stepfun.app"),
         Some("opencode") => Some("ai.opencode.desktop"),
-        Some("workbuddy") => Some("com.workbuddy.workbuddy"),
+        Some("workbuddy") => Some("com.tencent.workbuddy.mac"),
+        Some("workbuddy-ai") => Some("com.workbuddy.workbuddy-ai"),
         _ => None,
     }
 }
@@ -1388,6 +1391,8 @@ fn native_bundle_matches_context(ctx: &JumpContext, bundle_id: &str) -> bool {
             | (Some("stepfun"), "com.stepfun.app")
             | (Some("opencode"), "ai.opencode.desktop")
             | (Some("workbuddy"), "com.workbuddy.workbuddy")
+            | (Some("workbuddy"), "com.tencent.workbuddy.mac")
+            | (Some("workbuddy-ai"), "com.workbuddy.workbuddy-ai")
     )
 }
 
@@ -1414,6 +1419,8 @@ fn is_ide_host_bundle(bundle_id: &str) -> bool {
         || lower == "com.stepfun.app"
         || lower == "ai.opencode.desktop"
         || lower == "com.workbuddy.workbuddy"
+        || lower == "com.tencent.workbuddy.mac"
+        || lower == "com.workbuddy.workbuddy-ai"
 }
 
 fn outer_terminal_app(

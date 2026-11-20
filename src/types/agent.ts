@@ -9,7 +9,7 @@ export type AgentType =
   | 'qwen' | 'kimi' | 'doubao' | 'deepseek' | 'opencode'
   | 'qwenwork-cn' | 'deepseek-harness'
   | 'droid' | 'stepfun' | 'antigravity'
-  | 'workbuddy' | 'hermes' | 'pi' | 'kiro' | 'zcode'
+  | 'workbuddy' | 'workbuddy-ai' | 'hermes' | 'pi' | 'kiro' | 'zcode'
 
 export type ToolStatus = 'running' | 'success' | 'error' | 'interrupted'
 
