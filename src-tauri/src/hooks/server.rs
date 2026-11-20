@@ -154,10 +154,17 @@ pub struct PermissionResponse {
 
 /// A pending permission waiting for UI response
 pub(crate) struct PendingPermissionEntry {
-    pub(crate) session_id: String,
     pub(crate) received_at_ms: u64,
     pub(crate) tx: oneshot::Sender<PermissionReply>,
 }
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PendingPermissionKey {
+    session_id: String,
+    tool_use_id: String,
+}
+
+type PendingPermissions = HashMap<PendingPermissionKey, Vec<PendingPermissionEntry>>;
 
 pub(crate) struct PermissionReply {
     pub(crate) response: PermissionResponse,
@@ -198,8 +205,8 @@ pub(crate) struct PendingPlanEntry {
 
 /// The HookServer manages incoming connections from agent hook scripts
 pub struct HookServer {
-    /// Pending permission requests: tool/request key -> waiting hook connections
-    pending_permissions: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
+    /// Pending permission requests grouped by session and tool call.
+    pending_permissions: Arc<Mutex<PendingPermissions>>,
     /// Pending question requests: session_id -> sender
     pending_questions: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     /// Pending plan approvals: session_id -> sender
@@ -225,7 +232,7 @@ pub struct HookServer {
 
 #[derive(Clone)]
 struct HookConnectionContext {
-    pending: Arc<Mutex<HashMap<String, Vec<PendingPermissionEntry>>>>,
+    pending: Arc<Mutex<PendingPermissions>>,
     pending_q: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
     pending_plan: Arc<Mutex<HashMap<String, PendingPlanEntry>>>,
     store: Arc<SessionStore>,
@@ -859,13 +866,8 @@ impl HookServer {
         .any(|p| lower.contains(p))
     }
 
-    /// Start listening on both Unix socket and TCP
-    pub async fn start(&self) -> anyhow::Result<()> {
-        let endpoint = self.endpoint.clone();
-        let tcp_addr = endpoint.tcp_addr();
-        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
-
-        let context = HookConnectionContext {
+    fn connection_context(&self) -> HookConnectionContext {
+        HookConnectionContext {
             pending: self.pending_permissions.clone(),
             pending_q: self.pending_questions.clone(),
             pending_plan: self.pending_plans.clone(),
@@ -876,7 +878,15 @@ impl HookServer {
             raw_events: self.raw_events.clone(),
             config_store: self.config_store.clone(),
             recent_tools: self.recent_tools.clone(),
-        };
+        }
+    }
+
+    /// Start listening on both Unix socket and TCP
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let endpoint = self.endpoint.clone();
+        let tcp_addr = endpoint.tcp_addr();
+        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
+        let context = self.connection_context();
 
         #[cfg(unix)]
         {
@@ -1091,16 +1101,18 @@ impl HookServer {
 
                 // Create a oneshot channel for the permission response
                 let (tx, rx) = oneshot::channel();
+                let pending_key = PendingPermissionKey {
+                    session_id: session_id.clone(),
+                    tool_use_id: resolved_tool_use_id.clone(),
+                };
                 {
                     let mut pending_map = pending.lock().await;
-                    pending_map
-                        .entry(resolved_tool_use_id.clone())
-                        .or_default()
-                        .push(PendingPermissionEntry {
-                            session_id: session_id.clone(),
+                    pending_map.entry(pending_key.clone()).or_default().push(
+                        PendingPermissionEntry {
                             received_at_ms: current_time_ms(),
                             tx,
-                        });
+                        },
+                    );
                 }
 
                 // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
@@ -1161,7 +1173,7 @@ impl HookServer {
                     None => {
                         // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
-                        pending_map.remove(&resolved_tool_use_id);
+                        pending_map.remove(&pending_key);
                         if harness {
                             Self::clear_harness_permission(
                                 &store,
@@ -3209,7 +3221,8 @@ impl HookServer {
     ) -> anyhow::Result<()> {
         let entries = {
             let mut pending_map = self.pending_permissions.lock().await;
-            let Some(key) = Self::latest_pending_permission_key(&pending_map, session_id) else {
+            let Some(key) = Self::latest_pending_permission_key(&pending_map, session_id).cloned()
+            else {
                 anyhow::bail!("No pending permission for session {}", session_id);
             };
             pending_map.remove(&key).unwrap_or_default()
@@ -3271,21 +3284,22 @@ impl HookServer {
         }
     }
 
-    fn latest_pending_permission_key(
-        pending_map: &HashMap<String, Vec<PendingPermissionEntry>>,
+    fn latest_pending_permission_key<'a>(
+        pending_map: &'a PendingPermissions,
         session_id: &str,
-    ) -> Option<String> {
+    ) -> Option<&'a PendingPermissionKey> {
         pending_map
             .iter()
+            .filter(|(key, _)| key.session_id == session_id)
             .filter_map(|(key, entries)| {
                 entries
                     .iter()
-                    .filter(|entry| entry.session_id == session_id)
-                    .map(|entry| (key, entry.received_at_ms))
-                    .max_by_key(|(_, received_at_ms)| *received_at_ms)
+                    .map(|entry| entry.received_at_ms)
+                    .max()
+                    .map(|received_at_ms| (key, received_at_ms))
             })
             .max_by_key(|(_, received_at_ms)| *received_at_ms)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key)
     }
 }
 
@@ -3634,8 +3648,12 @@ mod tests {
                 .write_all(format!("{event}\n").as_bytes())
                 .await
                 .unwrap();
+            let key = PendingPermissionKey {
+                session_id: id.to_string(),
+                tool_use_id: tool_id.to_string(),
+            };
             tokio::time::timeout(Duration::from_secs(2), async {
-                while !pending.lock().await.contains_key(tool_id) {
+                while !pending.lock().await.contains_key(&key) {
                     tokio::task::yield_now().await;
                 }
             })
@@ -3646,7 +3664,7 @@ mod tests {
                 SessionPhase::WaitingApproval
             );
             if let Some(decision) = reply {
-                let mut entries = pending.lock().await.remove(tool_id).unwrap();
+                let mut entries = pending.lock().await.remove(&key).unwrap();
                 let (ack, acknowledged) = oneshot::channel();
                 entries
                     .pop()
@@ -3763,6 +3781,78 @@ mod tests {
         assert!(pending.tool_input.contains("AgentBro Windows smoke"));
 
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn permission_responses_stay_with_the_selected_session() {
+        let server = HookServer::new(
+            Arc::new(SessionStore::new()),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        for session_id in ["first", "first", "second"] {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PermissionRequest",
+                "session_id": session_id,
+                "cwd": "/workspace/project",
+                "tool_name": "Read",
+                "tool_use_id": "shared-tool-id",
+                "tool_input": {"file_path": "/workspace/project/example.txt"},
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            requests.push((client, task));
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let queued = server
+                    .pending_permissions
+                    .lock()
+                    .await
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>();
+                if queued == requests.len() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all Hook requests should be queued before responding");
+
+        server
+            .respond_permission("first", false, false)
+            .await
+            .unwrap();
+        server
+            .respond_permission("second", true, false)
+            .await
+            .unwrap();
+
+        for ((client, task), expected) in requests.into_iter().zip(["deny", "deny", "allow"]) {
+            let mut text = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BufReader::new(client).read_line(&mut text),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(response["decision"], expected);
+            task.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]
@@ -4059,24 +4149,29 @@ mod tests {
         let (old_tx, _old_rx) = oneshot::channel();
         let (new_tx, _new_rx) = oneshot::channel();
         pending.insert(
-            "old-tool".to_string(),
-            vec![PendingPermissionEntry {
+            PendingPermissionKey {
                 session_id: "s1".to_string(),
+                tool_use_id: "old-tool".to_string(),
+            },
+            vec![PendingPermissionEntry {
                 received_at_ms: 10,
                 tx: old_tx,
             }],
         );
         pending.insert(
-            "new-tool".to_string(),
-            vec![PendingPermissionEntry {
+            PendingPermissionKey {
                 session_id: "s1".to_string(),
+                tool_use_id: "new-tool".to_string(),
+            },
+            vec![PendingPermissionEntry {
                 received_at_ms: 20,
                 tx: new_tx,
             }],
         );
 
         assert_eq!(
-            HookServer::latest_pending_permission_key(&pending, "s1").as_deref(),
+            HookServer::latest_pending_permission_key(&pending, "s1")
+                .map(|key| key.tool_use_id.as_str()),
             Some("new-tool")
         );
     }
