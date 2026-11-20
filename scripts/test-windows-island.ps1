@@ -40,15 +40,35 @@ public static class AgentBroSmokeMouse {
     [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(Point point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    public static uint ProcessAtCursor() {
+        Point point;
+        if (!GetCursorPos(out point)) return 0;
+        uint processId;
+        GetWindowThreadProcessId(GetAncestor(WindowFromPoint(point), 2), out processId);
+        return processId;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] inputs, int size);
 
     public static void Click() {
-        var inputs = new[] {
-            new Input { Type = InputMouse, Mouse = new MouseInput { Flags = LeftDown } },
-            new Input { Type = InputMouse, Mouse = new MouseInput { Flags = LeftUp } }
-        };
-        if (SendInput(2, inputs, Marshal.SizeOf<Input>()) != 2)
+        SendMouseButton(LeftDown);
+        System.Threading.Thread.Sleep(60);
+        SendMouseButton(LeftUp);
+    }
+
+    private static void SendMouseButton(uint flags) {
+        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags } } };
+        if (SendInput(1, inputs, Marshal.SizeOf<Input>()) != 1)
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
 }
@@ -120,7 +140,8 @@ try {
     }
     Start-Sleep -Milliseconds 250
     $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
-    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name)"
+    $nativeOwner = [AgentBroSmokeMouse]::ProcessAtCursor()
+    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $nativeOwner. AgentBro: $AppProcessId."
     [AgentBroSmokeMouse]::Click()
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
@@ -139,7 +160,7 @@ try {
         if ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
-                Select-Object LocalizedControlType, Name, IsOffscreen, BoundingRectangle |
+                Select-Object LocalizedControlType, Name, IsOffscreen, @{Name='Bounds'; Expression={$_.BoundingRectangle.ToString()}} |
                 ConvertTo-Json -Depth 3 -Compress
         } else {
             Get-IslandWindows | Select-Object -ExpandProperty Current |
