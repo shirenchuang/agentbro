@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)]
     [string]$Installer,
-    [switch]$VerifyIsland
+    [switch]$VerifyIsland,
+    [string]$SymbolsDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,6 +58,11 @@ $fixtureSettings = @{
 }
 $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding utf8
 
+$webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
+Write-Output 'Installed WebView2 Runtime versions:'
+Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Name
+
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
@@ -73,6 +79,36 @@ function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     throw "Timed out waiting for $Description"
+}
+
+function Write-StartupStacks {
+    $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+    if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
+        Write-Output 'Windows Debugging Tools are unavailable on this runner.'
+        return
+    }
+
+    $start = [System.Diagnostics.ProcessStartInfo]::new($debugger)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $stackLog = Join-Path $stage 'agentbro-startup-stack.log'
+    $symbolCache = Join-Path $stage 'debug-symbol-cache'
+    $symbolPath = "$SymbolsDirectory;srv*$symbolCache*https://msdl.microsoft.com/download/symbols"
+    foreach ($argument in @('-pv', '-p', "$($app.Id)", '-y', $symbolPath, '-logo', $stackLog, '-c', '~* k 24; q')) {
+        $start.ArgumentList.Add($argument)
+    }
+    $capture = [System.Diagnostics.Process]::Start($start)
+    try {
+        if (-not $capture.WaitForExit(20000)) {
+            $capture.Kill()
+            Write-Output 'Startup stack capture timed out.'
+        }
+        if (Test-Path -LiteralPath $stackLog -PathType Leaf) {
+            Get-Content -LiteralPath $stackLog -TotalCount 250
+        }
+    } finally {
+        $capture.Dispose()
+    }
 }
 
 function Send-ClaudeToolEvent([string]$Executable, [string[]]$Arguments, [hashtable]$Event) {
@@ -130,15 +166,19 @@ function Test-InstalledIsland([string]$ProjectName) {
     }
 }
 
+$hookReady = $false
 try {
     Wait-AppCondition 'the installed app to listen on its Hook port' {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
+    $hookReady = $true
     Wait-AppCondition 'the bridge and Claude Hook configuration to be deployed' {
         (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and
             (Test-Path -LiteralPath $logPath -PathType Leaf) -and
             (Select-String -LiteralPath $logPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
     }
+    Select-String -LiteralPath $logPath -SimpleMatch 'Startup:', 'Listening on TCP:' |
+        Select-Object -ExpandProperty Line
     $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
     $bundledHashes = Get-FileHash -LiteralPath $bundledBridges.FullName
     if ($deployedHash -notin $bundledHashes.Hash) {
@@ -200,14 +240,17 @@ try {
     Get-NetTCPConnection -OwningProcess $app.Id -State Listen -ErrorAction SilentlyContinue |
         Select-Object LocalAddress, LocalPort |
         Format-Table
-    $webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
-    Write-Output 'WebView2 Runtime versions:'
-    Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty Name
     foreach ($diagnosticLog in @($logPath, $stdoutPath, $stderrPath)) {
         if (Test-Path -LiteralPath $diagnosticLog -PathType Leaf) {
             Write-Output "Last lines of $diagnosticLog"
             Get-Content -LiteralPath $diagnosticLog -Tail 30
+        }
+    }
+    if ($SymbolsDirectory -and -not $hookReady -and -not $app.HasExited) {
+        try {
+            Write-StartupStacks
+        } catch {
+            Write-Output "Could not capture AgentBro startup stacks: $_"
         }
     }
     throw
