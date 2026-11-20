@@ -185,25 +185,40 @@ fn windows_binary_candidates(binary: &str) -> Vec<String> {
         ],
     };
     candidates.push(binary.to_string());
+    if let Ok(extensions) = std::env::var("PATHEXT") {
+        for extension in extensions
+            .split(';')
+            .filter_map(|extension| extension.trim().strip_prefix('.'))
+        {
+            if extension.is_empty() || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let candidate = format!("{binary}.{extension}");
+            if !candidates
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&candidate))
+            {
+                candidates.push(candidate);
+            }
+        }
+    }
     candidates
 }
 
 #[cfg(target_os = "windows")]
 fn find_windows_codex_cli_binary() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.extend(windows_codex_bundled_cli_candidates());
+    let mut candidates = windows_codex_bundled_cli_candidates();
+    let binaries = windows_binary_candidates("codex");
 
     for dir in candidate_dirs()
         .into_iter()
         .filter(|dir| !is_windows_app_execution_path(dir))
     {
-        for binary in windows_binary_candidates("codex") {
-            candidates.push(dir.join(binary));
-        }
+        candidates.extend(binaries.iter().map(|binary| dir.join(binary)));
     }
 
-    for binary in windows_binary_candidates("codex") {
-        candidates.extend(which_all(&binary));
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.extend(binaries.iter().map(|binary| current_dir.join(binary)));
     }
 
     dedupe_paths(candidates)
@@ -274,32 +289,33 @@ fn is_windows_app_execution_path(path: &Path) -> bool {
     normalized.contains("\\microsoft\\windowsapps\\") || normalized.contains("\\windowsapps\\")
 }
 
+#[cfg(target_os = "windows")]
 fn which(binary: &str) -> Option<PathBuf> {
-    which_all(binary).into_iter().next()
+    let path = std::env::var_os("PATH")?;
+    find_on_windows_path(binary, &path)
 }
 
-fn which_all(binary: &str) -> Vec<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let command = "where.exe";
-    #[cfg(not(target_os = "windows"))]
-    let command = "which";
+#[cfg(target_os = "windows")]
+fn find_on_windows_path(binary: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
+}
 
-    crate::platform::process::background_command(command)
+#[cfg(not(target_os = "windows"))]
+fn which(binary: &str) -> Option<PathBuf> {
+    let output = crate::platform::process::background_command("which")
         .arg(binary)
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| {
-            output
-                .lines()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_file())
-                .collect()
-        })
-        .unwrap_or_default()
+        .and_then(|output| String::from_utf8(output.stdout).ok())?;
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
 }
 
 fn user_shell() -> String {
@@ -598,6 +614,27 @@ mod tests {
         assert_eq!(npm[0], "npm.cmd");
         assert_eq!(npx[0], "npx.cmd");
         assert_eq!(node[0], "node.exe");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finds_path_shims_in_environment_order() {
+        let root =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let first = root.path().join("z first");
+        let second = root.path().join("a second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let filename = "agentbro-fixture.cmd";
+        std::fs::write(first.join(filename), "@echo first").unwrap();
+        std::fs::write(second.join(filename), "@echo second").unwrap();
+
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(
+            super::find_on_windows_path(filename, &path),
+            Some(first.join(filename))
+        );
+        assert!(super::find_on_windows_path("missing.exe", &path).is_none());
     }
 
     #[cfg(target_os = "windows")]

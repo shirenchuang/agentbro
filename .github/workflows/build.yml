@@ -149,6 +149,9 @@ jobs:
           & $testExecutable source_update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable agents::executable::tests::windows_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
