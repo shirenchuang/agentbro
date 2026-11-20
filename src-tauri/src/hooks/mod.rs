@@ -4,7 +4,7 @@ pub mod conversation_parser;
 pub mod diagnostics;
 pub mod doubao_watcher;
 pub mod file_watcher;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub mod qwenwork_watcher;
 pub mod recovery;
 pub mod server;

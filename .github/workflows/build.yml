@@ -171,7 +171,11 @@ jobs:
           & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          & $testExecutable --exact hooks::qwenwork_watcher::tests::mirrors_qwenwork_turn_phases_without_owning_approvals
+          $qwenworkTest = 'hooks::qwenwork_watcher::tests::mirrors_qwenwork_turn_phases_without_owning_approvals'
+          if (-not (& $testExecutable --list $qwenworkTest --exact | Select-String -SimpleMatch "${qwenworkTest}: test" -Quiet)) {
+            throw 'The QwenWork watcher test was not compiled for Windows'
+          }
+          & $testExecutable --exact $qwenworkTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
