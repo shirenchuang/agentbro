@@ -233,3 +233,8 @@ jobs:
           name: agentbro-windows-desktop-failure
           path: ${{ runner.temp }}/agentbro-island-failure.png
           if-no-files-found: ignore
+
+      - name: Inspect the official QwenWork Windows installation
+        shell: pwsh
+        timeout-minutes: 9
+        run: ./scripts/probe-qwenwork-windows.ps1
