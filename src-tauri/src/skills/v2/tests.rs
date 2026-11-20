@@ -350,6 +350,113 @@ fn add_center_skill_can_link_to_local_source() {
 }
 
 #[test]
+fn center_import_can_copy_a_nested_source_before_replacing_its_parent() {
+    let (_home, svc, _lock) = fresh_service("overwrite-from-nested");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&center, "incoming", "review", Some("replacement"));
+    let result = overwrite_review_skill(&svc, &source, "copy").unwrap();
+
+    assert_eq!(result.updated, ["review"]);
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "replacement"
+    );
+}
+
+#[test]
+fn center_import_rejects_a_link_to_a_source_inside_the_replaced_skill() {
+    let (_home, svc, _lock) = fresh_service("overwrite-link-to-nested");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&center, "incoming", "review", Some("replacement"));
+
+    assert!(overwrite_review_skill(&svc, &source, "link").is_err());
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert!(source.join("SKILL.md").is_file());
+}
+
+#[test]
+#[cfg(unix)]
+fn center_import_keeps_the_previous_skill_when_the_prepared_copy_is_incomplete() {
+    let (_home, svc, _lock) = fresh_service("overwrite-incomplete-copy");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = svc.home.join("incoming");
+    fs::create_dir(&source).unwrap();
+    std::os::unix::fs::symlink(center.join("SKILL.md"), source.join("SKILL.md")).unwrap();
+
+    let error = overwrite_review_skill(&svc, &source, "copy").unwrap_err();
+    assert!(error.contains("missing SKILL.md"));
+    assert!(center.join("SKILL.md").is_file());
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+}
+
+#[test]
+fn center_import_restores_the_previous_skill_when_recording_the_source_fails() {
+    let (_home, svc, _lock) = fresh_service("overwrite-source-write-failure");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let source = write_skill(&svc.home, "incoming", "review", Some("replacement"));
+    let original_source = svc
+        .get_skill_detail("review")
+        .unwrap()
+        .source
+        .unwrap()
+        .source_uri;
+    svc.db
+        .with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_skill_import BEFORE INSERT ON skill_sources
+             BEGIN SELECT RAISE(ABORT, 'source write blocked'); END;",
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let error = overwrite_review_skill(&svc, &source, "copy").unwrap_err();
+    assert!(error.contains("source write blocked"));
+    assert_eq!(
+        fs::read_to_string(center.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        svc.get_skill_detail("review")
+            .unwrap()
+            .source
+            .unwrap()
+            .source_uri,
+        original_source
+    );
+}
+
+fn overwrite_review_skill(
+    svc: &Service,
+    source: &Path,
+    mode: &str,
+) -> Result<AddCenterSkillResult, String> {
+    svc.execute_add_center_skill(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "local_folder".to_string(),
+            source_uri: None,
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some(mode.to_string()),
+        },
+        vec![AddCenterSkillDecision {
+            skill_id: "review".to_string(),
+            proposed_skill_id: None,
+            resolution: "update".to_string(),
+        }],
+    )
+}
+
+#[test]
 fn local_parent_import_matches_existing_child_source() {
     let (_home, svc, _lock) = fresh_service("parent-child-source");
     let root = svc.home.join("dev-skills");
