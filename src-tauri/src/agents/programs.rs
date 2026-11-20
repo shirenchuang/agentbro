@@ -1579,7 +1579,7 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "dsh",
             "/Applications/DeepSeek Harness.app",
             "~/.dsh",
-            "https://github.com/deepseek-ai/deepseek-harness/releases",
+            "https://www.deepseek.com/harness/",
         ),
         "kimi" => cli(
             "kimi",
