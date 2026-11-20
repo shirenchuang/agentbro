@@ -4284,6 +4284,10 @@ pub async fn jump_to_terminal(
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
+    #[cfg(target_os = "windows")]
+    if session.agent_type == "qwenwork-cn" {
+        return crate::agents::programs::open_agent_app(&session.agent_type);
+    }
     if is_codex_desktop_session(&session) {
         return open_app_host_session(&session);
     }

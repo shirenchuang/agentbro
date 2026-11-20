@@ -137,7 +137,7 @@ jobs:
             src-tauri/target/release/agentbro.pdb
           if-no-files-found: error
 
-      - name: Test Windows Skills, Claude Hooks, and MCP
+      - name: Test Windows Agents, Skills, and MCP
         shell: pwsh
         run: |
           $testExecutable = cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
@@ -166,6 +166,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::qwenwork_watcher::tests::mirrors_qwenwork_turn_phases_without_owning_approvals
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes

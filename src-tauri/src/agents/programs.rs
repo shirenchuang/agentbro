@@ -156,14 +156,18 @@ pub async fn agent_open_download(
 #[tauri::command]
 pub async fn agent_open_app(state: State<'_, AppState>, agent_id: String) -> Result<(), String> {
     let _ = state;
-    let meta = metadata_for(&agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
-    if let Some(path) = installed_app_path(&agent_id, &meta) {
+    open_agent_app(&agent_id)
+}
+
+pub(crate) fn open_agent_app(agent_id: &str) -> Result<(), String> {
+    let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    if let Some(path) = installed_app_path(agent_id, &meta) {
         return open_target(&path);
     }
-    if let Some(binary) = find_agent_binary(&agent_id, &meta) {
+    if let Some(binary) = find_agent_binary(agent_id, &meta) {
         return launch_binary(&binary);
     }
-    let paths = app_path_candidates(&agent_id, &meta).join(", ");
+    let paths = app_path_candidates(agent_id, &meta).join(", ");
     if paths.is_empty() {
         Err(format!("No app path or launcher binary for {agent_id}"))
     } else {
@@ -1355,6 +1359,7 @@ fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<Strin
             names.extend(["CodyBuddyCN.exe", "CodeBuddy CN.exe", "CodeBuddy.exe"])
         }
         "qwen" => names.extend(["Qwen Code.exe", "Qwen.exe"]),
+        "qwenwork-cn" => names.push("Launcher.exe"),
         _ => {}
     }
     names.push(display_name_for_agent(agent_id));
@@ -2072,6 +2077,18 @@ mod tests {
         assert!(paths
             .iter()
             .any(|path| path.ends_with("\\Programs\\Cursor\\Cursor.exe")));
+    }
+
+    #[test]
+    fn windows_qwenwork_candidates_include_the_packaged_launcher() {
+        let qwenwork = metadata_for("qwenwork-cn").expect("QwenWork metadata");
+        let paths =
+            app_path_candidates_for_platform("qwenwork-cn", &qwenwork, RuntimePlatform::Windows);
+
+        for executable in ["Launcher.exe", "QwenWorkCN.exe"] {
+            let suffix = format!("\\Programs\\QwenWorkCN\\{executable}");
+            assert!(paths.iter().any(|path| path.ends_with(&suffix)));
+        }
     }
 
     #[test]
