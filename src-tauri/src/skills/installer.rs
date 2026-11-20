@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const GITHUB_API_CONNECT_TIMEOUT_SECS: u64 = 6;
 const GITHUB_API_MAX_TIME_SECS: u64 = 18;
@@ -20,6 +20,32 @@ const GITHUB_CLONE_TOTAL_TIMEOUT_SECS: u64 = 120;
 const GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS: u64 = 180;
 const GITHUB_TREE_TIMEOUT_SECS: u64 = 20;
 const MAX_GITHUB_SKILL_PREVIEWS: usize = 500;
+
+pub(crate) struct TempInstallDir(PathBuf);
+
+impl TempInstallDir {
+    pub(crate) fn create_in(parent: &Path) -> Result<Self, String> {
+        fs::create_dir_all(parent).map_err(|error| format!("Prepare Skill import: {error}"))?;
+        let path = parent.join(format!("agentbro-skill-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&path)
+            .map_err(|error| format!("Create temporary Skill directory: {error}"))?;
+        Ok(Self(path))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempInstallDir {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Could not clean up temporary Skill directory: {error}");
+            }
+        }
+    }
+}
 
 pub fn install_skill(
     source_path: &str,
@@ -36,84 +62,76 @@ pub fn install_skill_named(
     directory_name: Option<&str>,
     display_name: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let (src, temp_root) = resolve_install_source(source_path)?;
-    let result = (|| {
-        if !src.exists() {
-            return Err(format!("Source not found: {}", source_path));
-        }
-
-        let source_skill_name = src
-            .file_name()
-            .ok_or("Invalid source path")?
-            .to_string_lossy()
-            .to_string();
-        let skill_name = directory_name
-            .map(sanitize_file_name)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(source_skill_name);
-        let installed_ids = display_name
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .map(|name| vec![name])
-            .unwrap_or_else(|| skill_id_candidates(&src, &skill_name));
-
-        let central_path = if matches!(mode, InstallMode::Symlink) {
-            let central_dir = agent_paths::agentbro_skills_dir();
-            fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
-            let dest = central_dir.join(&skill_name);
-            copy_recursive(&src, &dest)?;
-            if let Some(name) = display_name {
-                rewrite_skill_name(&dest, name)?;
-            }
-            Some(dest)
-        } else {
-            None
-        };
-
-        for target in targets {
-            let paths = agent_paths::paths_for_agent(&target.agent);
-            let target_dir = paths
-                .skill_dirs
-                .first()
-                .ok_or_else(|| format!("No skill directory for agent: {}", target.agent))?;
-
-            fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
-            let dest = target_dir.join(&skill_name);
-            if same_location(&src, &dest) {
-                continue;
-            }
-
-            match mode {
-                InstallMode::Direct => {
-                    copy_recursive(&src, &dest)?;
-                    if let Some(name) = display_name {
-                        rewrite_skill_name(&dest, name)?;
-                    }
-                }
-                InstallMode::Symlink => {
-                    if let Some(ref central) = central_path {
-                        if dest.exists() || dest.symlink_metadata().is_ok() {
-                            fs::remove_file(&dest)
-                                .or_else(|_| fs::remove_dir_all(&dest))
-                                .map_err(|e| e.to_string())?;
-                        }
-                        #[cfg(unix)]
-                        std::os::unix::fs::symlink(central, &dest).map_err(|e| e.to_string())?;
-                        #[cfg(not(unix))]
-                        copy_recursive(central, &dest)?;
-                    }
-                }
-            }
-        }
-
-        Ok(installed_ids)
-    })();
-
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
+    let (src, _temp_root) = resolve_install_source(source_path)?;
+    if !src.exists() {
+        return Err(format!("Source not found: {}", source_path));
     }
 
-    result
+    let source_skill_name = src
+        .file_name()
+        .ok_or("Invalid source path")?
+        .to_string_lossy()
+        .to_string();
+    let skill_name = directory_name
+        .map(sanitize_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(source_skill_name);
+    let installed_ids = display_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| vec![name])
+        .unwrap_or_else(|| skill_id_candidates(&src, &skill_name));
+
+    let central_path = if matches!(mode, InstallMode::Symlink) {
+        let central_dir = agent_paths::agentbro_skills_dir();
+        fs::create_dir_all(&central_dir).map_err(|e| e.to_string())?;
+        let dest = central_dir.join(&skill_name);
+        copy_recursive(&src, &dest)?;
+        if let Some(name) = display_name {
+            rewrite_skill_name(&dest, name)?;
+        }
+        Some(dest)
+    } else {
+        None
+    };
+
+    for target in targets {
+        let paths = agent_paths::paths_for_agent(&target.agent);
+        let target_dir = paths
+            .skill_dirs
+            .first()
+            .ok_or_else(|| format!("No skill directory for agent: {}", target.agent))?;
+
+        fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
+        let dest = target_dir.join(&skill_name);
+        if same_location(&src, &dest) {
+            continue;
+        }
+
+        match mode {
+            InstallMode::Direct => {
+                copy_recursive(&src, &dest)?;
+                if let Some(name) = display_name {
+                    rewrite_skill_name(&dest, name)?;
+                }
+            }
+            InstallMode::Symlink => {
+                if let Some(ref central) = central_path {
+                    if dest.exists() || dest.symlink_metadata().is_ok() {
+                        fs::remove_file(&dest)
+                            .or_else(|_| fs::remove_dir_all(&dest))
+                            .map_err(|e| e.to_string())?;
+                    }
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(central, &dest).map_err(|e| e.to_string())?;
+                    #[cfg(not(unix))]
+                    copy_recursive(central, &dest)?;
+                }
+            }
+        }
+    }
+
+    Ok(installed_ids)
 }
 
 pub fn preview_github_skills(source: &str) -> Result<Vec<GitHubSkillPreview>, String> {
@@ -147,16 +165,13 @@ pub(crate) fn preview_github_skills_with_token(
         Err(error) => log::warn!("GitHub API preview failed, falling back to clone: {error}"),
     }
 
-    let (src, temp_root) = resolve_install_source_with_token(&normalized, github_token)?;
+    let (src, _temp_root) = resolve_install_source_with_token(&normalized, github_token)?;
     let result = (|| {
         let mut previews = Vec::new();
         collect_skill_previews(&src, &src, &mut previews)?;
         previews.sort_by(|a, b| a.source_path.cmp(&b.source_path));
         Ok(previews)
     })();
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
-    }
     if let Ok(previews) = &result {
         log::info!(
             "GitHub Skill preview completed via clone: skills={}, elapsed_ms={}",
@@ -270,14 +285,14 @@ fn preview_github_skills_via_api(
     Ok(Some(previews))
 }
 
-fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn resolve_install_source(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source_with_token(source, None)
 }
 
 fn resolve_install_source_with_token(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let local = PathBuf::from(source);
     if local.exists() {
         return Ok((local, None));
@@ -313,14 +328,14 @@ fn resolve_install_source_with_token(
 
 pub(crate) fn resolve_external_skill_source(
     source: &str,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source(source)
 }
 
 pub(crate) fn resolve_external_skill_source_with_token(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     resolve_install_source_with_token(source, github_token)
 }
 
@@ -359,7 +374,7 @@ pub(crate) fn resolve_github_repo_skills_with_cancel(
     skill_ids: &[String],
     github_token: Option<&str>,
     cancel: &AtomicBool,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = if let Some(spec) = source.strip_prefix("github:") {
         parse_github_spec_ref(spec)?
     } else if source.starts_with("https://github.com/") || source.starts_with("http://github.com/")
@@ -378,9 +393,9 @@ pub(crate) fn resolve_github_repo_skills_with_cancel(
     )
 }
 
-fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let skill_dir = root.join(skill_dir_name_from_url(source));
+    let skill_dir = root.path().join(skill_dir_name_from_url(source));
     fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
     let dest = skill_dir.join("SKILL.md");
 
@@ -395,7 +410,6 @@ fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<PathBuf>), S
         .map_err(|e| format!("Failed to run curl: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to download {source}: {stderr}"));
     }
 
@@ -504,7 +518,7 @@ fn parse_frontmatter_text(content: &str) -> std::collections::HashMap<String, St
 }
 
 pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> {
-    let (src, temp_root) = resolve_install_source(&request.source)?;
+    let (src, _temp_root) = resolve_install_source(&request.source)?;
     if !src.exists() {
         return Err(format!("Plugin source not found: {}", request.source));
     }
@@ -529,9 +543,6 @@ pub fn install_plugin(request: &PluginInstallRequest) -> Result<String, String> 
         .join(version);
     copy_recursive(&src, &dest)?;
     super::registry::add_source(&format!("plugin:{plugin_id}"), &request.source)?;
-    if let Some(root) = temp_root {
-        let _ = fs::remove_dir_all(root);
-    }
     Ok(format!("plugin:{plugin_id}"))
 }
 
@@ -553,24 +564,18 @@ fn read_plugin_manifest(path: &Path) -> Option<serde_json::Value> {
         .and_then(|content| serde_json::from_str(&content).ok())
 }
 
-fn temp_install_dir() -> Result<PathBuf, String> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis();
-    let dir = dirs::home_dir()
+fn temp_install_dir() -> Result<TempInstallDir, String> {
+    let parent = dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".agentbro")
-        .join("tmp")
-        .join(format!("install-{millis}"));
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+        .join("tmp");
+    TempInstallDir::create_in(&parent)
 }
 
 fn clone_github_spec(
     spec: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = parse_github_spec_ref(spec)?;
     clone_repo(
         &parsed.repo_url,
@@ -583,7 +588,7 @@ fn clone_github_spec(
 fn clone_github_url(
     source: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let parsed = parse_github_url_ref(source)?;
     clone_repo(
         &parsed.repo_url,
@@ -596,7 +601,7 @@ fn clone_github_url(
 fn clone_skillssh_spec(
     spec: &str,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let normalized = spec.trim().replace('@', "/");
     let parts: Vec<&str> = normalized
         .trim_matches('/')
@@ -620,15 +625,8 @@ fn clone_skillssh_spec(
         github_token,
         &cancel,
     )?;
-    match locate_skillssh_skill_dir(&repo_dir, &skill_id) {
-        Ok(skill_dir) => Ok((skill_dir, temp_root)),
-        Err(err) => {
-            if let Some(root) = temp_root {
-                let _ = fs::remove_dir_all(root);
-            }
-            Err(err)
-        }
-    }
+    let skill_dir = locate_skillssh_skill_dir(&repo_dir, &skill_id)?;
+    Ok((skill_dir, temp_root))
 }
 
 pub(crate) fn locate_skillssh_skill_dir(
@@ -900,7 +898,7 @@ fn clone_repo(
     branch: Option<&str>,
     subpath: Option<&str>,
     github_token: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     clone_repo_with_cancel(repo_url, branch, subpath, github_token, None)
 }
 
@@ -910,9 +908,9 @@ fn clone_repo_with_cancel(
     subpath: Option<&str>,
     github_token: Option<&str>,
     cancel: Option<&AtomicBool>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let repo_dir = root.join("repo");
+    let repo_dir = root.path().join("repo");
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
@@ -921,7 +919,6 @@ fn clone_repo_with_cancel(
     let single_attempt = clone_urls.len() == 1;
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = fs::remove_dir_all(&root);
             return Err("Installation cancelled".to_string());
         }
         let remaining = Duration::from_secs(GITHUB_CLONE_TOTAL_TIMEOUT_SECS)
@@ -985,7 +982,6 @@ fn clone_repo_with_cancel(
         let _ = fs::remove_dir_all(&repo_dir);
     }
     if !cloned {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to clone {repo_url}: {last_error}"));
     }
 
@@ -994,7 +990,6 @@ fn clone_repo_with_cancel(
         _ => repo_dir,
     };
     if !src.exists() {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("GitHub path not found: {}", src.display()));
     }
     Ok((src, Some(root)))
@@ -1007,9 +1002,9 @@ fn clone_repo_skills_with_cancel(
     skill_ids: &[String],
     github_token: Option<&str>,
     cancel: &AtomicBool,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let repo_dir = root.join("repo");
+    let repo_dir = root.path().join("repo");
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
@@ -1019,7 +1014,6 @@ fn clone_repo_skills_with_cancel(
 
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
-            let _ = fs::remove_dir_all(&root);
             return Err("Installation cancelled".to_string());
         }
         let remaining = Duration::from_secs(GITHUB_CLONE_TOTAL_TIMEOUT_SECS)
@@ -1091,12 +1085,11 @@ fn clone_repo_skills_with_cancel(
     }
 
     if !cloned {
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to prepare {repo_url}: {last_error}"));
     }
 
-    let tree_file = root.join("skill-tree.txt");
-    let tree_output = match run_git_with_cancel(
+    let tree_file = root.path().join("skill-tree.txt");
+    let tree_output = run_git_with_cancel(
         &repo_dir,
         &["ls-tree", "-r", "--name-only", "HEAD"],
         Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
@@ -1104,27 +1097,13 @@ fn clone_repo_skills_with_cancel(
         &network_env,
         Some(&tree_file),
         "Reading the GitHub repository directory",
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&root);
-            return Err(error);
-        }
-    };
+    )?;
     if !tree_output.status.success() {
         let error = redact_token(&String::from_utf8_lossy(&tree_output.stderr), github_token);
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to read {repo_url}: {error}"));
     }
-    let tree = match fs::read_to_string(&tree_file) {
-        Ok(tree) => tree,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&root);
-            return Err(format!(
-                "Failed to read the GitHub repository directory: {error}"
-            ));
-        }
-    };
+    let tree = fs::read_to_string(&tree_file)
+        .map_err(|error| format!("Failed to read the GitHub repository directory: {error}"))?;
     let prefix = subpath
         .map(normalize_repo_path)
         .filter(|path| !path.is_empty());
@@ -1140,7 +1119,7 @@ fn clone_repo_skills_with_cancel(
         .collect::<Vec<_>>();
 
     if !manifest_paths.is_empty() {
-        let init_output = match run_git_with_cancel(
+        let init_output = run_git_with_cancel(
             &repo_dir,
             &["sparse-checkout", "init", "--no-cone"],
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
@@ -1148,16 +1127,9 @@ fn clone_repo_skills_with_cancel(
             &network_env,
             None,
             "Preparing Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !init_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&init_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to prepare Skill manifests: {error}"));
         }
 
@@ -1167,7 +1139,7 @@ fn clone_repo_skills_with_cancel(
             .collect::<Vec<_>>();
         let mut sparse_args = vec!["sparse-checkout", "set", "--no-cone", "--"];
         sparse_args.extend(manifest_patterns.iter().map(String::as_str));
-        let set_output = match run_git_with_cancel(
+        let set_output = run_git_with_cancel(
             &repo_dir,
             &sparse_args,
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
@@ -1175,20 +1147,13 @@ fn clone_repo_skills_with_cancel(
             &network_env,
             None,
             "Selecting Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !set_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&set_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to select Skill manifests: {error}"));
         }
 
-        let checkout_output = match run_git_with_cancel(
+        let checkout_output = run_git_with_cancel(
             &repo_dir,
             &["checkout", "--quiet", "HEAD"],
             Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
@@ -1196,19 +1161,12 @@ fn clone_repo_skills_with_cancel(
             &network_env,
             None,
             "Downloading Skill manifests",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !checkout_output.status.success() {
             let error = redact_token(
                 &String::from_utf8_lossy(&checkout_output.stderr),
                 github_token,
             );
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to download Skill manifests: {error}"));
         }
     }
@@ -1217,7 +1175,7 @@ fn clone_repo_skills_with_cancel(
     if !selected_dirs.is_empty() {
         let mut sparse_args = vec!["sparse-checkout", "set", "--cone", "--"];
         sparse_args.extend(selected_dirs.iter().map(String::as_str));
-        let set_output = match run_git_with_cancel(
+        let set_output = run_git_with_cancel(
             &repo_dir,
             &sparse_args,
             Duration::from_secs(GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS),
@@ -1225,16 +1183,9 @@ fn clone_repo_skills_with_cancel(
             &network_env,
             None,
             "Downloading selected Skills",
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&root);
-                return Err(error);
-            }
-        };
+        )?;
         if !set_output.status.success() {
             let error = redact_token(&String::from_utf8_lossy(&set_output.stderr), github_token);
-            let _ = fs::remove_dir_all(&root);
             return Err(format!("Failed to download selected Skills: {error}"));
         }
     }
@@ -1415,10 +1366,10 @@ fn terminate_child_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+fn download_zip(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
-    let archive = root.join("skill.zip");
-    let extract_dir = root.join("unzipped");
+    let archive = root.path().join("skill.zip");
+    let extract_dir = root.path().join("unzipped");
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
     let output = Command::new(crate::agents::executable::command_path("curl"))
@@ -1432,7 +1383,6 @@ fn download_zip(source: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
         .map_err(|e| format!("Failed to run curl: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = fs::remove_dir_all(&root);
         return Err(format!("Failed to download {source}: {stderr}"));
     }
 
@@ -1981,6 +1931,7 @@ pub fn copy_recursive_pub(src: &Path, dest: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let millis = SystemTime::now()
@@ -1988,6 +1939,28 @@ mod tests {
             .unwrap()
             .as_millis();
         std::env::temp_dir().join(format!("agentbro-{name}-{millis}"))
+    }
+
+    #[test]
+    fn temporary_import_directories_have_independent_lifetimes() {
+        let parent = std::env::temp_dir();
+        let first = TempInstallDir::create_in(&parent).unwrap();
+        let second = TempInstallDir::create_in(&parent).unwrap();
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+        fs::write(first_path.join("SKILL.md"), "first").unwrap();
+        fs::write(second_path.join("SKILL.md"), "second").unwrap();
+
+        assert_ne!(first_path, second_path);
+        drop(first);
+        assert!(!first_path.exists());
+        assert_eq!(
+            fs::read_to_string(second_path.join("SKILL.md")).unwrap(),
+            "second"
+        );
+
+        drop(second);
+        assert!(!second_path.exists());
     }
 
     #[test]
@@ -2236,9 +2209,11 @@ mod tests {
     fn live_resolves_skills_sh_find_skills() {
         let (dir, temp_root) =
             resolve_install_source("skillssh:vercel-labs/skills/find-skills").unwrap();
+        let temp_root = temp_root.expect("downloaded repository has a temporary directory");
         assert!(dir.join("SKILL.md").is_file());
-        if let Some(root) = temp_root {
-            let _ = fs::remove_dir_all(root);
-        }
+        let temp_path = temp_root.path().to_path_buf();
+        assert!(dir.starts_with(&temp_path));
+        drop(temp_root);
+        assert!(!temp_path.exists());
     }
 }

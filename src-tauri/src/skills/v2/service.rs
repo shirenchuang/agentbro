@@ -7,6 +7,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_question_mark)]
 
+use crate::skills::installer::{self, TempInstallDir};
 use crate::skills::v2::agent_meta;
 use crate::skills::v2::db::{self, Db};
 use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
@@ -28,6 +29,12 @@ pub struct Service {
     pub db: Arc<Db>,
     pub home: PathBuf,
     center_import_lock: Mutex<()>,
+}
+
+struct PreparedCenterSkillImport {
+    preview: AddCenterSkillPreview,
+    source_ref: Option<String>,
+    _temp_root: Option<TempInstallDir>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1934,24 +1941,24 @@ impl Service {
         input: AddCenterSkillInput,
     ) -> Result<AddCenterSkillPreview, String> {
         self.prepare_center_skill_import(&input, None)
-            .map(|(preview, _)| preview)
+            .map(|prepared| prepared.preview)
     }
 
     fn prepare_center_skill_import(
         &self,
         input: &AddCenterSkillInput,
         checkout_commit: Option<&str>,
-    ) -> Result<(AddCenterSkillPreview, Option<String>), String> {
+    ) -> Result<PreparedCenterSkillImport, String> {
         let center = self.center_path()?;
         let expanded_src = fsutil::expand_tilde(&input.source_path);
-        let (src, temp_root) = if is_remote_skill_source(input) {
-            crate::skills::installer::resolve_external_skill_source(&input.source_path)?
+        let (src, mut temp_root) = if is_remote_skill_source(input) {
+            installer::resolve_external_skill_source(&input.source_path)?
         } else {
             (expanded_src, None)
         };
         let source_ref = checkout_commit.map(str::to_string).or_else(|| {
             if is_git_skill_source_path(&input.source_path) {
-                crate::skills::installer::read_checkout_commit(&temp_root.as_ref()?.join("repo"))
+                installer::read_checkout_commit(&temp_root.as_ref()?.path().join("repo"))
             } else {
                 None
             }
@@ -1960,10 +1967,6 @@ impl Service {
         let mut blockers = Vec::new();
         let mut unchanged_count = 0;
 
-        // If the source is an archive, extract it to a temp dir first so the
-        // rest of the flow can treat it as a folder. The temp dir persists
-        // through execute_add_center_skill (which reads cand.source_dir); it
-        // lives in /tmp and is cleaned by the OS.
         let src = if src.is_file()
             && matches!(
                 src.extension()
@@ -1972,13 +1975,17 @@ impl Service {
                     .as_deref(),
                 Some("zip")
             ) {
-            cleanup_old_temp_imports();
-            let dest = std::env::temp_dir().join(format!("agentbro-skill-import-{}", uuid_short()));
+            let extracted = TempInstallDir::create_in(&std::env::temp_dir())?;
+            let dest = extracted.path().to_path_buf();
             extract_zip(&src, &dest)?;
+            temp_root = Some(extracted);
             dest
         } else {
             src
         };
+        if temp_root.is_some() && input.import_mode.as_deref() == Some("link") {
+            return Err("Link import is only available when importing a local folder.".to_string());
+        }
 
         // Determine if source is a single skill or a folder of skills.
         let dirs: Vec<PathBuf> = if input.multi.unwrap_or(false) && src.is_dir() {
@@ -2087,15 +2094,16 @@ impl Service {
                 candidates.push(cand);
             }
         }
-        Ok((
-            AddCenterSkillPreview {
+        Ok(PreparedCenterSkillImport {
+            preview: AddCenterSkillPreview {
                 candidates,
                 blockers,
                 unchanged_count,
                 center_path: center.display().to_string(),
             },
             source_ref,
-        ))
+            _temp_root: temp_root,
+        })
     }
 
     pub fn execute_add_center_skill(
@@ -2116,8 +2124,9 @@ impl Service {
             .center_import_lock
             .lock()
             .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
-        let (preview, source_ref) = self.prepare_center_skill_import(&input, checkout_commit)?;
-        let source_ref = source_ref.as_deref();
+        let prepared = self.prepare_center_skill_import(&input, checkout_commit)?;
+        let preview = &prepared.preview;
+        let source_ref = prepared.source_ref.as_deref();
         let center = self.center_path()?;
         std::fs::create_dir_all(&center).map_err(|e| format!("center mkdir: {}", e))?;
         let mut created = Vec::new();
@@ -6790,46 +6799,17 @@ fn is_shared_agents_skill_path(home: &Path, path: &Path) -> bool {
 
 // ── ZIP extraction for local archive import ──────────────────────
 
-fn cleanup_old_temp_imports() {
-    if let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("agentbro-skill-import-") {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
-        }
-    }
-}
-
 fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("open zip: {}", e))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {}", e))?;
-    std::fs::create_dir_all(dest).map_err(|e| format!("mkdir: {}", e))?;
-    // Canonicalize dest so the zip-slip guard is consistent even when temp_dir()
-    // is behind a symlink (macOS /var → /private/var).
-    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("zip entry {}: {}", i, e))?;
-        let entry_name = entry.name().to_string();
-        // guard against path traversal (zip-slip): every component must stay under dest
-        let outpath = dest.join(&entry_name);
-        let mut cur = outpath.clone();
-        let mut ok = false;
-        for _ in 0..32 {
-            match cur.parent() {
-                Some(p) if p == dest => {
-                    ok = true;
-                    break;
-                }
-                Some(p) => cur = p.to_path_buf(),
-                None => break,
-            }
-        }
-        if !ok {
-            continue;
-        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("ZIP entry {i} has an invalid extraction path"))?;
+        let outpath = dest.join(relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&outpath).map_err(|e| format!("mkdir entry: {}", e))?;
         } else {

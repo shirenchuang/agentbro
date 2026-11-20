@@ -6487,13 +6487,10 @@ fn real_smoke_against_actual_home() {
 #[test]
 fn add_center_skill_from_zip() {
     let (_home, svc, _lock) = fresh_service("zip");
-    // build a skill dir, then zip it
-    let skill_dir = write_skill(
-        &svc.home.join("src"),
-        "zipped",
-        "zip-skill",
-        Some("payload"),
-    );
+    let other_import =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let other_skill = other_import.path().join("SKILL.md");
+    std::fs::write(&other_skill, "other import").unwrap();
     let zip_path = svc.home.join("zip-skill.zip");
     let file = std::fs::File::create(&zip_path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -6504,7 +6501,6 @@ fn add_center_skill_from_zip() {
     zip.start_file("zip-skill/reference.md", opts).unwrap();
     zip.write_all(b"payload").unwrap();
     zip.finish().unwrap();
-    let _ = &skill_dir;
 
     let preview = svc
         .preview_add_center_skill(AddCenterSkillInput {
@@ -6519,6 +6515,8 @@ fn add_center_skill_from_zip() {
         .unwrap();
     assert_eq!(preview.candidates.len(), 1);
     assert_eq!(preview.candidates[0].skill_id, "zip-skill");
+    assert!(!Path::new(&preview.candidates[0].source_dir).exists());
+    assert!(other_skill.is_file());
     let r = svc
         .execute_add_center_skill(
             AddCenterSkillInput {
@@ -6534,5 +6532,10 @@ fn add_center_skill_from_zip() {
         )
         .unwrap();
     assert_eq!(r.skill_ids, vec!["zip-skill".to_string()]);
-    assert!(svc.center_path().unwrap().join("zip-skill").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(svc.center_path().unwrap().join("zip-skill/reference.md")).unwrap(),
+        "payload"
+    );
+    assert!(zip_path.is_file());
+    assert!(other_skill.is_file());
 }
