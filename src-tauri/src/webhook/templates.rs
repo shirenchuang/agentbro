@@ -221,11 +221,10 @@ fn event_to_text(
     session_id: &str,
     language: &str,
 ) -> (String, String) {
-    let short_id = if session_id.len() > 8 {
-        &session_id[..8]
-    } else {
-        session_id
-    };
+    let short_id = session_id
+        .char_indices()
+        .nth(8)
+        .map_or(session_id, |(end, _)| &session_id[..end]);
     let labels = labels(language);
 
     match event {
@@ -293,5 +292,21 @@ fn event_to_text(
             ),
         ),
         NotificationEvent::Custom { title, body } => (title.clone(), body.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_id_preview_keeps_unicode_characters_intact() {
+        let (_, body) = event_to_text(
+            &NotificationEvent::SessionStart,
+            "Agent",
+            "任务编号🙂甲乙丙丁",
+            "en",
+        );
+        assert!(body.ends_with("`任务编号🙂甲乙丙`"));
     }
 }
