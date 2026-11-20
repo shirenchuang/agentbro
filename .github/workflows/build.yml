@@ -245,14 +245,6 @@ jobs:
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
-      - name: Upload the failed desktop check
-        if: failure() && runner.environment == 'github-hosted'
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentbro-windows-desktop-failure
-          path: ${{ runner.temp }}/agentbro-island-failure.png
-          if-no-files-found: ignore
-
       - name: Verify the installed bridge from WSL
         shell: pwsh
         timeout-minutes: 12
@@ -261,3 +253,11 @@ jobs:
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           ./scripts/probe-windows-wsl.ps1 -Installer $installer.FullName -VerifyIntegration:($env:WSL_BUILD_RUN -ne '44810356063')
+
+      - name: Upload the failed desktop check
+        if: failure() && runner.environment == 'github-hosted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-desktop-failure
+          path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore
