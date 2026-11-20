@@ -6539,3 +6539,105 @@ fn add_center_skill_from_zip() {
     assert!(zip_path.is_file());
     assert!(other_skill.is_file());
 }
+
+#[test]
+fn add_center_skill_from_public_download_links() {
+    use std::io::{BufRead, BufReader, Cursor};
+    use std::net::TcpListener;
+
+    let (_home, svc, _lock) = fresh_service("public-download");
+    let markdown = b"---\nname: remote-markdown\ndescription: Markdown fixture\n---\n# Markdown\n";
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("archive/SKILL.md", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"---\nname: remote-zip\ndescription: ZIP fixture\n---\n# Zip\n")
+        .unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+    let mut linked_zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    linked_zip.start_file("archive/SKILL.md", options).unwrap();
+    linked_zip.write_all(markdown).unwrap();
+    linked_zip
+        .add_symlink("archive/guide.md", "SKILL.md", options)
+        .unwrap();
+    let linked_archive = linked_zip.finish().unwrap().into_inner();
+
+    for (target, payload, expected_id) in [
+        (
+            "/skill.MD?download=1",
+            markdown.to_vec(),
+            Some("remote-markdown"),
+        ),
+        ("/skill.ZIP?download=1", archive, Some("remote-zip")),
+        ("/linked.zip", linked_archive, None),
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}{target}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("The Skill download did not reach the fixture: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut headers = BufReader::new(&stream).lines();
+            let request = headers.next().unwrap().unwrap();
+            assert!(request.starts_with(&format!("GET {target} ")));
+            for header in headers
+                .map(Result::unwrap)
+                .take_while(|line| !line.is_empty())
+            {
+                assert!(!header.to_ascii_lowercase().starts_with("authorization:"));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            stream.write_all(&payload).unwrap();
+        });
+
+        let installed = svc.execute_add_center_skill(
+            AddCenterSkillInput {
+                source_uri: Some(url.clone()),
+                source_path: url.clone(),
+                source_type: "url".to_string(),
+                imported_from_agent: None,
+                imported_from_path: None,
+                multi: None,
+                import_mode: Some("copy".to_string()),
+            },
+            vec![],
+        );
+        server.join().unwrap();
+
+        let Some(expected_id) = expected_id else {
+            assert!(installed
+                .unwrap_err()
+                .contains("regular files and directories"));
+            continue;
+        };
+        assert_eq!(installed.unwrap().skill_ids, [expected_id]);
+        let detail = svc.get_skill_detail(expected_id).unwrap();
+        assert_eq!(
+            detail.source.unwrap().source_uri.as_deref(),
+            Some(url.as_str())
+        );
+        assert!(Path::new(&detail.summary.center_path)
+            .join("SKILL.md")
+            .is_file());
+    }
+}

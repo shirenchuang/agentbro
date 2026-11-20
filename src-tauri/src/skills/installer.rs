@@ -5,6 +5,7 @@ use super::{
 };
 use crate::platform::process::background_command;
 use base64::{engine::general_purpose, Engine as _};
+use reqwest::Url;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ const GITHUB_CLONE_TOTAL_TIMEOUT_SECS: u64 = 120;
 const GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS: u64 = 180;
 const GITHUB_TREE_TIMEOUT_SECS: u64 = 20;
 const MAX_GITHUB_SKILL_PREVIEWS: usize = 500;
+const SKILL_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
 
 pub(crate) struct TempInstallDir(PathBuf);
 
@@ -307,19 +309,27 @@ fn resolve_install_source_with_token(
         return clone_skillssh_spec(spec, github_token);
     }
 
-    if source.starts_with("https://github.com/") || source.starts_with("http://github.com/") {
-        return clone_github_url(source, github_token);
-    }
-
     if source.starts_with("http://") || source.starts_with("https://") {
-        if source.ends_with(".zip") {
-            return download_zip(source);
-        }
-        if source.ends_with(".md")
-            || source.contains("/raw/")
-            || source.contains("raw.githubusercontent.com")
+        let mut url = Url::parse(source).map_err(|error| format!("Invalid Skill URL: {error}"))?;
+        let path = url.path().to_ascii_lowercase();
+        if url.host_str() == Some("github.com")
+            && !matches!(
+                url.path_segments().and_then(|mut segments| segments.nth(2)),
+                Some("raw" | "archive" | "releases")
+            )
         {
-            return download_markdown_skill(source);
+            url.set_query(None);
+            url.set_fragment(None);
+            return clone_github_url(url.as_str(), github_token);
+        }
+        if path.ends_with(".zip") {
+            return download_zip(&url, github_token);
+        }
+        if path.ends_with(".md")
+            || path.contains("/raw/")
+            || url.host_str() == Some("raw.githubusercontent.com")
+        {
+            return download_markdown_skill(&url, github_token);
         }
         return Err("Only GitHub repository URLs, raw Markdown skills, and .zip skill archives are supported for remote installs".to_string());
     }
@@ -392,31 +402,21 @@ pub(crate) fn resolve_github_repo_skills_with_cancel(
     )
 }
 
-fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
+fn download_markdown_skill(
+    source: &Url,
+    github_token: Option<&str>,
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
     let skill_dir = root.path().join(skill_dir_name_from_url(source));
     fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
     let dest = skill_dir.join("SKILL.md");
 
-    let output = background_command(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(None))
-        .arg("-L")
-        .arg("--fail")
-        .arg(source)
-        .arg("-o")
-        .arg(&dest)
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to download {source}: {stderr}"));
-    }
-
+    download_skill_file(source, &dest, github_token)?;
     Ok((skill_dir, Some(root)))
 }
 
-fn skill_dir_name_from_url(source: &str) -> String {
-    let trimmed = source.trim_end_matches('/');
+fn skill_dir_name_from_url(source: &Url) -> String {
+    let trimmed = source.path().trim_end_matches('/');
     let mut parts = trimmed
         .split('/')
         .filter(|part| !part.is_empty())
@@ -429,7 +429,13 @@ fn skill_dir_name_from_url(source: &str) -> String {
     }
     parts
         .last()
-        .map(|part| sanitize_file_name(part.trim_end_matches(".md")))
+        .map(|part| {
+            let name = match part.rsplit_once('.') {
+                Some((name, ext)) if ext.eq_ignore_ascii_case("md") => name,
+                _ => part,
+            };
+            sanitize_file_name(name)
+        })
         .filter(|part| !part.is_empty())
         .unwrap_or_else(|| "downloaded-skill".to_string())
 }
@@ -447,7 +453,7 @@ fn sanitize_file_name(value: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    if sanitized.is_empty() {
+    if matches!(sanitized.as_str(), "" | "." | "..") {
         "downloaded-skill".to_string()
     } else {
         sanitized
@@ -827,9 +833,9 @@ fn curl_text_with_timeout(
     max_time_secs: u64,
     github_token: Option<&str>,
 ) -> Result<String, String> {
+    let url = Url::parse(url).map_err(|error| format!("Invalid GitHub URL: {error}"))?;
     let output = background_command(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(github_token))
-        .arg("-L")
+        .args(http_curl_args(&url, github_token))
         .arg("--fail")
         .arg("--connect-timeout")
         .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
@@ -839,7 +845,8 @@ fn curl_text_with_timeout(
         .arg("Accept: application/vnd.github+json")
         .arg("-H")
         .arg("User-Agent: AgentBro")
-        .arg(url)
+        .arg("--url")
+        .arg(url.as_str())
         .output()
         .map_err(|e| format!("Failed to run curl: {e}"))?;
     if !output.status.success() {
@@ -1365,32 +1372,59 @@ fn terminate_child_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn download_zip(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), String> {
+fn download_zip(
+    source: &Url,
+    github_token: Option<&str>,
+) -> Result<(PathBuf, Option<TempInstallDir>), String> {
     let root = temp_install_dir()?;
     let archive = root.path().join("skill.zip");
     let extract_dir = root.path().join("unzipped");
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
-    let output = background_command(crate::agents::executable::command_path("curl"))
-        .args(authenticated_curl_args(None))
-        .arg("-L")
-        .arg("--fail")
-        .arg(source)
-        .arg("-o")
-        .arg(&archive)
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to download {source}: {stderr}"));
-    }
+    download_skill_file(source, &archive, github_token)?;
 
     let file = fs::File::open(&archive).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        if entry.is_symlink() {
+            return Err(
+                "Downloaded Skill archives must contain only regular files and directories."
+                    .to_string(),
+            );
+        }
+    }
     archive.extract(&extract_dir).map_err(|e| e.to_string())?;
 
     let src = single_child_dir(&extract_dir).unwrap_or(extract_dir);
     Ok((src, Some(root)))
+}
+
+fn download_skill_file(
+    source: &Url,
+    dest: &Path,
+    github_token: Option<&str>,
+) -> Result<(), String> {
+    let output = background_command(crate::agents::executable::command_path("curl"))
+        .args(http_curl_args(source, github_token))
+        .arg("--fail")
+        .arg("--connect-timeout")
+        .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
+        .arg("--max-time")
+        .arg(SKILL_DOWNLOAD_TIMEOUT_SECS.to_string())
+        .arg("--output")
+        .arg(dest)
+        .arg("--url")
+        .arg(source.as_str())
+        .output()
+        .map_err(|error| format!("Failed to run curl: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to download Skill: {}",
+            redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+        ));
+    }
+    Ok(())
 }
 
 fn github_token() -> Option<String> {
@@ -1413,10 +1447,42 @@ fn effective_github_token(explicit_token: Option<&str>) -> Option<String> {
         .or_else(github_token)
 }
 
-fn authenticated_curl_args(github_token: Option<&str>) -> Vec<String> {
-    effective_github_token(github_token)
-        .map(|token| vec!["-H".to_string(), format!("Authorization: Bearer {token}")])
-        .unwrap_or_default()
+fn http_curl_args(url: &Url, github_token: Option<&str>) -> Vec<String> {
+    let https = url.scheme() == "https";
+    let protocols = if https { "=https" } else { "=http,https" };
+    let mut args = [
+        "--location",
+        "--no-location-trusted",
+        "--globoff",
+        "--proto",
+        protocols,
+        "--proto-redir",
+        protocols,
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let github_https = https
+        && url.port_or_known_default() == Some(443)
+        && matches!(
+            url.host_str(),
+            Some(
+                "github.com"
+                    | "api.github.com"
+                    | "raw.githubusercontent.com"
+                    | "codeload.github.com"
+            )
+        );
+    if let Some(token) = github_https
+        .then(|| effective_github_token(github_token))
+        .flatten()
+    {
+        args.extend([
+            "--no-insecure".to_string(),
+            "-H".to_string(),
+            format!("Authorization: Bearer {token}"),
+        ]);
+    }
+    args
 }
 
 fn authenticated_github_url(repo_url: &str, github_token: Option<&str>) -> String {
@@ -1938,6 +2004,36 @@ mod tests {
             .unwrap()
             .as_millis();
         std::env::temp_dir().join(format!("agentbro-{name}-{millis}"))
+    }
+
+    #[test]
+    fn git_credentials_are_only_used_for_github_https_downloads() {
+        let token = Some("synthetic-test-token");
+        for host in [
+            "api.github.com",
+            "github.com",
+            "raw.githubusercontent.com",
+            "codeload.github.com",
+        ] {
+            let url = Url::parse(&format!("https://{host}/test")).unwrap();
+            let args = http_curl_args(&url, token);
+            assert!(args
+                .iter()
+                .any(|arg| arg == "Authorization: Bearer synthetic-test-token"));
+            assert!(args.iter().any(|arg| arg == "--no-location-trusted"));
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--proto-redir", "=https"]));
+        }
+        for source in [
+            "https://example.test/skill.zip",
+            "https://raw.githubusercontent.com.example.test/skill.md",
+            "http://raw.githubusercontent.com/skill.md",
+            "https://api.github.com:8443/test",
+        ] {
+            let args = http_curl_args(&Url::parse(source).unwrap(), token);
+            assert!(!args.iter().any(|arg| arg.starts_with("Authorization:")));
+        }
     }
 
     #[test]
