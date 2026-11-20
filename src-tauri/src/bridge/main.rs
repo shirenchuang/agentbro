@@ -1183,7 +1183,7 @@ fn main() {
             }
         }
         "PermissionRequest" => {
-            if source == "kimi" {
+            if matches!(source.as_str(), "kimi" | "workbuddy-ai") {
                 obj.insert("status".into(), "waiting_for_approval".into());
                 if !tool_name.is_empty() {
                     obj.insert("tool".into(), tool_name.into());
@@ -1314,8 +1314,11 @@ fn main() {
             copy_optional_field(obj, &data, "action", &["action"]);
         }
         "Notification" => {
-            let notification_type = data["notification_type"].as_str().unwrap_or("");
-            if notification_type == "permission_prompt" {
+            let notification_type = data["notification_type"]
+                .as_str()
+                .or_else(|| data["notificationType"].as_str())
+                .unwrap_or("");
+            if notification_type == "permission_prompt" && source != "workbuddy-ai" {
                 return;
             } else if notification_type == "idle_prompt" {
                 obj.insert("status".into(), "waiting_for_input".into());

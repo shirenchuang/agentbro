@@ -1,3 +1,4 @@
+use crate::agents::workbuddy::WorkBuddyEdition;
 use std::path::{Path, PathBuf};
 
 pub struct SkillPaths {
@@ -73,6 +74,14 @@ pub fn doubao_skill_dirs_for(home: &Path) -> Vec<PathBuf> {
 
 pub fn paths_for_agent(agent: &str) -> SkillPaths {
     let h = home();
+    if let Some(edition) = WorkBuddyEdition::from_agent_id(agent) {
+        let root = h.join(edition.profile_dir());
+        return SkillPaths {
+            skill_dirs: vec![root.join("skills")],
+            mcp_config: None,
+            settings_file: Some(root.join("settings.json")),
+        };
+    }
     match agent {
         "central" | "agentbro" => SkillPaths {
             skill_dirs: central_skill_dirs(),
@@ -146,7 +155,6 @@ pub fn paths_for_agent(agent: &str) -> SkillPaths {
             mcp_config: None,
             settings_file: None,
         },
-        "workbuddy" => basic_skill_paths(&h, ".workbuddy/skills"),
         "zcode" => SkillPaths {
             skill_dirs: vec![h.join(".zcode").join("skills")],
             mcp_config: Some(h.join(".zcode").join("cli").join("config.json")),
@@ -300,6 +308,7 @@ pub fn known_agent_ids() -> &'static [&'static str] {
         "codebuddycn",
         "codybuddycn",
         "workbuddy",
+        "workbuddy-ai",
         "zcode",
         "kiro",
         "pi",
@@ -337,7 +346,8 @@ pub fn plugin_cache_dir(agent: &str) -> Option<PathBuf> {
         "claude-code" => Some(h.join(".claude").join("plugins").join("cache")),
         "codex" => Some(h.join(".codex").join("plugins").join("cache")),
         "kimi" | "kimi-code-cli" => Some(kimi_code_home_for(&h).join("plugins").join("managed")),
-        "workbuddy" => Some(h.join(".workbuddy").join("plugins")),
+        "workbuddy" | "workbuddy-ai" => WorkBuddyEdition::from_agent_id(agent)
+            .map(|edition| h.join(edition.profile_dir()).join("plugins")),
         "zcode" => Some(h.join(".zcode").join("cli").join("plugins").join("cache")),
         "antigravity" => Some(h.join(".gemini").join("config").join("plugins")),
         _ => custom_agent_plugin_dir(agent),

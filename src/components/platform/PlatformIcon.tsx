@@ -69,6 +69,7 @@ const imageIcons: Record<string, string> = {
   stepfun: stepfunCliIcon,
   windsurf: windsurfIcon,
   workbuddy: workbuddyCliIcon,
+  'workbuddy-ai': workbuddyCliIcon,
   'work-buddy': workbuddyCliIcon,
   zcode: zcodeCliIcon,
   doubao: doubaoCliIcon,

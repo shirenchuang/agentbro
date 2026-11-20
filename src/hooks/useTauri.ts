@@ -297,6 +297,7 @@ function providerLabelForAgent(agentType: AgentType | string, engineLabel?: stri
   if (agentType === 'claude-code') return 'Claude'
   if (agentType === 'codex') return 'Codex'
   if (agentType === 'workbuddy') return 'WorkBuddy'
+  if (agentType === 'workbuddy-ai') return 'WorkBuddy AI'
   if (agentType === 'zcode') return 'ZCode'
   if (agentType === 'doubao') return 'Doubao'
   return String(agentType)

@@ -2411,6 +2411,16 @@ impl HookServer {
         raw: &serde_json::Value,
         done_cleanup_secs: u64,
     ) {
+        if status.as_deref() == Some("waiting_for_approval")
+            && raw.get("agent").and_then(|agent| agent.as_str()) == Some("workbuddy-ai")
+        {
+            store.update_session(session_id, |session| {
+                session.phase = SessionPhase::WaitingInput;
+                session.description = Some(message.to_string());
+            });
+            Self::play_sound_for_session(sound, store, session_id, SoundEvent::TaskConfirmation);
+            return;
+        }
         let lower = message.to_lowercase();
         let notification_type = raw
             .get("notification_type")
@@ -2599,11 +2609,6 @@ impl HookServer {
         } else {
             crate::agents::project_name_from_path(cwd)
         };
-        let terminal = raw
-            .get("tty")
-            .or_else(|| raw.get("terminal"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
         let agent_type = match event {
             AgentEvent::SessionStart { agent_type, .. } => agent_type.as_str(),
             _ => raw
@@ -2611,6 +2616,15 @@ impl HookServer {
                 .and_then(|value| value.as_str())
                 .unwrap_or("claude-code"),
         };
+        let terminal = raw
+            .get("tty")
+            .or_else(|| raw.get("terminal"))
+            .and_then(|value| value.as_str())
+            .filter(|terminal| !terminal.is_empty())
+            .unwrap_or_else(|| {
+                crate::agents::workbuddy::WorkBuddyEdition::from_agent_id(agent_type)
+                    .map_or("", |edition| edition.display_name())
+            });
 
         store.get_or_create_session(session_id, agent_type, &project, cwd, terminal);
     }
@@ -2858,7 +2872,13 @@ impl HookServer {
             return;
         };
 
-        let pid = if Self::is_remote_hook_event(raw) {
+        let is_workbuddy = raw
+            .get("agent")
+            .and_then(|value| value.as_str())
+            .and_then(crate::agents::workbuddy::WorkBuddyEdition::from_agent_id)
+            .is_some();
+        // WorkBuddy's bridge is launched by a short-lived hook shell. It does not own the session.
+        let pid = if Self::is_remote_hook_event(raw) || is_workbuddy {
             None
         } else {
             raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
@@ -3720,6 +3740,69 @@ mod tests {
         assert!(pending.tool_input.contains("AgentBro Windows smoke"));
 
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn workbuddy_ai_notification_waits_in_the_desktop_without_pending_permission() {
+        let store = Arc::new(SessionStore::new());
+        let adapter = crate::agents::workbuddy::WorkBuddyAdapter::for_edition(
+            crate::agents::workbuddy::WorkBuddyEdition::Global,
+        );
+        let context = HookConnectionContext {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_q: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan: Arc::new(Mutex::new(HashMap::new())),
+            store: store.clone(),
+            adapters: Arc::new(vec![Arc::new(adapter)]),
+            sound: Arc::new(std::sync::Mutex::new(None)),
+            app: Arc::new(std::sync::Mutex::new(None)),
+            raw_events: Arc::new(std::sync::Mutex::new(RawHookEventStore::new())),
+            config_store: Arc::new(std::sync::Mutex::new(None)),
+            recent_tools: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task =
+            tokio::spawn(async move { HookServer::handle_connection(server, context).await });
+        client
+            .write_all(br#"{"agent":"workbuddy-ai","event":"Notification","session_id":"workbuddy-ai-native","cwd":"C:\\WorkBuddy test\\project","status":"notification","notification_type":"permission_prompt"}"#)
+            .await
+            .unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let session = store.get_session("workbuddy-ai-native").unwrap();
+        assert_eq!(session.agent_type, "workbuddy-ai");
+        assert_eq!(session.terminal, "WorkBuddy AI");
+        assert_eq!(session.phase, SessionPhase::WaitingInput);
+        assert!(session.pending_permission.is_none());
+    }
+
+    #[test]
+    fn workbuddy_sessions_outlive_the_hook_shell() {
+        let store = SessionStore::new();
+        for agent in ["workbuddy", "workbuddy-ai"] {
+            store.get_or_create_session(agent, agent, "test-project", "/test-project", "WorkBuddy");
+            store.update_phase(agent, SessionPhase::Processing);
+            HookServer::update_session_metadata_from_raw(
+                &store,
+                &serde_json::json!({
+                    "session_id": agent,
+                    "agent": agent,
+                    "pid": u32::MAX,
+                }),
+            );
+        }
+
+        let sessions = store.get_all_sessions();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|session| session.phase == SessionPhase::Processing && session.pid.is_none()));
     }
 
     #[tokio::test]

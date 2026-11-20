@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_question_mark)]
 
+use crate::agents::workbuddy::WorkBuddyEdition;
 use crate::skills::v2::agent_meta;
 use crate::skills::v2::db::now_iso;
 use crate::skills::v2::fsutil::{self, inspect_path, PathKind};
@@ -690,8 +691,8 @@ pub fn read_plugins(svc: &Service, agent_id: &str) -> Vec<PluginStatus> {
     if agent_id == "antigravity" {
         return read_antigravity_plugins(svc);
     }
-    if agent_id == "workbuddy" {
-        return read_workbuddy_plugins(svc);
+    if let Some(edition) = WorkBuddyEdition::from_agent_id(agent_id) {
+        return read_workbuddy_plugins(&svc.home.join(edition.profile_dir()));
     }
     if agent_id == "zcode" {
         return read_zcode_plugins(svc);
@@ -817,8 +818,10 @@ pub(crate) fn find_plugin_location(
             ".codex-plugin",
             plugin,
         ),
-        "workbuddy" => find_manifest_plugin_location(
-            &svc.home.join(".workbuddy/plugins/marketplaces"),
+        "workbuddy" | "workbuddy-ai" => find_manifest_plugin_location(
+            &svc.home
+                .join(WorkBuddyEdition::from_agent_id(agent_id)?.profile_dir())
+                .join("plugins/marketplaces"),
             ".codebuddy-plugin",
             plugin,
         ),
@@ -1085,13 +1088,13 @@ struct PluginManifestInfo {
     source: Option<String>,
 }
 
-fn read_workbuddy_plugins(svc: &Service) -> Vec<PluginStatus> {
-    let enabled_plugins = read_plugin_enabled_config(&svc.home.join(".workbuddy/settings.json"));
+fn read_workbuddy_plugins(root: &Path) -> Vec<PluginStatus> {
+    let enabled_plugins = read_plugin_enabled_config(&root.join("settings.json"));
     if enabled_plugins.is_empty() {
         return Vec::new();
     }
 
-    let marketplace_root = svc.home.join(".workbuddy/plugins/marketplaces");
+    let marketplace_root = root.join("plugins/marketplaces");
     let manifests = plugin_manifests(&marketplace_root, ".codebuddy-plugin")
         .into_iter()
         .filter_map(|manifest| read_plugin_manifest_info(&marketplace_root, &manifest))

@@ -1429,6 +1429,7 @@ fn display_name_for_agent(id: &str) -> &'static str {
         "codebuddy" => "CodeBuddy",
         "codebuddycn" | "codybuddycn" => "CodyBuddyCN",
         "workbuddy" => "WorkBuddy",
+        "workbuddy-ai" => "WorkBuddy AI",
         "zcode" => "ZCode",
         "kiro" => "Kiro",
         "pi" => "Pi",
@@ -1624,6 +1625,12 @@ fn metadata_for(id: &str) -> Option<ProgramMetadata> {
             "workbuddy",
             "/Applications/WorkBuddy.app",
             "~/.workbuddy",
+            "https://workbuddy.cn",
+        ),
+        "workbuddy-ai" => app(
+            "WorkBuddyAI",
+            "/Applications/WorkBuddy AI.app",
+            "~/.workbuddy-ai",
             "https://workbuddy.ai",
         ),
         "zcode" => app(
@@ -1852,6 +1859,7 @@ mod tests {
             ("qwenwork-cn", "/Applications/QwenWorkCN.app"),
             ("deepseek-harness", "/Applications/DeepSeek Harness.app"),
             ("workbuddy", "/Applications/WorkBuddy.app"),
+            ("workbuddy-ai", "/Applications/WorkBuddy AI.app"),
         ] {
             let meta = metadata_for(id).unwrap();
             let candidates = app_path_candidates_for_platform(id, &meta, RuntimePlatform::Macos);
@@ -2088,6 +2096,23 @@ mod tests {
         for executable in ["Launcher.exe", "QwenWorkCN.exe"] {
             let suffix = format!("\\Programs\\QwenWorkCN\\{executable}");
             assert!(paths.iter().any(|path| path.ends_with(&suffix)));
+        }
+    }
+
+    #[test]
+    fn windows_workbuddy_launchers_match_the_two_installer_editions() {
+        for (agent, name) in [("workbuddy", "WorkBuddy"), ("workbuddy-ai", "WorkBuddyAI")] {
+            let meta = metadata_for(agent).expect("WorkBuddy metadata");
+            let paths = app_path_candidates_for_platform(agent, &meta, RuntimePlatform::Windows);
+            assert!(paths
+                .iter()
+                .any(|path| path.ends_with(&format!(r"\Programs\{name}\{name}.exe"))));
+            let other = if agent == "workbuddy" {
+                "WorkBuddyAI.exe"
+            } else {
+                "WorkBuddy.exe"
+            };
+            assert!(!paths.iter().any(|path| path.ends_with(other)));
         }
     }
 
