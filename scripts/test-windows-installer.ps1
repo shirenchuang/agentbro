@@ -177,6 +177,7 @@ try {
             (Test-Path -LiteralPath $logPath -PathType Leaf) -and
             (Select-String -LiteralPath $logPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
     }
+    Write-StartupStacks
     Select-String -LiteralPath $logPath -SimpleMatch 'Startup:', 'Listening on TCP:' |
         Select-Object -ExpandProperty Line
     $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
