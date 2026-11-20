@@ -46,20 +46,50 @@ function envelope(session, event) {
   }
 }
 
+function messageText(content) {
+  return content?.filter(block => block.type === 'text')
+    .map(block => block.text).join('\n').trim().slice(0, 2000)
+}
+
 export function apply(ctx) {
   const lifetime = new AbortController()
   ctx.effect(() => () => lifetime.abort())
   const updates = new Map()
   const pending = new Set()
+  const responses = new WeakMap()
 
   ctx.on('session/event', (session, event) => {
-    if (event.type !== 'turn/start' && event.type !== 'turn/end') return
-    const type = event.type === 'turn/start' ? 'processing' : 'turn_end'
+    let payload
+    switch (event.type) {
+      case 'turn/start':
+        responses.delete(session)
+        payload = envelope(session, 'processing')
+        break
+      case 'user/message': {
+        if (event.data.source?.kind !== 'user') return
+        const prompt = messageText(event.data.content)
+        if (!prompt) return
+        payload = { ...envelope(session, 'processing'), prompt }
+        break
+      }
+      case 'assistant/message': {
+        const text = messageText(event.data.message.content)
+        if (text) responses.set(session, text)
+        return
+      }
+      case 'turn/end':
+        payload = {
+          ...envelope(session, 'turn_end'),
+          outcome: event.data.reason.kind,
+          summary: responses.get(session),
+        }
+        responses.delete(session)
+        break
+      default:
+        return
+    }
     const previous = updates.get(session.id) ?? Promise.resolve()
-    const sent = previous.then(() => send({
-      ...envelope(session, type),
-      outcome: type === 'turn_end' ? event.data?.reason?.kind : undefined,
-    }, 1500, lifetime.signal))
+    const sent = previous.then(() => send(payload, 1500, lifetime.signal))
     updates.set(session.id, sent)
     void sent.finally(() => {
       if (updates.get(session.id) === sent) updates.delete(session.id)

@@ -1767,7 +1767,9 @@ impl HookServer {
                     });
                     return;
                 }
-                if event_name == "UserPromptSubmit" || event_name == "BeforeAgent" {
+                let harness_turn = event_name == "processing"
+                    && _raw.get("agent").and_then(|v| v.as_str()) == Some("deepseek-harness");
+                if event_name == "UserPromptSubmit" || event_name == "BeforeAgent" || harness_turn {
                     if let Some(prompt) = Self::extract_user_prompt_preview(_raw, 100) {
                         store.set_last_user_message(session_id, Some(prompt));
                     }
@@ -3532,7 +3534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn harness_permission_round_trip_and_disconnect_clear_the_island() {
+    async fn harness_turn_and_permission_round_trip_share_the_island_session() {
         let store = Arc::new(SessionStore::new());
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let context = HookConnectionContext {
@@ -3550,6 +3552,26 @@ mod tests {
             recent_tools: Arc::new(Mutex::new(VecDeque::new())),
         };
         let id = "deepseek-harness:fixture";
+        let (mut client, server) = tokio::io::duplex(4096);
+        let event = serde_json::json!({
+            "agent": "deepseek-harness",
+            "event": "processing",
+            "session_id": id,
+            "cwd": "/tmp/default-workspace",
+            "prompt": "请算一下 1+1",
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        HookServer::handle_connection(server, context.clone())
+            .await
+            .unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert_eq!(session.session_title.as_deref(), Some("请算一下 1+1"));
+        assert_eq!(session.last_user_message.as_deref(), Some("请算一下 1+1"));
+
         for (tool_id, reply) in [
             ("allow", Some("allow")),
             ("deny", Some("deny")),
@@ -3620,6 +3642,25 @@ mod tests {
             assert!(store.get_session(id).unwrap().pending_permission.is_none());
         }
         assert!(pending.lock().await.is_empty());
+
+        let (mut client, server) = tokio::io::duplex(4096);
+        let event = serde_json::json!({
+            "agent": "deepseek-harness",
+            "event": "turn_end",
+            "session_id": id,
+            "outcome": "completed",
+            "summary": "**1 + 1 = 2**",
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .unwrap();
+        HookServer::handle_connection(server, context)
+            .await
+            .unwrap();
+        let session = store.get_session(id).unwrap();
+        assert_eq!(session.phase, SessionPhase::Done);
+        assert_eq!(session.last_response.as_deref(), Some("**1 + 1 = 2**"));
     }
 
     #[tokio::test]
