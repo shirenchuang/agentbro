@@ -126,6 +126,22 @@ function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
     $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 
+function Click-IslandAction([Windows.Automation.Condition]$Condition, [string]$Action) {
+    $point = Wait-IslandValue "the native hit target for '$Action'" {
+        $target = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $Condition)
+        $candidate = [Windows.Point]::new(0, 0)
+        if (-not $target -or $target.Current.IsOffscreen -or -not $target.TryGetClickablePoint([ref]$candidate)) { return }
+        if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$candidate.X, [int]$candidate.Y)) { return }
+        Start-Sleep -Milliseconds 250
+        $hit = [Windows.Automation.AutomationElement]::FromPoint($candidate)
+        if ($hit.Current.Name -eq $Action -and [AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) {
+            return $candidate
+        }
+    }
+    Write-Output "Native cursor is over '$Action' at $($point.X), $($point.Y)."
+    [AgentBroSmokeMouse]::Click()
+}
+
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -170,24 +186,23 @@ try {
         $tab = Wait-IslandValue 'the Integration tab' { Find-NamedControl $settingsWindow 'Integration' }
         Invoke-NamedControl $tab
         $actionButton = Wait-IslandValue "the DeepSeek Harness '$HookOperation' button" {
-            $rowName = Find-NamedControl $settingsWindow $ProjectName
-            if (-not $rowName) { return }
-            $parent = $rowName
-            for ($depth = 0; $depth -lt 5 -and $parent; $depth++) {
-                $parent = [Windows.Automation.TreeWalker]::RawViewWalker.GetParent($parent)
-                if (-not $parent) { return }
-                $condition = [Windows.Automation.AndCondition]::new($buttonCondition,
-                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $HookOperation))
-                $actions = $parent.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
-                if ($actions.Count -eq 1) { return $actions[0] }
-                if ($actions.Count -gt 1) { return }
+            $nodes = $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition)
+            for ($i = 0; $i -lt $nodes.Count - 2; $i++) {
+                if ($nodes[$i].Current.Name -ne $ProjectName -or
+                    $nodes[$i + 1].Current.Name -notlike '*profiles*desktop*package.json') { continue }
+                for ($j = $i + 2; $j -lt [Math]::Min($i + 8, $nodes.Count); $j++) {
+                    $target = $nodes[$j]
+                    if ($target.Current.Name -eq $HookOperation -and
+                        $target.Current.ControlType -eq [Windows.Automation.ControlType]::Button) { return $target }
+                }
             }
         }
         Invoke-NamedControl $actionButton
         $null = Wait-IslandValue "AgentBro '$HookOperation' to update the Harness profile" {
             (Test-Path -LiteralPath $HarnessPluginPath -PathType Leaf) -eq ($HookOperation -eq 'Install')
         }
-        $settingsWindow.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+        Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
         return
     }
     if ($HarnessOutput) {
@@ -204,25 +219,14 @@ try {
             New-Item -ItemType File -Path (Join-Path $HarnessOutput "request-$index") | Out-Null
             $condition = [Windows.Automation.AndCondition]::new($buttonCondition,
                 [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $action))
-            $approvalButton = Wait-IslandValue "the visible '$action' Harness decision button" {
-                $target = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
-                if ($target -and -not $target.Current.IsOffscreen) { return $target }
-            }
-            Move-ToElement $approvalButton
-            Start-Sleep -Milliseconds 250
-            if ([AgentBroSmokeMouse]::ProcessAtCursor() -ne $AppProcessId) {
-                throw "The AgentBro window does not own the '$action' click point"
-            }
-            [AgentBroSmokeMouse]::Click()
+            Click-IslandAction $condition $action
             if ($LegacyHarnessDeny -and $action -eq 'Deny') {
                 $editCondition = [Windows.Automation.PropertyCondition]::new(
                     [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
                 $null = Wait-IslandValue 'the legacy rejection feedback field' {
                     $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $editCondition)
                 }
-                $approvalButton = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
-                Move-ToElement $approvalButton
-                [AgentBroSmokeMouse]::Click()
+                Click-IslandAction $condition $action
             }
             $resultPath = Join-Path $HarnessOutput "decision-$index.txt"
             $result = Wait-IslandValue "the '$action' result in the Harness approval service" {

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$AgentBroInstaller, [switch]$UseAgentBroHookInstaller)
+param([Parameter(Mandatory)][string]$AgentBroInstaller, [switch]$UseAgentBroHookInstaller, [switch]$LegacyHarnessDeny)
 
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro Harness probe $([Guid]::NewGuid().ToString('N'))"
@@ -116,8 +116,9 @@ try {
     }
     $env:AGENTBRO_HARNESS_FIXTURE_OUTPUT = $output
     $harness = Start-Process -FilePath $desktop -PassThru
+    $legacyArgs = if ($LegacyHarnessDeny) { @('-LegacyHarnessDeny') } else { @() }
     & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
-        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output -LegacyHarnessDeny
+        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output @legacyArgs
     if ($LASTEXITCODE -ne 0) { throw 'The Harness Island interaction check did not pass' }
     if ($UseAgentBroHookInstaller) {
         Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process

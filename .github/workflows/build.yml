@@ -232,7 +232,8 @@ jobs:
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           ./scripts/probe-windows-harness.ps1 -AgentBroInstaller $installer.FullName `
-              -UseAgentBroHookInstaller:($env:BUILD_ARTIFACT_RUN -ne '44777413811')
+              -UseAgentBroHookInstaller:($env:BUILD_ARTIFACT_RUN -ne '44777413811') `
+              -LegacyHarnessDeny:($env:BUILD_ARTIFACT_RUN -in @('44777413811', '44782186082'))
         env:
           BUILD_ARTIFACT_RUN: ${{ inputs.windows_artifact_run }}
 
