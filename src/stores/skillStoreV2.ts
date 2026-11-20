@@ -133,6 +133,7 @@ interface SkillV2Actions {
 }
 
 let marketplaceProgressListenerStarted = false
+let latestAgentDetailRequest = 0
 
 function ensureMarketplaceProgressListener() {
   if (marketplaceProgressListenerStarted) return
@@ -180,6 +181,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
 
   switchRuntimeEnvironment: async (id) => {
     if (get().runtimeEnvironmentId === id) return
+    latestAgentDetailRequest += 1
     set({
       runtimeEnvironmentId: id,
       overview: null,
@@ -344,32 +346,32 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     if (id && get().selectedAgentId === id && get().selectedAgentDetail && !get().agentDetailLoading) {
       return
     }
+    latestAgentDetailRequest += 1
     set({ selectedAgentId: id, selectedAgentDetail: null, agentDetailLoading: !!id })
     if (id) await get().loadAgentDetail(id)
     else set({ selectedAgentDetail: null })
   },
   loadAgentDetail: async (agentId, force = false) => {
-    const runtimeEnvironmentId = get().runtimeEnvironmentId
-    if (!force && get().selectedAgentId === agentId && get().selectedAgentDetail && !get().agentDetailLoading) {
-      return
+    const { runtimeEnvironmentId, selectedAgentId, selectedAgentDetail, agentDetailLoading } = get()
+    if (selectedAgentId !== agentId || (!force && selectedAgentDetail?.id === agentId && !agentDetailLoading)) return
+
+    const requestId = ++latestAgentDetailRequest
+    const isCurrentRequest = () => {
+      const current = get()
+      return requestId === latestAgentDetailRequest
+        && current.runtimeEnvironmentId === runtimeEnvironmentId
+        && current.selectedAgentId === agentId
     }
+
     set({ agentDetailLoading: true })
     try {
       const detail = await skillApiV2.getAgentDetail(agentId)
-      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
-      if (get().selectedAgentId === agentId) {
-        set({ selectedAgentDetail: detail })
+      if (isCurrentRequest()) {
+        set({ selectedAgentDetail: detail, agentDetailLoading: false })
       }
     } catch (e) {
-      if (get().selectedAgentId === agentId) {
-        set({ error: String(e) })
-      }
-    } finally {
-      if (
-        get().runtimeEnvironmentId === runtimeEnvironmentId
-        && get().selectedAgentId === agentId
-      ) {
-        set({ agentDetailLoading: false })
+      if (isCurrentRequest()) {
+        set({ error: String(e), agentDetailLoading: false })
       }
     }
   },
@@ -381,6 +383,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     ) {
       return false
     }
+    latestAgentDetailRequest += 1
     const overview = snapshot.overview
     set({
       selectedAgentDetail: snapshot.agentDetail,
@@ -451,7 +454,9 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       unmanagedSkillCount: Math.max(0, agent.unmanagedSkillCount - (unmanagedCounts.get(agent.id) || 0)),
     }))
 
+    latestAgentDetailRequest += 1
     set({
+      agentDetailLoading: false,
       selectedAgentDetail: {
         ...detail,
         skills: detail.skills.filter((target) => !managedIds.has(target.id)),

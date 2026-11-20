@@ -353,6 +353,55 @@ describe('skillStoreV2 Agent selection', () => {
     expect(useSkillStoreV2.getState().selectedAgentDetail?.id).toBe('codex')
     expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
   })
+
+  it('keeps the latest detail when returning to the same Agent', async () => {
+    let resolveOlder!: (detail: AgentDetail) => void
+    vi.spyOn(skillApiV2, 'getAgentDetail')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOlder = resolve }))
+      .mockResolvedValueOnce(makeAgentDetail('codex'))
+      .mockResolvedValueOnce({ ...makeAgentDetail('claude-code'), version: '2.0.0' })
+
+    const olderSelection = useSkillStoreV2.getState().selectAgent('claude-code')
+    await useSkillStoreV2.getState().selectAgent('codex')
+    await useSkillStoreV2.getState().selectAgent('claude-code')
+    resolveOlder({ ...makeAgentDetail('claude-code'), version: '1.0.0' })
+    await olderSelection
+
+    expect(useSkillStoreV2.getState().selectedAgentDetail?.version).toBe('2.0.0')
+    expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
+  })
+
+  it('leaves the selected Agent ready when an action refreshes another Agent', async () => {
+    const detail = makeAgentDetail('claude-code')
+    useSkillStoreV2.setState({ selectedAgentId: detail.id, selectedAgentDetail: detail })
+    const getAgentDetail = vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(makeAgentDetail('codex'))
+
+    await useSkillStoreV2.getState().loadAgentDetail('codex', true)
+
+    expect(getAgentDetail).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().selectedAgentDetail).toEqual(detail)
+    expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
+  })
+
+  it('keeps a published Agent snapshot when an older detail read finishes later', async () => {
+    let resolveOlder!: (detail: AgentDetail) => void
+    vi.spyOn(skillApiV2, 'getAgentDetail')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOlder = resolve }))
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'local', selectedAgentId: 'codex' })
+
+    const olderRead = useSkillStoreV2.getState().loadAgentDetail('codex', true)
+    const snapshot = {
+      agentDetail: { ...makeAgentDetail('codex'), version: '2.0.0' },
+      overview: makeOverview(),
+      unmanaged: [],
+    }
+    expect(useSkillStoreV2.getState().applyAgentSkillViewSnapshot('local', 'codex', snapshot)).toBe(true)
+    resolveOlder({ ...makeAgentDetail('codex'), version: '1.0.0' })
+    await olderRead
+
+    expect(useSkillStoreV2.getState().selectedAgentDetail).toEqual(snapshot.agentDetail)
+    expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
+  })
 })
 
 describe('skillStoreV2 overview shape', () => {
