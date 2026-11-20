@@ -226,6 +226,11 @@ jobs:
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
+      - name: Verify the official DeepSeek Harness installer and desktop CLI
+        timeout-minutes: 9
+        shell: pwsh
+        run: ./scripts/probe-windows-harness.ps1
+
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
         uses: actions/upload-artifact@v4
