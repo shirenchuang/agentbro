@@ -24,7 +24,7 @@ function listenForTauriEvent<T>(
   register: (unlisten: Unlisten) => void,
   isCancelled: () => boolean,
 ) {
-  import('@tauri-apps/api/event')
+  return import('@tauri-apps/api/event')
     .then(({ listen }) => listen<T>(eventName, handler))
     .then((unlisten) => {
       if (isCancelled()) unlisten()
@@ -510,6 +510,8 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
     let unlisten: (() => void) | undefined
     let cancelled = false
     let lastSessionSnapshot = ''
+    let sessionEventVersion = 0
+    let refreshInFlight = false
     const fullSync = mode === 'full'
     const usageRateLimitTimer = fullSync
       ? window.setInterval(refreshUsageRateLimits, USAGE_RATE_LIMIT_ACTIVE_REFRESH_MS)
@@ -544,32 +546,38 @@ export function useSessionEvents(mode: SessionSyncMode = 'full') {
       }
     }
 
-    // Load initial sessions
-    getSessions()
-      .then((sessions) => {
-        if (!cancelled) applyBackendSessions(sessions, { force: true })
-      })
-      .catch(e => console.error('[tauri] getSessions:', e))
+    const refreshSessions = async (force = false) => {
+      if (cancelled || refreshInFlight) return
+      const observedVersion = sessionEventVersion
+      refreshInFlight = true
+      try {
+        const sessions = await getSessions()
+        if (!cancelled && observedVersion === sessionEventVersion) {
+          applyBackendSessions(sessions, { force })
+        }
+      } catch (error) {
+        console.error('[tauri] getSessions:', error)
+      } finally {
+        refreshInFlight = false
+      }
+    }
 
     if (fullSync) refreshAppServerLiveFlag()
     const sessionRefreshTimer = fullSync
-      ? window.setInterval(() => {
-        getSessions()
-          .then((sessions) => {
-            if (!cancelled) applyBackendSessions(sessions)
-          })
-          .catch(e => console.error('[tauri] poll getSessions:', e))
-      }, SESSION_REFRESH_FALLBACK_MS)
+      ? window.setInterval(() => { void refreshSessions() }, SESSION_REFRESH_FALLBACK_MS)
       : undefined
 
-    listenForTauriEvent<{ sessions: BackendSession[]; suppressed?: boolean }>(
+    const listener = listenForTauriEvent<{ sessions: BackendSession[]; suppressed?: boolean }>(
       'session-update',
       (event) => {
+        if (cancelled) return
+        sessionEventVersion += 1
         applyBackendSessions(event.payload.sessions, { suppressed: event.payload.suppressed === true })
       },
       (fn) => { unlisten = fn },
       () => cancelled,
     )
+    void listener.then(() => refreshSessions(true))
 
     return () => {
       cancelled = true
