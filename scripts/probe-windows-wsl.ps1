@@ -62,15 +62,19 @@ try {
     $setup = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
     if (-not $setup.WaitForExit(90000) -or $setup.ExitCode -ne 0) { throw 'AgentBro installer failed' }
 
-    $app = Start-Process -FilePath (Join-Path $installDir 'agentbro.exe') -PassThru
-    $deadline = (Get-Date).AddSeconds(60)
-    do {
-        $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
-        if ($ready) { break }
-        if ($app.HasExited) { throw 'AgentBro exited during startup' }
-        Start-Sleep -Milliseconds 500
-    } until ((Get-Date) -ge $deadline)
-    if (-not $ready) { throw 'The installed AgentBro loopback listener never started' }
+    function Start-FixtureAgentBro {
+        $instance = Start-Process -FilePath (Join-Path $installDir 'agentbro.exe') -PassThru
+        $deadline = (Get-Date).AddSeconds(60)
+        do {
+            $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $instance.Id -ErrorAction SilentlyContinue
+            if ($ready) { return $instance }
+            if ($instance.HasExited) { throw 'AgentBro exited during startup' }
+            Start-Sleep -Milliseconds 500
+        } until ((Get-Date) -ge $deadline)
+        Stop-Process -Id $instance.Id -ErrorAction SilentlyContinue
+        throw 'The installed AgentBro loopback listener never started'
+    }
+    $app = Start-FixtureAgentBro
 
     if ($VerifyIntegration) {
         $env:WSLENV = (($env:WSLENV -split ':') | Where-Object { $_ -and $_ -notlike 'AGENTBRO_HOOK_PORT*' }) -join ':'
@@ -161,6 +165,9 @@ try {
             if (-not $request.HasExited) { Stop-Process -Id $request.Id -ErrorAction SilentlyContinue }
             $request.Dispose()
         }
+        Stop-Process -Id $app.Id
+        if (-not $app.WaitForExit(10000)) { throw 'Could not restart the AgentBro fixture' }
+        $app = Start-FixtureAgentBro
         Invoke-IslandCheck @('-WslAction', 'Uninstall')
         foreach ($name in @('.claude/settings.json', '.codex/hooks.json')) {
             $config = Read-WslFixtureConfig "/home/agentbro/$name"
