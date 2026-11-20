@@ -158,6 +158,14 @@ try {
     $nativeOwner = [AgentBroSmokeMouse]::ProcessAtCursor()
     $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
     Write-Output "Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
+    if ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and $owner.ProcessName -eq 'StartMenuExperienceHost') {
+        # The Start menu can open when the first-sign-in setup closes on a fresh Windows 11 VM.
+        Write-Output 'Closing the runner Start menu before clicking the Island.'
+        (New-Object -ComObject WScript.Shell).SendKeys('{ESC}')
+        $nativeOwner = Wait-IslandValue 'the Island to receive desktop input' {
+            if ([AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) { $AppProcessId }
+        }
+    }
     if ($nativeOwner -ne $AppProcessId) {
         throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
     }
