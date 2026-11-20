@@ -47,7 +47,7 @@ pub fn push_to_github() -> Result<SyncResult, String> {
             .map_err(|e| e.to_string())?;
     }
 
-    let meta_content = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    let meta_content = backup_metadata_json(meta)?;
     fs::write(tmp_dir.join("metadata.json"), meta_content).map_err(|e| e.to_string())?;
 
     let skills_src = agent_paths::agentbro_skills_dir();
@@ -347,8 +347,7 @@ pub fn execute_agent_sync(from: &str, to: &str) -> Result<(), String> {
 
 pub fn export_backup(path: &str) -> Result<(), String> {
     let dest = expand_user_path(path);
-    let meta = registry::load();
-    let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    let meta_json = backup_metadata_json(registry::load())?;
 
     let file = fs::File::create(&dest).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
@@ -365,6 +364,11 @@ pub fn export_backup(path: &str) -> Result<(), String> {
 
     zip.finish().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn backup_metadata_json(mut metadata: registry::Metadata) -> Result<String, String> {
+    metadata.sync = None;
+    serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())
 }
 
 pub fn import_backup(path: &str) -> Result<(), String> {
@@ -604,5 +608,53 @@ fn unique_path_name(dir: &Path, base: &str) -> String {
             return candidate;
         }
         index += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backups_preserve_skill_metadata_without_local_sync_settings() {
+        let metadata: registry::Metadata = serde_json::from_value(serde_json::json!({
+            "sources": {
+                "example-skill": {
+                    "origin": "https://github.com/example/skills",
+                    "installedVia": "island"
+                }
+            },
+            "packs": [{
+                "id": "example-pack",
+                "name": "Example Skills",
+                "description": "",
+                "skills": ["example-skill"],
+                "targetAgents": ["claude-code"]
+            }],
+            "sync": {
+                "method": "github",
+                "githubRepo": "example/sync-settings",
+                "githubToken": "fixture-credential",
+                "autoSync": false
+            }
+        }))
+        .unwrap();
+
+        let backup = backup_metadata_json(metadata.clone()).unwrap();
+        assert!(!backup.contains("fixture-credential"));
+        assert!(!backup.contains("example/sync-settings"));
+        let backup: serde_json::Value = serde_json::from_str(&backup).unwrap();
+        assert!(backup.get("sync").is_none());
+        let imported: registry::Metadata = serde_json::from_value(backup).unwrap();
+        assert_eq!(
+            imported.sources["example-skill"].origin,
+            "https://github.com/example/skills"
+        );
+        assert_eq!(imported.packs[0].skills, ["example-skill"]);
+        assert_eq!(imported.packs[0].target_agents, ["claude-code"]);
+        assert_eq!(
+            serde_json::to_value(&metadata).unwrap()["sync"]["githubToken"],
+            "fixture-credential"
+        );
     }
 }
