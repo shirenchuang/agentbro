@@ -120,6 +120,36 @@ try {
         Invoke-QwenWorkIslandCheck Processing '任务进行中'
         Set-QwenWorkFixturePhase waiting_interaction
         Invoke-QwenWorkIslandCheck Jump '请在千问办公中处理待确认事项'
+        Set-QwenWorkFixturePhase completed
+        Invoke-QwenWorkIslandCheck Completed '任务已完成'
+    } else {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class QwenWorkWindowProbe {
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    public static uint ForegroundProcess() {
+        uint processId;
+        GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+        return processId;
+    }
+}
+'@
+        $null = [QwenWorkWindowProbe]::ShowWindowAsync($window.MainWindowHandle, 6)
+        Start-Sleep -Milliseconds 300
+        if ([QwenWorkWindowProbe]::ForegroundProcess() -eq $window.Id) { throw 'QwenWork did not minimize' }
+        Start-Process -FilePath $desktop.FullName
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            $foreground = Get-Process -Id ([QwenWorkWindowProbe]::ForegroundProcess()) -ErrorAction SilentlyContinue
+            $activated = $foreground.Path -and $foreground.Path.StartsWith("$($desktop.DirectoryName)\", [StringComparison]::OrdinalIgnoreCase)
+            if ($activated) { break }
+            Start-Sleep -Milliseconds 250
+        } until ((Get-Date) -ge $deadline)
+        if (-not $activated) { throw 'The official launcher did not restore the running QwenWork window' }
+        Write-Output 'The official launcher restored the running QwenWork window to the foreground.'
     }
 } finally {
     if ($agentBro -and -not $agentBro.HasExited) { Stop-Process -Id $agentBro.Id -ErrorAction SilentlyContinue }

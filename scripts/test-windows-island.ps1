@@ -218,7 +218,11 @@ try {
             [AgentBroSmokeMouse]::ForegroundProcess() -ne $qwen.Id
         }
         $point = Wait-IslandValue 'a native click target for Jump to terminal' {
-            $jump = Find-NamedControl $island 'Jump to terminal'
+            $card = $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition) |
+                Where-Object { -not $_.Current.IsOffscreen -and $_.Current.Name.Contains($ProjectName) } |
+                Select-Object -First 1
+            if (-not $card) { return }
+            $jump = Find-NamedControl $card 'Jump to terminal'
             $candidate = [Windows.Point]::new(0, 0)
             if (-not $jump -or $jump.Current.IsOffscreen -or -not $jump.TryGetClickablePoint([ref]$candidate)) { return }
             if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$candidate.X, [int]$candidate.Y)) { return }
