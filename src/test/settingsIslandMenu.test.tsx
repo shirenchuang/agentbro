@@ -69,6 +69,7 @@ describe('settings island menu', () => {
       displayMonitor: 'auto',
       followFocus: false,
       tipsEnabled: true,
+      islandEnabled: true,
       sshHosts: [],
       analyticsEnabled: false,
       analyticsConsentPromptCompleted: true,
@@ -268,6 +269,28 @@ describe('settings island menu', () => {
     fireEvent.click(autoHideRow!.querySelector('[role="switch"]')!)
 
     await waitFor(() => expect(screen.getByText('Custom visibility')).toBeInTheDocument())
+  })
+
+  it('preserves user visibility settings when turning the island off and on', async () => {
+    const visibility = {
+      interactionMode: 'minimal' as const,
+      smartSuppression: false,
+      autoHideNoSessions: true,
+      idleCompactDwellSeconds: 17,
+      noSessionsHideDelay: 19,
+    }
+    useConfigStore.setState(visibility)
+
+    render(<SettingsApp onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText('settings.island.title'))
+    const label = await screen.findByText('Enable Island')
+    const islandToggle = label.closest('.setting-row')!.querySelector('[role="switch"]')!
+
+    fireEvent.click(islandToggle)
+    expect(islandToggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(islandToggle)
+    expect(islandToggle).toHaveAttribute('aria-checked', 'true')
+    expect(useConfigStore.getState()).toMatchObject(visibility)
   })
 
   it('shows the primary display label instead of a stale raw display id', async () => {

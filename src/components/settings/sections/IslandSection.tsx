@@ -650,12 +650,7 @@ function OverviewTab() {
 
       <SettingGroup>
         <SettingRow label={t('settings.islandEnabled', { defaultValue: 'Enable Island' })} description={t('settings.islandEnabledDesc', { defaultValue: 'Show AgentBro status, approvals, questions, and completions in the floating island.' })}>
-          <Toggle checked={config.islandEnabled} onChange={(v) => {
-            config.updateConfig('islandEnabled', v)
-            if (v) {
-              applyInteractionPreset(PERSISTENT_MONITOR_PRESET)
-            }
-          }} />
+          <Toggle checked={config.islandEnabled} onChange={(v) => config.updateConfig('islandEnabled', v)} />
         </SettingRow>
         <SettingRow label={t('settings.islandMonitorSubagents', { defaultValue: 'Monitor subagents' })} description={t('settings.islandMonitorSubagentsDesc', { defaultValue: 'Surface subagent activity and completion history in the island.' })}>
           <Toggle checked={config.islandMonitorSubagents} onChange={(v) => config.updateConfig('islandMonitorSubagents', v)} />
