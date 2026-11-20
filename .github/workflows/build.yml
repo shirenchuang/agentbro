@@ -6,12 +6,24 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      windows_artifact_run:
+        description: Existing Build run ID for an installer-only smoke test
+        type: string
+      windows_smoke_runner:
+        description: Windows image for the installer smoke test
+        type: choice
+        default: windows-latest
+        options:
+          - windows-latest
+          - windows-2022
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ !inputs.windows_artifact_run }}
     name: Build macOS (${{ matrix.arch }})
     runs-on: macos-15
     strategy:
@@ -72,6 +84,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
+    if: ${{ !inputs.windows_artifact_run }}
     name: Build Windows installers
     runs-on: windows-latest
 
@@ -111,6 +124,15 @@ jobs:
       - name: Build Tauri installers
         run: pnpm tauri:build:windows
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-installers
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
       - name: Test Windows Skills, Claude Hooks, and MCP
         shell: pwsh
         run: |
@@ -136,6 +158,12 @@ jobs:
           & $testExecutable source_update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable agents::executable::tests::windows_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -148,19 +176,14 @@ jobs:
           & $testExecutable --exact skills::mcp_management::tests::windows_stdio_mcp_checks_run_without_a_console
           exit $LASTEXITCODE
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentbro-windows-installers
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-
   smoke-windows:
     name: Smoke test installed Windows app
-    runs-on: windows-latest
+    if: ${{ !cancelled() && (inputs.windows_artifact_run || needs.build-windows.result == 'success') }}
+    runs-on: ${{ inputs.windows_smoke_runner || 'windows-latest' }}
     needs: build-windows
+    permissions:
+      actions: read
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -169,6 +192,8 @@ jobs:
         with:
           name: agentbro-windows-installers
           path: windows-installers
+          github-token: ${{ inputs.windows_artifact_run && github.token || '' }}
+          run-id: ${{ inputs.windows_artifact_run || github.run_id }}
 
       - name: Install and exercise the Windows app
         shell: pwsh
