@@ -3,6 +3,7 @@ use super::{
     GitHubSkillPreview, InstallMode, McpServerConfig, McpValidationResult, PluginInstallRequest,
     TargetConfig,
 };
+use crate::platform::process::background_command;
 use base64::{engine::general_purpose, Engine as _};
 use std::collections::HashSet;
 use std::fs;
@@ -344,9 +345,7 @@ pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
     if !git_dir.is_dir() {
         return None;
     }
-    let mut command = crate::platform::process::background_command(
-        crate::agents::executable::command_path("git"),
-    );
+    let mut command = background_command(crate::agents::executable::command_path("git"));
     command
         .arg("--git-dir")
         .arg(git_dir)
@@ -399,7 +398,7 @@ fn download_markdown_skill(source: &str) -> Result<(PathBuf, Option<TempInstallD
     fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
     let dest = skill_dir.join("SKILL.md");
 
-    let output = Command::new(crate::agents::executable::command_path("curl"))
+    let output = background_command(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args(None))
         .arg("-L")
         .arg("--fail")
@@ -828,7 +827,7 @@ fn curl_text_with_timeout(
     max_time_secs: u64,
     github_token: Option<&str>,
 ) -> Result<String, String> {
-    let output = Command::new(crate::agents::executable::command_path("curl"))
+    let output = background_command(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args(github_token))
         .arg("-L")
         .arg("--fail")
@@ -940,7 +939,7 @@ fn clone_repo_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = Command::new(crate::agents::executable::command_path("git"));
+        let mut attempt = background_command(crate::agents::executable::command_path("git"));
         attempt
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "Never")
@@ -1035,7 +1034,7 @@ fn clone_repo_skills_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = Command::new(crate::agents::executable::command_path("git"));
+        let mut attempt = background_command(crate::agents::executable::command_path("git"));
         attempt
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "Never")
@@ -1282,7 +1281,7 @@ fn run_git_with_cancel(
     stdout_file: Option<&Path>,
     operation: &str,
 ) -> Result<Output, String> {
-    let mut command = Command::new(crate::agents::executable::command_path("git"));
+    let mut command = background_command(crate::agents::executable::command_path("git"));
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
@@ -1372,7 +1371,7 @@ fn download_zip(source: &str) -> Result<(PathBuf, Option<TempInstallDir>), Strin
     let extract_dir = root.path().join("unzipped");
     fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
-    let output = Command::new(crate::agents::executable::command_path("curl"))
+    let output = background_command(crate::agents::executable::command_path("curl"))
         .args(authenticated_curl_args(None))
         .arg("-L")
         .arg("--fail")

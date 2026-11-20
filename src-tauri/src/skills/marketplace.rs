@@ -1,12 +1,12 @@
 use super::{
     registry, InstallMode, MarketplaceItem, MarketplaceMcpConfig, MarketplaceSource, TargetConfig,
 };
+use crate::platform::process::background_command;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -535,7 +535,7 @@ fn fetch_skills_sh_search(query: &str, limit: usize) -> Result<Vec<SkillsShSkill
         query
     };
     let limit = limit.clamp(1, 300).to_string();
-    let output = Command::new(crate::agents::executable::command_path("curl"))
+    let output = background_command(crate::agents::executable::command_path("curl"))
         .args([
             "-L",
             "--fail",
@@ -932,7 +932,7 @@ fn read_manifest(url: &str) -> Result<String, String> {
         return fs::read_to_string(expanded).map_err(|e| e.to_string());
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        let output = Command::new(crate::agents::executable::command_path("curl"))
+        let output = background_command(crate::agents::executable::command_path("curl"))
             .args(["-L", "--fail", url])
             .output()
             .map_err(|e| format!("Failed to run curl: {e}"))?;

@@ -1,9 +1,9 @@
 use super::{agent_paths, installer, registry, scanner};
 use super::{ConflictResolution, InstallMode, SkillType, SyncPreview, SyncResult, TargetConfig};
+use crate::platform::process::background_command;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub fn push_to_github() -> Result<SyncResult, String> {
     let meta = registry::load();
@@ -22,7 +22,7 @@ pub fn push_to_github() -> Result<SyncResult, String> {
     let _ = fs::remove_dir_all(&tmp_dir);
 
     let repo_url = format!("https://{}@github.com/{}.git", token, repo);
-    let clone_result = Command::new(crate::agents::executable::command_path("git"))
+    let clone_result = background_command(crate::agents::executable::command_path("git"))
         .args([
             "clone",
             "--depth",
@@ -35,12 +35,12 @@ pub fn push_to_github() -> Result<SyncResult, String> {
 
     if !clone_result.status.success() {
         fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-        Command::new(crate::agents::executable::command_path("git"))
+        background_command(crate::agents::executable::command_path("git"))
             .args(["init"])
             .current_dir(&tmp_dir)
             .output()
             .map_err(|e| e.to_string())?;
-        Command::new(crate::agents::executable::command_path("git"))
+        background_command(crate::agents::executable::command_path("git"))
             .args(["remote", "add", "origin", &repo_url])
             .current_dir(&tmp_dir)
             .output()
@@ -56,18 +56,18 @@ pub fn push_to_github() -> Result<SyncResult, String> {
         installer::copy_recursive_pub(&skills_src, &skills_dest)?;
     }
 
-    Command::new(crate::agents::executable::command_path("git"))
+    background_command(crate::agents::executable::command_path("git"))
         .args(["add", "."])
         .current_dir(&tmp_dir)
         .output()
         .map_err(|e| e.to_string())?;
-    Command::new(crate::agents::executable::command_path("git"))
+    background_command(crate::agents::executable::command_path("git"))
         .args(["commit", "-m", "AgentBro sync"])
         .current_dir(&tmp_dir)
         .output()
         .map_err(|e| e.to_string())?;
     let branch = detect_default_branch(&tmp_dir);
-    let push = Command::new(crate::agents::executable::command_path("git"))
+    let push = background_command(crate::agents::executable::command_path("git"))
         .args(["push", "-u", "origin", &branch])
         .current_dir(&tmp_dir)
         .output()
@@ -114,7 +114,7 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
     let _ = fs::remove_dir_all(&tmp_dir);
 
     let repo_url = format!("https://{}@github.com/{}.git", token, repo);
-    let clone = Command::new(crate::agents::executable::command_path("git"))
+    let clone = background_command(crate::agents::executable::command_path("git"))
         .args([
             "clone",
             "--depth",
@@ -468,7 +468,7 @@ fn hash_path(root: &Path, path: &Path, hasher: &mut impl Hasher) -> Result<(), S
 }
 
 fn detect_default_branch(repo_dir: &std::path::Path) -> String {
-    let output = Command::new(crate::agents::executable::command_path("git"))
+    let output = background_command(crate::agents::executable::command_path("git"))
         .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
         .current_dir(repo_dir)
         .output();

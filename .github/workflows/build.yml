@@ -111,7 +111,7 @@ jobs:
       - name: Build Tauri installers
         run: pnpm tauri:build:windows
 
-      - name: Test Windows Skill and Claude Hook paths
+      - name: Test Windows Skills, Claude Hooks, and MCP
         shell: pwsh
         run: |
           $testExecutable = cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
@@ -140,6 +140,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --ignored --exact agents::profiles::tests::windows_claude_hook_keeps_paths_through_git_bash
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact skills::mcp_management::tests::windows_stdio_mcp_checks_run_without_a_console
           exit $LASTEXITCODE
 
       - name: Upload artifact
