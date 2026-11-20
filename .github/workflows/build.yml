@@ -244,6 +244,17 @@ jobs:
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
+      - name: Inspect the official WorkBuddy installer
+        shell: pwsh
+        timeout-minutes: 14
+        env:
+          WORKBUDDY_PROBE_EDITION: ${{ inputs.workbuddy_probe_edition }}
+          BUILD_ARTIFACT_RUN: ${{ inputs.windows_artifact_run }}
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          $agentBroPath = if ($env:BUILD_ARTIFACT_RUN -ne '44796679660') { $installer.FullName }
+          ./scripts/probe-workbuddy-windows.ps1 -Edition $env:WORKBUDDY_PROBE_EDITION -AgentBroInstaller $agentBroPath
+
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
         uses: actions/upload-artifact@v4
@@ -251,10 +262,3 @@ jobs:
           name: agentbro-windows-desktop-failure
           path: ${{ runner.temp }}/agentbro-island-failure.png
           if-no-files-found: ignore
-
-      - name: Inspect the official WorkBuddy installer
-        shell: pwsh
-        timeout-minutes: 11
-        env:
-          WORKBUDDY_PROBE_EDITION: ${{ inputs.workbuddy_probe_edition }}
-        run: ./scripts/probe-workbuddy-windows.ps1 -Edition $env:WORKBUDDY_PROBE_EDITION
