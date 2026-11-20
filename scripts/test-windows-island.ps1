@@ -207,7 +207,8 @@ try {
             $phase = Find-NamedControl $island $ProjectName
             if ($phase -and -not $phase.Current.IsOffscreen) { return $phase }
         }
-        Write-Output "Windows Island showed QwenWork task phase: $ProjectName"
+        $phaseLabel = if ($QwenWorkMode -eq 'Jump') { 'Waiting for confirmation' } else { $QwenWorkMode }
+        Write-Output "Windows Island showed QwenWork task phase: $phaseLabel"
         if ($QwenWorkMode -ne 'Jump') { return }
         if ((Find-NamedControl $island 'Deny') -or (Find-NamedControl $island 'Allow Once')) {
             throw 'QwenWork showed an inline approval action'
@@ -219,7 +220,7 @@ try {
         }
         $point = Wait-IslandValue 'a native click target for Jump to terminal' {
             $card = $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition) |
-                Where-Object { -not $_.Current.IsOffscreen -and $_.Current.Name.Contains($ProjectName) } |
+                Where-Object { -not $_.Current.IsOffscreen -and ([string]$_.Current.Name).Contains($ProjectName) } |
                 Select-Object -First 1
             if (-not $card) { return }
             $jump = Find-NamedControl $card 'Jump to terminal'
@@ -242,7 +243,8 @@ try {
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
             $state = $button.Current
-            if (-not $state.IsOffscreen -and $state.Name.Contains($ProjectName) -and $state.Name.Contains('smoke.txt')) {
+            $name = [string]$state.Name
+            if (-not $state.IsOffscreen -and $name.Contains($ProjectName) -and $name.Contains('smoke.txt')) {
                 return $button
             }
         }
