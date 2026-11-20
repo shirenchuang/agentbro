@@ -141,7 +141,8 @@ try {
     Start-Sleep -Milliseconds 250
     $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
     $nativeOwner = [AgentBroSmokeMouse]::ProcessAtCursor()
-    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $nativeOwner. AgentBro: $AppProcessId."
+    $ownerName = (Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue).ProcessName
+    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $ownerName ($nativeOwner). AgentBro: $AppProcessId."
     [AgentBroSmokeMouse]::Click()
 
     $titleName = [Windows.Automation.PropertyCondition]::new(

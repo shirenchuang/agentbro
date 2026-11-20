@@ -101,6 +101,35 @@ function Send-ClaudeToolEvent([string]$Executable, [string[]]$Arguments, [hashta
     }
 }
 
+function Test-InstalledIsland([string]$ProjectName) {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
+    $scriptPath = Join-Path $PSScriptRoot 'test-windows-island.ps1'
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', $scriptPath,
+            '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
+        $start.ArgumentList.Add($argument)
+    }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $tester = [System.Diagnostics.Process]::Start($start)
+    try {
+        $output = $tester.StandardOutput.ReadToEndAsync()
+        $errors = $tester.StandardError.ReadToEndAsync()
+        if (-not $tester.WaitForExit(120000)) {
+            throw 'The installed Island desktop interaction check timed out'
+        }
+        Write-Output ($output.GetAwaiter().GetResult())
+        if ($tester.ExitCode -ne 0) {
+            throw "The installed Island did not pass the desktop interaction check: $($errors.GetAwaiter().GetResult())"
+        }
+    } finally {
+        if (-not $tester.HasExited) { Stop-Process -Id $tester.Id -ErrorAction SilentlyContinue }
+        $tester.Dispose()
+    }
+}
+
 try {
     Wait-AppCondition 'the installed app to listen on its Hook port' {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
@@ -158,10 +187,7 @@ try {
         $event.tool_input.file_path = Join-Path $event.cwd 'smoke.txt'
         $null = New-Item -ItemType Directory -Path $event.cwd
         Send-ClaudeToolEvent $bridgePath @('--source', 'claude-code') $event
-        $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File (Join-Path $PSScriptRoot 'test-windows-island.ps1') `
-            -AppProcessId $app.Id -ProjectName $projectName
-        if ($LASTEXITCODE -ne 0) { throw 'The installed Island did not pass the desktop interaction check' }
+        Test-InstalledIsland $projectName
     }
 } catch {
     Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"
