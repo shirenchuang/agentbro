@@ -1,5 +1,6 @@
 use crate::agents::{executable, AdapterStatus, AgentAdapter};
 use crate::commands::AppState;
+use crate::platform::process::background_tokio_command;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -524,7 +525,7 @@ async fn app_installed_version(app_path: &str) -> Option<String> {
 async fn npm_installed_version(package: &str) -> Option<String> {
     let output = timeout(
         Duration::from_secs(4),
-        Command::new(command_name("npm"))
+        background_tokio_command(command_name("npm"))
             .args(["list", "-g", package, "--depth=0", "--json"])
             .output(),
     )
@@ -543,7 +544,7 @@ async fn npm_installed_version(package: &str) -> Option<String> {
 async fn npm_latest_version(package: &str) -> Option<String> {
     let output = timeout(
         Duration::from_secs(5),
-        Command::new(command_name("npm"))
+        background_tokio_command(command_name("npm"))
             .args(["view", package, "version", "--silent"])
             .output(),
     )
@@ -781,7 +782,7 @@ async fn command_output_contains(binary: &str, args: &[&str], needle: &str) -> b
     let Some(path) = executable::find_binary(binary) else {
         return false;
     };
-    Command::new(path)
+    background_tokio_command(path)
         .args(args)
         .output()
         .await
@@ -794,7 +795,7 @@ async fn command_succeeds(binary: &str, args: &[&str]) -> bool {
     let Some(path) = executable::find_binary(binary) else {
         return false;
     };
-    Command::new(path)
+    background_tokio_command(path)
         .args(args)
         .output()
         .await
