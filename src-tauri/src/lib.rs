@@ -53,6 +53,7 @@ struct NotchDragState {
     min_center: f64,
     max_center: f64,
     last_window_x: f64,
+    monitor_scale: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4447,8 +4448,25 @@ fn position_notch_window(
     horizontal_offset: f64,
 ) -> f64 {
     let (x, y, anchor_offset_x) = notch_window_geometry(monitor, width, horizontal_offset);
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+    let _ = window.set_position(notch_window_position(x, y, monitor.scale_factor()));
     anchor_offset_x
+}
+
+fn notch_window_position(x: f64, y: f64, _monitor_scale: f64) -> tauri::Position {
+    #[cfg(target_os = "windows")]
+    {
+        tauri::Position::Physical(notch_physical_position(x, y, _monitor_scale))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        tauri::Position::Logical(tauri::LogicalPosition::new(x, y))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn notch_physical_position(x: f64, y: f64, monitor_scale: f64) -> tauri::PhysicalPosition<i32> {
+    tauri::LogicalPosition::new(x, y).to_physical(monitor_scale)
 }
 
 fn notch_window_geometry(
@@ -4481,6 +4499,7 @@ fn set_notch_window_frame(
     top_y: f64,
     width: f64,
     height: f64,
+    _monitor_scale: f64,
 ) -> Result<(), String> {
     use objc2_app_kit::NSWindow;
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -4541,12 +4560,39 @@ fn set_notch_window_frame(
     top_y: f64,
     width: f64,
     height: f64,
+    monitor_scale: f64,
 ) -> Result<(), String> {
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        x, top_y,
-    )));
+    let size = tauri::LogicalSize::new(width, height);
+    let position = notch_window_position(x, top_y, monitor_scale);
+    if cfg!(target_os = "windows") {
+        let _ = window.set_position(position);
+        let _ = window.set_size(tauri::Size::Physical(size.to_physical(monitor_scale)));
+    } else {
+        let _ = window.set_size(tauri::Size::Logical(size));
+        let _ = window.set_position(position);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod notch_position_tests {
+    use super::notch_physical_position;
+    use tauri::PhysicalPosition;
+
+    #[test]
+    fn mixed_dpi_notch_coordinates_use_the_target_display_scale() {
+        let right_monitor_start = 1920.0 / 1.5;
+        let left_monitor_start = -2560.0 / 1.5;
+        let center_window = (2560.0 / 1.5 - 420.0) / 2.0;
+        assert_eq!(
+            notch_physical_position(right_monitor_start + center_window, 0.0, 1.5),
+            PhysicalPosition::new(2885, 0)
+        );
+        assert_eq!(
+            notch_physical_position(left_monitor_start + center_window, -150.0 / 1.5, 1.5),
+            PhysicalPosition::new(-1595, -150)
+        );
+    }
 }
 
 const PET_DEFAULT_TRAILING_INSET: f64 = 24.0;
@@ -5140,11 +5186,14 @@ async fn start_notch_drag(
         (window_x + width / 2.0) - base_center
     };
 
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        window_x.round(),
-        y,
-    )));
+    let monitor_scale = monitor.scale_factor();
+    #[cfg(target_os = "windows")]
+    set_notch_window_frame(&app, &window, window_x, y, width, height, monitor_scale)?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+        let _ = window.set_position(notch_window_position(window_x.round(), y, monitor_scale));
+    }
     configure_notch_window_for_spaces(&app);
 
     {
@@ -5161,6 +5210,7 @@ async fn start_notch_drag(
             min_center,
             max_center,
             last_window_x: window_x.round(),
+            monitor_scale,
         });
     }
 
@@ -5216,7 +5266,13 @@ fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
         let Some(state) = drag.as_mut() else {
             return Ok(false);
         };
-        let desired_offset = state.start_offset + cursor_x - state.start_x;
+        let cursor_delta = cursor_x - state.start_x;
+        let cursor_delta = if cfg!(target_os = "windows") {
+            cursor_delta / state.monitor_scale
+        } else {
+            cursor_delta
+        };
+        let desired_offset = state.start_offset + cursor_delta;
         let next_offset = if state.min_center > state.max_center {
             0.0
         } else {
@@ -5229,13 +5285,10 @@ fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
         }
         state.current_offset = next_offset;
         state.last_window_x = window_x;
-        (window_x, state.y)
+        notch_window_position(window_x, state.y, state.monitor_scale)
     };
 
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-        next_position.0,
-        next_position.1,
-    )));
+    let _ = window.set_position(next_position);
     Ok(true)
 }
 
@@ -5526,7 +5579,7 @@ async fn resize_notch(
             // on the dedicated "pet" window.
             let (x, y, anchor_offset_x) =
                 notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
-            set_notch_window_frame(&app, &window, x, y, width, height)?;
+            set_notch_window_frame(&app, &window, x, y, width, height, monitor.scale_factor())?;
             return Ok(ResizeNotchResult { anchor_offset_x });
         }
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
