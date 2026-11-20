@@ -141,8 +141,11 @@ try {
     Start-Sleep -Milliseconds 250
     $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
     $nativeOwner = [AgentBroSmokeMouse]::ProcessAtCursor()
-    $ownerName = (Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue).ProcessName
-    Write-Output "Clicking Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $ownerName ($nativeOwner). AgentBro: $AppProcessId."
+    $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
+    Write-Output "Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
+    if ($nativeOwner -ne $AppProcessId) {
+        throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
+    }
     [AgentBroSmokeMouse]::Click()
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
