@@ -41,6 +41,21 @@ if ($bundledBridges.Count -eq 0) {
     throw 'The installed package is missing the bridge resource'
 }
 
+$legacyCommand = "$bridgePath --source claude-code"
+$userCommand = 'echo user-hook'
+$fixtureSettings = @{
+    hooks = @{
+        PreToolUse = @(@{
+            matcher = 'Read'
+            hooks = @(
+                @{ type = 'command'; command = $legacyCommand },
+                @{ type = 'command'; command = $userCommand }
+            )
+        })
+    }
+}
+$fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding utf8
+
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru
 $bridge = $null
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
@@ -62,12 +77,36 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     Wait-AppCondition 'the bridge and Claude Hook configuration to be deployed' {
-        (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and (Test-Path -LiteralPath $settingsPath -PathType Leaf)
+        (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and
+            (Test-Path -LiteralPath $logPath -PathType Leaf) -and
+            (Select-String -LiteralPath $logPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
     }
     $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
     $bundledHashes = Get-FileHash -LiteralPath $bundledBridges.FullName
     if ($deployedHash -notin $bundledHashes.Hash) {
         throw 'The deployed bridge does not match any executable bundled by the installer'
+    }
+
+    $hookGroups = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).hooks.PreToolUse
+    $bridgeHooks = @($hookGroups | ForEach-Object { $_.hooks } | Where-Object {
+        $_.type -eq 'command' -and $_.command -like '*agentbro-bridge.exe*'
+    })
+    if ($bridgeHooks.Count -ne 1 -or $bridgeHooks[0].command -eq $legacyCommand) {
+        throw 'The installed app did not replace the legacy Claude Hook command'
+    }
+    $userHooks = @($hookGroups | Where-Object { $_.matcher -eq 'Read' } | ForEach-Object { $_.hooks } | Where-Object {
+        $_.type -eq 'command' -and $_.command -eq $userCommand
+    })
+    if ($userHooks.Count -ne 1) {
+        throw 'The installed app did not preserve the user Hook and its matcher'
+    }
+
+    $bashPath = $env:CLAUDE_CODE_GIT_BASH_PATH
+    if (-not $bashPath) {
+        $bashPath = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+    }
+    if (-not (Test-Path -LiteralPath $bashPath -PathType Leaf)) {
+        throw "Git Bash was not found at $bashPath"
     }
 
     $sessionId = "windows-installer-smoke-$PID"
@@ -79,21 +118,23 @@ try {
         tool_input = @{ file_path = (Join-Path $stage 'smoke.txt') }
     } | ConvertTo-Json -Compress
 
-    $start = [System.Diagnostics.ProcessStartInfo]::new($bridgePath, '--source claude-code')
+    $start = [System.Diagnostics.ProcessStartInfo]::new($bashPath)
+    $start.ArgumentList.Add('-c')
+    $start.ArgumentList.Add($bridgeHooks[0].command)
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $bridge = [System.Diagnostics.Process]::Start($start)
     $bridge.StandardInput.WriteLine($event)
     $bridge.StandardInput.Close()
     if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
-        throw 'The installed bridge failed to send the test event'
+        throw 'The configured Claude Hook failed when run through Git Bash'
     }
 
     Wait-AppCondition 'AgentBro to receive the bridge tool event' {
         (Test-Path -LiteralPath $logPath -PathType Leaf) -and
             (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$sessionId tool=Read" -Quiet)
     }
-    Write-Output 'Windows installer, app startup, Hook deployment, and bridge delivery passed.'
+    Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
 } catch {
     if (Test-Path -LiteralPath $logPath -PathType Leaf) {
         Get-Content -LiteralPath $logPath -Tail 30
