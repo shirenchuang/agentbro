@@ -279,6 +279,31 @@ describe('McpManagementTab', () => {
     expect(await screen.findByText('还没有 MCP 服务器')).toBeInTheDocument()
   })
 
+  it('waits for the rescanned config revision before changing an MCP server', async () => {
+    let finishScan!: (result: McpInventory) => void
+    const pendingScan = new Promise<McpInventory>((resolve) => { finishScan = resolve })
+    vi.spyOn(skillApiV2, 'listMcpInventory')
+      .mockResolvedValueOnce(inventory())
+      .mockReturnValueOnce(pendingScan)
+    const toggle = vi.spyOn(skillApiV2, 'setMcpServerEnabled').mockResolvedValue(inventory())
+
+    render(<McpManagementTab detail={detail} />)
+    fireEvent.click(await screen.findByRole('button', { name: '重新扫描' }))
+    const serverSwitch = screen.getByRole('switch', { name: '启用或停用 context7' })
+    fireEvent.click(serverSwitch)
+
+    expect(toggle).not.toHaveBeenCalled()
+    expect(serverSwitch).toBeDisabled()
+    for (const name of ['新增 MCP', '编辑', '删除']) {
+      expect(screen.getByRole('button', { name })).toBeDisabled()
+    }
+
+    finishScan({ ...inventory(), revision: 'sha256:rescanned' })
+    await waitFor(() => expect(serverSwitch).toBeEnabled())
+    fireEvent.click(serverSwitch)
+    expect(toggle).toHaveBeenCalledExactlyOnceWith('codex', 'context7', 'sha256:rescanned', false)
+  })
+
   it('renders resource, prompt, and structured log discovery without invoking tools', async () => {
     vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
     const inspect = vi.spyOn(skillApiV2, 'inspectMcpServer').mockImplementation(

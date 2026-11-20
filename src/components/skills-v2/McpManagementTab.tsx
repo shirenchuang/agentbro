@@ -65,6 +65,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
 
   const enabledCount = inventory.servers.filter((server) => server.enabled).length
   const invalidCount = inventory.servers.filter((server) => !server.valid).length
+  const actionsDisabled = loading || busyAction !== null
 
   const startAdd = () => {
     setEditorError(null)
@@ -185,11 +186,11 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
           <McpStat value={invalidCount} label={t('skills.mcpManagement.invalidCount')} tone={invalidCount ? 'warn' : 'muted'} />
         </div>
         <div className="sm2__btn-row sm2__mcp-toolbar-actions">
-          <button className="sm2__btn" type="button" disabled={loading || Boolean(busyAction)} onClick={() => void load()}>
+          <button className="sm2__btn" type="button" disabled={actionsDisabled || editor !== null || deleteTarget !== null} onClick={() => void load()}>
             {loading ? t('skills.mcpManagement.scanning') : t('skills.mcpManagement.rescan')}
           </button>
           {inventory.capabilities.editable && (
-            <button className="sm2__btn sm2__btn--primary" type="button" disabled={Boolean(busyAction)} onClick={startAdd}>
+            <button className="sm2__btn sm2__btn--primary" type="button" disabled={actionsDisabled} onClick={startAdd}>
               {t('skills.mcpManagement.add')}
             </button>
           )}
@@ -215,7 +216,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
           <strong>{t('skills.mcpManagement.emptyTitle')}</strong>
           <span>{t('skills.mcpManagement.emptyDescription')}</span>
           {inventory.capabilities.editable && (
-            <button className="sm2__btn sm2__btn--primary" type="button" onClick={startAdd}>
+            <button className="sm2__btn sm2__btn--primary" type="button" disabled={actionsDisabled} onClick={startAdd}>
               {t('skills.mcpManagement.addFirst')}
             </button>
           )}
@@ -228,7 +229,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
               server={server}
               result={inspectionResults[server.name]}
               toggleBusy={busyAction === `toggle:${server.name}`}
-              actionsDisabled={Boolean(busyAction)}
+              actionsDisabled={actionsDisabled}
               onToggle={() => void toggle(server)}
               onInspect={() => setInspectorTarget(server)}
               onEdit={() => startEdit(server)}
