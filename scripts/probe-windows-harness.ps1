@@ -1,6 +1,31 @@
 param([Parameter(Mandatory)][string]$AgentBroInstaller, [switch]$UseAgentBroHookInstaller, [switch]$LegacyHarnessDeny)
 
 $ErrorActionPreference = 'Stop'
+
+function Invoke-HarnessIslandTest([string[]]$TestArguments) {
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', "$PSScriptRoot/test-windows-island.ps1",
+            '-AppProcessId', [string]$agentBro.Id) + $TestArguments) {
+        $start.ArgumentList.Add($argument)
+    }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $tester = [System.Diagnostics.Process]::Start($start)
+    try {
+        $stdout = $tester.StandardOutput.ReadToEndAsync()
+        $stderr = $tester.StandardError.ReadToEndAsync()
+        if (-not $tester.WaitForExit(120000)) { throw 'The Harness Island check timed out' }
+        Write-Output ($stdout.GetAwaiter().GetResult())
+        if ($tester.ExitCode -ne 0) { throw "Harness Island check exited $($tester.ExitCode): $($stderr.GetAwaiter().GetResult())" }
+    } finally {
+        if (-not $tester.HasExited) { Stop-Process -Id $tester.Id -ErrorAction SilentlyContinue }
+        $tester.Dispose()
+    }
+}
+
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro Harness probe $([Guid]::NewGuid().ToString('N'))"
 $null = New-Item -ItemType Directory -Path $stage
 $env:DSH_HOME = Join-Path $stage 'Harness profile'
@@ -105,26 +130,20 @@ try {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     if (-not $ready) { throw 'AgentBro Hook port was unavailable' }
-    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if ($UseAgentBroHookInstaller) {
-        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
-            -AppProcessId $agentBro.Id -ProjectName 'DeepSeek Harness' -HookOperation Install -HarnessPluginPath $installed
-        if ($LASTEXITCODE -ne 0) { throw 'AgentBro could not install the deepseek-harness Hook' }
+        Invoke-HarnessIslandTest @('-ProjectName', 'DeepSeek Harness', '-HookOperation', 'Install', '-HarnessPluginPath', $installed)
         $bridgeManifest = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installed) 'package.json') -Raw | ConvertFrom-Json
         if ($bridgeManifest.agentbroHookPort -ne $port) { throw 'AgentBro installed an incorrect Hook port' }
         Write-Output "AgentBro discovered the desktop installation and installed its Harness plugin on Hook port $port."
     }
     $env:AGENTBRO_HARNESS_FIXTURE_OUTPUT = $output
     $harness = Start-Process -FilePath $desktop -PassThru
-    $legacyArgs = if ($LegacyHarnessDeny) { @('-LegacyHarnessDeny') } else { @() }
-    & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
-        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output @legacyArgs
-    if ($LASTEXITCODE -ne 0) { throw 'The Harness Island interaction check did not pass' }
+    $eventArgs = @('-ProjectName', 'AgentBro Harness fixture', '-HarnessOutput', $output)
+    if ($LegacyHarnessDeny) { $eventArgs += '-LegacyHarnessDeny' }
+    Invoke-HarnessIslandTest $eventArgs
     if ($UseAgentBroHookInstaller) {
         Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process
-        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
-            -AppProcessId $agentBro.Id -ProjectName 'DeepSeek Harness' -HookOperation Uninstall -HarnessPluginPath $installed
-        if ($LASTEXITCODE -ne 0) { throw 'AgentBro could not uninstall the deepseek-harness Hook' }
+        Invoke-HarnessIslandTest @('-ProjectName', 'DeepSeek Harness', '-HookOperation', 'Uninstall', '-HarnessPluginPath', $installed)
         Write-Output 'AgentBro removed its Hook from the official Harness desktop profile.'
     }
 } finally {
