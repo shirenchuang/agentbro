@@ -1,7 +1,7 @@
 /* Hover List — Flat session list sorted by priority */
 import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DiffContent, OverlayItem, PermissionRequest, SessionNotice, SessionState, SubagentInfo, TaskInfo } from '../../types/agent'
@@ -1217,6 +1217,7 @@ function SessionCard({
   activeOverlay?: OverlayItem | null
 }) {
   const { t } = useTranslation()
+  const isPresent = useIsPresent()
   const badge = getAgentBadge(session)
   const agentName = getAgentDisplayName(session)
   const appLabel = getSessionAppLabel(session)
@@ -1284,6 +1285,8 @@ function SessionCard({
   return (
     <motion.div
       key={session.id}
+      inert={!isPresent}
+      aria-hidden={!isPresent || undefined}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
