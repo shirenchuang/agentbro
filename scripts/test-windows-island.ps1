@@ -75,9 +75,11 @@ function Find-VisibleIsland {
     $regionName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, 'AgentBro')
     foreach ($window in Get-IslandWindows) {
-        $region = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $regionName)
-        if ($region -and -not $region.Current.IsOffscreen -and -not $region.Current.BoundingRectangle.IsEmpty) {
-            return $region
+        foreach ($region in $window.FindAll([Windows.Automation.TreeScope]::Descendants, $regionName)) {
+            $state = $region.Current
+            if ($state.LocalizedControlType -eq 'region' -and -not $state.IsOffscreen -and -not $state.BoundingRectangle.IsEmpty) {
+                return $region
+            }
         }
     }
 }
@@ -115,7 +117,7 @@ try {
     $titleName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
     $backName = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Back')
+        [Windows.Automation.AutomationElement]::NameProperty, 'Back to sessions')
     $backButtonCondition = [Windows.Automation.AndCondition]::new($backName, $buttonCondition)
     $null = Wait-IslandValue 'the clicked session in the detail view' {
         $title = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $titleName)
