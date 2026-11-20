@@ -1155,6 +1155,8 @@
       "packNamed": "Pack: {{name}}"
     },
     "agentManagement": {
+      "sidebarSearch": "Search Agents",
+      "sidebarSearchEmpty": "No matching Agents",
       "scanComplete": "Scan complete: {{managed}} managed, {{unmanaged}} unmanaged",
       "scanCompleteShared": "Scan complete: this Agent has {{managed}} managed and {{unmanaged}} unmanaged; the .agents shared directory has {{sharedManaged}} managed and {{sharedUnmanaged}} unmanaged",
       "scanCompleteSharedReadOnly": "Scan complete: this Agent has {{managed}} managed, {{unmanaged}} unmanaged, and {{readOnly}} built-in read-only; the .agents shared directory has {{sharedManaged}} managed, {{sharedUnmanaged}} unmanaged, and {{sharedReadOnly}} read-only",
