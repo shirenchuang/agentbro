@@ -3235,6 +3235,7 @@ async fn import_github_repo_skills(
             &clone_source,
             github_token.as_deref(),
         )?;
+        let checkout_commit = skills::installer::read_checkout_commit(&repo_root);
         let install_result = (|| {
             for selection in active_selections {
                 let source_path = selection
@@ -3262,6 +3263,7 @@ async fn import_github_repo_skills(
                     &source,
                     resolution,
                     rename_to,
+                    checkout_commit.as_deref(),
                 )?;
                 imported.push(serde_json::json!({
                     "sourcePath": source_path,
@@ -3306,6 +3308,7 @@ fn install_github_skill_into_center(
     source_uri: &str,
     resolution: &str,
     rename_to: Option<&str>,
+    checkout_commit: Option<&str>,
 ) -> Result<(String, String), String> {
     let original_skill_id = skills::v2::fsutil::infer_skill_id(local_source);
     if original_skill_id.is_empty() {
@@ -3328,7 +3331,7 @@ fn install_github_skill_into_center(
             "update".to_string()
         },
     };
-    let result = manager.execute_add_center_skill(
+    let result = manager.execute_add_center_skill_with_commit(
         skills::v2::models::AddCenterSkillInput {
             source_path: local_source.display().to_string(),
             source_type: "github".to_string(),
@@ -3339,12 +3342,14 @@ fn install_github_skill_into_center(
             import_mode: Some("copy".to_string()),
         },
         vec![decision],
+        checkout_commit,
     )?;
     let imported_skill_id = result
         .skill_ids
         .first()
         .or_else(|| result.updated.first())
         .cloned()
+        .or_else(|| (resolution == "overwrite").then(|| original_skill_id.clone()))
         .ok_or_else(|| format!("GitHub Skill '{}' was not imported", original_skill_id))?;
     Ok((original_skill_id, imported_skill_id))
 }
@@ -3593,13 +3598,43 @@ mod github_import_source_tests {
         std::env::set_var("HOME", &temp_home);
 
         let test_result = (|| -> Result<(String, bool, bool, bool, bool), String> {
-            let source = temp_home.join("repo").join("skills").join("github-skill");
+            let checkout = temp_home.join("repo");
+            let source = checkout.join("skills").join("github-skill");
             fs::create_dir_all(&source).map_err(|error| error.to_string())?;
             fs::write(
                 source.join("SKILL.md"),
                 "---\nname: github-skill\ndescription: GitHub import test\n---\n",
             )
             .map_err(|error| error.to_string())?;
+            let git = |args: &[&str]| -> Result<String, String> {
+                let output = std::process::Command::new("git")
+                    .current_dir(&checkout)
+                    .args(args)
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !output.status.success() {
+                    return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+                }
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            };
+            git(&["init", "--quiet"])?;
+            git(&["add", "--all"])?;
+            let commit = |message: &str| {
+                git(&[
+                    "-c",
+                    "user.name=AgentBro Test",
+                    "-c",
+                    "user.email=agentbro-test@example.com",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ])
+            };
+            commit("Skill fixture")?;
             let requested_center = temp_home.join("custom-center");
             let fixed_center = temp_home.join(".agentbro").join("skills");
             let sqlite = temp_home.join("skill-manager.db");
@@ -3621,7 +3656,32 @@ mod github_import_source_tests {
                 "github:owner/repo/skills/github-skill",
                 "overwrite",
                 None,
+                None,
             )?;
+            for _ in 0..2 {
+                let expected = git(&["log", "-1", "--format=%H"])?;
+                let actual = crate::skills::installer::read_checkout_commit(&checkout);
+                if actual.as_deref() != Some(expected.as_str()) {
+                    return Err("Could not read the checked-out Skill commit".to_string());
+                }
+                for _ in 0..2 {
+                    let (_, reimported) = install_github_skill_into_center(
+                        &manager,
+                        &source,
+                        "github:owner/repo/skills/github-skill",
+                        "overwrite",
+                        None,
+                        actual.as_deref(),
+                    )?;
+                    let saved = manager.get_skill_detail(&reimported)?.source;
+                    if saved.and_then(|source| source.source_ref).as_deref()
+                        != Some(expected.as_str())
+                    {
+                        return Err("Skill detail has the wrong checkout commit".to_string());
+                    }
+                }
+                commit("Commit without a Skill content change")?;
+            }
             let listed = manager
                 .list_center_skills()?
                 .into_iter()
