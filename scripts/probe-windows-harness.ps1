@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$AgentBroInstaller)
+param([Parameter(Mandatory)][string]$AgentBroInstaller, [switch]$UseAgentBroHookInstaller)
 
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro Harness probe $([Guid]::NewGuid().ToString('N'))"
@@ -87,8 +87,10 @@ $null = New-Item -ItemType Directory -Path $fixture, $output
     Set-Content -LiteralPath (Join-Path $fixture 'package.json') -Encoding utf8
 Set-Content -LiteralPath (Join-Path $fixture 'bundle.yml') -Value "- insert:`n    - id: $fixtureName`n      name: $fixtureName" -Encoding utf8
 Copy-Item -LiteralPath "$PSScriptRoot/harness-approval-fixture.mjs" -Destination (Join-Path $fixture 'index.js')
-& $cli plugin --profile desktop add "file:$package" "file:$fixture" --offline --ignore-scripts
-if ($LASTEXITCODE -ne 0) { throw 'The desktop CLI could not install both plugins' }
+$pluginSpecs = @("file:$fixture")
+if (-not $UseAgentBroHookInstaller) { $pluginSpecs += "file:$package" }
+& $cli plugin --profile desktop add @pluginSpecs --offline --ignore-scripts
+if ($LASTEXITCODE -ne 0) { throw 'The desktop CLI could not install the requested plugins' }
 
 $agentBroDir = Join-Path $stage 'AgentBro app'
 $agentBroSetup = Start-Process -FilePath $AgentBroInstaller -ArgumentList "/S /D=$agentBroDir" -PassThru
@@ -103,15 +105,34 @@ try {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     if (-not $ready) { throw 'AgentBro Hook port was unavailable' }
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if ($UseAgentBroHookInstaller) {
+        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
+            -AppProcessId $agentBro.Id -ProjectName 'DeepSeek Harness' -HookOperation Install -HarnessPluginPath $installed
+        if ($LASTEXITCODE -ne 0) { throw 'AgentBro could not install the deepseek-harness Hook' }
+        $bridgeManifest = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installed) 'package.json') -Raw | ConvertFrom-Json
+        if ($bridgeManifest.agentbroHookPort -ne $port) { throw 'AgentBro installed an incorrect Hook port' }
+        Write-Output "AgentBro discovered the desktop installation and installed its Harness plugin on Hook port $port."
+    }
     $env:AGENTBRO_HARNESS_FIXTURE_OUTPUT = $output
     $harness = Start-Process -FilePath $desktop -PassThru
-    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
-        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output
+        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output -LegacyHarnessDeny
     if ($LASTEXITCODE -ne 0) { throw 'The Harness Island interaction check did not pass' }
+    if ($UseAgentBroHookInstaller) {
+        Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process
+        & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
+            -AppProcessId $agentBro.Id -ProjectName 'DeepSeek Harness' -HookOperation Uninstall -HarnessPluginPath $installed
+        if ($LASTEXITCODE -ne 0) { throw 'AgentBro could not uninstall the deepseek-harness Hook' }
+        Write-Output 'AgentBro removed its Hook from the official Harness desktop profile.'
+    }
 } finally {
     Get-ChildItem -LiteralPath $output -File | ForEach-Object {
         Write-Output "$($_.Name): $(Get-Content -LiteralPath $_.FullName -Raw)"
+    }
+    $agentBroLog = Join-Path $env:LOCALAPPDATA 'com.agentbro.desktop\logs\agentbro.log'
+    if (Test-Path -LiteralPath $agentBroLog) {
+        Select-String -LiteralPath $agentBroLog -Pattern 'deepseek-harness|Permission response' | Select-Object -Last 20 -ExpandProperty Line
     }
     if (-not $agentBro.HasExited) { Stop-Process -Id $agentBro.Id }
     Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process

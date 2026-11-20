@@ -3,7 +3,10 @@ param(
     [int]$AppProcessId,
     [Parameter(Mandatory)]
     [string]$ProjectName,
-    [string]$HarnessOutput
+    [string]$HarnessOutput,
+    [string]$HookOperation,
+    [string]$HarnessPluginPath,
+    [switch]$LegacyHarnessDeny
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,6 +117,15 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
     }
 }
 
+function Find-NamedControl([Windows.Automation.AutomationElement]$Root, [string]$Name) {
+    $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
+    $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -133,12 +145,51 @@ $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
 $island = $null
+$settingsWindow = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+    if ($HookOperation) {
+        $open = Wait-IslandValue 'the Settings button' { Find-NamedControl $island 'Settings' }
+        Invoke-NamedControl $open
+        $settingsWindow = Wait-IslandValue 'the AgentBro settings window' {
+            foreach ($window in Get-IslandWindows) {
+                if ((Find-NamedControl $window 'Island') -or (Find-NamedControl $window 'Integration') -or
+                    (Find-NamedControl $window 'Start AgentBro')) { return $window }
+            }
+        }
+        $start = Find-NamedControl $settingsWindow 'Start AgentBro'
+        if ($start) { Invoke-NamedControl $start }
+        if (-not (Find-NamedControl $settingsWindow 'Integration')) {
+            $nav = Wait-IslandValue 'the Island settings section' { Find-NamedControl $settingsWindow 'Island' }
+            Invoke-NamedControl $nav
+        }
+        $tab = Wait-IslandValue 'the Integration tab' { Find-NamedControl $settingsWindow 'Integration' }
+        Invoke-NamedControl $tab
+        $actionButton = Wait-IslandValue "the DeepSeek Harness '$HookOperation' button" {
+            $rowName = Find-NamedControl $settingsWindow $ProjectName
+            if (-not $rowName) { return }
+            $parent = $rowName
+            for ($depth = 0; $depth -lt 5 -and $parent; $depth++) {
+                $parent = [Windows.Automation.TreeWalker]::RawViewWalker.GetParent($parent)
+                if (-not $parent) { return }
+                $condition = [Windows.Automation.AndCondition]::new($buttonCondition,
+                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $HookOperation))
+                $actions = $parent.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+                if ($actions.Count -eq 1) { return $actions[0] }
+                if ($actions.Count -gt 1) { return }
+            }
+        }
+        Invoke-NamedControl $actionButton
+        $null = Wait-IslandValue "AgentBro '$HookOperation' to update the Harness profile" {
+            (Test-Path -LiteralPath $HarnessPluginPath -PathType Leaf) -eq ($HookOperation -eq 'Install')
+        }
+        $settingsWindow.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+        return
+    }
     if ($HarnessOutput) {
         $null = Wait-IslandValue 'the active Harness fixture session in the hover list' {
             foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
@@ -147,7 +198,7 @@ try {
             }
         }
         Write-Output 'Windows Island showed the active DeepSeek Harness session.'
-        $decisions = [ordered]@{ Deny = 'rejected'; 'Allow once' = 'allowed-once' }
+        $decisions = [ordered]@{ Deny = 'rejected'; 'Allow Once' = 'allowed-once' }
         $index = 0
         foreach ($action in $decisions.Keys) {
             New-Item -ItemType File -Path (Join-Path $HarnessOutput "request-$index") | Out-Null
@@ -163,6 +214,16 @@ try {
                 throw "The AgentBro window does not own the '$action' click point"
             }
             [AgentBroSmokeMouse]::Click()
+            if ($LegacyHarnessDeny -and $action -eq 'Deny') {
+                $editCondition = [Windows.Automation.PropertyCondition]::new(
+                    [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
+                $null = Wait-IslandValue 'the legacy rejection feedback field' {
+                    $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $editCondition)
+                }
+                $approvalButton = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+                Move-ToElement $approvalButton
+                [AgentBroSmokeMouse]::Click()
+            }
             $resultPath = Join-Path $HarnessOutput "decision-$index.txt"
             $result = Wait-IslandValue "the '$action' result in the Harness approval service" {
                 if (Test-Path -LiteralPath $resultPath -PathType Leaf) { Get-Content -LiteralPath $resultPath -Raw }
@@ -216,7 +277,12 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
-        if ($island) {
+        if ($settingsWindow) {
+            $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Select-Object -First 140 -ExpandProperty Current |
+                Select-Object LocalizedControlType, Name, IsOffscreen |
+                ConvertTo-Json -Depth 3 -Compress
+        } elseif ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
                 Select-Object LocalizedControlType, Name, IsOffscreen, @{Name='Bounds'; Expression={$_.BoundingRectangle.ToString()}} |

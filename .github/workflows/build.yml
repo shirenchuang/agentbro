@@ -231,7 +231,10 @@ jobs:
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
-          ./scripts/probe-windows-harness.ps1 -AgentBroInstaller $installer.FullName
+          ./scripts/probe-windows-harness.ps1 -AgentBroInstaller $installer.FullName `
+              -UseAgentBroHookInstaller:($env:BUILD_ARTIFACT_RUN -ne '44777413811')
+        env:
+          BUILD_ARTIFACT_RUN: ${{ inputs.windows_artifact_run }}
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
