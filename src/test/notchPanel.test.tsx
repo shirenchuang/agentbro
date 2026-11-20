@@ -2008,9 +2008,13 @@ describe('NotchPanel island shell', () => {
 
     render(<NotchPanel />)
 
-    expect(await screen.findByText('background · Background terminal')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /background · Background terminal/ })).toBeInTheDocument()
     await act(async () => { focusedResult.resolve(true) })
-    await waitFor(() => expect(screen.queryByText('background · Background terminal')).not.toBeInTheDocument())
-    expect(screen.getByText('focused · Focused terminal')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: /background · Background terminal/ })).not.toBeInTheDocument())
+    const departingTitle = screen.queryByText('background · Background terminal')
+    if (departingTitle) {
+      expect(departingTitle.closest('[inert]')).toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: /focused · Focused terminal/ })).toBeInTheDocument()
   })
 })

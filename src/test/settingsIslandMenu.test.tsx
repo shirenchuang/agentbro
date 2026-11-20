@@ -289,13 +289,11 @@ describe('settings island menu', () => {
 
     render(<SettingsApp onClose={vi.fn()} />)
     fireEvent.click(screen.getByText('settings.island.title'))
-    const label = await screen.findByText('Enable Island')
-    const islandToggle = label.closest('.setting-row')!.querySelector('[role="switch"]')!
-
-    fireEvent.click(islandToggle)
-    expect(islandToggle).toHaveAttribute('aria-checked', 'false')
-    fireEvent.click(islandToggle)
-    expect(islandToggle).toHaveAttribute('aria-checked', 'true')
+    const enabled = await screen.findByRole('switch', { name: 'Enable Island', checked: true })
+    fireEvent.click(enabled)
+    const disabled = await screen.findByRole('switch', { name: 'Enable Island', checked: false })
+    fireEvent.click(disabled)
+    expect(await screen.findByRole('switch', { name: 'Enable Island', checked: true })).toBeInTheDocument()
     expect(useConfigStore.getState()).toMatchObject(visibility)
   })
 
