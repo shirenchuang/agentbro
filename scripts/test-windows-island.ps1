@@ -113,6 +113,21 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
     }
 }
 
+function Save-FailedRunnerDesktop {
+    if ($env:GITHUB_ACTIONS -ne 'true' -or -not $env:RUNNER_TEMP) { return }
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
+        $bitmap.Save((Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png'), [Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
 $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
@@ -160,6 +175,11 @@ try {
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
 } catch {
+    try {
+        Save-FailedRunnerDesktop
+    } catch {
+        Write-Output "Could not capture the runner desktop: $_"
+    }
     try {
         if ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |

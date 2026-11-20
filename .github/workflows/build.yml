@@ -196,11 +196,6 @@ jobs:
           github-token: ${{ inputs.windows_artifact_run && github.token || '' }}
           run-id: ${{ inputs.windows_artifact_run || github.run_id }}
 
-      - name: Show the Windows desktop for the Arm runner
-        if: runner.arch == 'ARM64'
-        shell: pwsh
-        run: (New-Object -ComObject Shell.Application).MinimizeAll()
-
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -210,3 +205,11 @@ jobs:
               throw 'Windows NSIS installer was not found in the build artifact'
           }
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland
+
+      - name: Upload the failed desktop check
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-desktop-failure
+          path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore
