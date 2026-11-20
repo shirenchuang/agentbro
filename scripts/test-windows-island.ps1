@@ -112,7 +112,7 @@ try {
         }
     }
     $point = Wait-IslandValue 'a clickable point on the fixture session' {
-        $candidate = [Windows.Point]::new()
+        $candidate = [Windows.Point]::new(0, 0)
         if ($session.TryGetClickablePoint([ref]$candidate)) { $candidate }
     }
     if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$point.X, [int]$point.Y)) {
