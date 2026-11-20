@@ -8,12 +8,12 @@
 
 ## 1. 项目画像
 
-AgentBro 是一个 **macOS 桌面悬浮窗(灵动岛)**,用来收纳 Claude Code / Codex / Gemini CLI / Cursor / Copilot 等 AI 编程 Agent 的运行状态。技术栈:
+AgentBro 为 macOS 和 Windows x64 提供 **桌面悬浮窗（灵动岛）**，用来收纳 Claude Code、Codex、Gemini CLI、Cursor、Copilot 等 AI 编程 Agent 的运行状态。
 
 - **前端**:React 19 + TypeScript + Vite + Zustand + i18next + framer-motion
-- **后端**:Rust + Tauri 2(macOS only,Windows 在路线图)
-- **构建产物**:macOS 通用二进制 `.dmg`(arm64 + x86_64)
-- **本地 Hook Server**:`/tmp/agentbro.sock` 或 `127.0.0.1:17892`
+- 后端使用 Rust 和 Tauri 2。
+- 发布产物包括 macOS 通用 DMG（arm64 和 x86_64）以及 Windows x64 NSIS 和 MSI 安装包。
+- 本地 Hook 在 macOS 默认通过 `/tmp/agentbro-<uid>.sock` 传输，在 Windows 通过 `127.0.0.1:17894` 传输。
 
 第一性原则是 **本地优先 + 低打扰**。所有改动都要服务于这两个目标。
 
