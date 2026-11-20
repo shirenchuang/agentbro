@@ -119,3 +119,26 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  smoke-windows:
+    name: Smoke test installed Windows app
+    runs-on: windows-latest
+    needs: build-windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentbro-windows-installers
+          path: windows-installers
+
+      - name: Install and exercise the Windows app
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          if (-not $installer) {
+              throw 'Windows NSIS installer was not found in the build artifact'
+          }
+          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName
