@@ -372,7 +372,8 @@ function McpServerRow({
             role="switch"
             aria-checked={server.enabled}
             aria-label={t('skills.mcpManagement.toggleLabel', { name: server.name })}
-            disabled={actionsDisabled && !toggleBusy}
+            aria-busy={toggleBusy}
+            disabled={actionsDisabled}
             onClick={onToggle}
           >
             <span />
