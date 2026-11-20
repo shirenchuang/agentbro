@@ -66,15 +66,18 @@ $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsP
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 $webViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+$webViewProfile = $env:WEBVIEW2_USER_DATA_FOLDER
 try {
     if ($VerifyIsland) {
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$debugPort --remote-debugging-address=127.0.0.1"
+        $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $stage 'webview'
     }
     $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
         -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 } finally {
     if ($VerifyIsland) {
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $webViewArguments
+        $env:WEBVIEW2_USER_DATA_FOLDER = $webViewProfile
     }
 }
 $bridge = $null
@@ -137,26 +140,33 @@ try {
         tool_name = 'Read'
         tool_input = @{ file_path = (Join-Path $stage 'smoke.txt') }
     } | ConvertTo-Json -Compress
+    $eventFile = Join-Path $stage 'hook-event.json'
+    Set-Content -LiteralPath $eventFile -Value $event -Encoding utf8
 
     $start = [System.Diagnostics.ProcessStartInfo]::new($bashPath)
     $start.ArgumentList.Add('-c')
-    $start.ArgumentList.Add($bridgeHooks[0].command)
+    # The bridge reports Bash as the agent PID. Keep Bash alive while inspecting the session.
+    $start.ArgumentList.Add($bridgeHooks[0].command + ' < "$1" || exit "$?"; IFS= read -r _ || :')
+    $start.ArgumentList.Add('agentbro-smoke')
+    $start.ArgumentList.Add($eventFile.Replace('\', '/'))
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $bridge = [System.Diagnostics.Process]::Start($start)
-    $bridge.StandardInput.WriteLine($event)
-    $bridge.StandardInput.Close()
-    if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
-        throw 'The configured Claude Hook failed when run through Git Bash'
-    }
 
     Wait-AppCondition 'AgentBro to receive the bridge tool event' {
+        if ($bridge.HasExited) {
+            throw "The configured Claude Hook exited with code $($bridge.ExitCode) before event delivery"
+        }
         (Test-Path -LiteralPath $logPath -PathType Leaf) -and
             (Select-String -LiteralPath $logPath -SimpleMatch "[ToolUse] session=$sessionId tool=Read" -Quiet)
     }
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
     if ($VerifyIsland) {
         & (Join-Path $PSScriptRoot 'test-windows-island.ps1') -DebuggerPort $debugPort -ProjectName (Split-Path $stage -Leaf)
+    }
+    $bridge.StandardInput.Close()
+    if (-not $bridge.WaitForExit(10000) -or $bridge.ExitCode -ne 0) {
+        throw 'The configured Claude Hook failed when run through Git Bash'
     }
 } catch {
     Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"

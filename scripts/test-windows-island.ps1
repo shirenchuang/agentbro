@@ -59,7 +59,7 @@ function Wait-IslandValue([string]$Description, [scriptblock]$ReadValue) {
     throw "Timed out waiting for $Description"
 }
 
-function Read-IslandWebView([string]$Expression) {
+function Read-IslandWebView([Net.WebSockets.ClientWebSocket]$Socket, [string]$Expression) {
     $request = @{
         id = 1
         method = 'Runtime.evaluate'
@@ -90,19 +90,25 @@ function Read-IslandWebView([string]$Expression) {
     }
 }
 
-$target = Wait-IslandValue 'the installed Island WebView target' {
-    try {
-        $pages = Invoke-RestMethod -Uri "http://127.0.0.1:$DebuggerPort/json/list" -TimeoutSec 2
-        $pages | Where-Object {
-            $_.type -eq 'page' -and $_.url -match '^https?://tauri\.localhost/(index\.html)?$'
-        } | Select-Object -First 1
-    } catch {
-        return
+function Connect-IslandWebView([object[]]$Pages) {
+    foreach ($page in $Pages) {
+        if ($page.type -ne 'page' -or $page.url -notmatch '^https?://tauri\.localhost/') { continue }
+        $endpoint = [Uri]$page.webSocketDebuggerUrl
+        if (-not $endpoint.IsLoopback -or $endpoint.Port -ne $DebuggerPort -or $endpoint.Scheme -ne 'ws') {
+            continue
+        }
+        $candidate = [Net.WebSockets.ClientWebSocket]::new()
+        $timeout = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(3))
+        $isIsland = $false
+        try {
+            [void]$candidate.ConnectAsync($endpoint, $timeout.Token).GetAwaiter().GetResult()
+            $isIsland = (Read-IslandWebView $candidate 'window.__TAURI__?.window?.getCurrentWindow().label') -eq 'notch'
+            if ($isIsland) { return $candidate }
+        } finally {
+            $timeout.Dispose()
+            if (-not $isIsland) { $candidate.Dispose() }
+        }
     }
-}
-$debugSocket = [Uri]$target.webSocketDebuggerUrl
-if (-not $debugSocket.IsLoopback -or $debugSocket.Port -ne $DebuggerPort -or $debugSocket.Scheme -ne 'ws') {
-    throw 'The Island debugger WebSocket is outside the test port'
 }
 
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
@@ -110,10 +116,17 @@ if (-not [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)) {
     throw 'Cannot read the Windows test desktop cursor'
 }
 $project = ConvertTo-Json -InputObject $ProjectName -Compress
-$socket = [Net.WebSockets.ClientWebSocket]::new()
-$connectTimeout = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(5))
+$socket = $null
 try {
-    [void]$socket.ConnectAsync($debugSocket, $connectTimeout.Token).GetAwaiter().GetResult()
+    $socket = Wait-IslandValue 'the installed Island WebView target' {
+        try {
+            $pages = Invoke-RestMethod -Uri "http://127.0.0.1:$DebuggerPort/json/list" -TimeoutSec 2
+            $script:islandDiscovery = $pages | Select-Object title, url, type | ConvertTo-Json -Compress
+            Connect-IslandWebView $pages
+        } catch {
+            $script:islandDiscovery = $_.Exception.Message
+        }
+    }
     $positionExpression = @'
 async (element) => {
     const appWindow = window.__TAURI__?.window?.getCurrentWindow();
@@ -131,13 +144,13 @@ async (element) => {
 }
 '@
     $islandPoint = Wait-IslandValue 'the visible native Island' {
-        Read-IslandWebView "($positionExpression)(document.querySelector('.notch-panel'))"
+        Read-IslandWebView $socket "($positionExpression)(document.querySelector('.notch-panel'))"
     }
     if (-not [AgentBroSmokeMouse]::SetCursorPos($islandPoint.x, $islandPoint.y)) {
         throw 'Could not move the Windows cursor into the Island'
     }
     $sessionPoint = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
-        Read-IslandWebView @"
+        Read-IslandWebView $socket @"
         (() => {
             const title = Array.from(document.querySelectorAll('.hover-list__session-title'))
                 .find(element => element.textContent.trim() === $project);
@@ -152,13 +165,13 @@ async (element) => {
     }
     [AgentBroSmokeMouse]::Click()
     $null = Wait-IslandValue 'the clicked session in the detail view' {
-        Read-IslandWebView "document.querySelector('.chat-header__project')?.textContent.trim() === $project"
+        Read-IslandWebView $socket "document.querySelector('.chat-header__project')?.textContent.trim() === $project"
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
 } catch {
     if ($socket.State -eq 'Open') {
         try {
-            Read-IslandWebView @'
+            Read-IslandWebView $socket @'
             ({
                 state: document.querySelector('.notch-panel')?.dataset.islandState,
                 hidden: document.querySelector('.notch-hitbox')?.dataset.islandHidden,
@@ -170,10 +183,11 @@ async (element) => {
         } catch {
             Write-Output "Could not read Island failure state: $_"
         }
+    } elseif ($script:islandDiscovery) {
+        Write-Output "Island WebView discovery: $script:islandDiscovery"
     }
     throw
 } finally {
-    $connectTimeout.Dispose()
-    $socket.Dispose()
+    if ($socket) { $socket.Dispose() }
     [void][AgentBroSmokeMouse]::SetCursorPos($originalCursor.X, $originalCursor.Y)
 }
