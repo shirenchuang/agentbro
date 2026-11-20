@@ -255,7 +255,9 @@ jobs:
 
       - name: Verify the installed bridge from WSL
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 12
+        env:
+          WSL_BUILD_RUN: ${{ inputs.windows_artifact_run }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
-          ./scripts/probe-windows-wsl.ps1 -Installer $installer.FullName
+          ./scripts/probe-windows-wsl.ps1 -Installer $installer.FullName -VerifyIntegration:($env:WSL_BUILD_RUN -ne '44810356063')

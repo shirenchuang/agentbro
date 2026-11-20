@@ -2,7 +2,10 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$WslDistribution,
+    [string]$WslAction,
+    [switch]$WslJump
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,6 +131,32 @@ function Save-FailedRunnerDesktop {
     }
 }
 
+function Find-NamedControl([Windows.Automation.AutomationElement]$Root, [string]$Name) {
+    $condition = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
+    $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+
+function Find-WslHookAction([Windows.Automation.AutomationElement]$Window, [string]$Agent, [string]$Action) {
+    $controls = $Window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    $inGroup = $false
+    for ($i = 0; $i -lt $controls.Count; $i++) {
+        $control = $controls[$i]
+        if ($control.Current.Name -eq 'WSL Hooks') { $inGroup = $true }
+        if (-not $inGroup -or $control.Current.Name -ne $Agent) { continue }
+        for ($j = $i + 1; $j -lt [Math]::Min($controls.Count, $i + 10); $j++) {
+            $button = $controls[$j]
+            if ($button.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $button.Current.Name -eq $Action -and $button.Current.IsEnabled) {
+                return $button
+            }
+        }
+    }
+}
+
 $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
@@ -138,6 +167,77 @@ try {
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+    if ($WslAction) {
+        $open = Wait-IslandValue 'the Island Settings button' { Find-NamedControl $island 'Settings' }
+        Invoke-NamedControl $open
+        $settingsWindow = Wait-IslandValue 'the AgentBro settings window' {
+            foreach ($window in Get-IslandWindows) {
+                if ((Find-NamedControl $window 'Island') -or (Find-NamedControl $window 'Integration') -or
+                    (Find-NamedControl $window 'Start AgentBro')) { return $window }
+            }
+        }
+        $start = Find-NamedControl $settingsWindow 'Start AgentBro'
+        if ($start) { Invoke-NamedControl $start }
+        if (-not (Find-NamedControl $settingsWindow 'Integration')) {
+            $nav = Wait-IslandValue 'the Island settings section' { Find-NamedControl $settingsWindow 'Island' }
+            Invoke-NamedControl $nav
+        }
+        $tab = Wait-IslandValue 'the Integration tab' { Find-NamedControl $settingsWindow 'Integration' }
+        Invoke-NamedControl $tab
+        $distribution = Wait-IslandValue 'the available WSL Distribution selector' {
+            $control = Find-NamedControl $settingsWindow 'Distribution'
+            if ($control -and $control.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and $control.Current.IsEnabled) {
+                return $control
+            }
+        }
+        $distribution.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        $option = Wait-IslandValue "the $WslDistribution choice" {
+            foreach ($root in @($distribution, $settingsWindow, [Windows.Automation.AutomationElement]::RootElement)) {
+                $option = Find-NamedControl $root $WslDistribution
+                if ($option -and $option.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem) { return $option }
+            }
+        }
+        $option.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $opposite = if ($WslAction -eq 'Install') { 'Uninstall' } else { 'Install' }
+        foreach ($agent in @('Claude Code', 'Codex CLI')) {
+            $button = Wait-IslandValue "$WslAction in the WSL $agent row" { Find-WslHookAction $settingsWindow $agent $WslAction }
+            Invoke-NamedControl $button
+            $null = Wait-IslandValue "the WSL $agent configuration to show $opposite" {
+                Find-WslHookAction $settingsWindow $agent $opposite
+            }
+            Write-Output "$WslAction worked for $agent in $WslDistribution."
+        }
+        Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
+        return
+    }
+    if ($WslJump) {
+        foreach ($agent in @('Claude', 'Codex')) {
+            $null = Wait-IslandValue "the $agent session marked WSL in the native Island" {
+                foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+                    $name = [string]$button.Current.Name
+                    if ($name.Contains($ProjectName) -and $name.Contains($agent) -and $name.Contains($WslDistribution)) {
+                        return $button
+                    }
+                }
+            }
+        }
+        $point = Wait-IslandValue 'the clickable WSL session jump button' {
+            foreach ($card in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+                $name = [string]$card.Current.Name
+                if (-not $name.Contains($ProjectName) -or -not $name.Contains($WslDistribution)) { continue }
+                $jump = Find-NamedControl $card 'Jump to terminal'
+                $candidate = [Windows.Point]::new(0, 0)
+                if (-not $jump -or -not $jump.TryGetClickablePoint([ref]$candidate)) { continue }
+                if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$candidate.X, [int]$candidate.Y)) { continue }
+                Start-Sleep -Milliseconds 200
+                $hit = [Windows.Automation.AutomationElement]::FromPoint($candidate)
+                if ($hit.Current.Name -eq 'Jump to terminal' -and [AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) { return $candidate }
+            }
+        }
+        [AgentBroSmokeMouse]::Click()
+        Write-Output "Clicked the WSL session jump button at $($point.X), $($point.Y)."
+        return
+    }
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
             $state = $button.Current

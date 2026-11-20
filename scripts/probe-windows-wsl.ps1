@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)]
-    [string]$Installer
+    [string]$Installer,
+    [switch]$VerifyIntegration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,25 @@ try {
     & $wsl --distribution $distribution --exec /bin/sh -c 'uname -r; printf "Linux home %s\n" "$HOME"'
     if ($LASTEXITCODE -ne 0) { throw 'The imported WSL 2 distribution could not start' }
 
+    if ($VerifyIntegration) {
+        & $wsl --distribution $distribution --user root --exec useradd --create-home --shell /bin/bash agentbro
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL fixture user' }
+        "[user]`ndefault=agentbro" | & $wsl --distribution $distribution --user root --exec /bin/sh -c 'cat >/etc/wsl.conf'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not configure the default WSL fixture user' }
+        & $wsl --terminate $distribution
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restart the WSL fixture distribution' }
+        $defaultUser = (& $wsl --distribution $distribution --exec id -un | Out-String).Trim()
+        if ($defaultUser -ne 'agentbro') { throw "The default WSL fixture user is $defaultUser" }
+        @{ hooks = @{ SessionStart = @(@{ hooks = @(@{ type = 'command'; command = 'echo existing-user-hook' }) }) } } |
+            ConvertTo-Json -Depth 10 -Compress |
+            & $wsl --distribution $distribution --exec /bin/sh -c 'umask 077; mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/AgentBroWslSmoke"; cat > "$HOME/.claude/settings.json"; cp "$HOME/.claude/settings.json" "$HOME/.codex/hooks.json"'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL Hook fixture settings' }
+        'model = "fixture-model"' | & $wsl --distribution $distribution --exec /bin/sh -c 'cat > "$HOME/.codex/config.toml"'
+        'printf "%s" "$PWD" > "$HOME/.agentbro-smoke-cwd"' |
+            & $wsl --distribution $distribution --exec /bin/sh -c 'cat >> "$HOME/.bashrc"'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add the WSL workspace fixture' }
+    }
+
     $listen = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $listen.Start()
     $port = $listen.LocalEndpoint.Port
@@ -47,6 +67,68 @@ try {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     if (-not $ready) { throw 'The installed AgentBro loopback listener never started' }
+
+    if ($VerifyIntegration) {
+        $env:WSLENV = (($env:WSLENV -split ':') | Where-Object { $_ -and $_ -notlike 'AGENTBRO_HOOK_PORT*' }) -join ':'
+        $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        function Invoke-IslandCheck([string[]]$Options) {
+            & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
+                -AppProcessId $app.Id -ProjectName 'AgentBroWslSmoke' -WslDistribution $distribution @Options
+            if ($LASTEXITCODE -ne 0) { throw "The native Island WSL check failed: $Options" }
+        }
+        function Read-WslFixtureConfig([string]$Path) {
+            $text = & $wsl --distribution $distribution --exec /bin/cat $Path | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "Could not read the WSL fixture configuration at $Path" }
+            return $text
+        }
+
+        Invoke-IslandCheck @('-WslAction', 'Install')
+        $projectPath = '/home/agentbro/AgentBroWslSmoke'
+        foreach ($target in @(
+            @{ Id = 'claude-code'; Path = '/home/agentbro/.claude/settings.json' },
+            @{ Id = 'codex'; Path = '/home/agentbro/.codex/hooks.json' }
+        )) {
+            $config = Read-WslFixtureConfig $target.Path | ConvertFrom-Json -AsHashtable
+            $mode = (& $wsl --distribution $distribution --exec stat -c '%a' $target.Path | Out-String).Trim()
+            if ($mode -ne '600') { throw "Hook setup did not preserve permissions for $($target.Id)" }
+            foreach ($event in @(
+                @{ hook_event_name = 'SessionStart'; session_id = 'same-id'; cwd = $projectPath },
+                @{ hook_event_name = 'PreToolUse'; session_id = 'same-id'; cwd = $projectPath; tool_name = 'Read'; tool_input = @{ file_path = "$projectPath/smoke.txt" } }
+            )) {
+                $managed = $config.hooks[$event.hook_event_name] | ForEach-Object { $_.hooks } |
+                    Where-Object { $_.command -like "*--wsl-distro*--source $($target.Id)* # AgentBro WSL" } |
+                    Select-Object -First 1 -ExpandProperty command
+                if (-not $managed -or $managed -notlike "*--hook-port $port*") {
+                    throw "Missing the configured hook for $($target.Id) $($event.hook_event_name)"
+                }
+                ($event | ConvertTo-Json -Depth 8 -Compress) | & $wsl --distribution $distribution --exec /bin/sh -c $managed
+                if ($LASTEXITCODE -ne 0) { throw "The installed bridge did not run for $($target.Id)" }
+            }
+        }
+        $codexConfig = Read-WslFixtureConfig '/home/agentbro/.codex/config.toml'
+        if ($codexConfig -notmatch 'model = "fixture-model"' -or $codexConfig -notmatch 'hooks = true') {
+            throw 'Codex hook activation did not preserve the fixture model setting'
+        }
+        Start-Sleep -Seconds 5
+        Invoke-IslandCheck @('-WslJump')
+        $jumpDeadline = (Get-Date).AddSeconds(20)
+        do {
+            $opened = & $wsl --distribution $distribution --exec /bin/cat '/home/agentbro/.agentbro-smoke-cwd' 2>$null
+            if ($opened -eq $projectPath) { break }
+            Start-Sleep -Milliseconds 500
+        } until ((Get-Date) -ge $jumpDeadline)
+        if ($opened -ne $projectPath) { throw "The WSL jump did not open $projectPath" }
+        Write-Output 'Windows Island opened the fixture project in the WSL terminal.'
+        Invoke-IslandCheck @('-WslAction', 'Uninstall')
+        foreach ($name in @('.claude/settings.json', '.codex/hooks.json')) {
+            $config = Read-WslFixtureConfig "/home/agentbro/$name"
+            if ($config -notmatch 'echo existing-user-hook' -or $config -match '# AgentBro WSL') {
+                throw "The uninstall did not preserve the existing hook in $name"
+            }
+        }
+        Write-Output 'WSL Hook install, Linux-to-Windows event delivery, session separation, workspace jump, and uninstall passed.'
+        return
+    }
 
     $bridge = Get-ChildItem -LiteralPath $installDir -Filter 'agentbro-bridge.exe' -Recurse -File |
         Select-Object -First 1 -ExpandProperty FullName
