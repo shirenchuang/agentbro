@@ -217,14 +217,26 @@ jobs:
 
       - name: Install and exercise the Windows app
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
-              -SymbolsDirectory (Join-Path $PWD 'windows-installers')
+          $smokeShell = (Get-Process -Id $PID).Path
+          foreach ($attempt in 1..8) {
+            Write-Output "::group::Windows startup attempt $attempt"
+            if ($attempt -gt 4) {
+              $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $env:RUNNER_TEMP "AgentBro WebView2 startup $attempt"
+            }
+            try {
+              & $smokeShell -NoProfile -NonInteractive -File ./scripts/test-windows-installer.ps1 `
+                  -Installer $installer.FullName -VerifyIsland -SymbolsDirectory (Join-Path $PWD 'windows-installers')
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } finally {
+              Write-Output '::endgroup::'
+            }
+          }
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
