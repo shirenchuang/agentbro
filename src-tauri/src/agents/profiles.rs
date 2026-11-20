@@ -1326,7 +1326,7 @@ fn agentbro_command_is_current(profile: &AgentIntegrationProfile, command: &str)
     }
 
     let bridge = hook_manager::bridge_binary_path();
-    let bridge_path = bridge.display().to_string();
+    let bridge_path = bridge_path_for_command(profile, &bridge);
     if !command.contains(&bridge_path) {
         return false;
     }
@@ -1683,17 +1683,46 @@ pub fn managed_bridge_command_labeled(
         return Err("DeepSeek Harness uses a desktop plugin".into());
     }
     let bridge = hook_manager::ensure_bridge_binary()?;
+    Ok(bridge_command_for(
+        profile,
+        &bridge,
+        engine_label,
+        config_root,
+    ))
+}
+
+fn bridge_path_for_command(profile: &AgentIntegrationProfile, bridge: &Path) -> String {
+    let path = bridge.to_string_lossy();
+    if cfg!(target_os = "windows") && profile.id == "claude-code" {
+        windows_shell_path(&path)
+    } else {
+        path.into_owned()
+    }
+}
+
+fn bridge_command_for(
+    profile: &AgentIntegrationProfile,
+    bridge: &Path,
+    engine_label: Option<&str>,
+    config_root: Option<&str>,
+) -> String {
+    let bridge_path = bridge_path_for_command(profile, bridge);
     let mut args = vec!["--source".to_string(), profile.source.to_string()];
     if cfg!(target_os = "windows") {
         if let Some(label) = engine_label {
             args.extend(["--engine-label".to_string(), label.to_string()]);
         }
         if let Some(root) = config_root {
-            args.extend(["--config-root".to_string(), root.to_string()]);
+            let root = if profile.id == "claude-code" {
+                windows_shell_path(root)
+            } else {
+                root.to_string()
+            };
+            args.extend(["--config-root".to_string(), root]);
         }
     }
     args.extend(profile.extra_args.iter().map(|arg| arg.to_string()));
-    let mut parts = hook_manager::bridge_command_parts(&bridge, &args);
+    let mut parts = hook_manager::bridge_command_parts(Path::new(&bridge_path), &args);
     if !cfg!(target_os = "windows") {
         if let Some(label) = engine_label {
             parts.insert(
@@ -1708,7 +1737,17 @@ pub fn managed_bridge_command_labeled(
             );
         }
     }
-    Ok(parts.join(" "))
+    parts.join(" ")
+}
+
+fn windows_shell_path(path: &str) -> String {
+    // Claude Code's shell-form hooks can run in Git Bash, where backslashes are escapes.
+    if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc_path.replace('\\', "/"));
+    }
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/")
 }
 
 fn bridge_args_json(
@@ -1934,7 +1973,6 @@ fn update_nested_json_hooks(
             *value = serde_json::json!([]);
         }
         let groups = value.as_array_mut().expect("event hook groups is array");
-        groups.retain(|group| !json_hook_contains_profile(group, profile));
 
         let mut inner_hook = serde_json::json!({
             "type": "command",
@@ -2381,7 +2419,15 @@ where
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
         for value in hooks.values_mut() {
             if let Some(entries) = value.as_array_mut() {
-                entries.retain(|entry| !should_remove(entry));
+                entries.retain_mut(|entry| {
+                    if let Some(handlers) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                        let original_count = handlers.len();
+                        handlers.retain(|handler| !should_remove(handler));
+                        !handlers.is_empty() || original_count == 0
+                    } else {
+                        !should_remove(entry)
+                    }
+                });
             }
         }
         hooks.retain(|_, value| {
@@ -3509,6 +3555,64 @@ export default server;
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires Git Bash"]
+    fn windows_claude_hook_keeps_paths_through_git_bash() {
+        let bash = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("ProgramFiles").unwrap()).join("Git/bin/bash.exe")
+            });
+        let profile = claude_code_profile();
+        for (bridge, config_root) in [
+            (
+                r"C:\Users\Name\.agentbro\bin\agentbro-bridge.exe",
+                r"C:\Users\Name\.claude",
+            ),
+            (
+                r"C:\Users\User Name\.agentbro\bin\agentbro-bridge.exe",
+                r"\\?\C:\Users\User Name\Claude Settings",
+            ),
+        ] {
+            let command = bridge_command_for(
+                &profile,
+                Path::new(bridge),
+                Some("Test Engine"),
+                Some(config_root),
+            );
+            let output = std::process::Command::new(&bash)
+                .args(["-c", &format!("printf '%s\\n' {command}")])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected_bridge = bridge.replace('\\', "/");
+            let expected_root = config_root
+                .strip_prefix(r"\\?\")
+                .unwrap_or(config_root)
+                .replace('\\', "/");
+            assert_eq!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                [
+                    expected_bridge.as_str(),
+                    "--source",
+                    "claude-code",
+                    "--engine-label",
+                    "Test Engine",
+                    "--config-root",
+                    expected_root.as_str()
+                ]
+            );
+        }
+    }
+
     #[test]
     fn toml_cleanup_removes_only_agentbro_hooks() {
         let input = r#"[providers]
@@ -3598,12 +3702,7 @@ name = "also keep"
                             {
                                 "type": "command",
                                 "command": "/usr/bin/env AGENTBRO_CONFIG_ROOT='/Users/me/.claude' '/Users/me/.agentbro/bin/agentbro-bridge'"
-                            }
-                        ]
-                    },
-                    {
-                        "matcher": "*",
-                        "hooks": [
+                            },
                             {
                                 "type": "command",
                                 "command": "/usr/local/bin/custom-notifier --source claude"
