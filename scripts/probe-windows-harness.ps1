@@ -120,8 +120,8 @@ if ($LASTEXITCODE -ne 0) { throw 'The desktop CLI could not install the requeste
 $agentBroDir = Join-Path $stage 'AgentBro app'
 $agentBroSetup = Start-Process -FilePath $AgentBroInstaller -ArgumentList "/S /D=$agentBroDir" -PassThru
 if (-not $agentBroSetup.WaitForExit(90000) -or $agentBroSetup.ExitCode -ne 0) { throw 'AgentBro installation failed' }
-$agentBro = Start-Process -FilePath (Join-Path $agentBroDir 'agentbro.exe') -PassThru
-try {
+
+function Wait-AgentBroHook {
     $deadline = (Get-Date).AddSeconds(45)
     do {
         $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $agentBro.Id -ErrorAction SilentlyContinue
@@ -130,6 +130,12 @@ try {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -ge $deadline)
     if (-not $ready) { throw 'AgentBro Hook port was unavailable' }
+}
+
+$agentBroPath = Join-Path $agentBroDir 'agentbro.exe'
+$agentBro = Start-Process -FilePath $agentBroPath -PassThru
+try {
+    Wait-AgentBroHook
     if ($UseAgentBroHookInstaller) {
         Invoke-HarnessIslandTest @('-ProjectName', 'DeepSeek Harness', '-HookOperation', 'Install', '-HarnessPluginPath', $installed)
         $bridgeManifest = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installed) 'package.json') -Raw | ConvertFrom-Json
@@ -143,7 +149,13 @@ try {
     Invoke-HarnessIslandTest $eventArgs
     if ($UseAgentBroHookInstaller) {
         Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process
+        Stop-Process -Id $agentBro.Id
+        if (-not $agentBro.WaitForExit(10000)) { throw 'AgentBro fixture did not exit' }
+        $agentBro = Start-Process -FilePath $agentBroPath -PassThru
+        Wait-AgentBroHook
         Invoke-HarnessIslandTest @('-ProjectName', 'DeepSeek Harness', '-HookOperation', 'Uninstall', '-HarnessPluginPath', $installed)
+        $profileState = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+        if ($pluginName -in $profileState.dsh.profile.bundles) { throw 'The removed Hook is still enabled in Harness' }
         Write-Output 'AgentBro removed its Hook from the official Harness desktop profile.'
     }
 } finally {
