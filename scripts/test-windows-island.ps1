@@ -114,7 +114,7 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
 }
 
 function Save-FailedRunnerDesktop {
-    if ($env:GITHUB_ACTIONS -ne 'true' -or -not $env:RUNNER_TEMP) { return }
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bitmap = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
