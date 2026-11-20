@@ -213,7 +213,7 @@ export function PluginManagementTab({ detail }: { detail: AgentDetail }) {
                   plugin={plugin}
                   editable={inventory.capabilities.editable}
                   busy={busyPluginId === plugin.id}
-                  disabled={Boolean(busyPluginId)}
+                  disabled={loading || busyPluginId !== null}
                   onToggle={() => void toggle(plugin)}
                   onOpenDetails={() => setSelectedPlugin(plugin)}
                 />
