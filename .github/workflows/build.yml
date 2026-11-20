@@ -207,6 +207,10 @@ jobs:
           Get-Process -Name WWAHost -ErrorAction SilentlyContinue |
             Where-Object { $_.SessionId -eq $session } |
             Stop-Process
+          # The Start menu can open as Windows finishes the first sign-in.
+          Start-Sleep -Milliseconds 1500
+          (New-Object -ComObject WScript.Shell).SendKeys('{ESC}')
+          (New-Object -ComObject Shell.Application).MinimizeAll()
 
       - name: Install and exercise the Windows app
         shell: pwsh
