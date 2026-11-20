@@ -252,3 +252,10 @@ jobs:
           name: agentbro-windows-desktop-failure
           path: ${{ runner.temp }}/agentbro-island-failure.png
           if-no-files-found: ignore
+
+      - name: Verify the installed bridge from WSL
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          ./scripts/probe-windows-wsl.ps1 -Installer $installer.FullName
