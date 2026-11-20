@@ -5996,14 +5996,14 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '格式化 JSON' }))
     expect(editor).toHaveValue('{\n  "enabled": true\n}\n')
     fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
-    await waitFor(() => expect(writeConfig).toHaveBeenCalledWith(
+    const dialog = screen.getByRole('dialog')
+    expect(await within(dialog).findByText('配置已保存，原文件已备份')).toBeInTheDocument()
+    expect(writeConfig).toHaveBeenCalledWith(
       'claude-code',
       '/c/config.json',
       '{\n  "enabled": true\n}\n',
       'sha256:before',
-    ))
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText('配置已保存，原文件已备份')).toBeInTheDocument()
+    )
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '定位' }))
