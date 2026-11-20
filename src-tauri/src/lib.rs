@@ -6404,6 +6404,8 @@ pub fn run() {
             skills::v2::commands::skill_manager_update_settings,
             skills::v2::commands::list_center_skills_v2,
             skills::v2::commands::get_skill_detail_v2,
+            skills::v2::commands::check_skill_source_update,
+            skills::v2::commands::apply_skill_source_update,
             skills::v2::commands::preview_add_center_skill,
             skills::v2::commands::execute_add_center_skill,
             skills::v2::commands::execute_marketplace_skill_batch,

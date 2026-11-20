@@ -79,6 +79,14 @@ export interface SkillSourceDetail {
   updatedAt: string
 }
 
+export interface SkillSourceUpdateCheck {
+  sourceUri: string
+  installedRef: string | null
+  latestRef: string
+  currentHash: string
+  updateAvailable: boolean
+}
+
 export interface SkillTargetDetail {
   id: string
   skillId: string
@@ -1119,6 +1127,10 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<SkillSummary[]>('list_center_skills_v2') : Promise.resolve([]),
   getSkillDetail: (skillId: string) =>
     isTauriRuntime() ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }) : Promise.resolve(null as unknown as SkillDetail),
+  checkSkillSourceUpdate: (skillId: string, githubToken?: string) =>
+    invoke<SkillSourceUpdateCheck>('check_skill_source_update', { skillId, githubToken }),
+  applySkillSourceUpdate: (skillId: string, expected: SkillSourceUpdateCheck, githubToken?: string) =>
+    invoke<SkillDetail>('apply_skill_source_update', { skillId, expected, githubToken }),
   readFileTree: (skillPath: string) =>
     isTauriRuntime()
       ? invoke<FileTreeNode>('read_skill_files', { skillPath })

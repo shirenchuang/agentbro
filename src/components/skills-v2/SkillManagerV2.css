@@ -10683,6 +10683,17 @@
   gap: 10px;
 }
 
+.sm2__slideover--skill-detail .sm2__skill-source-update,
+.sm2__slideover--skill-detail .sm2__skill-source-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sm2__slideover--skill-detail .sm2__skill-source-update {
+  flex-direction: column;
+}
+
 .sm2__slideover--skill-detail .sm2__skill-source-card {
   min-width: 0;
   border: 1px solid var(--sm2-detail-border);

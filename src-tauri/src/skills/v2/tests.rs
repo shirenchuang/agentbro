@@ -6485,6 +6485,64 @@ fn real_smoke_against_actual_home() {
 }
 
 #[test]
+fn checked_skill_source_update_preserves_the_installed_id_and_guards_local_edits() {
+    let (_home, svc, _lock) = fresh_service("checked-source-update");
+    let source = write_skill(&svc.home, "first", "toolkit", Some("original"));
+    let installed_ref = "1".repeat(40);
+    let latest_ref = "2".repeat(40);
+    let source_uri = "github:example/skills/toolkit".to_string();
+    svc.execute_add_center_skill_with_commit(
+        AddCenterSkillInput {
+            source_path: source.display().to_string(),
+            source_type: "github".to_string(),
+            source_uri: Some(source_uri.clone()),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: None,
+            import_mode: Some("copy".to_string()),
+        },
+        vec![AddCenterSkillDecision {
+            skill_id: "toolkit".to_string(),
+            resolution: "create".to_string(),
+            proposed_skill_id: Some("my-toolkit".to_string()),
+        }],
+        Some(&installed_ref),
+    )
+    .unwrap();
+
+    let dir = svc.center_path().unwrap().join("my-toolkit");
+    let notes = dir.join("reference.md");
+    let mut check = SkillSourceUpdateCheck {
+        source_uri,
+        installed_ref: Some(installed_ref),
+        latest_ref: latest_ref.clone(),
+        current_hash: fsutil::hash_dir_contents(&dir),
+        update_available: true,
+    };
+    let upstream = write_skill(&svc.home, "next", "new-toolkit-name", Some("updated"));
+    assert!(svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &"3".repeat(40))
+        .is_err());
+    fs::write(&notes, "local edits").unwrap();
+    assert!(svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+        .is_err());
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "local edits");
+    check.current_hash = fsutil::hash_dir_contents(&dir);
+    let detail = svc
+        .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+        .unwrap();
+    assert_eq!(detail.summary.id, "my-toolkit");
+    assert_eq!(detail.summary.name, "new-toolkit-name");
+    assert_eq!(
+        detail.source.unwrap().source_ref.as_deref(),
+        Some(latest_ref.as_str())
+    );
+    assert_eq!(fs::read_to_string(notes).unwrap(), "updated");
+    assert_eq!(svc.list_center_skills().unwrap().len(), 1);
+}
+
+#[test]
 fn add_center_skill_from_zip() {
     let (_home, svc, _lock) = fresh_service("zip");
     let other_import =

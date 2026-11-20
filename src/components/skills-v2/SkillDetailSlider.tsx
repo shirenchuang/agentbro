@@ -3,7 +3,8 @@ import type { MouseEvent, RefObject, UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { skillApiV2 } from '../../services/skillApiV2'
-import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode } from '../../services/skillApiV2'
+import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode, SkillSourceUpdateCheck } from '../../services/skillApiV2'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
@@ -77,6 +78,12 @@ export function SkillDetailSlider({
   const [skillDocContent, setSkillDocContent] = useState('')
   const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
   const readOnly = fallbackSkill?.readOnly === true
+  const visibleSkillId = useRef<string | null>(null)
+
+  useEffect(() => {
+    visibleSkillId.current = open ? skillId : null
+    return () => { visibleSkillId.current = null }
+  }, [open, skillId])
 
   useEffect(() => {
     if (!open || !skillId) return
@@ -181,6 +188,23 @@ export function SkillDetailSlider({
     } finally {
       setFileLoading(false)
     }
+  }
+
+  const refreshUpdatedSource = async (updated: SkillDetail) => {
+    void useSkillStoreV2.getState().loadOverview(true)
+    if (visibleSkillId.current !== updated.id) return
+    setDetail(updated)
+    const path = findFile(updated.files, 'SKILL.md')
+    setSkillDocPath(path)
+    setActiveFile(path)
+    setSkillDocContent('')
+    setFileContent('')
+    setFileViewMode('preview')
+    if (!path) return
+    const content = await skillApiV2.readFileContent(path).catch(() => '')
+    if (visibleSkillId.current !== updated.id) return
+    setSkillDocContent(content)
+    setFileContent(content)
   }
 
   const doSync = async (targetId: string, action: string) => {
@@ -429,7 +453,7 @@ export function SkillDetailSlider({
               onConfirmBatchDelete={() => setBatchDeleteTargetIds(selectedBatchDeleteTargets.map((target) => target.id))}
             />
           )}
-          {tab === 'source' && <SourceTab detail={detail} />}
+          {tab === 'source' && <SourceTab key={detail.id} detail={detail} updateAllowed={!readOnly} onUpdated={refreshUpdatedSource} />}
         </div>
       )}
     </SlideOver>
@@ -1252,17 +1276,64 @@ function SkillFrontmatterIntro({ description, compact = false }: { description?:
   )
 }
 
-function SourceTab({ detail }: { detail: SkillDetail }) {
+function SourceTab({ detail, updateAllowed, onUpdated }: {
+  detail: SkillDetail
+  updateAllowed: boolean
+  onUpdated: (detail: SkillDetail) => Promise<void>
+}) {
   const { t } = useTranslation()
+  const [check, setCheck] = useState<SkillSourceUpdateCheck | null>(null)
+  const [busy, setBusy] = useState<'check' | 'apply' | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  const [updatedRef, setUpdatedRef] = useState<string | null>(null)
+  const [githubToken, setGithubToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
   const sourceType = detail.source?.sourceType || detail.sourceType
   const sourceUri = detail.source?.sourceUri || detail.sourceUri
   const linkedCenter = isLinkedCenterSkill(detail)
+  const supportsUpdates = updateAllowed && !linkedCenter && !!sourceUri
+    && ['git', 'github', 'skillssh'].includes(sourceType)
+    && /^(?:github:|skillssh:|https?:\/\/github\.com\/)/.test(sourceUri)
+  const checkForUpdates = async () => {
+    setBusy('check')
+    setUpdateError(null)
+    setUpdatedRef(null)
+    setCheck(null)
+    try {
+      setCheck(await skillApiV2.checkSkillSourceUpdate(detail.id, githubToken.trim() || undefined))
+    } catch (error) {
+      setUpdateError(String(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+  const applyUpdate = async () => {
+    if (!check?.updateAvailable) return
+    setBusy('apply')
+    setUpdateError(null)
+    try {
+      const updated = await skillApiV2.applySkillSourceUpdate(detail.id, check, githubToken.trim() || undefined)
+      setGithubToken('')
+      setShowToken(false)
+      setUpdatedRef(updated.source?.sourceRef ?? check.latestRef)
+      await onUpdated(updated)
+    } catch (error) {
+      setUpdateError(String(error))
+    } finally {
+      setCheck(null)
+      setConfirming(false)
+      setBusy(null)
+    }
+  }
   const summaryCards = [
     { label: '类型', value: skillSourceTypeLabel(t, sourceType) },
     { label: '中心类型', value: linkedCenter ? '软链中心目录' : null },
     { label: '导入 Agent', value: detail.source?.importedFromAgent },
     { label: '安装方式', value: detail.source?.installedVia },
-    { label: '来源 Ref', value: detail.source?.sourceRef },
+    { label: t('skills.sourceUpdates.installedCommit'), value: detail.source?.sourceRef },
+    { label: t('skills.sourceUpdates.installedAt'), value: detail.source?.createdAt ? new Date(detail.source.createdAt).toLocaleString() : null },
+    { label: t('skills.sourceUpdates.updatedAt'), value: detail.source?.updatedAt ? new Date(detail.source.updatedAt).toLocaleString() : null },
   ].filter(hasSourceValue)
   const pathCards = [
     { label: '真实源目录', value: linkedCenter ? detail.centerResolvedPath : null },
@@ -1291,6 +1362,66 @@ function SourceTab({ detail }: { detail: SkillDetail }) {
               <code className="selectable" title={item.value}>{item.value}</code>
             </div>
           ))}
+        </div>
+      )}
+      {supportsUpdates && (
+        <div className="sm2__skill-source-card sm2__skill-source-update">
+          <div className="sm2__skill-source-update-actions">
+            <button className="sm2__btn" disabled={busy !== null} onClick={() => void checkForUpdates()}>
+              {t(busy === 'check' ? 'skills.sourceUpdates.checking' : 'skills.sourceUpdates.check')}
+            </button>
+            {check?.updateAvailable && (
+              <button className="sm2__btn sm2__btn--primary" disabled={busy !== null} onClick={() => setConfirming(true)}>
+                {t('skills.sourceUpdates.apply')}
+              </button>
+            )}
+            <button
+              className="sm2__git-advanced-toggle"
+              aria-expanded={showToken}
+              disabled={busy !== null}
+              onClick={() => setShowToken(!showToken)}
+            >
+              {t('skills.sourceUpdates.privateRepository')}
+            </button>
+          </div>
+          {showToken && (
+            <label className="sm2__git-token-field">
+              <span>{t('skills.sourceUpdates.githubToken')}</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={githubToken}
+                disabled={busy !== null}
+                onChange={(event) => {
+                  setGithubToken(event.target.value)
+                  setCheck(null)
+                  setUpdateError(null)
+                }}
+              />
+            </label>
+          )}
+          {check && (
+            <div role="status">
+              {check.updateAvailable
+                ? t(check.installedRef ? 'skills.sourceUpdates.available' : 'skills.sourceUpdates.different', { version: check.latestRef.slice(0, 12) })
+                : t(check.installedRef ? 'skills.sourceUpdates.current' : 'skills.sourceUpdates.matches')}
+            </div>
+          )}
+          {updatedRef && <div role="status">{t('skills.sourceUpdates.applied', { version: updatedRef.slice(0, 12) })}</div>}
+          {updateError && <div className="sm2__error" role="alert">{updateError}</div>}
+          {confirming && check && (
+            <PreviewDialog
+              title={t('skills.sourceUpdates.apply')}
+              cancelLabel={t('settings.cancel')}
+              confirmLabel={t('skills.sourceUpdates.apply')}
+              busyLabel={t('skills.sourceUpdates.applying')}
+              busy={busy === 'apply'}
+              onCancel={() => { if (!busy) setConfirming(false) }}
+              onConfirm={() => void applyUpdate()}
+            >
+              <p>{t('skills.sourceUpdates.confirm', { version: check.latestRef.slice(0, 12) })}</p>
+            </PreviewDialog>
+          )}
         </div>
       )}
     </section>
