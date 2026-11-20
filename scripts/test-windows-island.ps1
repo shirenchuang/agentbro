@@ -222,7 +222,16 @@ try {
     }
 
     if ($WorkBuddyMode -in @('Install', 'Uninstall')) {
-        $open = Wait-IslandValue 'the Settings button' { Find-NamedControl $island 'Settings' }
+        $open = Wait-IslandValue 'the Settings button' {
+            $region = Find-VisibleIsland
+            if (-not $region) { return }
+            $settings = Find-NamedControl $region 'Settings'
+            if ($settings) { return $settings }
+            $dismiss = Find-NamedControl $region 'Dismiss'
+            if ($dismiss) { Invoke-NamedControl $dismiss }
+            $region = Find-VisibleIsland
+            if ($region) { Move-ToElement $region }
+        }
         Invoke-NamedControl $open
         $settingsWindow = Wait-IslandValue 'the AgentBro settings window' {
             foreach ($window in Get-IslandWindows) {
