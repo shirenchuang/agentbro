@@ -151,12 +151,7 @@ fn command_timeout(command: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_timeout, render_script, REMOTE_RUNNER_COMMAND, RESPONSE_MARKER};
-    use serde_json::Value;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-    use std::process::{Command, Stdio};
+    use super::{command_timeout, render_script, REMOTE_RUNNER_COMMAND};
 
     #[test]
     fn install_commands_receive_a_longer_timeout() {
@@ -188,6 +183,16 @@ mod tests {
             );
         }
     }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::{render_script, RESPONSE_MARKER};
+    use serde_json::Value;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn remote_script_preserves_overview_and_distribution_shapes() {

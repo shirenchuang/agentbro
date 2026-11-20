@@ -111,6 +111,28 @@ jobs:
       - name: Build Tauri installers
         run: pnpm tauri:build:windows
 
+      - name: Test Windows skill paths
+        shell: pwsh
+        run: |
+          $testExecutable = cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
+            ForEach-Object { ConvertFrom-Json -InputObject $_ } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.executable } |
+            Select-Object -ExpandProperty executable
+          if ($LASTEXITCODE -ne 0 -or @($testExecutable).Count -ne 1) {
+            throw 'Could not build and locate the Rust library test executable'
+          }
+
+          $manifestTool = Get-Item "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\mt.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          $appExecutable = (Resolve-Path 'src-tauri/target/release/agentbro.exe').Path
+          # The library test executable needs the same Common Controls v6 manifest as the app.
+          & $manifestTool.FullName -nologo "-inputresource:$appExecutable;#1" "-outputresource:$testExecutable;#1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable skills::v2::tests::windows_skill_paths_
+          exit $LASTEXITCODE
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
