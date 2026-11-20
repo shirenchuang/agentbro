@@ -58,6 +58,19 @@ $fixtureSettings = @{
 }
 $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding utf8
 
+$restoredSession = '恢复会话'
+$restoredProjectName = 'Windows restored project'
+$restoredWorkspace = Join-Path $stage $restoredProjectName
+$restoredProjectsDir = Join-Path $env:CLAUDE_CONFIG_DIR 'projects\restored-project'
+$null = New-Item -ItemType Directory -Path $restoredWorkspace, $restoredProjectsDir
+@{
+    sessionId = $restoredSession
+    cwd = $restoredWorkspace
+    type = 'user'
+    message = @{role = 'user'; content = 'Recover my existing test session'}
+} | ConvertTo-Json -Depth 5 -Compress |
+    Set-Content -LiteralPath (Join-Path $restoredProjectsDir "$restoredSession.jsonl") -Encoding utf8
+
 $webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
 Write-Output 'Installed WebView2 Runtime versions:'
 Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
@@ -171,6 +184,10 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
+    Wait-AppCondition 'AgentBro to restore the Unicode session' {
+        Select-String -LiteralPath $stdoutPath -SimpleMatch "session ${restoredSession}: project=$restoredProjectName" -Quiet
+    }
+    Write-Output 'The existing Unicode session was restored before delivering the live Hook.'
     Wait-AppCondition 'the bridge and Claude Hook configuration to be deployed' {
         (Test-Path -LiteralPath $bridgePath -PathType Leaf) -and
             (Select-String -LiteralPath $stdoutPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
