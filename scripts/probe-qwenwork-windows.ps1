@@ -39,9 +39,11 @@ function Set-QwenWorkFixturePhase([string]$Phase) {
 }
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro QwenWork probe $([Guid]::NewGuid().ToString('N'))"
 $null = New-Item -ItemType Directory -Path $stage
-$installer = Join-Path $stage 'qwenworkcn-setup-x64.exe'
+$architecture = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
+$installerName = "qwenworkcn-setup-$architecture.exe"
+$installer = Join-Path $stage $installerName
 & curl.exe --fail --location --silent --show-error --retry 2 --max-time 240 --output $installer `
-    https://assets.qwenwork.cn/release/latest/qwenworkcn-setup-x64.exe
+    "https://assets.qwenwork.cn/release/latest/$installerName"
 if ($LASTEXITCODE -ne 0) { throw 'Official QwenWork download failed' }
 $signature = Get-AuthenticodeSignature -LiteralPath $installer
 if ($signature.Status -ne 'Valid') { throw "QwenWork installer signature status: $($signature.Status)" }
