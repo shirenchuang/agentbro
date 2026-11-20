@@ -161,6 +161,9 @@ jobs:
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -110,20 +110,11 @@ fn detect_zcode() -> DetectedTool {
     }
 }
 
-/// GitHub Copilot detection (requires `gh` CLI with copilot extension)
 fn detect_copilot() -> DetectedTool {
-    let gh_path = find_binary(&["gh"]);
+    let binary_path = super::copilot::installed_executable();
     let config_dir = find_config_dir(&[".config/github-copilot"]);
 
-    let copilot_available = gh_path.as_ref().is_some_and(|path| {
-        crate::platform::process::background_command(path)
-            .args(["copilot", "--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    });
-
-    let status = if copilot_available {
+    let status = if binary_path.is_some() {
         AdapterStatus::Available
     } else if config_dir.is_some() {
         AdapterStatus::Installed
@@ -135,7 +126,7 @@ fn detect_copilot() -> DetectedTool {
         name: "copilot".to_string(),
         display_name: "GitHub Copilot".to_string(),
         status,
-        binary_path: gh_path.map(|p| p.display().to_string()),
+        binary_path: binary_path.map(|p| p.display().to_string()),
         config_dir: config_dir.map(|p| p.display().to_string()),
     }
 }
