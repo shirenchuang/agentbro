@@ -229,7 +229,9 @@ jobs:
       - name: Verify the official DeepSeek Harness installer and desktop CLI
         timeout-minutes: 9
         shell: pwsh
-        run: ./scripts/probe-windows-harness.ps1
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          ./scripts/probe-windows-harness.ps1 -AgentBroInstaller $installer.FullName
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'

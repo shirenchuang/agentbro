@@ -1,3 +1,5 @@
+param([Parameter(Mandatory)][string]$AgentBroInstaller)
+
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro Harness probe $([Guid]::NewGuid().ToString('N'))"
 $null = New-Item -ItemType Directory -Path $stage
@@ -21,6 +23,7 @@ $desktop = @($env:LOCALAPPDATA, (Join-Path $env:LOCALAPPDATA 'Programs'), $env:P
 if (-not $desktop) { throw 'The DeepSeek Harness desktop application was not found' }
 $cli = Join-Path (Split-Path -Parent $desktop) 'resources\runtime\cli\bin\dsh.cmd'
 if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw "Bundled CLI missing: $cli" }
+Write-Output "Bundled CLI: $cli"
 & $cli --version
 if ($LASTEXITCODE -ne 0) { throw 'The desktop CLI failed to run' }
 
@@ -43,8 +46,13 @@ try {
 
 $pluginName = 'agentbro-bridge-deepseek-harness'
 $package = Join-Path $stage $pluginName
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$port = $listener.LocalEndpoint.Port
+$listener.Stop()
+$env:AGENTBRO_HOOK_PORT = "$port"
 $null = New-Item -ItemType Directory -Path $package
-@{ name = $pluginName; version = '1.0.0'; type = 'module'; exports = './index.js'; agentbroHookPort = 17894;
+@{ name = $pluginName; version = '1.0.0'; type = 'module'; exports = './index.js'; agentbroHookPort = $port;
     dsh = @{ bundle = @{ patch = './bundle.yml' } } } |
     ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath (Join-Path $package 'package.json') -Encoding utf8
@@ -68,3 +76,43 @@ if ($pluginName -in $pkg.dsh.profile.bundles -or (Test-Path -LiteralPath $instal
     throw 'The desktop profile did not remove the AgentBro bridge'
 }
 Write-Output 'Official DeepSeek Harness desktop CLI removed the AgentBro bridge.'
+
+$fixtureName = 'agentbro-harness-ci-fixture'
+$fixture = Join-Path $stage $fixtureName
+$output = Join-Path $stage 'results'
+$null = New-Item -ItemType Directory -Path $fixture, $output
+@{ name = $fixtureName; version = '1.0.0'; type = 'module'; exports = './index.js';
+    dsh = @{ bundle = @{ patch = './bundle.yml' } } } |
+    ConvertTo-Json -Depth 8 |
+    Set-Content -LiteralPath (Join-Path $fixture 'package.json') -Encoding utf8
+Set-Content -LiteralPath (Join-Path $fixture 'bundle.yml') -Value "- insert:`n    - id: $fixtureName`n      name: $fixtureName" -Encoding utf8
+Copy-Item -LiteralPath "$PSScriptRoot/harness-approval-fixture.mjs" -Destination (Join-Path $fixture 'index.js')
+& $cli plugin --profile desktop add "file:$package" "file:$fixture" --offline --ignore-scripts
+if ($LASTEXITCODE -ne 0) { throw 'The desktop CLI could not install both plugins' }
+
+$agentBroDir = Join-Path $stage 'AgentBro app'
+$agentBroSetup = Start-Process -FilePath $AgentBroInstaller -ArgumentList "/S /D=$agentBroDir" -PassThru
+if (-not $agentBroSetup.WaitForExit(90000) -or $agentBroSetup.ExitCode -ne 0) { throw 'AgentBro installation failed' }
+$agentBro = Start-Process -FilePath (Join-Path $agentBroDir 'agentbro.exe') -PassThru
+try {
+    $deadline = (Get-Date).AddSeconds(45)
+    do {
+        $ready = Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $agentBro.Id -ErrorAction SilentlyContinue
+        if ($ready) { break }
+        if ($agentBro.HasExited) { throw 'AgentBro exited before Hook startup' }
+        Start-Sleep -Milliseconds 500
+    } until ((Get-Date) -ge $deadline)
+    if (-not $ready) { throw 'AgentBro Hook port was unavailable' }
+    $env:AGENTBRO_HARNESS_FIXTURE_OUTPUT = $output
+    $harness = Start-Process -FilePath $desktop -PassThru
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    & $windowsPowerShell -NoProfile -NonInteractive -Mta -File "$PSScriptRoot/test-windows-island.ps1" `
+        -AppProcessId $agentBro.Id -ProjectName 'AgentBro Harness fixture' -HarnessOutput $output
+    if ($LASTEXITCODE -ne 0) { throw 'The Harness Island interaction check did not pass' }
+} finally {
+    Get-ChildItem -LiteralPath $output -File | ForEach-Object {
+        Write-Output "$($_.Name): $(Get-Content -LiteralPath $_.FullName -Raw)"
+    }
+    if (-not $agentBro.HasExited) { Stop-Process -Id $agentBro.Id }
+    Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process
+}

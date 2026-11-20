@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$HarnessOutput
 )
 
 $ErrorActionPreference = 'Stop'
@@ -138,6 +139,40 @@ try {
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+    if ($HarnessOutput) {
+        $null = Wait-IslandValue 'the active Harness fixture session in the hover list' {
+            foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+                $state = $button.Current
+                if (-not $state.IsOffscreen -and $state.Name.Contains($ProjectName)) { return $button }
+            }
+        }
+        Write-Output 'Windows Island showed the active DeepSeek Harness session.'
+        $decisions = [ordered]@{ Deny = 'rejected'; 'Allow once' = 'allowed-once' }
+        $index = 0
+        foreach ($action in $decisions.Keys) {
+            New-Item -ItemType File -Path (Join-Path $HarnessOutput "request-$index") | Out-Null
+            $condition = [Windows.Automation.AndCondition]::new($buttonCondition,
+                [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $action))
+            $approvalButton = Wait-IslandValue "the visible '$action' Harness decision button" {
+                $target = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+                if ($target -and -not $target.Current.IsOffscreen) { return $target }
+            }
+            Move-ToElement $approvalButton
+            Start-Sleep -Milliseconds 250
+            if ([AgentBroSmokeMouse]::ProcessAtCursor() -ne $AppProcessId) {
+                throw "The AgentBro window does not own the '$action' click point"
+            }
+            [AgentBroSmokeMouse]::Click()
+            $resultPath = Join-Path $HarnessOutput "decision-$index.txt"
+            $result = Wait-IslandValue "the '$action' result in the Harness approval service" {
+                if (Test-Path -LiteralPath $resultPath -PathType Leaf) { Get-Content -LiteralPath $resultPath -Raw }
+            }
+            if ($result -ne $decisions[$action]) { throw "Unexpected '$action' result: $result" }
+            Write-Output "Native Island action '$action' returned '$result' to the Harness approval service."
+            $index++
+        }
+        return
+    }
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
             $state = $button.Current
