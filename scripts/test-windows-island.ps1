@@ -210,6 +210,12 @@ try {
                 if ($button.Current.Name -eq $WorkBuddyEditionName) { return $button }
             }
         }
+        $otherEdition = if ($WorkBuddyEditionName -eq 'WorkBuddy AI') { 'WorkBuddy' } else { 'WorkBuddy AI' }
+        foreach ($button in $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+            if ($button.Current.Name -eq $otherEdition -and -not $button.Current.IsOffscreen) {
+                throw "Agent Management also listed the uninstalled $otherEdition edition"
+            }
+        }
         Write-Output "Agent Management recognized the official $WorkBuddyEditionName installation before configuring its hooks."
         Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
         return

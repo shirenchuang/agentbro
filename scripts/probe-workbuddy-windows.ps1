@@ -86,7 +86,8 @@ do {
 foreach ($profile in (Get-ChildItem -LiteralPath $env:USERPROFILE -Force -Directory -Filter '.workbuddy*')) {
     $settings = Test-Path -LiteralPath (Join-Path $profile.FullName 'settings.json') -PathType Leaf
     $mcp = Test-Path -LiteralPath (Join-Path $profile.FullName 'mcp.json') -PathType Leaf
-    Write-Output "WorkBuddy profile $($profile.Name) (settings.json=$settings, mcp.json=$mcp)"
+    $skills = Test-Path -LiteralPath (Join-Path $profile.FullName 'skills') -PathType Container
+    Write-Output "WorkBuddy profile $($profile.Name) (settings.json=$settings, mcp.json=$mcp, skills=$skills)"
 }
 foreach ($relative in @('resources\app\product.json', 'resources\app.asar', 'resources\app.asar.unpacked\cli\bin', 'resources\app\cli\bin')) {
     $candidate = Join-Path $launcher.DirectoryName $relative
