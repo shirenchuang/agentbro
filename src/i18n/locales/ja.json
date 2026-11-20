@@ -1156,6 +1156,8 @@
       "packNamed": "パック: {{name}}"
     },
     "agentManagement": {
+      "sidebarSearch": "Agent を検索",
+      "sidebarSearchEmpty": "一致する Agent がありません",
       "scanComplete": "スキャン完了：管理済み {{managed}}、未管理 {{unmanaged}}",
       "scanCompleteShared": "スキャン完了：この Agent は管理済み {{managed}}、未管理 {{unmanaged}}；.agents 共有ディレクトリは管理済み {{sharedManaged}}、未管理 {{sharedUnmanaged}}",
       "scanCompleteSharedReadOnly": "スキャン完了：この Agent は管理済み {{managed}}、未管理 {{unmanaged}}、組み込み読み取り専用 {{readOnly}}；.agents 共有ディレクトリは管理済み {{sharedManaged}}、未管理 {{sharedUnmanaged}}、読み取り専用 {{sharedReadOnly}}",

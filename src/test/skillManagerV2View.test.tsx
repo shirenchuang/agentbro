@@ -3359,6 +3359,50 @@ describe('Skill detail slider + agent page render without crashing', () => {
     useSessionStore.setState({ sessions: {}, sessionList: [], activeSessionId: null })
   })
 
+  it('searches installed and folded uninstalled Agents without changing selection', async () => {
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      selectedAgentId: 'claude-code',
+      agents: [
+        makeSidebarAgent('claude-code', 'Claude Code'),
+        makeSidebarAgent('codex', 'Codex'),
+        { ...makeSidebarAgent('qwenwork-cn', '千问办公'), installed: false },
+      ],
+    })
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { container } = render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    const search = screen.getByRole('searchbox')
+    expect(screen.queryByText('千问办公')).not.toBeInTheDocument()
+    fireEvent.change(search, { target: { value: 'ClAuDe' } })
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.queryByText('Codex')).not.toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: ' QWENWORK ' } })
+    expect(screen.getByText('千问办公')).toBeInTheDocument()
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument()
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code')
+
+    fireEvent.change(search, { target: { value: 'does not match' } })
+    expect(container.querySelector('.sm2-sidebar__subgroup-empty[role="status"]')).toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByText('Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('Codex')).toBeInTheDocument()
+    expect(screen.queryByText('千问办公')).not.toBeInTheDocument()
+  })
+
   it('Agent skills default to cards and can switch to list view', async () => {
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)

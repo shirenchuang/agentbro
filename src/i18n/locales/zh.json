@@ -1196,6 +1196,8 @@
       "packNamed": "技能包：{{name}}"
     },
     "agentManagement": {
+      "sidebarSearch": "搜索 Agent",
+      "sidebarSearchEmpty": "没有匹配的 Agent",
       "scanComplete": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}",
       "scanCompleteShared": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}",
       "scanCompleteSharedReadOnly": "扫描完成：此 Agent 已管理 {{managed}}，未管理 {{unmanaged}}，内置只读 {{readOnly}}；.agents 共享目录已管理 {{sharedManaged}}，未管理 {{sharedUnmanaged}}，只读 {{sharedReadOnly}}",
