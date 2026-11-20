@@ -70,8 +70,12 @@ public static class AgentBroSmokeMouse {
         SendMouseButton(LeftUp);
     }
 
-    private static void SendMouseButton(uint flags) {
-        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags } } };
+    public static void ScrollDown() {
+        SendMouseButton(0x0800, unchecked((uint)-120));
+    }
+
+    private static void SendMouseButton(uint flags, uint data = 0) {
+        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags, Data = data } } };
         if (SendInput(1, inputs, Marshal.SizeOf<Input>()) != 1)
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
@@ -162,6 +166,7 @@ $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
 $island = $null
+$settingsWindow = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
@@ -185,20 +190,32 @@ try {
         }
         $tab = Wait-IslandValue 'the Integration tab' { Find-NamedControl $settingsWindow 'Integration' }
         Invoke-NamedControl $tab
+        $windowBounds = $settingsWindow.Current.BoundingRectangle
+        if (-not [AgentBroSmokeMouse]::SetCursorPos([int]($windowBounds.Right - 100), [int]($windowBounds.Bottom - 120))) {
+            throw 'Could not move the cursor over the Settings content'
+        }
+        $comboName = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, 'Distribution')
+        $comboType = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::ComboBox)
+        $distributionSelector = [Windows.Automation.AndCondition]::new($comboName, $comboType)
         $distribution = Wait-IslandValue 'the available WSL Distribution selector' {
-            $control = Find-NamedControl $settingsWindow 'Distribution'
-            if ($control -and $control.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox -and $control.Current.IsEnabled) {
-                return $control
+            $control = $settingsWindow.FindFirst([Windows.Automation.TreeScope]::Descendants, $distributionSelector)
+            if ($control -and $control.Current.IsEnabled) {
+                if ($control.Current.IsOffscreen) {
+                    $control.SetFocus()
+                } else {
+                    return $control
+                }
+            } else {
+                [AgentBroSmokeMouse]::ScrollDown()
             }
         }
-        $distribution.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
-        $option = Wait-IslandValue "the $WslDistribution choice" {
-            foreach ($root in @($distribution, $settingsWindow, [Windows.Automation.AutomationElement]::RootElement)) {
-                $option = Find-NamedControl $root $WslDistribution
-                if ($option -and $option.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem) { return $option }
-            }
-        }
-        $option.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        Move-ToElement $distribution
+        [AgentBroSmokeMouse]::Click()
+        Add-Type -AssemblyName System.Windows.Forms
+        [Windows.Forms.SendKeys]::SendWait('{HOME}{DOWN}{ENTER}')
+        Write-Output "Selected the WSL distribution in Settings: $WslDistribution."
         $opposite = if ($WslAction -eq 'Install') { 'Uninstall' } else { 'Install' }
         foreach ($agent in @('Claude Code', 'Codex CLI')) {
             $button = Wait-IslandValue "$WslAction in the WSL $agent row" { Find-WslHookAction $settingsWindow $agent $WslAction }
@@ -299,6 +316,13 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
+        if ($settingsWindow) {
+            $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Select-Object -ExpandProperty Current |
+                Where-Object { $_.Name -match 'WSL|Distribution|Install|error|failed' } |
+                Select-Object LocalizedControlType, Name, IsEnabled, IsOffscreen |
+                ConvertTo-Json -Depth 3 -Compress
+        }
         if ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |

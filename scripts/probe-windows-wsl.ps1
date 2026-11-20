@@ -30,6 +30,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The imported WSL 2 distribution could not start' }
 
     if ($VerifyIntegration) {
+        $registeredNames = @(& $wsl --list --quiet | ForEach-Object { ($_ -replace '\x00', '').Trim() } | Where-Object { $_ })
+        if ($registeredNames.Count -ne 1 -or $registeredNames[0] -ne $distribution) {
+            throw 'The WSL settings test needs the fixture distribution to be the only one listed'
+        }
         & $wsl --distribution $distribution --user root --exec /usr/sbin/useradd --create-home --shell /bin/bash agentbro
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL fixture user' }
         "[user]`ndefault=agentbro" | & $wsl --distribution $distribution --user root --exec /bin/sh -c 'cat >/etc/wsl.conf'
