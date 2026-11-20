@@ -213,6 +213,15 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
     onDeny(msg || undefined)
   }, [feedbackText, onDeny])
 
+  const handleDeny = () => {
+    if (session.agentType === 'deepseek-harness' || showFeedback) {
+      handleReject()
+      return
+    }
+    setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
+    setNotchFocusable(true)
+  }
+
   const handleJump = useCallback(() => {
     jumpToTerminal(session.id)
   }, [session.id])
@@ -325,22 +334,8 @@ export function PermissionCard({ overlay, session, onAllow, onAllowAlways, onAut
         <button
           type="button"
           className="perm-card__btn perm-card__btn--deny"
-          onMouseDown={(event) => runActionOnMouseDown(event, () => {
-            if (showFeedback) {
-              handleReject()
-            } else {
-              setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
-              setNotchFocusable(true)
-            }
-          })}
-          onClick={(event) => runActionOnKeyboardClick(event, () => {
-            if (showFeedback) {
-              handleReject()
-            } else {
-              setFeedbackState({ overlayId: overlay.id, text: feedbackText, show: true })
-              setNotchFocusable(true)
-            }
-          })}
+          onMouseDown={(event) => runActionOnMouseDown(event, handleDeny)}
+          onClick={(event) => runActionOnKeyboardClick(event, handleDeny)}
         >
           <span>{t('notch.deny')}</span>
         </button>
