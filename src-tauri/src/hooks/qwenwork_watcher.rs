@@ -243,7 +243,8 @@ fn reconcile(
             store.get_or_create_session(id, AGENT, NAME, "", NAME);
         }
         store.update_session(id, |session| {
-            session.term_bundle_id = Some("cn.qwenwork.desktop.mac".to_string());
+            session.term_bundle_id =
+                cfg!(target_os = "macos").then(|| "cn.qwenwork.desktop.mac".to_string());
             session.session_title = turn.title.clone();
             session.phase = turn.phase.clone();
             session.description = Some(turn.description.to_string());
@@ -364,6 +365,10 @@ mod tests {
         observe(2000);
         let waiting = store.get_session(id).unwrap();
         assert_eq!(waiting.phase, SessionPhase::WaitingInput);
+        assert_eq!(
+            waiting.term_bundle_id.as_deref(),
+            cfg!(target_os = "macos").then_some("cn.qwenwork.desktop.mac")
+        );
         assert!(waiting.pending_permission.is_none());
         assert!(waiting.pending_question.is_none());
 

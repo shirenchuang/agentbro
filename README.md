@@ -163,10 +163,10 @@ AgentBro 的支持分为两层。运行时 Hook 适配器负责把会话事件�
 | Agent 管理扫描 | 上面所有 Agent，另支持豆包、`.agents` 共享目录、Junie、Windsurf、Augment、KiloCode、OB1、Amp、Aider、OpenClaw / QClaw / EasyClaw / AutoClaw，以及自定义 Agent |
 | 项目级扫描 | 目前聚焦 Claude Code 与 Codex 常见项目配置：项目级 Skills、MCP、插件和指令文件 |
 
-macOS 的 Agent 管理可以单独识别 DeepSeek Harness 和千问办公（QwenWork CN），并管理 `~/.dsh/skills` 和 `~/.qwenworkcn/skills` 下的目录式 Skills。DeepSeek Harness 也能显示默认 `~/.agents/skills` 中的继承项。
+macOS 和 Windows 的 Agent 管理可以单独识别 DeepSeek Harness 和千问办公（QwenWork CN），并管理 `~/.dsh/skills` 和 `~/.qwenworkcn/skills` 下的目录式 Skills。DeepSeek Harness 也能显示默认 `~/.agents/skills` 中的继承项。
 
 - **DeepSeek Harness**。先打开客户端一次生成桌面配置，再完全退出。在 AgentBro 的灵动岛集成页给 DeepSeek Harness 安装 Hook，然后重新打开客户端。灵动岛会显示任务开始、结束和可转发的审批。审批可允许一次或拒绝，AgentBro 不可用时回到客户端处理。
-- **千问办公**。灵动岛只读观察桌面客户端记录的任务状态，包括排队、运行、结束和等待交互。需要点击确认或回答的问题在千问办公里处理。
+- **千问办公**。灵动岛只读观察桌面客户端记录的任务状态，包括排队、运行、结束和等待交互。可以从会话打开千问办公，在客户端处理确认或回答问题。
 
 豆包 macOS 支持会检测 `/Applications/Doubao.app`、管理 `~/Doubao/skills`，并继续通过中心库覆盖豆包兼容的 `~/.agents/skills`。由于豆包目前没有公开 Hook，灵动岛中的任务状态来自本机进程与两个任务存储目录的只读元数据关联，不读取聊天内容；该状态属于尽力推断，页面同步可能造成短暂误报。
 
