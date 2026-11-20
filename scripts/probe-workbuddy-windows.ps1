@@ -201,6 +201,7 @@ try {
     Send-WorkBuddyHook SessionStart @{}
     Send-WorkBuddyHook UserPromptSubmit @{ prompt = 'WorkBuddy is processing the test task' }
     Invoke-IslandCheck Processing 'WorkBuddy is processing the test task'
+    Start-Sleep -Seconds 8
     if ($Edition -eq 'global') {
         Send-WorkBuddyHook Notification @{ notification_type = 'permission_prompt'; message = 'Confirmation needed in the desktop' }
         Invoke-IslandCheck Jump 'Confirm this action in WorkBuddy AI'
