@@ -57,6 +57,11 @@ $fixtureSettings = @{
 }
 $fixtureSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding utf8
 
+$webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
+Write-Output 'Installed WebView2 Runtime versions:'
+Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Name
+
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
@@ -139,6 +144,8 @@ try {
             (Test-Path -LiteralPath $logPath -PathType Leaf) -and
             (Select-String -LiteralPath $logPath -SimpleMatch 'Claude Code hooks installed successfully' -Quiet)
     }
+    Select-String -LiteralPath $logPath -SimpleMatch 'Startup:', 'Listening on TCP:' |
+        Select-Object -ExpandProperty Line
     $deployedHash = (Get-FileHash -LiteralPath $bridgePath).Hash
     $bundledHashes = Get-FileHash -LiteralPath $bundledBridges.FullName
     if ($deployedHash -notin $bundledHashes.Hash) {
@@ -200,10 +207,6 @@ try {
     Get-NetTCPConnection -OwningProcess $app.Id -State Listen -ErrorAction SilentlyContinue |
         Select-Object LocalAddress, LocalPort |
         Format-Table
-    $webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
-    Write-Output 'WebView2 Runtime versions:'
-    Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty Name
     foreach ($diagnosticLog in @($logPath, $stdoutPath, $stderrPath)) {
         if (Test-Path -LiteralPath $diagnosticLog -PathType Leaf) {
             Write-Output "Last lines of $diagnosticLog"

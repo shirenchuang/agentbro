@@ -5648,7 +5648,7 @@ async fn resize_notch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -5671,6 +5671,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            log::info!("Startup: configured windows created");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -5739,6 +5740,7 @@ pub fn run() {
             // monitor transitions.
             platform::monitor_tracker::start(app.handle().clone());
 
+            log::info!("Startup: restoring active sessions");
             // Bootstrap: discover sessions that were already running before we launched
             {
                 let config = config_store.get();
@@ -5819,6 +5821,7 @@ pub fn run() {
                 });
             }
 
+            log::info!("Startup: initializing agent adapters");
             // Initialize adapters: default ~/.claude + custom engine instances
             let default_cc = ClaudeCodeAdapter::new();
             let mut cc_adapters: Vec<ClaudeCodeAdapter> = vec![];
@@ -5903,6 +5906,7 @@ pub fn run() {
                 }
             });
 
+            log::info!("Startup: scheduling Hook server");
             // Initialize and start hook server
             let hook_server = HookServer::new(session_store.clone(), adapters.clone());
             let hook_server = Arc::new(hook_server);
@@ -6470,6 +6474,8 @@ pub fn run() {
             skills::v2::commands::open_skill_path,
             skills::v2::commands::reveal_skill_path,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AgentBro");
+        .build(tauri::generate_context!())
+        .expect("error while building AgentBro");
+    log::info!("Startup: creating configured windows");
+    app.run(|_, _| {});
 }
