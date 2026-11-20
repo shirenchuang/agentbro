@@ -365,22 +365,31 @@ impl Service {
             if !path.is_dir() {
                 continue;
             }
-            let skill_id = fsutil::infer_skill_id(&path);
+            let inferred_id = fsutil::infer_skill_id(&path);
+            let path_string = path.display().to_string();
             let fm = fsutil::read_frontmatter(&path);
             let hash = fsutil::hash_dir(&path);
             let name = fm
                 .name()
                 .map(String::from)
-                .unwrap_or_else(|| skill_id.clone());
+                .unwrap_or_else(|| inferred_id.clone());
             let desc = fm.description().to_string();
-            self.db.transaction(|tx| {
+            let skill_id = self.db.transaction(|tx| {
+                // Git updates can change the manifest name without changing the installed directory.
+                let skill_id = tx.query_row(
+                    "SELECT s.id FROM skills s JOIN skill_sources source ON source.skill_id = s.id
+                     WHERE s.center_path = ?1 AND source.source_type IN ('github', 'git', 'skillssh')
+                     ORDER BY s.id LIMIT 1",
+                    params![path_string],
+                    |row| row.get::<_, String>(0),
+                ).optional().map_err(|error| error.to_string())?.unwrap_or(inferred_id);
                 upsert_skill_full(
                     tx,
                     &skill_id,
                     &name,
                     &desc,
                     "skill",
-                    &path.display().to_string(),
+                    &path_string,
                     &hash,
                     &serde_json::to_value(&fm.map).map_err(|e| e.to_string())?,
                     now,
@@ -407,9 +416,9 @@ impl Service {
                         "scan",
                     )?;
                 }
-                Ok(())
+                Ok(skill_id)
             })?;
-            found.push(skill_id.clone());
+            found.push(skill_id);
         }
         Ok(())
     }
@@ -1936,6 +1945,119 @@ impl Service {
 
     // ── Add to center library ─────────────────────────────────────
 
+    pub fn check_skill_source_update(
+        &self,
+        skill_id: &str,
+        github_token: Option<&str>,
+    ) -> Result<SkillSourceUpdateCheck, String> {
+        let (path, source) = self.git_skill_update_source(skill_id)?;
+        let source_uri = source
+            .source_uri
+            .ok_or("The Skill has no saved Git source.")?;
+        let checkout = installer::checkout_git_skill(&source_uri, github_token)?;
+        let current_hash = fsutil::hash_dir_contents(&path);
+        let update_available = match &source.source_ref {
+            Some(installed) => checkout.has_changed_since(installed, github_token)?,
+            None => current_hash != fsutil::hash_dir_contents(&checkout.skill_dir),
+        };
+        Ok(SkillSourceUpdateCheck {
+            source_uri,
+            installed_ref: source.source_ref,
+            latest_ref: checkout.commit,
+            current_hash,
+            update_available,
+        })
+    }
+
+    pub fn apply_skill_source_update(
+        &self,
+        skill_id: &str,
+        expected: SkillSourceUpdateCheck,
+        github_token: Option<&str>,
+    ) -> Result<SkillDetail, String> {
+        let (_, source) = self.git_skill_update_source(skill_id)?;
+        if source.source_uri.as_deref() != Some(&expected.source_uri)
+            || source.source_ref != expected.installed_ref
+            || !expected.update_available
+        {
+            return Err("Check for a Skill update again before applying it.".to_string());
+        }
+        let checkout = installer::checkout_git_skill(&expected.source_uri, github_token)?;
+        self.install_checked_git_skill(skill_id, &expected, &checkout.skill_dir, &checkout.commit)
+    }
+
+    fn git_skill_update_source(
+        &self,
+        skill_id: &str,
+    ) -> Result<(PathBuf, SkillSourceDetail), String> {
+        let row = self
+            .skill_row(skill_id)?
+            .ok_or("The Skill no longer exists.")?;
+        let path = PathBuf::from(row.center_path);
+        let source = self
+            .source_for_skill(skill_id)?
+            .filter(|source| {
+                matches!(source.source_type.as_str(), "github" | "git" | "skillssh")
+                    && source
+                        .source_uri
+                        .as_deref()
+                        .is_some_and(is_git_skill_source_path)
+            })
+            .ok_or("This Skill does not have a supported Git source.")?;
+        let center = self.center_path()?;
+        if path.parent() != Some(center.as_path())
+            || path != center.join(skill_id)
+            || !path.is_dir()
+            || path.is_symlink()
+        {
+            return Err("The Skill's files in the center library are unavailable.".to_string());
+        }
+        Ok((path, source))
+    }
+
+    pub(super) fn install_checked_git_skill(
+        &self,
+        skill_id: &str,
+        expected: &SkillSourceUpdateCheck,
+        source_dir: &Path,
+        latest_ref: &str,
+    ) -> Result<SkillDetail, String> {
+        let _import_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for import.".to_string())?;
+        let (path, source) = self.git_skill_update_source(skill_id)?;
+        if latest_ref != expected.latest_ref
+            || source.source_uri.as_deref() != Some(&expected.source_uri)
+            || source.source_ref != expected.installed_ref
+            || fsutil::hash_dir_contents(&path) != expected.current_hash
+        {
+            return Err(
+                "The Skill or its source changed since the last check. Check for updates again."
+                    .to_string(),
+            );
+        }
+        let input = AddCenterSkillInput {
+            source_path: source_dir.display().to_string(),
+            source_type: source.source_type,
+            source_uri: source.source_uri,
+            imported_from_agent: source.imported_from_agent,
+            imported_from_path: source.imported_from_path,
+            multi: Some(false),
+            import_mode: Some("copy".to_string()),
+        };
+        self.write_skill_to_center(
+            source_dir,
+            &self.center_path()?,
+            skill_id,
+            &input,
+            Some(latest_ref),
+        )?;
+        self.scan_center_into_db()?;
+        self.refresh_snapshot_best_effort();
+        self.get_skill_detail(skill_id)
+    }
+
     pub fn preview_add_center_skill(
         &self,
         input: AddCenterSkillInput,
@@ -2148,7 +2270,13 @@ impl Service {
                 }
                 Some("update") => {
                     // treat as overwrite
-                    self.write_skill_to_center(b, &center, &b.skill_id, &input, source_ref)?;
+                    self.write_skill_to_center(
+                        Path::new(&b.source_dir),
+                        &center,
+                        &b.skill_id,
+                        &input,
+                        source_ref,
+                    )?;
                     updated.push(b.skill_id.clone());
                 }
                 Some("create") => {
@@ -2157,7 +2285,13 @@ impl Service {
                         .get(&b.skill_id)
                         .and_then(|d| d.proposed_skill_id.clone())
                         .unwrap_or_else(|| format!("{}-import", b.skill_id));
-                    self.write_skill_to_center(b, &center, &new_id, &input, source_ref)?;
+                    self.write_skill_to_center(
+                        Path::new(&b.source_dir),
+                        &center,
+                        &new_id,
+                        &input,
+                        source_ref,
+                    )?;
                     created.push(new_id);
                 }
                 _ => {
@@ -2176,7 +2310,13 @@ impl Service {
                 continue;
             }
             if c.action == "update" {
-                self.write_skill_to_center(c, &center, &c.skill_id, &input, source_ref)?;
+                self.write_skill_to_center(
+                    Path::new(&c.source_dir),
+                    &center,
+                    &c.skill_id,
+                    &input,
+                    source_ref,
+                )?;
                 updated.push(c.skill_id.clone());
             } else {
                 // create — allow rename override
@@ -2186,12 +2326,24 @@ impl Service {
                     .filter(|s| !s.is_empty())
                 {
                     if new_id != c.skill_id {
-                        self.write_skill_to_center(c, &center, &new_id, &input, source_ref)?;
+                        self.write_skill_to_center(
+                            Path::new(&c.source_dir),
+                            &center,
+                            &new_id,
+                            &input,
+                            source_ref,
+                        )?;
                         created.push(new_id);
                         continue;
                     }
                 }
-                self.write_skill_to_center(c, &center, &c.skill_id, &input, source_ref)?;
+                self.write_skill_to_center(
+                    Path::new(&c.source_dir),
+                    &center,
+                    &c.skill_id,
+                    &input,
+                    source_ref,
+                )?;
                 created.push(c.skill_id.clone());
             }
         }
@@ -2206,14 +2358,13 @@ impl Service {
 
     fn write_skill_to_center(
         &self,
-        cand: &AddCenterSkillCandidate,
+        src: &Path,
         center: &Path,
         skill_id: &str,
         input: &AddCenterSkillInput,
         source_ref: Option<&str>,
     ) -> Result<(), String> {
         let dest = center.join(skill_id);
-        let src = Path::new(&cand.source_dir);
         if input.import_mode.as_deref() == Some("link") && fsutil::is_path_within(&dest, src) {
             return Err(format!(
                 "Cannot link '{}' to a source inside the Skill directory being replaced.",

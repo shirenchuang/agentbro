@@ -685,6 +685,23 @@
     "dismiss": "Dismiss"
   },
   "skills": {
+    "sourceUpdates": {
+      "installedCommit": "Installed commit",
+      "privateRepository": "Private repository",
+      "githubToken": "GitHub access token (for this update)",
+      "installedAt": "Installed at",
+      "updatedAt": "Updated at",
+      "check": "Check for updates",
+      "checking": "Checking source…",
+      "apply": "Update Skill",
+      "applying": "Updating Skill…",
+      "available": "Source update available · {{version}}",
+      "different": "Source files differ from this installation · {{version}}",
+      "current": "The upstream Skill is unchanged.",
+      "matches": "Local files match the source.",
+      "applied": "Skill updated to {{version}}.",
+      "confirm": "Replace the Skill files in the center library with {{version}}?"
+    },
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
     "runtimeEnvironment": {

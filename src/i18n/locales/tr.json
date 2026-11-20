@@ -580,6 +580,23 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "sourceUpdates": {
+      "installedCommit": "Yüklü commit",
+      "privateRepository": "Özel depo",
+      "githubToken": "GitHub erişim belirteci (bu güncelleme için)",
+      "installedAt": "Yükleme zamanı",
+      "updatedAt": "Güncelleme zamanı",
+      "check": "Güncellemeleri denetle",
+      "checking": "Kaynak denetleniyor…",
+      "apply": "Beceriyi güncelle",
+      "applying": "Beceri güncelleniyor…",
+      "available": "Kaynak güncellemesi var · {{version}}",
+      "different": "Kaynak dosyaları mevcut kurulumdan farklı · {{version}}",
+      "current": "Kaynak beceri değişmedi.",
+      "matches": "Yerel dosyalar kaynakla eşleşiyor.",
+      "applied": "Beceri {{version}} sürümüne güncellendi.",
+      "confirm": "Merkez kütüphanedeki beceri dosyaları {{version}} ile değiştirilsin mi?"
+    },
     "runtimeEnvironment": {
       "localName": "Bu Mac",
       "localMeta": "Yerel",

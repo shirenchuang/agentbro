@@ -81,6 +81,23 @@ pub fn get_skill_detail_v2(skill_id: String) -> Result<SkillDetail, String> {
     Ok(svc()?.get_skill_detail(&skill_id)?)
 }
 
+#[tauri::command(async)]
+pub fn check_skill_source_update(
+    skill_id: String,
+    github_token: Option<String>,
+) -> Result<SkillSourceUpdateCheck, String> {
+    svc()?.check_skill_source_update(&skill_id, github_token.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn apply_skill_source_update(
+    skill_id: String,
+    expected: SkillSourceUpdateCheck,
+    github_token: Option<String>,
+) -> Result<SkillDetail, String> {
+    svc()?.apply_skill_source_update(&skill_id, expected, github_token.as_deref())
+}
+
 // `(async)` runs the blocking body on a worker thread instead of the main
 // thread, so a network skill download never freezes the webview and multiple
 // installs can run concurrently.
