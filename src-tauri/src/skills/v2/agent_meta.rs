@@ -407,9 +407,10 @@ pub fn agent_installed(home: &std::path::Path, agent: &str) -> bool {
 
     #[cfg(target_os = "windows")]
     {
-        // Keep the Skill Manager list cheap on Windows. Program probing walks
-        // PATH and can block the settings window while every agent is listed.
-        false
+        // Check the desktop launcher directly without scanning PATH.
+        agent == "qwenwork-cn"
+            && is_runtime_home(home)
+            && crate::agents::programs::installed_app_path_for_agent(agent).is_some()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -448,7 +449,6 @@ fn agent_program_installed(agent: &str) -> bool {
     )
 }
 
-#[cfg(not(target_os = "windows"))]
 fn is_runtime_home(home: &Path) -> bool {
     same_path(home, &crate::skills::v2::fsutil::home())
 }
@@ -460,7 +460,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a == b
 }
 
-#[cfg(all(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
