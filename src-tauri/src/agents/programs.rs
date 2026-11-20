@@ -495,6 +495,7 @@ async fn version_info_for(
     (installed, latest)
 }
 
+#[cfg(target_os = "macos")]
 async fn app_installed_version(app_path: &str) -> Option<String> {
     let info_plist = Path::new(app_path).join("Contents").join("Info.plist");
     for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
@@ -519,6 +520,82 @@ async fn app_installed_version(app_path: &str) -> Option<String> {
             return Some(version);
         }
     }
+    None
+}
+
+#[cfg(target_os = "windows")]
+async fn app_installed_version(app_path: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let path: Vec<u16> = Path::new(app_path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    tokio::task::spawn_blocking(move || read_windows_app_version(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_app_version(path: &[u16]) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+    };
+
+    let mut ignored_handle = 0;
+    let length = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), &mut ignored_handle) };
+    if length == 0 {
+        return None;
+    }
+    let mut version = vec![0_u8; length as usize];
+    if unsafe { GetFileVersionInfoW(path.as_ptr(), 0, length, version.as_mut_ptr().cast()) } == 0 {
+        return None;
+    }
+
+    let root = [u16::from(b'\\'), 0];
+    let mut fixed = std::ptr::null_mut();
+    let mut size = 0;
+    if unsafe {
+        VerQueryValueW(
+            version.as_ptr().cast(),
+            root.as_ptr(),
+            &mut fixed,
+            &mut size,
+        )
+    } == 0
+        || fixed.is_null()
+        || (size as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+    {
+        return None;
+    }
+    let fixed = unsafe { fixed.cast::<VS_FIXEDFILEINFO>().read_unaligned() };
+    if fixed.dwSignature != 0xfeef04bd {
+        return None;
+    }
+    format_windows_app_version(
+        (fixed.dwProductVersionMS, fixed.dwProductVersionLS),
+        (fixed.dwFileVersionMS, fixed.dwFileVersionLS),
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn format_windows_app_version(product: (u32, u32), file: (u32, u32)) -> Option<String> {
+    let (high, low) = if product == (0, 0) { file } else { product };
+    (high != 0 || low != 0).then(|| {
+        format!(
+            "{}.{}.{}.{}",
+            high >> 16,
+            high & 0xffff,
+            low >> 16,
+            low & 0xffff
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn app_installed_version(_app_path: &str) -> Option<String> {
     None
 }
 
@@ -1744,6 +1821,23 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn windows_app_version_prefers_product_and_falls_back_to_file() {
+        let product = (3 << 16 | 2, 8 << 16 | 4);
+        let file = (1 << 16, 2 << 16 | 3);
+
+        assert_eq!(
+            super::format_windows_app_version(product, file).as_deref(),
+            Some("3.2.8.4")
+        );
+        assert_eq!(
+            super::format_windows_app_version((0, 0), file).as_deref(),
+            Some("1.0.2.3")
+        );
+        assert!(super::format_windows_app_version((0, 0), (0, 0)).is_none());
+    }
+
     use super::*;
     use crate::skills::v2::agent_meta;
 
