@@ -229,16 +229,9 @@ pub(crate) fn macos_cursor_position() -> (f64, f64) {
 }
 
 #[cfg(target_os = "windows")]
-fn cursor_position() -> Option<(f64, f64)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-
-    let mut point = POINT { x: 0, y: 0 };
-    let ok = unsafe { GetCursorPos(&mut point) };
-    if ok == 0 {
-        return None;
-    }
-    Some((point.x as f64, point.y as f64))
+pub fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    let cursor = app.cursor_position().ok()?;
+    app.monitor_from_point(cursor.x, cursor.y).ok().flatten()
 }
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -246,6 +239,7 @@ fn cursor_position() -> Option<(f64, f64)> {
     None
 }
 
+#[cfg(not(target_os = "windows"))]
 pub fn find_cursor_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     if let Ok(cursor) = app.cursor_position() {
         if let Ok(monitors) = app.available_monitors() {
