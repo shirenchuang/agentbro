@@ -200,7 +200,16 @@ try {
         }
         Invoke-NamedControl $actionButton
         $null = Wait-IslandValue "AgentBro '$HookOperation' to update the Harness profile" {
-            (Test-Path -LiteralPath $HarnessPluginPath -PathType Leaf) -eq ($HookOperation -eq 'Install')
+            $expectedInstalled = $HookOperation -eq 'Install'
+            if ((Test-Path -LiteralPath $HarnessPluginPath -PathType Leaf) -ne $expectedInstalled) { return }
+            $pluginDirectory = Split-Path -Parent $HarnessPluginPath
+            $profileRoot = Split-Path -Parent (Split-Path -Parent $pluginDirectory)
+            try {
+                $profileState = Get-Content -LiteralPath (Join-Path $profileRoot 'package.json') -Raw | ConvertFrom-Json
+                ($profileState.dsh.profile.bundles -contains (Split-Path -Leaf $pluginDirectory)) -eq $expectedInstalled
+            } catch {
+                return
+            }
         }
         Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
         return
