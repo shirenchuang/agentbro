@@ -25,6 +25,8 @@
     "composerHintCodexApp": "Codex.app 会话暂时不能从 AgentBro 直接发消息。",
     "composerHintQoderApp": "Qoder.app 会话暂时不能从 AgentBro 直接发消息。",
     "composerHintRemote": "远端会话不能从 AgentBro 续聊,请到远端终端继续。",
+    "composerHintWsl": "在 WSL 终端中继续对话。",
+    "openWslTerminal": "打开 WSL 终端",
     "composerHintNoTerminal": "这个会话没有可输入的终端。",
     "openHostApp": "打开 App",
     "send": "发送",
@@ -95,6 +97,15 @@
     }
   },
   "settings": {
+    "wslHooks": {
+      "title": "WSL Hook",
+      "distribution": "发行版",
+      "select": "选择发行版",
+      "noDistributions": "未找到已安装的 WSL 发行版。",
+      "refresh": "刷新",
+      "loading": "正在检查 WSL…",
+      "codexTrust": "如果 Codex 提示审核 Hook，请在 WSL 会话中运行 /hooks。"
+    },
     "title": "设置",
     "close": "关闭",
     "general": "通用",

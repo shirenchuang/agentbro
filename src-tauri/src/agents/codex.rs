@@ -1135,7 +1135,7 @@ fn remove_toml_tables(content: &str, table_paths: &BTreeSet<Vec<String>>) -> Str
     result.join("\n").replace("\n\n\n", "\n\n")
 }
 
-fn ensure_codex_hooks_feature(content: &str) -> String {
+pub(crate) fn ensure_codex_hooks_feature(content: &str) -> String {
     let mut lines = content
         .lines()
         .map(|line| line.to_string())
@@ -1163,7 +1163,11 @@ fn ensure_codex_hooks_feature(content: &str) -> String {
         .enumerate()
         .skip(features_index + 1)
         .take(next_section_index.saturating_sub(features_index + 1))
-        .find_map(|(index, line)| line.trim_start().starts_with("hooks").then_some(index));
+        .find_map(|(index, line)| {
+            line.split_once('=')
+                .filter(|(key, _)| key.trim() == "hooks")
+                .map(|_| index)
+        });
 
     if let Some(index) = hook_line_index {
         lines[index] = "hooks = true".to_string();

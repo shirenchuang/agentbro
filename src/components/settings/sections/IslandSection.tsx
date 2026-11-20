@@ -39,6 +39,8 @@ import { Slider } from '../Slider'
 import { GlassButton, GlassInput } from '../../shared'
 import { PlatformIcon } from '../../platform/PlatformIcon'
 import { HookEventConfigDialog } from '../HookEventConfigDialog'
+import { WslHooksSection } from './WslHooksSection'
+import { isWindowsPlatform } from '../../../utils/platform'
 import type { IslandSettingsView } from '../../../types/capability'
 
 function displayMatchesConfiguredValue(display: BackendDisplayInfo, value: string): boolean {
@@ -2362,6 +2364,8 @@ function IntegrationTab() {
           )
         })}
       </SettingGroup>
+
+      {isWindowsPlatform() && isTauri() && <WslHooksSection />}
 
       <SettingGroup label={t('settings.customHookConfig', { defaultValue: '自定义 Hook 配置' })}>
         {!addingCustom ? (

@@ -6,7 +6,7 @@ import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { sendMessage, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, getSessionTitle } from '../../utils/sessionDisplay'
-import { getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
+import { composerHints, getComposerCapability, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import { formatDurationShort } from '../../utils/time'
 import { MascotRouter } from '../notch/mascots/MascotRouter'
 import './OverlayFeedbackPanel.css'
@@ -440,8 +440,7 @@ function OverlayComposerHint({
   onJumpToHostApp: () => void
 }) {
   const { t } = useTranslation()
-  const messageKey = composerHintMessageKey(reason)
-  const ctaKey = composerHintCtaKey(reason)
+  const { messageKey, actionKey: ctaKey } = composerHints[reason]
 
   return (
     <div className="overlay-feedback__reply overlay-feedback__reply--hint" data-no-drag role="note">
@@ -461,24 +460,4 @@ function OverlayComposerHint({
       )}
     </div>
   )
-}
-
-function composerHintMessageKey(reason: ComposerLockReason): string {
-  switch (reason) {
-    case 'codex-app': return 'notch.composerHintCodexApp'
-    case 'qoder-app': return 'notch.composerHintQoderApp'
-    case 'remote': return 'notch.composerHintRemote'
-    case 'no-terminal': return 'notch.composerHintNoTerminal'
-  }
-}
-
-function composerHintCtaKey(reason: ComposerLockReason): string | null {
-  switch (reason) {
-    case 'codex-app':
-    case 'qoder-app':
-      return 'notch.openHostApp'
-    case 'remote':
-    case 'no-terminal':
-      return null
-  }
 }

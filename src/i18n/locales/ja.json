@@ -26,6 +26,8 @@
     "composerHintCodexApp": "Codex.app セッションはまだ AgentBro からメッセージを受け取れません。",
     "composerHintQoderApp": "Qoder.app セッションはまだ AgentBro からメッセージを受け取れません。",
     "composerHintRemote": "リモートセッションは AgentBro からの続行に対応していません。リモート端末で操作してください。",
+    "composerHintWsl": "WSL ターミナルで会話を続けてください。",
+    "openWslTerminal": "WSL ターミナルを開く",
     "composerHintNoTerminal": "このセッションには入力できるターミナルがありません。",
     "openHostApp": "アプリを開く",
     "send": "送信",
@@ -96,6 +98,15 @@
     }
   },
   "settings": {
+    "wslHooks": {
+      "title": "WSL フック",
+      "distribution": "ディストリビューション",
+      "select": "ディストリビューションを選択",
+      "noDistributions": "インストール済みの WSL ディストリビューションが見つかりません。",
+      "refresh": "更新",
+      "loading": "WSL を確認中…",
+      "codexTrust": "Codex がフックの確認を求めた場合は、WSL セッションで /hooks を実行してください。"
+    },
     "title": "設定",
     "close": "閉じる",
     "petVitals": "ペットバイタル",

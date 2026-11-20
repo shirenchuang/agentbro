@@ -5,7 +5,7 @@ import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { setNotchFocusable } from '../../services/tauriApi'
 import { getToolActivityLabel } from '../../utils/toolLabels'
-import { getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
+import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
 
 interface ApprovalBarProps {
@@ -354,8 +354,7 @@ interface ComposerHintProps {
 
 function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
   const { t } = useTranslation()
-  const messageKey = composerHintMessageKey(reason)
-  const ctaKey = composerHintCtaKey(reason)
+  const { messageKey, actionKey: ctaKey } = composerHints[reason]
   return (
     <div className="approval-bar__hint" role="note">
       <span className="approval-bar__hint-text">{t(messageKey)}</span>
@@ -374,24 +373,4 @@ function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
       )}
     </div>
   )
-}
-
-function composerHintMessageKey(reason: ComposerLockReason): string {
-  switch (reason) {
-    case 'codex-app': return 'notch.composerHintCodexApp'
-    case 'qoder-app': return 'notch.composerHintQoderApp'
-    case 'remote': return 'notch.composerHintRemote'
-    case 'no-terminal': return 'notch.composerHintNoTerminal'
-  }
-}
-
-function composerHintCtaKey(reason: ComposerLockReason): string | null {
-  switch (reason) {
-    case 'codex-app':
-    case 'qoder-app':
-      return 'notch.openHostApp'
-    case 'remote':
-    case 'no-terminal':
-      return null
-  }
 }

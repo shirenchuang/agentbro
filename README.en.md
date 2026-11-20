@@ -171,6 +171,8 @@ On macOS and Windows, Agent Management recognizes DeepSeek Harness and QwenWork 
 
 Doubao support on macOS detects `/Applications/Doubao.app`, manages `~/Doubao/skills`, and continues to cover Doubao's compatible `~/.agents/skills` through the central library. Doubao does not currently expose a public hook, so island activity is a best-effort inference from local processes and read-only metadata for two task-state directories; conversation contents are never read, and page synchronization can cause a brief false positive.
 
+On Windows, open Island → Integration → WSL Hooks and select a distribution to connect Claude Code or Codex CLI. Hooks use the distribution’s default user configuration and call the Windows bridge through WSL interop. The Island labels each distribution and can open a terminal in the session’s Linux working directory.
+
 ## Roadmap
 
 AgentBro will remain local-first. The next priorities include:

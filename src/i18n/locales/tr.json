@@ -25,6 +25,8 @@
     "composerHintCodexApp": "Codex.app oturumları henüz AgentBro'dan mesaj alamıyor.",
     "composerHintQoderApp": "Qoder.app oturumları henüz AgentBro'dan mesaj alamıyor.",
     "composerHintRemote": "Uzak oturumlar AgentBro'dan devam ettirilemez — uzak terminale geçin.",
+    "composerHintWsl": "Konuşmaya WSL terminalinde devam edin.",
+    "openWslTerminal": "WSL terminalini aç",
     "composerHintNoTerminal": "Bu oturumun yazılabilir bir terminali yok.",
     "openHostApp": "Uygulamayı aç",
     "send": "Gönder",
@@ -93,6 +95,15 @@
     }
   },
   "settings": {
+    "wslHooks": {
+      "title": "WSL Hook’ları",
+      "distribution": "Dağıtım",
+      "select": "Bir dağıtım seçin",
+      "noDistributions": "Yüklü WSL dağıtımı bulunamadı.",
+      "refresh": "Yenile",
+      "loading": "WSL denetleniyor…",
+      "codexTrust": "Codex Hook’ları incelemenizi isterse WSL oturumunda /hooks komutunu kullanın."
+    },
     "title": "Ayarlar",
     "close": "Kapat",
     "petVitals": "Pet Canlılığı",

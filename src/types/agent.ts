@@ -194,6 +194,7 @@ export interface SessionState {
   sessionTitle?: string
   remoteHostId?: string
   remoteHostName?: string
+  wslDistribution?: string
   pid?: number
   tty?: string
   termProgram?: string

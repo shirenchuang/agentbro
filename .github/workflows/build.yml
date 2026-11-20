@@ -187,6 +187,12 @@ jobs:
           & $testExecutable --exact hooks::server::tests::workbuddy_sessions_outlive_the_hook_shell
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable platform::wsl::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::server::tests::wsl_hooks_isolate_sessions_and_ignore_windows_process_ids
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

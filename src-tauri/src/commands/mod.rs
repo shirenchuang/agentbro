@@ -2531,6 +2531,9 @@ pub async fn send_message(
         .get_session(&session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
+    if session.wsl_distribution.is_some() {
+        return Err("Continue the conversation in the WSL terminal".to_string());
+    }
     if is_codex_desktop_session(&session) {
         // Prefer the persistent app-server WebSocket bridge when it's attached.
         // This is the only free-form reply path available on Windows, and it
@@ -4289,6 +4292,10 @@ pub async fn jump_to_terminal(
         .ok_or_else(|| format!("Session {} not found", session_id))?;
 
     #[cfg(target_os = "windows")]
+    if let Some(distribution) = &session.wsl_distribution {
+        return crate::platform::wsl::open_workspace(distribution, &session.cwd);
+    }
+    #[cfg(target_os = "windows")]
     if matches!(
         session.agent_type.as_str(),
         "qwenwork-cn" | "workbuddy" | "workbuddy-ai"
@@ -5730,6 +5737,9 @@ fn resolve_transcript_path_for_session(
     session_id: &str,
 ) -> Option<PathBuf> {
     let session = state.session_store.get_session(session_id)?;
+    if session.wsl_distribution.is_some() {
+        return None;
+    }
     let cwd = session.cwd.clone();
     let mut projects_dirs = all_projects_dirs();
     if let Some(root) = session

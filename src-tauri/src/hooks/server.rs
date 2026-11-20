@@ -995,7 +995,8 @@ impl HookServer {
         }
 
         // Parse the raw JSON
-        let raw: serde_json::Value = serde_json::from_str(line)?;
+        let mut raw: serde_json::Value = serde_json::from_str(line)?;
+        namespace_wsl_event(&mut raw);
 
         // Try to find a matching adapter and parse the event
         let event = Self::parse_with_adapters(&adapters, &raw);
@@ -2878,7 +2879,8 @@ impl HookServer {
             .and_then(crate::agents::workbuddy::WorkBuddyEdition::from_agent_id)
             .is_some();
         // WorkBuddy's bridge is launched by a short-lived hook shell. It does not own the session.
-        let pid = if Self::is_remote_hook_event(raw) || is_workbuddy {
+        let wsl_distribution = optional_nonempty_string(raw, "_wsl_distribution");
+        let pid = if Self::is_remote_hook_event(raw) || is_workbuddy || wsl_distribution.is_some() {
             None
         } else {
             raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)
@@ -2920,6 +2922,7 @@ impl HookServer {
             && cmux_workspace_id.is_none()
             && remote_host_id.is_none()
             && remote_host_name.is_none()
+            && wsl_distribution.is_none()
             && model.is_none()
         {
             return;
@@ -2964,6 +2967,10 @@ impl HookServer {
             }
             if let Some(value) = remote_host_name {
                 s.remote_host_name = Some(value.to_string());
+            }
+            if let Some(value) = wsl_distribution {
+                s.wsl_distribution = Some(value.to_string());
+                s.terminal = "WSL".to_string();
             }
             if let Some(value) = model {
                 s.model = Some(value.to_string());
@@ -3289,6 +3296,22 @@ fn canonical_agent_id(agent: &str) -> &str {
         "openai.codex" => "codex",
         other => other,
     }
+}
+
+fn namespace_wsl_event(raw: &mut serde_json::Value) {
+    let Some(distribution) = optional_nonempty_string(raw, "_wsl_distribution") else {
+        return;
+    };
+    let Some(session) = optional_nonempty_string(raw, "session_id").filter(|id| *id != "unknown")
+    else {
+        return;
+    };
+    let agent = optional_nonempty_string(raw, "agent").unwrap_or("agent");
+    let session = format!(
+        "wsl:{}:{distribution}:{agent}:{session}",
+        distribution.len()
+    );
+    raw["session_id"] = session.into();
 }
 
 fn optional_nonempty_string<'a>(raw: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -3803,6 +3826,28 @@ mod tests {
         assert!(sessions
             .iter()
             .all(|session| session.phase == SessionPhase::Processing && session.pid.is_none()));
+    }
+
+    #[test]
+    fn wsl_hooks_isolate_sessions_and_ignore_windows_process_ids() {
+        let store = SessionStore::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for distribution in [None, Some("Ubuntu"), Some("Debian")] {
+            let mut raw = serde_json::json!({
+                "agent": "claude-code",
+                "session_id": "same-session-id",
+                "_wsl_distribution": distribution,
+                "pid": u32::MAX,
+            });
+            namespace_wsl_event(&mut raw);
+            let id = raw["session_id"].as_str().unwrap();
+            assert!(ids.insert(id.to_string()));
+            store.get_or_create_session(id, "claude-code", "project", "/tmp/project", "");
+            HookServer::update_session_metadata_from_raw(&store, &raw);
+            let session = store.get_session(id).unwrap();
+            assert_eq!(session.wsl_distribution.as_deref(), distribution);
+            assert_eq!(session.pid, distribution.is_none().then_some(u32::MAX));
+        }
     }
 
     #[tokio::test]

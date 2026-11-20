@@ -26,6 +26,8 @@
     "composerHintCodexApp": "Codex.app 세션은 아직 AgentBro에서 메시지를 받을 수 없습니다.",
     "composerHintQoderApp": "Qoder.app 세션은 아직 AgentBro에서 메시지를 받을 수 없습니다.",
     "composerHintRemote": "원격 세션은 AgentBro에서 이어 보낼 수 없습니다. 원격 터미널에서 계속하세요.",
+    "composerHintWsl": "WSL 터미널에서 대화를 계속하세요.",
+    "openWslTerminal": "WSL 터미널 열기",
     "composerHintNoTerminal": "이 세션에는 입력할 터미널이 없습니다.",
     "openHostApp": "앱 열기",
     "send": "전송",
@@ -96,6 +98,15 @@
     }
   },
   "settings": {
+    "wslHooks": {
+      "title": "WSL 훅",
+      "distribution": "배포판",
+      "select": "배포판 선택",
+      "noDistributions": "설치된 WSL 배포판을 찾을 수 없습니다.",
+      "refresh": "새로 고침",
+      "loading": "WSL 확인 중…",
+      "codexTrust": "Codex에서 훅 검토를 요청하면 WSL 세션에서 /hooks를 실행하세요."
+    },
     "title": "설정",
     "close": "닫기",
     "petVitals": "펫 바이탈",

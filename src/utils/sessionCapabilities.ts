@@ -4,7 +4,16 @@ export type ComposerLockReason =
   | 'codex-app'
   | 'qoder-app'
   | 'remote'
+  | 'wsl'
   | 'no-terminal'
+
+export const composerHints: Record<ComposerLockReason, { messageKey: string; actionKey?: string }> = {
+  'codex-app': { messageKey: 'notch.composerHintCodexApp', actionKey: 'notch.openHostApp' },
+  'qoder-app': { messageKey: 'notch.composerHintQoderApp', actionKey: 'notch.openHostApp' },
+  remote: { messageKey: 'notch.composerHintRemote' },
+  wsl: { messageKey: 'notch.composerHintWsl', actionKey: 'notch.openWslTerminal' },
+  'no-terminal': { messageKey: 'notch.composerHintNoTerminal' },
+}
 
 export type ComposerCapability =
   | { kind: 'sendable' }
@@ -71,6 +80,9 @@ export function getComposerCapability(
   session: SessionState,
   options: ComposerCapabilityOptions = {},
 ): ComposerCapability {
+  if (session.wslDistribution) {
+    return { kind: 'locked', reason: 'wsl' }
+  }
   if (isRemoteSession(session)) {
     return { kind: 'locked', reason: 'remote' }
   }
