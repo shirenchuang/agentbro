@@ -5,7 +5,8 @@ param(
     [string]$ProjectName,
     [string]$WslDistribution,
     [string]$WslAction,
-    [switch]$WslJump
+    [switch]$WslJump,
+    [switch]$WslDeny
 )
 
 $ErrorActionPreference = 'Stop'
@@ -208,6 +209,22 @@ try {
             Write-Output "$WslAction worked for $agent in $WslDistribution."
         }
         Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
+        return
+    }
+    if ($WslDeny) {
+        $point = Wait-IslandValue 'the native Deny target for the WSL Hook' {
+            $root = Find-VisibleIsland
+            if (-not $root) { return }
+            $target = Find-NamedControl $root 'Deny'
+            $candidate = [Windows.Point]::new(0, 0)
+            if (-not $target -or $target.Current.IsOffscreen -or -not $target.TryGetClickablePoint([ref]$candidate)) { return }
+            if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$candidate.X, [int]$candidate.Y)) { return }
+            Start-Sleep -Milliseconds 200
+            $hit = [Windows.Automation.AutomationElement]::FromPoint($candidate)
+            if ($hit.Current.Name -eq 'Deny' -and [AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) { return $candidate }
+        }
+        [AgentBroSmokeMouse]::Click()
+        Write-Output "Clicked the native Deny button for the WSL Hook at $($point.X), $($point.Y)."
         return
     }
     if ($WslJump) {

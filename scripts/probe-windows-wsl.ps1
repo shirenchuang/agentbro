@@ -119,6 +119,39 @@ try {
         } until ((Get-Date) -ge $jumpDeadline)
         if ($opened -ne $projectPath) { throw "The WSL jump did not open $projectPath" }
         Write-Output 'Windows Island opened the fixture project in the WSL terminal.'
+        $claude = Read-WslFixtureConfig '/home/agentbro/.claude/settings.json' | ConvertFrom-Json -AsHashtable
+        $permission = $claude.hooks.PermissionRequest | ForEach-Object { $_.hooks } |
+            Where-Object { $_.command -like '*--wsl-distro*--source claude-code* # AgentBro WSL' } |
+            Select-Object -First 1 -ExpandProperty command
+        if (-not $permission) { throw 'The WSL Claude permission Hook was not installed' }
+        $start = [System.Diagnostics.ProcessStartInfo]::new($wsl)
+        foreach ($argument in @('--distribution', $distribution, '--exec', '/bin/sh', '-c', $permission)) {
+            $start.ArgumentList.Add($argument)
+        }
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $request = [System.Diagnostics.Process]::Start($start)
+        try {
+            $reply = $request.StandardOutput.ReadToEndAsync()
+            $request.StandardInput.WriteLine((@{
+                hook_event_name = 'PermissionRequest'
+                session_id = 'same-id'
+                cwd = $projectPath
+                tool_name = 'Read'
+                tool_input = @{ file_path = "$projectPath/smoke.txt" }
+            } | ConvertTo-Json -Depth 8 -Compress))
+            $request.StandardInput.Close()
+            Invoke-IslandCheck @('-WslDeny')
+            if (-not $request.WaitForExit(15000)) { throw 'WSL did not receive the approval response' }
+            $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($decision.hookSpecificOutput.decision.behavior -ne 'deny') { throw 'WSL did not receive Deny' }
+            Write-Output 'The configured WSL Claude Hook received the native Island denial response.'
+        } finally {
+            if (-not $request.HasExited) { Stop-Process -Id $request.Id -ErrorAction SilentlyContinue }
+            $request.Dispose()
+        }
         Invoke-IslandCheck @('-WslAction', 'Uninstall')
         foreach ($name in @('.claude/settings.json', '.codex/hooks.json')) {
             $config = Read-WslFixtureConfig "/home/agentbro/$name"
