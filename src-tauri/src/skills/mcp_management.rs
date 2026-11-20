@@ -1,3 +1,4 @@
+use crate::platform::process::background_tokio_command;
 use regex::Regex;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdout, Command};
+use tokio::process::{Child, ChildStdout};
 use tokio::sync::Notify;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -2716,7 +2717,7 @@ async fn open_stdio_inspection_session(
     } else {
         crate::agents::executable::command_path(command)
     };
-    let mut process = Command::new(command_path);
+    let mut process = background_tokio_command(command_path);
     process
         .args(&draft.args)
         .stdin(Stdio::piped())
@@ -3418,7 +3419,7 @@ async fn test_stdio_connection(draft: &McpServerDraft) -> Result<HandshakeInfo, 
     } else {
         crate::agents::executable::command_path(command)
     };
-    let mut process = Command::new(command_path);
+    let mut process = background_tokio_command(command_path);
     process
         .args(&draft.args)
         .stdin(Stdio::piped())
@@ -4358,6 +4359,69 @@ done"#
         assert_eq!(result.protocol_version.as_deref(), Some("2024-11-05"));
         assert_eq!(result.server_name.as_deref(), Some("fake-mcp"));
         assert_eq!(result.tool_count, Some(2));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_stdio_mcp_checks_run_without_a_console() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let mut draft = stdio_draft("Windows console probe", powershell.to_str().unwrap());
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -Namespace AgentBroTest -Name ConsoleProbe -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+'@
+$name = if ([AgentBroTest.ConsoleProbe]::GetConsoleWindow() -eq [IntPtr]::Zero) {
+    'no-console'
+} else {
+    'has-console'
+}
+$request = [Console]::ReadLine() | ConvertFrom-Json
+$response = @{
+    jsonrpc = '2.0'
+    id = $request.id
+    result = @{
+        protocolVersion = $request.params.protocolVersion
+        capabilities = @{}
+        serverInfo = @{ name = $name; version = '1' }
+    }
+}
+[Console]::WriteLine(($response | ConvertTo-Json -Compress -Depth 5))
+[void][Console]::ReadLine()
+"#;
+        let encoded = STANDARD.encode(
+            script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        draft.args = vec![
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-EncodedCommand".into(),
+            encoded,
+        ];
+
+        tokio::time::timeout(MCP_TEST_TIMEOUT, async {
+            let connection = test_stdio_connection(&draft).await.unwrap();
+            assert_eq!(connection.server_name.as_deref(), Some("no-console"));
+
+            let mut inspection = open_stdio_inspection_session(&draft).await.unwrap();
+            let response = initialize_inspection_session(&mut inspection)
+                .await
+                .unwrap();
+            assert_eq!(
+                handshake_info(&response).unwrap().server_name.as_deref(),
+                Some("no-console")
+            );
+            inspection.notify_initialized().await.unwrap();
+            inspection.shutdown().await.unwrap();
+        })
+        .await
+        .expect("Windows stdio MCP probes must complete within the connection timeout");
     }
 
     async fn fake_http_mcp(Json(body): Json<Value>) -> Json<Value> {

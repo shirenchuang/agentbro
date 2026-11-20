@@ -1,9 +1,9 @@
 use super::registry::{self, SkillExplanationEntry};
+use crate::platform::process::background_command;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,7 +101,7 @@ fn generate_with_api(
     });
     let auth_header = format!("Authorization: Bearer {api_key}");
     let body_text = body.to_string();
-    let output = Command::new(crate::agents::executable::command_path("curl"))
+    let output = background_command(crate::agents::executable::command_path("curl"))
         .arg("-sS")
         .arg("-L")
         .arg("--fail")
