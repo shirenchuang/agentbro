@@ -227,6 +227,16 @@ pub struct SkillSourceDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillSourceUpdateCheck {
+    pub source_uri: String,
+    pub installed_ref: Option<String>,
+    pub latest_ref: String,
+    pub current_hash: String,
+    pub update_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillTargetDetail {
     pub id: String,
     pub skill_id: String,

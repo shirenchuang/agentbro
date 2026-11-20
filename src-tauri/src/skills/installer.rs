@@ -351,6 +351,14 @@ pub(crate) fn resolve_external_skill_source_with_token(
 }
 
 pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
+    read_git_object_id(repo_dir, "HEAD^{commit}")
+}
+
+fn is_full_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_git_object_id(repo_dir: &Path, revision: &str) -> Option<String> {
     let git_dir = repo_dir.join(".git");
     if !git_dir.is_dir() {
         return None;
@@ -359,7 +367,7 @@ pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
     command
         .arg("--git-dir")
         .arg(git_dir)
-        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .args(["rev-parse", "--verify", "--end-of-options", revision])
         .env_remove("GIT_COMMON_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -367,15 +375,140 @@ pub(crate) fn read_checkout_commit(repo_dir: &Path) -> Option<String> {
         &mut command,
         Duration::from_secs(5),
         None,
-        "reading the Skill checkout commit",
+        "reading a Git Skill revision",
     )
     .ok()?;
     if !output.status.success() {
         return None;
     }
-    let commit = std::str::from_utf8(&output.stdout).ok()?.trim();
-    (matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then(|| commit.to_string())
+    let object_id = std::str::from_utf8(&output.stdout).ok()?.trim();
+    is_full_git_object_id(object_id).then(|| object_id.to_string())
+}
+
+pub(crate) struct GitSkillCheckout {
+    pub(crate) skill_dir: PathBuf,
+    pub(crate) commit: String,
+    repo_dir: PathBuf,
+    relative_path: String,
+    _temporary: TempInstallDir,
+}
+
+pub(crate) fn checkout_git_skill(
+    source: &str,
+    github_token: Option<&str>,
+) -> Result<GitSkillCheckout, String> {
+    let (skill_dir, temporary) = resolve_external_skill_source_with_token(source, github_token)?;
+    let temporary = temporary.ok_or("The saved Skill source did not produce a Git checkout.")?;
+    GitSkillCheckout::from_resolved(skill_dir, temporary)
+}
+
+impl GitSkillCheckout {
+    fn from_resolved(skill_dir: PathBuf, temporary: TempInstallDir) -> Result<Self, String> {
+        let repo_dir = temporary.path().join("repo");
+        let canonical_repo = repo_dir
+            .canonicalize()
+            .map_err(|_| "The saved Skill source did not produce a Git checkout.".to_string())?;
+        let skill_dir = skill_dir
+            .canonicalize()
+            .map_err(|_| "The Skill's saved directory is missing from the source.".to_string())?;
+        let relative = skill_dir
+            .strip_prefix(&canonical_repo)
+            .map_err(|_| "The Skill directory must be inside the Git checkout.".to_string())?;
+        if !skill_dir
+            .join("SKILL.md")
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err(
+                "The Skill's saved directory no longer contains a regular SKILL.md file."
+                    .to_string(),
+            );
+        }
+        let relative_path = relative
+            .iter()
+            .map(|part| part.to_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or("The Skill source path must be valid UTF-8.")?
+            .join("/");
+        let commit =
+            read_checkout_commit(&repo_dir).ok_or("Could not read the latest Skill commit.")?;
+        Ok(Self {
+            skill_dir,
+            commit,
+            repo_dir,
+            relative_path,
+            _temporary: temporary,
+        })
+    }
+
+    pub(crate) fn has_changed_since(
+        &self,
+        installed: &str,
+        github_token: Option<&str>,
+    ) -> Result<bool, String> {
+        git_skill_tree_changed(
+            &self.repo_dir,
+            &self.relative_path,
+            installed,
+            &self.commit,
+            github_token,
+        )
+    }
+}
+
+fn git_skill_tree_changed(
+    repo_dir: &Path,
+    path: &str,
+    installed: &str,
+    latest: &str,
+    github_token: Option<&str>,
+) -> Result<bool, String> {
+    if !is_full_git_object_id(installed) {
+        return Err("The installed Skill version is not a Git commit ID.".to_string());
+    }
+    if installed.eq_ignore_ascii_case(latest) {
+        return Ok(false);
+    }
+
+    if read_git_object_id(repo_dir, &format!("{installed}^{{commit}}")).is_none() {
+        let output = run_git_with_cancel(
+            repo_dir,
+            &[
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "origin",
+                installed,
+            ],
+            Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
+            &AtomicBool::new(false),
+            &git_network_env(),
+            None,
+            "fetching the installed Skill version",
+        )?;
+        if !output.status.success() {
+            return Err(format!(
+                "Could not fetch the installed Skill version: {}",
+                redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+            ));
+        }
+    }
+
+    let tree_revision = |commit: &str| {
+        if path.is_empty() {
+            format!("{commit}^{{tree}}")
+        } else {
+            format!("{commit}:{path}")
+        }
+    };
+    let latest_tree = read_git_object_id(repo_dir, &tree_revision(latest))
+        .ok_or("Could not read the latest Skill directory version.")?;
+    Ok(
+        read_git_object_id(repo_dir, &tree_revision(installed)).as_deref()
+            != Some(latest_tree.as_str()),
+    )
 }
 
 pub(crate) fn resolve_github_repo_skills_with_cancel(
@@ -2007,6 +2140,74 @@ mod tests {
     }
 
     #[test]
+    fn source_update_checks_the_skill_tree_in_a_shallow_checkout() {
+        let temp = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let remote = temp.path().join("source");
+        let skill_path = "skills/fixture with spaces";
+        let skill = remote.join(skill_path);
+        fs::create_dir_all(&skill).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let output = background_command(crate::agents::executable::command_path("git"))
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&remote, &["init", "--quiet"]);
+        let commit = || {
+            git(&remote, &["add", "--all"]);
+            git(
+                &remote,
+                &[
+                    "-c",
+                    "user.name=AgentBro Test",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "Fixture",
+                ],
+            );
+        };
+        fs::write(skill.join("SKILL.md"), "# Installed").unwrap();
+        commit();
+        let installed = read_checkout_commit(&remote).unwrap();
+        fs::write(remote.join("README.md"), "Unrelated change").unwrap();
+        commit();
+
+        let check = || {
+            let source_url = Url::from_file_path(&remote).unwrap();
+            let checkout_root = TempInstallDir::create_in(temp.path()).unwrap();
+            git(
+                checkout_root.path(),
+                &["clone", "--quiet", "--depth=1", source_url.as_str(), "repo"],
+            );
+            let checkout_path = checkout_root.path().join("repo");
+            let checkout =
+                GitSkillCheckout::from_resolved(checkout_path.join(skill_path), checkout_root)
+                    .unwrap();
+            assert_eq!(checkout.relative_path, skill_path);
+            assert_ne!(checkout.commit, installed);
+            assert!(
+                read_git_object_id(&checkout_path, &format!("{installed}^{{commit}}")).is_none()
+            );
+            checkout.has_changed_since(&installed, None).unwrap()
+        };
+        assert!(!check());
+        fs::write(skill.join("SKILL.md"), "# Updated").unwrap();
+        commit();
+        assert!(check());
+    }
+
+    #[test]
     fn git_credentials_are_only_used_for_github_https_downloads() {
         let token = Some("synthetic-test-token");
         for host in [
@@ -2302,13 +2503,17 @@ mod tests {
     #[test]
     #[ignore]
     fn live_resolves_skills_sh_find_skills() {
-        let (dir, temp_root) =
-            resolve_install_source("skillssh:vercel-labs/skills/find-skills").unwrap();
-        let temp_root = temp_root.expect("downloaded repository has a temporary directory");
-        assert!(dir.join("SKILL.md").is_file());
-        let temp_path = temp_root.path().to_path_buf();
-        assert!(dir.starts_with(&temp_path));
-        drop(temp_root);
-        assert!(!temp_path.exists());
+        for source in [
+            "skillssh:vercel-labs/skills/find-skills",
+            "github:vercel-labs/skills/skills/find-skills",
+        ] {
+            let checkout = checkout_git_skill(source, None).unwrap();
+            assert_eq!(checkout.relative_path, "skills/find-skills");
+            assert!(checkout.skill_dir.join("SKILL.md").is_file());
+            assert!(!checkout.has_changed_since(&checkout.commit, None).unwrap());
+            let temp_path = checkout._temporary.path().to_path_buf();
+            drop(checkout);
+            assert!(!temp_path.exists());
+        }
     }
 }

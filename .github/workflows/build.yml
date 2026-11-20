@@ -133,6 +133,9 @@ jobs:
           & $testExecutable skills::v2::tests::windows_skill_paths_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable source_update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

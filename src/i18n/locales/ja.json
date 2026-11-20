@@ -686,6 +686,23 @@
     "dismiss": "閉じる"
   },
   "skills": {
+    "sourceUpdates": {
+      "installedCommit": "インストール済みのコミット",
+      "privateRepository": "プライベートリポジトリ",
+      "githubToken": "GitHub アクセストークン（今回の更新用）",
+      "installedAt": "インストール日時",
+      "updatedAt": "更新日時",
+      "check": "更新を確認",
+      "checking": "配布元を確認中…",
+      "apply": "スキルを更新",
+      "applying": "スキルを更新中…",
+      "available": "配布元の更新があります · {{version}}",
+      "different": "配布元のファイルがインストール済みのファイルと異なります · {{version}}",
+      "current": "配布元のスキルに変更はありません。",
+      "matches": "ローカルのファイルは配布元と一致しています。",
+      "applied": "スキルを {{version}} に更新しました。",
+      "confirm": "ライブラリ内のスキルファイルを {{version}} で置き換えますか？"
+    },
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
     "runtimeEnvironment": {

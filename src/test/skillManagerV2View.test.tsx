@@ -2766,6 +2766,45 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container).toBeTruthy()
   })
 
+  it('checks a Git Skill source and applies the selected version after confirmation', async () => {
+    const sourceUri = 'skillssh:example/skills/release-checklist'
+    const oldVersion = 'a'.repeat(40)
+    const newVersion = 'b'.repeat(40)
+    const source = {
+      sourceType: 'skillssh', sourceUri, sourceRef: oldVersion,
+      importedFromAgent: null, importedFromPath: null, installedVia: 'agentbro',
+      createdAt: '2026-11-19T12:00:00Z', updatedAt: '2026-11-19T12:00:00Z',
+    }
+    const detail: SkillDetail = {
+      ...makeSkill({ sourceType: 'skillssh', sourceUri }), source,
+      centerResolvedPath: null, files: null, frontmatter: {}, targets: [],
+    }
+    const checked = { sourceUri, installedRef: oldVersion, latestRef: newVersion, currentHash: 'check-hash', updateAvailable: true }
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue(detail)
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+    const check = vi.spyOn(skillApiV2, 'checkSkillSourceUpdate').mockResolvedValue(checked)
+    const apply = vi.spyOn(skillApiV2, 'applySkillSourceUpdate').mockResolvedValue({
+      ...detail, source: { ...source, sourceRef: newVersion },
+    })
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId={detail.id} open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '来源' }))
+    fireEvent.click(screen.getByRole('button', { name: '私有仓库' }))
+    fireEvent.change(screen.getByLabelText('GitHub 访问令牌（仅本次使用）'), { target: { value: 'fixture-token' } })
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
+    expect(await screen.findByText('来源有可用更新 · bbbbbbbbbbbb')).toBeInTheDocument()
+    expect(check).toHaveBeenCalledWith(detail.id, 'fixture-token')
+    fireEvent.click(screen.getByRole('button', { name: '更新 Skill' }))
+    const dialog = await screen.findByRole('dialog', { name: '更新 Skill' })
+    expect(apply).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '更新 Skill' }))
+    expect(await screen.findByText('Skill 已更新到 bbbbbbbbbbbb。')).toBeInTheDocument()
+    expect(apply).toHaveBeenCalledWith(detail.id, checked, 'fixture-token')
+    expect(screen.queryByLabelText('GitHub 访问令牌（仅本次使用）')).not.toBeInTheDocument()
+    expect(screen.getByText(newVersion)).toBeInTheDocument()
+  })
+
   it('loads the file tree for unmanaged fallback skills', async () => {
     vi.spyOn(skillApiV2, 'getSkillDetail').mockRejectedValueOnce(new Error('not in center'))
     const readFileTree = vi.spyOn(skillApiV2, 'readFileTree').mockResolvedValueOnce({
