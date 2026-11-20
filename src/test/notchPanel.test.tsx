@@ -9,6 +9,7 @@ import { MATCH_NOTCH_HEIGHT } from '../utils/islandLayout'
 import { isApplePlatform } from '../utils/platform'
 
 const tauriMocks = vi.hoisted(() => ({
+  listen: vi.fn<typeof import('@tauri-apps/api/event').listen>(() => Promise.resolve(() => {})),
   getChatHistory: vi.fn(() => Promise.resolve([])),
   getChatHistoryTail: vi.fn(() => Promise.resolve({ messages: [], hasMore: false, firstMessageId: null, totalCount: 0, transcriptPath: null })),
   isTerminalFocused: vi.fn((sessionId?: string) => Promise.resolve(Boolean(sessionId && false))),
@@ -34,7 +35,7 @@ function primaryModifierKeyEvent() {
 }
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(() => Promise.resolve(() => {})),
+  listen: tauriMocks.listen,
 }))
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
@@ -158,7 +159,11 @@ describe('NotchPanel island shell', () => {
       islandAnimationScale: 1,
       islandSurfaceMode: 'island',
       maxPanelHeight: 600,
+      collapsedWidthScale: 100,
+      compactPillWidth: useConfigStore.getInitialState().compactPillWidth,
+      customNotchHeight: useConfigStore.getInitialState().customNotchHeight,
       microPillWidth: 112,
+      notchHeightMode: 'matchNotch',
       notchStyle: 'compact',
       panelMaxWidth: 630,
       panelHorizontalOffset: 0,
@@ -176,6 +181,40 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-island-state', 'hover')
     expect(screen.getByText('agentbro · Port dynamic island')).toBeInTheDocument()
     expect(screen.getByText('Claude')).toBeInTheDocument()
+  })
+
+  it('previews island dimensions without persisting uncommitted settings', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const configuredDimensions = {
+      notchHeightMode: 'custom' as const,
+      customNotchHeight: 37,
+      compactPillWidth: 360,
+      collapsedWidthScale: 100,
+    }
+    useConfigStore.setState(configuredDimensions)
+    mountIsland()
+    const originalWidth = hitboxWidthVar()
+
+    await waitFor(() => {
+      expect(tauriMocks.listen).toHaveBeenCalledWith('island-layout-preview', expect.any(Function))
+      expect(tauriMocks.listen).toHaveBeenCalledWith('island-layout-preview-clear', expect.any(Function))
+    })
+    const listeners = tauriMocks.listen.mock.calls
+    const preview = listeners.find(([event]) => event === 'island-layout-preview')![1]
+    const clear = listeners.find(([event]) => event === 'island-layout-preview-clear')![1]
+    act(() => preview({
+      event: 'island-layout-preview',
+      id: 1,
+      payload: { mode: 'compact', notchHeightMode: 'custom', customNotchHeight: 55, compactPillWidth: 500 },
+    }))
+
+    expect(hitboxWidthVar()).not.toBe(originalWidth)
+    expect(useConfigStore.getState()).toMatchObject(configuredDimensions)
+
+    act(() => clear({ event: 'island-layout-preview-clear', id: 2, payload: null }))
+
+    expect(hitboxWidthVar()).toBe(originalWidth)
+    expect(useConfigStore.getState()).toMatchObject(configuredDimensions)
   })
 
   it('collapses the island before opening settings so the transparent host cannot block it', () => {
