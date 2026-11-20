@@ -1,3 +1,4 @@
+import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -234,12 +235,12 @@ type IslandLayoutPreview = {
   detailPanelMaxHeight?: number
 }
 
-function LayoutPreviewBody({ mode }: { mode: IslandLayoutPreview['mode'] }) {
-  const contentFontSize = useConfigStore((s) => s.contentFontSize)
+function LayoutPreviewBody({ mode, contentFontSize }: Pick<IslandLayoutPreview, 'mode' | 'contentFontSize'>) {
+  const fontSize = useConfigStore((s) => contentFontSize ?? s.contentFontSize)
 
   if (mode === 'completion') {
     return (
-      <div className="layout-preview layout-preview--completion" style={{ '--preview-content-font-size': contentFontSize } as CSSProperties}>
+      <div className="layout-preview layout-preview--completion" style={{ '--preview-content-font-size': fontSize } as CSSProperties}>
         <div className="layout-preview__eyebrow">Task Complete</div>
         <div className="layout-preview__title">Codex finished running tests</div>
         <div className="layout-preview__meta">agentBro · npm run test:run · now</div>
@@ -249,7 +250,7 @@ function LayoutPreviewBody({ mode }: { mode: IslandLayoutPreview['mode'] }) {
 
   if (mode === 'expanded') {
     return (
-      <div className="layout-preview layout-preview--expanded" style={{ '--preview-content-font-size': contentFontSize } as CSSProperties}>
+      <div className="layout-preview layout-preview--expanded" style={{ '--preview-content-font-size': fontSize } as CSSProperties}>
         {Array.from({ length: EXPANDED_PREVIEW_SESSION_COUNT }).map((_, index) => (
           <div className="layout-preview__row" key={index}>
             <span className="layout-preview__dot" />
@@ -280,7 +281,6 @@ export function NotchPanel() {
   const showUpdateBanner = Boolean(updateAvailableVersion) && updateAvailableVersion !== updateDismissedVersion
   const dwellDuration = useConfigStore((s) => s.dwellDuration)
   const notchStyle = useConfigStore((s) => s.notchStyle)
-  const maxPanelHeight = useConfigStore((s) => s.maxPanelHeight)
   const autoCollapse = useConfigStore((s) => s.autoCollapse)
   const shortcuts = useConfigStore((s) => s.shortcuts)
   const hoverExpandDelay = useConfigStore((s) => s.hoverExpandDelay)
@@ -487,29 +487,13 @@ export function NotchPanel() {
     let unlistenPreview: (() => void) | undefined
     let unlistenClear: (() => void) | undefined
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<IslandLayoutPreview>('island-layout-preview', (event) => {
-        const store = useConfigStore.getState()
-        const next = event.payload
-        if (typeof next.collapsedWidthScale === 'number') store.updateConfig('collapsedWidthScale', next.collapsedWidthScale)
-        if (typeof next.microPillWidth === 'number') store.updateConfig('microPillWidth', next.microPillWidth)
-        if (typeof next.compactPillWidth === 'number') store.updateConfig('compactPillWidth', next.compactPillWidth)
-        if (typeof next.panelMaxWidth === 'number') store.updateConfig('panelMaxWidth', next.panelMaxWidth)
-        if (next.notchHeightMode === 'matchNotch' || next.notchHeightMode === 'matchMenuBar' || next.notchHeightMode === 'custom') {
-          store.updateConfig('notchHeightMode', next.notchHeightMode)
-        }
-        if (typeof next.customNotchHeight === 'number') store.updateConfig('customNotchHeight', next.customNotchHeight)
-        if (typeof next.contentFontSize === 'string') store.updateConfig('contentFontSize', next.contentFontSize)
-        if (typeof next.completionCardHeight === 'number') store.updateConfig('completionCardHeight', next.completionCardHeight)
-        if (typeof next.maxPanelHeight === 'number') store.updateConfig('maxPanelHeight', next.maxPanelHeight)
-        if (typeof next.detailPanelMaxHeight === 'number') store.updateConfig('detailPanelMaxHeight', next.detailPanelMaxHeight)
-        setLayoutPreview(event.payload)
-        setNotchOpacity(1).catch(() => {})
-      }).then((fn) => { unlistenPreview = fn }).catch(() => {})
-      listen('island-layout-preview-clear', () => {
-        setLayoutPreview(null)
-      }).then((fn) => { unlistenClear = fn }).catch(() => {})
-    }).catch(() => {})
+    listenTauriEvent<IslandLayoutPreview>('island-layout-preview', (event) => {
+      setLayoutPreview(event.payload)
+      setNotchOpacity(1).catch(() => {})
+    }).then((fn) => { unlistenPreview = fn }).catch(() => {})
+    listenTauriEvent('island-layout-preview-clear', () => {
+      setLayoutPreview(null)
+    }).then((fn) => { unlistenClear = fn }).catch(() => {})
 
     return () => {
       unlistenPreview?.()
@@ -1348,14 +1332,15 @@ export function NotchPanel() {
     setPanelState('hover')
   }, [setPanelState])
 
-  const collapsedWidthScale = useConfigStore((s) => s.collapsedWidthScale)
-  const notchHeightMode = useConfigStore((s) => s.notchHeightMode)
-  const customNotchHeight = useConfigStore((s) => s.customNotchHeight)
-  const microPillWidth = useConfigStore((s) => s.microPillWidth)
-  const compactPillWidth = useConfigStore((s) => s.compactPillWidth)
-  const panelMaxWidth = useConfigStore((s) => s.panelMaxWidth)
-  const completionCardHeight = useConfigStore((s) => s.completionCardHeight)
-  const detailPanelMaxHeight = useConfigStore((s) => s.detailPanelMaxHeight)
+  const collapsedWidthScale = useConfigStore((s) => layoutPreview?.collapsedWidthScale ?? s.collapsedWidthScale)
+  const notchHeightMode = useConfigStore((s) => layoutPreview?.notchHeightMode ?? s.notchHeightMode)
+  const customNotchHeight = useConfigStore((s) => layoutPreview?.customNotchHeight ?? s.customNotchHeight)
+  const microPillWidth = useConfigStore((s) => layoutPreview?.microPillWidth ?? s.microPillWidth)
+  const compactPillWidth = useConfigStore((s) => layoutPreview?.compactPillWidth ?? s.compactPillWidth)
+  const panelMaxWidth = useConfigStore((s) => layoutPreview?.panelMaxWidth ?? s.panelMaxWidth)
+  const completionCardHeight = useConfigStore((s) => layoutPreview?.completionCardHeight ?? s.completionCardHeight)
+  const detailPanelMaxHeight = useConfigStore((s) => layoutPreview?.detailPanelMaxHeight ?? s.detailPanelMaxHeight)
+  const maxPanelHeight = useConfigStore((s) => layoutPreview?.maxPanelHeight ?? s.maxPanelHeight)
   const maxVisibleSessions = useConfigStore((s) => s.maxVisibleSessions)
   const allowHorizontalDrag = useConfigStore((s) => s.allowHorizontalDrag)
   const panelHorizontalOffset = useConfigStore((s) => s.panelHorizontalOffset)
@@ -1465,7 +1450,6 @@ export function NotchPanel() {
     activeOverlay?.data,
     blockingOverlayMaxHeight,
   )
-  const effectiveDetailPanelMaxHeight = layoutPreview?.detailPanelMaxHeight ?? detailPanelMaxHeight
   const hoverPanelContentHeight = measuredHoverContentHeight || hoverListHeight
   const expandedPreviewHeight = typeof layoutPreview?.detailPanelMaxHeight === 'number'
     ? layoutPreview.detailPanelMaxHeight
@@ -1474,7 +1458,7 @@ export function NotchPanel() {
           statusBarHeight + EXPANDED_PREVIEW_SESSION_COUNT * EXPANDED_PREVIEW_ROW_HEIGHT + EXPANDED_PREVIEW_VERTICAL_PADDING,
           HOVER_PANEL_MIN_HEIGHT,
         ),
-        effectiveDetailPanelMaxHeight || 500,
+        detailPanelMaxHeight || 500,
       )
   const panelHeight =
     isPetMode
@@ -1495,7 +1479,7 @@ export function NotchPanel() {
                     ? collapsedHeight
                     : effectivePanelState === 'hover'
                       ? Math.min(Math.max(statusBarHeight + hoverPanelContentHeight, HOVER_PANEL_MIN_HEIGHT), maxPanelHeight || 600)
-                      : (effectiveDetailPanelMaxHeight || 500)
+                      : (detailPanelMaxHeight || 500)
 
   const visualState = isPetMode
     ? 'pet'
@@ -2009,7 +1993,7 @@ export function NotchPanel() {
                     exit={{ opacity: 0 }}
                     transition={scaledContentTransition}
                   >
-                    <LayoutPreviewBody mode={previewMode} />
+                    <LayoutPreviewBody mode={previewMode} contentFontSize={layoutPreview.contentFontSize} />
                   </motion.div>
                 )}
 
