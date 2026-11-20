@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$QwenWorkMode,
+    [string]$QwenWorkRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +50,22 @@ public static class AgentBroSmokeMouse {
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr window, int command);
+
+    public static uint ForegroundProcess() {
+        uint processId;
+        GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+        return processId;
+    }
+
+    public static void Minimize(IntPtr window) {
+        ShowWindowAsync(window, 6);
+    }
 
     public static uint ProcessAtCursor() {
         Point point;
@@ -113,6 +131,21 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
     }
 }
 
+function Find-NamedControl([Windows.Automation.AutomationElement]$Root, [string]$Name) {
+    $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
+    $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+
+function Get-QwenWorkWindow {
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.MainWindowHandle -ne 0 -and $_.Path -and $_.Path.StartsWith("$QwenWorkRoot\", [StringComparison]::OrdinalIgnoreCase)
+    } | Select-Object -First 1
+}
+
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -132,12 +165,76 @@ $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
 $island = $null
+$settingsWindow = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+
+    if ($QwenWorkMode -eq 'Detect') {
+        $open = Wait-IslandValue 'the Island Settings button' { Find-NamedControl $island 'Settings' }
+        Invoke-NamedControl $open
+        $settingsWindow = Wait-IslandValue 'the AgentBro settings window' {
+            foreach ($window in Get-IslandWindows) {
+                if ((Find-NamedControl $window 'Agent Skills') -or (Find-NamedControl $window 'Back to Settings') -or
+                    (Find-NamedControl $window 'Start AgentBro')) { return $window }
+            }
+        }
+        $start = Find-NamedControl $settingsWindow 'Start AgentBro'
+        if ($start) { Invoke-NamedControl $start }
+        $back = Find-NamedControl $settingsWindow 'Back to Settings'
+        if ($back) { Invoke-NamedControl $back }
+        $skills = Wait-IslandValue 'the Agent Skills section' { Find-NamedControl $settingsWindow 'Agent Skills' }
+        Invoke-NamedControl $skills
+        $manage = Wait-IslandValue 'the Agent Management tab' {
+            Find-NamedControl $settingsWindow ('Agent ' + [char]0x7ba1 + [char]0x7406)
+        }
+        Invoke-NamedControl $manage
+        $null = Wait-IslandValue 'QwenWork listed among installed Agents' {
+            foreach ($button in $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+                if ($button.Current.Name -match 'QwenWork') { return $button }
+            }
+        }
+        Write-Output 'Agent Management listed the official QwenWork installation without a task fixture.'
+        Invoke-NamedControl (Find-NamedControl $settingsWindow 'Close')
+        return
+    }
+
+    if ($QwenWorkMode) {
+        $null = Wait-IslandValue "the visible QwenWork phase '$ProjectName'" {
+            $phase = Find-NamedControl $island $ProjectName
+            if ($phase -and -not $phase.Current.IsOffscreen) { return $phase }
+        }
+        Write-Output "Windows Island showed QwenWork task phase: $ProjectName"
+        if ($QwenWorkMode -ne 'Jump') { return }
+        if ((Find-NamedControl $island 'Deny') -or (Find-NamedControl $island 'Allow Once')) {
+            throw 'QwenWork showed an inline approval action'
+        }
+        $qwen = Wait-IslandValue 'the running QwenWork window before the jump' { Get-QwenWorkWindow }
+        [AgentBroSmokeMouse]::Minimize($qwen.MainWindowHandle)
+        $null = Wait-IslandValue 'QwenWork to lose foreground focus' {
+            [AgentBroSmokeMouse]::ForegroundProcess() -ne $qwen.Id
+        }
+        $point = Wait-IslandValue 'a native click target for Jump to terminal' {
+            $jump = Find-NamedControl $island 'Jump to terminal'
+            $candidate = [Windows.Point]::new(0, 0)
+            if (-not $jump -or $jump.Current.IsOffscreen -or -not $jump.TryGetClickablePoint([ref]$candidate)) { return }
+            if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$candidate.X, [int]$candidate.Y)) { return }
+            Start-Sleep -Milliseconds 250
+            $hit = [Windows.Automation.AutomationElement]::FromPoint($candidate)
+            if ($hit.Current.Name -eq 'Jump to terminal' -and [AgentBroSmokeMouse]::ProcessAtCursor() -eq $AppProcessId) { return $candidate }
+        }
+        Write-Output "Native cursor hit the Island Jump button at $($point.X), $($point.Y)."
+        [AgentBroSmokeMouse]::Click()
+        $null = Wait-IslandValue 'the official QwenWork window to regain foreground focus' {
+            $foreground = Get-Process -Id ([AgentBroSmokeMouse]::ForegroundProcess()) -ErrorAction SilentlyContinue
+            $foreground.Path -and $foreground.Path.StartsWith("$QwenWorkRoot\", [StringComparison]::OrdinalIgnoreCase)
+        }
+        Write-Output 'The native Island action brought the official QwenWork desktop window to the foreground.'
+        return
+    }
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
             $state = $button.Current
@@ -181,7 +278,11 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
-        if ($island) {
+        if ($settingsWindow) {
+            $settingsWindow.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Select-Object -First 125 -ExpandProperty Current |
+                Select-Object LocalizedControlType, Name, IsOffscreen | ConvertTo-Json -Depth 3 -Compress
+        } elseif ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
                 Select-Object LocalizedControlType, Name, IsOffscreen, @{Name='Bounds'; Expression={$_.BoundingRectangle.ToString()}} |

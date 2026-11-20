@@ -237,4 +237,9 @@ jobs:
       - name: Inspect the official QwenWork Windows installation
         shell: pwsh
         timeout-minutes: 9
-        run: ./scripts/probe-qwenwork-windows.ps1
+        env:
+          BUILD_ARTIFACT_RUN: ${{ inputs.windows_artifact_run }}
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          ./scripts/probe-qwenwork-windows.ps1 -AgentBroInstaller $installer.FullName `
+              -VerifyAgentBro:($env:BUILD_ARTIFACT_RUN -ne '44785880844')
