@@ -6638,6 +6638,8 @@ fn canonical_or_original(path: &Path) -> PathBuf {
 fn is_remote_skill_source(input: &AddCenterSkillInput) -> bool {
     matches!(input.source_type.as_str(), "github" | "git" | "skillssh")
         || is_git_skill_source_path(&input.source_path)
+        || input.source_path.starts_with("https://")
+        || input.source_path.starts_with("http://")
 }
 
 fn is_git_skill_source_path(path: &str) -> bool {
