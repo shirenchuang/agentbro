@@ -257,7 +257,9 @@ describe('settings island menu', () => {
     render(<SettingsApp onClose={vi.fn()} />)
 
     fireEvent.click(screen.getByText('settings.island.title'))
-    fireEvent.click(await screen.findByText('Quiet Assistant'))
+    const quietPreset = await screen.findByRole('button', { name: /Quiet Assistant/ })
+    fireEvent.click(quietPreset)
+    await waitFor(() => expect(quietPreset).toHaveAttribute('aria-pressed', 'true'))
 
     expect(useConfigStore.getState()).toEqual(expect.objectContaining({
       interactionMode: 'minimal',
@@ -268,10 +270,11 @@ describe('settings island menu', () => {
     }))
     expect(screen.queryByText('Custom visibility')).not.toBeInTheDocument()
 
-    const autoHideRow = screen.getByText('settings.autoHideNoSessions').closest('.setting-row')
-    fireEvent.click(autoHideRow!.querySelector('[role="switch"]')!)
-
-    await waitFor(() => expect(screen.getByText('Custom visibility')).toBeInTheDocument())
+    const autoHide = screen.getByRole('switch', { name: 'settings.autoHideNoSessions' })
+    expect(autoHide).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(autoHide)
+    expect(await screen.findByText('Custom visibility')).toBeInTheDocument()
+    expect(autoHide).toHaveAttribute('aria-checked', 'false')
   })
 
   it('preserves user visibility settings when turning the island off and on', async () => {

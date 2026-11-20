@@ -3202,8 +3202,8 @@ describe('Skill detail slider + agent page render without crashing', () => {
       mcpConfig: '~/.codefuse/engine/cc/settings.json',
       pluginDir: '~/.codefuse/engine/cc/plugins/cache',
     }))
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
     expect(loadOverview).toHaveBeenCalledWith(true)
-    expect(screen.queryByRole('dialog', { name: /添加 Claude Code 实例/ })).not.toBeInTheDocument()
   })
 
   it('deletes a custom agent from the agent detail header', async () => {

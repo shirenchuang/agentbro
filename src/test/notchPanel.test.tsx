@@ -1986,8 +1986,11 @@ describe('NotchPanel island shell', () => {
   })
 
   it('filters the session list to focused terminal sessions when follow focus is enabled', async () => {
-    useConfigStore.setState({ followFocus: true })
-    tauriMocks.isTerminalFocused.mockImplementation((sessionId?: string) => Promise.resolve(sessionId === 's2'))
+    useConfigStore.setState({ followFocus: true, islandAnimationScale: 0.1 })
+    const focusedResult = deferred<boolean>()
+    tauriMocks.isTerminalFocused.mockImplementation((sessionId?: string) =>
+      sessionId === 's2' ? focusedResult.promise : Promise.resolve(false),
+    )
     const focused = session({ id: 's2', sessionTitle: 'Focused terminal', project: 'focused', pid: 2222, terminal: 'iTerm' })
     const background = session({ id: 's1', sessionTitle: 'Background terminal', project: 'background', pid: 1111, terminal: 'Terminal' })
     useSessionStore.setState({
@@ -2005,6 +2008,8 @@ describe('NotchPanel island shell', () => {
 
     render(<NotchPanel />)
 
+    expect(await screen.findByText('background · Background terminal')).toBeInTheDocument()
+    await act(async () => { focusedResult.resolve(true) })
     await waitFor(() => expect(screen.queryByText('background · Background terminal')).not.toBeInTheDocument())
     expect(screen.getByText('focused · Focused terminal')).toBeInTheDocument()
   })
