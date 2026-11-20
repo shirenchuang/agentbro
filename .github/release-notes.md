@@ -2,17 +2,17 @@
 
 ## English
 
-AgentBro v{{VERSION}} fixes DeepSeek Harness approval controls and improves QwenWork CN monitoring and macOS foreground detection.
+AgentBro v{{VERSION}} restores DeepSeek Harness conversation previews and adds QwenWork CN Flash task activity to the Island.
 
 ### Highlights
 
-- **DeepSeek Harness approval controls** ([#129](https://github.com/shirenchuang/agentbro/pull/129)). The Island and Pet Surface show the two actions supported by the Harness desktop plugin, Allow once and Deny.
-- **QwenWork CN account updates** ([#132](https://github.com/shirenchuang/agentbro/pull/132)). Other accounts keep updating when an account database becomes unreadable. AgentBro retains the last readable state until that account recovers or its displayed task expires.
-- **Native macOS foreground and pointer queries** ([#131](https://github.com/shirenchuang/agentbro/pull/131)). AgentBro uses AppKit to find the foreground application and read the pointer location. These queries run in the AgentBro process.
+- **DeepSeek Harness conversation previews** ([#137](https://github.com/shirenchuang/agentbro/pull/137)). The Island uses your prompt as the session title and shows previews of your prompt and the assistant’s reply in the session details.
+- **QwenWork CN Flash task activity** ([#137](https://github.com/shirenchuang/agentbro/pull/137)). Tasks run with the Flash engine now appear in the Island with their titles and status, including running and completed.
 
 ### Install and update
 
 - On macOS, use the signed universal installer, the in-app updater, or Homebrew with `brew tap shirenchuang/tap && brew install --cask agentbro`.
+- To update an existing Harness integration, quit DeepSeek Harness, remove and reinstall its Hook in AgentBro, then reopen Harness.
 
 ### Downloads
 
@@ -28,17 +28,17 @@ AgentBro v{{VERSION}} fixes DeepSeek Harness approval controls and improves Qwen
 
 ## 中文
 
-AgentBro v{{VERSION}} 修正了 DeepSeek Harness 审批按钮，并改进了千问办公任务监测和 macOS 前台检测。
+AgentBro v{{VERSION}} 修复了 DeepSeek Harness 的会话预览，并将千问办公 Flash 任务接入灵动岛。
 
 ### 重点更新
 
-- **DeepSeek Harness 审批按钮**（[#129](https://github.com/shirenchuang/agentbro/pull/129)）。灵动岛和桌宠统一显示 Harness 桌面插件支持的「允许一次」与「拒绝」。
-- **千问办公多账号更新**（[#132](https://github.com/shirenchuang/agentbro/pull/132)）。个别账号库读不到时，其他账号的任务状态继续刷新。AgentBro 保留受影响账号上一次读取到的状态，直到账号库恢复读取或任务显示过期。
-- **macOS 原生前台检测和鼠标定位**（[#131](https://github.com/shirenchuang/agentbro/pull/131)）。AgentBro 在自身进程中，通过 AppKit 获取前台应用和鼠标位置。
+- **DeepSeek Harness 会话预览**（[#137](https://github.com/shirenchuang/agentbro/pull/137)）。灵动岛根据提问生成会话标题，并在详情中显示提问和助手回复的预览。
+- **千问办公 Flash 任务状态**（[#137](https://github.com/shirenchuang/agentbro/pull/137)）。使用 Flash 引擎的任务会在灵动岛显示标题和状态，包括运行中和已完成。
 
 ### 安装与更新
 
 - macOS 可使用已签名的通用安装包、应用内更新，或执行 Homebrew 命令 `brew tap shirenchuang/tap && brew install --cask agentbro`。
+- 若已接入 Harness，请先退出 DeepSeek Harness，在 AgentBro 中卸载并重新安装它的 Hook，再打开 Harness。
 
 ### 下载
 

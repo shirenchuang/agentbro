@@ -160,7 +160,13 @@ impl AgentAdapter for DeepSeekHarnessAdapter {
                 Some("aborted" | "interrupted") => AgentEvent::Interrupt { session_id },
                 _ => AgentEvent::TaskComplete {
                     session_id,
-                    summary: "DeepSeek Harness turn ended".to_string(),
+                    summary: raw
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|summary| !summary.is_empty())
+                        .unwrap_or("DeepSeek Harness turn ended")
+                        .to_string(),
                 },
             },
             Some("permission_request") => AgentEvent::PermissionRequest {
