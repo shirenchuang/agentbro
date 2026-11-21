@@ -69,6 +69,9 @@ public static class AgentBroSmokeInput {
     private static extern IntPtr WindowFromPoint(Point point);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
     [DllImport("user32.dll")]
@@ -79,6 +82,12 @@ public static class AgentBroSmokeInput {
         if (!GetCursorPos(out point)) return 0;
         uint processId;
         GetWindowThreadProcessId(GetAncestor(WindowFromPoint(point), 2), out processId);
+        return processId;
+    }
+
+    public static uint ForegroundProcess() {
+        uint processId;
+        GetWindowThreadProcessId(GetForegroundWindow(), out processId);
         return processId;
     }
 
@@ -180,10 +189,20 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
     }
 }
 
-function Click-IslandElement([Windows.Automation.AutomationElement]$Element, [string]$Description) {
-    $point = Wait-IslandValue "a clickable point on $Description" {
-        $candidate = [Windows.Point]::new(0, 0)
-        if ($Element.TryGetClickablePoint([ref]$candidate)) { $candidate }
+function Click-IslandElement(
+    [Windows.Automation.AutomationElement]$Element,
+    [string]$Description,
+    [Windows.Automation.AutomationElement]$RowAnchor
+) {
+    $point = if ($RowAnchor) {
+        $row = $Element.Current.BoundingRectangle
+        $anchor = $RowAnchor.Current.BoundingRectangle
+        [Windows.Point]::new($row.Left + $row.Width / 2, $anchor.Top + $anchor.Height / 2)
+    } else {
+        Wait-IslandValue "a clickable point on $Description" {
+            $candidate = [Windows.Point]::new(0, 0)
+            if ($Element.TryGetClickablePoint([ref]$candidate)) { $candidate }
+        }
     }
     if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
         throw "Could not move the Windows cursor onto $Description"
@@ -226,9 +245,11 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         $session = Wait-IslandValue 'the waiting session in the Island list' {
             Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
         }
-        $session.SetFocus()
-        $null = Wait-IslandValue 'native keyboard focus on the waiting session' { $session.Current.HasKeyboardFocus }
-        [AgentBroSmokeInput]::PressSpace()
+        $rowAnchor = Wait-IslandValue 'the waiting session header' {
+            Find-IslandButton $session { param($Name) $Name.StartsWith('Mute notifications') }
+        }
+        # The center of a waiting row belongs to the inline permission preview.
+        Click-IslandElement $session 'Island session header with a pending permission' $rowAnchor
 
         $deny = Wait-IslandValue 'Deny in the session detail' {
             if (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) {
@@ -236,7 +257,9 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             }
         }
         $deny.SetFocus()
-        $null = Wait-IslandValue 'native keyboard focus on detail Deny' { $deny.Current.HasKeyboardFocus }
+        $null = Wait-IslandValue 'native keyboard focus on detail Deny' {
+            $deny.Current.HasKeyboardFocus -and [AgentBroSmokeInput]::ForegroundProcess() -eq $AppProcessId
+        }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         [AgentBroSmokeInput]::PressSpace()
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
