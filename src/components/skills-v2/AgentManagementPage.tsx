@@ -38,7 +38,7 @@ type PackApplyProgress = {
   percent: number
   detail: string
 }
-type AgentPackRuntime = {
+type AgentRuntimeSelection = {
   environmentId: string
   selectionRevision: number
 }
@@ -49,7 +49,7 @@ type PackApplyConflictDialogState = {
   agentName: string
   mode: 'link' | 'copy'
   preview: DistributionPreview
-  runtime: AgentPackRuntime
+  runtime: AgentRuntimeSelection
 }
 type BatchAdoptPackSelection =
   | { kind: 'none' }
@@ -76,10 +76,8 @@ type AdoptDialogState = {
   preview: AdoptPreview
   runtimeEnvironmentId: string
 }
-type AgentUninstallTarget = {
+type AgentActionTarget = AgentRuntimeSelection & {
   agent: AgentDetail
-  environmentId: string
-  selectionRevision: number
 }
 
 const PAGE_SIZE = 28
@@ -94,7 +92,7 @@ function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
     && (expectedRevision === undefined || current.selectionRevision === expectedRevision)
 }
 
-function isAgentPackRuntime(runtime: AgentPackRuntime) {
+function isAgentRuntimeSelection(runtime: AgentRuntimeSelection) {
   return isRuntimeEnvironment(runtime.environmentId, runtime.selectionRevision)
 }
 
@@ -114,11 +112,12 @@ function assertRuntimeEnvironment(expectedId: string, message: string) {
 export function AgentManagementPage() {
   const { t } = useTranslation()
   const state = useSkillStoreV2()
+  const { setError } = state
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const runtimeSelectionRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
-  const packRuntime = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
+  const runtimeSelection = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
   const sessionList = useMemo(() => (
     runtimeEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
       ? allSessions.filter((session) => !session.remoteHostId)
@@ -143,62 +142,77 @@ export function AgentManagementPage() {
   const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
   const [adoptingUnmanagedId, setAdoptingUnmanagedId] = useState<string | null>(null)
-  const [programs, setPrograms] = useState<Record<string, AgentProgramInfo>>({})
+  const [programSnapshot, setProgramSnapshot] = useState<{
+    runtime: AgentRuntimeSelection
+    programs: Record<string, AgentProgramInfo>
+  } | null>(null)
   const [programLoading, setProgramLoading] = useState(false)
   const [agentOutput, setAgentOutput] = useState<string[]>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
-  const [customDialogOpen, setCustomDialogOpen] = useState(false)
-  const [uninstallTarget, setUninstallTarget] = useState<AgentUninstallTarget | null>(null)
-  const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentDetail | null>(null)
+  const [customDialogRuntime, setCustomDialogRuntime] = useState<AgentRuntimeSelection | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<AgentActionTarget | null>(null)
+  const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentActionTarget | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
-  const selectedAgentIdRef = useRef<string | null>(null)
+  const programOperationRef = useRef<{
+    runtime: AgentRuntimeSelection
+    agentId: string
+    operation: string
+  } | null>(null)
+  const programRequestRef = useRef(0)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
-  const currentPackApplyConflict = packApplyConflict && isAgentPackRuntime(packApplyConflict.runtime)
+  const currentPackApplyConflict = packApplyConflict && isAgentRuntimeSelection(packApplyConflict.runtime)
     ? packApplyConflict
     : null
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
+  const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
+  const programs = programSnapshot && isAgentRuntimeSelection(programSnapshot.runtime) ? programSnapshot.programs : {}
 
-  const loadPrograms = useCallback(async () => {
-    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+  const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
+    if (!isAgentRuntimeSelection(runtime)) return
+    const request = ++programRequestRef.current
+    const isCurrent = () => request === programRequestRef.current && isAgentRuntimeSelection(runtime)
     setProgramLoading(true)
     try {
-      const next = await agentApi.refresh()
-      if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
-        setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
+      const next = await agentApi.refresh(runtime.environmentId)
+      if (isCurrent()) {
+        setProgramSnapshot({ runtime, programs: Object.fromEntries(next.map((agent) => [agent.id, agent])) })
       }
     } catch (e) {
-      if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
-        state.setError(skillErrorMessage(t, e))
-      }
+      if (isCurrent()) setError(skillErrorMessage(t, e))
     } finally {
-      setProgramLoading(false)
+      if (isCurrent()) setProgramLoading(false)
     }
-  }, [state, t])
+  }, [setError, t])
 
   useEffect(() => {
     if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
-    loadPrograms()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (state.customAgentDialogRequest <= 0) return
-    setCustomDialogOpen(true)
-    useSkillStoreV2.setState({ customAgentDialogRequest: 0 })
-  }, [state.customAgentDialogRequest])
+    void loadPrograms({ environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision })
+    return () => { programRequestRef.current += 1 }
+  }, [loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
-    selectedAgentIdRef.current = state.selectedAgentId
-  }, [state.selectedAgentId])
+    if (state.customAgentDialogRequest <= 0) return
+    setCustomDialogRuntime({ environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision })
+    useSkillStoreV2.setState({ customAgentDialogRequest: 0 })
+  }, [state.customAgentDialogRequest, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
     let alive = true
     agentApi.onOutput((event) => {
-      if (useRuntimeEnvironmentStore.getState().selectedEnvironmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID) return
-      if (event.agentId !== selectedAgentIdRef.current) return
+      const active = programOperationRef.current
+      if (
+        !alive || !active || active.runtime.environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID
+        || !isAgentRuntimeSelection(active.runtime)
+        || event.agentId !== active.agentId || event.operation !== active.operation
+        || event.agentId !== useSkillStoreV2.getState().selectedAgentId
+      ) return
       setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
     }).then((next) => {
       if (alive) unlisten = next
@@ -226,9 +240,12 @@ export function AgentManagementPage() {
 
   useEffect(() => {
     setTab('overview')
+  }, [state.selectedAgentId])
+
+  useEffect(() => {
     setNotice(null)
     setAgentOutput([])
-  }, [state.selectedAgentId])
+  }, [state.selectedAgentId, runtimeSelectionRevision])
 
   useEffect(() => () => {
     packApplyResolverRef.current?.(false)
@@ -267,10 +284,10 @@ export function AgentManagementPage() {
     }
   }
 
-  const finishPackAction = async (runtime: AgentPackRuntime, agentId: string, message: string) => {
-    if (!isAgentPackRuntime(runtime)) return false
+  const finishPackAction = async (runtime: AgentRuntimeSelection, agentId: string, message: string) => {
+    if (!isAgentRuntimeSelection(runtime)) return false
     await state.loadAgentDetail(agentId, true)
-    if (!isAgentPackRuntime(runtime)) return false
+    if (!isAgentRuntimeSelection(runtime)) return false
     void state.loadOverview(true)
     state.setError(null)
     setNotice(message)
@@ -278,15 +295,15 @@ export function AgentManagementPage() {
   }
 
   const revoke = async (packId: string, agentId: string) => {
-    if (!isAgentPackRuntime(packRuntime)) return
+    if (!isAgentRuntimeSelection(runtimeSelection)) return
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
-      await skillApiV2.removePackFromAgent(packId, agentId, packRuntime.environmentId)
-      await finishPackAction(packRuntime, agentId, '技能包已取消应用')
+      await skillApiV2.removePackFromAgent(packId, agentId, runtimeSelection.environmentId)
+      await finishPackAction(runtimeSelection, agentId, '技能包已取消应用')
     } catch (e) {
-      if (isAgentPackRuntime(packRuntime)) state.setError(String(e))
+      if (isAgentRuntimeSelection(runtimeSelection)) state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -314,25 +331,25 @@ export function AgentManagementPage() {
       agentName: detail?.id === agentId ? detail.displayName : agentId,
       mode,
       preview,
-      runtime: packRuntime,
+      runtime: runtimeSelection,
     }
   }
 
   const applyPack = async (packId: string, agentId: string): Promise<boolean> => {
-    if (!isAgentPackRuntime(packRuntime)) return false
+    if (!isAgentRuntimeSelection(runtimeSelection)) return false
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
       const mode = state.settings?.defaultDistributeMode || 'link'
-      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode, [], undefined, packRuntime.environmentId)
-      if (!isAgentPackRuntime(packRuntime)) return false
+      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode, [], undefined, runtimeSelection.environmentId)
+      if (!isAgentRuntimeSelection(runtimeSelection)) return false
       if (preview.blockers.length > 0) {
         return openPackApplyConflict(packApplyDialogInfo(packId, agentId, preview, mode))
       }
-      return await finishPackAction(packRuntime, agentId, '技能包已应用')
+      return await finishPackAction(runtimeSelection, agentId, '技能包已应用')
     } catch (e) {
-      if (isAgentPackRuntime(packRuntime)) state.setError(String(e))
+      if (isAgentRuntimeSelection(runtimeSelection)) state.setError(String(e))
       return false
     } finally {
       setBusy(false)
@@ -341,7 +358,7 @@ export function AgentManagementPage() {
 
   const executePackApplyConflict = async (decisions: DistributionBlockerDecision[]) => {
     const conflict = currentPackApplyConflict
-    if (!conflict || !isAgentPackRuntime(conflict.runtime)) return
+    if (!conflict || !isAgentRuntimeSelection(conflict.runtime)) return
     setPackApplyBusy(true)
     try {
       const result = await skillApiV2.executeApplyPack(
@@ -352,7 +369,7 @@ export function AgentManagementPage() {
         conflict.preview,
         conflict.runtime.environmentId,
       )
-      if (!isAgentPackRuntime(conflict.runtime)) return
+      if (!isAgentRuntimeSelection(conflict.runtime)) return
       if (result.blockers.length > 0) {
         setPackApplyConflict({ ...conflict, preview: result })
         return
@@ -361,7 +378,7 @@ export function AgentManagementPage() {
         resolvePackApplyConflict(true)
       }
     } catch (e) {
-      if (isAgentPackRuntime(conflict.runtime)) throw e
+      if (isAgentRuntimeSelection(conflict.runtime)) throw e
     } finally {
       setPackApplyBusy(false)
     }
@@ -412,39 +429,29 @@ export function AgentManagementPage() {
     }
   }
 
-  const updateAgent = async (agentId: string) => {
-    setUpdatingAgentId(agentId)
+  const changeAgentProgram = async (agentId: string, operation: 'install' | 'update') => {
+    if (!isCurrentRuntime()) return
+    const setPendingAgentId = operation === 'install' ? setInstallingAgentId : setUpdatingAgentId
+    const active = { runtime: runtimeSelection, agentId, operation }
+    programOperationRef.current = active
+    setPendingAgentId(agentId)
     setNotice(null)
     state.setError(null)
     setAgentOutput([])
     try {
-      await agentApi.update(agentId)
-      await loadPrograms()
+      await agentApi[operation](agentId, runtimeSelection.environmentId)
+      if (!isCurrentRuntime()) return
+      await loadPrograms(runtimeSelection)
+      if (!isCurrentRuntime()) return
       await state.loadOverview(true)
+      if (!isCurrentRuntime()) return
       await state.loadAgentDetail(agentId, true)
-      setNotice('Agent 更新完成')
+      if (isCurrentRuntime()) setNotice(operation === 'install' ? 'Agent 安装完成' : 'Agent 更新完成')
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrentRuntime()) state.setError(String(e))
     } finally {
-      setUpdatingAgentId(null)
-    }
-  }
-
-  const installAgent = async (agentId: string) => {
-    setInstallingAgentId(agentId)
-    setNotice(null)
-    state.setError(null)
-    setAgentOutput([])
-    try {
-      await agentApi.install(agentId)
-      await loadPrograms()
-      await state.loadOverview(true)
-      await state.loadAgentDetail(agentId, true)
-      setNotice('Agent 安装完成')
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setInstallingAgentId(null)
+      if (programOperationRef.current === active) programOperationRef.current = null
+      setPendingAgentId(null)
     }
   }
 
@@ -455,8 +462,9 @@ export function AgentManagementPage() {
     }
   }
 
-  const uninstallAgent = async ({ agent, environmentId, selectionRevision }: AgentUninstallTarget) => {
-    const isCurrent = () => isRuntimeEnvironment(environmentId, selectionRevision)
+  const uninstallAgent = async (target: AgentActionTarget) => {
+    const { agent, environmentId } = target
+    const isCurrent = () => isAgentRuntimeSelection(target)
     if (!isCurrent()) {
       setUninstallTarget(null)
       return
@@ -465,6 +473,8 @@ export function AgentManagementPage() {
     const unmanagedItems = useSkillStoreV2.getState().unmanaged
       .filter((item) => item.agentId === agent.id && !isReadOnlyUnmanaged(item) && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
     setUninstallingAgentId(agent.id)
+    const active = { runtime: target, agentId: agent.id, operation: 'uninstall' }
+    programOperationRef.current = active
     setNotice(null)
     state.setError(null)
     setAgentOutput([])
@@ -513,7 +523,7 @@ export function AgentManagementPage() {
       if (!isCurrent()) return
       useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
       setUninstallTarget(null)
-      await Promise.all([loadPrograms(), state.loadOverview(true)])
+      await Promise.all([loadPrograms(target), state.loadOverview(true)])
       if (!isCurrent()) return
       if (failures.length > 0) {
         if (useSkillStoreV2.getState().selectedAgentId === agent.id) {
@@ -546,29 +556,34 @@ export function AgentManagementPage() {
     } catch (e) {
       if (isCurrent()) state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
     } finally {
+      if (programOperationRef.current === active) programOperationRef.current = null
       setUninstallingAgentId(null)
     }
   }
 
   const openAgentDownload = async (agentId: string) => {
+    if (!isCurrentRuntime()) return
     setOpeningAgentId(agentId)
     try {
       await agentApi.openDownload(agentId)
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrentRuntime()) state.setError(String(e))
     } finally {
       setOpeningAgentId(null)
     }
   }
 
   const refreshAll = async () => {
+    if (!isCurrentRuntime()) return
     setRefreshingAll(true)
     setNotice(null)
     state.setError(null)
     try {
-      await Promise.all([state.loadOverview(true), loadPrograms()])
-      if (state.selectedAgentId && state.selectedAgentId !== SHARED_SKILLS_AGENT_ID) {
-        await state.loadAgentDetail(state.selectedAgentId, true)
+      await Promise.all([state.loadOverview(true), loadPrograms(runtimeSelection)])
+      if (!isCurrentRuntime()) return
+      const { selectedAgentId } = useSkillStoreV2.getState()
+      if (selectedAgentId && selectedAgentId !== SHARED_SKILLS_AGENT_ID) {
+        await state.loadAgentDetail(selectedAgentId, true)
       }
     } finally {
       setRefreshingAll(false)
@@ -576,11 +591,12 @@ export function AgentManagementPage() {
   }
 
   const refreshOverview = async () => {
+    if (!isCurrentRuntime()) return
     setRefreshingOverview(true)
     setNotice(null)
     state.setError(null)
     try {
-      await Promise.all([state.refresh(), loadPrograms()])
+      await Promise.all([state.refresh(), loadPrograms(runtimeSelection)])
     } finally {
       setRefreshingOverview(false)
     }
@@ -591,42 +607,52 @@ export function AgentManagementPage() {
     setDetailFallback(fallback || null)
   }
 
-  const addCustomAgent = async (config: CustomAgentConfig) => {
+  const addCustomAgent = async (config: CustomAgentConfig, runtime: AgentRuntimeSelection) => {
+    const isCurrent = () => isAgentRuntimeSelection(runtime)
+    if (!isCurrent()) return
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
-      const added = await agentApi.addCustom(config)
-      await Promise.all([state.loadOverview(true), loadPrograms()])
+      const added = await agentApi.addCustom(config, runtime.environmentId)
+      if (!isCurrent()) return
+      await Promise.all([state.loadOverview(true), loadPrograms(runtime)])
+      if (!isCurrent()) return
       if (useSkillStoreV2.getState().agents.some((agent) => agent.id === added.id)) {
         await state.selectAgent(added.id)
       }
-      setCustomDialogOpen(false)
+      if (!isCurrent()) return
+      setCustomDialogRuntime(null)
       setNotice(config.category === 'claude-compatible'
         ? 'Claude Code 实例已添加，Hook 已安装'
         : '自定义 Agent 已添加')
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(String(e))
     } finally {
       setBusy(false)
     }
   }
 
-  const deleteCustomAgent = async (agent: AgentDetail) => {
+  const deleteCustomAgent = async (target: AgentActionTarget) => {
+    const { agent, environmentId } = target
+    const isCurrent = () => isAgentRuntimeSelection(target)
+    if (!isCurrent()) return
     setDeletingAgentId(agent.id)
     setNotice(null)
     state.setError(null)
     try {
-      await agentApi.removeCustom(agent.id)
+      await agentApi.removeCustom(agent.id, environmentId)
+      if (!isCurrent()) return
       useSkillStoreV2.setState((current) => ({
         agents: current.agents.filter((item) => item.id !== agent.id),
       }))
       setDeleteAgentTarget(null)
-      await state.selectAgent(null)
-      await Promise.all([state.loadOverview(true), loadPrograms()])
-      setNotice(`已删除自定义 Agent「${agent.displayName}」`)
+      if (useSkillStoreV2.getState().selectedAgentId === agent.id) await state.selectAgent(null)
+      if (!isCurrent()) return
+      await Promise.all([state.loadOverview(true), loadPrograms(target)])
+      if (isCurrent()) setNotice(`已删除自定义 Agent「${agent.displayName}」`)
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(String(e))
     } finally {
       setDeletingAgentId(null)
     }
@@ -716,12 +742,12 @@ export function AgentManagementPage() {
             onRevoke={revoke}
             onApplyPack={applyPack}
             onScan={scanAgent}
-            onUpdate={updateAgent}
-            onInstall={installAgent}
+            onUpdate={(id) => changeAgentProgram(id, 'update')}
+            onInstall={(id) => changeAgentProgram(id, 'install')}
             onOpenDownload={openAgentDownload}
             onOpenSkillDetail={openSkillDetail}
             deleting={deletingAgentId === detail.id}
-            onRequestDelete={setDeleteAgentTarget}
+            onRequestDelete={(agent) => setDeleteAgentTarget({ agent, ...runtimeSelection })}
           />
         )}
       </div>
@@ -793,11 +819,11 @@ export function AgentManagementPage() {
           onExecute={executePackApplyConflict}
         />
       )}
-      {customDialogOpen && (
+      {customDialogRuntime && isAgentRuntimeSelection(customDialogRuntime) && (
         <CustomAgentDialog
           busy={busy}
-          onClose={() => setCustomDialogOpen(false)}
-          onSubmit={addCustomAgent}
+          onClose={() => setCustomDialogRuntime(null)}
+          onSubmit={(config) => addCustomAgent(config, customDialogRuntime)}
         />
       )}
       {uninstallTarget && uninstallAgentTarget && (
@@ -855,13 +881,13 @@ export function AgentManagementPage() {
           )}
         </PreviewDialog>
       )}
-      {deleteAgentTarget && (
+      {deleteAgentTarget && isAgentRuntimeSelection(deleteAgentTarget) && (
         <PreviewDialog
-          title={`删除 Agent「${deleteAgentTarget.displayName}」`}
+          title={`删除 Agent「${deleteAgentTarget.agent.displayName}」`}
           confirmLabel="确认删除"
           busyLabel="删除中"
           destructive
-          busy={deletingAgentId === deleteAgentTarget.id}
+          busy={deletingAgentId === deleteAgentTarget.agent.id}
           onCancel={() => setDeleteAgentTarget(null)}
           onConfirm={() => deleteCustomAgent(deleteAgentTarget)}
         >

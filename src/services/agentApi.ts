@@ -254,16 +254,16 @@ export const agentApi = {
     ? invoke<AgentProgramInfo[]>('agent_list')
     : Promise.resolve(seedAgentPrograms()),
 
-  refresh: () => isTauriRuntime()
-    ? invoke<AgentProgramInfo[]>('agent_refresh')
+  refresh: (environmentId?: string) => isTauriRuntime()
+    ? invoke<AgentProgramInfo[]>('agent_refresh', undefined, environmentId)
     : Promise.resolve(seedAgentPrograms()),
 
-  install: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_install', { agentId })
+  install: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_install', { agentId }, environmentId)
     : Promise.resolve(),
 
-  update: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_update', { agentId })
+  update: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_update', { agentId }, environmentId)
     : Promise.resolve(),
 
   uninstall: (agentId: string, environmentId?: string) => isTauriRuntime()
@@ -290,8 +290,8 @@ export const agentApi = {
     ? invoke('open_system_path', { path })
     : Promise.resolve(),
 
-  addCustom: (config: CustomAgentConfig) => isTauriRuntime()
-    ? invoke<AgentProgramInfo>('add_custom_agent', { config })
+  addCustom: (config: CustomAgentConfig, environmentId?: string) => isTauriRuntime()
+    ? invoke<AgentProgramInfo>('add_custom_agent', { config }, environmentId)
     : Promise.resolve({
       id: config.id || `custom-${config.displayName.toLowerCase().replace(/\s+/g, '-')}`,
       displayName: config.displayName,
@@ -338,8 +338,8 @@ export const agentApi = {
       isCustom: true,
     }),
 
-  removeCustom: (agentId: string) => isTauriRuntime()
-    ? invoke('remove_custom_agent', { agentId })
+  removeCustom: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('remove_custom_agent', { agentId }, environmentId)
     : Promise.resolve(),
 
   onOutput: async (handler: (event: AgentOutputEvent) => void): Promise<UnlistenFn> => {
