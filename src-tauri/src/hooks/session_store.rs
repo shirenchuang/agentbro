@@ -1,9 +1,13 @@
 // SessionStore — Thread-safe session state management
 // Central source of truth for all agent sessions
 
+use crate::terminal::process_tree::{build_tree, ProcessInfo};
 use chrono::Utc;
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -435,6 +439,8 @@ pub struct SessionUpdatePayload {
 pub struct SessionStore {
     sessions: Arc<DashMap<String, SessionState>>,
     app_handle: Option<AppHandle>,
+    #[cfg(test)]
+    update_requests: Arc<AtomicUsize>,
 }
 
 impl SessionStore {
@@ -442,7 +448,14 @@ impl SessionStore {
         Self {
             sessions: Arc::new(DashMap::new()),
             app_handle: None,
+            #[cfg(test)]
+            update_requests: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn update_request_count(&self) -> usize {
+        self.update_requests.load(Ordering::Relaxed)
     }
 
     /// Set the app handle for emitting Tauri events
@@ -505,6 +518,36 @@ impl SessionStore {
             session.update_duration();
         }
         self.emit_update();
+    }
+
+    pub(super) fn apply_observed_sessions<'a>(
+        &self,
+        updates: Vec<SessionState>,
+        removed_ids: impl Iterator<Item = &'a str>,
+    ) {
+        let mut changed = !updates.is_empty();
+        for observed in updates {
+            match self.sessions.entry(observed.id.clone()) {
+                Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    current.phase = observed.phase;
+                    current.description = observed.description;
+                    current.session_title = observed.session_title;
+                    current.term_bundle_id = observed.term_bundle_id;
+                    reconcile_pending_for_phase(current);
+                    current.update_duration();
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(observed);
+                }
+            }
+        }
+        for id in removed_ids {
+            changed |= self.sessions.remove(id).is_some();
+        }
+        if changed {
+            self.emit_update();
+        }
     }
 
     /// Set pending permission on a session
@@ -820,7 +863,7 @@ impl SessionStore {
 
     /// Get all sessions as a vector
     pub fn get_all_sessions(&self) -> Vec<SessionState> {
-        self.prune_dead_process_sessions();
+        self.prune_dead_process_sessions(&build_tree());
         self.sessions
             .iter()
             .map(|entry| {
@@ -831,8 +874,11 @@ impl SessionStore {
             .collect()
     }
 
-    fn prune_dead_process_sessions(&self) {
-        let tree = crate::terminal::process_tree::build_tree();
+    fn prune_dead_process_sessions(&self, tree: &HashMap<u32, ProcessInfo>) {
+        // A usable system snapshot always includes the AgentBro process.
+        if !tree.contains_key(&std::process::id()) {
+            return;
+        }
         let mut ended_ids = Vec::new();
         let mut stale_ids = Vec::new();
 
@@ -902,6 +948,8 @@ impl SessionStore {
     }
 
     fn emit_update_with_suppression(&self, suppressed: bool) {
+        #[cfg(test)]
+        self.update_requests.fetch_add(1, Ordering::Relaxed);
         if let Some(ref handle) = self.app_handle {
             let sessions = self.get_all_sessions();
             let payload = SessionUpdatePayload {
@@ -1038,6 +1086,42 @@ mod tests {
 
         session.tasks[0].status = "completed".to_string();
         assert!(!session.has_unfinished_tasks());
+    }
+
+    #[test]
+    fn preserves_running_and_finished_sessions_when_process_snapshot_is_unavailable() {
+        let store = seeded_store();
+        let pid = std::process::id();
+        store.update_session("s1", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Processing;
+        });
+        store.get_or_create_session("finished", "claude-code", "agentbro", "/tmp/agentbro", "");
+        store.update_session("finished", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Done;
+        });
+
+        let incomplete = HashMap::from([(
+            u32::MAX,
+            ProcessInfo {
+                pid: u32::MAX,
+                ppid: 0,
+                command: "other".into(),
+                tty: None,
+            },
+        )]);
+        for snapshot in [HashMap::new(), incomplete] {
+            store.prune_dead_process_sessions(&snapshot);
+            assert_eq!(
+                store.get_session("s1").unwrap().phase,
+                SessionPhase::Processing
+            );
+            assert_eq!(
+                store.get_session("finished").unwrap().phase,
+                SessionPhase::Done
+            );
+        }
     }
 
     #[test]
