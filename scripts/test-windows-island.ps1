@@ -208,28 +208,49 @@ public static class ExplorerSelectionControl {
         out IntPtr item, uint attributes, IntPtr resultAttributes);
 
     [DllImport("shell32.dll")]
-    private static extern int SHOpenFolderAndSelectItems(IntPtr item, uint count,
-        IntPtr children, uint flags);
+    private static extern IntPtr ILFindLastID(IntPtr item);
 
-    public static void Reveal(string path) {
+    [DllImport("shell32.dll")]
+    private static extern int SHOpenFolderAndSelectItems(IntPtr folder, uint count,
+        [In] IntPtr[] children, uint flags);
+
+    public static void Reveal(string path, string parent) {
         IntPtr item;
-        int result = SHParseDisplayName(path, IntPtr.Zero, out item, 0, IntPtr.Zero);
-        Marshal.ThrowExceptionForHR(result);
+        Marshal.ThrowExceptionForHR(SHParseDisplayName(path, IntPtr.Zero, out item, 0, IntPtr.Zero));
         try {
-            Marshal.ThrowExceptionForHR(SHOpenFolderAndSelectItems(item, 0, IntPtr.Zero, 0));
+            IntPtr folder;
+            Marshal.ThrowExceptionForHR(SHParseDisplayName(parent, IntPtr.Zero, out folder, 0, IntPtr.Zero));
+            try {
+                Marshal.ThrowExceptionForHR(SHOpenFolderAndSelectItems(folder, 1, new[] { ILFindLastID(item) }, 0));
+            } finally {
+                Marshal.FreeCoTaskMem(folder);
+            }
         } finally {
             Marshal.FreeCoTaskMem(item);
         }
     }
 }
 '@
-        [ExplorerSelectionControl]::Reveal($database)
-        $control = Wait-IslandValue 'the native Shell API to select the identical file' {
-            Find-ExplorerView $shell $dataFolder $database
+        [ExplorerSelectionControl]::Reveal($database, $dataFolder)
+        try {
+            $control = Wait-IslandValue 'the native Shell API to select the identical file' {
+                Find-ExplorerView $shell $dataFolder $database
+            }
+            Write-Output 'The Shell API with an explicit parent folder and child selected the exact SQLite file.'
+        } catch {
+            Write-Output 'The Shell API opened the parent without an observable selection. Selecting with the active Explorer FolderView.'
+            $view = Find-ExplorerView $shell $dataFolder
+            if (-not $view) { throw }
+            $item = $view.Document.Folder.ParseName('skill-manager.db')
+            if (-not $item) { throw 'Windows FolderView did not find the database basename' }
+            $view.Document.SelectItem($item, 29)
+            $control = Wait-IslandValue 'the Explorer FolderView to select the identical file' {
+                Find-ExplorerView $shell $dataFolder $database
+            }
+            Write-Output 'The Explorer FolderView selected the exact SQLite file.'
         }
         Save-FailedRunnerDesktop 'agentbro-projects-sqlite-control.png'
         $control.Quit()
-        Write-Output 'The Windows Shell API selected the exact SQLite file that the installed action had left unselected.'
         throw
     }
 }
