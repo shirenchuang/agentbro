@@ -5,6 +5,7 @@ param(
     [switch]$VerifyQwenWork,
     [switch]$VerifyPackManifest,
     [switch]$TracePermissionUi,
+    [switch]$TracePermissionRenderer,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
@@ -28,6 +29,9 @@ $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
     throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
+}
+if ($TracePermissionRenderer -and -not $TracePermissionUi) {
+    throw 'Renderer comparisons require the isolated-runner permission trace'
 }
 
 $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
@@ -122,6 +126,20 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
+$rendererTracePort = 0
+if ($TracePermissionRenderer) {
+    $debugListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $debugListener.Start()
+        $rendererTracePort = $debugListener.LocalEndpoint.Port
+    } finally {
+        $debugListener.Stop()
+    }
+    $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    New-Item -Path $key -Force | Out-Null
+    New-ItemProperty -Path $key -Name 'agentbro.exe' -PropertyType String -Force `
+        -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$rendererTracePort" | Out-Null
+}
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
@@ -273,6 +291,10 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
+    if ($rendererTracePort) {
+        $start.ArgumentList.Add('-RendererTracePort')
+        $start.ArgumentList.Add([string]$rendererTracePort)
+    }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
     if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
@@ -304,6 +326,16 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
+    if ($rendererTracePort) {
+        Wait-AppCondition 'the loopback WebView2 debug listener' {
+            $listener = @(Get-NetTCPConnection -State Listen -LocalPort $rendererTracePort -ErrorAction SilentlyContinue)
+            if ($listener | Where-Object { $_.LocalAddress -notin @('127.0.0.1', '::1') }) {
+                throw 'The WebView2 debug listener must bind to loopback only'
+            }
+            $listener.Count -gt 0
+        }
+        Write-Output 'The installed WebView2 debug listener is available on loopback.'
+    }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
         Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'

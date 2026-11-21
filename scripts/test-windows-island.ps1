@@ -10,6 +10,7 @@ param(
     [string]$PackImportPath,
     [string]$PackExportPath,
     [switch]$TracePermissionUi,
+    [int]$RendererTracePort,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
@@ -25,6 +26,7 @@ if ($TracePermissionUi) {
     }
     $permissionTraceDirectory = Join-Path $env:RUNNER_TEMP 'agentbro-permission-trace'
     $null = New-Item -ItemType Directory -Path $permissionTraceDirectory -Force
+    if ($RendererTracePort) { . (Join-Path $PSScriptRoot 'windows-island-renderer.ps1') }
 }
 
 Add-Type -TypeDefinition @'
@@ -326,6 +328,7 @@ function Write-IslandAccessibilityComparison([IntPtr]$WindowHandle, [string]$Sta
         Write-Host "Independent accessibility client: $($snapshot | ConvertTo-Json -Depth 4 -Compress)"
         Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-after-clients.png")
         Write-Host "Finished comparing accessibility clients at $([DateTimeOffset]::UtcNow.ToString('O'))."
+        if ($RendererTracePort) { Write-IslandRendererState $RendererTracePort }
     } catch {
         Write-Host "Could not compare accessibility clients: $_"
     } finally {

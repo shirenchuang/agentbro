@@ -30,6 +30,10 @@ on:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
+      windows_trace_permission_renderer:
+        description: Compare the Island renderer and UI Automation on an isolated runner
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
@@ -341,6 +345,7 @@ jobs:
           VERIFY_QWENWORK: ${{ inputs.windows_verify_qwenwork }}
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
+          TRACE_PERMISSION_RENDERER: ${{ inputs.windows_trace_permission_renderer }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
@@ -354,6 +359,7 @@ jobs:
               -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
               -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
               -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+              -TracePermissionRenderer:($env:TRACE_PERMISSION_RENDERER -eq 'true') `
               -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
               -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
               -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
