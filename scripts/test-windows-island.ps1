@@ -262,7 +262,7 @@ function Close-StartupSettings {
 }
 
 function Write-IslandAccessibilityBounds {
-    param([IntPtr]$WindowHandle)
+    param([IntPtr]$WindowHandle, [string]$FixtureProject = '')
 
     $native = [AgentBroSmokeInput+Rect]::new()
     if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
@@ -276,7 +276,8 @@ function Write-IslandAccessibilityBounds {
             Where-Object {
                 $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel', 'hover-list__card') -or
                 $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
-                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once')
+                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once') -or
+                ($FixtureProject -and $_.Name -and $_.Name.Contains($FixtureProject))
             } |
             Select-Object Name, ClassName, IsOffscreen, @{
                 Name = 'Bounds'
@@ -704,7 +705,25 @@ try {
         Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
     }
     if ($VerifyDrag) {
-        $null = Wait-IslandValue 'the fixture session and its Read target in the hover list' $findSession
+        try {
+            $null = Wait-IslandValue 'the fixture session and its Read target in the hover list' $findSession
+        } catch {
+            if ($TracePermissionUi) {
+                try {
+                    Write-IslandAccessibilityBounds $islandWindow.Handle -FixtureProject $ProjectName
+                    $freshRoot = Find-VisibleIsland
+                    if ($freshRoot -and $freshRoot.Handle -eq $islandWindow.Handle) {
+                        $freshRow = Find-IslandButton $freshRoot.Element {
+                            param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt')
+                        }
+                        Write-Host "Fresh Island region reports the fixture row: $([bool]$freshRow)."
+                    }
+                } catch {
+                    Write-Host "Could not inspect the fixture hover list accessibility: $_"
+                }
+            }
+            throw
+        }
         Test-InstalledIslandDrag $island $islandWindow.Handle
     }
     Click-IslandElement -Description 'Island session' -FindElement $findSession
