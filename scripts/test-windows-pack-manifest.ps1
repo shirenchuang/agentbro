@@ -50,11 +50,14 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     }
     $fileNameValue = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     if ($Action -eq 'Save') {
-        # Setting ValuePattern alone can leave the default filename selected at submission.
+        # The native edit commits the name. Sending the full path as keystrokes can lose characters.
+        $prefix = $Path.Substring(0, $Path.Length - 1)
         $fileName.SetFocus()
-        $null = Wait-IslandValue 'keyboard focus on the Save field' { $fileName.Current.HasKeyboardFocus }
-        $fileNameValue.SetValue('')
-        [AgentBroSmokeInput]::ReplaceText($Path)
+        $fileNameValue.SetValue($prefix)
+        $null = Wait-IslandValue 'the focused Save field with the path prefix' {
+            $fileName.Current.HasKeyboardFocus -and $fileNameValue.Current.Value -ceq $prefix
+        }
+        [AgentBroSmokeInput]::AppendCharacter($Path[$Path.Length - 1])
     } else {
         $fileNameValue.SetValue($Path)
     }
