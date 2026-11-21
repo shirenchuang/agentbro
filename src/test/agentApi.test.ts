@@ -153,4 +153,29 @@ describe('agentApi seedAgentPrograms', () => {
       selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     }
   })
+
+  it('routes the Skill Pack move preview and execution to the reviewed runtime', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+    const args = { targetId: 'target', packId: 'pack' }
+
+    try {
+      selectEnvironment('other-host')
+      await skillApiV2.previewMoveDirectSkillToPack(args.targetId, args.packId, 'reviewed-host')
+      await skillApiV2.moveDirectSkillToPack(args.targetId, args.packId, [], 'reviewed-host')
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['remote_skill_manager_invoke', { id: 'reviewed-host', command: 'preview_move_direct_skill_to_pack', args }],
+        ['remote_skill_manager_invoke', {
+          id: 'reviewed-host',
+          command: 'execute_move_direct_skill_to_pack',
+          args: { ...args, blockerDecisions: [] },
+        }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
 })
