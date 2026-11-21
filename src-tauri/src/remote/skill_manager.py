@@ -23,6 +23,7 @@ HOME = pathlib.Path.home().resolve()
 STATE_PATH = HOME / ".agentbro" / "skill-manager-remote.json"
 FIXED_CENTER_PATH = HOME / ".agentbro" / "skills"
 SHARED_SKILLS_AGENT_ID = "agents"
+DEFAULT_PACK_NAME = "全量技能包"
 SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
 STATE_MUTATING_COMMANDS = {
     "skill_manager_bootstrap",
@@ -243,6 +244,7 @@ def default_state():
         },
         "sources": {},
         "packs": {},
+        "packTargetClaims": {},
         "projects": {},
         "customAgents": {},
     }
@@ -253,7 +255,7 @@ def load_state():
     if STATE_PATH.is_file():
         try:
             saved = json.loads(STATE_PATH.read_text())
-            for key in ("settings", "sources", "packs", "projects", "customAgents"):
+            for key in ("settings", "sources", "packs", "packTargetClaims", "projects", "customAgents"):
                 if isinstance(saved.get(key), dict):
                     state[key].update(saved[key])
         except Exception:
@@ -862,24 +864,50 @@ def copy_or_link(source, target, mode):
     return "copy"
 
 
+def pack_applied_agent_ids(pack_id):
+    agents = set(STATE["packs"].get(pack_id, {}).get("appliedAgents", []))
+    agents.update(
+        target_id.partition("::")[0]
+        for target_id in STATE["packTargetClaims"].get(pack_id, {})
+    )
+    return sorted(agents)
+
+
 def applied_pack_ids(agent_id):
-    return [
-        pack_id for pack_id, pack in STATE["packs"].items()
-        if agent_id in pack.get("appliedAgents", [])
-    ]
+    pack_ids = dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"]))
+    return [pack_id for pack_id in pack_ids if agent_id in pack_applied_agent_ids(pack_id)]
+
+
+def add_pack_target_claims(pack_id, target_ids):
+    claims = dict.fromkeys(target_ids, True)
+    if claims:
+        STATE["packTargetClaims"].setdefault(pack_id, {}).update(claims)
+
+
+def filter_pack_target_claims(pack_id, keep):
+    claims = STATE["packTargetClaims"].get(pack_id, {})
+    remaining = {target_id: True for target_id in claims if keep(target_id)}
+    if remaining:
+        STATE["packTargetClaims"][pack_id] = remaining
+    else:
+        STATE["packTargetClaims"].pop(pack_id, None)
+    return remaining != claims
 
 
 def pack_claims(agent_id, skill_id):
     claims = []
     stamp = now()
-    for pack_id in applied_pack_ids(agent_id):
+    target_id = agent_id + "::" + skill_id
+    for pack_id in dict.fromkeys(list(STATE["packs"]) + list(STATE["packTargetClaims"])):
         pack = STATE["packs"].get(pack_id, {})
-        if skill_id in pack.get("skillIds", []):
+        explicit = target_id in STATE["packTargetClaims"].get(pack_id, {})
+        legacy = agent_id in pack.get("appliedAgents", []) and skill_id in pack.get("skillIds", [])
+        if explicit or legacy:
             claims.append({
                 "id": "pack::" + pack_id + "::" + agent_id + "::" + skill_id,
                 "claimType": "pack",
                 "packId": pack_id,
-                "packName": pack.get("name", pack_id),
+                "packName": DEFAULT_PACK_NAME if pack_id == "default" else pack.get("name", pack_id),
                 "createdAt": pack.get("createdAt", stamp),
             })
     if not claims:
@@ -1063,11 +1091,10 @@ def pack_detail(pack_id, skills=None, agents=None):
     if pack_id == "default":
         data = {
             "id": "default",
-            "name": "全量技能包",
+            "name": DEFAULT_PACK_NAME,
             "description": "中心库全部 Skills。应用时按当前中心库全量分发。",
             "tags": [],
             "skillIds": list(skills),
-            "appliedAgents": [],
             "revision": 1,
             "createdAt": now(),
             "updatedAt": now(),
@@ -1087,7 +1114,7 @@ def pack_detail(pack_id, skills=None, agents=None):
             "missing": skill is None,
         })
     applied = []
-    for agent_id in data.get("appliedAgents", []):
+    for agent_id in pack_applied_agent_ids(pack_id):
         agent = next((item for item in agents if item["id"] == agent_id), None)
         applied.append({
             "packId": data["id"],
@@ -1209,6 +1236,13 @@ def affected_target(target, agents):
         "mode": target["actualMode"],
         "claimCount": len(target["claims"]),
     }
+
+
+def targets_claimed_by_pack(pack_id, targets):
+    return (
+        target for target in targets.values()
+        if any(claim["packId"] == pack_id for claim in target["claims"])
+    )
 
 
 def preview_delete(skill_ids):
@@ -1522,8 +1556,13 @@ def remove_unmanaged_item(item, requested_agent_id):
 def remove_target_distribution(target):
     if target.get("agentId") == SHARED_SKILLS_AGENT_ID:
         remove_shared_skill_path(target["targetPath"])
-        return
-    remove_path(pathlib.Path(target["targetPath"]))
+    else:
+        remove_path(pathlib.Path(target["targetPath"]))
+    changed = False
+    for pack_id in list(STATE["packTargetClaims"]):
+        if filter_pack_target_claims(pack_id, lambda target_id: target_id != target["id"]):
+            changed = True
+    return changed
 
 
 def adopt_preview(agent_id, unmanaged_id):
@@ -1868,13 +1907,15 @@ def upsert_pack(pack):
     if pack_id == "default":
         raise ValueError("The default Skill Pack cannot be edited")
     existing = STATE["packs"].get(pack_id, {})
+    skill_ids = [safe_id(item) for item in pack.get("skillIds", [])]
+    filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] in skill_ids)
     stamp = now()
     STATE["packs"][pack_id] = {
         "id": pack_id,
         "name": str(pack.get("name") or pack_id),
         "description": str(pack.get("description") or ""),
         "tags": [str(item) for item in pack.get("tags", [])],
-        "skillIds": [safe_id(item) for item in pack.get("skillIds", [])],
+        "skillIds": skill_ids,
         "appliedAgents": existing.get("appliedAgents", []),
         "revision": int(existing.get("revision", 0)) + 1,
         "createdAt": existing.get("createdAt", stamp),
@@ -1918,7 +1959,7 @@ def agent_detail_from_inventory(
     applied = []
     for pack_id in applied_pack_ids(agent_id):
         detail = pack_detail(pack_id, skills, agents)
-        applied.extend(detail["appliedAgents"])
+        applied.extend(item for item in detail["appliedAgents"] if item["agentId"] == agent_id)
     return {
         "id": agent_id,
         "displayName": spec["displayName"],
@@ -2729,6 +2770,11 @@ def move_direct_preview(target_id, pack_id):
     target = targets.get(target_id)
     if not target:
         raise ValueError("Target not found: " + target_id)
+    if not any(
+        claim["claimType"] == "direct" or claim["packId"] == pack_id
+        for claim in target["claims"]
+    ):
+        raise ValueError("Target does not have a direct Skill distribution")
     detail = pack_detail(pack_id, skills, agents)
     skill = skills[target["skillId"]]
     member_ids = [item["skillId"] for item in detail["members"] if not item["missing"]]
@@ -2737,11 +2783,7 @@ def move_direct_preview(target_id, pack_id):
         item["agentId"] for item in detail["appliedAgents"]
     ]
     remaining = [item for item in member_ids if item != target["skillId"]]
-    distribution = distribution_preview(
-        remaining,
-        [target["agentId"]],
-        target["actualMode"],
-    )
+    distribution = distribution_preview([], [target["agentId"]], target["actualMode"])
     return {
         "targetId": target_id,
         "skillId": target["skillId"],
@@ -2752,7 +2794,7 @@ def move_direct_preview(target_id, pack_id):
         "packName": detail["name"],
         "alreadyMember": already_member,
         "alreadyApplied": already_applied,
-        "willAddToPack": not already_member,
+        "willAddToPack": pack_id != "default" and not already_member,
         "otherMemberCount": len(remaining),
         "distribution": distribution,
     }
@@ -3008,6 +3050,8 @@ def dispatch():
                     item for item in pack.get("skillIds", [])
                     if item != skill_id
                 ]
+            for pack_id in list(STATE["packTargetClaims"]):
+                filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] != skill_id)
         save_state()
         return None
     if command == "preview_distribute_skill":
@@ -3163,16 +3207,19 @@ def dispatch():
         _, _, _, targets = inventory()
         failures = []
         deleted = 0
+        claims_changed = False
         for target_id in ids:
             target = targets.get(target_id)
             if not target:
                 failures.append({"targetId": target_id, "error": "Target not found"})
                 continue
             try:
-                remove_target_distribution(target)
+                claims_changed = remove_target_distribution(target) or claims_changed
                 deleted += 1
             except Exception as error:
                 failures.append({"targetId": target_id, "error": str(error)})
+        if claims_changed:
+            save_state()
         if command == "delete_skill_target_distribution":
             if failures:
                 raise ValueError(failures[0]["error"])
@@ -3201,6 +3248,7 @@ def dispatch():
         if pack_id == "default":
             raise ValueError("The default Skill Pack cannot be deleted")
         STATE["packs"].pop(pack_id, None)
+        STATE["packTargetClaims"].pop(pack_id, None)
         save_state()
         return None
     if command == "preview_apply_skill_pack":
@@ -3239,49 +3287,58 @@ def dispatch():
             ],
         }
     if command == "preview_remove_skill_pack_from_agent":
-        detail = pack_detail(args["packId"])
+        pack_id = args["packId"]
         agent_id = args["agentId"]
-        _, agents, _, targets = inventory()
+        skills, agents, _, targets = inventory()
+        detail = pack_detail(pack_id, skills, agents)
         affected = [
             affected_target(item, agents)
-            for item in targets.values()
+            for item in targets_claimed_by_pack(pack_id, targets)
             if item["agentId"] == agent_id
-            and any(member["skillId"] == item["skillId"] for member in detail["members"])
         ]
+        removed = sum(item["claimCount"] == 1 for item in affected)
         return {
             "packId": detail["id"],
             "packName": detail["name"],
             "agentId": agent_id,
             "displayName": agent_spec(agent_id)["displayName"],
             "affectedTargets": affected,
-            "willRemoveTargets": len(affected),
-            "willPreserveTargets": 0,
+            "willRemoveTargets": removed,
+            "willPreserveTargets": len(affected) - removed,
         }
     if command == "execute_remove_skill_pack_from_agent":
         pack_id = args["packId"]
         agent_id = args["agentId"]
-        detail = pack_detail(pack_id)
+        skills, agents, _, targets = inventory()
+        pack_detail(pack_id, skills, agents)
+        agent_targets = [
+            target for target in targets_claimed_by_pack(pack_id, targets)
+            if target["agentId"] == agent_id
+        ]
         removed = 0
-        for member in detail["members"]:
-            target = agent_skills_path(agent_id) / member["skillId"]
-            if target.exists() or target.is_symlink():
-                remove_path(target)
+        for target in agent_targets:
+            if len(target["claims"]) == 1:
+                remove_target_distribution(target)
                 removed += 1
         if pack_id in STATE["packs"]:
             STATE["packs"][pack_id]["appliedAgents"] = [
                 item for item in STATE["packs"][pack_id].get("appliedAgents", [])
                 if item != agent_id
             ]
-            save_state()
+        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[0] != agent_id)
+        save_state()
         return {
             "packId": pack_id,
             "agentId": agent_id,
-            "removedClaims": removed,
+            "removedClaims": len(agent_targets),
             "removedTargets": removed,
-            "preservedTargets": 0,
+            "preservedTargets": len(agent_targets) - removed,
         }
     if command == "preview_remove_skill_from_pack":
-        detail = pack_detail(args["packId"])
+        pack_id = args["packId"]
+        skill_id = args["skillId"]
+        skills, agents, _, targets = inventory()
+        detail = pack_detail(pack_id, skills, agents)
         member = next(
             (item for item in detail["members"] if item["skillId"] == args["skillId"]),
             None,
@@ -3291,23 +3348,32 @@ def dispatch():
             "packName": detail["name"],
             "skillId": args["skillId"],
             "skillName": member["skillName"] if member else args["skillId"],
-            "affectedTargets": [],
+            "affectedTargets": [
+                affected_target(target, agents)
+                for target in targets_claimed_by_pack(pack_id, targets)
+                if target["skillId"] == skill_id
+            ],
             "appliedAgentCount": len(detail["appliedAgents"]),
             "canKeepStandalone": True,
             "canRemoveTargets": True,
         }
     if command == "execute_remove_skill_from_pack":
-        pack = STATE["packs"].get(args["packId"])
+        pack_id = args["packId"]
+        skill_id = args["skillId"]
+        pack = STATE["packs"].get(pack_id)
         if not pack:
             raise ValueError("Skill Pack not found")
+        if args.get("alsoRemoveTargets"):
+            _, _, _, targets = inventory()
+            for target in targets_claimed_by_pack(pack_id, targets):
+                if target["skillId"] == skill_id and len(target["claims"]) == 1:
+                    remove_target_distribution(target)
+        filter_pack_target_claims(pack_id, lambda target_id: target_id.partition("::")[2] != skill_id)
         pack["skillIds"] = [
             item for item in pack.get("skillIds", [])
-            if item != args["skillId"]
+            if item != skill_id
         ]
         pack["revision"] = int(pack.get("revision", 1)) + 1
-        if args.get("alsoRemoveTargets"):
-            for agent_id in pack.get("appliedAgents", []):
-                remove_path(agent_skills_path(agent_id) / args["skillId"])
         save_state()
         return None
     if command == "list_managed_agents_v2":
@@ -3521,20 +3587,15 @@ def dispatch():
         return move_direct_preview(args["targetId"], args["packId"])
     if command == "execute_move_direct_skill_to_pack":
         preview = move_direct_preview(args["targetId"], args["packId"])
-        pack = STATE["packs"].get(args["packId"])
-        if not pack:
-            raise ValueError("Skill Pack not found")
+        pack_id = preview["packId"]
         if preview["willAddToPack"]:
+            pack = STATE["packs"][pack_id]
             pack["skillIds"].append(preview["skillId"])
             pack["revision"] = int(pack.get("revision", 1)) + 1
-        if preview["agentId"] not in pack.get("appliedAgents", []):
-            pack.setdefault("appliedAgents", []).append(preview["agentId"])
+            pack["updatedAt"] = now()
+        add_pack_target_claims(pack_id, [preview["targetId"]])
         save_state()
-        if preview["distribution"]["skillIds"]:
-            distribution = preview["distribution"]
-            distribution["blockerDecisions"] = args.get("blockerDecisions", [])
-            execute_distribution(distribution)
-        return move_direct_preview(args["targetId"], args["packId"])
+        return preview
     if command == "skill_manager_export_snapshot":
         snapshot = center_path() / "agentbro-skills.snapshot.json"
         snapshot.write_text(json.dumps(overview(), ensure_ascii=False, indent=2))
