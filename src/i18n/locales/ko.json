@@ -745,7 +745,14 @@
       "current": "원본 스킬에 변경 사항이 없습니다.",
       "matches": "로컬 파일이 출처와 일치합니다.",
       "applied": "스킬을 {{version}}(으)로 업데이트했습니다.",
-      "confirm": "중앙 라이브러리의 스킬 파일을 {{version}}(으)로 바꾸시겠습니까?"
+      "confirm": "중앙 라이브러리의 스킬 파일을 {{version}}(으)로 바꾸시겠습니까?",
+      "fileChanges": "파일 변경 사항",
+      "noFileChanges": "목록에 표시되는 Skill 파일은 변경되지 않았습니다.",
+      "fileChange": {
+        "added": "추가",
+        "modified": "수정",
+        "removed": "삭제"
+      }
     },
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",

@@ -1420,6 +1420,18 @@ function SourceTab({ detail, updateAllowed, onUpdated }: {
               onConfirm={() => void applyUpdate()}
             >
               <p>{t('skills.sourceUpdates.confirm', { version: check.latestRef.slice(0, 12) })}</p>
+              {check.fileChanges.length > 0 ? (
+                <ul className="sm2__skill-source-update-files" aria-label={t('skills.sourceUpdates.fileChanges')}>
+                  {check.fileChanges.map((file, index) => (
+                    <li key={`${file.path}-${index}`}>
+                      <code>{file.path}</code>
+                      <span>{t(`skills.sourceUpdates.fileChange.${file.kind}`)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{t('skills.sourceUpdates.noFileChanges')}</p>
+              )}
             </PreviewDialog>
           )}
         </div>

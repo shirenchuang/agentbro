@@ -1993,17 +1993,24 @@ impl Service {
             .source_uri
             .ok_or("The Skill has no saved Git source.")?;
         let checkout = installer::checkout_git_skill(&source_uri, github_token)?;
-        let current_hash = fsutil::hash_dir_contents(&path);
+        let current = SkillSourceFiles::read(&path)?;
+        let latest = SkillSourceFiles::read(&checkout.skill_dir)?;
         let update_available = match &source.source_ref {
             Some(installed) => checkout.has_changed_since(installed, github_token)?,
-            None => current_hash != fsutil::hash_dir_contents(&checkout.skill_dir),
+            None => current != latest,
+        };
+        let file_changes = if update_available {
+            current.changes(&latest)
+        } else {
+            Vec::new()
         };
         Ok(SkillSourceUpdateCheck {
             source_uri,
             installed_ref: source.source_ref,
             latest_ref: checkout.commit,
-            current_hash,
+            current_hash: current.hash(),
             update_available,
+            file_changes,
         })
     }
 
@@ -2068,7 +2075,7 @@ impl Service {
         if latest_ref != expected.latest_ref
             || source.source_uri.as_deref() != Some(&expected.source_uri)
             || source.source_ref != expected.installed_ref
-            || fsutil::hash_dir_contents(&path) != expected.current_hash
+            || SkillSourceFiles::read(&path)?.hash() != expected.current_hash
         {
             return Err(
                 "The Skill or its source changed since the last check. Check for updates again."
@@ -4242,11 +4249,10 @@ impl Service {
 
         let center_files = collect_relative_files(center_path)?;
         let copy_files = collect_relative_files(copy_path)?;
-        let all_files: BTreeSet<String> = center_files.union(&copy_files).cloned().collect();
         let mut files = Vec::new();
-        for rel in all_files {
-            let center_bytes = read_relative_file(center_path, &rel)?;
-            let copy_bytes = read_relative_file(copy_path, &rel)?;
+        for rel in center_files.union(&copy_files) {
+            let center_bytes = read_relative_file(center_path, rel)?;
+            let copy_bytes = read_relative_file(copy_path, rel)?;
             if center_bytes == copy_bytes {
                 continue;
             }
@@ -4258,7 +4264,7 @@ impl Service {
             }
             .to_string();
             files.push(CopyTargetDiffFile {
-                path: rel,
+                path: display_skill_relative_path(rel),
                 change_type,
                 center_content: center_bytes
                     .as_deref()
@@ -6388,7 +6394,7 @@ fn filesystem_target_mode(path: &Path) -> Option<String> {
     }
 }
 
-fn collect_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
+fn collect_relative_files(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
     let mut out = BTreeSet::new();
     collect_relative_files_inner(root, root, &mut out)?;
     Ok(out)
@@ -6397,19 +6403,20 @@ fn collect_relative_files(root: &Path) -> Result<BTreeSet<String>, String> {
 fn collect_relative_files_inner(
     root: &Path,
     dir: &Path,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeSet<PathBuf>,
 ) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {}", dir.display(), e))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if fsutil::is_ignored_entry(&name) {
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read dir {}: {error}", dir.display()))?;
+        let name = entry.file_name();
+        if fsutil::is_ignored_entry(&name.to_string_lossy()) {
             continue;
         }
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("inspect {}: {error}", path.display()))?;
         if file_type.is_dir() {
             if path.is_symlink() {
                 continue;
@@ -6417,14 +6424,89 @@ fn collect_relative_files_inner(
             collect_relative_files_inner(root, &path, out)?;
         } else if file_type.is_file() {
             if let Ok(rel) = path.strip_prefix(root) {
-                out.insert(rel.to_string_lossy().replace('\\', "/"));
+                out.insert(rel.to_path_buf());
             }
         }
     }
     Ok(())
 }
 
-fn read_relative_file(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, String> {
+fn display_skill_relative_path(relative: &Path) -> String {
+    relative
+        .iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[derive(PartialEq, Eq)]
+pub(super) struct SkillSourceFiles(BTreeMap<PathBuf, (String, u32)>);
+
+impl SkillSourceFiles {
+    pub(super) fn read(root: &Path) -> Result<Self, String> {
+        let mut files = BTreeMap::new();
+        for relative in collect_relative_files(root)? {
+            let path = root.join(&relative);
+            let contents = distribution_target_fingerprint(&path)?;
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                path.symlink_metadata()
+                    .map_err(|error| format!("inspect {}: {error}", path.display()))?
+                    .permissions()
+                    .mode()
+                    & 0o111
+            };
+            #[cfg(not(unix))]
+            let executable = 0;
+            files.insert(relative, (contents, executable));
+        }
+        Ok(Self(files))
+    }
+
+    pub(super) fn hash(&self) -> String {
+        let mut hash = Sha256::new();
+        for (path, (contents, executable)) in &self.0 {
+            hash.update(path.as_os_str().as_encoded_bytes());
+            hash.update(b"\0");
+            hash.update(contents.as_bytes());
+            hash.update(b"\0");
+            hash.update(executable.to_le_bytes());
+        }
+        fsutil::hex_encode(&hash.finalize())
+    }
+
+    pub(super) fn changes(&self, latest: &Self) -> Vec<SkillSourceFileChange> {
+        use SkillSourceFileChangeKind::{Added, Modified, Removed};
+
+        let mut changes = Vec::new();
+        for (path, installed) in &self.0 {
+            let kind = match latest.0.get(path) {
+                Some(new) if new == installed => continue,
+                Some(_) => Modified,
+                None => Removed,
+            };
+            changes.push(SkillSourceFileChange {
+                path: display_skill_relative_path(path),
+                kind,
+            });
+        }
+        changes.extend(
+            latest
+                .0
+                .keys()
+                .filter(|path| !self.0.contains_key(*path))
+                .map(|path| SkillSourceFileChange {
+                    path: display_skill_relative_path(path),
+                    kind: Added,
+                }),
+        );
+        changes.sort_by(|left, right| left.path.cmp(&right.path));
+        changes
+    }
+}
+
+fn read_relative_file(root: &Path, rel: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = root.join(rel);
     if !path.is_file() {
         return Ok(None);

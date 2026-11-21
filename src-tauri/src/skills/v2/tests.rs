@@ -6810,6 +6810,56 @@ fn real_smoke_against_actual_home() {
 }
 
 #[test]
+fn skill_source_update_lists_the_regular_files_it_will_change() {
+    use super::service::SkillSourceFiles;
+    use SkillSourceFileChangeKind::{Added, Modified, Removed};
+
+    let temporary =
+        crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+    let installed = temporary.path().join("installed");
+    let latest = temporary.path().join("latest");
+    for root in [&installed, &latest] {
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("same.bin"), [0_u8, 255]).unwrap();
+    }
+    fs::write(installed.join("SKILL.md"), "customized").unwrap();
+    fs::write(latest.join("SKILL.md"), "upstream").unwrap();
+    fs::write(installed.join("old.md"), "gone").unwrap();
+    fs::write(latest.join("nested/例.md"), "new").unwrap();
+    fs::write(latest.join(".git/config"), "Git metadata").unwrap();
+    fs::write(installed.join("cache.tmp"), "ignored by the copy").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(installed.join("tool.sh"), "same script").unwrap();
+        fs::write(latest.join("tool.sh"), "same script").unwrap();
+        fs::set_permissions(installed.join("tool.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(latest.join("tool.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(installed.join("old.md"), latest.join("ignored-link")).unwrap();
+    }
+    let installed = SkillSourceFiles::read(&installed).unwrap();
+    let latest = SkillSourceFiles::read(&latest).unwrap();
+    let changes = installed.changes(&latest);
+    let expected = [
+        ("SKILL.md", Modified),
+        ("nested/例.md", Added),
+        ("old.md", Removed),
+        #[cfg(unix)]
+        ("tool.sh", Modified),
+    ];
+    assert_eq!(
+        changes
+            .iter()
+            .map(|file| (file.path.as_str(), file.kind))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_ne!(installed.hash(), latest.hash());
+}
+
+#[test]
 fn checked_skill_source_update_preserves_the_installed_id_and_guards_local_edits() {
     let (_home, svc, _lock) = fresh_service("checked-source-update");
     let source = write_skill(&svc.home, "first", "toolkit", Some("original"));
@@ -6841,19 +6891,35 @@ fn checked_skill_source_update_preserves_the_installed_id_and_guards_local_edits
         source_uri,
         installed_ref: Some(installed_ref),
         latest_ref: latest_ref.clone(),
-        current_hash: fsutil::hash_dir_contents(&dir),
+        current_hash: super::service::SkillSourceFiles::read(&dir).unwrap().hash(),
         update_available: true,
+        file_changes: Vec::new(),
     };
     let upstream = write_skill(&svc.home, "next", "new-toolkit-name", Some("updated"));
     assert!(svc
         .install_checked_git_skill("my-toolkit", &check, &upstream, &"3".repeat(40))
         .is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = notes.metadata().unwrap().permissions();
+        fs::set_permissions(
+            &notes,
+            fs::Permissions::from_mode(permissions.mode() ^ 0o100),
+        )
+        .unwrap();
+        assert!(svc
+            .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
+            .is_err());
+        fs::set_permissions(&notes, permissions).unwrap();
+    }
     fs::write(&notes, "local edits").unwrap();
     assert!(svc
         .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
         .is_err());
     assert_eq!(fs::read_to_string(&notes).unwrap(), "local edits");
-    check.current_hash = fsutil::hash_dir_contents(&dir);
+    check.current_hash = super::service::SkillSourceFiles::read(&dir).unwrap().hash();
     let detail = svc
         .install_checked_git_skill("my-toolkit", &check, &upstream, &latest_ref)
         .unwrap();
