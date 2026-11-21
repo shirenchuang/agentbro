@@ -1547,6 +1547,156 @@ os.replace = _agentbro_fail_activation_and_rollback
         std::fs::remove_dir_all(home).expect("remove test home");
     }
 
+    #[test]
+    fn remote_mcp_inventory_hides_credentials_but_host_connections_receive_them() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("test home");
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"mcpServers":{
+                "cli":{"type":"stdio","command":"fixture","env":{"API_TOKEN":"fixture-token","MODE":"test"}},
+                "remote":{"type":"http","url":"https://example.invalid/mcp","headers":{"Authorization":"Bearer fixture-value","X-Mode":"test"}}
+            }}"#,
+        ).expect("fixture configuration");
+        let agent = serde_json::json!({"agent":"claude-code"});
+        let listed = run_script(&home, "list_mcp_inventory_cmd", agent);
+        for (name, field, secret, ordinary, fixture) in [
+            ("cli", "env", "API_TOKEN", "MODE", "fixture-token"),
+            (
+                "remote",
+                "headers",
+                "Authorization",
+                "X-Mode",
+                "Bearer fixture-value",
+            ),
+        ] {
+            let server = listed["servers"]
+                .as_array()
+                .expect("inventory")
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .expect("fixture server");
+            let items = server[field].as_array().expect("config values");
+            let masked = items
+                .iter()
+                .find(|item| item["key"] == secret)
+                .expect("secret field");
+            assert_eq!(masked["secret"], true);
+            assert_eq!(masked["configured"], true);
+            assert!(masked["value"].is_null());
+            let ordinary_item = items
+                .iter()
+                .find(|item| item["key"] == ordinary)
+                .expect("ordinary field");
+            assert_eq!(ordinary_item["value"], "test");
+            assert!(!listed.to_string().contains(fixture));
+
+            let script = render_script(
+                "test_mcp_server_connection_cmd",
+                serde_json::json!({"agent":"claude-code","serverName":name}),
+            )
+            .expect("connection run")
+            .replace(
+                "\ntry:\n    RESPONSE = json_safe(dispatch())",
+                r#"
+def assert_local_values(server, method, params):
+    if server["transport"] == "stdio":
+        values = {item["key"]: item["value"] for item in server["env"]}
+        assert values["API_TOKEN"] == "fixture-token"
+    else:
+        values = {item["key"]: item["value"] for item in server["headers"]}
+        assert values["Authorization"] == "Bearer fixture-value"
+    return {"serverInfo": {"name": "fixture"}}, {"tools": []}
+stdio_mcp_request = assert_local_values
+http_mcp_request = assert_local_values
+try:
+    RESPONSE = json_safe(dispatch())"#,
+            );
+            let response = run_rendered_script(&home, &script);
+            assert_eq!(response["success"], true);
+            assert!(!response.to_string().contains(fixture));
+        }
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_mcp_edits_resolve_redacted_credentials_before_writing() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("test home");
+        let path = home.join(".claude.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"before":{"type":"http","url":"https://example.invalid/mcp","headers":{"Authorization":"Bearer fixture-value"}}}}"#,
+        ).expect("fixture configuration");
+        let agent = serde_json::json!({"agent":"claude-code"});
+        let listed = run_script(&home, "list_mcp_inventory_cmd", agent);
+        let save = |revision: &Value, original: &str, headers: Value| {
+            serde_json::json!({
+                "agent": "claude-code", "revision": revision, "originalName": original,
+                "server": {"name":"renamed","transport":"http","url":"https://example.invalid/mcp","headers":headers},
+            })
+        };
+        let preserved = run_script(
+            &home,
+            "save_mcp_server_cmd",
+            save(
+                &listed["revision"],
+                "before",
+                serde_json::json!([
+                    {"key":"Authorization","value":null,"secret":true,"configured":true},
+                ]),
+            ),
+        );
+        let disk = || {
+            serde_json::from_slice::<Value>(&std::fs::read(&path).expect("configuration"))
+                .expect("valid JSON")
+        };
+        assert!(disk()["mcpServers"]["before"].is_null());
+        assert_eq!(
+            disk()["mcpServers"]["renamed"]["headers"]["Authorization"],
+            "Bearer fixture-value"
+        );
+        assert!(preserved["servers"][0]["headers"][0]["value"].is_null());
+
+        let updated = run_script(
+            &home,
+            "save_mcp_server_cmd",
+            save(
+                &preserved["revision"],
+                "renamed",
+                serde_json::json!([
+                    {"key":"Authorization","value":"Bearer replacement","secret":true,"configured":true},
+                ]),
+            ),
+        );
+        assert_eq!(
+            disk()["mcpServers"]["renamed"]["headers"]["Authorization"],
+            "Bearer replacement"
+        );
+        assert!(updated["servers"][0]["headers"][0]["value"].is_null());
+
+        let before = std::fs::read(&path).expect("updated configuration");
+        let error = run_script_error(
+            &home,
+            "save_mcp_server_cmd",
+            save(
+                &updated["revision"],
+                "renamed",
+                serde_json::json!([
+                    {"key":"X-API-KEY","value":null,"secret":true,"configured":true},
+                ]),
+            ),
+        );
+        assert!(error.contains("No existing sensitive value for X-API-KEY"));
+        assert_eq!(
+            std::fs::read(&path).expect("unchanged configuration"),
+            before
+        );
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
     fn write_remote_skill(path: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(path).expect("Skill directory");
         std::fs::write(
