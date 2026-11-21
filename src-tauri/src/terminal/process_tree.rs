@@ -132,7 +132,9 @@ pub fn build_tree() -> HashMap<u32, ProcessInfo> {
 /// Build a snapshot of the process tree using the Windows ToolHelp API.
 #[cfg(target_os = "windows")]
 pub fn build_tree() -> HashMap<u32, ProcessInfo> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -163,6 +165,9 @@ pub fn build_tree() -> HashMap<u32, ProcessInfo> {
                 );
 
                 if Process32NextW(snapshot, &mut entry) == 0 {
+                    if GetLastError() != ERROR_NO_MORE_FILES {
+                        tree.clear();
+                    }
                     break;
                 }
             }
@@ -584,7 +589,9 @@ pub fn get_tty(pid: u32, tree: &HashMap<u32, ProcessInfo>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_tree, find_terminal_app_name, ProcessInfo};
+    #[cfg(target_os = "windows")]
+    use super::build_tree;
+    use super::{find_terminal_app_name, ProcessInfo};
     use std::collections::HashMap;
 
     #[cfg(target_os = "windows")]
