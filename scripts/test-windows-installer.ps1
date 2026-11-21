@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$Installer,
     [switch]$VerifyIsland,
+    [switch]$VerifyPackManifest,
     [string]$SymbolsDirectory
 )
 
@@ -70,6 +71,40 @@ $null = New-Item -ItemType Directory -Path $restoredWorkspace, $restoredProjects
     message = @{ role = 'user'; content = $restoredProjectName }
 } | ConvertTo-Json -Depth 5 -Compress |
     Set-Content -LiteralPath (Join-Path $restoredProjectsDir "$restoredSession.jsonl") -Encoding utf8
+
+$packFixtures = @()
+$packImportPath = $null
+$packExportPath = $null
+if ($VerifyPackManifest) {
+    $manifestDirectory = Join-Path $stage '共享 技能'
+    $packImportPath = Join-Path $manifestDirectory '导入 技能包.agentbro-pack.json'
+    $packExportPath = Join-Path $manifestDirectory '导出 技能包.agentbro-pack.json'
+    $null = New-Item -ItemType Directory -Path $manifestDirectory
+    $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    $skillRoot = Join-Path $profileDirectory '.agentbro\skills'
+    $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    $skillIds = @("windows-smoke-zulu-$suffix", "windows-smoke-alpha-$suffix")
+    foreach ($skillId in $skillIds) {
+        $skillDirectory = Join-Path $skillRoot $skillId
+        $null = New-Item -ItemType Directory -Path $skillDirectory -Force
+        $packFixtures += $skillDirectory
+        @"
+---
+name: $skillId
+description: Windows native manifest fixture
+---
+Windows native manifest fixture.
+"@ | Set-Content -LiteralPath (Join-Path $skillDirectory 'SKILL.md') -Encoding utf8
+    }
+    @{
+        format = 'agentbro-skill-pack'
+        version = 1
+        name = "Native Windows pack $suffix"
+        description = 'Windows native manifest round trip'
+        tags = @('native-smoke', '回归')
+        skillIds = $skillIds
+    } | ConvertTo-Json | Set-Content -LiteralPath $packImportPath -Encoding utf8
+}
 
 $webViewPath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
 Write-Output 'Installed WebView2 Runtime versions:'
@@ -157,6 +192,11 @@ function Test-InstalledIsland([string]$ProjectName) {
             '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
         $start.ArgumentList.Add($argument)
     }
+    if ($VerifyPackManifest) {
+        foreach ($argument in @('-PackImportPath', $packImportPath, '-PackExportPath', $packExportPath)) {
+            $start.ArgumentList.Add($argument)
+        }
+    }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -165,12 +205,13 @@ function Test-InstalledIsland([string]$ProjectName) {
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        if (-not $tester.WaitForExit(120000)) {
-            throw 'The installed Island desktop interaction check timed out'
+        $desktopTimeout = if ($VerifyPackManifest) { 180000 } else { 120000 }
+        if (-not $tester.WaitForExit($desktopTimeout)) {
+            throw 'The installed desktop interaction check timed out'
         }
         Write-Output ($output.GetAwaiter().GetResult())
         if ($tester.ExitCode -ne 0) {
-            throw "The installed Island did not pass the desktop interaction check: $($errors.GetAwaiter().GetResult())"
+            throw "The installed app did not pass the desktop interaction check: $($errors.GetAwaiter().GetResult())"
         }
     } finally {
         if (-not $tester.HasExited) { Stop-Process -Id $tester.Id -ErrorAction SilentlyContinue }
@@ -233,7 +274,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland) {
+    if ($VerifyIsland -or $VerifyPackManifest) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
@@ -270,5 +311,8 @@ try {
 } finally {
     if (-not $app.HasExited) {
         Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+    }
+    foreach ($fixture in $packFixtures) {
+        Remove-Item -LiteralPath $fixture -Recurse -ErrorAction SilentlyContinue
     }
 }

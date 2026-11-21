@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$PackImportPath,
+    [string]$PackExportPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,12 +13,18 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
-public static class AgentBroSmokeMouse {
+public static class AgentBroSmokeInput {
     private const uint InputMouse = 0;
+    private const uint InputKeyboard = 1;
     private const uint LeftDown = 0x0002;
     private const uint LeftUp = 0x0004;
+    private const uint KeyUp = 0x0002;
+    private const uint KeyUnicode = 0x0004;
+    private const ushort Control = 0x11;
+    private const ushort LetterA = 0x41;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Point { public int X; public int Y; }
@@ -29,7 +37,20 @@ public static class AgentBroSmokeMouse {
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct Input { public uint Type; public MouseInput Mouse; }
+    private struct KeyboardInput {
+        public ushort VirtualKey, ScanCode;
+        public uint Flags, Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputData {
+        [FieldOffset(0)] public MouseInput Mouse;
+        [FieldOffset(0)] public KeyboardInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input { public uint Type; public InputData Data; }
 
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out Point point);
@@ -66,9 +87,37 @@ public static class AgentBroSmokeMouse {
         SendMouseButton(LeftUp);
     }
 
+    public static void ReplaceText(string text) {
+        var inputs = new List<Input>(4 + text.Length * 2);
+        inputs.Add(KeyboardEvent(Control, 0, 0));
+        inputs.Add(KeyboardEvent(LetterA, 0, 0));
+        inputs.Add(KeyboardEvent(LetterA, 0, KeyUp));
+        inputs.Add(KeyboardEvent(Control, 0, KeyUp));
+        foreach (char unit in text) {
+            inputs.Add(KeyboardEvent(0, unit, KeyUnicode));
+            inputs.Add(KeyboardEvent(0, unit, KeyUnicode | KeyUp));
+        }
+        InjectInputs(inputs.ToArray());
+    }
+
+    private static Input KeyboardEvent(ushort virtualKey, ushort scanCode, uint flags) {
+        return new Input {
+            Type = InputKeyboard,
+            Data = new InputData {
+                Keyboard = new KeyboardInput { VirtualKey = virtualKey, ScanCode = scanCode, Flags = flags }
+            }
+        };
+    }
+
     private static void SendMouseButton(uint flags) {
-        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags } } };
-        if (SendInput(1, inputs, Marshal.SizeOf<Input>()) != 1)
+        InjectInputs(new[] {
+            new Input { Type = InputMouse, Data = new InputData { Mouse = new MouseInput { Flags = flags } } }
+        });
+    }
+
+    private static void InjectInputs(Input[] inputs) {
+        uint count = (uint)inputs.Length;
+        if (SendInput(count, inputs, Marshal.SizeOf<Input>()) != count)
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
 }
@@ -108,7 +157,7 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
     $rect = $Element.Current.BoundingRectangle
     $x = [int]($rect.X + $rect.Width / 2)
     $y = [int]($rect.Y + $rect.Height / 2)
-    if (-not [AgentBroSmokeMouse]::SetCursorPos($x, $y)) {
+    if (-not [AgentBroSmokeInput]::SetCursorPos($x, $y)) {
         throw "Could not move the Windows cursor to $x, $y"
     }
 }
@@ -128,9 +177,9 @@ function Save-FailedRunnerDesktop {
     }
 }
 
-$previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
-$originalCursor = [AgentBroSmokeMouse+Point]::new()
-$cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
+$previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$originalCursor = [AgentBroSmokeInput+Point]::new()
+$cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
@@ -151,18 +200,18 @@ try {
         $candidate = [Windows.Point]::new(0, 0)
         if ($session.TryGetClickablePoint([ref]$candidate)) { $candidate }
     }
-    if (-not [AgentBroSmokeMouse]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
         throw 'Could not move the Windows cursor onto the session'
     }
     Start-Sleep -Milliseconds 250
     $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
-    $nativeOwner = [AgentBroSmokeMouse]::ProcessAtCursor()
+    $nativeOwner = [AgentBroSmokeInput]::ProcessAtCursor()
     $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
     Write-Output "Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
     if ($nativeOwner -ne $AppProcessId) {
         throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
     }
-    [AgentBroSmokeMouse]::Click()
+    [AgentBroSmokeInput]::Click()
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
@@ -175,6 +224,10 @@ try {
         $title -and $back -and -not $title.Current.IsOffscreen -and -not $back.Current.IsOffscreen
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
+    if ($PackImportPath) {
+        . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
+        Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
 } catch {
     try {
         Save-FailedRunnerDesktop
@@ -182,7 +235,15 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
-        if ($island) {
+        if ($PackImportPath) {
+            foreach ($window in Get-IslandWindows) {
+                Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
+                $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                    Select-Object -First 85 -ExpandProperty Current |
+                    Select-Object LocalizedControlType, Name, ClassName, AutomationId, IsEnabled, IsOffscreen |
+                    ConvertTo-Json -Depth 3 -Compress
+            }
+        } elseif ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
                 Select-Object LocalizedControlType, Name, IsOffscreen, @{Name='Bounds'; Expression={$_.BoundingRectangle.ToString()}} |
@@ -198,9 +259,9 @@ try {
     throw
 } finally {
     if ($cursorSaved) {
-        [void][AgentBroSmokeMouse]::SetCursorPos($originalCursor.X, $originalCursor.Y)
+        [void][AgentBroSmokeInput]::SetCursorPos($originalCursor.X, $originalCursor.Y)
     }
     if ($previousDpi -ne [IntPtr]::Zero) {
-        [void][AgentBroSmokeMouse]::SetThreadDpiAwarenessContext($previousDpi)
+        [void][AgentBroSmokeInput]::SetThreadDpiAwarenessContext($previousDpi)
     }
 }
