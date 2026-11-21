@@ -470,6 +470,8 @@ pub struct ConflictBlocker {
     pub existing_path: Option<String>,
     pub existing_path_kind: Option<String>,
     pub resolved_existing_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +491,8 @@ pub struct DistributionChange {
     pub actual_mode: Option<String>,
     pub reason: Option<String>,
     pub target_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

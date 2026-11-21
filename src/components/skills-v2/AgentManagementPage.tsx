@@ -298,6 +298,7 @@ export function AgentManagementPage() {
         [packApplyConflict.agentId],
         packApplyConflict.mode,
         decisions,
+        packApplyConflict.preview,
       )
       if (result.blockers.length > 0) {
         setPackApplyConflict((current) => current ? { ...current, preview: result } : current)

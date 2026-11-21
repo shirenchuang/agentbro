@@ -456,13 +456,19 @@ pub fn execute_apply_skill_pack(
     target_agents: Vec<String>,
     requested_mode: String,
     blocker_decisions: Option<Vec<DistributionBlockerDecision>>,
+    reviewed_preview: Option<DistributionPreview>,
 ) -> Result<DistributionPreview, String> {
-    svc()?.apply_skill_pack_with_decisions(
-        &pack_id,
-        target_agents,
-        requested_mode,
-        blocker_decisions.unwrap_or_default(),
-    )
+    let svc = svc()?;
+    let decisions = blocker_decisions.unwrap_or_default();
+    if let Some(preview) = reviewed_preview {
+        if preview.target_agents != target_agents || preview.requested_mode != requested_mode {
+            return Err(
+                "Skill Pack targets or mode changed. Preview the application again.".into(),
+            );
+        }
+        return svc.apply_reviewed_skill_pack(&pack_id, preview, decisions);
+    }
+    svc.apply_skill_pack_with_decisions(&pack_id, target_agents, requested_mode, decisions)
 }
 
 #[tauri::command(async)]

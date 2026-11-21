@@ -887,6 +887,89 @@ fn windows_skill_paths_distribution_rolls_back_a_new_copy_if_registration_fails(
 }
 
 #[test]
+fn windows_skill_paths_distribution_requires_a_new_review_after_an_existing_copy_changes() {
+    let (_home, svc, _lock) = fresh_service("edited-distribution-target");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap()
+    };
+    let install = preview();
+    let copy_file = Path::new(&install.changes[0].target_path).join("reference.md");
+    svc.execute_distribute_skill(install, ClaimOrigin::Direct)
+        .unwrap();
+
+    let reinstall = preview();
+    assert_eq!(reinstall.changes[0].action, "reinstall");
+    fs::write(&copy_file, "local edit").unwrap();
+    let error = svc
+        .execute_distribute_skill(reinstall, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+    assert_eq!(fs::read_to_string(&copy_file).unwrap(), "local edit");
+
+    let overwrite = || {
+        let mut plan = preview();
+        assert!(plan.changes.is_empty());
+        assert_eq!(plan.blockers.len(), 1);
+        plan.blocker_decisions.push(DistributionBlockerDecision {
+            skill_id: "review".to_string(),
+            agent_id: "claude-code".to_string(),
+            action: "overwrite".to_string(),
+        });
+        plan
+    };
+    let reviewed = overwrite();
+    fs::write(&copy_file, "second local edit").unwrap();
+    let error = svc
+        .execute_distribute_skill(reviewed, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+    assert_eq!(fs::read_to_string(&copy_file).unwrap(), "second local edit");
+
+    svc.execute_distribute_skill(overwrite(), ClaimOrigin::Direct)
+        .unwrap();
+    assert_eq!(fs::read_to_string(copy_file).unwrap(), "center");
+}
+
+#[test]
+fn windows_skill_paths_distribution_preserves_reviewed_pack_members_and_target_content() {
+    let (_home, svc, _lock) = fresh_service("reviewed-pack-distribution");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap()
+    };
+    let install = preview();
+    let agent_target = PathBuf::from(&install.changes[0].target_path);
+    svc.apply_reviewed_skill_pack("default", install, vec![])
+        .unwrap();
+    let refresh = preview();
+    let copy_file = agent_target.join("reference.md");
+    fs::write(&copy_file, "local edit").unwrap();
+    let error = svc
+        .apply_reviewed_skill_pack("default", refresh.clone(), vec![])
+        .unwrap_err();
+    assert!(error.contains("Preview distribution again"), "{error}");
+
+    add_center_test_skill(&svc, "second-source", "another-skill");
+    let error = svc
+        .apply_reviewed_skill_pack("default", refresh, vec![])
+        .unwrap_err();
+    assert!(error.contains("membership changed"), "{error}");
+    assert_eq!(fs::read_to_string(copy_file).unwrap(), "local edit");
+    assert!(!agent_target.with_file_name("another-skill").exists());
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn windows_link_distribution_falls_back_to_copy_even_with_ask_policy() {
     let (_home, svc, _lock) = fresh_service("windows-link-fallback");
@@ -1531,6 +1614,7 @@ fn distribution_execution_rejects_preview_paths_outside_agent_skill_dir() {
             existing_path: Some(outside_target.display().to_string()),
             existing_path_kind: Some("directory".to_string()),
             resolved_existing_path: None,
+            target_fingerprint: None,
         }],
         blocker_decisions: vec![DistributionBlockerDecision {
             skill_id: "github-code-review".to_string(),
