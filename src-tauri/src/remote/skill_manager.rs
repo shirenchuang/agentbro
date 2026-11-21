@@ -1801,27 +1801,161 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn remote_mcp_http_completes_and_closes_the_negotiated_session() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-mcp-http-lifecycle-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let mut fixture = start_rendered_script(
+            &home,
+            r#"from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from pathlib import Path
+
+home = Path.home()
+versions = {"strict": "2025-06-18", "legacy": "2025-03-26", "failing": "2025-06-18"}
+states = {}
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, content=None, session_id=None):
+        self.send_response(status)
+        if session_id:
+            self.send_header("Mcp-Session-Id", session_id)
+        if content is not None:
+            self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        if content is not None:
+            self.wfile.write(json.dumps(content).encode())
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        name = self.path.lstrip("/")
+        method = request["method"]
+        if self.headers.get("Authorization") != "Bearer fixture":
+            self.reply(401)
+            return
+        if method == "initialize":
+            states[name] = "initializing"
+            self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "protocolVersion": versions[name],
+                "serverInfo": {"name": name},
+                "capabilities": {"tools": {}},
+            }}, "session-" + name)
+        elif not self.has_session(name):
+            self.reply(400)
+        elif method == "notifications/initialized" and states[name] == "initializing" and "id" not in request:
+            states[name] = "ready"
+            self.reply(202)
+        elif method == "tools/list" and states[name] == "ready":
+            states[name] = "used"
+            if name == "failing":
+                self.reply(503)
+            else:
+                self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": [{"name": "fixture"}]}})
+        else:
+            self.reply(400)
+
+    def has_session(self, name):
+        return (self.headers.get("MCP-Protocol-Version") == versions[name] and
+                self.headers.get("Mcp-Session-Id") == "session-" + name)
+
+    def do_DELETE(self):
+        name = self.path.lstrip("/")
+        if states.get(name) == "used" and self.has_session(name) and self.headers.get("Authorization") == "Bearer fixture":
+            (home / ("closed-" + name)).touch()
+            self.reply(204 if name == "strict" else 405)
+        else:
+            self.reply(400)
+
+with HTTPServer(("127.0.0.1", 0), Handler) as server:
+    (home / "http-port").write_text(str(server.server_port))
+    server.serve_forever()
+"#,
+        );
+        let port = home.join("http-port");
+        assert!(wait_for_fixture(|| port.is_file()));
+        let port = std::fs::read_to_string(port).expect("fixture port");
+        let names = ["strict", "legacy", "failing"];
+        let servers: serde_json::Map<String, Value> = names
+            .iter()
+            .map(|name| {
+                ((*name).to_string(), serde_json::json!({
+                    "url": format!("http://127.0.0.1:{port}/{name}"),
+                    "headers": {"Authorization": "Bearer fixture", "MCP-Protocol-Version": "override-me"},
+                }))
+            })
+            .collect();
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({"mcpServers": servers}).to_string(),
+        )
+        .expect("fixture configuration");
+        let results: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                let result = run_script(
+                    &home,
+                    "test_mcp_server_connection_cmd",
+                    serde_json::json!({"agent": "claude-code", "serverName": name}),
+                );
+                (name, result, home.join(format!("closed-{name}")).is_file())
+            })
+            .collect();
+        fixture.kill().expect("stop fixture");
+        fixture.wait_with_output().expect("wait for fixture");
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        for (name, result, tried_to_close) in results {
+            if name == "failing" {
+                assert_eq!(result["success"], false, "{result}");
+                assert!(
+                    result["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("503"),
+                    "{result}"
+                );
+            } else {
+                assert_eq!(result["success"], true, "{result}");
+                assert_eq!(result["toolCount"], 1);
+            }
+            assert!(tried_to_close, "did not terminate the session");
+        }
+    }
+
+    #[test]
     fn remote_mcp_cancelled_inspection_closes_the_http_connection() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-http-cancel-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&home).expect("test home");
-        let http = start_rendered_script(
+        let mut http = start_rendered_script(
             &home,
             r#"from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 import socket
+import time
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if request["method"] == "notifications/initialized":
+            self.send_response(202)
+            self.end_headers()
+            return
         result = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
         encoded = json.dumps(result).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
+        if request["method"] == "initialize":
+            self.send_header("Mcp-Session-Id", "fixture-session")
         self.end_headers()
         if request["method"] == "resources/list":
             (Path.home() / "waiting-http").touch()
@@ -1834,12 +1968,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.wfile.write(encoded)
 
+    def do_DELETE(self):
+        assert self.headers["Mcp-Session-Id"] == "fixture-session"
+        if (Path.home() / "waiting-http").exists():
+            (Path.home() / "terminating-http").touch()
+            time.sleep(5)
+        self.send_response(204)
+        self.end_headers()
+
 server = HTTPServer(("127.0.0.1", 0), Handler)
-server.timeout = 4
 (Path.home() / "http-port").write_text(str(server.server_port))
-for _ in range(4):
-    server.handle_request()
-server.server_close()
+server.serve_forever()
 "#,
         );
         assert!(wait_for_fixture(|| home.join("http-port").is_file()));
@@ -1878,6 +2017,8 @@ server.server_close()
         let stopped =
             wait_for_fixture(|| inspection.try_wait().expect("poll inspection").is_some());
         let closed = wait_for_fixture(|| home.join("closed-http").is_file());
+        let tried_to_terminate = home.join("terminating-http").is_file();
+        http.kill().expect("stop HTTP fixture");
         http.wait_with_output().expect("finish HTTP fixture");
         let output = inspection.wait_with_output().expect("finish inspection");
         std::fs::remove_dir_all(home).expect("remove test home");
@@ -1891,6 +2032,10 @@ server.server_close()
         assert!(
             closed,
             "cancelled inspection did not close its HTTP connection"
+        );
+        assert!(
+            tried_to_terminate,
+            "cancelled inspection did not terminate its session"
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("MCP inspection cancelled"));
     }
