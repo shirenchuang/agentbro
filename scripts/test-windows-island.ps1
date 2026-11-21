@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$ApprovalLog
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,6 +129,82 @@ function Save-FailedRunnerDesktop {
     }
 }
 
+function Send-ApprovalFixture([string]$Session, [string]$ToolId, [string]$Description) {
+    $fixture = [System.Net.Sockets.TcpClient]::new()
+    $fixture.Connect('127.0.0.1', [int]$env:AGENTBRO_HOOK_PORT)
+    $fixture.ReceiveTimeout = 10000
+    $body = @{
+        agent = 'deepseek-harness'
+        event = 'permission_request'
+        session_id = $Session
+        tool_use_id = $ToolId
+        tool_name = 'Bash'
+        cwd = $env:RUNNER_TEMP
+        tool_input = @{ description = $Description }
+    } | ConvertTo-Json -Depth 5 -Compress
+    $stream = $fixture.GetStream()
+    $bytes = [Text.Encoding]::UTF8.GetBytes($body + "`n")
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    return $fixture
+}
+
+function Find-FixtureText([string]$Description) {
+    $region = Find-VisibleIsland
+    if (-not $region) { return }
+    $items = $region.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    foreach ($item in $items) {
+        $state = $item.Current
+        if (-not $state.IsOffscreen -and $state.Name -eq $Description) { return $item }
+    }
+}
+
+function Test-ApprovalRoundTrip {
+    $session = "deepseek-harness:windows-approval-$PID"
+    $first = $null
+    $second = $null
+    try {
+        $first = Send-ApprovalFixture $session 'first' 'First approval fixture'
+        $null = Wait-IslandValue 'the first approval in the native Island' { Find-FixtureText 'First approval fixture' }
+        $second = Send-ApprovalFixture $session 'second' 'Second approval fixture'
+        $null = Wait-IslandValue 'the displayed second approval' { Find-FixtureText 'Second approval fixture' }
+        $first.Dispose()
+        $null = Wait-IslandValue 'the first Hook socket to close' {
+            Select-String -LiteralPath $ApprovalLog -SimpleMatch "Permission request timed out for session $session" -Quiet
+        }
+
+        $deny = Wait-IslandValue 'the visible Deny button for the second approval' {
+            if (-not (Find-FixtureText 'Second approval fixture')) { return }
+            $region = Find-VisibleIsland
+            $condition = [Windows.Automation.AndCondition]::new(
+                [Windows.Automation.PropertyCondition]::new(
+                    [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button),
+                [Windows.Automation.PropertyCondition]::new(
+                    [Windows.Automation.AutomationElement]::NameProperty, 'Deny'))
+            foreach ($button in $region.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)) {
+                if (-not $button.Current.IsOffscreen -and $button.Current.IsEnabled) { return $button }
+            }
+        }
+        Move-ToElement $deny
+        Start-Sleep -Milliseconds 200
+        if ([AgentBroSmokeMouse]::ProcessAtCursor() -ne $AppProcessId) { throw 'AgentBro does not own the Deny click point' }
+        [AgentBroSmokeMouse]::Click()
+        $reader = [IO.StreamReader]::new($second.GetStream())
+        try {
+            $line = $reader.ReadLine()
+            if (-not $line) { throw 'The second Hook disconnected without a response' }
+            $decision = $line | ConvertFrom-Json
+            if ($decision.decision -ne 'deny') { throw 'Deny was not returned to the second Hook socket' }
+        } finally {
+            $reader.Dispose()
+        }
+        Write-Output 'The second DeepSeek Harness fixture stayed visible after the first disconnected and received Deny from the native Island mouse click.'
+    } finally {
+        if ($first) { $first.Dispose() }
+        if ($second) { $second.Dispose() }
+    }
+}
+
 $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
@@ -135,6 +212,10 @@ $island = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
+    if ($ApprovalLog) {
+        Test-ApprovalRoundTrip
+        return
+    }
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)

@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$Installer,
     [switch]$VerifyIsland,
+    [switch]$VerifyPermissions,
     [string]$SymbolsDirectory
 )
 
@@ -157,6 +158,10 @@ function Test-InstalledIsland([string]$ProjectName) {
             '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
         $start.ArgumentList.Add($argument)
     }
+    if ($VerifyPermissions) {
+        $start.ArgumentList.Add('-ApprovalLog')
+        $start.ArgumentList.Add($stdoutPath)
+    }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -233,7 +238,9 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland) {
+    if ($VerifyPermissions) {
+        Test-InstalledIsland 'DeepSeek Harness permissions'
+    } elseif ($VerifyIsland) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
