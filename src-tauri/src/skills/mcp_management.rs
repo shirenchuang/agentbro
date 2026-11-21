@@ -2835,12 +2835,7 @@ async fn open_legacy_inspection_session(
             message: "Legacy SSE server did not provide an endpoint event".to_string(),
         });
     }
-    let endpoint = Url::parse(url)
-        .and_then(|base| base.join(endpoint.trim()))
-        .map_err(|error| TestFailure {
-            category: "invalid_config",
-            message: format!("Invalid SSE message endpoint: {error}"),
-        })?;
+    let endpoint = legacy_sse_endpoint(stream.url(), &endpoint)?;
     Ok(InspectionSession::LegacySse {
         client,
         draft: draft.clone(),
@@ -3705,6 +3700,16 @@ fn mcp_http_client() -> Result<Client, TestFailure> {
         .connect_timeout(Duration::from_secs(8))
         .timeout(MCP_TEST_TIMEOUT)
         .user_agent("AgentBro-MCP-Test/1")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt
+                .previous()
+                .first()
+                .is_some_and(|configured| configured.origin() != attempt.url().origin())
+            {
+                return attempt.error("MCP redirects must stay on the configured server origin");
+            }
+            reqwest::redirect::Policy::default().redirect(attempt)
+        }))
         .build()
         .map_err(|error| TestFailure {
             category: "network_error",
@@ -3851,12 +3856,7 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
             message: "Legacy SSE server did not provide an endpoint event".to_string(),
         });
     }
-    let endpoint = Url::parse(url)
-        .and_then(|base| base.join(endpoint.trim()))
-        .map_err(|error| TestFailure {
-            category: "invalid_config",
-            message: format!("Invalid SSE message endpoint: {error}"),
-        })?;
+    let endpoint = legacy_sse_endpoint(stream.url(), &endpoint)?;
     let mut initialize = None;
     let mut last_error = None;
     for protocol_version in std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS) {
@@ -3914,6 +3914,22 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
         None
     };
     Ok(HandshakeInfo { tool_count, ..info })
+}
+
+fn legacy_sse_endpoint(stream_url: &Url, endpoint: &str) -> Result<Url, TestFailure> {
+    let endpoint = stream_url
+        .join(endpoint.trim())
+        .map_err(|error| TestFailure {
+            category: "invalid_config",
+            message: format!("Invalid SSE message endpoint: {error}"),
+        })?;
+    if endpoint.origin() != stream_url.origin() {
+        return Err(TestFailure {
+            category: "protocol_error",
+            message: "The SSE message endpoint must use the configured server origin".to_string(),
+        });
+    }
+    Ok(endpoint)
 }
 
 async fn post_legacy_sse(
@@ -4868,6 +4884,51 @@ $response = @{
         task.abort();
     }
 
+    #[tokio::test]
+    async fn streamable_http_redirects_stay_on_the_configured_origin() {
+        use axum::response::Redirect;
+        use axum::routing::get;
+
+        let other_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other_address = other_listener.local_addr().unwrap();
+        let other_task = tokio::spawn(async move {
+            axum::serve(
+                other_listener,
+                Router::new().route("/", get(|| async { StatusCode::NO_CONTENT })),
+            )
+            .await
+            .unwrap();
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let router =
+                Router::new()
+                    .route("/same", get(|| async { Redirect::temporary("/target") }))
+                    .route("/target", get(|| async { StatusCode::NO_CONTENT }))
+                    .route(
+                        "/other",
+                        get(move || async move {
+                            Redirect::temporary(&format!("http://{other_address}/"))
+                        }),
+                    );
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let client = mcp_http_client().unwrap();
+        let same = client
+            .get(format!("http://{address}/same"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(same.status(), StatusCode::NO_CONTENT);
+        assert_eq!(same.url().path(), "/target");
+        let other = client.get(format!("http://{address}/other")).send().await;
+        assert!(other.is_err_and(|error| error.is_redirect()));
+        task.abort();
+        other_task.abort();
+    }
+
     async fn stream_http_tools(
         Json(body): Json<Value>,
         keep_open: bool,
@@ -4984,6 +5045,27 @@ $response = @{
             let reply: Value = serde_json::from_str(&data).unwrap();
             assert!(matches_rpc_reply(&reply, 2));
             assert_eq!(reply["result"], "雪");
+        }
+    }
+
+    #[test]
+    fn legacy_sse_resolves_relative_endpoints_on_the_stream_origin() {
+        let stream = Url::parse("https://mcp.example.test/redirected/events").unwrap();
+        let endpoint = legacy_sse_endpoint(&stream, " messages?client=fixture ").unwrap();
+        assert_eq!(
+            endpoint.as_str(),
+            "https://mcp.example.test/redirected/messages?client=fixture"
+        );
+        assert!(legacy_sse_endpoint(&stream, "https://mcp.example.test:443/messages").is_ok());
+        for endpoint in [
+            "http://mcp.example.test/messages",
+            "https://mcp.example.test:8443/messages",
+            "//other.example.test/messages",
+        ] {
+            assert_eq!(
+                legacy_sse_endpoint(&stream, endpoint).unwrap_err().category,
+                "protocol_error"
+            );
         }
     }
 
