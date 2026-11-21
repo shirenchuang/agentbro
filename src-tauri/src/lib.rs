@@ -47,6 +47,8 @@ use telemetry::TelemetryService;
 #[cfg_attr(test, derive(Default))]
 struct NotchDragState {
     gesture_id: u64,
+    moving: bool,
+    track_mouse_button: bool,
     start_x: f64,
     start_offset: f64,
     current_offset: f64,
@@ -4633,7 +4635,9 @@ async fn set_notch_window_frame(
 
 #[cfg(test)]
 mod notch_position_tests {
-    use super::{notch_drag_for_tick, notch_physical_position, NotchDragState};
+    use super::{
+        notch_drag_for_tick, notch_physical_position, take_notch_drag_offset, NotchDragState,
+    };
     use tauri::PhysicalPosition;
 
     #[test]
@@ -4655,12 +4659,26 @@ mod notch_position_tests {
     fn an_old_notch_drag_cannot_update_or_expire_a_newer_gesture() {
         let mut active = Some(NotchDragState {
             gesture_id: 2,
+            moving: true,
             ..Default::default()
         });
         assert!(notch_drag_for_tick(&mut active, 1, false).is_none());
         assert!(notch_drag_for_tick(&mut active, 1, true).is_none());
         assert!(notch_drag_for_tick(&mut active, 2, false).is_some());
         assert!(notch_drag_for_tick(&mut active, 2, true).is_none());
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn stopped_notch_drag_preserves_its_offset_until_matching_end() {
+        let mut active = Some(NotchDragState {
+            gesture_id: 2,
+            current_offset: 36.4,
+            ..Default::default()
+        });
+        assert!(notch_drag_for_tick(&mut active, 2, false).is_none());
+        assert_eq!(take_notch_drag_offset(&mut active, 1), None);
+        assert_eq!(take_notch_drag_offset(&mut active, 2), Some(36.0));
         assert!(active.is_none());
     }
 }
@@ -5231,10 +5249,14 @@ async fn start_notch_drag(
     width: f64,
     height: f64,
     display_id: Option<String>,
-) -> Result<bool, String> {
+    track_mouse_button: bool,
+) -> Result<Option<u64>, String> {
     let Some(window) = app.get_webview_window("notch") else {
-        return Ok(false);
+        return Ok(None);
     };
+    if notch_mouse_button_released(track_mouse_button) {
+        return Ok(None);
+    }
     let (cursor_x, _) = get_cursor_position_sync()?;
     let config_store = app.state::<AppState>();
     let configured_display_id = config_store.config_store.get().display_id;
@@ -5246,7 +5268,7 @@ async fn start_notch_drag(
         .or_else(|| window.current_monitor().ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
-        return Ok(false);
+        return Ok(None);
     };
     let (base_center, min_center, max_center, y, window_x) =
         notch_drag_geometry(&monitor, width, horizontal_offset);
@@ -5265,6 +5287,9 @@ async fn start_notch_drag(
         let _ = window.set_position(notch_window_position(window_x.round(), y, monitor_scale));
     }
     configure_notch_window_for_spaces(&app);
+    if notch_mouse_button_released(track_mouse_button) {
+        return Ok(None);
+    }
 
     let gesture_id = NEXT_NOTCH_DRAG_ID.fetch_add(1, Ordering::Relaxed);
     {
@@ -5273,6 +5298,8 @@ async fn start_notch_drag(
             .map_err(|e| format!("Drag lock error: {}", e))?;
         *drag = Some(NotchDragState {
             gesture_id,
+            moving: true,
+            track_mouse_button,
             start_x: cursor_x,
             start_offset,
             current_offset: start_offset,
@@ -5301,7 +5328,32 @@ async fn start_notch_drag(
         }
     });
 
-    Ok(true)
+    Ok(Some(gesture_id))
+}
+
+fn notch_mouse_button_released(track_mouse_button: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+
+        track_mouse_button
+            && unsafe {
+                let primary = if GetSystemMetrics(SM_SWAPBUTTON) == 0 {
+                    VK_LBUTTON
+                } else {
+                    VK_RBUTTON
+                };
+                GetAsyncKeyState(i32::from(primary)) >= 0
+            }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = track_mouse_button;
+        false
+    }
 }
 
 /// Run `f` inside a macOS autorelease pool so any NSScreen / NSWindow /
@@ -5332,7 +5384,7 @@ fn notch_drag_for_tick(
     if expired {
         *active = None;
     }
-    active.as_mut()
+    active.as_mut().filter(|state| state.moving)
 }
 
 fn update_notch_drag_position(
@@ -5350,7 +5402,17 @@ fn update_notch_drag_position(
         let Some(window) = app.get_webview_window("notch") else {
             return Ok(false);
         };
-        let (cursor_x, _) = get_cursor_position_sync()?;
+        let cursor = get_cursor_position_sync();
+        // WebView2 can miss the release if the pointer leaves the transparent host.
+        if notch_mouse_button_released(state.track_mouse_button) {
+            state.moving = false;
+            drop(drag);
+            window
+                .emit("notch-drag-stopped", gesture_id)
+                .map_err(|error| error.to_string())?;
+            return Ok(false);
+        }
+        let (cursor_x, _) = cursor?;
         let cursor_delta = cursor_x - state.start_x;
         let cursor_delta = if cfg!(target_os = "windows") {
             cursor_delta / state.monitor_scale
@@ -5380,7 +5442,7 @@ fn update_notch_drag_position(
         if let Ok(drag) = notch_drag_state().lock() {
             if drag
                 .as_ref()
-                .is_some_and(|state| state.gesture_id == gesture_id)
+                .is_some_and(|state| state.gesture_id == gesture_id && state.moving)
             {
                 let _ = window.set_position(next_position);
             }
@@ -5391,12 +5453,12 @@ fn update_notch_drag_position(
 }
 
 #[tauri::command]
-async fn end_notch_drag(app: tauri::AppHandle) -> Result<Option<f64>, String> {
+async fn end_notch_drag(app: tauri::AppHandle, gesture_id: u64) -> Result<Option<f64>, String> {
     let final_offset = {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
-        drag.take().map(|state| state.current_offset.round())
+        take_notch_drag_offset(&mut drag, gesture_id)
     };
 
     if let Some(offset) = final_offset {
@@ -5404,6 +5466,13 @@ async fn end_notch_drag(app: tauri::AppHandle) -> Result<Option<f64>, String> {
     }
 
     Ok(final_offset)
+}
+
+fn take_notch_drag_offset(active: &mut Option<NotchDragState>, gesture_id: u64) -> Option<f64> {
+    if active.as_ref()?.gesture_id != gesture_id {
+        return None;
+    }
+    active.take().map(|state| state.current_offset.round())
 }
 
 #[tauri::command]
