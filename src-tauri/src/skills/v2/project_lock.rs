@@ -30,6 +30,12 @@ struct LockEntry {
     skill_path: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct NodeModuleHints {
+    version: Option<String>,
+    via: Option<String>,
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct RepositoryRevision {
     url: String,
@@ -37,12 +43,28 @@ struct RepositoryRevision {
 }
 
 struct RestoreSource {
+    location: RestoreLocation,
+    hash: String,
+}
+
+enum RestoreLocation {
+    GitHub(GitHubSkill),
+    NodeModules(NodeModuleSkill),
+}
+
+struct GitHubSkill {
     repository: RepositoryRevision,
     commit: Option<String>,
     subpath: PathBuf,
     skill_path: Option<PathBuf>,
     skill_name: String,
-    hash: String,
+}
+
+struct NodeModuleSkill {
+    package: PathBuf,
+    declared_by: Option<PathBuf>,
+    version: Option<String>,
+    skill_path: PathBuf,
 }
 
 fn read_lock(root: &Path) -> Result<Option<(LockFile, String)>, String> {
@@ -96,9 +118,15 @@ pub(super) fn preview(root: &Path) -> Option<ProjectSkillLock> {
                     .get("source")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let reference = ["commit", "ref"]
-                    .into_iter()
-                    .find_map(|key| entry.get(key).and_then(|value| value.as_str()));
+                let reference = if entry.get("sourceType").and_then(|value| value.as_str())
+                    == Some("node_modules")
+                {
+                    entry.get("version").and_then(|value| value.as_str())
+                } else {
+                    ["commit", "ref"]
+                        .into_iter()
+                        .find_map(|key| entry.get(key).and_then(|value| value.as_str()))
+                };
                 let status = if !valid_skill_name(name) || duplicates.contains(&name.to_lowercase())
                 {
                     Invalid
@@ -192,10 +220,81 @@ fn restore_source(
     if version == 1 {
         return Err(Legacy);
     }
-    if version != 2 || raw.get("sourceType").and_then(|value| value.as_str()) != Some("github") {
+    let source_type = raw.get("sourceType").and_then(|value| value.as_str());
+    if version != 2 || !matches!(source_type, Some("github" | "node_modules")) {
         return Err(Unsupported);
     }
     let entry: LockEntry = serde_json::from_value(raw.clone()).map_err(|_| Invalid)?;
+    if !is_hex(&entry.computed_hash, 64) {
+        return Err(Invalid);
+    }
+    let skill_path = entry
+        .skill_path
+        .as_deref()
+        .map(locked_skill_directory)
+        .transpose()?;
+    let location = if source_type == Some("node_modules") {
+        let hints: NodeModuleHints = serde_json::from_value(raw.clone()).map_err(|_| Invalid)?;
+        RestoreLocation::NodeModules(NodeModuleSkill {
+            package: npm_package_path(&entry.source)?,
+            declared_by: hints
+                .via
+                .as_deref()
+                .filter(|via| *via != ".")
+                .map(npm_package_path)
+                .transpose()?,
+            version: hints.version,
+            skill_path: skill_path.ok_or(Invalid)?,
+        })
+    } else {
+        RestoreLocation::GitHub(github_lock_source(&entry, name, skill_path)?)
+    };
+    Ok(RestoreSource {
+        location,
+        hash: entry.computed_hash,
+    })
+}
+
+fn locked_skill_directory(value: &str) -> Result<PathBuf, ProjectLockedSkillStatus> {
+    let mut parts = value.split('/');
+    if parts.next_back() != Some("SKILL.md") {
+        return Err(ProjectLockedSkillStatus::Invalid);
+    }
+    let mut directory = PathBuf::new();
+    for part in parts {
+        if !valid_component(part) || part.eq_ignore_ascii_case(".git") {
+            return Err(ProjectLockedSkillStatus::Invalid);
+        }
+        directory.push(part);
+    }
+    Ok(directory)
+}
+
+fn npm_package_path(value: &str) -> Result<PathBuf, ProjectLockedSkillStatus> {
+    let valid_name = |part: &str| {
+        valid_skill_name(part)
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    };
+    match value.split_once('/') {
+        Some((scope, name))
+            if scope.strip_prefix('@').is_some_and(valid_name) && valid_name(name) =>
+        {
+            Ok(PathBuf::from(scope).join(name))
+        }
+        None if valid_name(value) => Ok(PathBuf::from(value)),
+        _ => Err(ProjectLockedSkillStatus::Invalid),
+    }
+}
+
+fn github_lock_source(
+    entry: &LockEntry,
+    name: &str,
+    skill_path: Option<PathBuf>,
+) -> Result<GitHubSkill, ProjectLockedSkillStatus> {
+    use ProjectLockedSkillStatus::Invalid;
+
     let source = entry
         .source
         .strip_prefix("https://github.com/")
@@ -209,7 +308,6 @@ fn restore_source(
             part.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
         })
-        || !is_hex(&entry.computed_hash, 64)
     {
         return Err(Invalid);
     }
@@ -220,31 +318,18 @@ fn restore_source(
         }
         subpath.push(part);
     }
-    let skill_path = entry
-        .skill_path
-        .as_deref()
-        .map(|value| {
-            let mut parts = value.split('/').collect::<Vec<_>>();
-            if parts.pop() != Some("SKILL.md")
-                || parts
-                    .iter()
-                    .any(|part| !valid_component(part) || part.eq_ignore_ascii_case(".git"))
-            {
-                return Err(Invalid);
-            }
-            let path: PathBuf = parts.into_iter().collect();
-            if !subpath.as_os_str().is_empty() && !path.starts_with(&subpath) {
-                return Err(Invalid);
-            }
-            Ok(path)
-        })
-        .transpose()?;
+    if skill_path
+        .as_ref()
+        .is_some_and(|path| !path.starts_with(&subpath))
+    {
+        return Err(Invalid);
+    }
     let reference = if let Some(commit) = &entry.commit {
         if !is_hex(commit, 40) {
             return Err(Invalid);
         }
         commit.clone()
-    } else if let Some(reference) = entry.reference {
+    } else if let Some(reference) = &entry.reference {
         if !reference
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_./-".contains(&byte))
@@ -256,24 +341,23 @@ fn restore_source(
         {
             return Err(Invalid);
         }
-        reference
+        reference.clone()
     } else {
         "HEAD".to_string()
     };
-    let skill_name = entry.skill_name.unwrap_or_else(|| name.to_string());
-    if !valid_skill_name(&skill_name) {
+    let skill_name = entry.skill_name.as_deref().unwrap_or(name);
+    if !valid_skill_name(skill_name) {
         return Err(Invalid);
     }
-    Ok(RestoreSource {
+    Ok(GitHubSkill {
         repository: RepositoryRevision {
             url: format!("https://github.com/{owner}/{repository}.git"),
             reference,
         },
-        commit: entry.commit,
+        commit: entry.commit.clone(),
         subpath,
         skill_path,
-        skill_name,
-        hash: entry.computed_hash,
+        skill_name: skill_name.to_string(),
     })
 }
 
@@ -366,26 +450,36 @@ fn restore_with(
                 .skills
                 .get(&name)
                 .ok_or("The Skill is missing from the lock file")?;
-            let source = restore_source(lock.version, &name, raw)
-                .map_err(|_| "This locked Skill has no supported, verifiable GitHub source")?;
+            let source =
+                restore_source(lock.version, &name, raw).map_err(|status| match status {
+                    ProjectLockedSkillStatus::Invalid => "The locked Skill source is invalid",
+                    _ => "This locked Skill has no supported, verifiable source",
+                })?;
             let destination = checked_destination(root, false)?.join(&name);
             match fs::symlink_metadata(&destination) {
                 Ok(_) => return Err("The destination already exists".to_string()),
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(error.to_string()),
             }
-            let checkout = checkouts
-                .entry(source.repository.clone())
-                .or_insert_with(|| fetch(&source.repository));
-            let (checkout, _temporary) = checkout.as_ref().map_err(Clone::clone)?;
-            if let Some(commit) = &source.commit {
-                if !installer::read_checkout_commit(checkout)
-                    .is_some_and(|actual| actual.eq_ignore_ascii_case(commit))
-                {
-                    return Err("The checkout does not contain the locked commit".to_string());
+            let skill = match &source.location {
+                RestoreLocation::GitHub(github) => {
+                    let checkout = checkouts
+                        .entry(github.repository.clone())
+                        .or_insert_with(|| fetch(&github.repository));
+                    let (checkout, _temporary) = checkout.as_ref().map_err(Clone::clone)?;
+                    if let Some(commit) = &github.commit {
+                        if !installer::read_checkout_commit(checkout)
+                            .is_some_and(|actual| actual.eq_ignore_ascii_case(commit))
+                        {
+                            return Err(
+                                "The checkout does not contain the locked commit".to_string()
+                            );
+                        }
+                    }
+                    select_github_skill(checkout, github)?
                 }
-            }
-            let skill = select_skill(checkout, &source)?;
+                RestoreLocation::NodeModules(package) => select_node_module_skill(root, package)?,
+            };
             install_verified_skill(root, revision, &name, &skill, &source.hash)
         })();
         results.push(ProjectSkillRestoreResult {
@@ -443,21 +537,69 @@ fn checked_destination(root: &Path, create: bool) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn select_skill(checkout: &Path, source: &RestoreSource) -> Result<PathBuf, String> {
+fn select_github_skill(checkout: &Path, source: &GitHubSkill) -> Result<PathBuf, String> {
     let root = checkout.canonicalize().map_err(|error| error.to_string())?;
     let skill = if let Some(path) = &source.skill_path {
         root.join(path)
     } else {
         installer::locate_skillssh_skill_dir(&root.join(&source.subpath), &source.skill_name)?
     };
-    let skill = skill.canonicalize().map_err(|error| error.to_string())?;
-    if !skill.starts_with(&root)
+    checked_source_skill(&root, &skill)
+}
+
+fn select_node_module_skill(root: &Path, source: &NodeModuleSkill) -> Result<PathBuf, String> {
+    let declaring = source
+        .declared_by
+        .as_deref()
+        .and_then(|package| find_node_module(root, root, package));
+    let origin = declaring.as_deref().unwrap_or(root);
+    let package = find_node_module(root, origin, &source.package).ok_or_else(|| {
+        format!(
+            "Could not find {}. Install the project's npm dependencies and retry.",
+            source.package.display()
+        )
+    })?;
+    if let Some(version) = &source.version {
+        let manifest = fs::read(package.join("package.json")).map_err(|error| error.to_string())?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest).map_err(|error| error.to_string())?;
+        if manifest.get("version").and_then(serde_json::Value::as_str) != Some(version) {
+            return Err(format!(
+                "The installed npm package {} does not match the locked version {version}.",
+                source.package.display()
+            ));
+        }
+    }
+    checked_source_skill(&package, &package.join(&source.skill_path))
+}
+
+fn find_node_module(root: &Path, from: &Path, package: &Path) -> Option<PathBuf> {
+    from.ancestors()
+        .take_while(|directory| directory.starts_with(root))
+        .find_map(|directory| {
+            let candidate = directory
+                .join("node_modules")
+                .join(package)
+                .canonicalize()
+                .ok()?;
+            (candidate.starts_with(root)
+                && candidate
+                    .join("package.json")
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| metadata.is_file()))
+            .then_some(candidate)
+        })
+}
+
+fn checked_source_skill(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let skill = path.canonicalize().map_err(|error| error.to_string())?;
+    if !skill.starts_with(root)
         || !skill
             .join("SKILL.md")
             .symlink_metadata()
             .is_ok_and(|metadata| metadata.is_file())
     {
-        return Err("The checkout has no matching Skill directory".to_string());
+        return Err("The source has no matching Skill directory".to_string());
     }
     Ok(skill)
 }
@@ -488,7 +630,7 @@ fn install_verified_skill(
         add_file_to_hash(&mut staged_hash, &path, &target)?;
     }
     if !format!("{:x}", staged_hash.finalize()).eq_ignore_ascii_case(expected) {
-        return Err("Downloaded Skill content does not match the lock file".to_string());
+        return Err("Skill content does not match the lock file".to_string());
     }
     lock_at_revision(root, revision)?;
     let destination = checked_destination(root, true)?;
@@ -674,6 +816,8 @@ mod tests {
     use serde_json::json;
 
     const PORTABLE_HASH: &str = "fd3e459f44c5edbece0fd70f8abd169df0a4d64fa9c28dd89eed88a6ca0a14a7";
+    const ROOT_PACKAGE_HASH: &str =
+        "ab488bfd61ddf0b54f931a50046bb662437a90608b401c7601569d2a480664c1";
     const MANIFEST: &str =
         "---\r\nname: original\r\ndescription: Local skill\r\n---\r\nOriginal content.\r\n";
 
@@ -734,7 +878,7 @@ mod tests {
             json!({
                 "version": 2,
                 "skills": {
-                    "missing": { "source": "npm-package", "sourceType": "node_modules" },
+                    "missing": { "source": "https://example.test/skills.zip", "sourceType": "download" },
                     "bad": { "source": "example/skills", "sourceType": "github", "computedHash": PORTABLE_HASH, "skillPath": "../SKILL.md" },
                 }
             }),
@@ -802,6 +946,194 @@ mod tests {
         assert!(verify_installed(&root, &lock.revision)
             .unwrap_err()
             .contains("lock file changed"));
+    }
+
+    #[test]
+    fn restores_selected_npm_skill_and_reports_missing_changed_or_unsafe_entries() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let package = root.join("node_modules/@example/toolkit");
+        let skill = package.join("skills/original");
+        fs::create_dir_all(skill.join("scripts")).unwrap();
+        fs::write(package.join("package.json"), br#"{"version":"1.2.3"}"#).unwrap();
+        fs::write(skill.join("SKILL.md"), MANIFEST).unwrap();
+        fs::write(skill.join("scripts/data.bin"), b"\0\r\n").unwrap();
+
+        let entry = json!({
+            "source": "@example/toolkit",
+            "sourceType": "node_modules",
+            "version": "1.2.3",
+            "skillPath": "skills/original/SKILL.md",
+            "computedHash": PORTABLE_HASH,
+        });
+        let mut changed = entry.clone();
+        changed["computedHash"] = "0".repeat(64).into();
+        let mut missing = entry.clone();
+        missing["source"] = "missing-package".into();
+        let mut unsafe_path = entry.clone();
+        unsafe_path["skillPath"] = "../SKILL.md".into();
+        let mut wrong_version = entry.clone();
+        wrong_version["version"] = "9.0.0".into();
+        write_lock(
+            &root,
+            json!({
+                "version": 2,
+                "skills": {
+                    "alias": entry,
+                    "changed": changed,
+                    "missing": missing,
+                    "unsafe": unsafe_path,
+                    "wrong-version": wrong_version,
+                }
+            }),
+        );
+        let before = fs::read(root.join(LOCK_FILE)).unwrap();
+        let lock = preview(&root).unwrap();
+        assert_eq!(lock.skills[0].status, Ready);
+        assert_eq!(lock.skills[0].reference.as_deref(), Some("1.2.3"));
+        assert_eq!(lock.skills[3].status, Invalid);
+
+        let names = lock.skills.iter().map(|skill| skill.name.clone()).collect();
+        let results = restore_with(&root, &lock.revision, names, |_| {
+            panic!("An installed package does not require a Git checkout")
+        })
+        .unwrap();
+        assert!(results[0].error.is_none(), "{:?}", results[0].error);
+        for (result, message) in results[1..].iter().zip([
+            "content does not match",
+            "Install the project's npm dependencies",
+            "invalid",
+            "locked version 9.0.0",
+        ]) {
+            assert!(
+                result
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.contains(message)),
+                "{result:?}"
+            );
+        }
+        let destination = root.join(".agents/skills");
+        assert_eq!(
+            fs::read_to_string(destination.join("alias/SKILL.md")).unwrap(),
+            MANIFEST
+        );
+        assert_eq!(
+            fs::read(destination.join("alias/scripts/data.bin")).unwrap(),
+            b"\0\r\n"
+        );
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+        assert_eq!(fs::read(root.join(LOCK_FILE)).unwrap(), before);
+        assert_eq!(
+            verify_installed(&root, &lock.revision)
+                .unwrap()
+                .get("alias"),
+            Some(&Verified)
+        );
+    }
+
+    #[test]
+    fn resolves_npm_skill_via_the_declaring_dependency() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let declaring = root.join("node_modules/declaring-package");
+        let package = declaring.join("node_modules/skill-package");
+        fs::create_dir_all(package.join("scripts")).unwrap();
+        fs::write(declaring.join("package.json"), "{}").unwrap();
+        fs::write(package.join("package.json"), br#"{"version":"2.0.0"}"#).unwrap();
+        fs::write(package.join("SKILL.md"), MANIFEST).unwrap();
+        fs::write(package.join("scripts/data.bin"), b"\0\r\n").unwrap();
+        write_lock(
+            &root,
+            json!({
+                "version": 2,
+                "skills": {
+                    "nested": {
+                        "source": "skill-package",
+                        "sourceType": "node_modules",
+                        "via": "declaring-package",
+                        "skillPath": "SKILL.md",
+                        "computedHash": ROOT_PACKAGE_HASH
+                    }
+                }
+            }),
+        );
+        let lock = preview(&root).unwrap();
+        let result = restore(&root, &lock.revision, vec!["nested".into()]).unwrap();
+        assert!(result[0].error.is_none(), "{:?}", result[0].error);
+        assert!(root.join(".agents/skills/nested/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn supports_pnpm_package_links_inside_the_project_and_rejects_external_links() {
+        let temp = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temp.path().join("project");
+        let store = root.join("node_modules/.pnpm/declaring-package@1.0.0/node_modules");
+        let declaring = store.join("declaring-package");
+        let package = store.join("skill-package");
+        let outside = temp.path().join("outside-package");
+        fs::create_dir_all(&declaring).unwrap();
+        fs::create_dir_all(package.join("scripts")).unwrap();
+        fs::create_dir_all(outside.join("scripts")).unwrap();
+        fs::write(declaring.join("package.json"), "{}").unwrap();
+        for directory in [&package, &outside] {
+            fs::write(directory.join("package.json"), br#"{"version":"2.0.0"}"#).unwrap();
+            fs::write(directory.join("SKILL.md"), MANIFEST).unwrap();
+            fs::write(directory.join("scripts/data.bin"), b"\0\r\n").unwrap();
+        }
+        for (source, name) in [
+            (&declaring, "declaring-package"),
+            (&outside, "outside-package"),
+        ] {
+            let link = root.join("node_modules").join(name);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(source, link).unwrap();
+            #[cfg(windows)]
+            {
+                let result = std::process::Command::new("powershell.exe")
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "New-Item -ItemType Junction -Path $env:AGENTBRO_TEST_JUNCTION -Target $env:AGENTBRO_TEST_JUNCTION_TARGET -ErrorAction Stop | Out-Null",
+                    ])
+                    .env("AGENTBRO_TEST_JUNCTION", &link)
+                    .env("AGENTBRO_TEST_JUNCTION_TARGET", source)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+        let entry = json!({
+            "source": "skill-package",
+            "sourceType": "node_modules",
+            "via": "declaring-package",
+            "skillPath": "SKILL.md",
+            "version": "2.0.0",
+            "computedHash": ROOT_PACKAGE_HASH,
+        });
+        let mut escaped = entry.clone();
+        escaped["source"] = "outside-package".into();
+        write_lock(
+            &root,
+            json!({ "version": 2, "skills": { "inside": entry, "outside": escaped } }),
+        );
+        let root = root.canonicalize().unwrap();
+        let lock = preview(&root).unwrap();
+        let results = restore(
+            &root,
+            &lock.revision,
+            vec!["inside".into(), "outside".into()],
+        )
+        .unwrap();
+        assert!(results[0].error.is_none(), "{:?}", results[0].error);
+        assert!(results[1].error.is_some());
+        assert!(root.join(".agents/skills/inside/SKILL.md").is_file());
+        assert!(!root.join(".agents/skills/outside").exists());
     }
 
     #[test]
