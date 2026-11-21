@@ -4746,7 +4746,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '批量删除 0 个' })).toBeInTheDocument()
   })
 
-  it('moves a directly distributed Skill into a selected skill pack', async () => {
+  it.each([
+    'same selection', 'switch before confirming', 'switch during move', 'switch during refresh',
+  ] as const)('keeps a direct Skill move on its reviewed Agent view with %s', async (scenario) => {
     const pack = {
       id: 'daily-pack',
       name: 'Daily Pack',
@@ -4785,10 +4787,27 @@ describe('Skill detail slider + agent page render without crashing', () => {
       },
     }
     const previewMove = vi.spyOn(skillApiV2, 'previewMoveDirectSkillToPack').mockResolvedValue(movePreview)
-    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockResolvedValue(movePreview)
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    let finishMove!: () => void
+    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockImplementation(() => {
+      if (scenario !== 'switch during move') return Promise.resolve(movePreview)
+      return new Promise((resolve) => { finishMove = () => resolve(movePreview) })
+    })
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    const snapshot = {
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [],
+    }
+    if (scenario === 'switch during refresh') {
+      refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+        finishRefresh = () => resolve(snapshot)
+      }))
+    } else refreshAgentSkillView.mockResolvedValue(snapshot)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
     const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    loadOverview.mockClear()
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -4796,16 +4815,46 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(screen.getByRole('heading', { name: '将直接分发归入技能包' })).toBeInTheDocument()
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'daily-pack'))
     expect(await screen.findByText('加入技能包成员')).toBeInTheDocument()
     expect(screen.getByText('不处理其他成员')).toBeInTheDocument()
     expect(screen.getByText(/不会安装、更新或删除「Daily Pack」中的其他 2 个成员/)).toBeInTheDocument()
     expect(screen.getByText('切换为技能包控制')).toBeInTheDocument()
 
+    if (scenario === 'switch before confirming') {
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      expect(screen.queryByRole('dialog', { name: '将直接分发归入技能包' })).not.toBeInTheDocument()
+      expect(executeMove).not.toHaveBeenCalled()
+      return
+    }
+
     fireEvent.click(screen.getByRole('button', { name: '移动并交由技能包管理' }))
-    await waitFor(() => expect(executeMove).toHaveBeenCalledWith('target-1', 'daily-pack', []))
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(executeMove).toHaveBeenCalledTimes(1)
+
+    if (scenario === 'same selection') {
+      await waitFor(() => expect(screen.getByText('已将「Release Checklist」归入「Daily Pack」')).toBeInTheDocument())
+    } else {
+      if (scenario === 'switch during refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+      const remoteItem = makeSharedUnmanaged('remote-only', { agentId: 'claude-code' })
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', unmanaged: [remoteItem], error: 'New host status' })
+        if (scenario === 'switch during move') finishMove()
+        else finishRefresh()
+      })
+      expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+      expect(screen.queryByText(/Release Checklist.*Daily Pack/)).not.toBeInTheDocument()
+    }
+    expect(previewMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(executeMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+    expect(loadOverview).not.toHaveBeenCalledWith(true)
+    if (scenario === 'switch during move') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('shows every claim and defaults moving to the skill existing pack', async () => {
@@ -4888,7 +4937,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(document.querySelector('#sm2-move-to-pack-select')).toHaveValue('nice-try')
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try'))
+    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('shows immediate deleting feedback for a managed skill card', async () => {
