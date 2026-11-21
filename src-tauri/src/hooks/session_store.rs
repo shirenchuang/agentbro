@@ -2,8 +2,10 @@
 // Central source of truth for all agent sessions
 
 use chrono::Utc;
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -435,6 +437,8 @@ pub struct SessionUpdatePayload {
 pub struct SessionStore {
     sessions: Arc<DashMap<String, SessionState>>,
     app_handle: Option<AppHandle>,
+    #[cfg(test)]
+    update_requests: Arc<AtomicUsize>,
 }
 
 impl SessionStore {
@@ -442,7 +446,14 @@ impl SessionStore {
         Self {
             sessions: Arc::new(DashMap::new()),
             app_handle: None,
+            #[cfg(test)]
+            update_requests: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn update_request_count(&self) -> usize {
+        self.update_requests.load(Ordering::Relaxed)
     }
 
     /// Set the app handle for emitting Tauri events
@@ -505,6 +516,36 @@ impl SessionStore {
             session.update_duration();
         }
         self.emit_update();
+    }
+
+    pub(super) fn apply_observed_sessions<'a>(
+        &self,
+        updates: Vec<SessionState>,
+        removed_ids: impl Iterator<Item = &'a str>,
+    ) {
+        let mut changed = !updates.is_empty();
+        for observed in updates {
+            match self.sessions.entry(observed.id.clone()) {
+                Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    current.phase = observed.phase;
+                    current.description = observed.description;
+                    current.session_title = observed.session_title;
+                    current.term_bundle_id = observed.term_bundle_id;
+                    reconcile_pending_for_phase(current);
+                    current.update_duration();
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(observed);
+                }
+            }
+        }
+        for id in removed_ids {
+            changed |= self.sessions.remove(id).is_some();
+        }
+        if changed {
+            self.emit_update();
+        }
     }
 
     /// Set pending permission on a session
@@ -902,6 +943,8 @@ impl SessionStore {
     }
 
     fn emit_update_with_suppression(&self, suppressed: bool) {
+        #[cfg(test)]
+        self.update_requests.fetch_add(1, Ordering::Relaxed);
         if let Some(ref handle) = self.app_handle {
             let sessions = self.get_all_sessions();
             let payload = SessionUpdatePayload {

@@ -1,4 +1,4 @@
-use super::session_store::{SessionPhase, SessionStore};
+use super::session_store::{SessionPhase, SessionState, SessionStore};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -256,6 +256,7 @@ fn reconcile(
         }
     }
     let mut next = HashSet::new();
+    let mut updates = Vec::new();
     for (id, turn) in latest {
         if matches!(
             turn.phase,
@@ -273,20 +274,21 @@ fn reconcile(
         }) {
             continue;
         }
-        if existing.is_none() {
-            store.get_or_create_session(id, AGENT, NAME, "", NAME);
-        }
-        store.update_session(id, |session| {
-            session.term_bundle_id =
-                cfg!(target_os = "macos").then(|| "cn.qwenwork.desktop.mac".to_string());
-            session.session_title = turn.title.clone();
-            session.phase = turn.phase.clone();
-            session.description = Some(turn.description.to_string());
-        });
+        let mut observed = SessionState::new(
+            id.to_string(),
+            AGENT.to_string(),
+            NAME.to_string(),
+            String::new(),
+            NAME.to_string(),
+        );
+        observed.term_bundle_id =
+            cfg!(target_os = "macos").then(|| "cn.qwenwork.desktop.mac".to_string());
+        observed.session_title = turn.title.clone();
+        observed.phase = turn.phase.clone();
+        observed.description = Some(turn.description.to_string());
+        updates.push(observed);
     }
-    for id in visible.difference(&next) {
-        store.remove_session(id);
-    }
+    store.apply_observed_sessions(updates, visible.difference(&next).map(String::as_str));
     *visible = next;
 }
 
@@ -395,14 +397,21 @@ mod tests {
             )
             .unwrap();
         let store = SessionStore::new();
+        store.get_or_create_session("other-agent", "codex", "project", "", "terminal");
+        let initial_updates = store.update_request_count();
         let mut visible = HashSet::new();
         let mut cached = HashMap::new();
-        for (now, expected_rows) in [(120000, 64), (115000 + DONE_MS + 1, 1)] {
+        for (now, expected_rows, update_count) in [
+            (120000, 64, 1),
+            (120000, 64, 1),
+            (115000 + DONE_MS + 1, 1, 2),
+        ] {
             let observed = read_recent_turns(&directory, now);
             for path in [&desk_path, &flash_path] {
                 assert_eq!(observed[path].as_ref().unwrap().len(), expected_rows);
             }
             reconcile(&store, &mut visible, &mut cached, observed, now);
+            assert_eq!(store.update_request_count() - initial_updates, update_count);
             assert_eq!(
                 store
                     .get_session("qwenwork-cn:live-desk")
@@ -417,6 +426,7 @@ mod tests {
             );
         }
         assert_eq!(visible.len(), 2);
+        assert!(store.get_session("other-agent").is_some());
         drop(desk);
         drop(flash);
         std::fs::remove_dir_all(directory).unwrap();
