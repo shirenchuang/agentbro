@@ -8,6 +8,7 @@ import pathlib
 import re
 import select
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -2470,6 +2471,95 @@ def mcp_server(agent_id, server_name):
     return server
 
 
+def mcp_cancel_marker(kind, request_id):
+    owner = os.getuid()
+    scope = hashlib.sha256(os.fsencode(HOME)).hexdigest()[:16]
+    root = pathlib.Path(tempfile.gettempdir()) / "agentbro-mcp-cancel-{}-{}".format(owner, scope)
+    root.mkdir(mode=0o700, exist_ok=True)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o077:
+        raise RuntimeError("MCP cancellation directory must be private")
+
+    # Separate SSH connections can deliver cancellation before the operation starts.
+    cutoff = time.time() - 180
+    for entry in root.iterdir():
+        try:
+            if re.fullmatch(r"[0-9a-f]{64}", entry.name):
+                info = entry.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                    entry.unlink()
+        except FileNotFoundError:
+            pass
+    key = json.dumps([kind, request_id]).encode()
+    return root / hashlib.sha256(key).hexdigest()
+
+
+def cancel_mcp_request(kind, request_id):
+    marker = mcp_cancel_marker(kind, request_id)
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
+def stop_mcp_worker(_signal, _frame):
+    raise SystemExit(1)
+
+
+def supervise_mcp_request(kind, request_id):
+    marker = mcp_cancel_marker(kind, request_id)
+    cancelled = "MCP " + kind + " cancelled"
+    if marker.is_file():
+        unlink_if_exists(marker)
+        raise RuntimeError(cancelled)
+
+    reader, writer = os.pipe()
+    try:
+        worker = os.fork()
+    except OSError:
+        os.close(reader)
+        os.close(writer)
+        raise
+    if worker == 0:
+        os.close(reader)
+        signal.signal(signal.SIGUSR1, stop_mcp_worker)
+        os.setpgid(0, 0)
+        return
+
+    os.close(writer)
+    try:
+        try:
+            os.setpgid(worker, worker)
+        except ProcessLookupError:
+            pass
+        # Poll for a separate SSH request while the worker can block in either transport.
+        while not select.select([reader], [], [], 0.1)[0]:
+            if marker.is_file():
+                try:
+                    os.kill(worker, signal.SIGUSR1)
+                except ProcessLookupError:
+                    pass
+                select.select([reader], [], [], 2.5)
+                raise RuntimeError(cancelled)
+        _, status = os.waitpid(worker, 0)
+        worker = None
+        if os.WIFEXITED(status):
+            raise SystemExit(os.WEXITSTATUS(status))
+        raise SystemExit(128 + os.WTERMSIG(status))
+    finally:
+        try:
+            if worker is not None:
+                try:
+                    os.killpg(worker, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(worker, 0)
+        finally:
+            os.close(reader)
+            unlink_if_exists(marker)
+
+
 def read_json_line(stream, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -2540,8 +2630,9 @@ def stdio_mcp_request(server, method, params=None):
         process.terminate()
         try:
             process.wait(timeout=2)
-        except Exception:
+        except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
 
 
 def http_mcp_post(url, headers, payload, session_id=None):
@@ -3567,8 +3658,10 @@ def dispatch():
             "result": result,
             "warnings": [],
         }
-    if command in ("cancel_mcp_inspection_cmd", "cancel_mcp_operation_cmd"):
-        return None
+    if command == "cancel_mcp_inspection_cmd":
+        return cancel_mcp_request("inspection", args["inspectionId"])
+    if command == "cancel_mcp_operation_cmd":
+        return cancel_mcp_request("operation", args["operationId"])
     if command == "list_skill_projects_v2":
         return [
             project_summary(project)
@@ -3729,6 +3822,11 @@ def dispatch():
         raise ValueError("This operation is not available through the remote SSH runtime yet")
     raise ValueError("Unsupported remote Skill Manager command: " + command)
 
+
+if COMMAND == "inspect_mcp_server_cmd":
+    supervise_mcp_request("inspection", ARGS["inspectionId"])
+elif COMMAND in ("call_mcp_tool_cmd", "get_mcp_prompt_cmd"):
+    supervise_mcp_request("operation", ARGS["operationId"])
 
 try:
     RESPONSE = json_safe(dispatch())

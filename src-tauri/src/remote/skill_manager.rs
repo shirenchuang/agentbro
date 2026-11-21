@@ -1621,6 +1621,221 @@ try:
     }
 
     #[test]
+    fn remote_mcp_cancellation_stops_the_original_stdio_call() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-mcp-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let fixture = home.join("mcp_fixture.py");
+        let started = home.join("started");
+        let release = home.join("release");
+        std::fs::write(
+            &fixture,
+            r#"import json
+from pathlib import Path
+import os
+import sys
+import time
+
+started, release = map(Path, sys.argv[1:])
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["method"] == "initialize":
+        result = {"serverInfo": {"name": "fixture"}}
+    elif request["method"] == "tools/call":
+        started.write_text(str(os.getpid()))
+        deadline = time.monotonic() + 8
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        result = {"content": []}
+    else:
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#,
+        )
+        .expect("stdio server fixture");
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({"mcpServers": {"fixture": {
+                "command": "python3",
+                "args": [&fixture, &started, &release]
+            }}})
+            .to_string(),
+        )
+        .expect("fixture configuration");
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let script = render_script(
+            "call_mcp_tool_cmd",
+            serde_json::json!({
+                "agent": "claude-code",
+                "serverName": "fixture",
+                "operationId": operation_id,
+                "toolName": "wait",
+                "arguments": {}
+            }),
+        )
+        .expect("render tool call");
+        let mut call = start_rendered_script(&home, &script);
+        let running = wait_for_fixture(|| started.exists());
+        let unrelated = run_script(
+            &home,
+            "cancel_mcp_operation_cmd",
+            serde_json::json!({"operationId": uuid::Uuid::new_v4().to_string()}),
+        );
+        let still_running = call.try_wait().expect("poll tool call").is_none();
+        let cancelled = run_script(
+            &home,
+            "cancel_mcp_operation_cmd",
+            serde_json::json!({"operationId": operation_id}),
+        );
+        let stopped = wait_for_fixture(|| call.try_wait().expect("poll tool call").is_some());
+        std::fs::write(release, "").expect("release fixture");
+        let output = call.wait_with_output().expect("finish fixture");
+        let pid = std::fs::read_to_string(&started)
+            .ok()
+            .and_then(|text| text.parse::<libc::pid_t>().ok());
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        assert!(running, "stdio fixture did not start");
+        assert!(
+            unrelated.is_null() && still_running,
+            "unrelated operation was affected"
+        );
+        assert!(cancelled.is_null());
+        assert!(
+            stopped,
+            "cancel returned while the original tool call was still running"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("MCP operation cancelled"));
+        assert!(!output.status.success());
+        let pid = pid.expect("fixture process ID");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "fixture was not reaped");
+    }
+
+    #[test]
+    fn remote_mcp_cancelled_inspection_closes_the_http_connection() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-http-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let http = start_rendered_script(
+            &home,
+            r#"from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from pathlib import Path
+import socket
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        result = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+        encoded = json.dumps(result).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        if request["method"] == "resources/list":
+            (Path.home() / "waiting-http").touch()
+            self.connection.settimeout(4)
+            try:
+                if self.connection.recv(1) == b"":
+                    (Path.home() / "closed-http").touch()
+            except socket.timeout:
+                pass
+        else:
+            self.wfile.write(encoded)
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+server.timeout = 4
+(Path.home() / "http-port").write_text(str(server.server_port))
+for _ in range(4):
+    server.handle_request()
+server.server_close()
+"#,
+        );
+        assert!(wait_for_fixture(|| home.join("http-port").is_file()));
+        let port = std::fs::read_to_string(home.join("http-port")).expect("fixture port");
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({"mcpServers": {"fixture": {
+                "url": format!("http://127.0.0.1:{port}/mcp")
+            }}})
+            .to_string(),
+        )
+        .expect("fixture configuration");
+        let inspection_id = uuid::Uuid::new_v4().to_string();
+        let script = render_script(
+            "inspect_mcp_server_cmd",
+            serde_json::json!({
+                "agent": "claude-code",
+                "serverName": "fixture",
+                "inspectionId": inspection_id
+            }),
+        )
+        .expect("render inspection");
+        let mut inspection = start_rendered_script(&home, &script);
+        let waiting = wait_for_fixture(|| home.join("waiting-http").is_file());
+        run_script(
+            &home,
+            "cancel_mcp_operation_cmd",
+            serde_json::json!({"operationId": inspection_id}),
+        );
+        let still_running = inspection.try_wait().expect("poll inspection").is_none();
+        run_script(
+            &home,
+            "cancel_mcp_inspection_cmd",
+            serde_json::json!({"inspectionId": inspection_id}),
+        );
+        let stopped =
+            wait_for_fixture(|| inspection.try_wait().expect("poll inspection").is_some());
+        let closed = wait_for_fixture(|| home.join("closed-http").is_file());
+        http.wait_with_output().expect("finish HTTP fixture");
+        let output = inspection.wait_with_output().expect("finish inspection");
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        assert!(waiting, "inspection did not reach resources/list");
+        assert!(
+            still_running,
+            "an operation cancellation affected an inspection"
+        );
+        assert!(stopped, "cancelled inspection was still running");
+        assert!(
+            closed,
+            "cancelled inspection did not close its HTTP connection"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("MCP inspection cancelled"));
+    }
+
+    #[test]
+    fn remote_mcp_cancel_can_arrive_before_the_operation() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-mcp-early-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        run_script(
+            &home,
+            "cancel_mcp_operation_cmd",
+            serde_json::json!({"operationId": operation_id}),
+        );
+        let error = run_script_error(
+            &home,
+            "get_mcp_prompt_cmd",
+            serde_json::json!({
+                "agent": "claude-code",
+                "serverName": "fixture",
+                "operationId": operation_id,
+                "promptName": "preview"
+            }),
+        );
+        std::fs::remove_dir_all(home).expect("remove test home");
+        assert!(error.contains("MCP operation cancelled"));
+    }
+
+    #[test]
     fn remote_mcp_edits_resolve_redacted_credentials_before_writing() {
         let home =
             std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
@@ -1695,6 +1910,17 @@ try:
             before
         );
         std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    fn wait_for_fixture(mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
     }
 
     fn write_remote_skill(path: &Path, name: &str, body: &str) {
@@ -1798,12 +2024,19 @@ try:
     }
 
     fn execute_rendered_script(home: &Path, script: &str) -> std::process::Output {
+        start_rendered_script(home, script)
+            .wait_with_output()
+            .expect("run remote script")
+    }
+
+    fn start_rendered_script(home: &Path, script: &str) -> std::process::Child {
         let mut child = Command::new("python3")
             .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("HOME", home)
+            .env("TMPDIR", home)
             .env("PATH", "/usr/bin:/bin")
             .spawn()
             .expect("start remote script");
@@ -1813,6 +2046,6 @@ try:
             .expect("remote script stdin")
             .write_all(script.as_bytes())
             .expect("write remote script");
-        child.wait_with_output().expect("run remote script")
+        child
     }
 }
