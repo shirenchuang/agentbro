@@ -1364,13 +1364,18 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<RemoveSkillFromPackPreview>('preview_remove_skill_from_pack', { packId, skillId }) : Promise.resolve({ packId, packName: packId, skillId, skillName: skillId, affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true }),
   removeSkillFromPack: (packId: string, skillId: string, alsoRemoveTargets: boolean) =>
     isTauriRuntime() ? invoke<void>('execute_remove_skill_from_pack', { packId, skillId, alsoRemoveTargets }) : Promise.resolve(),
-  previewMoveDirectSkillToPack: (targetId: string, packId: string) =>
+  previewMoveDirectSkillToPack: (targetId: string, packId: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId })
+      ? invoke<MoveDirectSkillToPackPreview>('preview_move_direct_skill_to_pack', { targetId, packId }, environmentId)
       : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
-  moveDirectSkillToPack: (targetId: string, packId: string, blockerDecisions: DistributionBlockerDecision[] = []) =>
+  moveDirectSkillToPack: (
+    targetId: string,
+    packId: string,
+    blockerDecisions: DistributionBlockerDecision[] = [],
+    environmentId?: string,
+  ) =>
     isTauriRuntime()
-      ? invoke<MoveDirectSkillToPackPreview>('execute_move_direct_skill_to_pack', { targetId, packId, blockerDecisions })
+      ? invoke<MoveDirectSkillToPackPreview>('execute_move_direct_skill_to_pack', { targetId, packId, blockerDecisions }, environmentId)
       : Promise.resolve(null as unknown as MoveDirectSkillToPackPreview),
 
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),

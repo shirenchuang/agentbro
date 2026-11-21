@@ -1634,7 +1634,7 @@ function SkillsTab({
   const [unmanagedBatchDeleteReview, setUnmanagedBatchDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [batchAdoptReview, setBatchAdoptReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [quickTakeoverReview, setQuickTakeoverReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
-  const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
+  const [moveToPackReview, setMoveToPackReview] = useState<AgentSkillReview<AgentDetail['skills'][number]> | null>(null)
   const [unmanagedSingleDeleteReview, setUnmanagedSingleDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
   const reconciliationGenerationRef = useRef(0)
@@ -1726,7 +1726,7 @@ function SkillsTab({
     setUnmanagedBatchDeleteReview(null)
     setBatchAdoptReview(null)
     setQuickTakeoverReview(null)
-    setMoveToPackTarget(null)
+    setMoveToPackReview(null)
     setUnmanagedSingleDeleteReview(null)
     setDeleteUnmanagedError(null)
   }, [detail.id, packFilter, runtimeSelectionRevision, source, state.agentSelectionRevision, state.runtimeEnvironmentId, status])
@@ -2061,6 +2061,7 @@ function SkillsTab({
   const batchDeleteTargets = managedDeleteReview?.items
   const batchDeleteUnmanagedTargets = unmanagedBatchDeleteReview?.items
   const deleteUnmanagedTarget = unmanagedSingleDeleteReview?.items[0]
+  const moveToPackTarget = moveToPackReview?.items[0]
   const deletingSharedManaged = batchDeleteTargets?.some(isSharedManagedSkill) ?? false
   const deletingSharedUnmanaged = batchDeleteUnmanagedTargets?.some(isSharedAgentsUnmanaged) ?? false
   const deletingSingleSharedUnmanaged = deleteUnmanagedTarget ? isSharedAgentsUnmanaged(deleteUnmanagedTarget) : false
@@ -2293,7 +2294,9 @@ function SkillsTab({
               if (source === 'shared') setManagedDeleteReview(review)
               else void deleteManaged(review)
             }}
-            onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
+            onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0
+              ? (target) => setMoveToPackReview(createSkillReview([target]))
+              : undefined}
             onOpenSkillDetail={onOpenSkillDetail}
           />
           {shownManaged.length < filteredManaged.length && (
@@ -2489,14 +2492,19 @@ function SkillsTab({
           )}
         </PreviewDialog>
       )}
-      {moveToPackTarget && (
+      {moveToPackReview && moveToPackTarget && isCurrentAgentSkillScope(moveToPackReview) && (
         <MoveDirectSkillToPackDialog
           target={moveToPackTarget}
           packs={moveToPackOptions}
-          onCancel={() => setMoveToPackTarget(null)}
+          scope={moveToPackReview}
+          onCancel={() => setMoveToPackReview(null)}
           onDone={async (result) => {
-            await refreshAgentSkills()
-            setMoveToPackTarget(null)
+            if (!isCurrentAgentSkillScope(moveToPackReview)) return
+            const { agentId, environmentId } = moveToPackReview
+            const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+            if (!isCurrentAgentSkillScope(moveToPackReview)) return
+            useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+            setMoveToPackReview((current) => current === moveToPackReview ? null : current)
             setLocalNotice(t('skills.moveToPack.success', {
               skill: result.skillName,
               pack: result.packName,
@@ -2729,11 +2737,13 @@ function BatchAdoptPackDialog({
 function MoveDirectSkillToPackDialog({
   target,
   packs,
+  scope,
   onCancel,
   onDone,
 }: {
   target: AgentDetail['skills'][number]
   packs: MoveToPackOption[]
+  scope: AgentSkillScope
   onCancel: () => void
   onDone: (result: MoveDirectSkillToPackPreview) => Promise<void> | void
 }) {
@@ -2746,44 +2756,46 @@ function MoveDirectSkillToPackDialog({
     ))
     return existingPackClaim?.packId ?? packs[0]?.id ?? ''
   })
-  const [preview, setPreview] = useState<MoveDirectSkillToPackPreview | null>(null)
+  const [loadedPreview, setPreview] = useState<MoveDirectSkillToPackPreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const name = pathBasename(target.targetPath) || target.skillId
+  const preview = loadedPreview?.targetId === target.id && loadedPreview.packId === packId ? loadedPreview : null
 
   useEffect(() => {
-    if (!packId) return
+    if (!packId || !isCurrentAgentSkillScope(scope)) return
     let active = true
+    const isCurrent = () => active && isCurrentAgentSkillScope(scope)
     setLoading(true)
     setPreview(null)
     setError(null)
-    skillApiV2.previewMoveDirectSkillToPack(target.id, packId)
+    skillApiV2.previewMoveDirectSkillToPack(target.id, packId, scope.environmentId)
       .then((next) => {
-        if (active) setPreview(next)
+        if (isCurrent()) setPreview(next)
       })
       .catch((nextError) => {
-        if (active) setError(skillErrorMessage(t, nextError))
+        if (isCurrent()) setError(skillErrorMessage(t, nextError))
       })
       .finally(() => {
-        if (active) setLoading(false)
+        if (isCurrent()) setLoading(false)
       })
     return () => {
       active = false
     }
-  }, [packId, t, target.id])
+  }, [packId, scope, t, target.id])
 
   const selectedPack = packs.find((pack) => pack.id === packId)
 
   const execute = async () => {
-    if (!preview) return
+    if (!preview || loading || !isCurrentAgentSkillScope(scope)) return
     setBusy(true)
     setError(null)
     try {
-      const result = await skillApiV2.moveDirectSkillToPack(target.id, packId, [])
+      const result = await skillApiV2.moveDirectSkillToPack(preview.targetId, preview.packId, [], scope.environmentId)
       await onDone(result)
     } catch (nextError) {
-      setError(skillErrorMessage(t, nextError))
+      if (isCurrentAgentSkillScope(scope)) setError(skillErrorMessage(t, nextError))
     } finally {
       setBusy(false)
     }
