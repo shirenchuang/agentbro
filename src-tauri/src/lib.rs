@@ -4515,7 +4515,7 @@ fn notch_window_geometry(
 }
 
 #[cfg(target_os = "macos")]
-fn set_notch_window_frame(
+async fn set_notch_window_frame(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     x: f64,
@@ -4576,7 +4576,7 @@ fn set_notch_window_frame(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_notch_window_frame(
+async fn set_notch_window_frame(
     _app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     x: f64,
@@ -4587,14 +4587,33 @@ fn set_notch_window_frame(
 ) -> Result<(), String> {
     let size = tauri::LogicalSize::new(width, height);
     let position = notch_window_position(x, top_y, monitor_scale);
-    if cfg!(target_os = "windows") {
-        let _ = window.set_position(position);
-        let _ = window.set_size(tauri::Size::Physical(size.to_physical(monitor_scale)));
-    } else {
+
+    #[cfg(target_os = "windows")]
+    {
+        let size = tauri::Size::Physical(size.to_physical(monitor_scale));
+        let window = window.clone();
+        let (applied, completion) = tokio::sync::oneshot::channel();
+        // Tauri queues individual setters off the main thread. A completed resize
+        // must acknowledge both changes from the same event-loop callback.
+        _app.run_on_main_thread(move || {
+            let result = window
+                .set_position(position)
+                .and_then(|()| window.set_size(size))
+                .map_err(|error| error.to_string());
+            let _ = applied.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        completion
+            .await
+            .map_err(|_| "The Island window closed before its resize completed".to_string())?
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         let _ = window.set_size(tauri::Size::Logical(size));
         let _ = window.set_position(position);
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -5211,7 +5230,7 @@ async fn start_notch_drag(
 
     let monitor_scale = monitor.scale_factor();
     #[cfg(target_os = "windows")]
-    set_notch_window_frame(&app, &window, window_x, y, width, height, monitor_scale)?;
+    set_notch_window_frame(&app, &window, window_x, y, width, height, monitor_scale).await?;
     #[cfg(not(target_os = "windows"))]
     {
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
@@ -5602,7 +5621,8 @@ async fn resize_notch(
             // on the dedicated "pet" window.
             let (x, y, anchor_offset_x) =
                 notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
-            set_notch_window_frame(&app, &window, x, y, width, height, monitor.scale_factor())?;
+            set_notch_window_frame(&app, &window, x, y, width, height, monitor.scale_factor())
+                .await?;
             return Ok(ResizeNotchResult { anchor_offset_x });
         }
         let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
