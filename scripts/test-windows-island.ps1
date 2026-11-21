@@ -307,6 +307,12 @@ function Test-KeyboardPermissionDenial(
                 $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
             }
         }
+        if ($TracePermissionUi -and $Attempt -eq 1) {
+            $cardFrame = [AgentBroSmokeInput+Rect]::new()
+            if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$cardFrame)) {
+                Write-Output "Permission card HWND size: $($cardFrame.Right - $cardFrame.Left)x$($cardFrame.Bottom - $cardFrame.Top)."
+            }
+        }
         Click-IslandElement $showSessions 'Permission card session list button' -CenterAfterLayout
         $session = Wait-IslandValue 'the waiting session in the Island list' {
             Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
@@ -339,7 +345,7 @@ function Test-KeyboardPermissionDenial(
             throw
         }
         if ($hasListFrame) {
-            Write-Output "Waiting session list HWND height: $($listFrame.Bottom - $listFrame.Top)."
+            Write-Output "Waiting session list HWND size: $($listFrame.Right - $listFrame.Left)x$($listFrame.Bottom - $listFrame.Top)."
             Write-PermissionAccessibilityBounds $WindowHandle
         }
         $deny.SetFocus()

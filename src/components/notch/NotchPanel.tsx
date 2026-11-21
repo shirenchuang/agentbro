@@ -1554,9 +1554,12 @@ export function NotchPanel() {
   const hostUsesStableCanvas = !isPetMode && islandEnabled && effectivePanelState === 'collapsed'
   const windowsIsland = !isPetMode && isTauri() && isWindowsPlatform()
   // Keep WebView2's accessibility viewport steady as permission controls appear or disappear.
-  const holdWindowsViewportHeight = windowsIsland && islandEnabled && !layoutPreview
-  const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
-  const hostTargetHitboxHeight = holdWindowsViewportHeight
+  const holdWindowsViewport = windowsIsland && islandEnabled && !layoutPreview
+  const expandedHitboxWidth = expandedPanelContentWidth + shellSideExtension * 2 + NOTCH_HIT_SLOP_X_EXPANDED * 2
+  const hostTargetHitboxWidth = holdWindowsViewport
+    ? Math.max(expandedHitboxWidth, hitboxWidth)
+    : hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
+  const hostTargetHitboxHeight = holdWindowsViewport
     ? Math.max(stableHostHitboxHeight, hitboxHeight)
     : hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
@@ -1627,7 +1630,7 @@ export function NotchPanel() {
     width: hitboxWidth,
     height: hitboxHeight,
     anchorOffsetX: nativeHoverAnchorOffsetX,
-    passesOutside: windowsIsland && effectivePanelState !== 'collapsed' && hostHitboxSize.height > hitboxHeight,
+    passesOutside: windowsIsland && effectivePanelState !== 'collapsed' && hostIsLargerThanTarget,
   }
   const shellX = effectivePanelState === 'collapsed' || isDragging
     ? effectiveShellAnchorOffsetX

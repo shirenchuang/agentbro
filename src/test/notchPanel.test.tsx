@@ -477,18 +477,36 @@ describe('NotchPanel island shell', () => {
       const hostHeight = () => parseFloat(container.style.getPropertyValue('--notch-host-height'))
       const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
       const viewportHeight = hostHeight()
+      const viewportWidth = hostWidthVar()
       const waiting = session({
         phase: 'waiting_approval',
         pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
       })
-      act(() => useSessionStore.setState({ sessions: { [waiting.id]: waiting }, sessionList: [waiting] }))
-      const listHeight = hitboxHeight()
+      const overlay: OverlayItem = {
+        id: 'permission-s1',
+        sessionId: waiting.id,
+        type: 'permission',
+        data: { toolName: 'Bash', toolInput: 'echo fixture' },
+        createdAt: Date.now(),
+      }
+      act(() => useSessionStore.setState({
+        sessions: { [waiting.id]: waiting },
+        sessionList: [waiting],
+        activeOverlay: overlay,
+        overlayQueue: [overlay],
+      }))
+      expect(hitboxWidthVar()).toBe('656px')
+      expect(hostWidthVar()).toBe(viewportWidth)
       expect(hostHeight()).toBe(viewportHeight)
       await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
 
       tauriMocks.isCursorOverNotch.mockResolvedValue(true)
       await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(false))
-      fireEvent.mouseDown(screen.getByText('agentbro · Port dynamic island'), { button: 0 })
+      fireEvent.mouseDown(await screen.findByRole('button', { name: 'notch.showAllSessions' }))
+      const waitingSession = await screen.findByText('agentbro · Port dynamic island')
+      const listHeight = hitboxHeight()
+      expect(hitboxWidthVar()).toBe('686px')
+      fireEvent.mouseDown(waitingSession, { button: 0 })
       await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
 
       expect(hitboxHeight()).toBeGreaterThan(listHeight)
@@ -501,7 +519,9 @@ describe('NotchPanel island shell', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
       expect(useSessionStore.getState().panelState).toBe('expanded')
       expect(hostHeight()).toBe(viewportHeight)
-      expect(tauriMocks.resizeNotch.mock.calls.every(([, height]) => height === viewportHeight)).toBe(true)
+      expect(tauriMocks.resizeNotch.mock.calls.every(([width, height]) =>
+        `${width}px` === viewportWidth && height === viewportHeight
+      )).toBe(true)
     } finally {
       platform.mockRestore()
     }
