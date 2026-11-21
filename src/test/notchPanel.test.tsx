@@ -731,6 +731,70 @@ describe('NotchPanel island shell', () => {
     expect(panel).toHaveAttribute('data-dragging', 'false')
   })
 
+  it('lets pending Windows frame writes finish before native dragging without replaying the old position', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      const earlierResize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockReturnValueOnce(earlierResize.promise)
+      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary' })
+      mountIsland(null, { phase: 'idle' })
+      await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1))
+
+      await act(async () => { useSessionStore.getState().setPanelState('expanded') })
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+
+      const handle = screen.getByTestId('notch-drag-handle')
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+      await act(async () => {
+        fireEvent.pointerMove(handle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
+      })
+      expect(tauriMocks.startNotchDrag).not.toHaveBeenCalled()
+
+      await act(async () => { earlierResize.resolve({ anchorOffsetX: 0 }) })
+      expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1)
+      expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
+
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
+  it('cancels a Windows drag released before the pending frame write finishes', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      const resize = deferred<{ anchorOffsetX: number }>()
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.resizeNotch.mockReturnValueOnce(resize.promise)
+      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary' })
+      mountIsland(null, { phase: 'idle' })
+      await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1))
+
+      const handle = screen.getByTestId('notch-drag-handle')
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const beginDrag = () => {
+        fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+        fireEvent.pointerMove(handle, { pointerId: 7, pointerType: 'mouse', clientX: 118, clientY: 2 })
+      }
+      beginDrag()
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await act(async () => { resize.resolve({ anchorOffsetX: 0 }) })
+
+      expect(tauriMocks.startNotchDrag).not.toHaveBeenCalled()
+      expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+      expect(panel).toHaveAttribute('data-dragging', 'false')
+
+      beginDrag()
+      await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+      fireEvent.pointerUp(handle, { pointerId: 7 })
+      await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
   it('waits for the final drag offset before resizing the Island after release', async () => {
     const finish = deferred<number | null>()
     tauriMocks.isTauri.mockReturnValue(true)

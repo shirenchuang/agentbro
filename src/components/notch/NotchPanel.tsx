@@ -14,7 +14,7 @@ import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
-import { primaryModifierPressed } from '../../utils/platform'
+import { isWindowsPlatform, primaryModifierPressed } from '../../utils/platform'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
 import { UpdateBanner } from './UpdateBanner'
@@ -677,7 +677,7 @@ export function NotchPanel() {
     horizontalOffset: number
     displayId: string | undefined
   } | null>(null)
-  const inFlightNativeHostResizeKeysRef = useRef(new Set<string>())
+  const inFlightNativeHostResizesRef = useRef(new Map<string, Promise<void>>())
   const nativeHostResizeWaitersRef = useRef(new Map<string, Array<(anchorOffsetX: number) => void>>())
   const interactionLockUntilRef = useRef(0)
   const detailModeRef = useRef(false)
@@ -1661,6 +1661,7 @@ export function NotchPanel() {
     onComplete: (anchorOffsetX: number) => void,
     options?: { force?: boolean },
   ) {
+    if (isWindowsPlatform() && (activeDragRef.current || pendingDragEndRef.current)) return
     const key = nativeHostResizeKey(width, height, horizontalOffset, displayId)
     nativeHostResizeTargetRef.current = { key, width, height, horizontalOffset, displayId }
     if (!options?.force && lastNativeHostResizeKeyRef.current === key) {
@@ -1676,13 +1677,12 @@ export function NotchPanel() {
       waiters.set(key, [onComplete])
     }
 
-    const inFlightKeys = inFlightNativeHostResizeKeysRef.current
-    if (inFlightKeys.has(key)) return
-    inFlightKeys.add(key)
+    const inFlight = inFlightNativeHostResizesRef.current
+    if (inFlight.has(key)) return
 
-    resizeNotch(width, height, horizontalOffset, displayId)
+    const resize = resizeNotch(width, height, horizontalOffset, displayId)
       .then((result) => {
-        inFlightKeys.delete(key)
+        inFlight.delete(key)
         lastNativeHostResizeKeyRef.current = key
         const callbacks = waiters.get(key) ?? []
         waiters.delete(key)
@@ -1693,16 +1693,17 @@ export function NotchPanel() {
         }
         callbacks.forEach((callback) => callback(hostAnchorOffsetXRef.current))
         // An older request can finish after the current frame was applied.
-        if (target && !inFlightKeys.has(target.key)) {
+        if (target && !inFlight.has(target.key)) {
           requestResize(target.width, target.height, target.horizontalOffset, target.displayId, updateHostAnchorOffset)
         }
       })
       .catch(() => {
-        inFlightKeys.delete(key)
+        inFlight.delete(key)
         const callbacks = waiters.get(key) ?? []
         waiters.delete(key)
         callbacks.forEach((callback) => callback(hostAnchorOffsetXRef.current))
       })
+    inFlight.set(key, resize)
   }, [updateHostAnchorOffset])
 
   // Keep the native transparent host at a stable max canvas. macOS can briefly
@@ -1913,7 +1914,9 @@ export function NotchPanel() {
     const { pointerId, pointerType, currentTarget: captureTarget } = event
     const pendingEnd = pendingDragEndRef.current
     const start = async () => {
-      await Promise.all([pendingEnd, dragStopListenerReadyRef.current])
+      const pendingResizes = isWindowsPlatform() ? inFlightNativeHostResizesRef.current.values() : []
+      // An already-dispatched frame write can overwrite the position even after dragging starts.
+      await Promise.allSettled([pendingEnd, dragStopListenerReadyRef.current, ...pendingResizes])
       if (activeDragRef.current !== gesture) return null
       const { width, height } = hostHitboxSizeRef.current
       const { panelHorizontalOffset, displayMonitor } = useConfigStore.getState()
