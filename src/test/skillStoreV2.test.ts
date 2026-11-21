@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSkillStoreV2, filteredSkills } from '../stores/skillStoreV2'
 import type { AgentDetail, SkillSummary, SkillManagerOverview, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
   return {
@@ -296,6 +297,26 @@ describe('skillStoreV2 refresh', () => {
     await useSkillStoreV2.getState().loadOverview(true)
 
     expect(useSkillStoreV2.getState().unmanaged).toEqual([])
+  })
+
+  it('does not fetch inventory from a new runtime during an in-flight overview', async () => {
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+    let resolveOverview!: (overview: SkillManagerOverview) => void
+    const pendingOverview = new Promise<SkillManagerOverview>((resolve) => { resolveOverview = resolve })
+    vi.spyOn(skillApiV2, 'overview').mockReturnValue(pendingOverview)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const refresh = useSkillStoreV2.getState().loadOverview(true)
+
+    try {
+      selectEnvironment('new-runtime')
+      resolveOverview(makeOverview())
+      await refresh
+
+      expect(listUnmanaged).not.toHaveBeenCalled()
+      expect(useSkillStoreV2.getState().overview).toBeNull()
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
   })
 })
 

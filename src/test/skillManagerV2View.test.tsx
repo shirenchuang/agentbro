@@ -6439,8 +6439,45 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('npm uninstall -g @anthropic-ai/claude-code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText('Agent「Claude Code」已卸载，已清理 1 个 Skills')).toBeInTheDocument()
+  })
+
+  it('finishes an uninstall on the confirmed runtime without changing the newly selected host', async () => {
+    const localSkill = makeSharedUnmanaged('local-only', { agentId: 'claude-code' })
+    const remoteSkill = makeSharedUnmanaged('remote-only', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [localSkill] })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ hooksInstalled: true })])
+    let finishProgramUninstall!: () => void
+    const pendingProgramUninstall = new Promise<void>((resolve) => { finishProgramUninstall = resolve })
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockReturnValue(pendingProgramUninstall)
+    const deleteManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+    expect(uninstall).toHaveBeenCalledTimes(1)
+
+    const remoteAgent = makeSidebarAgent('claude-code', 'Remote Claude')
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-runtime', unmanaged: [remoteSkill], agents: [remoteAgent] })
+      finishProgramUninstall()
+    })
+
+    expect(uninstall).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(deleteManaged).toHaveBeenCalledExactlyOnceWith(agentDetail.skills.map((skill) => skill.id), LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(deleteUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', localSkill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstallHook).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).toHaveBeenCalledExactlyOnceWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(useSkillStoreV2.getState().agents).toEqual([remoteAgent])
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteSkill])
+    expect(screen.queryByText(/已卸载/)).not.toBeInTheDocument()
   })
 
   it('removes an uninstalled Agent from the installed sidebar and selects the next one', async () => {
@@ -6686,9 +6723,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(dialog).toHaveTextContent('1未管理 Skills')
     fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
 
-    await waitFor(() => expect(deleteManaged).toHaveBeenCalledWith(['target-aider']))
-    expect(deleteUnmanaged).toHaveBeenCalledWith('aider', 'unmanaged-aider')
-    expect(uninstallHook).toHaveBeenCalledWith('aider')
+    await waitFor(() => expect(deleteManaged).toHaveBeenCalledWith(['target-aider'], LOCAL_RUNTIME_ENVIRONMENT_ID))
+    expect(deleteUnmanaged).toHaveBeenCalledWith('aider', 'unmanaged-aider', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(uninstallHook).toHaveBeenCalledWith('aider', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(uninstall).not.toHaveBeenCalled()
     expect(await screen.findByText('Agent「Aider」已卸载，已清理 2 个 Skills')).toBeInTheDocument()
   })

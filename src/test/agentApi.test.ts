@@ -58,4 +58,33 @@ describe('agentApi seedAgentPrograms', () => {
 
     expect(invoke).toHaveBeenCalledWith('agent_install', { agentId: 'codex' })
   })
+
+  it('uses the confirmed runtime for uninstall IPC after the selection changes', async () => {
+    const { agentApi } = await import('../services/agentApi')
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+
+    try {
+      selectEnvironment('other-host')
+      await agentApi.uninstall('codex', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      await agentApi.uninstall('codex', 'confirmed-host')
+      await agentApi.uninstallHook('cursor', 'confirmed-host')
+      await skillApiV2.deleteSkillTargetDistributions(['target'], 'confirmed-host')
+      await skillApiV2.deleteUnmanagedAgentSkill('codex', 'unmanaged', 'confirmed-host')
+      await skillApiV2.listUnmanaged('confirmed-host')
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['agent_uninstall', { agentId: 'codex' }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'agent_uninstall', args: { agentId: 'codex' } }],
+        ['uninstall_remote_agent_hooks', { id: 'confirmed-host', agentId: 'cursor-cli' }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'delete_skill_target_distributions', args: { targetIds: ['target'] } }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'delete_unmanaged_agent_skill', args: { agentId: 'codex', unmanagedId: 'unmanaged' } }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'list_unmanaged_v2', args: {} }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
 })
