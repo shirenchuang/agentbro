@@ -520,7 +520,8 @@ function Get-IslandCenterX([IntPtr]$WindowHandle) {
 
 function Test-InstalledIslandDrag(
     [Windows.Automation.AutomationElement]$Island,
-    [IntPtr]$WindowHandle
+    [IntPtr]$WindowHandle,
+    [scriptblock]$FindSession
 ) {
     $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
     if ($dpi -eq 0) { throw 'Could not read the native Island DPI' }
@@ -605,6 +606,24 @@ function Test-InstalledIslandDrag(
         }
         Write-Output "Native Island remained at $released after release and further cursor movement."
     }
+
+    $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+        throw 'Could not move the cursor away from the Island after dragging'
+    }
+    $null = Wait-IslandValue 'the Island session list to collapse after dragging' {
+        -not (& $FindSession)
+    }
+    if ([Math]::Abs((Get-IslandCenterX $WindowHandle) - $released) -gt 2) {
+        throw "The Island lost its released center $released when the session list collapsed"
+    }
+
+    Move-ToIslandHoverPoint $WindowHandle $Island
+    $null = Wait-IslandValue 'the Island session list to reopen at the released position' $FindSession
+    if ([Math]::Abs((Get-IslandCenterX $WindowHandle) - $released) -gt 2) {
+        throw "The Island lost its released center $released when the session list reopened"
+    }
+    Write-Output "Native Island remained at $released through collapse and reopening of the session list."
 }
 
 function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
@@ -734,7 +753,7 @@ try {
             }
             throw
         }
-        Test-InstalledIslandDrag $island $islandWindow.Handle
+        Test-InstalledIslandDrag $island $islandWindow.Handle $findSession
     }
     Click-IslandElement -Description 'Island session' -FindElement $findSession
 
