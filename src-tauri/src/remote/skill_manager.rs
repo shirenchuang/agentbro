@@ -1385,6 +1385,93 @@ os.replace = _agentbro_fail_activation_and_rollback
     }
 
     #[test]
+    fn remote_codex_mcp_inventory_reads_toml_without_returning_secrets() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-codex-mcp-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let codex = home.join(".codex");
+        std::fs::create_dir_all(&codex).expect("test Codex home");
+        let config = r#"
+[mcp_servers."stdio.fixture"]
+command = "python3"
+args = ["-u", "fixture.py"]
+env_vars = ["FIXTURE_ENV", { name = "FIXTURE_TYPED_ENV", source = "local" }]
+
+[mcp_servers."stdio.fixture".env]
+API_TOKEN = "stdio-fixture-value"
+MODE = "fixture"
+
+[mcp_servers.http_fixture]
+url = "https://example.invalid/mcp?token=query-fixture-value"
+enabled = false
+bearer_token_env_var = "FIXTURE_BEARER"
+http_headers = { Authorization = "Bearer http-fixture-value", "X-Static" = "static-fixture-value" }
+env_http_headers = { "X-Context" = "FIXTURE_CONTEXT" }
+"#;
+        let path = codex.join("config.toml");
+        std::fs::write(&path, config).expect("Codex MCP fixture config");
+        let args = serde_json::json!({"agent": "codex"});
+        let has_toml = execute_rendered_script(
+            &home,
+            "try:\n    import tomllib\nexcept ImportError:\n    import tomli\n",
+        )
+        .status
+        .success();
+
+        if has_toml {
+            let inventory = run_script(&home, "list_mcp_inventory_cmd", args.clone());
+            let servers = inventory["servers"].as_array().expect("MCP servers");
+            let stdio = servers
+                .iter()
+                .find(|entry| entry["name"] == "stdio.fixture")
+                .expect("stdio server");
+            assert_eq!(stdio["transport"], "stdio");
+            assert_eq!(stdio["args"], serde_json::json!(["-u", "fixture.py"]));
+            let http = servers
+                .iter()
+                .find(|entry| entry["name"] == "http_fixture")
+                .expect("HTTP server");
+            assert_eq!(http["transport"], "http");
+            assert_eq!(http["enabled"], false);
+            assert_eq!(http["disabledByAgentbro"], false);
+            assert_eq!(http["url"], "https://example.invalid/mcp");
+            assert!(stdio["env"]
+                .as_array()
+                .expect("stdio environment")
+                .iter()
+                .any(|entry| entry["key"] == "FIXTURE_TYPED_ENV"
+                    && entry["secret"] == true
+                    && entry["value"].is_null()));
+            assert!(http["headers"]
+                .as_array()
+                .expect("HTTP headers")
+                .iter()
+                .any(|entry| entry["key"] == "X-Context"
+                    && entry["secret"] == true
+                    && entry["value"].is_null()));
+            assert!(!inventory.to_string().contains("fixture-value"));
+            assert_eq!(inventory["capabilities"]["editable"], false);
+
+            let malformed = "[mcp_servers.broken\ncommand = \"fixture-value\"\n";
+            std::fs::write(&path, malformed).expect("malformed test configuration");
+            let error = run_script_error(&home, "list_mcp_inventory_cmd", args);
+            assert!(error.contains("Fix the remote Codex MCP TOML"), "{error}");
+            assert!(!error.contains("fixture-value"));
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("malformed config"),
+                malformed
+            );
+            std::fs::write(&path, config).expect("restore test configuration");
+        } else {
+            let error = run_script_error(&home, "list_mcp_inventory_cmd", args);
+            assert!(error.contains("TOML"), "{error}");
+        }
+        assert_eq!(std::fs::read_to_string(path).expect("read config"), config);
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_mcp_mutations_reject_stale_revisions() {
         let home =
             std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
