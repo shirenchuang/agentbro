@@ -190,11 +190,48 @@ function Test-ExplorerReveal([Windows.Automation.AutomationElement]$Settings) {
         }
     }
     Invoke-NamedControl $reveal
-    $window = Wait-IslandValue 'Explorer to select the exact SQLite file' {
-        Find-ExplorerView $shell $dataFolder $database
+    try {
+        $window = Wait-IslandValue 'Explorer to select the exact SQLite file' {
+            Find-ExplorerView $shell $dataFolder $database
+        }
+        $window.Quit()
+        Write-Output 'The installed app selected the exact SQLite file in File Explorer.'
+    } catch {
+        Write-Output 'The installed action did not select the file. Testing the same path with the native Shell selection API.'
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class ExplorerSelectionControl {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHParseDisplayName(string name, IntPtr context,
+        out IntPtr item, uint attributes, IntPtr resultAttributes);
+
+    [DllImport("shell32.dll")]
+    private static extern int SHOpenFolderAndSelectItems(IntPtr item, uint count,
+        IntPtr children, uint flags);
+
+    public static void Reveal(string path) {
+        IntPtr item;
+        int result = SHParseDisplayName(path, IntPtr.Zero, out item, 0, IntPtr.Zero);
+        Marshal.ThrowExceptionForHR(result);
+        try {
+            Marshal.ThrowExceptionForHR(SHOpenFolderAndSelectItems(item, 0, IntPtr.Zero, 0));
+        } finally {
+            Marshal.FreeCoTaskMem(item);
+        }
     }
-    $window.Quit()
-    Write-Output 'The installed app selected the exact SQLite file in File Explorer.'
+}
+'@
+        [ExplorerSelectionControl]::Reveal($database)
+        $control = Wait-IslandValue 'the native Shell API to select the identical file' {
+            Find-ExplorerView $shell $dataFolder $database
+        }
+        Save-FailedRunnerDesktop 'agentbro-projects-sqlite-control.png'
+        $control.Quit()
+        Write-Output 'The Windows Shell API selected the exact SQLite file that the installed action had left unselected.'
+        throw
+    }
 }
 
 function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
