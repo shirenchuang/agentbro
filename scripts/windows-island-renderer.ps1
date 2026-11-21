@@ -135,9 +135,10 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
     if (!panel) return null;
     const bounds = ({ x, y, width, height }) => [x, y, width, height].map(Math.round);
     const markers = /^(Back to sessions|Show all \d+ sessions|Deny|Allow Once|Make agents easier to use)$|smoke\.txt/;
+    const labelFor = element => (element?.getAttribute('aria-label') || element?.textContent || '').trim().replace(/\s+/g, ' ');
     const controls = Array.from(panel.querySelectorAll('button, [role="button"]')).flatMap(button => {
-        const label = (button.getAttribute('aria-label') || button.textContent).trim().replace(/\s+/g, ' ');
-        if (!markers.test(label)) return [];
+        const label = labelFor(button);
+        if (!markers.test(label) && !button.matches('.hover-list__session-title')) return [];
         const rect = button.getBoundingClientRect();
         const center = [rect.x + rect.width / 2, rect.y + rect.height / 2];
         return [{
@@ -149,7 +150,8 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
     const visual = window.visualViewport;
     return {
         panel: panel.dataset.islandState, bounds: bounds(panel.getBoundingClientRect()), controls,
-        focused: document.hasFocus(), visibility: document.visibilityState, capturedAt: new Date().toISOString(),
+        focused: document.hasFocus(), activeControl: labelFor(document.activeElement?.closest('button, [role="button"]')),
+        visibility: document.visibilityState, capturedAt: new Date().toISOString(),
         viewport: [window.innerWidth, window.innerHeight], devicePixelRatio: window.devicePixelRatio,
         zoomed: Boolean(visual && (visual.scale !== 1 || visual.offsetLeft !== 0 || visual.offsetTop !== 0)),
     };
@@ -195,8 +197,11 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
             $timeout = [Threading.CancellationTokenSource]::new(12000)
             $tree = Invoke-IslandRendererRequest $socket $timeout.Token 'Accessibility.getFullAXTree' @{} 3
             $buttons = @($tree.nodes | Where-Object {
-                $_.role.value -eq 'button' -and
-                    $_.name.value -match '^(Back to sessions|Show all \d+ sessions|Deny|Allow Once|Make agents easier to use)$|smoke\.txt'
+                $label = $_.name.value
+                $_.role.value -eq 'button' -and (
+                    $label -match '^(Back to sessions|Show all \d+ sessions|Deny|Allow Once|Make agents easier to use)$|smoke\.txt' -or
+                    ($ProjectName -and $label -and $label.Contains($ProjectName))
+                )
             } | ForEach-Object { @{ label = $_.name.value; ignored = $_.ignored } })
             Write-Host "Island renderer accessibility at $([DateTimeOffset]::UtcNow.ToString('O')): $(ConvertTo-Json -InputObject $buttons -Compress)"
             Write-IslandProviderSnapshot $WindowHandle 'after Chromium accessibility'
