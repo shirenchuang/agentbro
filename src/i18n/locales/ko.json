@@ -699,6 +699,8 @@
   "skills": {
     "projectsTab": "프로젝트",
     "projectLock": {
+      "verify": "설치된 스킬 검증",
+      "verifying": "검증 중…",
       "selectAll": "복원 가능한 항목 모두 선택",
       "restoring": "복원 중…",
       "restore": "선택 항목 복원 ({{count}}개)",
@@ -707,6 +709,9 @@
       "restored": "복원됨",
       "status": {
         "existing": "이미 있음",
+        "verified": "잠금 파일과 일치",
+        "modified": "잠금 파일과 다름",
+        "unverified": "검증할 수 없음",
         "ready": "복원 가능",
         "legacy": "이전 해시 형식",
         "unsupported": "지원하지 않는 소스 또는 버전",

@@ -537,7 +537,7 @@ export interface ProjectLockedSkill {
   name: string
   source: string
   reference: string | null
-  status: 'existing' | 'ready' | 'legacy' | 'unsupported' | 'invalid'
+  status: 'existing' | 'ready' | 'legacy' | 'unsupported' | 'invalid' | 'verified' | 'modified' | 'unverified'
 }
 
 export interface ProjectSkillRestoreResult {
@@ -1519,6 +1519,10 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<ProjectSkillRestoreResult[]>('restore_project_skill_lock_v2', { projectId, revision, skillNames })
       : Promise.resolve([]),
+  verifyProjectSkillLock: (projectId: string, revision: string) =>
+    isTauriRuntime()
+      ? invoke<Record<string, ProjectLockedSkill['status']>>('verify_project_skill_lock_v2', { projectId, revision })
+      : Promise.resolve<Record<string, ProjectLockedSkill['status']>>({}),
   installCenterSkillsToProject: (projectId: string, agentId: string, skillIds: string[], requestedMode: 'link' | 'copy') =>
     isTauriRuntime()
       ? invoke<ProjectDetail>('install_center_skills_to_project_v2', { projectId, agentId, skillIds, requestedMode })

@@ -224,6 +224,39 @@ describe('ProjectManagementPage', () => {
     expect(screen.queryByRole('checkbox', { name: 'missing-skill' })).not.toBeInTheDocument()
   })
 
+  it('checks installed Skills against the current lock without making them restorable', async () => {
+    await i18n.changeLanguage('en')
+    const project = makeProject()
+    vi.mocked(skillApiV2.getProjectDetail).mockResolvedValue({
+      ...project,
+      skillLock: {
+        version: 2,
+        revision: 'verify-digest',
+        error: null,
+        skills: ['matching', 'edited', 'incomplete'].map((name) => ({
+          name, source: 'example/skills', reference: 'locked-commit', status: 'existing',
+        })),
+      },
+    })
+    const pending = deferred<Record<string, 'verified' | 'modified' | 'unverified'>>()
+    const verify = vi.spyOn(skillApiV2, 'verifyProjectSkillLock').mockReturnValue(pending.promise)
+    const restore = vi.spyOn(skillApiV2, 'restoreProjectSkillLock')
+    render(<ProjectManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Verify installed Skills' }))
+    expect(verify).toHaveBeenCalledWith(project.id, 'verify-digest')
+    expect(screen.getByRole('button', { name: 'Verifying…' })).toBeDisabled()
+    await act(async () => {
+      pending.resolve({ matching: 'verified', edited: 'modified', incomplete: 'unverified' })
+    })
+
+    expect(screen.getByText('Matches lock file')).toBeInTheDocument()
+    expect(screen.getByText('Differs from lock file')).toBeInTheDocument()
+    expect(screen.getByText('Unable to verify')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Restore selected/ })).not.toBeInTheDocument()
+    expect(restore).not.toHaveBeenCalled()
+  })
+
   it('keeps the selected project detail when an earlier selection finishes late', async () => {
     const first = makeProject()
     const second = alternateProject()

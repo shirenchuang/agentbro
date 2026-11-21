@@ -642,6 +642,18 @@ pub async fn restore_project_skill_lock_v2(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn verify_project_skill_lock_v2(
+    project_id: String,
+    revision: String,
+) -> Result<std::collections::BTreeMap<String, ProjectLockedSkillStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        svc()?.verify_project_skill_lock(&project_id, &revision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command(async)]
 pub fn install_center_skills_to_project_v2(
     project_id: String,
