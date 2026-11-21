@@ -457,6 +457,151 @@ os.replace = _agentbro_fail_link_activation
     }
 
     #[test]
+    fn remote_direct_pack_move_and_revoke_keep_unrelated_targets_and_claims() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-direct-pack-move-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let center = home.join(".agentbro/skills");
+        let agent = home.join(".codex/skills");
+        for skill in ["selected", "already-present", "absent-peer"] {
+            write_remote_skill(&center.join(skill), skill, "center\n");
+        }
+        for skill in ["selected", "already-present"] {
+            write_remote_skill(&agent.join(skill), skill, "direct copy\n");
+        }
+        for (pack, skills) in [
+            ("team", vec!["already-present", "absent-peer"]),
+            ("partner", vec!["selected"]),
+        ] {
+            run_script(
+                &home,
+                "execute_upsert_skill_pack",
+                serde_json::json!({"pack": {"id": pack, "skillIds": skills}}),
+            );
+        }
+
+        let args = serde_json::json!({"targetId": "codex::selected", "packId": "team"});
+        let preview = run_script(&home, "preview_move_direct_skill_to_pack", args.clone());
+        assert_eq!(preview["otherMemberCount"], 2);
+        let moved = run_script(&home, "execute_move_direct_skill_to_pack", args);
+        assert!(
+            !agent.join("absent-peer").exists(),
+            "moving one Skill must not install the rest of the Pack"
+        );
+        assert_eq!(preview["distribution"]["changes"], serde_json::json!([]));
+        assert_eq!(moved["distribution"]["changes"], serde_json::json!([]));
+        let detail = run_script(
+            &home,
+            "get_agent_detail_v2",
+            serde_json::json!({"agentId": "codex"}),
+        );
+        let targets = detail["skills"].as_array().expect("Agent targets");
+        let selected = targets
+            .iter()
+            .find(|target| target["skillId"] == "selected")
+            .expect("selected target");
+        let other = targets
+            .iter()
+            .find(|target| target["skillId"] == "already-present")
+            .expect("unrelated target");
+        assert_eq!(selected["claims"][0]["packId"], "team");
+        assert_eq!(other["claims"][0]["claimType"], "direct");
+        assert_eq!(detail["appliedPacks"][0]["packId"], "team");
+
+        let another_move = serde_json::json!({"targetId": "codex::selected", "packId": "partner"});
+        let error = run_script_error(&home, "execute_move_direct_skill_to_pack", another_move);
+        assert!(error.contains("does not have a direct Skill distribution"));
+        let member_args = serde_json::json!({"packId": "team", "skillId": "already-present", "alsoRemoveTargets": true});
+        let member_preview =
+            run_script(&home, "preview_remove_skill_from_pack", member_args.clone());
+        assert_eq!(member_preview["affectedTargets"], serde_json::json!([]));
+        run_script(&home, "execute_remove_skill_from_pack", member_args);
+        assert!(agent.join("already-present/SKILL.md").is_file());
+        std::fs::write(
+            agent.join("selected/SKILL.md"),
+            "---\nname: selected\n---\ncenter\n",
+        )
+        .expect("make the selected target reusable");
+        run_script(
+            &home,
+            "execute_apply_skill_pack",
+            serde_json::json!({"packId": "partner", "targetAgents": ["codex"], "requestedMode": "copy"}),
+        );
+        let revoke_args = serde_json::json!({"packId": "team", "agentId": "codex"});
+        let revoke_preview = run_script(
+            &home,
+            "preview_remove_skill_pack_from_agent",
+            revoke_args.clone(),
+        );
+        assert_eq!(revoke_preview["willRemoveTargets"], 0);
+        assert_eq!(revoke_preview["willPreserveTargets"], 1);
+        let revoked = run_script(&home, "execute_remove_skill_pack_from_agent", revoke_args);
+        assert_eq!(revoked["removedClaims"], 1);
+        assert_eq!(revoked["preservedTargets"], 1);
+        assert!(agent.join("selected/SKILL.md").is_file());
+        assert!(agent.join("already-present/SKILL.md").is_file());
+        let detail = run_script(
+            &home,
+            "get_agent_detail_v2",
+            serde_json::json!({"agentId": "codex"}),
+        );
+        let selected = detail["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|target| target["skillId"] == "selected")
+            .expect("preserved target");
+        assert_eq!(selected["claims"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["claims"][0]["packId"], "partner");
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_direct_move_supports_the_builtin_pack_without_touching_other_skills() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-default-pack-move-{}",
+            uuid::Uuid::new_v4()
+        ));
+        for skill in ["selected", "unrelated"] {
+            write_remote_skill(
+                &home.join(".agentbro/skills").join(skill),
+                skill,
+                "center\n",
+            );
+            write_remote_skill(&home.join(".codex/skills").join(skill), skill, "direct\n");
+        }
+        let args = serde_json::json!({"targetId": "codex::selected", "packId": "default"});
+        let moved = run_script(&home, "execute_move_direct_skill_to_pack", args);
+        assert_eq!(moved["willAddToPack"], false);
+        let detail = run_script(
+            &home,
+            "get_agent_detail_v2",
+            serde_json::json!({"agentId": "codex"}),
+        );
+        let target = detail["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|target| target["skillId"] == "selected")
+            .expect("moved target");
+        assert_eq!(target["claims"][0]["packId"], "default");
+        let revoked = run_script(
+            &home,
+            "execute_remove_skill_pack_from_agent",
+            serde_json::json!({"packId": "default", "agentId": "codex"}),
+        );
+        assert_eq!(revoked["removedTargets"], 1);
+        assert!(!home.join(".codex/skills/selected").exists());
+        assert!(home.join(".codex/skills/unrelated/SKILL.md").is_file());
+        let state = std::fs::read_to_string(home.join(".agentbro/skill-manager-remote.json"))
+            .expect("read persisted state");
+        let state: serde_json::Value = serde_json::from_str(&state).expect("parse persisted state");
+        assert!(state["packs"].get("default").is_none());
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_batch_delete_and_composite_refresh_each_build_one_inventory() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-skill-manager-fast-delete-test-{}",
