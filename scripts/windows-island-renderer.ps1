@@ -47,14 +47,19 @@ function Write-IslandRendererState([int]$Port) {
 })()
 '@
     $targets = Invoke-RestMethod "http://127.0.0.1:$Port/json/list" -UseBasicParsing -TimeoutSec 3
+    $targetNumber = 0
     foreach ($target in $targets) {
         if ($target.type -ne 'page' -or -not $target.webSocketDebuggerUrl) { continue }
         $endpoint = [uri]$target.webSocketDebuggerUrl
         if (-not $endpoint.IsLoopback -or $endpoint.Port -ne $Port) { continue }
+        $targetNumber += 1
         $socket = [Net.WebSockets.ClientWebSocket]::new()
-        $timeout = [Threading.CancellationTokenSource]::new(5000)
+        $timeout = [Threading.CancellationTokenSource]::new(12000)
+        $stage = 'connect'
+        $state = $null
         try {
             $null = $socket.ConnectAsync($endpoint, $timeout.Token).GetAwaiter().GetResult()
+            $stage = 'read DOM'
             $evaluated = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
                 expression = $expression
                 returnByValue = $true
@@ -64,6 +69,7 @@ function Write-IslandRendererState([int]$Port) {
             Write-Host "Island renderer DOM at $([DateTimeOffset]::UtcNow.ToString('O')): $($state | ConvertTo-Json -Depth 5 -Compress)"
 
             # Querying Chromium's accessibility tree can refresh it. Collect the DOM and Windows samples first.
+            $stage = 'read accessibility'
             $tree = Invoke-IslandRendererRequest $socket $timeout.Token 'Accessibility.getFullAXTree' @{}
             $buttons = @($tree.nodes | Where-Object {
                 $_.role.value -eq 'button' -and
@@ -71,6 +77,9 @@ function Write-IslandRendererState([int]$Port) {
             } | ForEach-Object { @{ label = $_.name.value; ignored = $_.ignored } })
             Write-Host "Island renderer accessibility at $([DateTimeOffset]::UtcNow.ToString('O')): $(ConvertTo-Json -InputObject $buttons -Compress)"
             return
+        } catch {
+            Write-Host "Could not $stage for WebView2 page $($targetNumber): $_"
+            if ($state) { return }
         } finally {
             $timeout.Dispose()
             $socket.Dispose()
