@@ -180,7 +180,7 @@ impl Db {
         }
         // Migrate from old flat location (~/.agentbro/skill-manager.db)
         let old_db = crate::data_dir::agentbro_home().join("skill-manager.db");
-        crate::data_dir::migrate_sqlite(&old_db, path);
+        crate::data_dir::migrate_sqlite(&old_db, path).map_err(|error| format!("{error:#}"))?;
         Self::open_at(path)
     }
 

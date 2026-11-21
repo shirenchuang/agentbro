@@ -1,6 +1,7 @@
 use super::models::{
     ProjectLockedSkill, ProjectLockedSkillStatus, ProjectSkillLock, ProjectSkillRestoreResult,
 };
+use crate::data_dir::rename_path_if_absent;
 use crate::skills::installer::{self, TempInstallDir};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -492,7 +493,7 @@ fn install_verified_skill(
     }
     lock_at_revision(root, revision)?;
     let destination = checked_destination(root, true)?;
-    publish_new_directory(&staged, &destination.join(name))
+    rename_path_if_absent(&staged, &destination.join(name))
         .map_err(|error| format!("Could not install the missing Skill: {error}"))
 }
 
@@ -615,56 +616,6 @@ fn add_file_to_hash(hash: &mut Sha256, path: &str, source: &Path) -> Result<(), 
         return Err("A Skill file changed while it was being verified".to_string());
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn publish_new_directory(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let source = CString::new(source.as_os_str().as_bytes())?;
-    let target = CString::new(target.as_os_str().as_bytes())?;
-    #[cfg(target_os = "macos")]
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            target.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let result = -1;
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(windows)]
-fn publish_new_directory(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileW;
-
-    let source: Vec<_> = source.as_os_str().encode_wide().chain([0]).collect();
-    let target: Vec<_> = target.as_os_str().encode_wide().chain([0]).collect();
-    if unsafe { MoveFileW(source.as_ptr(), target.as_ptr()) } == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -919,7 +870,7 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::create_dir(&occupied).unwrap();
         fs::write(source.join("SKILL.md"), "from archive").unwrap();
-        assert!(publish_new_directory(&source, &occupied).is_err());
+        assert!(rename_path_if_absent(&source, &occupied).is_err());
         assert!(source.join("SKILL.md").is_file());
         assert!(!occupied.join("SKILL.md").exists());
     }
