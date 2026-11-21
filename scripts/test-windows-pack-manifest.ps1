@@ -49,9 +49,17 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
         }
     }
     $value = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
-    $value.SetValue($Path)
-    if ($value.Current.Value -cne $Path) {
-        throw "The $Action file name control did not accept the requested path"
+    if ($Action -eq 'Save') {
+        # Setting ValuePattern alone can leave the default filename selected at submission.
+        Add-Type -AssemblyName System.Windows.Forms
+        Set-Clipboard -Value $Path
+        $fileName.SetFocus()
+        [Windows.Forms.SendKeys]::SendWait('^a^v')
+    } else {
+        $value.SetValue($Path)
+    }
+    $null = Wait-IslandValue "the entered $Action path" {
+        $value.Current.Value -ceq $Path
     }
     $submit = Wait-IslandValue "the enabled $Action button" {
         $button = Find-PackControl $dialog $Action
@@ -113,10 +121,7 @@ function Test-InstalledPackManifest(
     if (-not (Test-Path -LiteralPath $ExportPath -PathType Leaf)) {
         $fixtureRoot = Split-Path (Split-Path $ExportPath)
         $savedCandidates = Get-ChildItem -LiteralPath $fixtureRoot -Filter '*.agentbro-pack.json*' -File -Recurse
-        $documents = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
-        $defaultPath = Join-Path $documents 'skill-pack.agentbro-pack.json'
         Write-Output "Files in the fixture: $($savedCandidates.FullName -join ', ')"
-        Write-Output "Default file in Documents exists: $(Test-Path -LiteralPath $defaultPath -PathType Leaf)"
         throw 'The export reported success but the file was absent from the requested path'
     }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
