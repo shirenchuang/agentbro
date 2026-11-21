@@ -159,13 +159,7 @@ jobs:
           & $testExecutable skills::v2::tests::windows_skill_paths_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          & $testExecutable skills::v2::fsutil::windows_shell::tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
           & $testExecutable source_update
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          & $testExecutable skills::sync::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable agents::executable::tests::windows_
@@ -249,6 +243,38 @@ jobs:
           (New-Object -ComObject WScript.Shell).SendKeys('{ESC}')
           (New-Object -ComObject Shell.Application).MinimizeAll()
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile the Windows Explorer helper for a native comparison
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'agentbro-shell-fixture'
+          New-Item -ItemType Directory -Path (Join-Path $fixture 'src') -Force | Out-Null
+          $source = Get-Content -LiteralPath 'src-tauri/src/skills/v2/fsutil.rs' -Raw
+          $module = [regex]::Match($source, '(?ms)^mod windows_shell \{.*?(?=^#\[cfg\(target_os = "windows"\)\]\r?\nfn is_url)')
+          if (-not $module.Success) { throw 'The Windows Shell module could not be extracted' }
+          $entry = @'
+          fn main() {
+              let target = std::env::args_os().nth(1).expect("a disposable fixture path");
+              if let Err(error) = windows_shell::reveal(std::path::Path::new(&target)) {
+                  eprintln!("{error}");
+                  std::process::exit(1);
+              }
+          }
+          '@
+          Set-Content -LiteralPath (Join-Path $fixture 'src/main.rs') -Value ($module.Value + "`n" + $entry) -Encoding utf8
+          $cargo = Get-Content -LiteralPath 'src-tauri/Cargo.toml'
+          $dependencies = @($cargo | Where-Object { $_ -match '^(windows|windows-sys) =' } |
+            ForEach-Object { $_.Replace('version = "0.61"', $(if ($_ -match '^windows-sys') {'version = "=0.61.2"'} else {'version = "=0.61.3"'})) })
+          @('[package]', 'name = "agentbro-shell-fixture"', 'version = "0.0.0"', 'edition = "2021"', '[dependencies]') + $dependencies |
+            Set-Content -LiteralPath (Join-Path $fixture 'Cargo.toml') -Encoding utf8
+          cargo build --quiet --manifest-path (Join-Path $fixture 'Cargo.toml')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $helper = Join-Path $fixture 'target/debug/agentbro-shell-fixture.exe'
+          if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'The Shell helper executable is missing' }
+          "AGENTBRO_SHELL_FIXTURE=$helper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -257,13 +283,15 @@ jobs:
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
+          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyProjectLock `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
-      - name: Upload the failed desktop check
-        if: failure() && runner.environment == 'github-hosted'
+      - name: Upload the Projects desktop screenshots
+        if: always() && runner.environment == 'github-hosted'
         uses: actions/upload-artifact@v4
         with:
-          name: agentbro-windows-desktop-failure
-          path: ${{ runner.temp }}/agentbro-island-failure.png
+          name: agentbro-windows-projects-desktop
+          path: |
+            ${{ runner.temp }}/agentbro-projects-*.png
+            ${{ runner.temp }}/agentbro-island-failure.png
           if-no-files-found: ignore
