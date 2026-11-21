@@ -1,14 +1,17 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpManagementTab } from '../components/skills-v2/McpManagementTab'
 import i18n from '../i18n'
+import { useRuntimeEnvironmentStore } from '../stores/runtimeEnvironmentStore'
+import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import {
   skillApiV2,
   type AgentDetail,
   type McpInspectionReport,
   type McpInventory,
   type McpServerEntry,
+  type McpValidationResultV2,
 } from '../services/skillApiV2'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
@@ -196,6 +199,54 @@ describe('McpManagementTab', () => {
     ))
     expect(await screen.findByText('已保存 MCP「context7」')).toBeInTheDocument()
   })
+
+  it.each(['runtime', 'runtime and back', 'agent and back', 'runtime before validation'])(
+    'cancels saving when the selection changes: %s',
+    async (change) => {
+      const runtime = useRuntimeEnvironmentStore.getState()
+      const skill = useSkillStoreV2.getState()
+      let finishValidation!: (result: McpValidationResultV2) => void
+      const validation = new Promise<McpValidationResultV2>((resolve) => {
+        finishValidation = resolve
+      })
+      vi.spyOn(skillApiV2, 'listMcpInventory').mockResolvedValue(inventory())
+      const validate = vi.spyOn(skillApiV2, 'validateMcpServerDraft').mockReturnValue(validation)
+      const save = vi.spyOn(skillApiV2, 'saveMcpServer').mockResolvedValue(inventory())
+
+      try {
+        const { unmount } = render(<McpManagementTab detail={detail} />)
+        fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+        if (change === 'runtime before validation') runtime.selectEnvironment('remote-test')
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        if (change === 'runtime before validation') {
+          expect(validate).not.toHaveBeenCalled()
+          expect(save).not.toHaveBeenCalled()
+          return
+        }
+        expect(validate).toHaveBeenCalledOnce()
+
+        if (change === 'agent and back') {
+          useSkillStoreV2.setState({ selectedAgentId: 'claude-code', agentSelectionRevision: skill.agentSelectionRevision + 1 })
+          useSkillStoreV2.setState({ selectedAgentId: skill.selectedAgentId, agentSelectionRevision: skill.agentSelectionRevision + 2 })
+        } else {
+          runtime.selectEnvironment('remote-test')
+          if (change === 'runtime and back') runtime.selectEnvironment(runtime.selectedEnvironmentId)
+        }
+        unmount()
+        await act(async () => { finishValidation({ valid: true, message: 'ok', warnings: [] }) })
+        expect(save).not.toHaveBeenCalled()
+      } finally {
+        useRuntimeEnvironmentStore.setState({
+          selectedEnvironmentId: runtime.selectedEnvironmentId,
+          selectionRevision: runtime.selectionRevision,
+        })
+        useSkillStoreV2.setState({
+          selectedAgentId: skill.selectedAgentId,
+          agentSelectionRevision: skill.agentSelectionRevision,
+        })
+      }
+    },
+  )
 
   it('adds HTTP servers and supports test, toggle, and confirmed deletion', async () => {
     const empty = inventory([])
