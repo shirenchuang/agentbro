@@ -53,12 +53,19 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
         # Setting ValuePattern alone can leave the default filename selected at submission.
         $fileName.SetFocus()
         $null = Wait-IslandValue 'keyboard focus on the Save field' { $fileName.Current.HasKeyboardFocus }
+        $value.SetValue('')
         [AgentBroSmokeInput]::ReplaceText($Path)
     } else {
         $value.SetValue($Path)
     }
-    $null = Wait-IslandValue "the entered $Action path" {
-        $value.Current.Value -ceq $Path
+    try {
+        $null = Wait-IslandValue "the entered $Action path" {
+            $value.Current.Value -ceq $Path
+        }
+    } catch {
+        Write-Output "Expected $Action path: [$Path]"
+        Write-Output "File name control value: [$($value.Current.Value)]"
+        throw
     }
     $submit = Wait-IslandValue "the enabled $Action button" {
         $button = Find-PackControl $dialog $Action
