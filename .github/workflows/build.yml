@@ -18,6 +18,10 @@ on:
           - windows-latest
           - windows-2022
           - windows-11-arm
+      windows_verify_qwenwork:
+        description: Exercise the installed Island with live updates to QwenWork test databases
+        type: boolean
+        default: false
       windows_verify_pack_manifest:
         description: Exercise Skill Pack manifests through the native Open and Save dialogs
         type: boolean
@@ -280,10 +284,17 @@ jobs:
           (New-Object -ComObject WScript.Shell).SendKeys('{ESC}')
           (New-Object -ComObject Shell.Application).MinimizeAll()
 
+      - name: Set up Python for the QwenWork fixture
+        if: inputs.windows_verify_qwenwork
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
         env:
+          VERIFY_QWENWORK: ${{ inputs.windows_verify_qwenwork }}
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
@@ -294,6 +305,7 @@ jobs:
               throw 'Windows NSIS installer was not found in the build artifact'
           }
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
+              -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
               -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
               -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
               -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `

@@ -10,6 +10,7 @@ param(
     [string]$PackImportPath,
     [string]$PackExportPath,
     [switch]$TracePermissionUi,
+    [switch]$VerifyQwenWork,
     [switch]$VerifyDrag
 )
 
@@ -507,6 +508,62 @@ function Test-InstalledIslandDrag(
     }
 }
 
+function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
+    $root = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.qwenworkcn'
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or (Test-Path -LiteralPath $root)) {
+        throw 'The QwenWork fixture requires an isolated hosted runner with no existing QwenWork profile'
+    }
+    $null = New-Item -Path $root -ItemType Directory
+    $fixture = Join-Path $PSScriptRoot 'windows-qwenwork-fixture.py'
+    try {
+        $fixtureOutput = & python $fixture $root seed
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the QwenWork fixture databases' }
+        $labels = $fixtureOutput | ConvertFrom-Json
+        $null = Wait-IslandValue 'both live QwenWork tasks among completed history' {
+            $waiting = Find-IslandButton $Island { param($Name) $Name.Contains($labels.waiting) }
+            $flash = Find-IslandButton $Island {
+                param($Name)
+                $Name.Contains($labels.flashTitle) -and $Name.Contains($labels.running)
+            }
+            $waiting -and $flash
+        }
+        Write-Output 'The installed Island rendered the waiting desktop task and running Flash task amid 70 newer completed tasks in each database.'
+
+        & python $fixture $root resume
+        if ($LASTEXITCODE -ne 0) { throw 'Could not resume the waiting QwenWork fixture' }
+        $null = Wait-IslandValue 'the waiting QwenWork task to resume in the installed Island' {
+            Find-IslandButton $Island {
+                param($Name)
+                $Name.Contains($labels.agent) -and $Name.Contains($labels.running) -and
+                    -not $Name.Contains($labels.flashTitle)
+            }
+        }
+        Write-Output 'The installed Island changed the desktop task from waiting to running after the database update.'
+    } catch {
+        try {
+            Save-FailedRunnerDesktop
+            Write-Output 'Island controls before removing the QwenWork databases:'
+            $Island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Select-Object -First 35 -ExpandProperty Current |
+                Select-Object Name, ClassName, IsOffscreen |
+                ConvertTo-Json -Depth 3 -Compress
+        } catch {
+            Write-Output "Could not inspect the QwenWork fixture on the Island: $_"
+        }
+        throw
+    } finally {
+        $null = Wait-IslandValue 'the QwenWork fixture files to be released and removed' {
+            if (Test-Path -LiteralPath $root) {
+                Remove-Item -LiteralPath $root -Recurse -ErrorAction SilentlyContinue
+            }
+            -not (Test-Path -LiteralPath $root)
+        }
+    }
+    $null = Wait-IslandValue 'the removed QwenWork fixture to leave the Island' {
+        -not (Find-IslandButton $Island { param($Name) $Name.Contains($labels.agent) })
+    }
+}
+
 function Save-RunnerDesktop([string]$Path) {
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -529,7 +586,8 @@ function Save-PermissionFrame([Diagnostics.Stopwatch]$Clock, [int]$Attempt, [str
 
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
-    Save-RunnerDesktop (Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png')
+    $path = Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png'
+    if (-not (Test-Path -LiteralPath $path)) { Save-RunnerDesktop $path }
 }
 
 $previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))
@@ -540,6 +598,17 @@ try {
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
     Move-ToElement $island
+    if ($VerifyQwenWork) {
+        Test-InstalledQwenWork $island
+        $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+        if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+            throw 'Could not move the cursor away from the Island after the QwenWork fixture'
+        }
+        Start-Sleep -Milliseconds 250
+        $islandWindow = Wait-IslandValue 'the visible Island after the QwenWork fixture' { Find-VisibleIsland }
+        $island = $islandWindow.Element
+        Move-ToElement $island
+    }
 
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
