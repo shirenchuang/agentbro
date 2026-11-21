@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$Installer,
     [switch]$VerifyIsland,
+    [switch]$VerifyQwenWork,
     [switch]$VerifyPackManifest,
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
@@ -268,6 +269,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             $start.ArgumentList.Add($argument)
         }
     }
+    if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     $start.UseShellExecute = $false
@@ -351,7 +353,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyDrag) {
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyDrag -or $VerifyQwenWork) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
