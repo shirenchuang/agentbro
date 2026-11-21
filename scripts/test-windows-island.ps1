@@ -3,6 +3,10 @@ param(
     [int]$AppProcessId,
     [Parameter(Mandatory)]
     [string]$ProjectName,
+    [Parameter(Mandatory)]
+    [string]$SessionId,
+    [Parameter(Mandatory)]
+    [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath
 )
@@ -87,6 +91,11 @@ public static class AgentBroSmokeInput {
         SendMouseButton(LeftUp);
     }
 
+    public static void PressSpace() {
+        const ushort Space = 0x20;
+        InjectInputs(new[] { KeyboardEvent(Space, 0, 0), KeyboardEvent(Space, 0, KeyUp) });
+    }
+
     public static void ReplaceText(string text) {
         var inputs = new List<Input>(4 + text.Length * 2);
         inputs.Add(KeyboardEvent(Control, 0, 0));
@@ -162,6 +171,85 @@ function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
     }
 }
 
+function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptblock]$MatchesName) {
+    $buttons = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+    foreach ($button in $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $buttons)) {
+        $state = $button.Current
+        if (-not $state.IsOffscreen -and (& $MatchesName ([string]$state.Name))) { return $button }
+    }
+}
+
+function Click-IslandElement([Windows.Automation.AutomationElement]$Element, [string]$Description) {
+    $point = Wait-IslandValue "a clickable point on $Description" {
+        $candidate = [Windows.Point]::new(0, 0)
+        if ($Element.TryGetClickablePoint([ref]$candidate)) { $candidate }
+    }
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
+        throw "Could not move the Windows cursor onto $Description"
+    }
+    Start-Sleep -Milliseconds 250
+    $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
+    $nativeOwner = [AgentBroSmokeInput]::ProcessAtCursor()
+    $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
+    Write-Output "$Description at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
+    if ($nativeOwner -ne $AppProcessId) {
+        throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
+    }
+    [AgentBroSmokeInput]::Click()
+}
+
+function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Island) {
+    $connection = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
+        $stream = $connection.GetStream()
+        $event = @{
+            agent = 'claude-code'
+            event = 'PermissionRequest'
+            session_id = $SessionId
+            cwd = $Workspace
+            tool_name = 'Bash'
+            tool_use_id = 'windows-smoke-keyboard-denial'
+            tool_input = @{ command = 'echo AgentBro Windows permission fixture' }
+        }
+        $line = ($event | ConvertTo-Json -Compress) + "`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $reader = [System.IO.StreamReader]::new($stream)
+        $reply = $reader.ReadLineAsync()
+
+        $showSessions = Wait-IslandValue 'the permission card and its session list button' {
+            Find-IslandButton $Island { param($Name) $Name -eq 'Make agents easier to use' }
+        }
+        Click-IslandElement $showSessions 'Permission card session list button'
+        $session = Wait-IslandValue 'the waiting session in the Island list' {
+            Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
+        }
+        Click-IslandElement $session 'Island session with a pending permission'
+
+        $deny = Wait-IslandValue 'Deny in the session detail' {
+            if (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) {
+                Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+            }
+        }
+        $deny.SetFocus()
+        $null = Wait-IslandValue 'native keyboard focus on detail Deny' { $deny.Current.HasKeyboardFocus }
+        if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
+        [AgentBroSmokeInput]::PressSpace()
+        if (-not $reply.Wait(8000)) { throw 'The Hook did not receive a reply after keyboard denial in the detail view' }
+        $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($decision.decision -ne 'deny') { throw "Unexpected Hook permission decision: $($decision.decision)" }
+        $null = Wait-IslandValue 'the resolved permission in the detail' {
+            (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) -and
+                -not (Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
+        }
+        Write-Output 'Windows Island accepted Space on the detail Deny button and the waiting Hook received deny.'
+    } finally {
+        $connection.Dispose()
+    }
+}
+
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -185,45 +273,20 @@ try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
 
-    $buttonCondition = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
-        foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
-            $state = $button.Current
-            $name = [string]$state.Name
-            if (-not $state.IsOffscreen -and $name.Contains($ProjectName) -and $name.Contains('smoke.txt')) {
-                return $button
-            }
-        }
+        Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
     }
-    $point = Wait-IslandValue 'a clickable point on the fixture session' {
-        $candidate = [Windows.Point]::new(0, 0)
-        if ($session.TryGetClickablePoint([ref]$candidate)) { $candidate }
-    }
-    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
-        throw 'Could not move the Windows cursor onto the session'
-    }
-    Start-Sleep -Milliseconds 250
-    $underCursor = [Windows.Automation.AutomationElement]::FromPoint($point)
-    $nativeOwner = [AgentBroSmokeInput]::ProcessAtCursor()
-    $owner = Get-Process -Id $nativeOwner -ErrorAction SilentlyContinue
-    Write-Output "Island session at $($point.X), $($point.Y). Hit: $($underCursor.Current.Name). Native owner: $($owner.ProcessName) ($nativeOwner)."
-    if ($nativeOwner -ne $AppProcessId) {
-        throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
-    }
-    [AgentBroSmokeInput]::Click()
+    Click-IslandElement $session 'Island session'
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
-    $backName = [Windows.Automation.PropertyCondition]::new(
-        [Windows.Automation.AutomationElement]::NameProperty, 'Back to sessions')
-    $backButtonCondition = [Windows.Automation.AndCondition]::new($backName, $buttonCondition)
     $null = Wait-IslandValue 'the clicked session in the detail view' {
         $title = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $titleName)
-        $back = $island.FindFirst([Windows.Automation.TreeScope]::Descendants, $backButtonCondition)
-        $title -and $back -and -not $title.Current.IsOffscreen -and -not $back.Current.IsOffscreen
+        $title -and -not $title.Current.IsOffscreen -and
+            (Find-IslandButton $island { param($Name) $Name -eq 'Back to sessions' })
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
+    Test-KeyboardPermissionDenial $island
     if ($PackImportPath) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
