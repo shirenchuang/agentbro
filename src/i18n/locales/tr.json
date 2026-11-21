@@ -1316,6 +1316,8 @@
       "skip": "Bu hedefi atla"
     },
     "packAutoSyncTitle": "Skill paketi eşitleme",
+    "revealSqlite": "SQLite dosyasını dosya yöneticisinde göster",
+    "sqliteRevealed": "SQLite dosyası dosya yöneticisinde gösterildi",
     "packAutoSyncLabel": "Skill paketi güncellemelerini uygulanmış Agentlara otomatik eşitle",
     "packAutoSyncHelp": "Kapalıyken paket sayfaları eşitlenmemiş değişiklikleri gösterir ve elle eşitleme düğmesi sunar.",
     "packSyncFailedNotice": "{{count}} Agent eşitlenemedi. Durumu kontrol edip tekrar deneyebilirsiniz.",

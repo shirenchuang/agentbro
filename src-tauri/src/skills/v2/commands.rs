@@ -10,7 +10,7 @@ use crate::skills::v2::service::{
     AdoptBatchItem, AdoptBatchResult, ClaimOrigin, DeleteSkillTargetDistributionsResult,
     DeleteUnmanagedAgentSkillsResult, Service, UpsertPackInput,
 };
-use crate::skills::v2::{diagnosis, snapshot};
+use crate::skills::v2::{diagnosis, fsutil, snapshot};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -726,14 +726,18 @@ pub fn skill_manager_get_snapshot() -> Result<Snapshot, String> {
     snapshot::export(&svc)
 }
 
-#[tauri::command(async)]
-pub fn open_skill_path(path: String) -> Result<(), String> {
-    crate::skills::v2::fsutil::open_path(&path)
+#[tauri::command]
+pub async fn open_skill_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || fsutil::open_path(&path))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
-#[tauri::command(async)]
-pub fn reveal_skill_path(path: String) -> Result<(), String> {
-    crate::skills::v2::fsutil::reveal_path(&path)
+#[tauri::command]
+pub async fn reveal_skill_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || fsutil::reveal_path(&path))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn pack_members(svc: &Service, pack_id: &str) -> Result<Vec<String>, String> {

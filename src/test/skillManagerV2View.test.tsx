@@ -7376,15 +7376,15 @@ describe('Skill manager settings page', () => {
     })
   })
 
-  it('reveals the SQLite database in Finder and shows feedback', async () => {
+  it('reveals the SQLite database in the file manager and shows feedback', async () => {
     const revealPath = vi.spyOn(skillApiV2, 'revealPath').mockResolvedValue(undefined)
     const { SettingsPageV2 } = await import('../components/skills-v2/SettingsPageV2')
 
     render(<SettingsPageV2 />)
-    fireEvent.click(screen.getByText('在 Finder 中显示 SQLite'))
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('skills.revealSqlite') }))
 
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/Users/mac/.agentbro/skill-manager/skill-manager.db'))
-    expect(screen.getByText('已在 Finder 中定位 SQLite')).toBeInTheDocument()
+    expect(await screen.findByText(i18n.t('skills.sqliteRevealed'))).toBeInTheDocument()
   })
 
   it('does not expose a center library path editor', async () => {
