@@ -7,6 +7,8 @@ param(
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
+    [switch]$CloseStartupSettings,
+    [switch]$AutomationFocusPermission,
     [switch]$VerifyStartupStackSampler
 )
 
@@ -272,6 +274,8 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
+    if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
+    if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true

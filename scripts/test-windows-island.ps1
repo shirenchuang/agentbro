@@ -11,7 +11,9 @@ param(
     [string]$PackExportPath,
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
-    [switch]$VerifyDrag
+    [switch]$VerifyDrag,
+    [switch]$CloseStartupSettings,
+    [switch]$AutomationFocusPermission
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +30,7 @@ if ($TracePermissionUi) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class AgentBroSmokeInput {
     private const uint InputMouse = 0;
@@ -42,6 +45,13 @@ public static class AgentBroSmokeInput {
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo {
+        public uint Size, Flags;
+        public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public Rect CaretRect;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MouseInput {
@@ -92,6 +102,12 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
@@ -108,6 +124,22 @@ public static class AgentBroSmokeInput {
         uint processId;
         GetWindowThreadProcessId(WindowAtCursor(), out processId);
         return processId;
+    }
+
+    private static string DescribeWindow(IntPtr window) {
+        if (window == IntPtr.Zero) return "none";
+        var name = new StringBuilder(128);
+        GetClassName(window, name, name.Capacity);
+        return string.Format("{0} ({1})", window, name);
+    }
+
+    public static string DescribeForegroundFocus() {
+        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (!GetGUIThreadInfo(0, ref info))
+            return string.Format("GetGUIThreadInfo failed: {0}", Marshal.GetLastWin32Error());
+        return string.Format("foreground {0}, active {1}, focus {2}, capture {3}",
+            DescribeWindow(GetForegroundWindow()), DescribeWindow(info.Active),
+            DescribeWindow(info.Focus), DescribeWindow(info.Capture));
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -194,10 +226,18 @@ function Find-VisibleIsland {
     }
 }
 
-function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
-    $rect = $Element.Current.BoundingRectangle
-    $x = [int]($rect.X + $rect.Width / 2)
-    $y = [int]($rect.Y + $rect.Height / 2)
+function Move-ToIslandHoverPoint([IntPtr]$WindowHandle, [Windows.Automation.AutomationElement]$Region) {
+    $native = [AgentBroSmokeInput+Rect]::new()
+    $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
+    if ($dpi -eq 0 -or -not [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
+        throw 'Could not read the native Island window for cursor entry'
+    }
+    $x = [int](($native.Left + $native.Right) / 2)
+    $y = [int]($native.Top + 12 * ($dpi / 96.0))
+    if ($TracePermissionUi) {
+        $uia = $Region.Current.BoundingRectangle
+        Write-Host "Island cursor entry: ($x, $y). Accessibility region center Y: $($uia.Top + $uia.Height / 2)."
+    }
     if (-not [AgentBroSmokeInput]::SetCursorPos($x, $y)) {
         throw "Could not move the Windows cursor to $x, $y"
     }
@@ -212,21 +252,40 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
     }
 }
 
-function Write-PermissionAccessibilityBounds {
-    foreach ($window in Get-IslandWindows) {
-        $state = $window.Current
-        $handle = [IntPtr]$state.NativeWindowHandle
-        $native = [AgentBroSmokeInput+Rect]::new()
-        if ([AgentBroSmokeInput]::GetWindowRect($handle, [ref]$native)) {
-            $dpi = [AgentBroSmokeInput]::GetDpiForWindow($handle)
-            Write-Host "Native window $handle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
+function Close-StartupSettings {
+    $settings = Wait-IslandValue 'the first-run Settings window' {
+        foreach ($window in Get-IslandWindows) {
+            if (Find-IslandButton $window { param($Name) $Name -eq 'Start AgentBro' }) {
+                return $window
+            }
         }
+    }
+    $handle = $settings.Current.NativeWindowHandle
+    $close = $settings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+    $close.Close()
+    $null = Wait-IslandValue 'the Settings window to close' {
+        -not (Get-IslandWindows | Where-Object { $_.Current.NativeWindowHandle -eq $handle })
+    }
+    Write-Output 'Closed the first-run Settings window before exercising the Island.'
+}
+
+function Write-IslandAccessibilityBounds {
+    param([IntPtr]$WindowHandle, [string]$FixtureProject = '')
+
+    $native = [AgentBroSmokeInput+Rect]::new()
+    if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
+        $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
+        Write-Host "Native window $WindowHandle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
+    }
+    $window = [Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
+    if ($window) {
         $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
             Select-Object -ExpandProperty Current |
             Where-Object {
-                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel') -or
+                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel', 'hover-list__card') -or
                 $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
-                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once')
+                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once') -or
+                ($FixtureProject -and $_.Name -and $_.Name.Contains($FixtureProject))
             } |
             Select-Object Name, ClassName, IsOffscreen, @{
                 Name = 'Bounds'
@@ -241,7 +300,8 @@ function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
     [Windows.Automation.AutomationElement]$RowAnchor,
-    [switch]$CenterAfterLayout
+    [switch]$CenterAfterLayout,
+    [scriptblock]$FindElement
 ) {
     $point = if ($RowAnchor) {
         $row = $Element.Current.BoundingRectangle
@@ -258,8 +318,14 @@ function Click-IslandElement(
         [Windows.Point]::new($rect.Left + $rect.Width / 2, $rect.Top + $rect.Height / 2)
     } else {
         Wait-IslandValue "a clickable point on $Description" {
-            $candidate = [Windows.Point]::new(0, 0)
-            if ($Element.TryGetClickablePoint([ref]$candidate)) { $candidate }
+            try {
+                $current = if ($FindElement) { & $FindElement } else { $Element }
+                $candidate = [Windows.Point]::new(0, 0)
+                if ($current -and $current.TryGetClickablePoint([ref]$candidate)) { $candidate }
+            } catch {
+                if (-not $FindElement -or ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                    $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException])) { throw }
+            }
         }
     }
     if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
@@ -306,6 +372,12 @@ function Test-KeyboardPermissionDenial(
                 $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
             }
         }
+        if ($TracePermissionUi -and $Attempt -eq 1) {
+            $cardFrame = [AgentBroSmokeInput+Rect]::new()
+            if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$cardFrame)) {
+                Write-Output "Permission card HWND size: $($cardFrame.Right - $cardFrame.Left)x$($cardFrame.Bottom - $cardFrame.Top)."
+            }
+        }
         Click-IslandElement $showSessions 'Permission card session list button' -CenterAfterLayout
         $session = Wait-IslandValue 'the waiting session in the Island list' {
             Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
@@ -313,6 +385,9 @@ function Test-KeyboardPermissionDenial(
         $rowAnchor = Wait-IslandValue 'the waiting session header' {
             Find-IslandButton $session { param($Name) $Name.StartsWith('Mute notifications') }
         }
+        $listFrame = [AgentBroSmokeInput+Rect]::new()
+        $hasListFrame = $TracePermissionUi -and $Attempt -eq 1 -and
+            [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$listFrame)
         # The center of a waiting row belongs to the inline permission preview.
         Click-IslandElement $session 'Island session header with a pending permission' $rowAnchor
 
@@ -326,7 +401,7 @@ function Test-KeyboardPermissionDenial(
         } catch {
             if ($TracePermissionUi) {
                 try {
-                    Write-PermissionAccessibilityBounds
+                    Write-IslandAccessibilityBounds $WindowHandle
                     Save-PermissionFrame $detailClock $Attempt 'before-space-timeout'
                 } catch {
                     Write-Host "Could not capture permission accessibility bounds: $_"
@@ -334,29 +409,55 @@ function Test-KeyboardPermissionDenial(
             }
             throw
         }
+        if ($hasListFrame) {
+            Write-Output "Waiting session list HWND size: $($listFrame.Right - $listFrame.Left)x$($listFrame.Bottom - $listFrame.Top)."
+            Write-IslandAccessibilityBounds $WindowHandle
+        }
+        if ($TracePermissionUi) {
+            Write-Host "Before requesting Deny focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+        }
         $denyHasFocus = {
             if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
             $focused = [Windows.Automation.AutomationElement]::FocusedElement
             $focused -and $deny.Current.HasKeyboardFocus -and
                 [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $deny.GetRuntimeId())
         }
+        $clock = [Diagnostics.Stopwatch]::new()
         try {
-            $tabs = 0
-            while ($tabs -lt 24 -and -not (& $denyHasFocus)) {
-                if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)) {
-                    throw 'The Island lost foreground focus during native Tab navigation'
+            if ($AutomationFocusPermission) {
+                $deny.SetFocus()
+            } else {
+                $tabs = 0
+                while ($tabs -lt 24 -and -not (& $denyHasFocus)) {
+                    if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)) {
+                        throw 'The Island lost foreground focus during native Tab navigation'
+                    }
+                    $tabs += 1
+                    Start-Sleep -Milliseconds 125
                 }
-                $tabs += 1
-                Start-Sleep -Milliseconds 125
+                Write-Output "Native Tab presses to reach Deny: $tabs."
             }
-            Write-Output "Native Tab presses to reach Deny: $tabs."
             $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' $denyHasFocus
         } catch {
             Write-Host "Island window: $WindowHandle. Foreground window: $([AgentBroSmokeInput]::GetForegroundWindow())."
+            if ($TracePermissionUi) {
+                try {
+                    $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                    Write-Host ("Focused UIA control: '{0}' ({1}). Deny focusable: {2}. Deny focused: {3}." -f
+                        $focused.Current.Name, $focused.Current.ClassName,
+                        $deny.Current.IsKeyboardFocusable, $deny.Current.HasKeyboardFocus)
+                    Write-IslandAccessibilityBounds $WindowHandle
+                    Save-PermissionFrame $clock $Attempt 'focus-timeout'
+                } catch {
+                    Write-Host "Could not inspect keyboard focus: $_"
+                }
+            }
             throw
         }
-        $clock = [Diagnostics.Stopwatch]::new()
-        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'before-space' }
+        if ($TracePermissionUi) {
+            Save-PermissionFrame $clock $Attempt 'before-space'
+            Write-Host "Before sending Space: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+        }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock.Start()
         if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x20)) {
@@ -364,7 +465,10 @@ function Test-KeyboardPermissionDenial(
         }
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) {
-            Write-Host "Island window: $WindowHandle. Foreground window: $([AgentBroSmokeInput]::GetForegroundWindow())."
+            if ($TracePermissionUi) {
+                Write-Host "After the Hook timed out: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+                Save-PermissionFrame $clock $Attempt 'hook-timeout'
+            }
             throw 'The Hook did not receive a reply after keyboard denial in the detail view'
         }
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
@@ -379,6 +483,9 @@ function Test-KeyboardPermissionDenial(
                 Save-PermissionFrame $clock $Attempt 'while-polling'
                 do { $observation.sampleIndex += 1 } while ($observation.sampleIndex -lt $sampleTimes.Count -and
                     $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex])
+                if ($observation.sampleIndex -eq $sampleTimes.Count) {
+                    Write-IslandAccessibilityBounds $WindowHandle
+                }
             }
             $hasBack = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' })
             $hasDeny = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
@@ -394,6 +501,7 @@ function Test-KeyboardPermissionDenial(
         if ($TracePermissionUi) {
             $focused = [Windows.Automation.AutomationElement]::FocusedElement
             Write-Output "After approval, native keyboard focus: '$($focused.Current.Name)'."
+            if ($Attempt -eq 1) { Write-IslandAccessibilityBounds $WindowHandle }
             Save-PermissionFrame $clock $Attempt 'uia-resolved'
         }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
@@ -430,6 +538,7 @@ function Test-InstalledIslandDrag(
         }
 
         $before = Get-IslandCenterX $WindowHandle
+        $releaseClock = [Diagnostics.Stopwatch]::new()
         [AgentBroSmokeInput]::PressLeft()
         try {
             Start-Sleep -Milliseconds 40
@@ -453,6 +562,8 @@ function Test-InstalledIslandDrag(
             } else {
                 Start-Sleep -Milliseconds 20
             }
+            $heldCenter = Get-IslandCenterX $WindowHandle
+            $releaseClock.Start()
         } finally {
             [AgentBroSmokeInput]::ReleaseLeft()
         }
@@ -461,13 +572,18 @@ function Test-InstalledIslandDrag(
             -not [AgentBroSmokeInput]::IsLeftButtonDown()
         }
         Write-Output 'Windows confirmed the physical mouse button is released.'
+        $releasePositions = [Collections.Generic.List[string]]::new()
         $null = Wait-IslandValue 'the released Island window to settle' {
             $firstCenter = Get-IslandCenterX $WindowHandle
+            $releasePositions.Add("$($releaseClock.ElapsedMilliseconds) ms: $firstCenter")
             Start-Sleep -Milliseconds 200
-            [Math]::Abs((Get-IslandCenterX $WindowHandle) - $firstCenter) -le 1
+            $secondCenter = Get-IslandCenterX $WindowHandle
+            $releasePositions.Add("$($releaseClock.ElapsedMilliseconds) ms: $secondCenter")
+            [Math]::Abs($secondCenter - $firstCenter) -le 1
         }
         $released = Get-IslandCenterX $WindowHandle
         if ($direction -gt 0 -and $released - $before -lt (12 * $scale)) {
+            Write-Host "Native Island center immediately before releasing: $heldCenter. After release: $($releasePositions -join ', ')."
             throw "Island returned toward its starting point on release: $before -> $released"
         }
         $cursor = [AgentBroSmokeInput+Point]::new()
@@ -575,10 +691,12 @@ $previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeInput+Point]::new()
 $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
+$islandWindow = $null
 try {
+    if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
-    Move-ToElement $island
+    Move-ToIslandHoverPoint $islandWindow.Handle $island
     if ($VerifyQwenWork) {
         Test-InstalledQwenWork $island
         $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
@@ -588,19 +706,35 @@ try {
         Start-Sleep -Milliseconds 250
         $islandWindow = Wait-IslandValue 'the visible Island after the QwenWork fixture' { Find-VisibleIsland }
         $island = $islandWindow.Element
-        Move-ToElement $island
+        Move-ToIslandHoverPoint $islandWindow.Handle $island
     }
 
-    $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
+    $findSession = {
         Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
     }
     if ($VerifyDrag) {
-        Test-InstalledIslandDrag $island $islandWindow.Handle
-        $session = Wait-IslandValue 'the fixture session after dragging the Island' {
-            Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
+        try {
+            $null = Wait-IslandValue 'the fixture session and its Read target in the hover list' $findSession
+        } catch {
+            if ($TracePermissionUi) {
+                try {
+                    Write-IslandAccessibilityBounds $islandWindow.Handle -FixtureProject $ProjectName
+                    $freshRoot = Find-VisibleIsland
+                    if ($freshRoot -and $freshRoot.Handle -eq $islandWindow.Handle) {
+                        $freshRow = Find-IslandButton $freshRoot.Element {
+                            param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt')
+                        }
+                        Write-Host "Fresh Island region reports the fixture row: $([bool]$freshRow)."
+                    }
+                } catch {
+                    Write-Host "Could not inspect the fixture hover list accessibility: $_"
+                }
+            }
+            throw
         }
+        Test-InstalledIslandDrag $island $islandWindow.Handle
     }
-    Click-IslandElement $session 'Island session'
+    Click-IslandElement -Description 'Island session' -FindElement $findSession
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
@@ -626,6 +760,15 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
+        if ($TracePermissionUi -and $islandWindow) {
+            Write-IslandAccessibilityBounds $islandWindow.Handle
+            Write-Host "Focus after failure: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe' OR Name = 'wslhost.exe'" |
+                ForEach-Object {
+                    $parent = Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue
+                    Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
+                }
+        }
         if ($PackImportPath) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"

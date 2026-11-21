@@ -466,6 +466,84 @@ describe('NotchPanel island shell', () => {
     expect(nativeHeight).toBe(detailResize.height)
   })
 
+  it('removes a closing session list from the accessibility tree during its exit animation', () => {
+    mountIsland()
+    const list = screen.getByTestId('notch-hover-content')
+    expect(list).not.toHaveAttribute('inert')
+    expect(list).not.toHaveAttribute('aria-hidden')
+
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+
+    expect(list).toBeInTheDocument()
+    expect(list).toHaveAttribute('inert')
+    expect(list).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    try {
+      tauriMocks.isTauri.mockReturnValue(true)
+      tauriMocks.isCursorOverNotch.mockResolvedValue(false)
+      useConfigStore.setState({ islandAnimationScale: 0.1 })
+      mountIsland()
+      const container = document.querySelector<HTMLElement>('.notch-container')!
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
+      const hostHeight = () => parseFloat(container.style.getPropertyValue('--notch-host-height'))
+      const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
+      const viewportHeight = hostHeight()
+      const viewportWidth = hostWidthVar()
+      const waiting = session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
+      })
+      const overlay: OverlayItem = {
+        id: 'permission-s1',
+        sessionId: waiting.id,
+        type: 'permission',
+        data: { toolName: 'Bash', toolInput: 'echo fixture' },
+        createdAt: Date.now(),
+      }
+      act(() => useSessionStore.setState({
+        sessions: { [waiting.id]: waiting },
+        sessionList: [waiting],
+        activeOverlay: overlay,
+        overlayQueue: [overlay],
+      }))
+      expect(hitboxWidthVar()).toBe('656px')
+      expect(hostWidthVar()).toBe(viewportWidth)
+      expect(hostHeight()).toBe(viewportHeight)
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
+
+      tauriMocks.isCursorOverNotch.mockResolvedValue(true)
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenLastCalledWith(false))
+      fireEvent.mouseDown(await screen.findByRole('button', { name: 'notch.showAllSessions' }))
+      const waitingSession = await screen.findByText('agentbro · Port dynamic island')
+      const listHeight = hitboxHeight()
+      expect(hitboxWidthVar()).toBe('686px')
+      const listPanelHeight = parseFloat(panel.style.height)
+      fireEvent.mouseDown(waitingSession, { button: 0 })
+      await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
+
+      expect(hitboxHeight()).toBeGreaterThan(listHeight)
+      expect(parseFloat(panel.style.height)).toBeGreaterThan(listPanelHeight)
+      expect(panel).toHaveStyle({ width: '658px', height: '500px' })
+      expect(hostHeight()).toBe(viewportHeight)
+      expect(viewportHeight).toBeGreaterThanOrEqual(hitboxHeight())
+      const deny = await screen.findByRole('button', { name: 'notch.deny' })
+      deny.focus()
+      await userEvent.keyboard(' ')
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'notch.deny' })).toBeNull())
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
+      expect(useSessionStore.getState().panelState).toBe('expanded')
+      expect(hostHeight()).toBe(viewportHeight)
+      expect(tauriMocks.resizeNotch.mock.calls.every(([width, height]) =>
+        `${width}px` === viewportWidth && height === viewportHeight
+      )).toBe(true)
+    } finally {
+      platform.mockRestore()
+    }
+  })
+
   it('keeps the visible collapsed pill inside a passthrough stable native host', async () => {
     tauriMocks.isTauri.mockReturnValue(true)
     const currentSession = session({ phase: 'idle' })
@@ -737,11 +815,11 @@ describe('NotchPanel island shell', () => {
       const earlierResize = deferred<{ anchorOffsetX: number }>()
       tauriMocks.isTauri.mockReturnValue(true)
       tauriMocks.resizeNotch.mockReturnValueOnce(earlierResize.promise)
-      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary' })
+      useConfigStore.setState({ allowHorizontalDrag: true, displayMonitor: 'primary', panelHorizontalOffset: 0 })
       mountIsland(null, { phase: 'idle' })
       await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(1))
 
-      await act(async () => { useSessionStore.getState().setPanelState('expanded') })
+      await act(async () => { useConfigStore.getState().updateConfig('panelHorizontalOffset', 24) })
       expect(tauriMocks.resizeNotch).toHaveBeenCalledTimes(2)
 
       const handle = screen.getByTestId('notch-drag-handle')

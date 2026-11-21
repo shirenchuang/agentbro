@@ -1,7 +1,7 @@
 import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type CSSProperties, type PointerEvent } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type ComponentProps, type CSSProperties, type PointerEvent } from 'react'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { answerDisplayedPermission, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
@@ -239,6 +239,11 @@ type IslandLayoutPreview = {
   detailPanelMaxHeight?: number
 }
 
+function IslandLayer(props: ComponentProps<typeof motion.div>) {
+  const isPresent = useIsPresent()
+  return <motion.div {...props} inert={!isPresent} aria-hidden={!isPresent || undefined} />
+}
+
 function LayoutPreviewBody({ mode, contentFontSize }: Pick<IslandLayoutPreview, 'mode' | 'contentFontSize'>) {
   const fontSize = useConfigStore((s) => contentFontSize ?? s.contentFontSize)
 
@@ -332,7 +337,7 @@ export function NotchPanel() {
   const pendingDragEndRef = useRef<Promise<void> | null>(null)
   const dragStopListenerReadyRef = useRef<Promise<void> | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
-  const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0 })
+  const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0, passesOutside: false })
   const hasInputDraftRef = useRef(false)
 
   useEffect(() => {
@@ -994,9 +999,12 @@ export function NotchPanel() {
       if (cancelled || inFlight || isDragging) return
       inFlight = true
       try {
-        const { width, height, anchorOffsetX } = nativeHoverProbeRef.current
+        const probe = nativeHoverProbeRef.current
+        const { width, height, anchorOffsetX } = probe
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
+        const currentProbe = nativeHoverProbeRef.current
+        if (width !== currentProbe.width || height !== currentProbe.height || anchorOffsetX !== currentProbe.anchorOffsetX) return
         const currentPanelState = useSessionStore.getState().panelState
         const visibleFeedbackOverlay = Boolean(
           activeOverlay
@@ -1008,8 +1016,7 @@ export function NotchPanel() {
             !isDragging
             && !isOver
             && !preparingOpen
-            && currentPanelState === 'collapsed'
-            && !visibleFeedbackOverlay
+            && (currentProbe.passesOutside || (currentPanelState === 'collapsed' && !visibleFeedbackOverlay))
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
@@ -1550,8 +1557,16 @@ export function NotchPanel() {
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
   const hostUsesStableCanvas = !isPetMode && islandEnabled && effectivePanelState === 'collapsed'
-  const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
-  const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
+  const windowsIsland = !isPetMode && isTauri() && isWindowsPlatform()
+  // Keep WebView2's accessibility viewport steady as permission controls appear or disappear.
+  const holdWindowsViewport = windowsIsland && islandEnabled && !layoutPreview
+  const expandedHitboxWidth = expandedPanelContentWidth + shellSideExtension * 2 + NOTCH_HIT_SLOP_X_EXPANDED * 2
+  const hostTargetHitboxWidth = holdWindowsViewport
+    ? Math.max(expandedHitboxWidth, hitboxWidth)
+    : hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
+  const hostTargetHitboxHeight = holdWindowsViewport
+    ? Math.max(stableHostHitboxHeight, hitboxHeight)
+    : hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
     width: hostTargetHitboxWidth,
     height: hostTargetHitboxHeight,
@@ -1616,7 +1631,12 @@ export function NotchPanel() {
     ? shellAnchorOffsetX
     : 0
   const nativeHoverAnchorOffsetX = effectivePanelState === 'collapsed' ? effectiveShellAnchorOffsetX : 0
-  nativeHoverProbeRef.current = { width: hitboxWidth, height: hitboxHeight, anchorOffsetX: nativeHoverAnchorOffsetX }
+  nativeHoverProbeRef.current = {
+    width: hitboxWidth,
+    height: hitboxHeight,
+    anchorOffsetX: nativeHoverAnchorOffsetX,
+    passesOutside: windowsIsland && effectivePanelState !== 'collapsed' && hostIsLargerThanTarget,
+  }
   const shellX = effectivePanelState === 'collapsed' || isDragging
     ? effectiveShellAnchorOffsetX
     : effectiveShellAnchorOffsetX === 0
@@ -1628,6 +1648,12 @@ export function NotchPanel() {
   const renderedShellWidth = preparingOpen ? lastCollapsedVisualRef.current.shellWidth : shellWidth
   const renderedPanelHeight = preparingOpen ? lastCollapsedVisualRef.current.panelHeight : panelHeight
   const renderedClipPath = preparingOpen ? lastCollapsedVisualRef.current.clipPath : notchShellClipPath
+  const renderedGeometry = {
+    width: renderedShellWidth,
+    height: renderedPanelHeight,
+    clipPath: renderedClipPath,
+    WebkitClipPath: renderedClipPath,
+  }
   const renderedVisualState = preparingOpen
     ? (isMicro ? 'micro' : 'compact')
     : visualState
@@ -1977,13 +2003,10 @@ export function NotchPanel() {
           aria-expanded={effectivePanelState !== 'collapsed'}
           initial={false}
           animate={{
-            width: renderedShellWidth,
-            height: renderedPanelHeight,
+            ...(!windowsIsland && renderedGeometry),
             x: shellX,
             opacity: layoutPreview ? 1 : displayChanging || islandHidden ? 0 : 1,
-            clipPath: renderedClipPath,
-            WebkitClipPath: renderedClipPath,
-          } as { width: number; height: number; x: number | number[]; opacity: number; clipPath: string; WebkitClipPath: string }}
+          }}
           transition={panelTransition}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
@@ -1993,6 +2016,8 @@ export function NotchPanel() {
             if (allowHorizontalDrag) event.preventDefault()
           }}
           style={{
+            // Set the clipping bounds before WebView2 exposes the newly mounted controls.
+            ...(windowsIsland && renderedGeometry),
             display: isPetMode ? 'none' : undefined,
             overflow: 'hidden',
             cursor: allowHorizontalDrag ? (isDragging ? 'grabbing' : 'grab') : 'default',
@@ -2031,7 +2056,7 @@ export function NotchPanel() {
 
               <AnimatePresence mode="wait">
                 {!preparingOpen && hasBlockingOverlayContent && activeOverlay && (
-                  <motion.div
+                  <IslandLayer
                     key={`alert-${activeOverlay.id}`}
                     className="notch-panel__alert-content"
                     data-overlay-type={activeOverlay.type}
@@ -2047,7 +2072,7 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {!preparingOpen && layoutPreview && (previewMode === 'expanded' || previewMode === 'completion') && (
@@ -2063,7 +2088,7 @@ export function NotchPanel() {
                 )}
 
                 {!preparingOpen && feedbackPresentationOpen && activeOverlay && (
-                  <motion.div
+                  <IslandLayer
                     key={`feedback-${activeOverlay.id}`}
                     className="notch-panel__feedback-content"
                     initial={{ opacity: 0 }}
@@ -2080,12 +2105,12 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {/* Base layer: session list */}
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'hover' && (
-                  <motion.div
+                  <IslandLayer
                     ref={setHoverContentNode}
                     key="hover"
                     className="notch-panel__hover-content"
@@ -2106,12 +2131,12 @@ export function NotchPanel() {
                       }}
                       focusFilteredEmpty={focusFilteredEmpty}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {/* Base layer: detail view */}
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'expanded' && (
-                  <motion.div
+                  <IslandLayer
                     key="expanded"
                     className="notch-panel__detail-content"
                     initial={{ opacity: 0 }}
@@ -2131,7 +2156,7 @@ export function NotchPanel() {
                       useSessionStore.getState().setActiveSession(null)
                       setPanelState('hover')
                     }} />
-                  </motion.div>
+                  </IslandLayer>
                 )}
               </AnimatePresence>
 
@@ -2151,7 +2176,7 @@ export function NotchPanel() {
               {/* Overlay layer — renders on top of base layer */}
               <AnimatePresence>
                 {!preparingOpen && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && !feedbackPresentationOpen && (
-                  <motion.div
+                  <IslandLayer
                     key={`overlay-${activeOverlay.id}`}
                     className="notch-panel__overlay"
                     initial={{ opacity: 0 }}
@@ -2166,7 +2191,7 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
               </AnimatePresence>
             </>
