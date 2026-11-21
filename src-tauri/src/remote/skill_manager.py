@@ -29,6 +29,9 @@ FIXED_CENTER_PATH = HOME / ".agentbro" / "skills"
 SHARED_SKILLS_AGENT_ID = "agents"
 DEFAULT_PACK_NAME = "全量技能包"
 SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
+MCP_INSPECTION_MAX_PAGES = 10
+MCP_INSPECTION_MAX_ITEMS = 500
+MCP_INSPECTION_CATALOG_TIMEOUT = 15
 STATE_MUTATING_COMMANDS = {
     "skill_manager_bootstrap",
     "skill_manager_init",
@@ -2666,10 +2669,9 @@ def supervise_mcp_request(kind, request_id):
             unlink_if_exists(marker)
 
 
-def read_json_line(stream, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        ready, _, _ = select.select([stream], [], [], max(0.1, deadline - time.time()))
+def read_json_line(stream, deadline):
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([stream], [], [], max(0, deadline - time.monotonic()))
         if not ready:
             continue
         line = stream.readline()
@@ -2717,7 +2719,7 @@ def stdio_mcp_session(server):
 
     request_ids = count(1)
 
-    def request(method, params=None):
+    def request(method, params=None, *, timeout=15):
         request_id = next(request_ids)
         payload = {
             "jsonrpc": "2.0",
@@ -2727,8 +2729,9 @@ def stdio_mcp_session(server):
         if params is not None:
             payload["params"] = params
         send(payload)
+        deadline = time.monotonic() + timeout
         while True:
-            response = read_json_line(process.stdout, 15)
+            response = read_json_line(process.stdout, deadline)
             if response.get("id") == request_id:
                 if response.get("error"):
                     raise ValueError(json.dumps(response["error"], ensure_ascii=False))
@@ -2751,7 +2754,7 @@ def stdio_mcp_session(server):
             process.wait()
 
 
-def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_version=None):
+def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_version=None, *, timeout=20):
     has_payload = payload is not None
     request = urllib.request.Request(
         url,
@@ -2768,7 +2771,7 @@ def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_vers
     if protocol_version:
         request.add_unredirected_header("MCP-Protocol-Version", protocol_version)
 
-    with urllib.request.urlopen(request, timeout=20 if has_payload else 1) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         if not has_payload:
             return None, session_id
         raw = response.read().decode(errors="replace")
@@ -2822,13 +2825,14 @@ def http_mcp_session(server):
         )
         request_ids = count(2)
 
-        def request(method, params=None):
+        def request(method, params=None, *, timeout=20):
             result, _ = http_mcp_exchange(
                 url,
                 headers,
                 {"jsonrpc": "2.0", "id": next(request_ids), "method": method, "params": params or {}},
                 session_id=session_id,
                 protocol_version=protocol_version,
+                timeout=timeout,
             )
             return result
 
@@ -2836,7 +2840,9 @@ def http_mcp_session(server):
     finally:
         if session_id:
             try:
-                http_mcp_exchange(url, headers, session_id=session_id, protocol_version=protocol_version)
+                http_mcp_exchange(
+                    url, headers, session_id=session_id, protocol_version=protocol_version, timeout=1
+                )
             except (OSError, ValueError):
                 # Remote peers may reject DELETE or be unavailable after cancellation.
                 pass
@@ -2882,6 +2888,39 @@ def advertised_mcp_capabilities(initialized):
     return capabilities if isinstance(capabilities, dict) else None
 
 
+def discover_mcp_catalog(request, capability):
+    entries = []
+    seen_cursors = set()
+    params = {}
+    deadline = time.monotonic() + MCP_INSPECTION_CATALOG_TIMEOUT
+    for page in range(MCP_INSPECTION_MAX_PAGES):
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Catalog discovery timed out")
+            result = request(capability + "/list", params, timeout=remaining)
+            page_entries = result.get(capability) if isinstance(result, dict) else None
+            if not isinstance(page_entries, list) or any(not isinstance(item, dict) for item in page_entries):
+                raise ValueError("Invalid remote MCP catalog.")
+        except Exception as error:
+            return (entries if page else None), error
+
+        space = MCP_INSPECTION_MAX_ITEMS - len(entries)
+        entries.extend(page_entries[:space])
+        cursor = result.get("nextCursor")
+        if len(page_entries) > space or (cursor is not None and len(entries) == MCP_INSPECTION_MAX_ITEMS):
+            return entries, "Catalog stopped at the {}-item limit".format(MCP_INSPECTION_MAX_ITEMS)
+        if cursor is None:
+            return entries, None
+        if not isinstance(cursor, str):
+            return entries, "Server returned an invalid pagination cursor"
+        if cursor in seen_cursors:
+            return entries, "Server repeated a pagination cursor"
+        seen_cursors.add(cursor)
+        params = {"cursor": cursor}
+    return entries, "Catalog stopped at the {}-page limit".format(MCP_INSPECTION_MAX_PAGES)
+
+
 def inspect_mcp(agent_id, server_name, inspection_id):
     started = time.time()
     server = mcp_server(agent_id, server_name)
@@ -2892,14 +2931,11 @@ def inspect_mcp(agent_id, server_name, inspection_id):
         for capability in ("tools", "resources", "prompts"):
             if advertised is not None and capability not in advertised:
                 continue
-            try:
-                result = request(capability + "/list", {}) or {}
-                entries = result.get(capability)
-                if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
-                    raise ValueError("Invalid remote MCP catalog.")
+            entries, warning = discover_mcp_catalog(request, capability)
+            if entries is not None:
                 catalogs[capability] = entries
-            except Exception as error:
-                warnings.append(capability + "/list: " + mcp_error_message(server, error))
+            if warning is not None:
+                warnings.append(capability + "/list: " + mcp_error_message(server, warning))
     available = advertised if advertised is not None else catalogs
     server_info = initialized.get("serverInfo", {})
     return {

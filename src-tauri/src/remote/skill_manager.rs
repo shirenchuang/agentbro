@@ -1727,8 +1727,10 @@ trace = Path.home() / ("trace-" + mode)
 capabilities = {
     "tools": {"tools": {}},
     "resources": {"resources": {}},
-    "partial": {"tools": {}, "resources": {}},
+    "partial": {"tools": {}, "resources": {}, "prompts": {}},
+    "bounded": {"tools": {}, "resources": {}, "prompts": {}},
 }[mode]
+cursor_token = " page +/% "
 for line in sys.stdin:
     request = json.loads(line)
     method = request["method"]
@@ -1737,25 +1739,51 @@ for line in sys.stdin:
     if "id" not in request:
         continue
     response = {"jsonrpc": "2.0", "id": request["id"]}
+    cursor = request.get("params", {}).get("cursor")
     if method == "initialize":
         response["result"] = {
             "protocolVersion": "2025-06-18",
             "serverInfo": {"name": mode},
             "capabilities": capabilities,
         }
+    elif method == "tools/list" and mode == "bounded":
+        offset = int(cursor) if cursor is not None else 0
+        response["result"] = {
+            "tools": [{"name": "tool-{}".format(index)} for index in range(offset, offset + 260)],
+            "nextCursor": str(offset + 260),
+        }
+    elif method == "resources/list" and mode == "bounded":
+        page = int(cursor) if cursor is not None else 0
+        response["result"] = {"resources": [], "nextCursor": str(page + 1)}
+    elif method == "prompts/list" and mode == "bounded":
+        response["result"] = {"prompts": [{"name": "fixture"}], "nextCursor": 42}
     elif method == "tools/list" and "tools" in capabilities:
         response["result"] = {"tools": [{"name": "seen"}] if mode == "partial" else []}
     elif method == "resources/list" and mode == "resources":
-        response["result"] = {"resources": [{"name": "fixture", "uri": "file:///fixture"}]}
+        if cursor is None:
+            response["result"] = {"resources": [], "nextCursor": cursor_token}
+        elif cursor == cursor_token:
+            response["result"] = {"resources": [{"name": "fixture", "uri": "file:///fixture"}]}
     elif method == "resources/list" and mode == "partial":
-        response["error"] = {"code": -32000, "message": "Catalog failed"}
+        if cursor is None:
+            response["result"] = {
+                "resources": [{"name": "first", "uri": "file:///first"}],
+                "nextCursor": cursor_token,
+            }
+        elif cursor == cursor_token:
+            response["error"] = {"code": -32000, "message": "Catalog failed"}
+    elif method == "prompts/list" and mode == "partial":
+        response["result"] = {
+            "prompts": [{"name": "initial" if cursor is None else "continued"}],
+            "nextCursor": cursor_token,
+        }
     else:
         response["error"] = {"code": -32601, "message": "Method not found"}
     print(json.dumps(response), flush=True)
 "#,
         )
         .expect("stdio server fixture");
-        let names = ["tools", "resources", "partial"];
+        let names = ["tools", "resources", "partial", "bounded"];
         let servers: serde_json::Map<String, Value> = names
             .iter()
             .map(|name| {
@@ -1803,18 +1831,37 @@ for line in sys.stdin:
             let report: Value = serde_json::from_str(payload).expect("inspection JSON");
             let expected = match name {
                 "tools" => vec!["initialize", "notifications/initialized", "tools/list"],
-                "resources" => vec!["initialize", "notifications/initialized", "resources/list"],
+                "resources" => vec![
+                    "initialize",
+                    "notifications/initialized",
+                    "resources/list",
+                    "resources/list",
+                ],
+                "bounded" => [
+                    &[
+                        "initialize",
+                        "notifications/initialized",
+                        "tools/list",
+                        "tools/list",
+                    ][..],
+                    &["resources/list"; 10],
+                    &["prompts/list"],
+                ]
+                .concat(),
                 _ => vec![
                     "initialize",
                     "notifications/initialized",
                     "tools/list",
                     "resources/list",
+                    "resources/list",
+                    "prompts/list",
+                    "prompts/list",
                 ],
             };
             assert_eq!(trace.lines().collect::<Vec<_>>(), expected, "{name}");
             assert_eq!(
                 report["status"],
-                if name == "partial" {
+                if matches!(name, "partial" | "bounded") {
                     "partial"
                 } else {
                     "connected"
@@ -1822,13 +1869,40 @@ for line in sys.stdin:
             );
             assert_eq!(report["capabilities"]["tools"], name != "resources");
             assert_eq!(report["capabilities"]["resources"], name != "tools");
-            assert_eq!(report["capabilities"]["prompts"], false);
+            assert_eq!(
+                report["capabilities"]["prompts"],
+                matches!(name, "partial" | "bounded")
+            );
+            if name == "resources" {
+                assert_eq!(report["resources"][0]["uri"], "file:///fixture");
+            }
             if name == "partial" {
                 assert_eq!(report["tools"][0]["name"], "seen");
+                assert_eq!(report["resources"][0]["uri"], "file:///first");
+                assert_eq!(report["prompts"][0]["name"], "initial");
+                assert_eq!(report["prompts"][1]["name"], "continued");
                 assert!(report["warnings"][0]
                     .as_str()
                     .unwrap_or_default()
                     .contains("Catalog failed"));
+                assert!(report["warnings"][1]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("repeated"));
+                assert!(!report.to_string().contains("page +/%"));
+            }
+            if name == "bounded" {
+                assert_eq!(report["tools"].as_array().expect("tools").len(), 500);
+                assert_eq!(report["tools"][499]["name"], "tool-499");
+                assert_eq!(report["prompts"][0]["name"], "fixture");
+                assert_eq!(
+                    report["warnings"],
+                    serde_json::json!([
+                        "tools/list: Catalog stopped at the 500-item limit",
+                        "resources/list: Catalog stopped at the 10-page limit",
+                        "prompts/list: Server returned an invalid pagination cursor",
+                    ])
+                );
             }
         }
     }
@@ -1980,13 +2054,19 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "notifications/initialized" and states[name] == "initializing" and "id" not in request:
             states[name] = "ready"
             self.reply(202)
-        elif method == "tools/list" and states[name] == "ready":
+        elif method == "tools/list" and states[name] == "ready" and request["id"] == 2 and request["params"] == {}:
             states[name] = "used"
             if name == "failing":
                 self.reply(503)
             else:
-                self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": [{"name": "fixture"}]}})
-        elif name == "strict" and method == "resources/list" and states[name] == "used" and request["id"] == 3:
+                result = {"tools": [{"name": "fixture"}]}
+                if name == "strict":
+                    result["nextCursor"] = " tools/?= "
+                self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": result})
+        elif name == "strict" and method == "tools/list" and states[name] == "used" and request["id"] == 3 and request["params"] == {"cursor": " tools/?= "}:
+            states[name] = "listed-tools"
+            self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": [{"name": "second"}]}})
+        elif name == "strict" and method == "resources/list" and states[name] == "listed-tools" and request["id"] == 4 and request["params"] == {}:
             states[name] = "listed-resources"
             self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"resources": []}})
         else:
@@ -2059,6 +2139,7 @@ with HTTPServer(("127.0.0.1", 0), Handler) as server:
                 assert_eq!(result["status"], "connected", "{result}");
                 assert_eq!(result["capabilities"]["resources"], true);
                 assert_eq!(result["tools"][0]["name"], "fixture");
+                assert_eq!(result["tools"][1]["name"], "second");
                 assert_eq!(result["resources"], serde_json::json!([]));
             } else if name == "failing" {
                 assert_eq!(result["success"], false, "{result}");
