@@ -28,6 +28,7 @@ if ($TracePermissionUi) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class AgentBroSmokeInput {
     private const uint InputMouse = 0;
@@ -42,6 +43,13 @@ public static class AgentBroSmokeInput {
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo {
+        public uint Size, Flags;
+        public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public Rect CaretRect;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MouseInput {
@@ -92,6 +100,12 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
@@ -108,6 +122,22 @@ public static class AgentBroSmokeInput {
         uint processId;
         GetWindowThreadProcessId(WindowAtCursor(), out processId);
         return processId;
+    }
+
+    private static string DescribeWindow(IntPtr window) {
+        if (window == IntPtr.Zero) return "none";
+        var name = new StringBuilder(128);
+        GetClassName(window, name, name.Capacity);
+        return string.Format("{0} ({1})", window, name);
+    }
+
+    public static string DescribeForegroundFocus() {
+        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (!GetGUIThreadInfo(0, ref info))
+            return string.Format("GetGUIThreadInfo failed: {0}", Marshal.GetLastWin32Error());
+        return string.Format("foreground {0}, active {1}, focus {2}, capture {3}",
+            DescribeWindow(GetForegroundWindow()), DescribeWindow(info.Active),
+            DescribeWindow(info.Focus), DescribeWindow(info.Capture));
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -356,9 +386,11 @@ function Test-KeyboardPermissionDenial(
             Write-Output "Waiting session list HWND size: $($listFrame.Right - $listFrame.Left)x$($listFrame.Bottom - $listFrame.Top)."
             Write-IslandAccessibilityBounds $WindowHandle
         }
+        if ($TracePermissionUi) {
+            Write-Host "Before requesting Deny focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+        }
         $deny.SetFocus()
         $clock = [Diagnostics.Stopwatch]::new()
-        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'before-space' }
         try {
             $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' {
                 if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
@@ -382,6 +414,10 @@ function Test-KeyboardPermissionDenial(
             }
             throw
         }
+        if ($TracePermissionUi) {
+            Save-PermissionFrame $clock $Attempt 'before-space'
+            Write-Host "Before sending Space: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+        }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock.Start()
         if (-not [AgentBroSmokeInput]::PressSpaceInWindow($WindowHandle)) {
@@ -389,7 +425,10 @@ function Test-KeyboardPermissionDenial(
         }
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) {
-            Write-Host "Island window: $WindowHandle. Foreground window: $([AgentBroSmokeInput]::GetForegroundWindow())."
+            if ($TracePermissionUi) {
+                Write-Host "After the Hook timed out: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+                Save-PermissionFrame $clock $Attempt 'hook-timeout'
+            }
             throw 'The Hook did not receive a reply after keyboard denial in the detail view'
         }
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
