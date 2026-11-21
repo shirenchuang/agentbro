@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
@@ -148,6 +148,7 @@ try {
     Move-ToElement $island
 
     if ($LockProjectPath) {
+        $settings = $null
         $open = Wait-IslandValue 'the Island Settings button' { Find-NamedControl $island 'Settings' }
         Invoke-NamedControl $open
         $settings = Wait-IslandValue 'the native Settings window' {
@@ -163,13 +164,16 @@ try {
         Invoke-NamedControl $agentSkills
         $projects = Wait-IslandValue 'the Projects navigation item' { Find-NamedControl $settings 'Projects' }
         Invoke-NamedControl $projects
+        $null = [AgentBroSmokeMouse]::SetCursorPos(30, 400)
         Write-Output 'Opened Projects from the native Settings sidebar.'
 
         $label = [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
         $pathBox = Wait-IslandValue 'the project folder field' {
             foreach ($element in $settings.FindAll([Windows.Automation.TreeScope]::Descendants, $label)) {
-                if ($element.Current.Name -eq '导入项目' -or $element.Current.Name -eq '/Users/me/work/repo') { return $element }
+                $state = $element.Current
+                if ($state.AutomationId -eq 'skill-project-root' -or
+                    $state.Name -like '*导入项目*' -or $state.Name -eq '/Users/me/work/repo') { return $element }
             }
         }
         $filled = $false
@@ -258,6 +262,13 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
+        if ($settings) {
+            $settings.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.LocalizedControlType -in @('edit', 'button', 'check box') } |
+                Select-Object -First 65 -ExpandProperty Current |
+                Select-Object LocalizedControlType, Name, AutomationId, IsEnabled, IsOffscreen |
+                ConvertTo-Json -Depth 3 -Compress
+        }
         if ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |

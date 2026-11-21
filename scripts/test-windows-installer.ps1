@@ -194,7 +194,7 @@ function Test-InstalledIsland([string]$ProjectName) {
     $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
     $scriptPath = Join-Path $PSScriptRoot 'test-windows-island.ps1'
-    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', $scriptPath,
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Sta', '-File', $scriptPath,
             '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
         $start.ArgumentList.Add($argument)
     }
