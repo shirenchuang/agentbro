@@ -12,7 +12,7 @@ import {
 } from '../../services/skillApiV2'
 import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
-import { McpInspectorDrawer } from './McpInspectorDrawer'
+import { McpInspectorDrawer, type McpInspectorTarget } from './McpInspectorDrawer'
 import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
 
@@ -45,7 +45,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<McpServerEntry | null>(null)
-  const [inspectorTarget, setInspectorTarget] = useState<McpServerEntry | null>(null)
+  const [inspectorTarget, setInspectorTarget] = useState<McpInspectorTarget | null>(null)
   const [inspectionResults, setInspectionResults] = useState<Record<string, McpInspectionReport>>({})
 
   const load = async () => {
@@ -106,6 +106,11 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         headers: server.headers.map((value) => ({ ...value })),
       },
     })
+  }
+
+  const startInspection = (server: McpServerEntry) => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    setInspectorTarget({ server, environmentId: selectedEnvironmentId, selectionRevision })
   }
 
   const save = async () => {
@@ -261,7 +266,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
               toggleBusy={busyAction === `toggle:${server.name}`}
               actionsDisabled={actionsDisabled}
               onToggle={() => void toggle(server)}
-              onInspect={() => setInspectorTarget(server)}
+              onInspect={() => startInspection(server)}
               onEdit={() => startEdit(server)}
               onDelete={() => setDeleteTarget(server)}
             />
@@ -297,7 +302,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
       <McpInspectorDrawer
         agentId={detail.id}
         agentName={detail.displayName}
-        server={inspectorTarget}
+        target={inspectorTarget}
         onClose={() => setInspectorTarget(null)}
         onReport={storeInspectionReport}
       />
