@@ -30,6 +30,10 @@ on:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
         default: false
+      windows_verify_startup_stacks:
+        description: Verify that the x64 Windows startup sampler resolves AgentBro frames
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -280,6 +284,7 @@ jobs:
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
+          VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -289,6 +294,7 @@ jobs:
               -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
               -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
               -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
+              -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
       - name: Upload the failed desktop check

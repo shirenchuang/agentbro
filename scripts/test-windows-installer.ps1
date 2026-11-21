@@ -5,7 +5,8 @@ param(
     [switch]$VerifyPackManifest,
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
-    [switch]$VerifyDrag
+    [switch]$VerifyDrag,
+    [switch]$VerifyStartupStackSampler
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,7 +135,71 @@ function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     throw "Timed out waiting for $Description"
 }
 
+function Write-LocalStartupStacks {
+    $pdb = Get-ChildItem -LiteralPath $SymbolsDirectory -Filter agentbro.pdb -Recurse -File |
+        Select-Object -First 1
+    if (-not $pdb) { throw 'The Windows artifact does not contain the AgentBro PDB' }
+
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw 'The Visual Studio toolset locator is unavailable'
+    }
+    $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if (-not $visualStudio) { throw 'The Visual C++ x64 toolset is unavailable' }
+    & (Join-Path $visualStudio 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation |
+        Out-Host
+
+    $source = Join-Path $PSScriptRoot 'windows-startup-stacks.cpp'
+    Push-Location $stage
+    try {
+        & cl.exe /nologo /std:c++17 /EHsc /W4 /WX $source /link dbghelp.lib | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows startup sampler' }
+    } finally {
+        Pop-Location
+    }
+
+    $sampler = Join-Path $stage 'windows-startup-stacks.exe'
+    $start = [System.Diagnostics.ProcessStartInfo]::new($sampler)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.ArgumentList.Add([string]$app.Id)
+    $start.ArgumentList.Add($pdb.DirectoryName)
+    $capture = [System.Diagnostics.Process]::Start($start)
+    try {
+        $output = $capture.StandardOutput.ReadToEndAsync()
+        $errors = $capture.StandardError.ReadToEndAsync()
+        if (-not $capture.WaitForExit(15000)) {
+            $capture.Kill()
+            throw 'Local startup stack capture timed out'
+        }
+        $stacks = $output.GetAwaiter().GetResult()
+        Write-Output $stacks
+        if ($capture.ExitCode -ne 0) {
+            throw "Local startup stack capture failed: $($errors.GetAwaiter().GetResult())"
+        }
+        if ($stacks -notmatch '(?m)^  agentbro![^+]+\+0x') {
+            throw 'Local startup stacks do not contain a resolved AgentBro frame'
+        }
+    } finally {
+        $capture.Dispose()
+    }
+}
+
 function Write-StartupStacks {
+    if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'X64') {
+        try {
+            Write-LocalStartupStacks
+            return
+        } catch {
+            if ($VerifyStartupStackSampler) { throw }
+            Write-Output "Local startup stack capture unavailable: $_"
+        }
+    } elseif ($VerifyStartupStackSampler) {
+        throw 'The local startup stack sampler requires x64 Windows'
+    }
+
     $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
     if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
         Write-Output 'Windows Debugging Tools are unavailable on this runner.'
@@ -233,6 +298,10 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
+    if ($VerifyStartupStackSampler) {
+        Write-StartupStacks
+        Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'
+    }
     Wait-AppCondition 'AgentBro to restore the Unicode session' {
         Select-String -LiteralPath $stdoutPath -SimpleMatch "session ${restoredSession}: project=$restoredProjectName" -Quiet
     }
