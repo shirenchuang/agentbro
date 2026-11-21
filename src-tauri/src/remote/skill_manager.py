@@ -2746,21 +2746,26 @@ def stdio_mcp_request(server, method, params=None):
             process.wait()
 
 
-def http_mcp_post(url, headers, payload, session_id=None, protect_headers=False):
-    request_headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_version=None):
+    has_payload = payload is not None
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
-        headers=request_headers,
-        method="POST",
+        data=json.dumps(payload).encode() if has_payload else None,
+        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+        method="POST" if has_payload else "DELETE",
     )
-    add_header = request.add_unredirected_header if protect_headers else request.add_header
     for item in headers:
-        if item.get("key") and item.get("value") is not None:
-            add_header(item["key"], item["value"])
+        key = item.get("key")
+        if key and key.lower() not in ("mcp-session-id", "mcp-protocol-version") and item.get("value") is not None:
+            request.add_unredirected_header(key, item["value"])
     if session_id:
-        add_header("Mcp-Session-Id", session_id)
-    with urllib.request.urlopen(request, timeout=20) as response:
+        request.add_unredirected_header("Mcp-Session-Id", session_id)
+    if protocol_version:
+        request.add_unredirected_header("MCP-Protocol-Version", protocol_version)
+
+    with urllib.request.urlopen(request, timeout=20 if has_payload else 1) as response:
+        if not has_payload:
+            return None, session_id
         raw = response.read().decode(errors="replace")
         session = response.headers.get("Mcp-Session-Id") or session_id
     if raw.startswith("event:") or "\ndata:" in raw:
@@ -2779,10 +2784,10 @@ def http_mcp_request(server, method, params=None):
     url = server.get("url")
     if not url:
         raise ValueError("Remote MCP server has no URL")
-    protect_headers = server.get("codexConnection", False)
-    initialized, session_id = http_mcp_post(
+    headers = server.get("headers", [])
+    initialized, session_id = http_mcp_exchange(
         url,
-        server.get("headers", []),
+        headers,
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -2793,21 +2798,37 @@ def http_mcp_request(server, method, params=None):
                 "clientInfo": {"name": "AgentBro", "version": "remote"},
             },
         },
-        protect_headers=protect_headers,
     )
-    result, _ = http_mcp_post(
-        url,
-        server.get("headers", []),
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": method,
-            "params": params or {},
-        },
-        session_id,
-        protect_headers,
-    )
-    return initialized, result
+    protocol_version = "2025-03-26"
+    try:
+        if initialized is not None and not isinstance(initialized, dict):
+            raise ValueError("Invalid remote MCP initialization result.")
+        negotiated = (initialized or {}).get("protocolVersion", protocol_version)
+        if not isinstance(negotiated, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", negotiated):
+            raise ValueError("Invalid remote MCP protocol version.")
+        protocol_version = negotiated
+        http_mcp_exchange(
+            url,
+            headers,
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            session_id=session_id,
+            protocol_version=protocol_version,
+        )
+        result, _ = http_mcp_exchange(
+            url,
+            headers,
+            {"jsonrpc": "2.0", "id": 2, "method": method, "params": params or {}},
+            session_id=session_id,
+            protocol_version=protocol_version,
+        )
+        return initialized, result
+    finally:
+        if session_id:
+            try:
+                http_mcp_exchange(url, headers, session_id=session_id, protocol_version=protocol_version)
+            except (OSError, ValueError):
+                # Remote peers may reject DELETE or be unavailable after cancellation.
+                pass
 
 
 def mcp_request(agent_id, server_name, method, params=None):

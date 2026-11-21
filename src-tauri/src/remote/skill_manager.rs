@@ -1934,21 +1934,28 @@ with HTTPServer(("127.0.0.1", 0), Handler) as server:
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&home).expect("test home");
-        let http = start_rendered_script(
+        let mut http = start_rendered_script(
             &home,
             r#"from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 import socket
+import time
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if request["method"] == "notifications/initialized":
+            self.send_response(202)
+            self.end_headers()
+            return
         result = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
         encoded = json.dumps(result).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
+        if request["method"] == "initialize":
+            self.send_header("Mcp-Session-Id", "fixture-session")
         self.end_headers()
         if request["method"] == "resources/list":
             (Path.home() / "waiting-http").touch()
@@ -1961,12 +1968,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.wfile.write(encoded)
 
+    def do_DELETE(self):
+        assert self.headers["Mcp-Session-Id"] == "fixture-session"
+        if (Path.home() / "waiting-http").exists():
+            (Path.home() / "terminating-http").touch()
+            time.sleep(5)
+        self.send_response(204)
+        self.end_headers()
+
 server = HTTPServer(("127.0.0.1", 0), Handler)
-server.timeout = 4
 (Path.home() / "http-port").write_text(str(server.server_port))
-for _ in range(4):
-    server.handle_request()
-server.server_close()
+server.serve_forever()
 "#,
         );
         assert!(wait_for_fixture(|| home.join("http-port").is_file()));
@@ -2005,6 +2017,8 @@ server.server_close()
         let stopped =
             wait_for_fixture(|| inspection.try_wait().expect("poll inspection").is_some());
         let closed = wait_for_fixture(|| home.join("closed-http").is_file());
+        let tried_to_terminate = home.join("terminating-http").is_file();
+        http.kill().expect("stop HTTP fixture");
         http.wait_with_output().expect("finish HTTP fixture");
         let output = inspection.wait_with_output().expect("finish inspection");
         std::fs::remove_dir_all(home).expect("remove test home");
@@ -2018,6 +2032,10 @@ server.server_close()
         assert!(
             closed,
             "cancelled inspection did not close its HTTP connection"
+        );
+        assert!(
+            tried_to_terminate,
+            "cancelled inspection did not terminate its session"
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("MCP inspection cancelled"));
     }
