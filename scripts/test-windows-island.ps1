@@ -9,13 +9,19 @@ param(
     [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath,
-    [int]$PermissionTracePort
+    [switch]$TracePermissionUi
 )
 
 $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-if ($PermissionTracePort) { . (Join-Path $PSScriptRoot 'test-windows-permission-trace.ps1') }
+if ($TracePermissionUi) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) {
+        throw 'Permission screenshots require an isolated GitHub-hosted runner'
+    }
+    $permissionTraceDirectory = Join-Path $env:RUNNER_TEMP 'agentbro-permission-trace'
+    $null = New-Item -ItemType Directory -Path $permissionTraceDirectory -Force
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -225,9 +231,7 @@ function Click-IslandElement(
 
 function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Island) {
     $connection = [System.Net.Sockets.TcpClient]::new()
-    $trace = $null
     try {
-        if ($PermissionTracePort) { $trace = Open-IslandPermissionTrace $PermissionTracePort }
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
         $event = @{
@@ -268,55 +272,66 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             $deny.Current.HasKeyboardFocus -and [AgentBroSmokeInput]::ForegroundProcess() -eq $AppProcessId
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
-        if ($trace) {
-            $before = Read-IslandPermissionDom $trace
-            Write-Host "Permission before Space: $($before | ConvertTo-Json -Compress)"
-            if (-not ($before.detail -and $before.deny -and $before.denyFocused)) {
-                throw 'WebView2 did not show a focused detail Deny button before Space'
-            }
-        }
-        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $clock = [Diagnostics.Stopwatch]::new()
+        if ($TracePermissionUi) { Save-PermissionFrame $clock 'before-space' }
+        $clock.Start()
         [AgentBroSmokeInput]::PressSpace()
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) { throw 'The Hook did not receive a reply after keyboard denial in the detail view' }
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
         if ($decision.decision -ne 'deny') { throw "Unexpected Hook permission decision: $($decision.decision)" }
         Write-Output "Original Hook socket confirmed deny at $($clock.ElapsedMilliseconds) ms."
-        $observation = @{ last = '' }
+        if ($TracePermissionUi) { Save-PermissionFrame $clock 'hook-confirmed' }
+        $sampleTimes = @(250, 1000, 3000, 7000, 12000)
+        $observation = @{ last = ''; sampleIndex = 0 }
         $null = Wait-IslandValue 'the resolved permission in the detail' {
+            if ($TracePermissionUi -and $observation.sampleIndex -lt $sampleTimes.Count -and
+                $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex]) {
+                Save-PermissionFrame $clock 'while-polling'
+                do { $observation.sampleIndex += 1 } while ($observation.sampleIndex -lt $sampleTimes.Count -and
+                    $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex])
+            }
             $hasBack = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' })
             $hasDeny = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
-            if ($trace) {
-                $dom = Read-IslandPermissionDom $trace
-                $state = @{ uiaDetail = $hasBack; uiaDeny = $hasDeny; dom = $dom } | ConvertTo-Json -Depth 3 -Compress
+            if ($TracePermissionUi) {
+                $state = "detail=$hasBack deny=$hasDeny"
                 if ($state -ne $observation.last) {
-                    Write-Host "Permission at $($clock.ElapsedMilliseconds) ms: $state"
+                    Write-Host "Windows accessibility at $($clock.ElapsedMilliseconds) ms: $state"
                     $observation.last = $state
                 }
-                if (-not $dom.detail -or $dom.deny) { return $false }
             }
             $hasBack -and -not $hasDeny
         }
+        if ($TracePermissionUi) { Save-PermissionFrame $clock 'uia-resolved' }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
     } finally {
-        if ($trace) { $trace.Dispose() }
         $connection.Dispose()
     }
 }
 
-function Save-FailedRunnerDesktop {
-    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
+function Save-RunnerDesktop([string]$Path) {
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bitmap = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
-        $bitmap.Save((Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png'), [Drawing.Imaging.ImageFormat]::Png)
+        $bitmap.Save($Path, [Drawing.Imaging.ImageFormat]::Png)
     } finally {
         $graphics.Dispose()
         $bitmap.Dispose()
     }
+}
+
+function Save-PermissionFrame([Diagnostics.Stopwatch]$Clock, [string]$Stage) {
+    $name = '{0:D5}-{1}.png' -f $Clock.ElapsedMilliseconds, $Stage
+    Save-RunnerDesktop (Join-Path $permissionTraceDirectory $name)
+    Write-Host "Permission desktop frame $name"
+}
+
+function Save-FailedRunnerDesktop {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
+    Save-RunnerDesktop (Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png')
 }
 
 $previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))

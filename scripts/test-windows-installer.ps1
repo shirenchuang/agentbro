@@ -16,13 +16,10 @@ $env:Path = "$fixtureBin;$env:Path"
 New-Item -ItemType Directory -Path $fixtureBin, $env:CLAUDE_CONFIG_DIR | Out-Null
 Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.0' -Encoding ascii
 
-function Get-AvailableLoopbackPort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $listener.Start()
-    try { $listener.LocalEndpoint.Port } finally { $listener.Stop() }
-}
-
-$port = Get-AvailableLoopbackPort
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$port = $listener.LocalEndpoint.Port
+$listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
     throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
@@ -120,18 +117,8 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
-$permissionTracePort = 0
-$originalWebViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-try {
-    if ($TracePermissionUi) {
-        $permissionTracePort = Get-AvailableLoopbackPort
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$permissionTracePort"
-    }
-    $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-} finally {
-    if ($TracePermissionUi) { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $originalWebViewArguments }
-}
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -215,10 +202,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             $start.ArgumentList.Add($argument)
         }
     }
-    if ($permissionTracePort) {
-        $start.ArgumentList.Add('-PermissionTracePort')
-        $start.ArgumentList.Add([string]$permissionTracePort)
-    }
+    if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true

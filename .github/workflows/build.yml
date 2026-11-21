@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       windows_trace_permission_ui:
-        description: Trace Hook, WebView2 and Windows accessibility state during approval dismissal
+        description: Record Hook timing, desktop screenshots and accessibility state during approval dismissal
         type: boolean
         default: false
 
@@ -288,4 +288,12 @@ jobs:
         with:
           name: agentbro-windows-desktop-failure
           path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore
+
+      - name: Upload the permission dismissal timeline
+        if: ${{ !cancelled() && inputs.windows_trace_permission_ui && runner.environment == 'github-hosted' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-permission-trace
+          path: ${{ runner.temp }}/agentbro-permission-trace/
           if-no-files-found: ignore
