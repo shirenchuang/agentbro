@@ -12,7 +12,7 @@ export function SettingsPageV2() {
   const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!settings) state.loadOverview()
+    if (!settings && state.initialized) void state.loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -24,7 +24,7 @@ export function SettingsPageV2() {
             <div className="sm2__error" role="alert">{state.error}</div>
             <button className="sm2__btn" onClick={() => {
               state.setError(null)
-              void state.loadOverview(true)
+              void state.init()
             }}>{t('settings.retry')}</button>
           </div>
         </div>

@@ -129,7 +129,7 @@ export function SkillPackPage() {
   const [packImportError, setPackImportError] = useState<string | null>(null)
 
   useEffect(() => {
-    state.loadOverview()
+    if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
