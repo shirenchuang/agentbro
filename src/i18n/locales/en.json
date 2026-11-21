@@ -744,7 +744,14 @@
       "current": "The upstream Skill is unchanged.",
       "matches": "Local files match the source.",
       "applied": "Skill updated to {{version}}.",
-      "confirm": "Replace the Skill files in the center library with {{version}}?"
+      "confirm": "Replace the Skill files in the center library with {{version}}?",
+      "fileChanges": "File changes",
+      "noFileChanges": "The displayed Skill files are unchanged.",
+      "fileChange": {
+        "added": "Added",
+        "modified": "Modified",
+        "removed": "Removed"
+      }
     },
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",

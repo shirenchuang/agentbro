@@ -272,6 +272,23 @@ pub struct SkillSourceUpdateCheck {
     pub latest_ref: String,
     pub current_hash: String,
     pub update_available: bool,
+    #[serde(default)]
+    pub file_changes: Vec<SkillSourceFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSourceFileChange {
+    pub path: String,
+    pub kind: SkillSourceFileChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillSourceFileChangeKind {
+    Added,
+    Modified,
+    Removed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -785,7 +785,14 @@
       "current": "上游 Skill 没有变化。",
       "matches": "本地文件与来源一致。",
       "applied": "Skill 已更新到 {{version}}。",
-      "confirm": "用 {{version}} 替换中心库中的 Skill 文件？"
+      "confirm": "用 {{version}} 替换中心库中的 Skill 文件？",
+      "fileChanges": "文件变更",
+      "noFileChanges": "列表所含的 Skill 文件没有变更。",
+      "fileChange": {
+        "added": "新增",
+        "modified": "修改",
+        "removed": "删除"
+      }
     },
     "title": "技能管理",
     "description": "管理 AI Agent 的 Skills、MCP 和插件，支持跨设备同步。",
