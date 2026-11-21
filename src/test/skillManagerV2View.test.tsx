@@ -4559,6 +4559,116 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
 
+  async function openAgentSkillLibrary() {
+    useSkillStoreV2.setState({
+      skills: [
+        makeSkill({ id: 'first-skill', name: 'First skill', installedAgents: [] }),
+        makeSkill({ id: 'second-skill', name: 'Second skill', installedAgents: [] }),
+      ],
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    await act(async () => { render(<AgentManagementPage />) })
+    await act(async () => { fireEvent.click(screen.getByText('Skills (2)')) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '新增SKILL' })) })
+    return within(screen.getByRole('dialog', { name: '从技能库添加' }))
+  }
+
+  it('discards a late Agent Skill preview after the selection and mode change', async () => {
+    const dialog = await openAgentSkillLibrary()
+    const older: DistributionPreview = {
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const latest: DistributionPreview = { ...older, skillIds: ['second-skill'], requestedMode: 'copy' }
+    let resolvePreview!: (value: DistributionPreview) => void
+    const pending = new Promise<DistributionPreview>((resolve) => { resolvePreview = resolve })
+    const preview = vi.spyOn(skillApiV2, 'previewDistribute').mockReturnValueOnce(pending).mockResolvedValue(latest)
+    const execute = vi.spyOn(skillApiV2, 'executeDistribute').mockResolvedValue(latest)
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    expect(preview).toHaveBeenCalledWith(['first-skill'], ['claude-code'], 'link')
+
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 Second skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: /复制/ }))
+    await act(async () => { resolvePreview(older) })
+
+    expect(screen.queryByRole('dialog', { name: '确认安装 Skill' })).not.toBeInTheDocument()
+    expect(execute).not.toHaveBeenCalled()
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    expect(preview).toHaveBeenLastCalledWith(['second-skill'], ['claude-code'], 'copy')
+    const review = await screen.findByRole('dialog', { name: '确认安装 Skill' })
+    expect(review).toHaveTextContent(/1 个 Skill.+复制/)
+    fireEvent.click(within(review).getByRole('button', { name: '执行分发' }))
+    expect(await screen.findByText('Skill 已安装到当前 Agent')).toBeInTheDocument()
+    expect(execute).toHaveBeenCalledWith(latest)
+  })
+
+  it('invalidates a reviewed Agent Skill install after switching runtimes', async () => {
+    const dialog = await openAgentSkillLibrary()
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValue({
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    })
+    const execute = vi.spyOn(skillApiV2, 'executeDistribute')
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    const confirm = await screen.findByRole('button', { name: '执行分发' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    fireEvent.click(confirm)
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '确认安装 Skill' })).not.toBeInTheDocument()
+  })
+
+  it('drops the install refresh if the runtime changes while inventory is loading', async () => {
+    const dialog = await openAgentSkillLibrary()
+    const preview: DistributionPreview = {
+      skillIds: ['first-skill'],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'previewDistribute').mockResolvedValue(preview)
+    vi.spyOn(skillApiV2, 'executeDistribute').mockResolvedValue(preview)
+    let resolveInventory!: (value: UnmanagedItemDto[]) => void
+    const inventory = new Promise<UnmanagedItemDto[]>((resolve) => { resolveInventory = resolve })
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockReturnValue(inventory)
+    const initialInventory = useSkillStoreV2.getState().unmanaged
+    const loadAgentDetail = vi.mocked(useSkillStoreV2.getState().loadAgentDetail)
+    loadAgentDetail.mockClear()
+    fireEvent.click(dialog.getByRole('checkbox', { name: '选择 First skill' }))
+    fireEvent.click(dialog.getByRole('button', { name: '添加 1 个 Skill' }))
+    fireEvent.click(await screen.findByRole('button', { name: '执行分发' }))
+    await waitFor(() => expect(listUnmanaged).toHaveBeenCalled())
+
+    await act(async () => {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      resolveInventory([])
+    })
+
+    expect(useSkillStoreV2.getState().unmanaged).toEqual(initialInventory)
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+  })
+
   it('hides pack controls and center-library install action on unmanaged skills', async () => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
