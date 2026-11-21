@@ -135,8 +135,9 @@ interface SkillV2Actions {
 }
 
 let marketplaceProgressListenerStarted = false
-let latestAgentDetailRequest = 0
 let latestRefreshRequest = 0
+let latestAgentDetailRequest = 0
+let latestPackDetailRequest = 0
 let latestProjectListRequest = 0
 let latestProjectDetailRequest = 0
 let projectSelectionRevision = 0
@@ -400,14 +401,29 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   },
   selectPack: async (id) => {
     const runtimeEnvironmentId = get().runtimeEnvironmentId
+    const selection = useRuntimeEnvironmentStore.getState()
+    if (runtimeEnvironmentId !== selection.selectedEnvironmentId) return
+
+    const request = ++latestPackDetailRequest
     set({ selectedPackId: id, selectedPackDetail: null })
     if (!id) return
+
+    const isCurrent = () => {
+      const state = get()
+      const current = useRuntimeEnvironmentStore.getState()
+      return request === latestPackDetailRequest
+        && state.selectedPackId === id
+        && state.selectedPackDetail === null
+        && state.runtimeEnvironmentId === runtimeEnvironmentId
+        && current.selectedEnvironmentId === runtimeEnvironmentId
+        && current.selectionRevision === selection.selectionRevision
+    }
+
     try {
-      const detail = await skillApiV2.getPackDetail(id)
-      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
-      set({ selectedPackDetail: detail })
+      const detail = await skillApiV2.getPackDetail(id, runtimeEnvironmentId)
+      if (isCurrent()) set({ selectedPackDetail: detail })
     } catch (e) {
-      set({ error: String(e) })
+      if (isCurrent()) set({ error: String(e) })
     }
   },
   selectAgent: async (id) => {

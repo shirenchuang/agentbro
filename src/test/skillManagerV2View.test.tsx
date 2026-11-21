@@ -7376,6 +7376,37 @@ describe('Skill detail slider + agent page render without crashing', () => {
     }
   })
 
+  it('keeps the current pack detail when the previous selection responds late', async () => {
+    const slowPack: SkillPackDetail = {
+      id: 'slow-pack', name: 'Slow Pack', description: '', tags: [], members: [], appliedAgents: [],
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    }
+    const fastPack: SkillPackDetail = { ...slowPack, id: 'fast-pack', name: 'Fast Pack' }
+    let resolveSlow!: (detail: SkillPackDetail) => void
+    const pending = new Promise<SkillPackDetail>((resolve) => { resolveSlow = resolve })
+    const getDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockImplementation((id) =>
+      id === slowPack.id ? pending : Promise.resolve(fastPack),
+    )
+    const packs = [slowPack, fastPack].map(({ id, name, tags, description }) => ({
+      id, name, tags, description, memberCount: 0, appliedAgentCount: 0, healthy: true,
+    }))
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue({ ...makeOverview(), packs })
+    useSkillStoreV2.setState({ packs, selectedPackId: fastPack.id, selectedPackDetail: fastPack })
+
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+    fireEvent.click(screen.getByRole('button', { name: /^Slow Pack/ }))
+    expect(getDetail).toHaveBeenCalledWith(slowPack.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: /^Fast Pack/ }))
+    expect(await screen.findByRole('heading', { name: fastPack.name })).toBeInTheDocument()
+
+    await act(async () => { resolveSlow(slowPack) })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(fastPack.id)
+    expect(screen.getByRole('heading', { name: fastPack.name })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: slowPack.name })).not.toBeInTheDocument()
+  })
+
   it('opens the pack builder in a dialog instead of replacing the canvas', async () => {
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     const { container } = render(<SkillPackPage />)
