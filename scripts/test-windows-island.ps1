@@ -100,6 +100,22 @@ public static class AgentBroSmokeInput {
     public static extern bool GetWindowRect(IntPtr window, out Rect rect);
 
     [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr window, out Rect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr window, ref Point point);
+
+    public static bool GetClientScreenRect(IntPtr window, out Rect rect) {
+        var origin = new Point();
+        if (!GetClientRect(window, out rect) || !ClientToScreen(window, ref origin)) return false;
+        rect.Left += origin.X;
+        rect.Right += origin.X;
+        rect.Top += origin.Y;
+        rect.Bottom += origin.Y;
+        return true;
+    }
+
+    [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(Point point);
 
     [DllImport("user32.dll")]
@@ -139,7 +155,11 @@ public static class AgentBroSmokeInput {
     public static IntPtr WindowAtCursor() {
         Point point;
         if (!GetCursorPos(out point)) return IntPtr.Zero;
-        return GetAncestor(WindowFromPoint(point), 2);
+        return WindowAtScreenPoint(point.X, point.Y);
+    }
+
+    public static IntPtr WindowAtScreenPoint(int x, int y) {
+        return GetAncestor(WindowFromPoint(new Point { X = x, Y = y }), 2);
     }
 
     public static uint ProcessAtCursor() {
@@ -360,7 +380,7 @@ function Write-IslandAccessibilityComparison([IntPtr]$WindowHandle, [string]$Sta
         }
         Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-after-clients.png")
         Write-Host "Finished comparing accessibility clients at $([DateTimeOffset]::UtcNow.ToString('O'))."
-        if ($RendererTracePort) { Write-IslandRendererState $RendererTracePort }
+        if ($RendererTracePort) { Write-IslandRendererState $RendererTracePort $WindowHandle }
     } catch {
         Write-Host "Could not compare accessibility clients: $_"
     } finally {
