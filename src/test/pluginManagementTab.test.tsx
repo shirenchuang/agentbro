@@ -279,7 +279,7 @@ describe('PluginManagementTab', () => {
 
     render(<PluginManagementTab detail={{ ...detail, id: 'custom-agent' }} />)
     expect(await screen.findByText(/插件配置暂时只读/)).toBeInTheDocument()
+    expect(await screen.findAllByText('只读')).toHaveLength(2)
     expect(screen.queryAllByRole('switch')).toHaveLength(0)
-    expect(screen.getAllByText('只读')).toHaveLength(2)
   })
 })
