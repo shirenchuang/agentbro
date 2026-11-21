@@ -8,12 +8,14 @@ param(
     [Parameter(Mandatory)]
     [string]$Workspace,
     [string]$PackImportPath,
-    [string]$PackExportPath
+    [string]$PackExportPath,
+    [int]$PermissionTracePort
 )
 
 $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+if ($PermissionTracePort) { . (Join-Path $PSScriptRoot 'test-windows-permission-trace.ps1') }
 
 Add-Type -TypeDefinition @'
 using System;
@@ -223,7 +225,9 @@ function Click-IslandElement(
 
 function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Island) {
     $connection = [System.Net.Sockets.TcpClient]::new()
+    $trace = $null
     try {
+        if ($PermissionTracePort) { $trace = Open-IslandPermissionTrace $PermissionTracePort }
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
         $stream = $connection.GetStream()
         $event = @{
@@ -264,17 +268,38 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             $deny.Current.HasKeyboardFocus -and [AgentBroSmokeInput]::ForegroundProcess() -eq $AppProcessId
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
+        if ($trace) {
+            $before = Read-IslandPermissionDom $trace
+            Write-Host "Permission before Space: $($before | ConvertTo-Json -Compress)"
+            if (-not ($before.detail -and $before.deny -and $before.denyFocused)) {
+                throw 'WebView2 did not show a focused detail Deny button before Space'
+            }
+        }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         [AgentBroSmokeInput]::PressSpace()
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) { throw 'The Hook did not receive a reply after keyboard denial in the detail view' }
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
         if ($decision.decision -ne 'deny') { throw "Unexpected Hook permission decision: $($decision.decision)" }
+        Write-Output "Original Hook socket confirmed deny at $($clock.ElapsedMilliseconds) ms."
+        $observation = @{ last = '' }
         $null = Wait-IslandValue 'the resolved permission in the detail' {
-            (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) -and
-                -not (Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
+            $hasBack = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' })
+            $hasDeny = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
+            if ($trace) {
+                $dom = Read-IslandPermissionDom $trace
+                $state = @{ uiaDetail = $hasBack; uiaDeny = $hasDeny; dom = $dom } | ConvertTo-Json -Depth 3 -Compress
+                if ($state -ne $observation.last) {
+                    Write-Host "Permission at $($clock.ElapsedMilliseconds) ms: $state"
+                    $observation.last = $state
+                }
+                if (-not $dom.detail -or $dom.deny) { return $false }
+            }
+            $hasBack -and -not $hasDeny
         }
-        Write-Output 'Windows Island accepted Space on the detail Deny button and the waiting Hook received deny.'
+        Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
     } finally {
+        if ($trace) { $trace.Dispose() }
         $connection.Dispose()
     }
 }

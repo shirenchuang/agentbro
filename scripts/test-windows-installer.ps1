@@ -3,6 +3,7 @@ param(
     [string]$Installer,
     [switch]$VerifyIsland,
     [switch]$VerifyPackManifest,
+    [switch]$TracePermissionUi,
     [string]$SymbolsDirectory
 )
 
@@ -15,11 +16,17 @@ $env:Path = "$fixtureBin;$env:Path"
 New-Item -ItemType Directory -Path $fixtureBin, $env:CLAUDE_CONFIG_DIR | Out-Null
 Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.0' -Encoding ascii
 
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-$listener.Start()
-$port = $listener.LocalEndpoint.Port
-$listener.Stop()
+function Get-AvailableLoopbackPort {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    try { $listener.LocalEndpoint.Port } finally { $listener.Stop() }
+}
+
+$port = Get-AvailableLoopbackPort
 $env:AGENTBRO_HOOK_PORT = "$port"
+if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
+    throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
+}
 
 $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
 if (-not $installerProcess.WaitForExit(90000)) {
@@ -113,8 +120,18 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
-$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+$permissionTracePort = 0
+$originalWebViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+try {
+    if ($TracePermissionUi) {
+        $permissionTracePort = Get-AvailableLoopbackPort
+        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$permissionTracePort"
+    }
+    $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+} finally {
+    if ($TracePermissionUi) { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $originalWebViewArguments }
+}
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -197,6 +214,10 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         foreach ($argument in @('-PackImportPath', $packImportPath, '-PackExportPath', $packExportPath)) {
             $start.ArgumentList.Add($argument)
         }
+    }
+    if ($permissionTracePort) {
+        $start.ArgumentList.Add('-PermissionTracePort')
+        $start.ArgumentList.Add([string]$permissionTracePort)
     }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
