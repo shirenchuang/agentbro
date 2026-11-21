@@ -9,7 +9,8 @@ param(
     [string]$Workspace,
     [string]$PackImportPath,
     [string]$PackExportPath,
-    [switch]$TracePermissionUi
+    [switch]$TracePermissionUi,
+    [switch]$VerifyDrag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,11 +92,15 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
-    public static uint ProcessAtCursor() {
+    public static IntPtr WindowAtCursor() {
         Point point;
-        if (!GetCursorPos(out point)) return 0;
+        if (!GetCursorPos(out point)) return IntPtr.Zero;
+        return GetAncestor(WindowFromPoint(point), 2);
+    }
+
+    public static uint ProcessAtCursor() {
         uint processId;
-        GetWindowThreadProcessId(GetAncestor(WindowFromPoint(point), 2), out processId);
+        GetWindowThreadProcessId(WindowAtCursor(), out processId);
         return processId;
     }
 
@@ -107,6 +112,9 @@ public static class AgentBroSmokeInput {
         System.Threading.Thread.Sleep(60);
         SendMouseButton(LeftUp);
     }
+
+    public static void PressLeft() { SendMouseButton(LeftDown); }
+    public static void ReleaseLeft() { SendMouseButton(LeftUp); }
 
     public static bool PressSpaceInWindow(IntPtr window) {
         if (window == IntPtr.Zero || GetForegroundWindow() != window) return false;
@@ -380,6 +388,86 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
+function Get-IslandCenterX([IntPtr]$WindowHandle) {
+    $bounds = [AgentBroSmokeInput+Rect]::new()
+    if (-not [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$bounds)) {
+        throw 'Could not read the native Island bounds'
+    }
+    ($bounds.Left + $bounds.Right) / 2.0
+}
+
+function Test-InstalledIslandDrag(
+    [Windows.Automation.AutomationElement]$Island,
+    [IntPtr]$WindowHandle
+) {
+    $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
+    if ($dpi -eq 0) { throw 'Could not read the native Island DPI' }
+    $scale = $dpi / 96.0
+    foreach ($direction in @(1, -1)) {
+        $region = $Island.Current.BoundingRectangle
+        $startX = [int]($region.Left + $region.Width / 2)
+        $startY = [int]($region.Top + 4 * $scale)
+        if (-not [AgentBroSmokeInput]::SetCursorPos($startX, $startY)) {
+            throw 'Could not move the cursor onto the Island drag handle'
+        }
+        Start-Sleep -Milliseconds 150
+        if ([AgentBroSmokeInput]::WindowAtCursor() -ne $WindowHandle) {
+            throw 'The native Island does not own the drag start point'
+        }
+
+        $before = Get-IslandCenterX $WindowHandle
+        [AgentBroSmokeInput]::PressLeft()
+        try {
+            Start-Sleep -Milliseconds 40
+            $targetX = [int]($startX + $direction * 14 * $scale)
+            if (-not [AgentBroSmokeInput]::SetCursorPos($targetX, $startY)) {
+                throw 'Could not move the held pointer across the Island'
+            }
+            if ($direction -gt 0) {
+                $probe = @{ Offset = 42 }
+                $null = Wait-IslandValue 'native Island movement with the pointer held' {
+                    if ([Math]::Abs((Get-IslandCenterX $WindowHandle) - $before) -ge (12 * $scale)) {
+                        return $true
+                    }
+                    if (-not [AgentBroSmokeInput]::SetCursorPos([int]($startX + $probe.Offset * $scale), $startY)) {
+                        throw 'Could not move the cursor while the native drag starts'
+                    }
+                    $probe.Offset = if ($probe.Offset -eq 42) { 68 } else { 42 }
+                    $false
+                }
+                Write-Output "Native Island moved from $before to $(Get-IslandCenterX $WindowHandle) at $dpi DPI."
+            } else {
+                Start-Sleep -Milliseconds 20
+            }
+        } finally {
+            [AgentBroSmokeInput]::ReleaseLeft()
+        }
+
+        $null = Wait-IslandValue 'the released Island window to settle' {
+            $firstCenter = Get-IslandCenterX $WindowHandle
+            Start-Sleep -Milliseconds 200
+            [Math]::Abs((Get-IslandCenterX $WindowHandle) - $firstCenter) -le 1
+        }
+        $released = Get-IslandCenterX $WindowHandle
+        $cursor = [AgentBroSmokeInput+Point]::new()
+        if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor)) {
+            throw 'Could not read the cursor position after releasing the Island'
+        }
+        $probeX = [int]($cursor.X + $direction * 30 * $scale)
+        if (-not [AgentBroSmokeInput]::SetCursorPos($probeX, $startY)) {
+            throw 'Could not move the cursor after releasing the Island'
+        }
+        foreach ($sample in 1..4) {
+            Start-Sleep -Milliseconds 150
+            $current = Get-IslandCenterX $WindowHandle
+            if ([Math]::Abs($current - $released) -gt 2) {
+                throw "Island followed the cursor after release: $released -> $current"
+            }
+        }
+        Write-Output "Native Island remained at $released after release and further cursor movement."
+    }
+}
+
 function Save-RunnerDesktop([string]$Path) {
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -416,6 +504,12 @@ try {
 
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
+    }
+    if ($VerifyDrag) {
+        Test-InstalledIslandDrag $island $islandWindow.Handle
+        $session = Wait-IslandValue 'the fixture session after dragging the Island' {
+            Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
+        }
     }
     Click-IslandElement $session 'Island session'
 
