@@ -390,6 +390,70 @@ describe('skillStoreV2 refresh', () => {
     expect(useSkillStoreV2.getState().unmanaged).toEqual([])
   })
 
+  it.each([false, true])('keeps the newest published overview (newer arrives first: %s)', async (newerFirst) => {
+    const older = makeOverview({ skills: [makeSkill({ id: 'older-skill' })] })
+    const newer = makeOverview({ skills: [makeSkill({ id: 'newer-skill' })] })
+    let finishOlder!: (value: SkillManagerOverview) => void
+    let finishNewer!: (value: SkillManagerOverview) => void
+    vi.spyOn(skillApiV2, 'overview')
+      .mockReturnValueOnce(new Promise((resolve) => { finishOlder = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishNewer = resolve }))
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const { loadOverview } = useSkillStoreV2.getState()
+    const firstRead = loadOverview(true)
+    const secondRead = loadOverview(true)
+
+    if (newerFirst) {
+      finishNewer(newer)
+      await secondRead
+      finishOlder(older)
+      await firstRead
+    } else {
+      finishOlder(older)
+      await firstRead
+      expect(useSkillStoreV2.getState().overview).toBe(older)
+      finishNewer(newer)
+      await secondRead
+    }
+
+    expect(useSkillStoreV2.getState().overview).toBe(newer)
+  })
+
+  it('preserves a full refresh when an in-flight cached overview finishes afterward', async () => {
+    const refreshed = makeOverview({ skills: [makeSkill({ id: 'after-scan' })] })
+    let finishScan!: (value: SkillManagerOverview) => void
+    let finishCached!: (value: SkillManagerOverview) => void
+    vi.spyOn(skillApiV2, 'refreshOverview').mockReturnValueOnce(new Promise((resolve) => { finishScan = resolve }))
+    vi.spyOn(skillApiV2, 'overview').mockReturnValueOnce(new Promise((resolve) => { finishCached = resolve }))
+    const unmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const { refresh, loadOverview } = useSkillStoreV2.getState()
+    const scan = refresh()
+    const cachedRead = loadOverview(true)
+
+    finishScan(refreshed)
+    await scan
+    finishCached(makeOverview())
+    await cachedRead
+
+    expect(useSkillStoreV2.getState().overview).toBe(refreshed)
+    expect(unmanaged).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not report an older inventory failure after a newer read has succeeded', async () => {
+    let failOlder!: (error: Error) => void
+    vi.spyOn(skillApiV2, 'overview')
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { failOlder = reject }))
+      .mockResolvedValueOnce(makeOverview())
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const { loadOverview } = useSkillStoreV2.getState()
+    const previous = loadOverview(true)
+    await loadOverview(true)
+    failOlder(new Error('Stale inventory failure'))
+    await previous
+
+    expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
   it('does not fetch inventory from a new runtime during an in-flight overview', async () => {
     const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
     let resolveOverview!: (overview: SkillManagerOverview) => void
@@ -541,6 +605,9 @@ describe('skillStoreV2 Agent selection', () => {
     useSkillStoreV2.setState({ runtimeEnvironmentId: 'local', selectedAgentId: 'codex' })
 
     const olderRead = useSkillStoreV2.getState().loadAgentDetail('codex', true)
+    let finishCached!: (overview: SkillManagerOverview) => void
+    vi.spyOn(skillApiV2, 'overview').mockReturnValueOnce(new Promise((resolve) => { finishCached = resolve }))
+    const cachedOverview = useSkillStoreV2.getState().loadOverview(true)
     const snapshot = {
       agentDetail: { ...makeAgentDetail('codex'), version: '2.0.0' },
       overview: makeOverview(),
@@ -548,10 +615,12 @@ describe('skillStoreV2 Agent selection', () => {
     }
     expect(useSkillStoreV2.getState().applyAgentSkillViewSnapshot('local', 'codex', snapshot)).toBe(true)
     resolveOlder({ ...makeAgentDetail('codex'), version: '1.0.0' })
-    await olderRead
+    finishCached(makeOverview())
+    await Promise.all([olderRead, cachedOverview])
 
     expect(useSkillStoreV2.getState().selectedAgentDetail).toEqual(snapshot.agentDetail)
     expect(useSkillStoreV2.getState().agentDetailLoading).toBe(false)
+    expect(useSkillStoreV2.getState().overview).toBe(snapshot.overview)
   })
 })
 
@@ -647,6 +716,8 @@ describe('skillStoreV2 Agent Skill delete reconciliation', () => {
     })
   })
 
+  afterEach(() => vi.restoreAllMocks())
+
   it('removes successful regular and inherited items atomically', () => {
     const applied = useSkillStoreV2.getState().removeAgentSkillItems(
       'local',
@@ -659,6 +730,28 @@ describe('skillStoreV2 Agent Skill delete reconciliation', () => {
     expect(useSkillStoreV2.getState().selectedAgentDetail?.skills).toEqual([regularTarget])
     expect(useSkillStoreV2.getState().selectedAgentDetail?.inheritedManagedSkills).toEqual([])
     expect(useSkillStoreV2.getState().selectedAgentDetail?.inheritedUnmanagedSkills).toEqual([])
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([regularUnmanaged])
+    expect(useSkillStoreV2.getState().overview?.metrics).toMatchObject({ targetCount: 1, unmanagedCount: 1 })
+  })
+
+  it('does not restore a confirmed deletion from a delayed unmanaged inventory read', async () => {
+    const state = useSkillStoreV2.getState()
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(state.overview!)
+    let inventoryStarted!: () => void
+    let finishInventory!: (items: UnmanagedItemDto[]) => void
+    const started = new Promise<void>((resolve) => { inventoryStarted = resolve })
+    const pending = new Promise<UnmanagedItemDto[]>((resolve) => { finishInventory = resolve })
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockImplementationOnce(() => {
+      inventoryStarted()
+      return pending
+    })
+    const cachedRead = state.loadOverview(true)
+    await started
+
+    expect(state.removeAgentSkillItems('local', 'codex', ['target-shared'], ['unmanaged-shared'])).toBe(true)
+    finishInventory([regularUnmanaged, sharedUnmanaged])
+    await cachedRead
+
     expect(useSkillStoreV2.getState().unmanaged).toEqual([regularUnmanaged])
     expect(useSkillStoreV2.getState().overview?.metrics).toMatchObject({ targetCount: 1, unmanagedCount: 1 })
   })
