@@ -48,23 +48,23 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
             }
         }
     }
-    $value = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+    $fileNameValue = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     if ($Action -eq 'Save') {
         # Setting ValuePattern alone can leave the default filename selected at submission.
         $fileName.SetFocus()
         $null = Wait-IslandValue 'keyboard focus on the Save field' { $fileName.Current.HasKeyboardFocus }
-        $value.SetValue('')
+        $fileNameValue.SetValue('')
         [AgentBroSmokeInput]::ReplaceText($Path)
     } else {
-        $value.SetValue($Path)
+        $fileNameValue.SetValue($Path)
     }
     try {
         $null = Wait-IslandValue "the entered $Action path" {
-            $value.Current.Value -ceq $Path
+            $fileNameValue.Current.Value -ceq $Path
         }
     } catch {
         Write-Output "Expected $Action path: [$Path]"
-        Write-Output "File name control value: [$($value.Current.Value)]"
+        Write-Output "File name control value: [$($fileNameValue.Current.Value)]"
         throw
     }
     $submit = Wait-IslandValue "the enabled $Action button" {
