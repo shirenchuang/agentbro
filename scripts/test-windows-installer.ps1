@@ -184,12 +184,13 @@ function Send-ClaudeToolEvent([string]$Executable, [string[]]$Arguments, [hashta
     }
 }
 
-function Test-InstalledIsland([string]$ProjectName) {
+function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]$Workspace) {
     $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
     $scriptPath = Join-Path $PSScriptRoot 'test-windows-island.ps1'
     foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', $scriptPath,
-            '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
+            '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName,
+            '-SessionId', $SessionId, '-Workspace', $Workspace)) {
         $start.ArgumentList.Add($argument)
     }
     if ($VerifyPackManifest) {
@@ -281,7 +282,7 @@ try {
         $event.cwd = $restoredWorkspace
         $event.tool_input.file_path = Join-Path $restoredWorkspace 'smoke.txt'
         Send-ClaudeToolEvent $bridgePath @('--source', 'claude-code') $event
-        Test-InstalledIsland $restoredProjectName
+        Test-InstalledIsland $restoredProjectName $restoredSession $restoredWorkspace
     }
 } catch {
     Write-Output "AgentBro PID: $($app.Id), expected Hook port: $port"
