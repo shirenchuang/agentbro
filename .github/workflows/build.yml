@@ -179,6 +179,9 @@ jobs:
           & $testExecutable skills::v2::tests::windows_skill_paths_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::v2::db::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable skills::v2::fsutil::windows_shell::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -8028,7 +8028,9 @@ function makeOverview() {
 describe('Skill manager settings page', () => {
   beforeEach(() => {
     cleanup()
+    useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     useSkillStoreV2.setState({
+      runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
       settings: {
         centerPath: '/Users/mac/.agentbro/skills',
         sqlitePath: '/Users/mac/.agentbro/skill-manager/skill-manager.db',
@@ -8039,6 +8041,32 @@ describe('Skill manager settings page', () => {
       },
       error: null,
     })
+  })
+
+  it('shows a database load error and can retry after it becomes available', async () => {
+    const { loadOverview, loadProjects } = useSkillStoreV2.getInitialState()
+    useSkillStoreV2.setState({ settings: null, overview: null, loadOverview, loadProjects })
+    const overview = vi.spyOn(skillApiV2, 'overview')
+      .mockRejectedValueOnce('Could not initialize Skill Manager database: database is locked')
+      .mockResolvedValueOnce(makeOverview())
+    const unmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const projects = vi.spyOn(skillApiV2, 'listProjects').mockResolvedValue([])
+    const { SettingsPageV2 } = await import('../components/skills-v2/SettingsPageV2')
+
+    try {
+      render(<SettingsPageV2 />)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('database is locked')
+      fireEvent.click(screen.getByRole('button', { name: i18n.t('settings.retry') }))
+
+      expect(await screen.findByRole('button', { name: i18n.t('skills.revealSqlite') })).toBeInTheDocument()
+      expect(overview).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      overview.mockRestore()
+      unmanaged.mockRestore()
+      projects.mockRestore()
+    }
   })
 
   it('reveals the SQLite database in the file manager and shows feedback', async () => {

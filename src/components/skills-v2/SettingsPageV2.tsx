@@ -17,6 +17,19 @@ export function SettingsPageV2() {
   }, [])
 
   if (!settings) {
+    if (state.error) {
+      return (
+        <div className="sm2">
+          <div className="sm2__main">
+            <div className="sm2__error" role="alert">{state.error}</div>
+            <button className="sm2__btn" onClick={() => {
+              state.setError(null)
+              void state.loadOverview(true)
+            }}>{t('settings.retry')}</button>
+          </div>
+        </div>
+      )
+    }
     return <div className="sm2__empty">加载设置中…</div>
   }
 
