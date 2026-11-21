@@ -380,7 +380,12 @@ function Write-IslandAccessibilityComparison([IntPtr]$WindowHandle, [string]$Sta
         }
         Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-after-clients.png")
         Write-Host "Finished comparing accessibility clients at $([DateTimeOffset]::UtcNow.ToString('O'))."
-        if ($RendererTracePort) { Write-IslandRendererState $RendererTracePort $WindowHandle }
+        if ($RendererTracePort) {
+            $endpoint = if ($rendererDiscovery -and $rendererDiscovery.State -eq 'Completed') {
+                Receive-Job -Job $rendererDiscovery -Keep
+            }
+            Write-IslandRendererState $RendererTracePort $WindowHandle $endpoint
+        }
     } catch {
         Write-Host "Could not compare accessibility clients: $_"
     } finally {
@@ -810,11 +815,25 @@ $originalCursor = [AgentBroSmokeInput+Point]::new()
 $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
+$rendererDiscovery = $null
 $testingPermissions = $false
 try {
     if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
+    if ($RendererTracePort) {
+        try {
+            # Select by Tauri's window label without enabling Chromium accessibility ahead of the test.
+            $rendererDiscovery = Start-Job -ArgumentList (Join-Path $PSScriptRoot 'windows-island-renderer.ps1'), $RendererTracePort -ScriptBlock {
+                param($ProbeScript, $Port)
+                $ErrorActionPreference = 'Stop'
+                . $ProbeScript
+                Find-IslandRendererEndpoint $Port
+            }
+        } catch {
+            Write-Host "Could not start renderer discovery: $_"
+        }
+    }
     Move-ToIslandHoverPoint $islandWindow.Handle $island
     if ($VerifyQwenWork) {
         Test-InstalledQwenWork $island
@@ -918,6 +937,7 @@ try {
     }
     throw
 } finally {
+    if ($rendererDiscovery) { Remove-Job -Job $rendererDiscovery -Force }
     if ($cursorSaved) {
         [void][AgentBroSmokeInput]::SetCursorPos($originalCursor.X, $originalCursor.Y)
     }

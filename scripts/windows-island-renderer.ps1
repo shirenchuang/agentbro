@@ -2,9 +2,10 @@ function Invoke-IslandRendererRequest(
     [Net.WebSockets.ClientWebSocket]$Socket,
     [Threading.CancellationToken]$Cancellation,
     [string]$Method,
-    [hashtable]$Parameters
+    [hashtable]$Parameters,
+    [int]$RequestId = 1
 ) {
-    $request = @{ id = 1; method = $Method; params = $Parameters } | ConvertTo-Json -Depth 5 -Compress
+    $request = @{ id = $RequestId; method = $Method; params = $Parameters } | ConvertTo-Json -Depth 5 -Compress
     $send = [ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($request))
     $buffer = [ArraySegment[byte]]::new([byte[]]::new(8192))
     $body = [IO.MemoryStream]::new()
@@ -20,11 +21,44 @@ function Invoke-IslandRendererRequest(
                 $body.Write($buffer.Array, 0, $frame.Count)
             } until ($frame.EndOfMessage)
             $response = [Text.Encoding]::UTF8.GetString($body.ToArray()) | ConvertFrom-Json
-        } until ($response.id -eq 1)
+        } until ($response.id -eq $RequestId)
         if ($response.error) { throw "$Method failed: $($response.error.message)" }
         $response.result
     } finally {
         $body.Dispose()
+    }
+}
+
+function Get-IslandDebuggerEndpoints([int]$Port) {
+    $targets = Invoke-RestMethod "http://127.0.0.1:$Port/json/list" -UseBasicParsing -TimeoutSec 3
+    foreach ($target in $targets) {
+        if ($target.type -ne 'page' -or -not $target.webSocketDebuggerUrl) { continue }
+        $endpoint = $null
+        if ([uri]::TryCreate($target.webSocketDebuggerUrl, [UriKind]::Absolute, [ref]$endpoint) -and
+            $endpoint.Scheme -eq 'ws' -and $endpoint.IsLoopback -and $endpoint.Port -eq $Port) {
+            $endpoint
+        }
+    }
+}
+
+function Find-IslandRendererEndpoint([int]$Port) {
+    $expression = "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === 'notch'"
+    foreach ($endpoint in Get-IslandDebuggerEndpoints $Port) {
+        $socket = [Net.WebSockets.ClientWebSocket]::new()
+        $timeout = [Threading.CancellationTokenSource]::new(3000)
+        try {
+            $null = $socket.ConnectAsync($endpoint, $timeout.Token).GetAwaiter().GetResult()
+            $response = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
+                expression = $expression
+                returnByValue = $true
+            }
+            if ($response.result.value -eq $true) { return $endpoint.AbsoluteUri }
+        } catch {
+            Write-Verbose "Could not identify a WebView2 page: $_"
+        } finally {
+            $timeout.Dispose()
+            $socket.Dispose()
+        }
     }
 }
 
@@ -94,7 +128,7 @@ function Write-IslandProviderSnapshot([IntPtr]$WindowHandle, [string]$Stage) {
     }
 }
 
-function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
+function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$PreferredEndpoint) {
     $expression = @'
 (() => {
     const panel = document.querySelector('.notch-panel');
@@ -121,13 +155,12 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
     };
 })()
 '@
-    $targets = Invoke-RestMethod "http://127.0.0.1:$Port/json/list" -UseBasicParsing -TimeoutSec 3
+    $endpoints = @(if ($PreferredEndpoint) { $PreferredEndpoint })
+    $endpoints += @(Get-IslandDebuggerEndpoints $Port | Where-Object { $_ -ne $PreferredEndpoint })
     $targetNumber = 0
-    foreach ($target in $targets) {
-        if ($target.type -ne 'page' -or -not $target.webSocketDebuggerUrl) { continue }
-        $endpoint = [uri]$target.webSocketDebuggerUrl
-        if (-not $endpoint.IsLoopback -or $endpoint.Port -ne $Port) { continue }
+    foreach ($endpoint in $endpoints) {
         $targetNumber += 1
+        $isPrepared = $endpoint -eq $PreferredEndpoint
         $socket = [Net.WebSockets.ClientWebSocket]::new()
         $timeout = [Threading.CancellationTokenSource]::new(12000)
         $stage = 'connect'
@@ -142,6 +175,7 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
             $evaluated = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest
             $state = $evaluated.result.value
             if (-not $state) { continue }
+            Write-Host "Island renderer used preselected target: $isPrepared."
             Write-Host "Island renderer DOM at $([DateTimeOffset]::UtcNow.ToString('O')): $($state | ConvertTo-Json -Depth 5 -Compress)"
 
             Write-IslandProviderSnapshot $WindowHandle 'before hit testing'
@@ -153,13 +187,13 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
             $stage = 'verify DOM after hit testing'
             $timeout.Dispose()
             $timeout = [Threading.CancellationTokenSource]::new(6000)
-            $verified = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest
+            $verified = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest 2
             Write-Host "Island renderer DOM after hit testing: $($verified.result.value | ConvertTo-Json -Depth 5 -Compress)"
 
             $stage = 'read accessibility'
             $timeout.Dispose()
             $timeout = [Threading.CancellationTokenSource]::new(12000)
-            $tree = Invoke-IslandRendererRequest $socket $timeout.Token 'Accessibility.getFullAXTree' @{}
+            $tree = Invoke-IslandRendererRequest $socket $timeout.Token 'Accessibility.getFullAXTree' @{} 3
             $buttons = @($tree.nodes | Where-Object {
                 $_.role.value -eq 'button' -and
                     $_.name.value -match '^(Back to sessions|Show all \d+ sessions|Deny|Allow Once|Make agents easier to use)$|smoke\.txt'
