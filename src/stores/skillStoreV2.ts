@@ -136,6 +136,7 @@ interface SkillV2Actions {
 
 let marketplaceProgressListenerStarted = false
 let latestAgentDetailRequest = 0
+let latestRefreshRequest = 0
 let latestProjectListRequest = 0
 let latestProjectDetailRequest = 0
 let projectSelectionRevision = 0
@@ -308,11 +309,24 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   },
   refresh: async () => {
     const runtimeEnvironmentId = get().runtimeEnvironmentId
+    const selection = useRuntimeEnvironmentStore.getState()
+    if (runtimeEnvironmentId !== selection.selectedEnvironmentId) return
+
+    const request = ++latestRefreshRequest
+    const isCurrent = () => {
+      const current = useRuntimeEnvironmentStore.getState()
+      return request === latestRefreshRequest
+        && get().runtimeEnvironmentId === runtimeEnvironmentId
+        && current.selectedEnvironmentId === runtimeEnvironmentId
+        && current.selectionRevision === selection.selectionRevision
+    }
+
     set({ loading: true, error: null })
     try {
-      const overview = await skillApiV2.refreshOverview()
-      const unmanaged = await skillApiV2.listUnmanaged()
-      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
+      const overview = await skillApiV2.refreshOverview(runtimeEnvironmentId)
+      if (!isCurrent()) return
+      const unmanaged = await skillApiV2.listUnmanaged(runtimeEnvironmentId)
+      if (!isCurrent()) return
       set({
         overview,
         skills: overview.skills,
@@ -324,13 +338,11 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         lastOverviewLoadedAt: Date.now(),
       })
       await get().loadProjects(true)
-      set({ initialized: true })
+      if (isCurrent()) set({ initialized: true })
     } catch (e) {
-      set({ error: String(e) })
+      if (isCurrent()) set({ error: String(e) })
     } finally {
-      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
-        set({ loading: false })
-      }
+      if (isCurrent()) set({ loading: false })
     }
   },
   loadOverview: async (force = false) => {
