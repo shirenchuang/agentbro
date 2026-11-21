@@ -18,6 +18,7 @@ public static class AgentBroSmokeMouse {
     private const uint InputMouse = 0;
     private const uint LeftDown = 0x0002;
     private const uint LeftUp = 0x0004;
+    private const uint Wheel = 0x0800;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Point { public int X; public int Y; }
@@ -67,8 +68,12 @@ public static class AgentBroSmokeMouse {
         SendMouseButton(LeftUp);
     }
 
-    private static void SendMouseButton(uint flags) {
-        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags } } };
+    public static void ScrollDown() {
+        SendMouseButton(Wheel, unchecked((uint)-240));
+    }
+
+    private static void SendMouseButton(uint flags, uint data = 0) {
+        var inputs = new[] { new Input { Type = InputMouse, Mouse = new MouseInput { Flags = flags, Data = data } } };
         if (SendInput(1, inputs, Marshal.SizeOf<Input>()) != 1)
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
@@ -206,11 +211,23 @@ try {
             if ($button -and $button.Current.IsEnabled) { return $button }
         }
         Invoke-NamedControl $restore
-        $null = Wait-IslandValue 'the restored result in the native panel' {
-            Find-NamedControl $settings 'Restored'
+        $finished = Wait-IslandValue 'the completed restore and single retryable Skill' {
+            Find-NamedControl $settings 'Restore selected (1)'
         } 65
+        $buttonBounds = $finished.Current.BoundingRectangle
+        if (-not [AgentBroSmokeMouse]::SetCursorPos([int]($buttonBounds.X + $buttonBounds.Width / 2),
+                [int]($buttonBounds.Y + $buttonBounds.Height / 2))) {
+            throw 'Could not move the mouse to the project lock panel'
+        }
+        [AgentBroSmokeMouse]::ScrollDown()
+        $lockPanel = Wait-IslandValue 'the lock panel after scrolling' { Find-NamedControl $settings 'skills-lock.json' }
+        $success = Wait-IslandValue 'the visible restored result in the native panel' {
+            $item = Find-NamedControl $lockPanel 'Restored'
+            if ($item -and -not $item.Current.IsOffscreen) { return $item }
+        }
         $null = Wait-IslandValue 'the content mismatch result in the native panel' {
-            Find-NamedControl $settings 'Downloaded Skill content does not match the lock file'
+            $item = Find-NamedControl $lockPanel 'Downloaded Skill content does not match the lock file'
+            if ($item -and -not $item.Current.IsOffscreen) { return $item }
         }
         Write-Output 'The native Projects UI restored the selected Skill and reported a separate hash mismatch.'
         return
@@ -263,6 +280,13 @@ try {
     }
     try {
         if ($settings) {
+            $panel = Find-NamedControl $settings 'skills-lock.json'
+            if ($panel) {
+                $panel.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                    Select-Object -First 90 -ExpandProperty Current |
+                    Select-Object LocalizedControlType, Name, IsOffscreen |
+                    ConvertTo-Json -Depth 3 -Compress
+            }
             $settings.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Where-Object { $_.Current.LocalizedControlType -in @('edit', 'button', 'check box') } |
                 Select-Object -First 65 -ExpandProperty Current |

@@ -279,7 +279,13 @@ try {
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
     if ($VerifyProjectLock) {
-        Test-InstalledIsland 'Native project lock fixture'
+        $desktopFailure = $null
+        try {
+            Test-InstalledIsland 'Native project lock fixture'
+        } catch {
+            $desktopFailure = $_
+            Write-Output "Project lock desktop assertion failed: $($_.Exception.Message)"
+        }
         $restored = Join-Path $lockProject '.agents/skills/native-restored/SKILL.md'
         $normalized = [IO.File]::ReadAllText($restored).Replace("`r`n", "`n")
         $actualHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($normalized)))
@@ -292,6 +298,7 @@ try {
         }
         if ((Get-FileHash -LiteralPath $lockPath).Hash -ne $originalLockHash) { throw 'The project lock file changed' }
         Write-Output 'Verified the pinned GitHub Skill bytes, hash mismatch rejection, and preservation of the existing Skill and lock file.'
+        if ($desktopFailure) { throw $desktopFailure }
     } elseif ($VerifyIsland) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
