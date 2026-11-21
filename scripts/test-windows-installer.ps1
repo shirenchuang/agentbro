@@ -122,6 +122,7 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
+if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
@@ -392,6 +393,10 @@ try {
     }
     throw
 } finally {
+    if ($VerifyDrag -and (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
+        Select-String -LiteralPath $stdoutPath -SimpleMatch 'Island position trace ' |
+            Select-Object -ExpandProperty Line
+    }
     if (-not $app.HasExited) {
         Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
     }
