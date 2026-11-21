@@ -496,6 +496,9 @@ function Test-InstalledIslandDrag(
             [Math]::Abs((Get-IslandCenterX $WindowHandle) - $firstCenter) -le 1
         }
         $released = Get-IslandCenterX $WindowHandle
+        if ($direction -gt 0 -and $released - $before -lt (12 * $scale)) {
+            throw "Island returned toward its starting point on release: $before -> $released"
+        }
         $cursor = [AgentBroSmokeInput+Point]::new()
         if (-not [AgentBroSmokeInput]::GetCursorPos([ref]$cursor)) {
             throw 'Could not read the cursor position after releasing the Island'
@@ -508,7 +511,7 @@ function Test-InstalledIslandDrag(
             Start-Sleep -Milliseconds 150
             $current = Get-IslandCenterX $WindowHandle
             if ([Math]::Abs($current - $released) -gt 2) {
-                throw "Island followed the cursor after release: $released -> $current"
+                throw "Island moved after release: $released -> $current (started at $before)"
             }
         }
         Write-Output "Native Island remained at $released after release and further cursor movement."
