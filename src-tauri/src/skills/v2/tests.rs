@@ -2576,6 +2576,116 @@ fn remove_skill_from_applied_pack_can_keep_standalone() {
 
 // ── Copy sync: outdated / modified / diverged ───────────────────
 
+fn copy_sync_fixture(svc: &Service) -> (PathBuf, SkillTargetDetail) {
+    let center = add_center_test_skill(svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(vec!["review".into()], vec!["codex".into()], "copy".into())
+        .unwrap();
+    svc.execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap();
+    let target = svc.get_skill_detail("review").unwrap().targets.remove(0);
+    fs::write(
+        Path::new(&target.target_path).join("reference.md"),
+        "agent edit",
+    )
+    .unwrap();
+    (center, target)
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_preserves_the_destination_when_the_source_is_missing() {
+    for action in ["center_over_agent", "agent_over_center"] {
+        let (_home, svc, _lock) = fresh_service("copy-sync-missing-source");
+        let (center, target) = copy_sync_fixture(&svc);
+        let agent = Path::new(&target.target_path);
+        let (source, destination, expected) = if action == "center_over_agent" {
+            (center.as_path(), agent, "agent edit")
+        } else {
+            (agent, center.as_path(), "center")
+        };
+        fs::remove_dir_all(source).unwrap();
+
+        assert!(svc.execute_sync_copy_target(&target.id, action).is_err());
+        assert_eq!(
+            fs::read_to_string(destination.join("reference.md")).unwrap(),
+            expected
+        );
+        assert!(destination.join("SKILL.md").is_file());
+    }
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_restores_both_versions_after_a_database_failure() {
+    for action in ["center_over_agent", "agent_over_center"] {
+        let (_home, svc, _lock) = fresh_service("copy-sync-database-failure");
+        let (center, target) = copy_sync_fixture(&svc);
+        let agent = Path::new(&target.target_path);
+        svc.db()
+            .with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TRIGGER reject_copy_reconciliation BEFORE UPDATE ON skill_targets
+                     BEGIN SELECT RAISE(ABORT, 'synchronization failed'); END;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = svc
+            .execute_sync_copy_target(&target.id, action)
+            .unwrap_err();
+        assert!(error.contains("synchronization failed"), "{error}");
+        assert_eq!(
+            fs::read_to_string(center.join("reference.md")).unwrap(),
+            "center"
+        );
+        assert_eq!(
+            fs::read_to_string(agent.join("reference.md")).unwrap(),
+            "agent edit"
+        );
+    }
+}
+
+#[test]
+fn windows_skill_paths_copy_sync_reports_the_backup_if_rollback_is_blocked() {
+    let (_home, svc, _lock) = fresh_service("copy-sync-recovery");
+    let destination = add_center_test_skill(&svc, "source", "review");
+    let pending_path = std::cell::RefCell::new(PathBuf::new());
+
+    let error = fsutil::replace_skill_directory(
+        &destination,
+        |pending| {
+            write_skill(
+                pending.parent().unwrap(),
+                "incoming",
+                "review",
+                Some("replacement"),
+            );
+            pending_path.replace(pending.to_path_buf());
+            Ok(())
+        },
+        || {
+            let pending = pending_path.borrow();
+            fs::create_dir(&*pending).unwrap();
+            fs::write(pending.join("collision"), "existing").unwrap();
+            Err::<(), _>("synchronization failed".into())
+        },
+    )
+    .unwrap_err();
+    let pending = pending_path.into_inner();
+    let recovery = pending.parent().unwrap();
+    assert!(error.contains("Skill recovery files are at"), "{error}");
+    assert!(error.contains(&recovery.display().to_string()), "{error}");
+    assert_eq!(
+        fs::read_to_string(recovery.join("previous/reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(
+        fs::read_to_string(pending.join("collision")).unwrap(),
+        "existing"
+    );
+}
+
 #[test]
 fn copy_sync_detects_outdated_modified_diverged() {
     let (_home, svc, _lock) = fresh_service("sync");

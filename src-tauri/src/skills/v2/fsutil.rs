@@ -575,6 +575,80 @@ pub fn infer_skill_id(dir: &Path) -> String {
     )
 }
 
+pub(crate) fn replace_skill_directory<T>(
+    destination: &Path,
+    prepare: impl FnOnce(&Path) -> Result<(), String>,
+    commit: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("Skill path '{}' has no parent.", destination.display()))?;
+    fs::create_dir_all(parent).map_err(|error| format!("Create {}: {error}", parent.display()))?;
+    let staging = parent.join(format!(".agentbro-replace-{}.tmp", uuid::Uuid::new_v4()));
+    fs::create_dir(&staging)
+        .map_err(|error| format!("Prepare Skill replacement '{}': {error}", staging.display()))?;
+    let pending = staging.join("incoming");
+    let backup = staging.join("previous");
+    let mut saved_previous = false;
+    let mut activated = false;
+
+    let result = (|| {
+        prepare(&pending)?;
+        if !is_skill_dir(&pending) {
+            return Err(format!(
+                "Replacement Skill '{}' is missing SKILL.md.",
+                destination.display()
+            ));
+        }
+        match fs::rename(destination, &backup) {
+            Ok(()) => saved_previous = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Back up existing Skill '{}': {error}",
+                    destination.display()
+                ));
+            }
+        }
+        fs::rename(&pending, destination)
+            .map_err(|error| format!("Activate Skill '{}': {error}", destination.display()))?;
+        activated = true;
+        commit()
+    })();
+
+    if let Err(error) = &result {
+        let restore = (|| {
+            if activated {
+                fs::rename(destination, &pending)?;
+            }
+            if saved_previous {
+                match destination.symlink_metadata() {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                    Ok(_) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            "The replacement path is occupied",
+                        ))
+                    }
+                }
+                fs::rename(&backup, destination)?;
+            }
+            Ok::<(), std::io::Error>(())
+        })();
+        if let Err(restore_error) = restore {
+            return Err(format!(
+                "{error} Restoration failed: {restore_error}. Skill recovery files are at '{}'.",
+                staging.display()
+            ));
+        }
+    }
+    if let Err(error) = remove_path(&staging) {
+        log::warn!("Could not clean up Skill replacement directory: {error}");
+    }
+    result
+}
+
 /// Recursive copy of a directory, skipping ignored entries. Used for `copy`
 /// distribution and importing into the center library.
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
@@ -584,16 +658,17 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     ensure_destination_not_inside_source(src, dst)?;
     fs::create_dir_all(dst).map_err(|e| format!("create dir {}: {}", dst.display(), e))?;
     let rd = fs::read_dir(src).map_err(|e| format!("read dir {}: {}", src.display(), e))?;
-    for entry in rd.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if is_ignored_entry(&name) {
+    for entry in rd {
+        let entry = entry.map_err(|error| format!("read dir {}: {error}", src.display()))?;
+        let name = entry.file_name();
+        if is_ignored_entry(&name.to_string_lossy()) {
             continue;
         }
         let from = entry.path();
         let to = dst.join(&name);
-        let Ok(ft) = entry.file_type() else {
-            continue;
-        };
+        let ft = entry
+            .file_type()
+            .map_err(|error| format!("inspect {}: {error}", from.display()))?;
         if ft.is_dir() {
             if from.is_symlink() {
                 continue;
