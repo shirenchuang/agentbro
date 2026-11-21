@@ -417,6 +417,8 @@ def agent_config_path(agent_id):
     if agent_id == "openclaw":
         configured = os.environ.get("OPENCLAW_CONFIG_PATH")
         return expand_path(configured) if configured else openclaw_state_path() / "openclaw.json"
+    if agent_id == "codex" and os.environ.get("CODEX_HOME"):
+        return expand_path(os.environ["CODEX_HOME"]) / "config.toml"
     return HOME / spec["config"]
 
 
@@ -424,7 +426,7 @@ def agent_mcp_path(agent_id):
     spec = agent_spec(agent_id)
     if not spec:
         raise ValueError("Unknown Agent: " + str(agent_id))
-    return agent_config_path(agent_id) if agent_id == "openclaw" else HOME / spec["mcp"]
+    return agent_config_path(agent_id) if agent_id in ("openclaw", "codex") else HOME / spec["mcp"]
 
 
 def agent_plugin_path(agent_id):
@@ -2312,10 +2314,85 @@ def parse_mcp_config(content):
     return data
 
 
-def mcp_config_values(values, include_sensitive):
+def parse_codex_mcp_config(content):
+    if not content.strip():
+        return {}
+    try:
+        import tomllib as toml_parser
+    except ImportError:
+        try:
+            import tomli as toml_parser
+        except ImportError:
+            raise ValueError("Reading remote Codex MCP TOML requires Python 3.11+ or an installed tomli parser.") from None
+
+    message = "Fix the remote Codex MCP TOML configuration before inspecting its servers."
+    try:
+        servers = toml_parser.loads(content.decode("utf-8")).get("mcp_servers", {})
+    except ValueError:
+        raise ValueError(message) from None
+    if not isinstance(servers, dict) or any(not isinstance(server, dict) for server in servers.values()):
+        raise ValueError(message)
+    return servers
+
+
+def codex_mcp_connection(config, include_sensitive):
+    env = config.get("env", {})
+    headers = config.get("http_headers", {})
+    header_vars = config.get("env_http_headers", {})
+    args = config.get("args", [])
+    env_vars = config.get("env_vars", [])
+    string_fields = ("command", "cwd", "url", "bearer_token_env_var", "environment_id")
+    if (
+        any(key in config and not isinstance(config[key], str) for key in string_fields)
+        or not isinstance(config.get("enabled", True), bool)
+        or not isinstance(args, list)
+        or any(not isinstance(arg, str) for arg in args)
+        or not isinstance(env_vars, list)
+        or any(
+            not isinstance(values, dict) or any(not isinstance(value, str) for value in values.values())
+            for values in (env, headers, header_vars)
+        )
+    ):
+        return {}, {}, "Invalid remote Codex MCP server configuration."
+    if bool(config.get("command")) == bool(config.get("url")):
+        return {}, {}, "A remote Codex MCP server requires either a command or a URL."
+
+    env = dict(env)
+    headers = {key.title(): value for key, value in headers.items()}
+    unsupported = ""
+    for entry in env_vars:
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            name = entry["name"]
+            if entry.get("source", "local") != "local":
+                unsupported = "This MCP server uses environment variables from a Codex executor."
+                continue
+        else:
+            return {}, {}, "Invalid remote Codex MCP environment variable configuration."
+        env.setdefault(name, os.environ.get(name) if include_sensitive else "")
+
+    for key, name in header_vars.items():
+        resolved = os.environ.get(name) if include_sensitive else ""
+        if resolved is not None:
+            headers[key.title()] = resolved
+    bearer_var = config.get("bearer_token_env_var")
+    if bearer_var:
+        bearer = os.environ.get(bearer_var) if include_sensitive else ""
+        if bearer is not None:
+            headers["Authorization"] = "Bearer " + bearer
+
+    if config.get("environment_id", "local") != "local":
+        unsupported = "This MCP server uses a Codex executor."
+    elif config.get("http_headers_helper"):
+        unsupported = "This MCP server uses a Codex HTTP headers helper."
+    return env, headers, unsupported
+
+
+def mcp_config_values(values, include_sensitive, redact_all=False):
     items = []
     for key, raw in values.items():
-        secret = bool(re.search(r"authorization|token|key|secret|password|passwd", key, re.I))
+        secret = redact_all or bool(re.search(r"authorization|token|key|secret|password|passwd", key, re.I))
         configured = raw is not None
         items.append({
             "key": key,
@@ -2345,37 +2422,62 @@ def mcp_inventory(agent_id, include_sensitive=False):
     path = agent_mcp_path(agent_id)
     content = read_mcp_config_bytes(path)
     revision = hashlib.sha256(content).hexdigest()
-    editable = path.suffix == ".json"
+    codex = agent_id == "codex"
+    editable = not codex and path.suffix == ".json"
     data = parse_mcp_config(content) if editable else {}
-    raw_servers = data.get("mcpServers", {})
+    raw_servers = parse_codex_mcp_config(content) if codex else data.get("mcpServers", {})
     disabled = set(data.get("disabledMcpServers", []))
     servers = []
     for name, value in raw_servers.items():
         if not isinstance(value, dict):
             continue
-        transport = value.get("type")
+        transport = None if codex else value.get("type")
         if not transport:
             transport = "http" if value.get("url") else "stdio"
-        env = mcp_config_values(value.get("env") or {}, include_sensitive)
-        headers = mcp_config_values(value.get("headers") or {}, include_sensitive)
-        servers.append({
+        if codex:
+            env, headers, message = codex_mcp_connection(value, include_sensitive)
+        else:
+            env, headers, message = value.get("env") or {}, value.get("headers") or {}, ""
+        command, args, cwd, url = (
+            value.get("command"), value.get("args", []), value.get("cwd"), value.get("url")
+        )
+        if codex:
+            command = command if isinstance(command, str) else None
+            cwd = cwd if isinstance(cwd, str) else None
+            url = url if isinstance(url, str) else None
+            if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+                args = []
+        if codex and url:
+            try:
+                parts = urllib.parse.urlsplit(url)
+                if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+                    message = "The remote Codex MCP server requires an HTTP URL without embedded credentials."
+                if not include_sensitive:
+                    url = urllib.parse.urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+            except ValueError:
+                url = None
+                message = "Invalid remote Codex MCP server URL."
+        server = {
             "name": name,
             "transport": transport,
-            "command": value.get("command"),
-            "args": value.get("args", []),
-            "env": env,
-            "cwd": value.get("cwd"),
-            "url": value.get("url"),
-            "headers": headers,
-            "enabled": name not in disabled,
+            "command": command,
+            "args": args,
+            "env": mcp_config_values(env, include_sensitive, redact_all=codex),
+            "cwd": cwd,
+            "url": url,
+            "headers": mcp_config_values(headers, include_sensitive, redact_all=codex),
+            "enabled": value.get("enabled", True) is not False if codex else name not in disabled,
             "disabledByAgentbro": name in disabled,
-            "valid": bool(value.get("command") or value.get("url")),
-            "message": "",
+            "valid": not message and bool(command or url),
+            "message": message,
             "warnings": [],
             "configPath": str(path),
             "editable": editable,
             "sourceKind": "remote_config",
-        })
+        }
+        if codex and include_sensitive:
+            server["codexConnection"] = True
+        servers.append(server)
     return {
         "agentId": agent_id,
         "configPath": str(path),
@@ -2384,7 +2486,7 @@ def mcp_inventory(agent_id, include_sensitive=False):
             "editable": editable,
             "supportsStdio": True,
             "supportsHttp": True,
-            "supportsSse": True,
+            "supportsSse": not codex,
             "supportsNativeToggle": editable,
         },
         "servers": servers,
@@ -2395,7 +2497,7 @@ def write_mcp_inventory(
     agent_id, revision, server=None, original_name=None, delete_name=None, toggle=None
 ):
     path = agent_mcp_path(agent_id)
-    if path.suffix != ".json":
+    if agent_id == "codex" or path.suffix != ".json":
         raise ValueError("This remote Agent MCP format is read-only")
     target = path.resolve()
     content = read_mcp_config_bytes(target)
@@ -2468,6 +2570,8 @@ def mcp_server(agent_id, server_name):
         raise ValueError("MCP server not found: " + server_name)
     if not server["enabled"]:
         raise ValueError("MCP server is disabled")
+    if agent_id == "codex" and not server["valid"]:
+        raise ValueError(server["message"] or "The remote Codex MCP server requires a command or URL.")
     return server
 
 
@@ -2583,6 +2687,13 @@ def stdio_mcp_request(server, method, params=None):
     if not command:
         raise ValueError("MCP stdio server has no command")
     environment = os.environ.copy()
+    if server.get("codexConnection"):
+        environment = {
+            name: environment[name] for name in (
+                "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "SHELL", "TERM",
+                "TMPDIR", "TZ", "USER", "__CF_USER_TEXT_ENCODING",
+            ) if name in environment
+        }
     for item in server.get("env", []):
         if item.get("key") and item.get("value") is not None:
             environment[item["key"]] = item["value"]
@@ -2635,19 +2746,20 @@ def stdio_mcp_request(server, method, params=None):
             process.wait()
 
 
-def http_mcp_post(url, headers, payload, session_id=None):
+def http_mcp_post(url, headers, payload, session_id=None, protect_headers=False):
     request_headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-    for item in headers:
-        if item.get("key") and item.get("value") is not None:
-            request_headers[item["key"]] = item["value"]
-    if session_id:
-        request_headers["Mcp-Session-Id"] = session_id
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
         headers=request_headers,
         method="POST",
     )
+    add_header = request.add_unredirected_header if protect_headers else request.add_header
+    for item in headers:
+        if item.get("key") and item.get("value") is not None:
+            add_header(item["key"], item["value"])
+    if session_id:
+        add_header("Mcp-Session-Id", session_id)
     with urllib.request.urlopen(request, timeout=20) as response:
         raw = response.read().decode(errors="replace")
         session = response.headers.get("Mcp-Session-Id") or session_id
@@ -2667,6 +2779,7 @@ def http_mcp_request(server, method, params=None):
     url = server.get("url")
     if not url:
         raise ValueError("Remote MCP server has no URL")
+    protect_headers = server.get("codexConnection", False)
     initialized, session_id = http_mcp_post(
         url,
         server.get("headers", []),
@@ -2680,6 +2793,7 @@ def http_mcp_request(server, method, params=None):
                 "clientInfo": {"name": "AgentBro", "version": "remote"},
             },
         },
+        protect_headers=protect_headers,
     )
     result, _ = http_mcp_post(
         url,
@@ -2691,16 +2805,31 @@ def http_mcp_request(server, method, params=None):
             "params": params or {},
         },
         session_id,
+        protect_headers,
     )
     return initialized, result
 
 
 def mcp_request(agent_id, server_name, method, params=None):
     server = mcp_server(agent_id, server_name)
-    if server["transport"] == "stdio":
-        initialized, result = stdio_mcp_request(server, method, params)
-    else:
-        initialized, result = http_mcp_request(server, method, params)
+    try:
+        if server["transport"] == "stdio":
+            initialized, result = stdio_mcp_request(server, method, params)
+        else:
+            initialized, result = http_mcp_request(server, method, params)
+    except Exception as error:
+        if agent_id != "codex":
+            raise
+        message = str(error)
+        values = {item["value"] for item in server["env"] + server["headers"] if item["value"]}
+        values.update(value[7:] for value in list(values) if value.lower().startswith("bearer "))
+        if server["url"]:
+            query = urllib.parse.urlsplit(server["url"]).query
+            values.update(value for _, value in urllib.parse.parse_qsl(query) if value)
+        for value in sorted(values, key=len, reverse=True):
+            if value:
+                message = message.replace(value, "***")
+        raise ValueError(message) from None
     return server, initialized, result
 
 
