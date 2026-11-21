@@ -88,6 +88,32 @@ describe('agentApi seedAgentPrograms', () => {
     }
   })
 
+  it('routes Agent Management program and custom Agent commands to the requested runtime', async () => {
+    const { agentApi } = await import('../services/agentApi')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    const config = { displayName: 'Team Agent', globalSkillsDir: '/team/.claude/skills' }
+    try {
+      selectEnvironment('different-host')
+      await agentApi.refresh('original-host')
+      await agentApi.install('codex', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      await agentApi.update('codex', 'original-host')
+      await agentApi.addCustom(config, 'original-host')
+      await agentApi.removeCustom('custom-team', LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['remote_skill_manager_invoke', { id: 'original-host', command: 'agent_refresh', args: {} }],
+        ['agent_install', { agentId: 'codex' }],
+        ['remote_skill_manager_invoke', { id: 'original-host', command: 'agent_update', args: { agentId: 'codex' } }],
+        ['remote_skill_manager_invoke', { id: 'original-host', command: 'add_custom_agent', args: { config } }],
+        ['remove_custom_agent', { agentId: 'custom-team' }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
+
   it('routes batch adoption and pack sync IPC to the confirmed runtime', async () => {
     const { skillApiV2 } = await import('../services/skillApiV2')
     const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')

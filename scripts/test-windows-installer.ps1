@@ -34,6 +34,61 @@ if ($TracePermissionRenderer -and -not $TracePermissionUi) {
     throw 'Renderer comparisons require the isolated-runner permission trace'
 }
 
+function Write-WindowsTerminalStarts([string]$SourceIdentifier, [object[]]$Baseline, [int]$AgentBroPid) {
+    $starts = @(Get-Event -SourceIdentifier $SourceIdentifier -ErrorAction SilentlyContinue | ForEach-Object {
+        $process = $_.SourceEventArgs.NewEvent
+        [PSCustomObject]@{
+            Name = $process.ProcessName
+            Id = [int]$process.ProcessId
+            ParentId = [int]$process.ParentProcessId
+            StartedAt = [DateTime]::FromFileTimeUtc([long]$process.TIME_CREATED)
+        }
+    })
+    $agentBroStart = $starts | Where-Object { $_.Id -eq $AgentBroPid -and $_.Name -eq 'agentbro.exe' } | Select-Object -First 1
+    Write-Output "Windows process trace recorded $($starts.Count) starts. AgentBro start observed: $([bool]$agentBroStart)."
+    $processes = $Baseline + $starts
+    $terminalNames = @('wsl.exe', 'wslhost.exe', 'WindowsTerminal.exe')
+    foreach ($terminal in $starts | Where-Object { $_.Name -in $terminalNames } | Sort-Object StartedAt) {
+        $chain = [Collections.Generic.List[string]]::new()
+        $current = $terminal
+        for ($depth = 0; $current -and $depth -lt 8; $depth += 1) {
+            $chain.Add("$($current.Name) ($($current.Id))")
+            if (-not $current.ParentId) { break }
+            $parent = $processes | Where-Object {
+                $_.Id -eq $current.ParentId -and $_.StartedAt -le $current.StartedAt
+            } | Sort-Object StartedAt -Descending | Select-Object -First 1
+            if (-not $parent) { $chain.Add("unknown PID $($current.ParentId)") }
+            $current = $parent
+        }
+        Write-Output "Windows terminal start at $($terminal.StartedAt.ToString('O')): $($chain -join ' <- ')"
+    }
+    foreach ($terminal in $Baseline | Where-Object { $_.Name -in $terminalNames }) {
+        Write-Output "Windows terminal was already running at trace start: $($terminal.Name) ($($terminal.Id)), parent PID $($terminal.ParentId), started $($terminal.StartedAt.ToString('O'))."
+    }
+}
+
+$processTraceId = "AgentBroInstallerProcessStarts-$PID"
+$processTrace = $false
+$processBaseline = @()
+if ($TracePermissionUi) {
+    try {
+        Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier $processTraceId -ErrorAction Stop | Out-Null
+        $processTrace = [bool](Get-EventSubscriber -SourceIdentifier $processTraceId -ErrorAction Stop)
+        Write-Output "Windows process start trace subscribed: $processTrace."
+        $processBaseline = @(Get-CimInstance -ClassName Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate |
+            Where-Object { $_.CreationDate } | ForEach-Object {
+                [PSCustomObject]@{
+                    Name = $_.Name
+                    Id = [int]$_.ProcessId
+                    ParentId = [int]$_.ParentProcessId
+                    StartedAt = $_.CreationDate.ToUniversalTime()
+                }
+            })
+    } catch {
+        Write-Output "Could not initialize Windows process traces: $_"
+    }
+}
+
 $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
 if (-not $installerProcess.WaitForExit(90000)) {
     $installerProcess.Kill()
@@ -425,6 +480,15 @@ try {
     }
     throw
 } finally {
+    if ($processTrace) {
+        try {
+            Write-WindowsTerminalStarts $processTraceId $processBaseline $app.Id
+        } catch {
+            Write-Output "Could not read Windows process traces: $_"
+        } finally {
+            Unregister-Event -SourceIdentifier $processTraceId -ErrorAction SilentlyContinue
+        }
+    }
     if ($VerifyDrag -and (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
         Select-String -LiteralPath $stdoutPath -SimpleMatch 'Island position trace ' |
             Select-Object -ExpandProperty Line
