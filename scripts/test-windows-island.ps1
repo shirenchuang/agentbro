@@ -570,6 +570,14 @@ try {
     Move-ToElement $island
     if ($VerifyQwenWork) {
         Test-InstalledQwenWork $island
+        $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+        if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+            throw 'Could not move the cursor away from the Island after the QwenWork fixture'
+        }
+        Start-Sleep -Milliseconds 250
+        $islandWindow = Wait-IslandValue 'the visible Island after the QwenWork fixture' { Find-VisibleIsland }
+        $island = $islandWindow.Element
+        Move-ToElement $island
     }
 
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
