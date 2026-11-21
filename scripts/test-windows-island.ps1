@@ -227,12 +227,22 @@ function Write-PermissionAccessibilityBounds {
 function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
-    [Windows.Automation.AutomationElement]$RowAnchor
+    [Windows.Automation.AutomationElement]$RowAnchor,
+    [switch]$CenterAfterLayout
 ) {
     $point = if ($RowAnchor) {
         $row = $Element.Current.BoundingRectangle
         $anchor = $RowAnchor.Current.BoundingRectangle
         [Windows.Point]::new($row.Left + $row.Width / 2, $anchor.Top + $anchor.Height / 2)
+    } elseif ($CenterAfterLayout) {
+        $rect = Wait-IslandValue "stable bounds for $Description" {
+            $before = $Element.Current.BoundingRectangle
+            Start-Sleep -Milliseconds 200
+            $after = $Element.Current.BoundingRectangle
+            if (-not $after.IsEmpty -and $before.Equals($after)) { $after }
+        }
+        Write-Host "$Description bounds: $($rect.ToString([Globalization.CultureInfo]::InvariantCulture))."
+        [Windows.Point]::new($rect.Left + $rect.Width / 2, $rect.Top + $rect.Height / 2)
     } else {
         Wait-IslandValue "a clickable point on $Description" {
             $candidate = [Windows.Point]::new(0, 0)
@@ -280,7 +290,7 @@ function Test-KeyboardPermissionDenial(
         $showSessions = Wait-IslandValue 'the permission card and its session list button' {
             Find-IslandButton $Island { param($Name) $Name -eq 'Make agents easier to use' }
         }
-        Click-IslandElement $showSessions 'Permission card session list button'
+        Click-IslandElement $showSessions 'Permission card session list button' -CenterAfterLayout
         $session = Wait-IslandValue 'the waiting session in the Island list' {
             Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
         }
