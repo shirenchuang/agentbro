@@ -1853,6 +1853,62 @@ mod tests {
     use super::*;
     use crate::skills::v2::agent_meta;
 
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_package_shell_runs_without_a_console() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let probe = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -Namespace AgentBroTest -Name PackageConsole -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint processId);
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+'@
+if (-not [AgentBroTest.PackageConsole]::FreeConsole()) { exit 92 }
+if ([AgentBroTest.PackageConsole]::AttachConsole([uint32]::MaxValue)) {
+    $window = [AgentBroTest.PackageConsole]::GetConsoleWindow()
+    [void][AgentBroTest.PackageConsole]::FreeConsole()
+    if ($window -ne [IntPtr]::Zero) { exit 91 }
+} elseif ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 6) {
+    exit 92
+}
+exit 0
+"#;
+        let encoded = STANDARD.encode(
+            probe
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        let command = format!(
+            "echo fixture-stdout & echo fixture-stderr 1>&2 & powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
+        );
+        let output = timeout(
+            Duration::from_secs(20),
+            command_shell(&command)
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("package shell probe timed out")
+        .expect("package shell should start");
+
+        assert_ne!(
+            output.status.code(),
+            Some(91),
+            "package shell had a console window"
+        );
+        assert!(
+            output.status.success(),
+            "console probe failed: {:?}",
+            output.status
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("fixture-stdout"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("fixture-stderr"));
+    }
+
     #[test]
     fn standalone_desktop_agents_have_distinct_macos_bundles() {
         for (id, path) in [

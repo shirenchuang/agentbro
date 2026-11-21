@@ -247,6 +247,9 @@ jobs:
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::programs::tests::windows_package_shell_runs_without_a_console
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
