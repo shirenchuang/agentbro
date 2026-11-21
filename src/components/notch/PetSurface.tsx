@@ -9,17 +9,15 @@ import {
   type PointerEvent,
 } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { OverlayItem, SessionState } from '../../types/agent'
+import type { OverlayItem, PermissionRequest, SessionState } from '../../types/agent'
 import { PRIORITY, computePriority, type Priority } from '../../types/priority'
-import { useSessionStore, selectActiveOverlay } from '../../stores/sessionStore'
+import { answerDisplayedPermission, useSessionStore, selectActiveOverlay } from '../../stores/sessionStore'
 import {
   endPetDrag,
   isCursorInWindowZones,
   isTauri,
   jumpToTerminal,
   openSettingsWindow,
-  respondAutoApprove,
-  respondPermission,
   respondPlan,
   respondQuestion,
   sendMessage,
@@ -102,12 +100,6 @@ function configAnchorToStage(anchor: { left: boolean; top: boolean } | null | un
     x: anchor.left ? 'left' : 'right',
     y: anchor.top ? 'top' : 'bottom',
   }
-}
-
-function clearPermissionAfter(sessionId: string, work: Promise<void>) {
-  work
-    .then(() => useSessionStore.getState().clearPermission(sessionId))
-    .catch((error) => console.warn('[PetSurface] permission response failed:', error))
 }
 
 /**
@@ -948,6 +940,7 @@ function PetBlockingOverlay({
   onShowSessions: () => void
 }) {
   const showSessions = sessionCount > 1 ? onShowSessions : undefined
+  const permission = overlay.type === 'permission' ? overlay.data as PermissionRequest : undefined
 
   return (
     <section
@@ -961,12 +954,13 @@ function PetBlockingOverlay({
         <PermissionCard
           overlay={overlay}
           session={session}
-          onAllow={() => { clearPermissionAfter(session.id, respondPermission(session.id, true)) }}
-          onAllowAlways={() => { clearPermissionAfter(session.id, respondPermission(session.id, true, true)) }}
-          onAutoApprove={() => { clearPermissionAfter(session.id, respondAutoApprove(session.id)) }}
+          onAllow={() => { answerDisplayedPermission(session.id, permission, true) }}
+          onAllowAlways={() => { answerDisplayedPermission(session.id, permission, true, true) }}
+          onAutoApprove={() => { answerDisplayedPermission(session.id, permission, 'auto') }}
           onDeny={(message?: string) => {
-            if (message) void sendMessage(session.id, message).catch((error) => console.warn('[PetSurface] deny feedback:', error))
-            clearPermissionAfter(session.id, respondPermission(session.id, false))
+            if (answerDisplayedPermission(session.id, permission, false) && message) {
+              void sendMessage(session.id, message).catch((error) => console.warn('[PetSurface] deny feedback:', error))
+            }
           }}
           onDismiss={onClose}
           onShowSessions={showSessions}

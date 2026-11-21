@@ -2,13 +2,13 @@ import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
+import { answerDisplayedPermission, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
-import { respondPermission, respondQuestion, respondPlan, respondAutoApprove, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
-import type { OverlayItem, PanelState, SubagentInfo } from '../../types/agent'
+import type { OverlayItem, PanelState, PermissionRequest, SubagentInfo } from '../../types/agent'
 import { deriveIslandInteraction, getFollowFocusVisibleSessions, isBlockingOverlay, isNonBlockingOverlay, sessionHasVisibleActivity, sessionNeedsAttention } from '../../utils/islandInteraction'
 import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
@@ -49,12 +49,6 @@ const MAX_WAKE_SILENCE_MS = 60_000
 const contentTransition = {
   duration: 0.2,
   ease: 'easeOut' as const,
-}
-
-function clearPermissionAfter(sessionId: string, work: Promise<void>) {
-  work
-    .then(() => useSessionStore.getState().clearPermission(sessionId))
-    .catch((error) => console.warn('[notch] permission response failed:', error))
 }
 
 const NOTCH_SHELL_SIDE_EXTENSION = 14
@@ -135,24 +129,27 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
   if (!session) return null
 
   switch (overlay.type) {
-    case 'permission':
+    case 'permission': {
+      const permission = overlay.data as PermissionRequest
       return (
         <PermissionCard
           overlay={overlay}
           session={session}
-          onAllow={() => { clearPermissionAfter(session.id, respondPermission(session.id, true)) }}
-          onAllowAlways={() => { clearPermissionAfter(session.id, respondPermission(session.id, true, true)) }}
-          onAutoApprove={() => { clearPermissionAfter(session.id, respondAutoApprove(session.id)) }}
+          onAllow={() => { answerDisplayedPermission(session.id, permission, true) }}
+          onAllowAlways={() => { answerDisplayedPermission(session.id, permission, true, true) }}
+          onAutoApprove={() => { answerDisplayedPermission(session.id, permission, 'auto') }}
           onShowSessions={onShowSessions}
           onDeny={(message?: string) => {
-            if (message) sendMessage(session.id, message)
-            clearPermissionAfter(session.id, respondPermission(session.id, false))
+            if (answerDisplayedPermission(session.id, permission, false) && message) {
+              void sendMessage(session.id, message).catch((error) => console.warn('[notch] deny feedback:', error))
+            }
           }}
           onDismiss={onDismiss}
           onDraftStateChange={onDraftStateChange}
           sessionCount={sessionCount}
         />
       )
+    }
     case 'plan':
       return (
         <PlanApprovalCard
@@ -1135,7 +1132,7 @@ export function NotchPanel() {
           respondPlan(active.id, 'acceptEdits')
           useSessionStore.getState().clearPlan(active.id)
         } else {
-          clearPermissionAfter(active.id, respondPermission(active.id, true))
+          answerDisplayedPermission(active.id, active.pendingPermission, true)
         }
         return
       }
@@ -1148,7 +1145,7 @@ export function NotchPanel() {
           respondPlan(active.id, 'manual')
           useSessionStore.getState().clearPlan(active.id)
         } else {
-          clearPermissionAfter(active.id, respondPermission(active.id, false))
+          answerDisplayedPermission(active.id, active.pendingPermission, false)
         }
         return
       }

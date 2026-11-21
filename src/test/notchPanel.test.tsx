@@ -931,7 +931,7 @@ describe('NotchPanel island shell', () => {
     expect(allowButton).toBeInTheDocument()
     fireEvent.mouseDown(allowButton)
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, false, undefined)
     await waitFor(() => {
       expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
     })
@@ -953,10 +953,50 @@ describe('NotchPanel island shell', () => {
     expect(allowButton).toBeInTheDocument()
     fireEvent.click(allowButton)
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
     await waitFor(() => {
       expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined()
     })
+  })
+
+  it('keeps a second permission open when the first response arrives late', async () => {
+    const firstReply = deferred()
+    tauriMocks.respondPermission.mockReturnValueOnce(firstReply.promise)
+    const first = { toolUseId: 'first', toolName: 'Bash', toolInput: '{"command":"pnpm test"}' }
+    const second = { ...first, toolUseId: 'second', toolInput: '{"command":"pnpm build"}' }
+    mountIsland({
+      id: 'permission-s1-first',
+      sessionId: 's1',
+      type: 'permission',
+      data: first,
+      createdAt: Date.now(),
+    }, { agentType: 'deepseek-harness', phase: 'waiting_approval', pendingPermission: first })
+
+    fireEvent.click(document.querySelector('.perm-card__btn--allow') as HTMLElement)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, 'first')
+
+    await act(async () => {
+      const store = useSessionStore.getState()
+      store.replaceAllSessions([{ ...store.sessions.s1, pendingPermission: second }])
+      firstReply.resolve()
+      await firstReply.promise
+    })
+    const store = useSessionStore.getState()
+    expect(store.sessions.s1.pendingPermission).toEqual(second)
+    expect(store.sessions.s1.phase).toBe('waiting_approval')
+    expect(store.activeOverlay?.data).toEqual(second)
+
+    const previousCard = screen.queryByText('pnpm test')?.closest('.overlay-card')
+    const previousDeny = previousCard?.querySelector('.perm-card__btn--deny')
+    if (previousDeny) fireEvent.click(previousDeny)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(1)
+
+    const currentCard = (await screen.findByText('pnpm build')).closest('.overlay-card')
+    const deny = currentCard?.querySelector('.perm-card__btn--deny')
+    expect(deny).toBeInTheDocument()
+    fireEvent.click(deny as HTMLElement)
+    expect(tauriMocks.respondPermission).toHaveBeenLastCalledWith('s1', false, undefined, 'second')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeUndefined())
   })
 
   it('opens the island when backend snapshots introduce a permission request', async () => {
@@ -1120,7 +1160,7 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true })
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
 
   it('routes configured panel and session navigation shortcuts', () => {

@@ -2087,62 +2087,28 @@ fn handle_permission_shortcut(app: tauri::AppHandle, allowed: bool) {
     let Some(session) = first_pending_permission(&state.session_store) else {
         return;
     };
-    let session_id = session.id.clone();
-    let codex_app_server = state.codex_app_server.clone();
-    let hook_server = state.hook_server.clone();
-    let session_store = state.session_store.clone();
+    let session_id = session.id;
+    let tool_use_id = session
+        .pending_permission
+        .and_then(|permission| permission.tool_use_id);
 
     tauri::async_runtime::spawn(async move {
-        match codex_app_server
-            .respond_permission(&session_id, allowed, false)
-            .await
+        let state = app.state::<AppState>();
+        if let Err(error) = commands::respond_to_permission(
+            &state,
+            &session_id,
+            allowed,
+            false,
+            tool_use_id.as_deref(),
+        )
+        .await
         {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(err) => log::warn!(
-                "Global permission shortcut Codex app-server response failed for {}: {}",
-                session_id,
-                err
-            ),
-        }
-        let hook_result = hook_server
-            .respond_permission(&session_id, allowed, false)
-            .await;
-        if let Err(err) = hook_result {
             log::warn!(
-                "Global permission shortcut hook response failed for {}: {}. Falling back to tmux.",
+                "Global permission shortcut failed for {}: {}",
                 session_id,
-                err
+                error
             );
-            let fallback_result = (|| -> Result<(), String> {
-                let pid = session
-                    .pid
-                    .ok_or_else(|| "Session has no PID for tmux fallback".to_string())?;
-                let tmux_target = crate::terminal::approval::resolve_tmux_target(pid)
-                    .ok_or_else(|| "Could not find tmux pane for session".to_string())?;
-                if allowed {
-                    crate::terminal::approval::approve_once(&tmux_target)
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    crate::terminal::approval::reject(
-                        &tmux_target,
-                        Some("Denied via keyboard shortcut"),
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            })();
-            if let Err(fallback_err) = fallback_result {
-                log::warn!(
-                    "Global permission shortcut tmux fallback failed for {}: {}",
-                    session_id,
-                    fallback_err
-                );
-                return;
-            }
         }
-        session_store.set_pending_permission(&session_id, None);
-        session_store.update_phase(&session_id, SessionPhase::Processing);
     });
 }
 

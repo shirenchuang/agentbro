@@ -668,10 +668,10 @@ describe('HoverList interactions', () => {
     fireEvent.click(within(permissionCard).getByRole('button', { name: '自动批准' }))
     fireEvent.click(within(permissionCard).getByRole('button', { name: '拒绝' }))
 
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true)
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true)
-    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1')
-    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', true, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, true, undefined)
+    expect(tauriMocks.respondAutoApprove).toHaveBeenCalledWith('s1', undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(3, 's1', false, undefined, undefined)
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 

@@ -449,11 +449,10 @@ impl HookServer {
         };
 
         let raw_tool_use_id = Self::raw_tool_use_id(raw);
-        let same_tool_use_id = raw_tool_use_id
-            .as_deref()
-            .is_some_and(|id| pending.tool_use_id.as_deref() == Some(id));
-        if same_tool_use_id || Self::is_permission_resolution_event(raw) {
-            store.set_pending_permission(session_id, None);
+        if let Some(id) = raw_tool_use_id.as_deref() {
+            store.clear_matching_permission(session_id, Some(id));
+        } else if Self::is_permission_resolution_event(raw) {
+            store.clear_matching_permission(session_id, pending.tool_use_id.as_deref());
         }
     }
 
@@ -1058,19 +1057,32 @@ impl HookServer {
                     &raw,
                 )
                 .await
-                .unwrap_or_else(|| format!("permission:{}:{}", session_id, current_time_ms()));
+                .unwrap_or_else(|| format!("permission:{}", uuid::Uuid::new_v4()));
 
-                // Set pending permission on session
-                store.set_pending_permission(
-                    session_id,
-                    Some(PendingPermission {
-                        tool_use_id: Some(resolved_tool_use_id.clone()),
-                        tool_name: tool_name.clone(),
-                        tool_input: Self::permission_tool_input_from_raw(&raw),
-                        diff: diff.clone(),
-                        options: options.clone(),
-                    }),
-                );
+                let (tx, rx) = oneshot::channel();
+                let pending_key = PendingPermissionKey {
+                    session_id: session_id.clone(),
+                    tool_use_id: resolved_tool_use_id.clone(),
+                };
+                {
+                    let mut pending_map = pending.lock().await;
+                    pending_map.entry(pending_key.clone()).or_default().push(
+                        PendingPermissionEntry {
+                            received_at_ms: current_time_ms(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_permission(
+                        session_id,
+                        Some(PendingPermission {
+                            tool_use_id: Some(resolved_tool_use_id.clone()),
+                            tool_name: tool_name.clone(),
+                            tool_input: Self::permission_tool_input_from_raw(&raw),
+                            diff: diff.clone(),
+                            options: options.clone(),
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1097,22 +1109,6 @@ impl HookServer {
                             );
                         }
                     }
-                }
-
-                // Create a oneshot channel for the permission response
-                let (tx, rx) = oneshot::channel();
-                let pending_key = PendingPermissionKey {
-                    session_id: session_id.clone(),
-                    tool_use_id: resolved_tool_use_id.clone(),
-                };
-                {
-                    let mut pending_map = pending.lock().await;
-                    pending_map.entry(pending_key.clone()).or_default().push(
-                        PendingPermissionEntry {
-                            received_at_ms: current_time_ms(),
-                            tx,
-                        },
-                    );
                 }
 
                 // Wait for the UI to respond. Codex uses a longer hook timeout for AgentBro
@@ -1145,21 +1141,18 @@ impl HookServer {
                             }
                             Err(err) => Err(err.to_string()),
                         };
-                        let _ = reply.ack.send(write_result.clone());
-
                         if write_result.is_ok() {
                             // Play confirmation sound
                             Self::play_sound(&sound, SoundEvent::TaskConfirmation);
 
                             // Clear pending permission
-                            store.set_pending_permission(session_id, None);
-                            store.update_phase(session_id, SessionPhase::Processing);
-                        } else if let Err(err) = write_result {
+                            store
+                                .clear_matching_permission(session_id, Some(&resolved_tool_use_id));
+                        } else if let Err(err) = &write_result {
                             if harness {
-                                Self::clear_harness_permission(
-                                    &store,
+                                store.clear_matching_permission(
                                     session_id,
-                                    &resolved_tool_use_id,
+                                    Some(&resolved_tool_use_id),
                                 );
                             }
                             log::warn!(
@@ -1169,19 +1162,20 @@ impl HookServer {
                                 err
                             );
                         }
+                        let _ = reply.ack.send(write_result);
                     }
                     None => {
                         // Timeout or channel closed — let Claude Code handle it normally
                         let mut pending_map = pending.lock().await;
-                        pending_map.remove(&pending_key);
-                        if harness {
-                            Self::clear_harness_permission(
-                                &store,
-                                session_id,
-                                &resolved_tool_use_id,
-                            );
-                        } else {
-                            store.set_pending_permission(session_id, None);
+                        if let Some(entries) = pending_map.get_mut(&pending_key) {
+                            entries.retain(|entry| !entry.tx.is_closed());
+                            if entries.is_empty() {
+                                pending_map.remove(&pending_key);
+                                store.clear_matching_permission(
+                                    session_id,
+                                    Some(&resolved_tool_use_id),
+                                );
+                            }
                         }
                         log::warn!("Permission request timed out for session {}", session_id);
                     }
@@ -1393,22 +1387,6 @@ impl HookServer {
         }
 
         Ok(())
-    }
-
-    fn clear_harness_permission(store: &SessionStore, session_id: &str, tool_use_id: &str) {
-        store.update_session(session_id, |session| {
-            if session
-                .pending_permission
-                .as_ref()
-                .and_then(|permission| permission.tool_use_id.as_deref())
-                == Some(tool_use_id)
-            {
-                session.pending_permission = None;
-                if session.phase == SessionPhase::WaitingApproval {
-                    session.phase = SessionPhase::Processing;
-                }
-            }
-        });
     }
 
     /// Return recent raw hook events for a session, oldest first.
@@ -1839,7 +1817,9 @@ impl HookServer {
                     s.last_tool_name = Some(tool_name.clone());
                     s.last_tool_target = tool_target.clone();
                     s.last_tool_status = Some(status.clone());
-                    s.phase = SessionPhase::Processing;
+                    if s.pending_permission.is_none() {
+                        s.phase = SessionPhase::Processing;
+                    }
                 });
 
                 // Track TaskCreate/TaskUpdate tool payloads so the island task
@@ -3157,6 +3137,7 @@ impl HookServer {
         session_id: &str,
         allowed: bool,
         always: bool,
+        tool_use_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let response = PermissionResponse {
             decision: if allowed {
@@ -3171,7 +3152,7 @@ impl HookServer {
             },
             always: if allowed && always { Some(true) } else { None },
         };
-        self.send_pending_permission_response(session_id, response)
+        self.send_pending_permission_response(session_id, tool_use_id, response)
             .await
     }
 
@@ -3204,28 +3185,40 @@ impl HookServer {
         }
     }
 
-    pub async fn respond_auto_approve(&self, session_id: &str) -> anyhow::Result<()> {
+    pub async fn respond_auto_approve(
+        &self,
+        session_id: &str,
+        tool_use_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         let response = PermissionResponse {
             decision: "auto".to_string(),
             reason: None,
             always: None,
         };
-        self.send_pending_permission_response(session_id, response)
+        self.send_pending_permission_response(session_id, tool_use_id, response)
             .await
     }
 
     async fn send_pending_permission_response(
         &self,
         session_id: &str,
+        tool_use_id: Option<&str>,
         response: PermissionResponse,
     ) -> anyhow::Result<()> {
         let entries = {
             let mut pending_map = self.pending_permissions.lock().await;
-            let Some(key) = Self::latest_pending_permission_key(&pending_map, session_id).cloned()
-            else {
+            let key = if let Some(tool_use_id) = tool_use_id {
+                Some(PendingPermissionKey {
+                    session_id: session_id.to_string(),
+                    tool_use_id: tool_use_id.to_string(),
+                })
+            } else {
+                Self::latest_pending_permission_key(&pending_map, session_id).cloned()
+            };
+            let Some(entries) = key.and_then(|key| pending_map.remove(&key)) else {
                 anyhow::bail!("No pending permission for session {}", session_id);
             };
-            pending_map.remove(&key).unwrap_or_default()
+            entries
         };
 
         let mut ack_receivers = Vec::new();
@@ -3832,15 +3825,105 @@ mod tests {
         .expect("all Hook requests should be queued before responding");
 
         server
-            .respond_permission("first", false, false)
+            .respond_permission("first", false, false, None)
             .await
             .unwrap();
         server
-            .respond_permission("second", true, false)
+            .respond_permission("second", true, false, None)
             .await
             .unwrap();
 
         for ((client, task), expected) in requests.into_iter().zip(["deny", "deny", "allow"]) {
+            let mut text = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BufReader::new(client).read_line(&mut text),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(response["decision"], expected);
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_responses_preserve_newer_requests_in_the_same_session() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let mut requests = Vec::new();
+        for tool_id in ["first", "second"] {
+            let (mut client, connection) = tokio::io::duplex(4096);
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "PermissionRequest",
+                "session_id": "same-session",
+                "cwd": "/workspace/project",
+                "tool_name": "Read",
+                "tool_use_id": tool_id,
+                "tool_input": {"file_path": format!("{tool_id}.txt")},
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if store
+                        .get_session("same-session")
+                        .and_then(|session| session.pending_permission)
+                        .and_then(|permission| permission.tool_use_id)
+                        .as_deref()
+                        == Some(tool_id)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("request should become visible");
+            requests.push((client, task));
+        }
+
+        server
+            .respond_permission("same-session", false, false, Some("first"))
+            .await
+            .unwrap();
+        assert!(server
+            .respond_permission("same-session", true, false, Some("first"))
+            .await
+            .is_err());
+        HookServer::clear_pending_permission_after_tool_resolution(
+            &store,
+            "same-session",
+            &serde_json::json!({"event": "PermissionDenied", "tool_use_id": "first"}),
+        );
+        let session = store.get_session("same-session").unwrap();
+        assert_eq!(session.phase, SessionPhase::WaitingApproval);
+        assert_eq!(
+            session.pending_permission.unwrap().tool_use_id.as_deref(),
+            Some("second")
+        );
+        server
+            .respond_permission("same-session", true, false, Some("second"))
+            .await
+            .unwrap();
+        let session = store.get_session("same-session").unwrap();
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+
+        for ((client, task), expected) in requests.into_iter().zip(["deny", "allow"]) {
             let mut text = String::new();
             tokio::time::timeout(
                 Duration::from_secs(2),
