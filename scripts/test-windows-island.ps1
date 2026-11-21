@@ -141,7 +141,8 @@ try {
     $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
         foreach ($button in $island.FindAll([Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
             $state = $button.Current
-            if (-not $state.IsOffscreen -and $state.Name.Contains($ProjectName) -and $state.Name.Contains('smoke.txt')) {
+            $name = [string]$state.Name
+            if (-not $state.IsOffscreen -and $name.Contains($ProjectName) -and $name.Contains('smoke.txt')) {
                 return $button
             }
         }

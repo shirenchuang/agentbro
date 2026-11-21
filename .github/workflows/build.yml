@@ -137,7 +137,7 @@ jobs:
             src-tauri/target/release/agentbro.pdb
           if-no-files-found: error
 
-      - name: Test Windows Skills, Claude Hooks, and MCP
+      - name: Test Windows Agents, Skills, and MCP
         shell: pwsh
         run: |
           $testExecutable = cargo test --release --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
@@ -166,6 +166,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $qwenworkTest = 'hooks::qwenwork_watcher::tests::mirrors_qwenwork_turn_phases_without_owning_approvals'
+          if (-not (& $testExecutable --list $qwenworkTest --exact | Select-String -SimpleMatch "${qwenworkTest}: test" -Quiet)) {
+            throw 'The QwenWork watcher test was not compiled for Windows'
+          }
+          & $testExecutable --exact $qwenworkTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::programs::tests::windows_workbuddy_launchers_match_the_two_installer_editions
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact agents::profiles::tests::workbuddy_ai_hooks_use_separate_settings_and_observe_confirmations
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::server::tests::workbuddy_sessions_outlive_the_hook_shell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable platform::wsl::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::server::tests::wsl_hooks_isolate_sessions_and_ignore_windows_process_ids
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact skills::installer::tests::temporary_import_directories_have_independent_lifetimes
@@ -217,26 +242,36 @@ jobs:
 
       - name: Install and exercise the Windows app
         shell: pwsh
-        timeout-minutes: 8
+        timeout-minutes: 18
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
           $smokeShell = (Get-Process -Id $PID).Path
-          foreach ($attempt in 1..8) {
-            Write-Output "::group::Windows startup attempt $attempt"
-            if ($attempt -gt 4) {
-              $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $env:RUNNER_TEMP "AgentBro WebView2 startup $attempt"
-            }
-            try {
-              & $smokeShell -NoProfile -NonInteractive -File ./scripts/test-windows-installer.ps1 `
-                  -Installer $installer.FullName -VerifyIsland -SymbolsDirectory (Join-Path $PWD 'windows-installers')
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            } finally {
-              Write-Output '::endgroup::'
-            }
+          $symbols = Join-Path $PWD 'windows-installers'
+          $failures = @()
+          foreach ($attempt in 1..16) {
+              if ($attempt -le 8) {
+                  $profile = 'default'
+                  [Environment]::SetEnvironmentVariable('WEBVIEW2_USER_DATA_FOLDER', $null, 'Process')
+              } else {
+                  $profile = 'fresh'
+                  $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $env:RUNNER_TEMP "AgentBro WebView2 startup $attempt"
+              }
+              Write-Output "::group::Windows startup attempt $attempt ($profile)"
+              $timer = [Diagnostics.Stopwatch]::StartNew()
+              try {
+                  & $smokeShell -NoProfile -NonInteractive -File ./scripts/test-windows-installer.ps1 `
+                    -Installer $installer.FullName -VerifyIsland -SymbolsDirectory $symbols
+                  $result = $LASTEXITCODE
+                  Write-Output "Windows startup case $attempt ($profile) exit=$result duration=$([int]$timer.Elapsed.TotalMilliseconds)ms"
+                  if ($result -ne 0) { $failures += "$attempt ($profile)" }
+              } finally {
+                  Write-Output '::endgroup::'
+              }
           }
+          if ($failures.Count -gt 0) { throw "Failed Windows startup cases: $($failures -join ', ')" }
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
