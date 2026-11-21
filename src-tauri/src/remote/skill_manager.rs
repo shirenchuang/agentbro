@@ -504,6 +504,70 @@ os.replace = _agentbro_fail_link_activation
     }
 
     #[test]
+    fn remote_pack_manifest_fingerprints_match_the_portable_format() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let directory = home.path().join(".agentbro/skills/review");
+        let docs = directory.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            b"---\r\nname: review\r\n---\r\nReview\r\n",
+        )
+        .unwrap();
+        std::fs::write(docs.join("data.bin"), b"\0\r\n").unwrap();
+        std::fs::write(docs.join("metadata.json"), b"{\"task\":\"review\"}\n").unwrap();
+        let mut text = vec![b'x'; 65_535];
+        text.extend_from_slice(b"\r\nreference\r");
+        std::fs::write(docs.join("notes.txt"), &text).unwrap();
+        let fingerprints = || {
+            run_script(
+                home.path(),
+                "get_skill_pack_fingerprints",
+                serde_json::json!({
+                    "skillIds": ["review"],
+                }),
+            )
+        };
+        let expected = "f01a46a872990d61dbb42eb09dcd3d38051e4fa727ddca5a2da56d81968be8ef";
+        let reviewed = fingerprints();
+        assert_eq!(
+            reviewed,
+            serde_json::json!([{
+                "skillId": "review", "missing": false, "fingerprint": expected,
+            }])
+        );
+        let args = |reviewed: Value, accept| {
+            serde_json::json!({
+                "manifest": {
+                    "format": "agentbro-skill-pack",
+                    "version": 2,
+                    "name": "Shared review",
+                    "skillIds": ["review"],
+                    "skillFingerprints": {"review": expected},
+                },
+                "reviewed": reviewed,
+                "acceptLocalCopies": accept,
+            })
+        };
+        let command = "execute_import_skill_pack_manifest";
+        let imported = run_script(home.path(), command, args(reviewed.clone(), false));
+        assert_eq!(imported["members"][0]["skillId"], "review");
+        assert_eq!(imported["appliedAgents"], serde_json::json!([]));
+
+        text[0] = b'y';
+        std::fs::write(docs.join("notes.txt"), &text).unwrap();
+        let error = run_script_error(home.path(), command, args(reviewed, true));
+        assert!(error.contains("changed since review"));
+        let updated = fingerprints();
+        let error = run_script_error(home.path(), command, args(updated.clone(), false));
+        assert!(error.contains("Confirm the local copy"));
+        let accepted = run_script(home.path(), command, args(updated, true));
+        assert_ne!(accepted["id"], imported["id"]);
+        assert_eq!(std::fs::read(docs.join("notes.txt")).unwrap(), text);
+    }
+
+    #[test]
     fn remote_skill_pack_create_assigns_independent_ids_and_preserves_the_definition() {
         let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
             .expect("temporary remote home");

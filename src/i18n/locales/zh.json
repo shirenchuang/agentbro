@@ -739,6 +739,13 @@
   "skills": {
     "projectsTab": "项目",
     "packManifest": {
+      "match": "内容一致",
+      "different": "内容不同",
+      "unrecorded": "清单未记录指纹",
+      "unavailable": "无法验证内容",
+      "unavailableHelp": "确认中心库中的技能文件可读，然后重新比对。",
+      "useLocalCopies": "内容不同或清单未记录指纹时，使用当前库中的技能",
+      "recheck": "重新比对技能",
       "creating": "正在创建…",
       "import": "导入技能包",
       "export": "导出技能包",

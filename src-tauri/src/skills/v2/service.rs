@@ -5136,6 +5136,69 @@ impl Service {
         Ok(preview)
     }
 
+    pub fn skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
+        skill_ids
+            .iter()
+            .map(|id| {
+                let Some(row) = self.skill_row(id)? else {
+                    return Ok(SkillPackFingerprint {
+                        skill_id: id.clone(),
+                        missing: true,
+                        fingerprint: None,
+                    });
+                };
+                let path = Path::new(&row.center_path);
+                let fingerprint = path.canonicalize().ok().and_then(|directory| {
+                    super::project_lock::fingerprint_canonical_skill_directory(&directory, false)
+                        .ok()
+                });
+                let missing = fingerprint.is_none()
+                    && path
+                        .join("SKILL.md")
+                        .symlink_metadata()
+                        .is_err_and(|error| {
+                            matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            )
+                        });
+                Ok(SkillPackFingerprint {
+                    skill_id: id.clone(),
+                    missing,
+                    fingerprint,
+                })
+            })
+            .collect()
+    }
+
+    pub fn import_reviewed_skill_pack(
+        &self,
+        manifest: SkillPackManifest,
+        reviewed: &[SkillPackFingerprint],
+        accept_local_copies: bool,
+    ) -> Result<SkillPackDetail, String> {
+        super::pack_manifest::validate(&manifest)?;
+        if manifest.version != 2 {
+            return Err("A content review requires Skill Pack version 2.".to_string());
+        }
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = self.skill_pack_fingerprints(&manifest.skill_ids)?;
+        super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
+        self.upsert_skill_pack_deferred(UpsertPackInput {
+            id: String::new(),
+            name: manifest.name,
+            description: manifest.description,
+            tags: manifest.tags,
+            skill_ids: manifest.skill_ids,
+        })
+    }
+
     pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {
         self.upsert_skill_pack_with_sync(pack, true)
     }

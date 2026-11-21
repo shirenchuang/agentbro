@@ -54,6 +54,7 @@ STATE_MUTATING_COMMANDS = {
     "execute_sync_copy_target",
     "execute_fix_diagnosis_issue",
     "execute_upsert_skill_pack",
+    "execute_import_skill_pack_manifest",
     "execute_delete_skill_pack",
     "execute_apply_skill_pack",
     "execute_sync_skill_pack_to_agents",
@@ -558,6 +559,119 @@ def hash_dir(path):
         return digest.hexdigest()
     except Exception:
         return ""
+
+
+def add_pack_content_file(digest, relative, source):
+    with source.open("rb") as handle:
+        size = 0
+        crlf = 0
+        binary = False
+        previous = b""
+        for chunk in iter(lambda: handle.read(65536), b""):
+            size += len(chunk)
+            binary = binary or b"\0" in chunk
+            crlf += chunk.count(b"\r\n") + (previous == b"\r" and chunk.startswith(b"\n"))
+            previous = chunk[-1:]
+        normalize = not binary and crlf > 0
+        expected_size = size - crlf if normalize else size
+        digest.update(f"{relative}\0{expected_size}\0".encode())
+
+        handle.seek(0)
+        pending = b""
+        written = 0
+        for chunk in iter(lambda: handle.read(65536), b""):
+            if normalize:
+                chunk = pending + chunk
+                pending = b"\r" if chunk.endswith(b"\r") else b""
+                if pending:
+                    chunk = chunk[:-1]
+                chunk = chunk.replace(b"\r\n", b"\n")
+            digest.update(chunk)
+            written += len(chunk)
+        digest.update(pending)
+        if written + len(pending) != expected_size:
+            raise ValueError("A Skill file changed while it was being verified")
+
+
+def pack_content_fingerprint(directory):
+    root = directory.resolve(strict=True)
+    if not stat.S_ISREG((root / "SKILL.md").lstat().st_mode):
+        raise ValueError("The installed path is not a Skill directory")
+    files = {}
+
+    def collect(directory, prefix, ancestors):
+        for entry in directory.iterdir():
+            name = entry.name
+            if has_surrogate(name):
+                raise ValueError("Skill file names must be UTF-8")
+            source = entry
+            if entry.is_symlink():
+                try:
+                    source = entry.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if source != root and root not in source.parents:
+                    continue
+            mode = source.stat().st_mode
+            if stat.S_ISDIR(mode) and name in (".git", "__pycache__", "__pypackages__"):
+                continue
+            if (name.endswith((".", " ")) or name.lower() == ".git"
+                    or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 or ch in '<>:"/\\|?*' for ch in name)
+                    or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name.split(".", 1)[0], re.I | re.ASCII)):
+                raise ValueError("Unsupported Skill file name: " + name)
+            relative = prefix + name
+            if stat.S_ISDIR(mode) and source not in ancestors:
+                collect(source, relative + "/", ancestors | {source})
+            elif stat.S_ISREG(mode):
+                files[relative] = source
+
+    collect(root, "", {root})
+    digest = hashlib.sha256()
+    for relative, file in sorted(files.items()):
+        add_pack_content_file(digest, relative, file)
+    return digest.hexdigest()
+
+
+def skill_pack_fingerprints(skill_ids):
+    paths = {path.name: path for path in center_path().iterdir()}
+    items = []
+    for skill_id in skill_ids:
+        entry = {"skillId": skill_id, "missing": False, "fingerprint": None}
+        path = paths.get(skill_id)
+        try:
+            if path is None:
+                raise FileNotFoundError()
+            (path / "SKILL.md").lstat()
+            entry["fingerprint"] = pack_content_fingerprint(path)
+        except (FileNotFoundError, NotADirectoryError):
+            entry["missing"] = True
+        except (OSError, RuntimeError, ValueError):
+            pass
+        items.append(entry)
+    return items
+
+
+def import_reviewed_skill_pack(manifest, reviewed, accept_local_copies):
+    if manifest.get("version") != 2 or manifest.get("format") != "agentbro-skill-pack":
+        raise ValueError("A content review requires Skill Pack version 2")
+    ids = manifest["skillIds"]
+    expected = manifest.get("skillFingerprints", {})
+    if (not manifest["name"].strip() or len(set(ids)) != len(ids)
+            or any(key not in ids or not re.fullmatch(r"[0-9a-f]{64}", value) for key, value in expected.items())):
+        raise ValueError("Invalid Skill Pack manifest")
+    current = skill_pack_fingerprints(ids)
+    if current != reviewed:
+        raise ValueError("The selected library changed since review. Recheck the Skill Pack.")
+    for item in current:
+        skill_id = item["skillId"]
+        if item["missing"]:
+            raise ValueError(f"Skill '{skill_id}' is missing from the center library.")
+        if not item["fingerprint"]:
+            raise ValueError(f"Could not verify Skill '{skill_id}' in the center library.")
+        if accept_local_copies is not True and expected.get(skill_id) != item["fingerprint"]:
+            raise ValueError(f"Confirm the local copy of Skill '{skill_id}' before importing.")
+    return upsert_pack({**manifest, "id": ""})
+
 
 
 def skill_directories(root):
@@ -3655,6 +3769,10 @@ def dispatch():
         return overview()["packs"]
     if command == "get_skill_pack_detail":
         return pack_detail(args["packId"])
+    if command == "get_skill_pack_fingerprints":
+        return skill_pack_fingerprints(args["skillIds"])
+    if command == "execute_import_skill_pack_manifest":
+        return import_reviewed_skill_pack(args["manifest"], args["reviewed"], args["acceptLocalCopies"])
     if command == "execute_upsert_skill_pack":
         return upsert_pack(args["pack"])
     if command == "preview_delete_skill_pack":

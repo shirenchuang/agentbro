@@ -4,7 +4,7 @@
 //! cross the Tauri boundary match the TypeScript types in `skillApi.ts`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub const SCHEMA_VERSION: i64 = 4;
 
@@ -401,6 +401,16 @@ pub struct SkillPackManifest {
     #[serde(default)]
     pub tags: Vec<String>,
     pub skill_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_fingerprints: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackFingerprint {
+    pub skill_id: String,
+    pub missing: bool,
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
