@@ -163,8 +163,8 @@ function ProjectDetailView({
   onTab,
   agentFilter,
   onAgentFilter,
-  busy,
-  onScan,
+  busy: projectDetailLoading,
+  onScan: scanProject,
   onRemove,
 }: {
   detail: ProjectDetail
@@ -177,10 +177,11 @@ function ProjectDetailView({
   onRemove: () => void
 }) {
   const [scanning, setScanning] = useState(false)
-  const scan = async () => {
+  const busy = projectDetailLoading || scanning
+  const onScan = async () => {
     setScanning(true)
     try {
-      await onScan()
+      await scanProject()
     } finally {
       setScanning(false)
     }
@@ -222,10 +223,10 @@ function ProjectDetailView({
         </div>
         <div className="sm2__btn-row sm2__project-actions">
           <button className="sm2__btn" disabled={busy} onClick={() => skillApiV2.openPath(detail.rootPath)}>打开</button>
-          <button className="sm2__btn" disabled={busy || scanning} onClick={scan}>{scanning ? '扫描中…' : '重新扫描'}</button>
+          <button className="sm2__btn" disabled={busy} onClick={onScan}>{busy ? '扫描中…' : '重新扫描'}</button>
           <button
             className="sm2__btn sm2__btn--danger-ghost"
-            disabled={busy || scanning}
+            disabled={busy}
             onClick={() => {
               if (window.confirm(`从列表移除项目 ${detail.name}？不会删除项目文件。`)) onRemove()
             }}

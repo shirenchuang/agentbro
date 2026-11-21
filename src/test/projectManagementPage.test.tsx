@@ -140,6 +140,90 @@ describe('ProjectManagementPage', () => {
     vi.spyOn(skillApiV2, 'getProjectDetail').mockResolvedValue(project)
   })
 
+  it('renders project resources and installs a center skill into the project', async () => {
+    const install = vi.spyOn(skillApiV2, 'installCenterSkillsToProject').mockResolvedValue(makeProject())
+    render(<ProjectManagementPage />)
+
+    await waitFor(() => expect(screen.getByText('agentbro')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('Skills (1)'))
+    expect(screen.getByText('project-review')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('MCP (1)'))
+    expect(screen.getByText('context7')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Plugins (1)'))
+    expect(screen.getAllByText('documents@openai-primary-runtime').length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '安装 Skill' }))
+
+    await waitFor(() => {
+      expect(install).toHaveBeenCalledWith('project-1', 'codex', ['release-checklist'], 'link')
+    })
+  })
+
+  it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {
+    await i18n.changeLanguage('en')
+    useSkillStoreV2.setState({ activeTab: 'library' })
+    const project = makeProject()
+    const skillLock = {
+      version: 2,
+      revision: 'preview-digest',
+      error: null,
+      skills: [
+        { name: 'missing-skill', source: 'example/skills', reference: 'locked-commit', status: 'ready' },
+        { name: 'mismatch', source: 'example/skills', reference: 'main', status: 'ready' },
+        { name: 'other-source', source: 'package', reference: null, status: 'unsupported' },
+        { name: 'present', source: 'example/skills', reference: 'main', status: 'existing' },
+        { name: 'unselected', source: 'example/skills', reference: null, status: 'ready' },
+      ],
+    } satisfies NonNullable<ProjectDetail['skillLock']>
+    vi.mocked(skillApiV2.getProjectDetail)
+      .mockResolvedValueOnce({ ...project, skillLock })
+      .mockResolvedValue({
+        ...project,
+        skillLock: {
+          ...skillLock,
+          skills: skillLock.skills.map((skill) => skill.name === 'missing-skill'
+            ? { ...skill, status: 'existing' }
+            : skill),
+        },
+      })
+    const restore = vi.spyOn(skillApiV2, 'restoreProjectSkillLock').mockResolvedValue([
+      { name: 'missing-skill', error: null },
+      { name: 'mismatch', error: 'Downloaded Skill content does not match the lock file' },
+    ])
+    render(
+      <>
+        <SettingsSidebar
+          activeSection="skill-manager-v2"
+          activeIslandView="overview"
+          activeMonitorView="overview"
+          collapsed={false}
+          onCollapsedChange={() => {}}
+          onSelect={() => {}}
+          onIslandViewChange={() => {}}
+          onMonitorViewChange={() => {}}
+        />
+        <SkillManagerShell />
+      </>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+
+    expect(await screen.findByText('example/skills · locked-commit')).toBeInTheDocument()
+    expect(screen.getByText('Unsupported source or version')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore selected (0)' })).toBeDisabled()
+    expect(restore).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'missing-skill' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'mismatch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore selected (2)' }))
+
+    await waitFor(() => expect(restore).toHaveBeenCalledWith('project-1', 'preview-digest', ['missing-skill', 'mismatch']))
+    expect(await screen.findByText('Restored')).toBeInTheDocument()
+    expect(screen.getByText('Downloaded Skill content does not match the lock file')).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'missing-skill' })).not.toBeInTheDocument()
+  })
+
   it('keeps the selected project detail when an earlier selection finishes late', async () => {
     const first = makeProject()
     const second = alternateProject()
@@ -301,89 +385,5 @@ describe('ProjectManagementPage', () => {
     ])
     expect(scan).toHaveBeenCalledWith(first.id)
     expect(screen.getByRole('heading', { name: second.name })).toBeInTheDocument()
-  })
-
-  it('renders project resources and installs a center skill into the project', async () => {
-    const install = vi.spyOn(skillApiV2, 'installCenterSkillsToProject').mockResolvedValue(makeProject())
-    render(<ProjectManagementPage />)
-
-    await waitFor(() => expect(screen.getByText('agentbro')).toBeInTheDocument())
-
-    fireEvent.click(screen.getByText('Skills (1)'))
-    expect(screen.getByText('project-review')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByText('MCP (1)'))
-    expect(screen.getByText('context7')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByText('Plugins (1)'))
-    expect(screen.getAllByText('documents@openai-primary-runtime').length).toBeGreaterThan(0)
-
-    fireEvent.click(screen.getByRole('button', { name: '安装 Skill' }))
-
-    await waitFor(() => {
-      expect(install).toHaveBeenCalledWith('project-1', 'codex', ['release-checklist'], 'link')
-    })
-  })
-
-  it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {
-    await i18n.changeLanguage('en')
-    useSkillStoreV2.setState({ activeTab: 'library' })
-    const project = makeProject()
-    const skillLock = {
-      version: 2,
-      revision: 'preview-digest',
-      error: null,
-      skills: [
-        { name: 'missing-skill', source: 'example/skills', reference: 'locked-commit', status: 'ready' },
-        { name: 'mismatch', source: 'example/skills', reference: 'main', status: 'ready' },
-        { name: 'other-source', source: 'package', reference: null, status: 'unsupported' },
-        { name: 'present', source: 'example/skills', reference: 'main', status: 'existing' },
-        { name: 'unselected', source: 'example/skills', reference: null, status: 'ready' },
-      ],
-    } satisfies NonNullable<ProjectDetail['skillLock']>
-    vi.mocked(skillApiV2.getProjectDetail)
-      .mockResolvedValueOnce({ ...project, skillLock })
-      .mockResolvedValue({
-        ...project,
-        skillLock: {
-          ...skillLock,
-          skills: skillLock.skills.map((skill) => skill.name === 'missing-skill'
-            ? { ...skill, status: 'existing' }
-            : skill),
-        },
-      })
-    const restore = vi.spyOn(skillApiV2, 'restoreProjectSkillLock').mockResolvedValue([
-      { name: 'missing-skill', error: null },
-      { name: 'mismatch', error: 'Downloaded Skill content does not match the lock file' },
-    ])
-    render(
-      <>
-        <SettingsSidebar
-          activeSection="skill-manager-v2"
-          activeIslandView="overview"
-          activeMonitorView="overview"
-          collapsed={false}
-          onCollapsedChange={() => {}}
-          onSelect={() => {}}
-          onIslandViewChange={() => {}}
-          onMonitorViewChange={() => {}}
-        />
-        <SkillManagerShell />
-      </>,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
-
-    expect(await screen.findByText('example/skills · locked-commit')).toBeInTheDocument()
-    expect(screen.getByText('Unsupported source or version')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Restore selected (0)' })).toBeDisabled()
-    expect(restore).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'missing-skill' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'mismatch' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Restore selected (2)' }))
-
-    await waitFor(() => expect(restore).toHaveBeenCalledWith('project-1', 'preview-digest', ['missing-skill', 'mismatch']))
-    expect(await screen.findByText('Restored')).toBeInTheDocument()
-    expect(screen.getByText('Downloaded Skill content does not match the lock file')).toBeInTheDocument()
-    expect(screen.queryByRole('checkbox', { name: 'missing-skill' })).not.toBeInTheDocument()
   })
 })
