@@ -251,7 +251,7 @@ jobs:
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
+          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyProjectLock `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
       - name: Upload the failed desktop check

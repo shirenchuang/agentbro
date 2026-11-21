@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$LockProjectPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,13 +75,13 @@ public static class AgentBroSmokeMouse {
 }
 '@
 
-function Wait-IslandValue([string]$Description, [scriptblock]$ReadValue) {
+function Wait-IslandValue([string]$Description, [scriptblock]$ReadValue, [int]$TimeoutSeconds = 15) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     do {
         $value = & $ReadValue
         if ($value) { return $value }
         Start-Sleep -Milliseconds 250
-    } while ($timer.Elapsed.TotalSeconds -lt 15)
+    } while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds)
     throw "Timed out waiting for $Description"
 }
 
@@ -128,6 +129,16 @@ function Save-FailedRunnerDesktop {
     }
 }
 
+function Find-NamedControl([Windows.Automation.AutomationElement]$Root, [string]$Name) {
+    $condition = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-NamedControl([Windows.Automation.AutomationElement]$Element) {
+    $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+
 $previousDpi = [AgentBroSmokeMouse]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeMouse+Point]::new()
 $cursorSaved = [AgentBroSmokeMouse]::GetCursorPos([ref]$originalCursor)
@@ -135,6 +146,71 @@ $island = $null
 try {
     $island = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     Move-ToElement $island
+
+    if ($LockProjectPath) {
+        $open = Wait-IslandValue 'the Island Settings button' { Find-NamedControl $island 'Settings' }
+        Invoke-NamedControl $open
+        $settings = Wait-IslandValue 'the native Settings window' {
+            foreach ($window in Get-IslandWindows) {
+                if ((Find-NamedControl $window 'Agent Skills') -or (Find-NamedControl $window 'Start AgentBro')) {
+                    return $window
+                }
+            }
+        }
+        $welcome = Find-NamedControl $settings 'Start AgentBro'
+        if ($welcome) { Invoke-NamedControl $welcome }
+        $agentSkills = Wait-IslandValue 'the Agent Skills section' { Find-NamedControl $settings 'Agent Skills' }
+        Invoke-NamedControl $agentSkills
+        $projects = Wait-IslandValue 'the Projects navigation item' { Find-NamedControl $settings 'Projects' }
+        Invoke-NamedControl $projects
+        Write-Output 'Opened Projects from the native Settings sidebar.'
+
+        $label = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
+        $pathBox = Wait-IslandValue 'the project folder field' {
+            foreach ($element in $settings.FindAll([Windows.Automation.TreeScope]::Descendants, $label)) {
+                if ($element.Current.Name -eq '导入项目' -or $element.Current.Name -eq '/Users/me/work/repo') { return $element }
+            }
+        }
+        $filled = $false
+        try {
+            $pathBox.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($LockProjectPath)
+            Start-Sleep -Milliseconds 300
+            $add = Find-NamedControl $settings '添加'
+            $filled = $add -and $add.Current.IsEnabled
+        } catch {}
+        if (-not $filled) {
+            Add-Type -AssemblyName System.Windows.Forms
+            Set-Clipboard -Value $LockProjectPath
+            $pathBox.SetFocus()
+            [Windows.Forms.SendKeys]::SendWait('^a^v')
+        }
+        $add = Wait-IslandValue 'the enabled Add Project button' {
+            $button = Find-NamedControl $settings '添加'
+            if ($button -and $button.Current.IsEnabled) { return $button }
+        }
+        Invoke-NamedControl $add
+        $null = Wait-IslandValue 'the lock file preview' { Find-NamedControl $settings 'native-restored' }
+        if (-not (Find-NamedControl $settings 'native-existing')) { throw 'Existing Skill is absent from the preview' }
+        if (-not (Find-NamedControl $settings 'native-mismatch')) { throw 'Second missing Skill is absent from the preview' }
+        $select = Wait-IslandValue 'the Select all restorable checkbox' {
+            Find-NamedControl $settings 'Select all restorable'
+        }
+        $select.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Toggle()
+        $restore = Wait-IslandValue 'the restore selection button for two Skills' {
+            $button = Find-NamedControl $settings 'Restore selected (2)'
+            if ($button -and $button.Current.IsEnabled) { return $button }
+        }
+        Invoke-NamedControl $restore
+        $null = Wait-IslandValue 'the restored result in the native panel' {
+            Find-NamedControl $settings 'Restored'
+        } 65
+        $null = Wait-IslandValue 'the content mismatch result in the native panel' {
+            Find-NamedControl $settings 'Downloaded Skill content does not match the lock file'
+        }
+        Write-Output 'The native Projects UI restored the selected Skill and reported a separate hash mismatch.'
+        return
+    }
 
     $buttonCondition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
