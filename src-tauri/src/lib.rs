@@ -4599,6 +4599,17 @@ async fn set_notch_window_frame(
             let result = window
                 .set_position(position)
                 .and_then(|()| window.set_size(size))
+                .and_then(|()| {
+                    // Wry notifies WebView2 on moves. Refresh accessibility
+                    // bounds after a resize that leaves the window in place.
+                    window.with_webview(|webview| {
+                        if let Err(error) =
+                            unsafe { webview.controller().NotifyParentWindowPositionChanged() }
+                        {
+                            log::debug!("Island WebView2 bounds notification failed: {error}");
+                        }
+                    })
+                })
                 .map_err(|error| error.to_string());
             let _ = applied.send(result);
         })
