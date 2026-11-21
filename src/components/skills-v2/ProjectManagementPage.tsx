@@ -3,6 +3,7 @@ import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
 import { AgentIconBadge } from './AgentIconBadge'
+import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
 type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config'
 
@@ -77,9 +78,10 @@ export function ProjectManagementPage() {
       <div className="sm2__project-layout">
         <aside className="sm2__project-sidebar settings-scroll">
           <div className="sm2__project-import">
-            <label>导入项目</label>
+            <label htmlFor="skill-project-root">导入项目</label>
             <div className="sm2__project-import-row">
               <input
+                id="skill-project-root"
                 className="sm2__search sm2__search--full"
                 value={rootPath}
                 onChange={(event) => setRootPath(event.target.value)}
@@ -231,6 +233,13 @@ function ProjectDetailView({
       </div>
 
       <ProjectInstallPanel detail={detail} />
+      {detail.skillLock && (
+        <ProjectSkillLockPanel
+          key={detail.id + ':' + detail.skillLock.revision}
+          projectId={detail.id}
+          lock={detail.skillLock}
+        />
+      )}
 
       <div className="sm2__subtabs">
         {tabs.map((item) => (

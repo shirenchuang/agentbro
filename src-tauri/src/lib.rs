@@ -6465,6 +6465,7 @@ pub fn run() {
             skills::v2::commands::remove_skill_project_v2,
             skills::v2::commands::get_skill_project_detail_v2,
             skills::v2::commands::scan_skill_project_v2,
+            skills::v2::commands::restore_project_skill_lock_v2,
             skills::v2::commands::install_center_skills_to_project_v2,
             skills::v2::commands::install_skill_pack_to_project_v2,
             skills::v2::commands::run_skill_manager_diagnosis,

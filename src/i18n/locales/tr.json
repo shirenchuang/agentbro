@@ -591,6 +591,22 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "projectsTab": "Projeler",
+    "projectLock": {
+      "selectAll": "Geri yüklenebilenlerin tümünü seç",
+      "restoring": "Geri yükleniyor…",
+      "restore": "Seçilenleri geri yükle ({{count}})",
+      "destination": "Eksik becerileri {{path}} konumuna geri yükleyin.",
+      "empty": "Bu kilit dosyasında beceri yok.",
+      "restored": "Geri yüklendi",
+      "status": {
+        "existing": "Zaten var",
+        "ready": "Geri yüklenebilir",
+        "legacy": "Eski karma biçimi",
+        "unsupported": "Desteklenmeyen kaynak veya sürüm",
+        "invalid": "Geçersiz kayıt"
+      }
+    },
     "sourceUpdates": {
       "installedCommit": "Yüklü commit",
       "privateRepository": "Özel depo",

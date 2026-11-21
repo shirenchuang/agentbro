@@ -696,6 +696,22 @@
     "dismiss": "Dismiss"
   },
   "skills": {
+    "projectsTab": "Projects",
+    "projectLock": {
+      "selectAll": "Select all restorable",
+      "restoring": "Restoring…",
+      "restore": "Restore selected ({{count}})",
+      "destination": "Restore missing Skills to {{path}}.",
+      "empty": "This lock file has no Skills.",
+      "restored": "Restored",
+      "status": {
+        "existing": "Already exists",
+        "ready": "Ready to restore",
+        "legacy": "Legacy hash format",
+        "unsupported": "Unsupported source or version",
+        "invalid": "Invalid entry"
+      }
+    },
     "sourceUpdates": {
       "installedCommit": "Installed commit",
       "privateRepository": "Private repository",

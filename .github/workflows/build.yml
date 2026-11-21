@@ -190,6 +190,9 @@ jobs:
           & $testExecutable platform::wsl::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::v2::project_lock::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact hooks::server::tests::wsl_hooks_isolate_sessions_and_ignore_windows_process_ids
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

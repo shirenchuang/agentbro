@@ -402,6 +402,61 @@ pub(crate) fn checkout_git_skill(
     GitSkillCheckout::from_resolved(skill_dir, temporary)
 }
 
+pub(crate) fn checkout_skill_lock_ref(
+    repository: &str,
+    reference: &str,
+) -> Result<(PathBuf, TempInstallDir), String> {
+    let temporary = TempInstallDir::create_in(&std::env::temp_dir())?;
+    let checkout = temporary.path().join("repo");
+    fs::create_dir(&checkout).map_err(|error| error.to_string())?;
+    let cancel = AtomicBool::new(false);
+    let network_env = git_network_env();
+    for (args, operation) in [
+        (
+            &["init", "--quiet", "--template="][..],
+            "preparing the Skill checkout",
+        ),
+        (
+            &[
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--",
+                repository,
+                reference,
+            ],
+            "fetching the locked Skill revision",
+        ),
+        (
+            &[
+                "-c",
+                "core.hooksPath=.git/agentbro-no-hooks",
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ],
+            "checking out the locked Skill revision",
+        ),
+    ] {
+        let output = run_git_with_cancel(
+            &checkout,
+            args,
+            Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
+            &cancel,
+            &network_env,
+            None,
+            operation,
+        )?;
+        if !output.status.success() {
+            return Err(format!("Git failed while {operation}"));
+        }
+    }
+    Ok((checkout, temporary))
+}
+
 impl GitSkillCheckout {
     fn from_resolved(skill_dir: PathBuf, temporary: TempInstallDir) -> Result<Self, String> {
         let repo_dir = temporary.path().join("repo");

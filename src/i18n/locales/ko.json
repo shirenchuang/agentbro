@@ -697,6 +697,22 @@
     "dismiss": "닫기"
   },
   "skills": {
+    "projectsTab": "프로젝트",
+    "projectLock": {
+      "selectAll": "복원 가능한 항목 모두 선택",
+      "restoring": "복원 중…",
+      "restore": "선택 항목 복원 ({{count}}개)",
+      "destination": "누락된 스킬을 {{path}}에 복원합니다.",
+      "empty": "이 잠금 파일에 스킬이 없습니다.",
+      "restored": "복원됨",
+      "status": {
+        "existing": "이미 있음",
+        "ready": "복원 가능",
+        "legacy": "이전 해시 형식",
+        "unsupported": "지원하지 않는 소스 또는 버전",
+        "invalid": "잘못된 항목"
+      }
+    },
     "sourceUpdates": {
       "installedCommit": "설치된 커밋",
       "privateRepository": "비공개 저장소",

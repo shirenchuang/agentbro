@@ -1693,6 +1693,7 @@ impl Service {
         let root = PathBuf::from(&row.root_path);
         let agents = self.scan_project_agents(&root)?;
         let instructions = project_instruction_files(&root);
+        let skill_lock = super::project_lock::preview(&root);
         let mut health = Vec::new();
         if !root.is_dir() {
             health.push(ProjectHealthIssue {
@@ -1701,7 +1702,7 @@ impl Service {
                 message: format!("Project path does not exist: {}", root.display()),
                 severity: "error".to_string(),
             });
-        } else if agents.is_empty() && instructions.is_empty() {
+        } else if agents.is_empty() && instructions.is_empty() && skill_lock.is_none() {
             health.push(ProjectHealthIssue {
                 agent_id: None,
                 kind: "project_no_agent_config".to_string(),
@@ -1715,7 +1716,20 @@ impl Service {
             agents,
             instructions,
             health,
+            skill_lock,
         })
+    }
+
+    pub fn restore_project_skill_lock(
+        &self,
+        project_id: &str,
+        revision: &str,
+        skill_names: Vec<String>,
+    ) -> Result<Vec<ProjectSkillRestoreResult>, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        super::project_lock::restore(Path::new(&row.root_path), revision, skill_names)
     }
 
     fn scan_project_agents(&self, root: &Path) -> Result<Vec<ProjectAgentDetail>, String> {

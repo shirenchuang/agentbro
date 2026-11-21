@@ -126,6 +126,42 @@ pub struct ProjectDetail {
     pub agents: Vec<ProjectAgentDetail>,
     pub instructions: Vec<ProjectInstructionFile>,
     pub health: Vec<ProjectHealthIssue>,
+    pub skill_lock: Option<ProjectSkillLock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillLock {
+    pub version: Option<u32>,
+    pub revision: String,
+    pub skills: Vec<ProjectLockedSkill>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLockedSkill {
+    pub name: String,
+    pub source: String,
+    pub reference: Option<String>,
+    pub status: ProjectLockedSkillStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectLockedSkillStatus {
+    Existing,
+    Ready,
+    Legacy,
+    Unsupported,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSkillRestoreResult {
+    pub name: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

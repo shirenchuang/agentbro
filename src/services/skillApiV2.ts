@@ -523,6 +523,26 @@ export interface ProjectDetail extends ProjectSummary {
   agents: ProjectAgentDetail[]
   instructions: ProjectInstructionFile[]
   health: ProjectHealthIssue[]
+  skillLock?: ProjectSkillLock | null
+}
+
+export interface ProjectSkillLock {
+  version: number | null
+  revision: string
+  skills: ProjectLockedSkill[]
+  error: string | null
+}
+
+export interface ProjectLockedSkill {
+  name: string
+  source: string
+  reference: string | null
+  status: 'existing' | 'ready' | 'legacy' | 'unsupported' | 'invalid'
+}
+
+export interface ProjectSkillRestoreResult {
+  name: string
+  error: string | null
 }
 
 export interface ConflictBlocker {
@@ -1495,6 +1515,10 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<ProjectDetail>('get_skill_project_detail_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
   scanProject: (projectId: string) =>
     isTauriRuntime() ? invoke<ProjectDetail>('scan_skill_project_v2', { projectId }) : Promise.resolve(demoProjectDetail(projectId)),
+  restoreProjectSkillLock: (projectId: string, revision: string, skillNames: string[]) =>
+    isTauriRuntime()
+      ? invoke<ProjectSkillRestoreResult[]>('restore_project_skill_lock_v2', { projectId, revision, skillNames })
+      : Promise.resolve([]),
   installCenterSkillsToProject: (projectId: string, agentId: string, skillIds: string[], requestedMode: 'link' | 'copy') =>
     isTauriRuntime()
       ? invoke<ProjectDetail>('install_center_skills_to_project_v2', { projectId, agentId, skillIds, requestedMode })

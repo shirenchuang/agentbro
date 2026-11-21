@@ -737,6 +737,22 @@
     "dismiss": "关闭"
   },
   "skills": {
+    "projectsTab": "项目",
+    "projectLock": {
+      "selectAll": "选择全部可恢复项",
+      "restoring": "正在恢复…",
+      "restore": "恢复选中项（{{count}}）",
+      "destination": "将缺失的 Skill 恢复到 {{path}}。",
+      "empty": "此锁文件没有 Skill。",
+      "restored": "已恢复",
+      "status": {
+        "existing": "已存在",
+        "ready": "可恢复",
+        "legacy": "旧版校验格式",
+        "unsupported": "暂不支持的来源或版本",
+        "invalid": "条目无效"
+      }
+    },
     "sourceUpdates": {
       "installedCommit": "已安装的提交",
       "privateRepository": "私有仓库",
