@@ -373,6 +373,19 @@ pub struct SkillPackSummary {
     pub failed_sync_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillPackManifest {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub skill_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillPackPickerData {

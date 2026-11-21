@@ -697,6 +697,18 @@
   },
   "skills": {
     "projectsTab": "Projects",
+    "packManifest": {
+      "creating": "Creating…",
+      "import": "Import Skill Pack",
+      "export": "Export Skill Pack",
+      "create": "Create Skill Pack",
+      "exported": "Skill Pack exported.",
+      "imported": "Imported {{name}} as a new Skill Pack.",
+      "review": "This pack uses the Skills already in the selected runtime’s center library.",
+      "missing": "Missing",
+      "missingHelp": "Install the missing Skills in the center library before importing.",
+      "empty": "This pack has no members."
+    },
     "projectLock": {
       "verify": "Verify installed Skills",
       "verifying": "Verifying…",

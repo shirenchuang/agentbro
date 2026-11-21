@@ -698,6 +698,18 @@
   },
   "skills": {
     "projectsTab": "프로젝트",
+    "packManifest": {
+      "creating": "만드는 중…",
+      "import": "스킬 팩 가져오기",
+      "export": "스킬 팩 내보내기",
+      "create": "스킬 팩 만들기",
+      "exported": "스킬 팩을 내보냈습니다.",
+      "imported": "‘{{name}}’을 새 스킬 팩으로 가져왔습니다.",
+      "review": "이 팩은 선택한 실행 환경의 중앙 라이브러리에 있는 스킬을 참조합니다.",
+      "missing": "누락",
+      "missingHelp": "누락된 스킬을 중앙 라이브러리에 설치한 뒤 가져오세요.",
+      "empty": "이 팩에는 스킬이 없습니다."
+    },
     "projectLock": {
       "verify": "설치된 스킬 검증",
       "verifying": "검증 중…",

@@ -7,10 +7,10 @@ import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
 import { agentApi, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
-import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillPackManifest, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
 import type { AgentType, SessionState } from '../types/agent'
 import { useConfigStore } from '../stores/configStore'
 import {
@@ -21,7 +21,7 @@ import {
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn().mockResolvedValue(null) }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn().mockResolvedValue(null), save: vi.fn().mockResolvedValue(null) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
 
 function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
@@ -6594,7 +6594,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__rail')).toBeNull()
   })
 
-  async function openPackApplication() {
+  async function renderPackPage() {
     const skill = makeSkill()
     const pack: SkillPackDetail = {
       id: 'default',
@@ -6624,9 +6624,115 @@ describe('Skill detail slider + agent page render without crashing', () => {
     vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(pack)
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     render(<SkillPackPage />)
+    return { pack, skill, overview }
+  }
+
+  async function openPackApplication() {
+    const { pack, skill } = await renderPackPage()
     fireEvent.click(screen.getByRole('button', { name: '应用到 Agent' }))
     return { pack, skill, dialog: within(screen.getByRole('dialog', { name: '应用「Review pack」' })) }
   }
+
+  it('exports a Skill Pack manifest with only the ordered definition', async () => {
+    const { pack, skill } = await renderPackPage()
+    act(() => useSkillStoreV2.setState({
+      selectedPackDetail: {
+        ...pack,
+        description: 'Review before publishing',
+        tags: ['team'],
+        appliedAgents: [{ packId: pack.id, packName: pack.name, memberCount: 1, agentId: 'claude-code' }],
+      },
+    }))
+    const destination = 'C:/Team Files/技能包.agentbro-pack.json'
+    vi.mocked(saveDialog).mockResolvedValueOnce(destination)
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出技能包' }))
+
+    expect(await screen.findByText('技能包已导出。')).toBeInTheDocument()
+    expect(write).toHaveBeenCalledWith(destination, {
+      format: 'agentbro-skill-pack',
+      version: 1,
+      name: pack.name,
+      description: 'Review before publishing',
+      tags: ['team'],
+      skillIds: [skill.id],
+    })
+  })
+
+  it('previews missing Skill Pack members and imports a new pack in manifest order', async () => {
+    const { pack, skill, overview } = await renderPackPage()
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 1,
+      name: '团队审阅',
+      description: '团队的审阅流程',
+      tags: ['team'],
+      skillIds: ['review-notes', skill.id],
+    }
+    const source = '/Users/me/Team Workspace/团队审阅.agentbro-pack.json'
+    vi.mocked(openDialog).mockResolvedValueOnce(source)
+    const read = vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...pack,
+      id: 'pack-imported',
+      name: manifest.name,
+      description: manifest.description,
+      tags: manifest.tags,
+      members: [
+        { skillId: 'review-notes', skillName: 'Review Notes', required: true, sortOrder: 0, missing: false },
+        { ...pack.members[0], sortOrder: 1 },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    expect(read).toHaveBeenCalledWith(source)
+    expect(preview.getByText(manifest.description)).toBeInTheDocument()
+    expect(preview.getByText('缺失')).toBeInTheDocument()
+    expect(preview.getByRole('button', { name: '创建技能包' })).toBeDisabled()
+    expect(upsert).not.toHaveBeenCalled()
+
+    const updatedSkills = [skill, makeSkill({ id: 'review-notes' })]
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, skills: updatedSkills })
+    act(() => useSkillStoreV2.setState({ skills: updatedSkills }))
+    fireEvent.click(preview.getByRole('button', { name: '创建技能包' }))
+
+    expect(await screen.findByText('已将「团队审阅」导入为新技能包。')).toBeInTheDocument()
+    expect(upsert).toHaveBeenCalledWith({
+      id: '',
+      name: manifest.name,
+      description: manifest.description,
+      tags: manifest.tags,
+      skillIds: ['review-notes', skill.id],
+    }, { deferSync: true })
+    expect(useSkillStoreV2.getState().selectedPackId).toBe('pack-imported')
+  })
+
+  it('discards a Skill Pack import review after switching runtimes', async () => {
+    const { skill } = await renderPackPage()
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/workflow.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue({
+      format: 'agentbro-skill-pack',
+      version: 1,
+      name: 'Portable pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+    })
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack')
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const confirm = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+      .getByRole('button', { name: '创建技能包' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    fireEvent.click(confirm)
+
+    expect(upsert).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
+  })
 
   it('discards a late pack preview when the selected Agent and mode change', async () => {
     const { pack, skill, dialog } = await openPackApplication()

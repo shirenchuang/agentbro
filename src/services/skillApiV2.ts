@@ -197,6 +197,15 @@ export interface SkillPackDetail {
   updatedAt: string
 }
 
+export interface SkillPackManifest {
+  format: 'agentbro-skill-pack'
+  version: 1
+  name: string
+  description: string
+  tags: string[]
+  skillIds: string[]
+}
+
 export interface McpServerStatus {
   name: string
   command: string
@@ -1318,6 +1327,9 @@ export const skillApiV2 = {
   listPacks: () => (isTauriRuntime() ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
   getPackDetail: (packId: string) =>
     isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }) : Promise.resolve(null as unknown as SkillPackDetail),
+  readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
+  writePackManifest: (path: string, manifest: SkillPackManifest) =>
+    tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
   upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean } = {}) =>
     isTauriRuntime()
       ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false })

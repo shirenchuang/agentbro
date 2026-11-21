@@ -407,6 +407,16 @@ pub fn get_skill_pack_detail(pack_id: String) -> Result<SkillPackDetail, String>
 }
 
 #[tauri::command(async)]
+pub fn read_skill_pack_manifest(path: String) -> Result<SkillPackManifest, String> {
+    super::pack_manifest::read(std::path::Path::new(&path))
+}
+
+#[tauri::command(async)]
+pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> Result<(), String> {
+    super::pack_manifest::write(std::path::Path::new(&path), &manifest)
+}
+
+#[tauri::command(async)]
 pub fn execute_upsert_skill_pack(
     pack: UpsertPackInput,
     defer_sync: Option<bool>,

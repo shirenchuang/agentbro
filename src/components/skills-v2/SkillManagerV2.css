@@ -628,6 +628,19 @@
 
 .sm2__change--blocked { background: rgba(255, 59, 48, 0.1); }
 
+.sm2__pack-manifest-members {
+  padding: 0;
+  list-style: none;
+}
+
+.sm2__pack-manifest-members li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
 .sm2__issue {
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   border-radius: 10px;

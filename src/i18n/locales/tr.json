@@ -592,6 +592,18 @@
   },
   "skills": {
     "projectsTab": "Projeler",
+    "packManifest": {
+      "creating": "Oluşturuluyor…",
+      "import": "Beceri paketi içe aktar",
+      "export": "Beceri paketini dışa aktar",
+      "create": "Beceri paketi oluştur",
+      "exported": "Beceri paketi dışa aktarıldı.",
+      "imported": "{{name}} yeni bir beceri paketi olarak içe aktarıldı.",
+      "review": "Bu paket, seçilen çalışma ortamının merkez kütüphanesindeki becerileri kullanır.",
+      "missing": "Eksik",
+      "missingHelp": "İçe aktarmadan önce eksik becerileri merkez kütüphanesine yükleyin.",
+      "empty": "Bu pakette beceri yok."
+    },
     "projectLock": {
       "verify": "Yüklü becerileri doğrula",
       "verifying": "Doğrulanıyor…",
