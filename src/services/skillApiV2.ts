@@ -1122,9 +1122,9 @@ function demoMcpInspectionReport(
 export const skillApiV2 = {
   bootstrap: () => (isTauriRuntime() ? invoke<void>('skill_manager_bootstrap') : Promise.resolve()),
   init: () => (isTauriRuntime() ? invoke<void>('skill_manager_init') : Promise.resolve()),
-  overview: () =>
+  overview: (environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<SkillManagerOverview>('skill_manager_overview')
+      ? invoke<SkillManagerOverview>('skill_manager_overview', undefined, environmentId)
       : Promise.resolve(demoOverview()),
   getSkillPackPickerData: (): Promise<SkillPackPickerData> => {
     if (isTauriRuntime()) return invoke<SkillPackPickerData>('skill_pack_picker_data')

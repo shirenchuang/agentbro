@@ -779,17 +779,8 @@ export function AgentManagementPage() {
             }
             const overview = await skillApiV2.overview()
             ensureRefreshRuntime()
-            useSkillStoreV2.setState({
-              overview,
-              skills: overview.skills,
-              agents: overview.agents,
-              packs: overview.packs,
-              issues: overview.issues,
-              unmanaged,
-              settings: overview.settings,
-              lastOverviewLoadedAt: Date.now(),
-              error: null,
-            })
+            useSkillStoreV2.getState().applyInventoryOverview(overview, unmanaged)
+            state.setError(null)
             setAdopt(null)
           }}
         />

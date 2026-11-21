@@ -102,6 +102,7 @@ interface SkillV2Actions {
   init: () => Promise<void>
   refresh: () => Promise<void>
   loadOverview: (force?: boolean) => Promise<void>
+  applyInventoryOverview: (overview: SkillManagerOverview, unmanaged: UnmanagedItemDto[]) => void
   setTab: (tab: SkillManagerTab) => void
   setInstallTab: (tab: SkillInstallTab) => void
   setViewMode: (mode: SkillViewMode) => void
@@ -136,6 +137,8 @@ interface SkillV2Actions {
 
 let marketplaceProgressListenerStarted = false
 let latestRefreshRequest = 0
+let inventoryRevision = 0
+let publishedInventoryRevision = 0
 let latestAgentDetailRequest = 0
 let latestPackDetailRequest = 0
 let latestProjectListRequest = 0
@@ -143,6 +146,19 @@ let latestProjectDetailRequest = 0
 let projectSelectionRevision = 0
 let skillRuntimeGeneration = 0
 let pendingInitialization: { generation: number; task: Promise<void> } | null = null
+
+function inventoryFields(overview: SkillManagerOverview, unmanaged: UnmanagedItemDto[]) {
+  return {
+    overview,
+    skills: overview.skills,
+    agents: overview.agents,
+    packs: overview.packs,
+    issues: overview.issues,
+    unmanaged,
+    settings: overview.settings,
+    lastOverviewLoadedAt: Date.now(),
+  }
+}
 
 function isProjectRuntime(id: string) {
   return useSkillStoreV2.getState().runtimeEnvironmentId === id
@@ -328,16 +344,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       if (!isCurrent()) return
       const unmanaged = await skillApiV2.listUnmanaged(runtimeEnvironmentId)
       if (!isCurrent()) return
-      set({
-        overview,
-        skills: overview.skills,
-        agents: overview.agents,
-        packs: overview.packs,
-        issues: overview.issues,
-        unmanaged,
-        settings: overview.settings,
-        lastOverviewLoadedAt: Date.now(),
-      })
+      get().applyInventoryOverview(overview, unmanaged)
       await get().loadProjects(true)
       if (isCurrent()) set({ initialized: true })
     } catch (e) {
@@ -349,35 +356,36 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   loadOverview: async (force = false) => {
     const runtimeEnvironmentId = get().runtimeEnvironmentId
     const selection = useRuntimeEnvironmentStore.getState()
+    if (runtimeEnvironmentId !== selection.selectedEnvironmentId) return
+    if (!force && get().overview && Date.now() - get().lastOverviewLoadedAt < OVERVIEW_CACHE_TTL_MS) return
+
+    const revision = ++inventoryRevision
     const isCurrent = () => {
       const current = useRuntimeEnvironmentStore.getState()
-      return get().runtimeEnvironmentId === runtimeEnvironmentId
-        && current.selectedEnvironmentId === selection.selectedEnvironmentId
+      return revision > publishedInventoryRevision
+        && get().runtimeEnvironmentId === runtimeEnvironmentId
+        && current.selectedEnvironmentId === runtimeEnvironmentId
         && current.selectionRevision === selection.selectionRevision
     }
-    const now = Date.now()
-    if (!force && get().overview && now - get().lastOverviewLoadedAt < OVERVIEW_CACHE_TTL_MS) {
-      return
-    }
+
     try {
-      const overview = await skillApiV2.overview()
+      const overview = await skillApiV2.overview(runtimeEnvironmentId)
       if (!isCurrent()) return
-      const unmanaged = await skillApiV2.listUnmanaged()
+      const unmanaged = await skillApiV2.listUnmanaged(runtimeEnvironmentId)
       if (!isCurrent()) return
-      set({
-        overview,
-        skills: overview.skills,
-        agents: overview.agents,
-        packs: overview.packs,
-        issues: overview.issues,
-        unmanaged,
-        settings: overview.settings,
-        lastOverviewLoadedAt: Date.now(),
-      })
+      publishedInventoryRevision = revision
+      set(inventoryFields(overview, unmanaged))
       void get().loadProjects()
     } catch (e) {
-      if (isCurrent()) set({ error: String(e) })
+      if (isCurrent()) {
+        publishedInventoryRevision = revision
+        set({ error: String(e) })
+      }
     }
+  },
+  applyInventoryOverview: (overview, unmanaged) => {
+    publishedInventoryRevision = ++inventoryRevision
+    set(inventoryFields(overview, unmanaged))
   },
   setTab: (tab) => set({ activeTab: tab }),
   requestCustomAgentDialog: () => set((state) => ({
@@ -474,18 +482,11 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       return false
     }
     latestAgentDetailRequest += 1
-    const overview = snapshot.overview
+    publishedInventoryRevision = ++inventoryRevision
     set({
+      ...inventoryFields(snapshot.overview, snapshot.unmanaged),
       selectedAgentDetail: snapshot.agentDetail,
       agentDetailLoading: false,
-      overview,
-      skills: overview.skills,
-      agents: overview.agents,
-      packs: overview.packs,
-      issues: overview.issues,
-      unmanaged: snapshot.unmanaged,
-      settings: overview.settings,
-      lastOverviewLoadedAt: Date.now(),
     })
     return true
   },
@@ -544,6 +545,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }))
 
     latestAgentDetailRequest += 1
+    publishedInventoryRevision = ++inventoryRevision
     set({
       agentDetailLoading: false,
       selectedAgentDetail: {
