@@ -32,6 +32,7 @@ SHARED_SKILL_CONSUMERS = ("codex", "kimi", "openclaw")
 MCP_INSPECTION_MAX_PAGES = 10
 MCP_INSPECTION_MAX_ITEMS = 500
 MCP_INSPECTION_CATALOG_TIMEOUT = 15
+MCP_SSE_LINE_END = re.compile(br"\r\n?|\n")
 STATE_MUTATING_COMMANDS = {
     "skill_manager_bootstrap",
     "skill_manager_init",
@@ -2766,6 +2767,50 @@ def stdio_mcp_session(server):
             process.wait()
 
 
+def mcp_event_lines(response, deadline):
+    pending = bytearray()
+    trailing_cr = False
+    while time.monotonic() < deadline:
+        chunk = response.read1(8192)
+        if not chunk:
+            return
+        start = int(trailing_cr and chunk.startswith(b"\n"))
+        trailing_cr = chunk.endswith(b"\r")
+        for match in MCP_SSE_LINE_END.finditer(chunk, start):
+            pending.extend(chunk[start:match.start()])
+            yield bytes(pending)
+            pending.clear()
+            start = match.end()
+        pending.extend(chunk[start:])
+    raise TimeoutError("MCP event stream response timed out")
+
+
+def read_mcp_event_response(response, request_id, deadline):
+    data = []
+    for index, line in enumerate(mcp_event_lines(response, deadline)):
+        if index == 0 and line.startswith(b"\xef\xbb\xbf"):
+            line = line[3:]
+        if not line and data:
+            payload = b"\n".join(data)
+            data.clear()
+            try:
+                value = json.loads(payload.decode("utf-8"))
+            except (ValueError, RecursionError):
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("id") == request_id
+                and "method" not in value
+                and ("result" in value or "error" in value)
+            ):
+                return value
+        else:
+            field, _, text = line.partition(b":")
+            if field == b"data":
+                data.append(text[1:] if text.startswith(b" ") else text)
+    raise ValueError("MCP event stream closed before the request received a response")
+
+
 def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_version=None, *, timeout=20):
     has_payload = payload is not None
     request = urllib.request.Request(
@@ -2783,18 +2828,22 @@ def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_vers
     if protocol_version:
         request.add_unredirected_header("MCP-Protocol-Version", protocol_version)
 
+    deadline = time.monotonic() + timeout
     with urllib.request.urlopen(request, timeout=timeout) as response:
         if not has_payload:
             return None, session_id
-        raw = response.read().decode(errors="replace")
         session = response.headers.get("Mcp-Session-Id") or session_id
-    if raw.startswith("event:") or "\ndata:" in raw:
-        data_lines = [
-            line[5:].strip() for line in raw.splitlines()
-            if line.startswith("data:")
-        ]
-        raw = data_lines[-1] if data_lines else "{}"
-    value = json.loads(raw or "{}")
+        if "id" in payload and response.headers.get_content_type() == "text/event-stream":
+            value = read_mcp_event_response(response, payload["id"], deadline)
+        else:
+            raw = response.read().decode(errors="replace")
+            if raw.startswith("event:") or "\ndata:" in raw:
+                data_lines = [
+                    line[5:].strip() for line in raw.splitlines()
+                    if line.startswith("data:")
+                ]
+                raw = data_lines[-1] if data_lines else "{}"
+            value = json.loads(raw or "{}")
     if value.get("error"):
         raise ValueError(json.dumps(value["error"], ensure_ascii=False))
     return value.get("result"), session

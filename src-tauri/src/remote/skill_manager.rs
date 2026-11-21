@@ -2089,13 +2089,16 @@ for line in sys.stdin:
         std::fs::create_dir_all(&home).expect("test home");
         let mut fixture = start_rendered_script(
             &home,
-            r#"from http.server import BaseHTTPRequestHandler, HTTPServer
+            r#"from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import threading
+import time
 
 home = Path.home()
 versions = {"strict": "2025-06-18", "legacy": "2025-03-26", "failing": "2025-06-18"}
 states = {}
+resources_requested = threading.Event()
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -2110,6 +2113,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if content is not None:
             self.wfile.write(json.dumps(content).encode())
+
+    def stream_tools(self, request):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.end_headers()
+        notice = json.dumps({"jsonrpc": "2.0", "method": "notifications/message",
+                             "params": {"level": "info", "data": "Sending tools"}})
+        reply = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {
+            "tools": [{"name": "second", "title": "雪"}],
+        }}, indent=2, ensure_ascii=False)
+        self.wfile.write(b"\xef\xbb\xbf: AgentBro fixture\r")
+        self.wfile.flush()
+        time.sleep(0.05)
+        body = "\ndata: " + notice + "\n\nevent: message\r"
+        body += "".join("data: " + line + "\r" for line in reply.splitlines()) + "\r"
+        self.wfile.write(body.encode("utf-8"))
+        self.wfile.flush()
+        if not resources_requested.wait(3):
+            (home / "stream-closed-before-next-request").touch()
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -2145,8 +2167,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": result})
         elif name == "strict" and method == "tools/list" and states[name] == "used" and request["id"] == 3 and request["params"] == {"cursor": " tools/?= "}:
             states[name] = "listed-tools"
-            self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": [{"name": "second"}]}})
+            self.stream_tools(request)
         elif name == "strict" and method == "resources/list" and states[name] == "listed-tools" and request["id"] == 4 and request["params"] == {}:
+            resources_requested.set()
             states[name] = "listed-resources"
             self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"resources": []}})
         else:
@@ -2165,7 +2188,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(400)
 
-with HTTPServer(("127.0.0.1", 0), Handler) as server:
+with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
     (home / "http-port").write_text(str(server.server_port))
     server.serve_forever()
 "#,
@@ -2210,16 +2233,22 @@ with HTTPServer(("127.0.0.1", 0), Handler) as server:
                 (name, result, home.join(format!("closed-{name}")).is_file())
             })
             .collect();
+        let waited_for_stream_close = home.join("stream-closed-before-next-request").is_file();
         fixture.kill().expect("stop fixture");
         fixture.wait_with_output().expect("wait for fixture");
         std::fs::remove_dir_all(home).expect("remove test home");
 
+        assert!(
+            !waited_for_stream_close,
+            "client waited for the SSE stream to close"
+        );
         for (name, result, tried_to_close) in results {
             if name == "strict" {
                 assert_eq!(result["status"], "connected", "{result}");
                 assert_eq!(result["capabilities"]["resources"], true);
                 assert_eq!(result["tools"][0]["name"], "fixture");
                 assert_eq!(result["tools"][1]["name"], "second");
+                assert_eq!(result["tools"][1]["title"], "雪");
                 assert_eq!(result["resources"], serde_json::json!([]));
             } else if name == "failing" {
                 assert_eq!(result["success"], false, "{result}");
