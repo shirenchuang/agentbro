@@ -213,14 +213,15 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
 }
 
 function Write-PermissionAccessibilityBounds {
-    foreach ($window in Get-IslandWindows) {
-        $state = $window.Current
-        $handle = [IntPtr]$state.NativeWindowHandle
-        $native = [AgentBroSmokeInput+Rect]::new()
-        if ([AgentBroSmokeInput]::GetWindowRect($handle, [ref]$native)) {
-            $dpi = [AgentBroSmokeInput]::GetDpiForWindow($handle)
-            Write-Host "Native window $handle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
-        }
+    param([IntPtr]$WindowHandle)
+
+    $native = [AgentBroSmokeInput+Rect]::new()
+    if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
+        $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
+        Write-Host "Native window $WindowHandle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
+    }
+    $window = [Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
+    if ($window) {
         $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
             Select-Object -ExpandProperty Current |
             Where-Object {
@@ -329,7 +330,7 @@ function Test-KeyboardPermissionDenial(
         } catch {
             if ($TracePermissionUi) {
                 try {
-                    Write-PermissionAccessibilityBounds
+                    Write-PermissionAccessibilityBounds $WindowHandle
                     Save-PermissionFrame $detailClock $Attempt 'before-space-timeout'
                 } catch {
                     Write-Host "Could not capture permission accessibility bounds: $_"
@@ -339,7 +340,7 @@ function Test-KeyboardPermissionDenial(
         }
         if ($hasListFrame) {
             Write-Output "Waiting session list HWND height: $($listFrame.Bottom - $listFrame.Top)."
-            Write-PermissionAccessibilityBounds
+            Write-PermissionAccessibilityBounds $WindowHandle
         }
         $deny.SetFocus()
         $clock = [Diagnostics.Stopwatch]::new()
@@ -353,6 +354,18 @@ function Test-KeyboardPermissionDenial(
             }
         } catch {
             Write-Host "Island window: $WindowHandle. Foreground window: $([AgentBroSmokeInput]::GetForegroundWindow())."
+            if ($TracePermissionUi) {
+                try {
+                    $focused = [Windows.Automation.AutomationElement]::FocusedElement
+                    Write-Host ("Focused UIA control: '{0}' ({1}). Deny focusable: {2}. Deny focused: {3}." -f
+                        $focused.Current.Name, $focused.Current.ClassName,
+                        $deny.Current.IsKeyboardFocusable, $deny.Current.HasKeyboardFocus)
+                    Write-PermissionAccessibilityBounds $WindowHandle
+                    Save-PermissionFrame $clock $Attempt 'focus-timeout'
+                } catch {
+                    Write-Host "Could not inspect keyboard focus: $_"
+                }
+            }
             throw
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
@@ -377,6 +390,9 @@ function Test-KeyboardPermissionDenial(
                 Save-PermissionFrame $clock $Attempt 'while-polling'
                 do { $observation.sampleIndex += 1 } while ($observation.sampleIndex -lt $sampleTimes.Count -and
                     $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex])
+                if ($observation.sampleIndex -eq $sampleTimes.Count) {
+                    Write-PermissionAccessibilityBounds $WindowHandle
+                }
             }
             $hasBack = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' })
             $hasDeny = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Deny' })
@@ -392,6 +408,7 @@ function Test-KeyboardPermissionDenial(
         if ($TracePermissionUi) {
             $focused = [Windows.Automation.AutomationElement]::FocusedElement
             Write-Output "After approval, native keyboard focus: '$($focused.Current.Name)'."
+            if ($Attempt -eq 1) { Write-PermissionAccessibilityBounds $WindowHandle }
             Save-PermissionFrame $clock $Attempt 'uia-resolved'
         }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."

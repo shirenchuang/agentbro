@@ -1553,11 +1553,10 @@ export function NotchPanel() {
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
   const hostUsesStableCanvas = !isPetMode && islandEnabled && effectivePanelState === 'collapsed'
   const windowsIsland = !isPetMode && isTauri() && isWindowsPlatform()
-  // WebView2 can keep the previous accessibility viewport when the approval list grows into detail.
-  const holdApprovalHeight = windowsIsland && islandEnabled && !layoutPreview
-    && (activeOverlay?.type === 'permission' || displayedSessions.some((session) => session.pendingPermission))
+  // Keep WebView2's accessibility viewport steady as permission controls appear or disappear.
+  const holdWindowsViewportHeight = windowsIsland && islandEnabled && !layoutPreview
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
-  const hostTargetHitboxHeight = holdApprovalHeight
+  const hostTargetHitboxHeight = holdWindowsViewportHeight
     ? Math.max(stableHostHitboxHeight, hitboxHeight)
     : hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({

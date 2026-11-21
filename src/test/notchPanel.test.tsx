@@ -466,20 +466,24 @@ describe('NotchPanel island shell', () => {
     expect(nativeHeight).toBe(detailResize.height)
   })
 
-  it('keeps the Windows approval viewport steady while opening the waiting session', async () => {
+  it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
     const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
     try {
       tauriMocks.isTauri.mockReturnValue(true)
       tauriMocks.isCursorOverNotch.mockResolvedValue(false)
-      mountIsland(null, {
-        phase: 'waiting_approval',
-        pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
-      })
+      useConfigStore.setState({ islandAnimationScale: 0.1 })
+      mountIsland()
       const container = document.querySelector<HTMLElement>('.notch-container')!
       const hostHeight = () => parseFloat(container.style.getPropertyValue('--notch-host-height'))
       const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
       const viewportHeight = hostHeight()
+      const waiting = session({
+        phase: 'waiting_approval',
+        pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
+      })
+      act(() => useSessionStore.setState({ sessions: { [waiting.id]: waiting }, sessionList: [waiting] }))
       const listHeight = hitboxHeight()
+      expect(hostHeight()).toBe(viewportHeight)
       await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
 
       tauriMocks.isCursorOverNotch.mockResolvedValue(true)
@@ -490,6 +494,13 @@ describe('NotchPanel island shell', () => {
       expect(hitboxHeight()).toBeGreaterThan(listHeight)
       expect(hostHeight()).toBe(viewportHeight)
       expect(viewportHeight).toBeGreaterThanOrEqual(hitboxHeight())
+      const deny = await screen.findByRole('button', { name: 'notch.deny' })
+      deny.focus()
+      await userEvent.keyboard(' ')
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'notch.deny' })).toBeNull())
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
+      expect(useSessionStore.getState().panelState).toBe('expanded')
+      expect(hostHeight()).toBe(viewportHeight)
       expect(tauriMocks.resizeNotch.mock.calls.every(([, height]) => height === viewportHeight)).toBe(true)
     } finally {
       platform.mockRestore()
