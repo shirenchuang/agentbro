@@ -1384,6 +1384,169 @@ os.replace = _agentbro_fail_activation_and_rollback
         std::fs::remove_dir_all(home).expect("remove test home");
     }
 
+    #[test]
+    fn remote_mcp_mutations_reject_stale_revisions() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("test home");
+        let path = home.join(".claude.json");
+        let before = br#"{"mcpServers":{"demo":{"type":"stdio","command":"initial"}}}"#;
+        let current = br#"{"mcpServers":{"demo":{"type":"stdio","command":"external"}},"other":{"keep":true}}"#;
+        let agent = serde_json::json!({"agent": "claude-code"});
+        std::fs::write(&path, before).expect("initial configuration");
+        let inventory = run_script(&home, "list_mcp_inventory_cmd", agent.clone());
+        let revision = &inventory["revision"];
+        std::fs::write(&path, current).expect("external edit");
+        let draft = serde_json::json!({"name":"demo","transport":"stdio","command":"draft"});
+
+        for (command, args) in [
+            (
+                "save_mcp_server_cmd",
+                serde_json::json!({"agent":"claude-code","revision":revision,"originalName":"demo","server":draft}),
+            ),
+            (
+                "set_mcp_server_enabled_cmd",
+                serde_json::json!({"agent":"claude-code","revision":revision,"serverName":"demo","enabled":false}),
+            ),
+            (
+                "delete_mcp_server_v2_cmd",
+                serde_json::json!({"agent":"claude-code","revision":revision,"serverName":"demo"}),
+            ),
+        ] {
+            let error = run_script_error(&home, command, args);
+            assert!(error.contains("changed after it was opened"), "{error}");
+            assert_eq!(std::fs::read(&path).expect("configuration"), current);
+        }
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_mcp_writes_preserve_malformed_and_unrelated_configuration() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("test home");
+        let path = home.join(".claude.json");
+        let agent = serde_json::json!({"agent":"claude-code"});
+        let inventory = run_script(&home, "list_mcp_inventory_cmd", agent.clone());
+        let draft = serde_json::json!({"name":"demo","transport":"stdio","command":"fixture"});
+        let save = |revision: &Value, original: Option<&str>| {
+            serde_json::json!({
+                "agent": "claude-code",
+                "revision": revision,
+                "originalName": original,
+                "server": draft,
+            })
+        };
+        let missing = save(&inventory["revision"], None);
+        let created = run_script(&home, "save_mcp_server_cmd", missing);
+        assert_eq!(created["servers"][0]["command"], "fixture");
+
+        for malformed in [
+            r#"{"mcpServers":,"keep":{"already":"present"}}"#,
+            r#"{"mcpServers":[],"keep":{"already":"present"}}"#,
+        ] {
+            use sha2::{Digest, Sha256};
+            std::fs::write(&path, malformed).expect("malformed configuration");
+            let revision = serde_json::json!(format!("{:x}", Sha256::digest(malformed.as_bytes())));
+            let error =
+                run_script_error(&home, "save_mcp_server_cmd", save(&revision, Some("demo")));
+            assert!(error.contains("Fix the remote MCP JSON"), "{error}");
+            let error = run_script_error(&home, "list_mcp_inventory_cmd", agent.clone());
+            assert!(error.contains("Fix the remote MCP JSON"), "{error}");
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("configuration"),
+                malformed
+            );
+        }
+
+        let source = br#"{"mcpServers":{"demo":{"type":"stdio","command":"previous","timeout":30}},"other":{"keep":true}}"#;
+        std::fs::write(&path, source).expect("current configuration");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("config permissions");
+        let inventory = run_script(&home, "list_mcp_inventory_cmd", agent);
+        let edit = save(&inventory["revision"], Some("demo"));
+        let error = run_script_error_with_prelude(
+            &home,
+            "save_mcp_server_cmd",
+            edit.clone(),
+            "def fail_replace(self, target):\n    raise OSError('injected failure before replace')\npathlib.Path.replace = fail_replace\n",
+        );
+        assert!(error.contains("injected failure before replace"), "{error}");
+        assert_eq!(std::fs::read(&path).expect("configuration"), source);
+        assert!(!std::fs::read_dir(&home).expect("test home").any(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+
+        let target = home.join("linked.json");
+        std::fs::rename(&path, &target).expect("move config");
+        std::os::unix::fs::symlink(&target, &path).expect("link config");
+        let updated = run_script(&home, "save_mcp_server_cmd", edit);
+        assert_eq!(updated["servers"][0]["command"], "fixture");
+        assert!(path.is_symlink());
+        assert_eq!(
+            std::fs::metadata(&target)
+                .expect("target")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(&target).expect("target configuration"))
+                .expect("valid JSON");
+        assert_eq!(disk["other"]["keep"], true);
+        assert_eq!(disk["mcpServers"]["demo"]["timeout"], 30);
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_mcp_mutations_from_the_same_revision_are_serialized() {
+        let home =
+            std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("test home");
+        let inventory = run_script(
+            &home,
+            "list_mcp_inventory_cmd",
+            serde_json::json!({"agent":"claude-code"}),
+        );
+        let scripts = ["first", "second"].map(|name| {
+            render_script(
+                "save_mcp_server_cmd",
+                serde_json::json!({
+                    "agent": "claude-code",
+                    "revision": inventory["revision"],
+                    "server": {"name":name,"transport":"stdio","command":"fixture"},
+                }),
+            )
+            .expect("remote save script")
+        });
+        let [first, second] = std::thread::scope(|scope| {
+            let jobs = scripts.each_ref().map(|script| {
+                let home = &home;
+                scope.spawn(move || execute_rendered_script(home, script))
+            });
+            jobs.map(|job| job.join().expect("remote save output"))
+        });
+        assert_ne!(first.status.success(), second.status.success());
+        let failed = if first.status.success() {
+            second
+        } else {
+            first
+        };
+        assert!(String::from_utf8_lossy(&failed.stderr).contains("changed after it was opened"));
+        let after = run_script(
+            &home,
+            "list_mcp_inventory_cmd",
+            serde_json::json!({"agent":"claude-code"}),
+        );
+        assert_eq!(after["servers"].as_array().expect("server list").len(), 1);
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
     fn write_remote_skill(path: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(path).expect("Skill directory");
         std::fs::write(
