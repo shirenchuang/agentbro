@@ -21,6 +21,7 @@ pub mod theme;
 pub mod webhook;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -43,7 +44,9 @@ use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
 use telemetry::TelemetryService;
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Default))]
 struct NotchDragState {
+    gesture_id: u64,
     start_x: f64,
     start_offset: f64,
     current_offset: f64,
@@ -68,6 +71,7 @@ struct PetDragState {
     start_anchor: PetStageAnchor,
 }
 
+static NEXT_NOTCH_DRAG_ID: AtomicU64 = AtomicU64::new(0);
 static NOTCH_DRAG_STATE: OnceLock<Mutex<Option<NotchDragState>>> = OnceLock::new();
 static PET_DRAG_STATE: OnceLock<Mutex<Option<PetDragState>>> = OnceLock::new();
 static TRAY_ICON_RECT: OnceLock<Mutex<Option<tauri::Rect>>> = OnceLock::new();
@@ -4629,7 +4633,7 @@ async fn set_notch_window_frame(
 
 #[cfg(test)]
 mod notch_position_tests {
-    use super::notch_physical_position;
+    use super::{notch_drag_for_tick, notch_physical_position, NotchDragState};
     use tauri::PhysicalPosition;
 
     #[test]
@@ -4645,6 +4649,19 @@ mod notch_position_tests {
             notch_physical_position(left_monitor_start + center_window, -150.0 / 1.5, 1.5),
             PhysicalPosition::new(-1595, -150)
         );
+    }
+
+    #[test]
+    fn an_old_notch_drag_cannot_update_or_expire_a_newer_gesture() {
+        let mut active = Some(NotchDragState {
+            gesture_id: 2,
+            ..Default::default()
+        });
+        assert!(notch_drag_for_tick(&mut active, 1, false).is_none());
+        assert!(notch_drag_for_tick(&mut active, 1, true).is_none());
+        assert!(notch_drag_for_tick(&mut active, 2, false).is_some());
+        assert!(notch_drag_for_tick(&mut active, 2, true).is_none());
+        assert!(active.is_none());
     }
 }
 
@@ -5249,11 +5266,13 @@ async fn start_notch_drag(
     }
     configure_notch_window_for_spaces(&app);
 
+    let gesture_id = NEXT_NOTCH_DRAG_ID.fetch_add(1, Ordering::Relaxed);
     {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
         *drag = Some(NotchDragState {
+            gesture_id,
             start_x: cursor_x,
             start_offset,
             current_offset: start_offset,
@@ -5272,14 +5291,10 @@ async fn start_notch_drag(
         let started_at = std::time::Instant::now();
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-            if started_at.elapsed() > std::time::Duration::from_secs(30) {
-                if let Ok(mut drag) = notch_drag_state().lock() {
-                    *drag = None;
-                }
-                break;
-            }
+            let expired = started_at.elapsed() > std::time::Duration::from_secs(30);
             let keep_dragging =
-                drain_pool(|| update_notch_drag_position(&app_handle)).unwrap_or(false);
+                drain_pool(|| update_notch_drag_position(&app_handle, gesture_id, expired))
+                    .unwrap_or(false);
             if !keep_dragging {
                 break;
             }
@@ -5306,19 +5321,36 @@ fn drain_pool<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window("notch") else {
-        return Ok(false);
-    };
-    let (cursor_x, _) = get_cursor_position_sync()?;
+fn notch_drag_for_tick(
+    active: &mut Option<NotchDragState>,
+    gesture_id: u64,
+    expired: bool,
+) -> Option<&mut NotchDragState> {
+    if active.as_ref()?.gesture_id != gesture_id {
+        return None;
+    }
+    if expired {
+        *active = None;
+    }
+    active.as_mut()
+}
 
-    let next_position = {
+fn update_notch_drag_position(
+    app: &tauri::AppHandle,
+    gesture_id: u64,
+    expired: bool,
+) -> Result<bool, String> {
+    let (window, next_position) = {
         let mut drag = notch_drag_state()
             .lock()
             .map_err(|e| format!("Drag lock error: {}", e))?;
-        let Some(state) = drag.as_mut() else {
+        let Some(state) = notch_drag_for_tick(&mut drag, gesture_id, expired) else {
             return Ok(false);
         };
+        let Some(window) = app.get_webview_window("notch") else {
+            return Ok(false);
+        };
+        let (cursor_x, _) = get_cursor_position_sync()?;
         let cursor_delta = cursor_x - state.start_x;
         let cursor_delta = if cfg!(target_os = "windows") {
             cursor_delta / state.monitor_scale
@@ -5338,10 +5370,23 @@ fn update_notch_drag_position(app: &tauri::AppHandle) -> Result<bool, String> {
         }
         state.current_offset = next_offset;
         state.last_window_x = window_x;
-        notch_window_position(window_x, state.y, state.monitor_scale)
+        (
+            window,
+            notch_window_position(window_x, state.y, state.monitor_scale),
+        )
     };
 
-    let _ = window.set_position(next_position);
+    app.run_on_main_thread(move || {
+        if let Ok(drag) = notch_drag_state().lock() {
+            if drag
+                .as_ref()
+                .is_some_and(|state| state.gesture_id == gesture_id)
+            {
+                let _ = window.set_position(next_position);
+            }
+        }
+    })
+    .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
