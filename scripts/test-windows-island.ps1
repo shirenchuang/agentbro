@@ -226,7 +226,9 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         $session = Wait-IslandValue 'the waiting session in the Island list' {
             Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
         }
-        Click-IslandElement $session 'Island session with a pending permission'
+        $session.SetFocus()
+        $null = Wait-IslandValue 'native keyboard focus on the waiting session' { $session.Current.HasKeyboardFocus }
+        [AgentBroSmokeInput]::PressSpace()
 
         $deny = Wait-IslandValue 'Deny in the session detail' {
             if (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) {
@@ -237,6 +239,7 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         $null = Wait-IslandValue 'native keyboard focus on detail Deny' { $deny.Current.HasKeyboardFocus }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         [AgentBroSmokeInput]::PressSpace()
+        Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) { throw 'The Hook did not receive a reply after keyboard denial in the detail view' }
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
         if ($decision.decision -ne 'deny') { throw "Unexpected Hook permission decision: $($decision.decision)" }
