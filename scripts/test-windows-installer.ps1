@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory)]
     [string]$Installer,
     [switch]$VerifyIsland,
-    [string]$SymbolsDirectory
+    [string]$SymbolsDirectory,
+    [string]$StartupStackSampler,
+    [switch]$VerifyStartupStackSampler
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +97,41 @@ function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
 }
 
 function Write-StartupStacks {
+    if ($StartupStackSampler) {
+        $pdb = Get-ChildItem -LiteralPath $SymbolsDirectory -Filter agentbro.pdb -Recurse -File |
+            Select-Object -First 1
+        if (-not $pdb) {
+            throw 'The Windows artifact is missing the AgentBro PDB'
+        }
+        $start = [System.Diagnostics.ProcessStartInfo]::new($StartupStackSampler)
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.ArgumentList.Add([string]$app.Id)
+        $start.ArgumentList.Add($pdb.DirectoryName)
+        $capture = [System.Diagnostics.Process]::Start($start)
+        try {
+            $output = $capture.StandardOutput.ReadToEndAsync()
+            $errors = $capture.StandardError.ReadToEndAsync()
+            if (-not $capture.WaitForExit(15000)) {
+                $capture.Kill()
+                throw 'Local startup stack capture timed out'
+            }
+            $stacks = $output.GetAwaiter().GetResult()
+            Write-Output $stacks
+            if ($capture.ExitCode -ne 0) {
+                throw "Local startup stack capture failed: $($errors.GetAwaiter().GetResult())"
+            }
+            if ($stacks -notmatch '(?m)^  agentbro![^+]+\+0x') {
+                throw 'Local startup stacks do not contain a resolved AgentBro frame'
+            }
+        } finally {
+            $capture.Dispose()
+        }
+        return
+    }
+
     $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
     if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
         Write-Output 'Windows Debugging Tools are unavailable on this runner.'
@@ -184,6 +221,10 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
+    if ($VerifyStartupStackSampler) {
+        Write-StartupStacks
+        Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'
+    }
     Wait-AppCondition 'AgentBro to restore the Unicode session' {
         Select-String -LiteralPath $stdoutPath -SimpleMatch "session ${restoredSession}: project=$restoredProjectName" -Quiet
     }

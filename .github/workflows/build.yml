@@ -256,6 +256,7 @@ jobs:
           (New-Object -ComObject Shell.Application).MinimizeAll()
 
       - name: Install and exercise the Windows app
+        if: runner.arch != 'X64'
         shell: pwsh
         timeout-minutes: 5
         run: |
@@ -265,6 +266,48 @@ jobs:
           }
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
+
+      - name: Compile a local Windows stack sampler
+        if: runner.arch == 'X64'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'The hosted runner is missing the Visual C++ toolset' }
+          & (Join-Path $vs 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          $source = Join-Path $PWD 'scripts/windows-startup-stacks.cpp'
+          Push-Location $env:RUNNER_TEMP
+          try {
+            cl.exe /nologo /std:c++17 /EHsc /W4 /WX $source /link dbghelp.lib
+            if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows startup sampler' }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Exercise the installed app and capture native startup waits
+        if: runner.arch == 'X64'
+        shell: pwsh
+        timeout-minutes: 9
+        run: |
+          $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw 'Windows NSIS installer was not found' }
+          $shell = (Get-Process -Id $PID).Path
+          $stackSampler = Join-Path $env:RUNNER_TEMP 'windows-startup-stacks.exe'
+          $symbols = Join-Path $PWD 'windows-installers'
+          $passed = 0
+          foreach ($attempt in 1..4) {
+            if ($attempt -gt 2) {
+              $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $env:RUNNER_TEMP "AgentBro WebView2 profile $attempt"
+            }
+            Write-Output "::group::Installed Windows startup attempt $attempt"
+            & $shell -NoProfile -NonInteractive -File ./scripts/test-windows-installer.ps1 `
+              -Installer $installer.FullName -VerifyIsland -SymbolsDirectory $symbols `
+              -StartupStackSampler $stackSampler -VerifyStartupStackSampler
+            if ($LASTEXITCODE -eq 0) { $passed += 1 }
+            Write-Output "::endgroup::"
+          }
+          if ($passed -ne 4) { throw "$passed of 4 installed Windows startup attempts passed" }
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
