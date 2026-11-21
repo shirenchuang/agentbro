@@ -185,6 +185,12 @@ jobs:
           & $testExecutable source_update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::installer::tests::private_git
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable skills::installer::tests::curl_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable skills::sync::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
