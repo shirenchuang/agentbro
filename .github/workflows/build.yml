@@ -200,6 +200,9 @@ jobs:
           & $testExecutable skills::v2::db::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable data_dir::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable skills::v2::fsutil::windows_shell::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
