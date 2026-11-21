@@ -193,7 +193,7 @@ try {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                     Select-Object -First 85 -ExpandProperty Current |
-                    Select-Object LocalizedControlType, Name, AutomationId, IsEnabled, IsOffscreen |
+                    Select-Object LocalizedControlType, Name, ClassName, AutomationId, IsEnabled, IsOffscreen |
                     ConvertTo-Json -Depth 3 -Compress
             }
         } elseif ($island) {

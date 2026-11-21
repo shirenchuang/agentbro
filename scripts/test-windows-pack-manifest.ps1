@@ -24,10 +24,16 @@ function Invoke-PackControl([Windows.Automation.AutomationElement]$Element) {
 }
 
 function Set-PackDialogFile([string]$Action, [string]$Path) {
+    $dialogClass = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ClassNameProperty, '#32770')
     $dialog = Wait-IslandValue "the native $Action file dialog" {
         foreach ($window in Get-IslandWindows) {
-            if ($window.Current.ClassName -eq '#32770' -and (Find-PackControl $window $Action)) {
-                return $window
+            $candidates = @($window) + @($window.FindAll([Windows.Automation.TreeScope]::Descendants, $dialogClass))
+            foreach ($candidate in $candidates) {
+                if ($candidate.Current.ClassName -eq '#32770' -and -not $candidate.Current.IsOffscreen -and
+                    (Find-PackControl $candidate $Action)) {
+                    return $candidate
+                }
             }
         }
     }
