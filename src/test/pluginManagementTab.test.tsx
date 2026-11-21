@@ -282,4 +282,18 @@ describe('PluginManagementTab', () => {
     expect(await screen.findAllByText('只读')).toHaveLength(2)
     expect(screen.queryAllByRole('switch')).toHaveLength(0)
   })
+
+  it('shows unknown plugin status without listing it as disabled', async () => {
+    const installed = { ...inventory().plugins[0], enabled: null }
+    vi.spyOn(skillApiV2, 'listPluginInventory').mockResolvedValue(inventory({
+      capabilities: { editable: false, requiresNewSession: true },
+      plugins: [installed],
+    }))
+    render(<PluginManagementTab detail={detail} />)
+
+    expect(await screen.findByText('状态未知')).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '已停用' }))
+    expect(screen.queryByText(installed.name)).not.toBeInTheDocument()
+  })
 })

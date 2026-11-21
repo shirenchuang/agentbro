@@ -809,6 +809,7 @@
       "disabled": "プラグイン「{{name}}」を無効にしました",
       "enabledTag": "有効",
       "disabledTag": "無効",
+      "unknownTag": "状態不明",
       "on": "オン",
       "off": "オフ",
       "toggleLabel": "{{name}} を有効または無効にする",

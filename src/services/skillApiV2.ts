@@ -377,7 +377,7 @@ export interface PluginStatus {
   id: string
   name: string
   version: string | null
-  enabled: boolean
+  enabled: boolean | null
   source: string | null
 }
 

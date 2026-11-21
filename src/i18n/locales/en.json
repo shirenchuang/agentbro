@@ -808,6 +808,7 @@
       "disabled": "Disabled plugin “{{name}}”",
       "enabledTag": "Enabled",
       "disabledTag": "Disabled",
+      "unknownTag": "Status unknown",
       "on": "On",
       "off": "Off",
       "toggleLabel": "Enable or disable {{name}}",

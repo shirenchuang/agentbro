@@ -1497,6 +1497,139 @@ os.replace = _agentbro_fail_activation_and_rollback
     }
 
     #[test]
+    fn remote_codex_plugins_use_toml_and_reject_stale_settings() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let codex = home.path().join(".codex");
+        let cache = codex.join("plugins/cache/team");
+        for id in ["review", "cache-only"] {
+            let manifest = cache.join(id).join("1.0.0/.codex-plugin/plugin.json");
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            std::fs::write(manifest, serde_json::json!({"name": id}).to_string()).unwrap();
+        }
+        let path = codex.join("config.toml");
+        let original = "[features]\nenabled = false # keep\n\n[plugins.\"review@team\"]\nenabled = false # review\n";
+        std::fs::write(&path, original).unwrap();
+        let agent = serde_json::json!({"agentId": "codex"});
+        let inventory = run_script(home.path(), "list_plugin_inventory_v2", agent);
+        let args = serde_json::json!({
+            "agentId": "codex", "pluginId": "review@team", "revision": inventory["revision"], "enabled": true,
+        });
+        let parser_available = execute_rendered_script(
+            home.path(),
+            "try:\n    import tomllib\nexcept ImportError:\n    import tomli\n",
+        )
+        .status
+        .success();
+        if parser_available {
+            assert_eq!(inventory["capabilities"]["editable"], true);
+            assert_eq!(inventory["plugins"].as_array().unwrap().len(), 1);
+            assert_eq!(inventory["plugins"][0]["id"], "review@team");
+            assert_eq!(inventory["plugins"][0]["enabled"], false);
+            let updated = run_script(home.path(), "set_plugin_enabled_v2", args.clone());
+            assert_eq!(updated["plugins"][0]["enabled"], true);
+            let expected = original.replace("false # review", "true # review");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+            let stale = run_script_error(home.path(), "set_plugin_enabled_v2", args);
+            assert!(stale.contains("settings changed"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        } else {
+            assert_eq!(inventory["capabilities"]["editable"], false);
+            assert!(inventory["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|plugin| plugin["enabled"].is_null()));
+            let error = run_script_error(home.path(), "set_plugin_enabled_v2", args);
+            assert!(error.contains("read-only"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+        assert!(!codex.join("plugins/cache/.disabled").exists());
+        assert!(!cache.join("review/1.0.0/.disabled").exists());
+    }
+
+    #[test]
+    fn remote_claude_plugins_keep_user_scope_and_preserve_settings() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let claude = home.path().join(".claude");
+        let root = claude.join("plugins/cache/team/review/1.0.0");
+        let manifest = root.join(".claude-plugin/plugin.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &manifest,
+            r#"{"name":"review","description":"Review plugin"}"#,
+        )
+        .unwrap();
+        let path = claude.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"enabledPlugins":{"review@team":false},"theme":"dark"}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::write(claude.join("plugins/installed_plugins.json"), r#"{"version":2,"plugins":{"review@team":[{"scope":"user"}],"project-only@team":[{"scope":"project"}],"user-only@team":[{"scope":"user"}]}}"#).unwrap();
+        let inventory = run_script(
+            home.path(),
+            "list_plugin_inventory_v2",
+            serde_json::json!({"agentId": "claude-code"}),
+        );
+        assert_eq!(inventory["plugins"].as_array().unwrap().len(), 2);
+        assert_eq!(inventory["plugins"][0]["id"], "review@team");
+        assert_eq!(inventory["plugins"][0]["enabled"], false);
+        assert_eq!(inventory["plugins"][1]["id"], "user-only@team");
+        assert_eq!(inventory["plugins"][1]["enabled"], true);
+        let detail = run_script(
+            home.path(),
+            "get_plugin_detail_v2",
+            serde_json::json!({
+                "agentId": "claude-code", "pluginId": "review@team",
+            }),
+        );
+        assert_eq!(detail["description"], "Review plugin");
+        let args = serde_json::json!({
+            "agentId": "claude-code", "pluginId": "review@team", "revision": inventory["revision"], "enabled": true,
+        });
+        let updated = run_script(home.path(), "set_plugin_enabled_v2", args.clone());
+        assert_eq!(updated["plugins"][0]["enabled"], true);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap(),
+            serde_json::json!({
+                "enabledPlugins": {"review@team": true}, "theme": "dark",
+            })
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let stale = run_script_error(home.path(), "set_plugin_enabled_v2", args);
+        assert!(stale.contains("settings changed"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert!(!root.join(".disabled").exists());
+
+        let unknown = home.path().join(".gemini/extensions/fixture");
+        std::fs::create_dir_all(&unknown).unwrap();
+        let possible = run_script(
+            home.path(),
+            "list_plugin_inventory_v2",
+            serde_json::json!({"agentId": "gemini"}),
+        );
+        assert_eq!(possible["capabilities"]["editable"], false);
+        assert_eq!(possible["plugins"][0]["id"], "fixture");
+        assert!(possible["plugins"][0]["enabled"].is_null());
+        let error = run_script_error(
+            home.path(),
+            "set_plugin_enabled_v2",
+            serde_json::json!({
+                "agentId": "gemini", "pluginId": "fixture", "revision": possible["revision"], "enabled": false,
+            }),
+        );
+        assert!(error.contains("read-only"));
+        assert!(!unknown.join(".disabled").exists());
+    }
+
+    #[test]
     fn remote_codex_mcp_inventory_reads_toml_without_returning_secrets() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-codex-mcp-{}",
