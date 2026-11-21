@@ -235,6 +235,9 @@ jobs:
           & $testExecutable --ignored --exact agents::profiles::tests::windows_claude_hook_keeps_paths_through_git_bash
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::mcp_management::tests::streamable_http_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact skills::mcp_management::tests::windows_stdio_mcp_checks_run_without_a_console
           exit $LASTEXITCODE
 

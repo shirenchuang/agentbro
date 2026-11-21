@@ -1961,7 +1961,7 @@ enum InspectionSession {
         draft: McpServerDraft,
         endpoint: String,
         stream: reqwest::Response,
-        buffer: String,
+        buffer: SseBuffer,
         next_id: i64,
     },
 }
@@ -2790,7 +2790,7 @@ async fn open_legacy_inspection_session(
             message: format!("SSE endpoint returned HTTP {}", stream.status()),
         });
     }
-    let mut buffer = String::new();
+    let mut buffer = SseBuffer::legacy();
     let (event, endpoint) = next_sse_event(&mut stream, &mut buffer).await?;
     if event.as_deref() != Some("endpoint") {
         return Err(TestFailure {
@@ -2894,15 +2894,9 @@ impl InspectionSession {
                 session_id,
                 ..
             } => {
-                let (response, next_session) = send_streamable_rpc(
-                    client,
-                    draft,
-                    url,
-                    body,
-                    session_id.as_deref(),
-                    id.is_none(),
-                )
-                .await?;
+                let (response, next_session) =
+                    send_streamable_rpc(client, draft, url, body, session_id.as_deref(), id)
+                        .await?;
                 *session_id = next_session;
                 Ok(response)
             }
@@ -3616,7 +3610,7 @@ async fn test_streamable_http_connection(
             url,
             &initialize_request(1, protocol_version),
             None,
-            false,
+            Some(1),
         )
         .await
         {
@@ -3649,7 +3643,7 @@ async fn test_streamable_http_connection(
             "method": "notifications/initialized"
         }),
         session_id.as_deref(),
-        true,
+        None,
     )
     .await?;
     let tool_count = if initialize.pointer("/result/capabilities/tools").is_some() {
@@ -3664,7 +3658,7 @@ async fn test_streamable_http_connection(
                 "params": {}
             }),
             session_id.as_deref(),
-            false,
+            Some(2),
         )
         .await?;
         Some(tool_count_from_response(&response)?)
@@ -3697,7 +3691,7 @@ async fn send_streamable_rpc(
     url: &str,
     body: &Value,
     session_id: Option<&str>,
-    notification: bool,
+    id: Option<i64>,
 ) -> Result<(Value, Option<String>), TestFailure> {
     let mut request = client
         .post(url)
@@ -3709,7 +3703,7 @@ async fn send_streamable_rpc(
             .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
     }
     request = apply_http_headers(request, draft)?;
-    let response = request.json(body).send().await.map_err(network_failure)?;
+    let mut response = request.json(body).send().await.map_err(network_failure)?;
     if matches!(
         response.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -3742,12 +3736,22 @@ async fn send_streamable_rpc(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
         .or_else(|| session_id.map(str::to_string));
-    if notification {
+    let Some(id) = id else {
         return Ok((Value::Null, next_session));
-    }
-    let text = response.text().await.map_err(network_failure)?;
-    let value = parse_rpc_response_text(&text)?;
-    Ok((rpc_result(value)?, next_session))
+    };
+    let is_event_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"));
+    let reply = if is_event_stream {
+        next_sse_rpc_response(&mut response, &mut SseBuffer::default(), id).await?
+    } else {
+        let text = response.text().await.map_err(network_failure)?;
+        rpc_result(parse_rpc_response_text(&text, id)?)?
+    };
+    Ok((reply, next_session))
 }
 
 fn apply_http_headers(
@@ -3795,7 +3799,7 @@ async fn test_legacy_sse_connection(draft: &McpServerDraft) -> Result<HandshakeI
             message: format!("SSE endpoint returned HTTP {}", stream.status()),
         });
     }
-    let mut buffer = String::new();
+    let mut buffer = SseBuffer::legacy();
     let (event, endpoint) = next_sse_event(&mut stream, &mut buffer).await?;
     if event.as_deref() != Some("endpoint") {
         return Err(TestFailure {
@@ -3899,7 +3903,7 @@ async fn post_legacy_sse(
 
 async fn next_sse_rpc_response(
     response: &mut reqwest::Response,
-    buffer: &mut String,
+    buffer: &mut SseBuffer,
     id: i64,
 ) -> Result<Value, TestFailure> {
     loop {
@@ -3907,47 +3911,106 @@ async fn next_sse_rpc_response(
         let Ok(value) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
-        if value.get("id").and_then(Value::as_i64) == Some(id) {
+        if matches_rpc_reply(&value, id) {
             return rpc_result(value);
+        }
+    }
+}
+
+fn matches_rpc_reply(value: &Value, id: i64) -> bool {
+    value.get("id").and_then(Value::as_i64) == Some(id)
+        && value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some())
+}
+
+#[derive(Default)]
+struct SseBuffer {
+    bytes: Vec<u8>,
+    scan_from: usize,
+    trailing_cr: bool,
+    seen_frame: bool,
+    limit: Option<usize>,
+}
+
+impl SseBuffer {
+    fn legacy() -> Self {
+        Self {
+            limit: Some(256 * 1024),
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Result<(), TestFailure> {
+        for &byte in chunk {
+            let preceded_by_cr = std::mem::replace(&mut self.trailing_cr, byte == b'\r');
+            match byte {
+                b'\n' if preceded_by_cr => {}
+                b'\r' => self.bytes.push(b'\n'),
+                _ => self.bytes.push(byte),
+            }
+        }
+        if self.limit.is_some_and(|limit| self.bytes.len() > limit) {
+            return Err(TestFailure {
+                category: "protocol_error",
+                message: "SSE handshake exceeded the response limit".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn next_event(&mut self) -> Option<(Option<String>, String)> {
+        loop {
+            let Some(relative_end) = self.bytes[self.scan_from..]
+                .windows(2)
+                .position(|pair| pair == b"\n\n")
+            else {
+                self.scan_from = self.bytes.len().saturating_sub(1);
+                return None;
+            };
+            let end = self.scan_from + relative_end;
+            let frame = String::from_utf8_lossy(&self.bytes[..end]);
+            let frame = if self.seen_frame {
+                frame.as_ref()
+            } else {
+                self.seen_frame = true;
+                frame.strip_prefix('\u{feff}').unwrap_or(&frame)
+            };
+            let mut event_name = None;
+            let mut data = Vec::new();
+            for line in frame.lines() {
+                let (field, value) = line.split_once(':').unwrap_or((line, ""));
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                match field {
+                    "event" => event_name = Some(value.to_string()),
+                    "data" => data.push(value),
+                    _ => {}
+                }
+            }
+            let event = (!data.is_empty()).then(|| (event_name, data.join("\n")));
+            self.bytes.drain(..end + 2);
+            self.scan_from = 0;
+            if event.is_some() {
+                return event;
+            }
         }
     }
 }
 
 async fn next_sse_event(
     response: &mut reqwest::Response,
-    buffer: &mut String,
+    buffer: &mut SseBuffer,
 ) -> Result<(Option<String>, String), TestFailure> {
     loop {
-        if let Some(index) = buffer.find("\n\n") {
-            let event = buffer[..index].to_string();
-            buffer.drain(..index + 2);
-            let mut event_name = None;
-            let mut data = Vec::new();
-            for line in event.lines() {
-                if let Some(value) = line.strip_prefix("event:") {
-                    event_name = Some(value.trim().to_string());
-                } else if let Some(value) = line.strip_prefix("data:") {
-                    data.push(value.trim_start().to_string());
-                }
-            }
-            if !data.is_empty() {
-                return Ok((event_name, data.join("\n")));
-            }
-            continue;
+        if let Some(event) = buffer.next_event() {
+            return Ok(event);
         }
         let Some(chunk) = response.chunk().await.map_err(network_failure)? else {
             return Err(TestFailure {
                 category: "startup_failed",
-                message: "SSE connection closed before the handshake completed".to_string(),
+                message: "SSE stream closed before the expected event arrived".to_string(),
             });
         };
-        buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
-        if buffer.len() > 256 * 1024 {
-            return Err(TestFailure {
-                category: "protocol_error",
-                message: "SSE handshake exceeded the response limit".to_string(),
-            });
-        }
+        buffer.push(&chunk)?;
     }
 }
 
@@ -3967,18 +4030,18 @@ fn initialize_request(id: i64, protocol_version: &str) -> Value {
     })
 }
 
-fn parse_rpc_response_text(text: &str) -> Result<Value, TestFailure> {
+fn parse_rpc_response_text(text: &str, id: i64) -> Result<Value, TestFailure> {
     if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
         return Ok(value);
     }
-    for event in text.replace("\r\n", "\n").split("\n\n") {
-        let data = event
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim_start)
-            .collect::<Vec<_>>()
-            .join("\n");
+    let mut events = SseBuffer::default();
+    events.push(text.as_bytes())?;
+    events.push(b"\n\n")?;
+    while let Some((_, data)) = events.next_event() {
         if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            if !matches_rpc_reply(&value, id) {
+                continue;
+            }
             return Ok(value);
         }
     }
@@ -4608,6 +4671,125 @@ $response = @{
         assert_eq!(result.server_name.as_deref(), Some("fake-http"));
         assert_eq!(result.tool_count, Some(3));
         task.abort();
+    }
+
+    async fn stream_http_tools(
+        Json(body): Json<Value>,
+        keep_open: bool,
+    ) -> axum::response::Response {
+        use axum::body::{Body, Bytes};
+        use axum::response::IntoResponse;
+        use futures_util::StreamExt;
+
+        match body.get("method").and_then(Value::as_str) {
+            Some("tools/list") => {
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": { "tools": [{ "name": "fixture", "title": "雪" }] }
+                });
+                let mut events = concat!(
+                    "\u{feff}: sending tools\r\n",
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",",
+                    "\"params\":{\"level\":\"info\",\"data\":\"tools\"}}\r\n\r\n",
+                )
+                .to_string();
+                for line in serde_json::to_string_pretty(&reply).unwrap().lines() {
+                    events.push_str("data: ");
+                    events.push_str(line);
+                    events.push('\r');
+                }
+                events.push('\r');
+                let cr = events.find('\r').unwrap() + 1;
+                let utf8 = events.find('雪').unwrap() + 1;
+                let frames = [0..cr, cr..utf8, utf8..events.len()]
+                    .into_iter()
+                    .map(|range| {
+                        Ok::<_, std::convert::Infallible>(Bytes::copy_from_slice(
+                            &events.as_bytes()[range],
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                let stream = futures_util::stream::iter(frames);
+                let response = if keep_open {
+                    Body::from_stream(stream.chain(futures_util::stream::pending()))
+                } else {
+                    Body::from_stream(stream)
+                };
+                (
+                    [("content-type", "text/event-stream; charset=utf-8")],
+                    response,
+                )
+                    .into_response()
+            }
+            Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
+            _ => fake_http_mcp(Json(body)).await.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn streamable_http_uses_the_matching_event_before_stream_close() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let router = Router::new()
+                .route("/finite", post(|body| stream_http_tools(body, false)))
+                .route("/open", post(|body| stream_http_tools(body, true)));
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut draft = McpServerDraft {
+            name: "events".to_string(),
+            transport: McpTransport::Http,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+            url: Some(format!("http://{address}/finite")),
+            headers: Vec::new(),
+        };
+        let connection = test_streamable_http_connection(&draft).await.unwrap();
+        assert_eq!(connection.tool_count, Some(1));
+
+        draft.url = Some(format!("http://{address}/open"));
+        let report = tokio::time::timeout(
+            Duration::from_secs(3),
+            perform_mcp_inspection("stream", &draft, Vec::new()),
+        )
+        .await
+        .expect("the inspector should complete before the server closes the stream");
+        assert_eq!(report.status, "connected", "{:?}", report.warnings);
+        assert_eq!(report.tools[0].title.as_deref(), Some("雪"));
+        task.abort();
+    }
+
+    #[test]
+    fn legacy_sse_decodes_endpoint_and_reply_across_chunk_boundaries() {
+        let input = concat!(
+            "\u{feff}event: endpoint\r\n",
+            "data: /messages?session=fixture\r\n\r\n",
+            "data: {\"id\":2,\r",
+            "data: \"result\":\"雪\"}\r\r",
+        )
+        .as_bytes();
+        for split in 0..=input.len() {
+            let mut buffer = SseBuffer::legacy();
+            buffer.push(&input[..split]).unwrap();
+            let mut endpoint = buffer.next_event();
+            buffer.push(&input[split..]).unwrap();
+            endpoint = endpoint.or_else(|| buffer.next_event());
+            assert_eq!(
+                endpoint,
+                Some((
+                    Some("endpoint".to_string()),
+                    "/messages?session=fixture".to_string()
+                )),
+                "split at byte {split}"
+            );
+            let (_, data) = buffer.next_event().unwrap();
+            let reply: Value = serde_json::from_str(&data).unwrap();
+            assert!(matches_rpc_reply(&reply, 2));
+            assert_eq!(reply["result"], "雪");
+        }
     }
 
     #[tokio::test]
