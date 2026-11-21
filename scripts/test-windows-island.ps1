@@ -571,7 +571,7 @@ function Test-InstalledIslandDrag(
         $null = Wait-IslandValue 'Windows to report the physical mouse button released' {
             -not [AgentBroSmokeInput]::IsLeftButtonDown()
         }
-        Write-Output 'Windows confirmed the physical mouse button is released.'
+        Write-Output "Windows confirmed the physical mouse button is released at $([DateTimeOffset]::UtcNow.ToString('O'))."
         $releasePositions = [Collections.Generic.List[string]]::new()
         $null = Wait-IslandValue 'the released Island window to settle' {
             $firstCenter = Get-IslandCenterX $WindowHandle
@@ -594,10 +594,12 @@ function Test-InstalledIslandDrag(
         if (-not [AgentBroSmokeInput]::SetCursorPos($probeX, $startY)) {
             throw 'Could not move the cursor after releasing the Island'
         }
+        Write-Output "Moved the released pointer to ($probeX, $startY) at $([DateTimeOffset]::UtcNow.ToString('O'))."
         foreach ($sample in 1..4) {
             Start-Sleep -Milliseconds 150
             $current = Get-IslandCenterX $WindowHandle
             if ([Math]::Abs($current - $released) -gt 2) {
+                Write-Host "Position changed at $([DateTimeOffset]::UtcNow.ToString('O')) after $($releaseClock.ElapsedMilliseconds) ms. After release: $($releasePositions -join ', ')."
                 throw "Island moved after release: $released -> $current (started at $before)"
             }
         }

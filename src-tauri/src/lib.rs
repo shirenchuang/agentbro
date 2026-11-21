@@ -82,6 +82,15 @@ fn notch_drag_state() -> &'static Mutex<Option<NotchDragState>> {
     NOTCH_DRAG_STATE.get_or_init(|| Mutex::new(None))
 }
 
+#[cfg(target_os = "windows")]
+fn trace_island_position(message: std::fmt::Arguments<'_>) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("AGENTBRO_TRACE_ISLAND_DRAG").is_some()) {
+        let utc = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        log::info!("Island position trace {utc}: {message}");
+    }
+}
+
 fn pet_drag_state() -> &'static Mutex<Option<PetDragState>> {
     PET_DRAG_STATE.get_or_init(|| Mutex::new(None))
 }
@@ -4477,6 +4486,10 @@ fn position_notch_window(
     horizontal_offset: f64,
 ) -> f64 {
     let (x, y, anchor_offset_x) = notch_window_geometry(monitor, width, horizontal_offset);
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "reposition offset={horizontal_offset} target=({x}, {y}) width={width}"
+    ));
     let _ = window.set_position(notch_window_position(x, y, monitor.scale_factor()));
     anchor_offset_x
 }
@@ -5292,6 +5305,10 @@ async fn start_notch_drag(
     }
 
     let gesture_id = NEXT_NOTCH_DRAG_ID.fetch_add(1, Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "start drag={gesture_id} offset={start_offset} windowX={window_x} cursorX={cursor_x} width={width}"
+    ));
     {
         let mut drag = notch_drag_state()
             .lock()
@@ -5406,6 +5423,11 @@ fn update_notch_drag_position(
         // WebView2 can miss the release if the pointer leaves the transparent host.
         if notch_mouse_button_released(state.track_mouse_button) {
             state.moving = false;
+            #[cfg(target_os = "windows")]
+            trace_island_position(format_args!(
+                "native release drag={gesture_id} offset={}",
+                state.current_offset
+            ));
             drop(drag);
             window
                 .emit("notch-drag-stopped", gesture_id)
@@ -5445,6 +5467,10 @@ fn update_notch_drag_position(
                 .is_some_and(|state| state.gesture_id == gesture_id && state.moving)
             {
                 let _ = window.set_position(next_position);
+                #[cfg(target_os = "windows")]
+                trace_island_position(format_args!(
+                    "drag move drag={gesture_id} position={next_position:?}"
+                ));
             }
         }
     })
@@ -5461,6 +5487,10 @@ async fn end_notch_drag(app: tauri::AppHandle, gesture_id: u64) -> Result<Option
         take_notch_drag_offset(&mut drag, gesture_id)
     };
 
+    #[cfg(target_os = "windows")]
+    trace_island_position(format_args!(
+        "end drag={gesture_id} offset={final_offset:?}"
+    ));
     if let Some(offset) = final_offset {
         reposition_notch_to_display(&app, None, Some(offset))?;
     }
@@ -5746,6 +5776,10 @@ async fn resize_notch(
             // on the dedicated "pet" window.
             let (x, y, anchor_offset_x) =
                 notch_window_geometry(&monitor, width, horizontal_offset.unwrap_or(0.0));
+            #[cfg(target_os = "windows")]
+            trace_island_position(format_args!(
+                "resize offset={horizontal_offset:?} target=({x}, {y}) size=({width}, {height})"
+            ));
             set_notch_window_frame(&app, &window, x, y, width, height, monitor.scale_factor())
                 .await?;
             return Ok(ResizeNotchResult { anchor_offset_x });
