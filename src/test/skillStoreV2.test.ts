@@ -274,10 +274,101 @@ describe('skillStoreV2 refresh', () => {
     await useSkillStoreV2.getState().refresh()
 
     expect(refreshOverview).toHaveBeenCalledTimes(1)
+    expect(refreshOverview).toHaveBeenCalledWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(refresh).not.toHaveBeenCalled()
     expect(loadOverview).not.toHaveBeenCalled()
     expect(listUnmanaged).toHaveBeenCalledTimes(1)
+    expect(listUnmanaged).toHaveBeenCalledWith(LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(useSkillStoreV2.getState().skills.map((skill) => skill.id)).toEqual(['fast-refresh'])
+  })
+
+  it.each([false, true])('drops an old full refresh after changing runtime (returned: %s)', async (returnToLocal) => {
+    let finishScan!: (value: SkillManagerOverview) => void
+    const scan = new Promise<SkillManagerOverview>((resolve) => { finishScan = resolve })
+    vi.spyOn(skillApiV2, 'refreshOverview').mockReturnValueOnce(scan)
+    const unmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    const previous = useSkillStoreV2.getState().refresh()
+
+    try {
+      selectEnvironment('different-skill-runtime')
+      if (returnToLocal) selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: returnToLocal ? LOCAL_RUNTIME_ENVIRONMENT_ID : 'different-skill-runtime',
+        loading: true,
+        error: 'Current runtime status',
+      })
+      finishScan(makeOverview({ skills: [makeSkill()] }))
+      await previous
+
+      expect(unmanaged).not.toHaveBeenCalled()
+      expect(useSkillStoreV2.getState()).toMatchObject({
+        overview: null, loading: true, error: 'Current runtime status', initialized: false,
+      })
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, loading: false })
+    }
+  })
+
+  it('does not initialize the new runtime when an old refresh finishes loading projects', async () => {
+    vi.spyOn(skillApiV2, 'refreshOverview').mockResolvedValue(makeOverview())
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    let projectReadStarted!: () => void
+    let finishProjects!: () => void
+    const readingProjects = new Promise<void>((resolve) => { projectReadStarted = resolve })
+    const projects = new Promise<[]>((resolve) => { finishProjects = () => resolve([]) })
+    vi.spyOn(skillApiV2, 'listProjects').mockImplementationOnce(() => {
+      projectReadStarted()
+      return projects
+    })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    const previous = useSkillStoreV2.getState().refresh()
+    await readingProjects
+
+    try {
+      selectEnvironment('different-skill-runtime')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'different-skill-runtime', initialized: false, loading: true })
+      finishProjects()
+      await previous
+
+      expect(useSkillStoreV2.getState()).toMatchObject({ initialized: false, loading: true })
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, loading: false })
+    }
+  })
+
+  it('keeps the results of the newest full refresh when an earlier one finishes late', async () => {
+    let finishOldScan!: (value: SkillManagerOverview) => void
+    const oldScan = new Promise<SkillManagerOverview>((resolve) => { finishOldScan = resolve })
+    const current = makeOverview({ skills: [makeSkill({ id: 'current-skill' })] })
+    vi.spyOn(skillApiV2, 'refreshOverview').mockReturnValueOnce(oldScan).mockResolvedValueOnce(current)
+    const unmanaged = vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    const refresh = useSkillStoreV2.getState().refresh
+    const previous = refresh()
+    await refresh()
+    finishOldScan(makeOverview())
+    await previous
+
+    expect(unmanaged).toHaveBeenCalledTimes(1)
+    expect(useSkillStoreV2.getState().overview).toEqual(current)
+  })
+
+  it('reports only the current full refresh failure', async () => {
+    let failOldScan!: (error: Error) => void
+    const oldScan = new Promise<SkillManagerOverview>((_resolve, reject) => { failOldScan = reject })
+    vi.spyOn(skillApiV2, 'refreshOverview')
+      .mockReturnValueOnce(oldScan)
+      .mockRejectedValueOnce(new Error('Current scan failed'))
+    const refresh = useSkillStoreV2.getState().refresh
+
+    const previous = refresh()
+    await refresh()
+    failOldScan(new Error('Old scan failed'))
+    await previous
+
+    expect(useSkillStoreV2.getState()).toMatchObject({ error: 'Error: Current scan failed', loading: false })
   })
 
   it('clears stale unmanaged rows when loading overview after Agent sync', async () => {

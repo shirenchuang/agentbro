@@ -1137,9 +1137,9 @@ export const skillApiV2 = {
     })
   },
   refresh: () => (isTauriRuntime() ? invoke<void>('skill_manager_refresh') : Promise.resolve()),
-  refreshOverview: () =>
+  refreshOverview: (environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<SkillManagerOverview>('skill_manager_refresh_overview')
+      ? invoke<SkillManagerOverview>('skill_manager_refresh_overview', undefined, environmentId)
       : Promise.resolve(demoOverview()),
   getSettings: () =>
     isTauriRuntime()
