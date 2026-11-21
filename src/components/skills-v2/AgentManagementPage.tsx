@@ -68,11 +68,15 @@ const SHARED_SKILLS_AGENT_ID = 'agents'
 const NOTICE_DISMISS_MS = 3200
 const PACK_PROGRESS_DONE_DISMISS_MS = 2400
 
+function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
+  const current = useRuntimeEnvironmentStore.getState()
+  return current.selectedEnvironmentId === expectedId
+    && useSkillStoreV2.getState().runtimeEnvironmentId === expectedId
+    && (expectedRevision === undefined || current.selectionRevision === expectedRevision)
+}
+
 function assertRuntimeEnvironment(expectedId: string, message: string) {
-  if (
-    useRuntimeEnvironmentStore.getState().selectedEnvironmentId !== expectedId
-    || useSkillStoreV2.getState().runtimeEnvironmentId !== expectedId
-  ) {
+  if (!isRuntimeEnvironment(expectedId)) {
     throw new Error(message)
   }
 }
@@ -1701,10 +1705,16 @@ function SkillsTab({
   }, [packApplyProgress])
 
   const refreshAgentSkills = async () => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    const isCurrent = () => isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)
+    if (!isCurrent()) return false
     const nextUnmanaged = await skillApiV2.listUnmanaged()
+    if (!isCurrent()) return false
     useSkillStoreV2.setState({ unmanaged: nextUnmanaged })
     await state.loadAgentDetail(detail.id, true)
+    if (!isCurrent()) return false
     await state.loadOverview(true)
+    return isCurrent()
   }
 
   const reconcileDeletedAgentSkills = (agentId: string, runtimeEnvironmentId: string) => {
@@ -2010,7 +2020,7 @@ function SkillsTab({
     }
   }
   const finishInstallFromLibrary = async () => {
-    await refreshAgentSkills()
+    if (!(await refreshAgentSkills())) return
     setInstallDialogOpen(false)
     setSource('agent')
     setStatus('managed')
@@ -2453,6 +2463,7 @@ function SkillsTab({
       )}
       {installDialogOpen && (
         <AgentSkillInstallDialog
+          key={detail.id}
           agent={detail}
           skills={state.skills}
           defaultMode={state.settings?.defaultDistributeMode || 'link'}
@@ -3012,6 +3023,12 @@ function AgentPackToggleRail({
   )
 }
 
+type AgentSkillInstallReview = {
+  preview: DistributionPreview
+  runtimeId: string
+  runtimeRevision: number
+}
+
 function AgentSkillInstallDialog({
   agent,
   skills,
@@ -3031,10 +3048,12 @@ function AgentSkillInstallDialog({
   const [source, setSource] = useState('')
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
-  const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [review, setReview] = useState<AgentSkillInstallReview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, InstallBlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const previewRequest = useRef(0)
+  const preview = review?.preview
   const sources = useMemo(
     () => Array.from(new Set(skills.map((skill) => skill.sourceType).filter(Boolean))).sort(),
     [skills],
@@ -3073,10 +3092,6 @@ function AgentSkillInstallDialog({
   const unresolvedBlockers = preview?.blockers.filter((blocker) => !blockerDecisions[installBlockerKey(blocker)]).length ?? 0
 
   useEffect(() => {
-    setMode(defaultMode)
-  }, [defaultMode])
-
-  useEffect(() => {
     setSelectedIds((current) => {
       const known = new Set(skills.map((skill) => skill.id))
       const next = new Set(Array.from(current).filter((id) => known.has(id)))
@@ -3084,11 +3099,21 @@ function AgentSkillInstallDialog({
     })
   }, [skills])
 
+  const resetPreview = () => {
+    previewRequest.current += 1
+    setReview(null)
+    setBlockerDecisions({})
+    setBusy(false)
+    setError(null)
+  }
+
   const toggleSkill = (skillId: string) => {
+    resetPreview()
     setSelectedIds((current) => toggleSetValue(current, skillId))
   }
 
   const selectVisible = () => {
+    resetPreview()
     setSelectedIds((current) => {
       const next = new Set(current)
       for (const skill of filteredSkills) next.add(skill.id)
@@ -3096,23 +3121,39 @@ function AgentSkillInstallDialog({
     })
   }
 
+  const changeMode = (nextMode: 'link' | 'copy') => {
+    if (nextMode === mode) return
+    resetPreview()
+    setMode(nextMode)
+  }
+
   const runPreview = async () => {
-    if (selectedSkills.length === 0) return
+    if (busy || selectedSkills.length === 0) return
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    if (!isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
+    const requestId = ++previewRequest.current
+    const isCurrent = () => requestId === previewRequest.current && isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)
     setBusy(true)
     setError(null)
     try {
       const nextPreview = await skillApiV2.previewDistribute(selectedSkills.map((skill) => skill.id), [agent.id], mode)
-      setPreview(nextPreview)
-      setBlockerDecisions({})
+      if (isCurrent()) {
+        setReview({ preview: nextPreview, runtimeId: selectedEnvironmentId, runtimeRevision: selectionRevision })
+      }
     } catch (e) {
-      setError(String(e))
+      if (isCurrent()) setError(String(e))
     } finally {
-      setBusy(false)
+      if (requestId === previewRequest.current) setBusy(false)
     }
   }
 
   const execute = async () => {
-    if (!preview) return
+    if (!review || busy) return
+    const { preview, runtimeId, runtimeRevision } = review
+    if (!isRuntimeEnvironment(runtimeId, runtimeRevision)) {
+      resetPreview()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -3123,9 +3164,9 @@ function AgentSkillInstallDialog({
         })
         .filter((item): item is { skillId: string; agentId: string; action: InstallBlockerDecision } => Boolean(item))
       await skillApiV2.executeDistribute({ ...preview, blockerDecisions: blockerDecisionsPayload })
-      await Promise.resolve(onDone())
+      if (isRuntimeEnvironment(runtimeId, runtimeRevision)) await onDone()
     } catch (e) {
-      setError(String(e))
+      if (isRuntimeEnvironment(runtimeId, runtimeRevision)) setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -3140,14 +3181,14 @@ function AgentSkillInstallDialog({
         busy={busy}
         disabled={unresolvedBlockers > 0}
         modalClassName="sm2__modal--agent-install sm2__modal--light-surface"
-        onCancel={() => setPreview(null)}
+        onCancel={() => { if (!busy) resetPreview() }}
         onConfirm={execute}
       >
         <div className="sm2-agent-install">
           <div className="sm2-agent-install__target">
             <span>目标：</span>
             <strong>{agent.displayName}</strong>
-            <em>{selectedSkills.length} 个 Skill · {skillModeLabel(t, mode)}</em>
+            <em>{preview.skillIds.length} 个 Skill · {skillModeLabel(t, preview.requestedMode)}</em>
           </div>
           <div className="sm2-agent-install__preview-list">
             {preview.changes.map((change) => (
@@ -3156,7 +3197,7 @@ function AgentSkillInstallDialog({
                   {change.action === 'create' ? '新增' : change.action === 'reinstall' ? '重装' : change.action === 'convert' ? '转换' : change.action}
                 </span>
                 <div>
-                  <strong>{selectedSkills.find((skill) => skill.id === change.skillId)?.name ?? change.skillId}</strong>
+                  <strong>{skills.find((skill) => skill.id === change.skillId)?.name ?? change.skillId}</strong>
                   <code>{change.targetPath}</code>
                 </div>
               </div>
@@ -3168,7 +3209,7 @@ function AgentSkillInstallDialog({
                 <div key={key} className="sm2-agent-install__preview-row sm2-agent-install__preview-row--blocked">
                   <span className="sm2__tag sm2__tag--conflict">阻止</span>
                   <div>
-                    <strong>{selectedSkills.find((skill) => skill.id === blocker.skillId)?.name ?? blocker.skillId}</strong>
+                    <strong>{skills.find((skill) => skill.id === blocker.skillId)?.name ?? blocker.skillId}</strong>
                     <span>{distributionBlockerReason(t, blocker)}</span>
                     {blocker.existingPath && <code>{blocker.existingPath}</code>}
                     <div className="sm2-agent-install__decision-row">
@@ -3254,8 +3295,8 @@ function AgentSkillInstallDialog({
         <div className="sm2-agent-install__filters">
           <span>安装方式</span>
           <div className="sm2__view-toggle sm2__view-toggle--soft">
-            <button className={mode === 'link' ? 'active' : ''} onClick={() => setMode('link')}>{skillModeLabel(t, 'link')}</button>
-            <button className={mode === 'copy' ? 'active' : ''} onClick={() => setMode('copy')}>{skillModeLabel(t, 'copy')}</button>
+            <button className={mode === 'link' ? 'active' : ''} onClick={() => changeMode('link')}>{skillModeLabel(t, 'link')}</button>
+            <button className={mode === 'copy' ? 'active' : ''} onClick={() => changeMode('copy')}>{skillModeLabel(t, 'copy')}</button>
           </div>
         </div>
         <div className="sm2-agent-install__bulk">
@@ -3263,7 +3304,10 @@ function AgentSkillInstallDialog({
           <button className="sm2__btn sm2__btn--ghost" disabled={filteredSkills.length === 0} onClick={selectVisible}>
             选择当前
           </button>
-          <button className="sm2__btn sm2__btn--ghost" disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>
+          <button className="sm2__btn sm2__btn--ghost" disabled={selectedIds.size === 0} onClick={() => {
+            resetPreview()
+            setSelectedIds(new Set())
+          }}>
             清空
           </button>
         </div>
