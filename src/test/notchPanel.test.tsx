@@ -25,7 +25,7 @@ const tauriMocks = vi.hoisted(() => ({
   }),
   isCursorOverNotch: vi.fn(() => Promise.resolve(false)),
   isTauri: vi.fn(() => false),
-  resizeNotch: vi.fn(() => Promise.resolve({ anchorOffsetX: 0 })),
+  resizeNotch: vi.fn<typeof import('../services/tauriApi').resizeNotch>(() => Promise.resolve({ anchorOffsetX: 0 })),
   startNotchDrag: vi.fn(() => Promise.resolve(true)),
   endNotchDrag: vi.fn(() => Promise.resolve(null)),
 }))
@@ -373,6 +373,43 @@ describe('NotchPanel island shell', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('restores the detail height when the earlier native list resize completes last', async () => {
+    const pending: Array<{ height: number; apply: () => void }> = []
+    let nativeHeight = 0
+    let immediate = false
+    tauriMocks.resizeNotch.mockImplementation((_width, height) => new Promise((resolve) => {
+      const apply = () => {
+        nativeHeight = height
+        resolve({ anchorOffsetX: 0 })
+      }
+      if (immediate) apply()
+      else pending.push({ height, apply })
+    }))
+    const waiting = session({
+      phase: 'waiting_approval',
+      pendingPermission: { toolName: 'Bash', toolInput: 'echo fixture' },
+    })
+    useSessionStore.setState({
+      sessions: { [waiting.id]: waiting },
+      sessionList: [waiting],
+      activeSessionId: waiting.id,
+      panelState: 'hover',
+      activeOverlay: null,
+      overlayQueue: [],
+    })
+
+    render(<NotchPanel />)
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+
+    const [listResize, detailResize] = pending
+    expect(detailResize.height).toBeGreaterThan(listResize.height)
+    await act(async () => { detailResize.apply() })
+    expect(nativeHeight).toBe(detailResize.height)
+    immediate = true
+    await act(async () => { listResize.apply() })
+    expect(nativeHeight).toBe(detailResize.height)
   })
 
   it('keeps the visible collapsed pill inside a passthrough stable native host', async () => {
