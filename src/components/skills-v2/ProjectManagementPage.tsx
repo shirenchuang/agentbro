@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
+import { isWindowsPlatform } from '../../utils/platform'
 import { AgentIconBadge } from './AgentIconBadge'
 import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
@@ -85,7 +86,7 @@ export function ProjectManagementPage() {
                 className="sm2__search sm2__search--full"
                 value={rootPath}
                 onChange={(event) => setRootPath(event.target.value)}
-                placeholder="/Users/me/work/repo"
+                placeholder={isWindowsPlatform() ? 'C:\\Users\\me\\work\\repo' : '/Users/me/work/repo'}
               />
               <button className="sm2__btn sm2__btn--primary" disabled={!rootPath.trim() || state.projectDetailLoading} onClick={addProject}>
                 添加
@@ -343,32 +344,36 @@ function ProjectInstallPanel({ detail }: { detail: ProjectDetail }) {
             <option value="copy">复制</option>
           </select>
         </label>
-        <label>
-          <span>中心库 Skill</span>
-          <select className="sm2__select" value={skillId} onChange={(event) => setSkillId(event.target.value)} disabled={state.skills.length === 0}>
-            {state.skills.length === 0 ? (
-              <option value="">中心库为空</option>
-            ) : state.skills.map((skill) => (
-              <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>
-            ))}
-          </select>
-        </label>
-        <button className="sm2__btn sm2__btn--primary" disabled={busy || !skillId} onClick={installSkill}>
-          安装 Skill
-        </button>
-        <label>
-          <span>技能包</span>
-          <select className="sm2__select" value={packId} onChange={(event) => setPackId(event.target.value)} disabled={state.packs.length === 0}>
-            {state.packs.length === 0 ? (
-              <option value="">暂无技能包</option>
-            ) : state.packs.map((pack) => (
-              <option key={pack.id} value={pack.id}>{pack.name}</option>
-            ))}
-          </select>
-        </label>
-        <button className="sm2__btn" disabled={busy || !packId} onClick={applyPack}>
-          应用技能包
-        </button>
+        <div className="sm2__project-install-choice">
+          <label>
+            <span>中心库 Skill</span>
+            <select className="sm2__select" value={skillId} onChange={(event) => setSkillId(event.target.value)} disabled={state.skills.length === 0}>
+              {state.skills.length === 0 ? (
+                <option value="">中心库为空</option>
+              ) : state.skills.map((skill) => (
+                <option key={skill.id} value={skill.id}>{skill.name || skill.id}</option>
+              ))}
+            </select>
+          </label>
+          <button className="sm2__btn sm2__btn--primary" disabled={busy || !skillId} onClick={installSkill}>
+            安装 Skill
+          </button>
+        </div>
+        <div className="sm2__project-install-choice">
+          <label>
+            <span>技能包</span>
+            <select className="sm2__select" value={packId} onChange={(event) => setPackId(event.target.value)} disabled={state.packs.length === 0}>
+              {state.packs.length === 0 ? (
+                <option value="">暂无技能包</option>
+              ) : state.packs.map((pack) => (
+                <option key={pack.id} value={pack.id}>{pack.name}</option>
+              ))}
+            </select>
+          </label>
+          <button className="sm2__btn" disabled={busy || !packId} onClick={applyPack}>
+            应用技能包
+          </button>
+        </div>
       </div>
     </section>
   )

@@ -626,6 +626,7 @@
     },
     "runtimeEnvironment": {
       "localName": "Bu Mac",
+      "localWindowsName": "Bu bilgisayar",
       "localMeta": "Yerel",
       "remoteMeta": "Uzak",
       "switchLabel": "Çalışma ortamını değiştir",

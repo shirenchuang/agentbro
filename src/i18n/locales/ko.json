@@ -734,6 +734,7 @@
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
     "runtimeEnvironment": {
       "localName": "이 Mac",
+      "localWindowsName": "이 PC",
       "localMeta": "로컬",
       "remoteMeta": "원격",
       "switchLabel": "실행 환경 전환",

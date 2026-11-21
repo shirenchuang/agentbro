@@ -774,6 +774,7 @@
     "description": "管理 AI Agent 的 Skills、MCP 和插件，支持跨设备同步。",
     "runtimeEnvironment": {
       "localName": "这台 Mac",
+      "localWindowsName": "这台电脑",
       "localMeta": "本机",
       "remoteMeta": "远程",
       "switchLabel": "切换运行环境",

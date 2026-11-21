@@ -5453,13 +5453,20 @@
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  overflow-y: auto;
   padding: 14px;
   border-right: 1px solid var(--border, rgba(15, 23, 42, 0.08));
 }
 
 .sm2__project-canvas {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   padding: 14px 18px 18px;
+}
+
+.sm2__project-sidebar > .sm2__search {
+  flex: none;
 }
 
 .sm2__project-import {
@@ -5547,8 +5554,8 @@
 }
 
 .sm2__project-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 14px;
   align-items: center;
   padding: 16px;
@@ -5558,6 +5565,7 @@
 }
 
 .sm2__project-hero-main {
+  flex: 1 1 180px;
   min-width: 0;
 }
 
@@ -5566,6 +5574,7 @@
   font-size: 22px;
   font-weight: 800;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .sm2__project-hero-main code,
@@ -5592,7 +5601,6 @@
   display: flex;
   gap: 5px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .sm2__project-agent-chips button {
@@ -5617,13 +5625,12 @@
 }
 
 .sm2__project-actions {
-  justify-content: flex-end;
   margin: 0;
 }
 
 .sm2__project-stat-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 96px), 1fr));
   gap: 10px;
 }
 
@@ -5705,15 +5712,30 @@
 }
 
 .sm2__project-install-controls {
-  display: grid;
-  grid-template-columns: minmax(140px, 0.8fr) 96px minmax(180px, 1.2fr) auto minmax(180px, 1.2fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  align-items: end;
+}
+
+.sm2__project-install-choice {
+  display: flex;
+  flex: 2 1 220px;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
   align-items: end;
 }
 
 .sm2__project-install-controls label {
   display: grid;
+  flex: 1 1 112px;
   gap: 4px;
+  min-width: 0;
+}
+
+.sm2__project-install-controls select {
+  width: 100%;
   min-width: 0;
 }
 
@@ -5724,7 +5746,7 @@
 .sm2__project-matrix-head,
 .sm2__project-matrix-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.1fr) 82px 82px 82px minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(44px, 0.52fr)) minmax(0, 1.4fr);
   gap: 10px;
   align-items: center;
 }
@@ -5763,7 +5785,7 @@
 
 .sm2__project-skill-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
   gap: 10px;
 }
 
@@ -5859,21 +5881,9 @@
     border-bottom: 1px solid var(--border, rgba(15, 23, 42, 0.08));
   }
 
-  .sm2__project-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .sm2__project-agent-chips,
-  .sm2__project-actions {
-    justify-content: flex-start;
-  }
-
-  .sm2__project-install-controls {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .sm2__project-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .sm2__project-sidebar,
+  .sm2__project-canvas {
+    overflow: visible;
   }
 }
 
