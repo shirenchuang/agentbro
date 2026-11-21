@@ -119,7 +119,7 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Scan skills scattered across agent folders, adopt them into a center library, and distribute them to agents or projects by symlink or copy. Batch jobs, conflict decisions, and diagnostics stay visible.
 - Group common skills into reusable packs, apply them to several agents, and safely revoke them later.
 - [Import and export Skill Pack manifests](docs/skill-pack-manifest.md) to share and maintain pack definitions in your own Git repository.
-- Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls.
+- Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls. Cancelling closes AgentBro's connection. Actions the server has already performed can still take effect.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
 - Preview skills.sh project lock files and select missing GitHub Skills to restore to the project's .agents/skills directory. Restoration verifies the v2 content hash and preserves existing entries. [skills.sh lock format](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts)
