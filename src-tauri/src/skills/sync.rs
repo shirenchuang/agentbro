@@ -1,136 +1,226 @@
 use super::{agent_paths, installer, registry, scanner};
 use super::{ConflictResolution, InstallMode, SkillType, SyncPreview, SyncResult, TargetConfig};
 use crate::platform::process::background_command;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const SYNC_AUTH_HEADER: &str = "AGENTBRO_SKILL_SYNC_AUTHORIZATION";
+
+struct GitHubSyncRemote {
+    url: String,
+    token: String,
+    encoded_auth: String,
+}
+
+impl GitHubSyncRemote {
+    fn configured(metadata: &registry::Metadata) -> Result<Self, String> {
+        let config = metadata.sync.as_ref().ok_or("No GitHub sync configured")?;
+        let repository = config
+            .github_repo
+            .as_deref()
+            .ok_or("No GitHub repo configured")?;
+        let token = config
+            .github_token
+            .as_deref()
+            .ok_or("No GitHub token configured")?;
+        Self::new(repository, token)
+    }
+
+    fn new(repository: &str, token: &str) -> Result<Self, String> {
+        let repository = repository.trim();
+        let repository = repository
+            .strip_prefix("https://github.com/")
+            .unwrap_or(repository);
+        let repository = repository.trim_end_matches('/');
+        let Some((owner, name)) = repository.split_once('/') else {
+            return Err("Use a GitHub repository in owner/repo format".to_string());
+        };
+        let name = name.strip_suffix(".git").unwrap_or(name);
+        let valid = |part: &str| {
+            !matches!(part, "" | "." | "..")
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        };
+        if !valid(owner) || !valid(name) {
+            return Err("Use a GitHub repository in owner/repo format".to_string());
+        }
+        let token = token.trim();
+        if token.is_empty() {
+            return Err("No GitHub token configured".to_string());
+        }
+        Ok(Self {
+            url: format!("https://github.com/{owner}/{name}.git"),
+            token: token.to_string(),
+            encoded_auth: STANDARD.encode(format!("x-access-token:{token}")),
+        })
+    }
+
+    fn command(&self) -> Command {
+        let mut command = git();
+        command
+            .args(["-c", "http.followRedirects=false"])
+            .arg(format!(
+                "--config-env=http.{}.extraHeader={SYNC_AUTH_HEADER}",
+                self.url
+            ))
+            .env(
+                SYNC_AUTH_HEADER,
+                format!("Authorization: Basic {}", self.encoded_auth),
+            )
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "Never")
+            .env("GIT_TRACE_REDACT", "1");
+        command
+    }
+
+    fn check(&self, operation: &str, output: Output) -> Result<(), String> {
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .replace(&self.encoded_auth, "***")
+            .replace(&self.token, "***");
+        Err(git_error(operation, &output, detail.trim()))
+    }
+
+    fn clone_checkout(&self, directory: &Path) -> Result<(), String> {
+        let output = self
+            .command()
+            .args(["clone", "--depth", "1", "--no-recurse-submodules", "--"])
+            .arg(&self.url)
+            .arg(directory)
+            .output()
+            .map_err(|error| error.to_string())?;
+        self.check("clone", output)
+    }
+
+    fn push_checkout(&self, directory: &Path, branch: &str) -> Result<(), String> {
+        let output = self
+            .command()
+            .args(["push", "--", "origin", branch])
+            .current_dir(directory)
+            .output()
+            .map_err(|error| error.to_string())?;
+        self.check("push", output)
+    }
+}
+
+fn git() -> Command {
+    background_command(crate::agents::executable::command_path("git"))
+}
+
+fn git_error(operation: &str, output: &Output, detail: &str) -> String {
+    if detail.is_empty() {
+        format!("Git {operation} failed ({})", output.status)
+    } else {
+        format!("Git {operation} failed ({})\n{detail}", output.status)
+    }
+}
+
+fn run_local_git(directory: &Path, args: &[&str]) -> Result<Output, String> {
+    git()
+        .current_dir(directory)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())
+}
+
+fn require_git_success(operation: &str, output: Output) -> Result<Output, String> {
+    if !output.status.success() {
+        return Err(git_error(
+            operation,
+            &output,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    Ok(output)
+}
+
+fn commit_sync_snapshot(directory: &Path) -> Result<(), String> {
+    require_git_success("add", run_local_git(directory, &["add", "--all"])?)?;
+    let diff = run_local_git(directory, &["diff", "--cached", "--quiet"])?;
+    match diff.status.code() {
+        Some(0) => Ok(()),
+        Some(1) => {
+            require_git_success(
+                "commit",
+                run_local_git(directory, &["commit", "-m", "AgentBro sync"])?,
+            )?;
+            Ok(())
+        }
+        _ => Err(git_error(
+            "diff",
+            &diff,
+            String::from_utf8_lossy(&diff.stderr).trim(),
+        )),
+    }
+}
+
+fn checked_out_branch(directory: &Path) -> Result<String, String> {
+    let output = require_git_success(
+        "symbolic-ref",
+        run_local_git(directory, &["symbolic-ref", "--quiet", "--short", "HEAD"])?,
+    )?;
+    String::from_utf8(output.stdout)
+        .map(|name| name.trim().to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn sync_failed(message: String) -> SyncResult {
+    SyncResult {
+        success: false,
+        message,
+        conflicts: Vec::new(),
+    }
+}
 
 pub fn push_to_github() -> Result<SyncResult, String> {
     let meta = registry::load();
-    let repo = meta
-        .sync
-        .as_ref()
-        .and_then(|s| s.github_repo.as_ref())
-        .ok_or("No GitHub repo configured")?;
-    let token = meta
-        .sync
-        .as_ref()
-        .and_then(|s| s.github_token.as_ref())
-        .ok_or("No GitHub token configured")?;
-
-    let tmp_dir = std::env::temp_dir().join("agentbro-sync");
-    let _ = fs::remove_dir_all(&tmp_dir);
-
-    let repo_url = format!("https://{}@github.com/{}.git", token, repo);
-    let clone_result = background_command(crate::agents::executable::command_path("git"))
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            &repo_url,
-            &tmp_dir.display().to_string(),
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !clone_result.status.success() {
-        fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-        background_command(crate::agents::executable::command_path("git"))
-            .args(["init"])
-            .current_dir(&tmp_dir)
-            .output()
-            .map_err(|e| e.to_string())?;
-        background_command(crate::agents::executable::command_path("git"))
-            .args(["remote", "add", "origin", &repo_url])
-            .current_dir(&tmp_dir)
-            .output()
-            .map_err(|e| e.to_string())?;
+    let remote = GitHubSyncRemote::configured(&meta)?;
+    let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir())?;
+    let checkout = temporary.path().join("repo");
+    if let Err(error) = remote.clone_checkout(&checkout) {
+        return Ok(sync_failed(format!("推送失败：{error}")));
     }
 
-    let meta_content = backup_metadata_json(meta)?;
-    fs::write(tmp_dir.join("metadata.json"), meta_content).map_err(|e| e.to_string())?;
-
+    fs::write(checkout.join("metadata.json"), backup_metadata_json(meta)?)
+        .map_err(|error| error.to_string())?;
     let skills_src = agent_paths::agentbro_skills_dir();
     if skills_src.is_dir() {
-        let skills_dest = tmp_dir.join("skills");
-        installer::copy_recursive_pub(&skills_src, &skills_dest)?;
+        installer::copy_recursive_pub(&skills_src, &checkout.join("skills"))?;
     }
 
-    background_command(crate::agents::executable::command_path("git"))
-        .args(["add", "."])
-        .current_dir(&tmp_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
-    background_command(crate::agents::executable::command_path("git"))
-        .args(["commit", "-m", "AgentBro sync"])
-        .current_dir(&tmp_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
-    let branch = detect_default_branch(&tmp_dir);
-    let push = background_command(crate::agents::executable::command_path("git"))
-        .args(["push", "-u", "origin", &branch])
-        .current_dir(&tmp_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let _ = fs::remove_dir_all(&tmp_dir);
-
-    if push.status.success() {
-        let mut meta = registry::load();
-        if let Some(ref mut sync) = meta.sync {
-            sync.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
-        }
-        let _ = registry::save(&meta);
-
-        Ok(SyncResult {
-            success: true,
-            message: "推送成功".to_string(),
-            conflicts: vec![],
-        })
-    } else {
-        let stderr = String::from_utf8_lossy(&push.stderr).to_string();
-        Ok(SyncResult {
-            success: false,
-            message: format!("推送失败: {}", stderr),
-            conflicts: vec![],
-        })
+    if let Err(error) = commit_sync_snapshot(&checkout) {
+        return Ok(sync_failed(format!("推送失败：{error}")));
     }
+    let branch = checked_out_branch(&checkout)?;
+    if let Err(error) = remote.push_checkout(&checkout, &branch) {
+        return Ok(sync_failed(format!("推送失败：{error}")));
+    }
+
+    let mut meta = registry::load();
+    if let Some(ref mut sync) = meta.sync {
+        sync.last_sync_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+    let _ = registry::save(&meta);
+    Ok(SyncResult {
+        success: true,
+        message: "推送成功".to_string(),
+        conflicts: vec![],
+    })
 }
 
 pub fn pull_from_github() -> Result<SyncResult, String> {
     let meta = registry::load();
-    let repo = meta
-        .sync
-        .as_ref()
-        .and_then(|s| s.github_repo.as_ref())
-        .ok_or("No GitHub repo configured")?;
-    let token = meta
-        .sync
-        .as_ref()
-        .and_then(|s| s.github_token.as_ref())
-        .ok_or("No GitHub token configured")?;
-
-    let tmp_dir = std::env::temp_dir().join("agentbro-sync-pull");
-    let _ = fs::remove_dir_all(&tmp_dir);
-
-    let repo_url = format!("https://{}@github.com/{}.git", token, repo);
-    let clone = background_command(crate::agents::executable::command_path("git"))
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            &repo_url,
-            &tmp_dir.display().to_string(),
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !clone.status.success() {
-        return Ok(SyncResult {
-            success: false,
-            message: "拉取失败：无法克隆仓库".to_string(),
-            conflicts: vec![],
-        });
+    let remote = GitHubSyncRemote::configured(&meta)?;
+    let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir())?;
+    let tmp_dir = temporary.path().join("repo");
+    if let Err(error) = remote.clone_checkout(&tmp_dir) {
+        return Ok(sync_failed(format!("拉取失败：{error}")));
     }
 
     let remote_meta_path = tmp_dir.join("metadata.json");
@@ -192,8 +282,6 @@ pub fn pull_from_github() -> Result<SyncResult, String> {
     } else {
         persist_pending_pull(&tmp_dir)?;
     }
-
-    let _ = fs::remove_dir_all(&tmp_dir);
 
     Ok(SyncResult {
         success: conflicts.is_empty(),
@@ -471,28 +559,6 @@ fn hash_path(root: &Path, path: &Path, hasher: &mut impl Hasher) -> Result<(), S
     Ok(())
 }
 
-fn detect_default_branch(repo_dir: &std::path::Path) -> String {
-    let output = background_command(crate::agents::executable::command_path("git"))
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
-        .current_dir(repo_dir)
-        .output();
-    if let Ok(out) = output {
-        if out.status.success() {
-            let full = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Some(branch) = full.strip_prefix("origin/") {
-                return branch.to_string();
-            }
-            return full;
-        }
-    }
-    let head = repo_dir.join(".git/refs/heads/main");
-    if head.exists() {
-        "main".to_string()
-    } else {
-        "master".to_string()
-    }
-}
-
 fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     zip: &mut zip::ZipWriter<W>,
     dir: &std::path::Path,
@@ -614,6 +680,134 @@ fn unique_path_name(dir: &Path, base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_auth_is_scoped_to_the_configured_https_repository() {
+        let remote =
+            GitHubSyncRemote::new("https://github.com/example/skills/", "fixture-credential")
+                .unwrap();
+        let command = remote.command();
+        assert_eq!(remote.url, "https://github.com/example/skills.git");
+        assert!(command.get_args().all(|argument| {
+            let argument = argument.to_string_lossy();
+            !argument.contains("fixture-credential") && !argument.contains(&remote.encoded_auth)
+        }));
+        let config = |url: &str| {
+            remote
+                .command()
+                .args(["config", "--get-urlmatch", "http.extraHeader", url])
+                .output()
+                .unwrap()
+        };
+        let selected = config("https://github.com/example/skills.git/info/refs");
+        assert!(selected.status.success());
+        assert_eq!(
+            String::from_utf8(selected.stdout).unwrap().trim(),
+            format!("Authorization: Basic {}", remote.encoded_auth)
+        );
+        for url in [
+            "https://github.com/example/another.git",
+            "https://example.test/example/skills.git",
+        ] {
+            assert!(!String::from_utf8_lossy(&config(url).stdout).contains(&remote.encoded_auth));
+        }
+        let mut failure = run_local_git(Path::new("."), &["not-an-agentbro-git-command"]).unwrap();
+        assert!(!failure.status.success());
+        failure.stderr = format!(
+            "permission denied: {} (raw {})",
+            remote.encoded_auth, remote.token
+        )
+        .into_bytes();
+        let message = remote.check("clone", failure).unwrap_err();
+        assert!(message.contains("permission denied"));
+        assert!(!message.contains(&remote.encoded_auth));
+        assert!(!message.contains(&remote.token));
+        assert!(GitHubSyncRemote::new("https://example.test/example/skills", "fixture").is_err());
+    }
+
+    #[test]
+    fn commits_an_initial_snapshot_and_stops_on_a_failed_commit() {
+        let temporary = installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path();
+        let remote = root.join("source.git");
+        let checkout = root.join("checkout");
+        require_git_success(
+            "init",
+            git()
+                .args(["init", "--bare", "--initial-branch=trunk"])
+                .arg(&remote)
+                .output()
+                .unwrap(),
+        )
+        .unwrap();
+        require_git_success(
+            "clone",
+            git()
+                .args(["clone", "--"])
+                .arg(&remote)
+                .arg(&checkout)
+                .output()
+                .unwrap(),
+        )
+        .unwrap();
+        for (key, value) in [
+            ("user.name", "AgentBro test"),
+            ("user.email", "agentbro-fixture@example.test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            require_git_success(
+                "config",
+                run_local_git(&checkout, &["config", key, value]).unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(checkout.join("metadata.json"), "{}").unwrap();
+        commit_sync_snapshot(&checkout).unwrap();
+        let branch = checked_out_branch(&checkout).unwrap();
+        require_git_success(
+            "push",
+            run_local_git(&checkout, &["push", "--", "origin", &branch]).unwrap(),
+        )
+        .unwrap();
+        let committed_head = run_local_git(&checkout, &["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout;
+        assert_eq!(
+            run_local_git(&remote, &["rev-parse", &branch])
+                .unwrap()
+                .stdout,
+            committed_head,
+        );
+        commit_sync_snapshot(&checkout).unwrap();
+        require_git_success(
+            "config",
+            run_local_git(&checkout, &["config", "commit.gpgsign", "true"]).unwrap(),
+        )
+        .unwrap();
+        require_git_success(
+            "config",
+            run_local_git(
+                &checkout,
+                &[
+                    "config",
+                    "gpg.program",
+                    checkout.join("missing-gpg").to_str().unwrap(),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(checkout.join("metadata.json"), "{\"fixture\":true}").unwrap();
+        assert!(commit_sync_snapshot(&checkout)
+            .unwrap_err()
+            .contains("Git commit failed"));
+        assert_eq!(
+            run_local_git(&checkout, &["rev-parse", "HEAD"])
+                .unwrap()
+                .stdout,
+            committed_head
+        );
+    }
 
     #[test]
     fn backups_preserve_skill_metadata_without_local_sync_settings() {
