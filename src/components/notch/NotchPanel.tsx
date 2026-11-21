@@ -665,7 +665,7 @@ export function NotchPanel() {
   const openPrepareTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const openPrepareFrameRef = useRef<number | undefined>(undefined)
   const desiredIgnoreCursorEventsRef = useRef(false)
-  const appliedIgnoreCursorEventsRef = useRef(false)
+  const appliedIgnoreCursorEventsRef = useRef<boolean | null>(false)
   const forceIgnoreCursorEventsRef = useRef(false)
   const ignoreCursorEventsInFlightRef = useRef(false)
   const ignoreCursorEventsDelayTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -747,13 +747,13 @@ export function NotchPanel() {
         appliedIgnoreCursorEventsRef.current = desiredIgnore
       })
       .catch(() => {
-        // Leave the applied state unchanged so the next request can retry.
+        appliedIgnoreCursorEventsRef.current = null
       })
       .finally(() => {
         ignoreCursorEventsInFlightRef.current = false
         if (
           forceIgnoreCursorEventsRef.current
-          || appliedIgnoreCursorEventsRef.current !== desiredIgnoreCursorEventsRef.current
+          || desiredIgnore !== desiredIgnoreCursorEventsRef.current
         ) {
           flushNativeIgnoreCursorEvents()
         }

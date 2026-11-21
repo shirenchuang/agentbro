@@ -561,7 +561,54 @@ describe('NotchPanel island shell', () => {
     })
   })
 
-  it('serializes native cursor passthrough so a stale hidden request cannot disable hover', async () => {
+  it('does not immediately resubmit a failed native passthrough change', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const firstRequest = deferred()
+    const nextHoverProbe = deferred<boolean>()
+    const error = new Error('native passthrough unavailable')
+    tauriMocks.isCursorOverNotch
+      .mockResolvedValueOnce(false)
+      .mockImplementation(() => nextHoverProbe.promise)
+    tauriMocks.setNotchIgnoreCursorEvents
+      .mockImplementationOnce(() => firstRequest.promise)
+      .mockRejectedValueOnce(error)
+
+    try {
+      await act(async () => {
+        mountIsland()
+        useSessionStore.getState().setPanelState('collapsed')
+      })
+      await waitFor(() => expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledWith(true))
+      await act(async () => {
+        firstRequest.reject(error)
+        await firstRequest.promise.catch(() => {})
+      })
+
+      expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[true]])
+    } finally {
+      tauriMocks.setNotchIgnoreCursorEvents.mockReset().mockResolvedValue(undefined)
+    }
+  })
+
+  it('waits until the next hover poll to retry failed native cursor passthrough', async () => {
+    tauriMocks.isTauri.mockReturnValue(true)
+    const nextHoverProbe = deferred<boolean>()
+    tauriMocks.isCursorOverNotch
+      .mockResolvedValueOnce(false)
+      .mockImplementation(() => nextHoverProbe.promise)
+    tauriMocks.setNotchIgnoreCursorEvents.mockRejectedValueOnce(new Error('native passthrough unavailable'))
+
+    await act(async () => { mountIsland() })
+    await waitFor(() => expect(tauriMocks.isCursorOverNotch).toHaveBeenCalledTimes(2))
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[false]])
+
+    await act(async () => { nextHoverProbe.resolve(false) })
+
+    expect(tauriMocks.setNotchIgnoreCursorEvents.mock.calls).toEqual([[false], [false]])
+  })
+
+  it.each(['succeeds', 'fails'])('serializes native cursor passthrough when the stale hidden request %s', async (result) => {
     tauriMocks.isTauri.mockReturnValue(true)
     const pendingCollapsedPassthrough = deferred()
     tauriMocks.setNotchIgnoreCursorEvents
@@ -596,8 +643,9 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.setNotchIgnoreCursorEvents).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      pendingCollapsedPassthrough.resolve()
-      await pendingCollapsedPassthrough.promise
+      if (result === 'succeeds') pendingCollapsedPassthrough.resolve()
+      else pendingCollapsedPassthrough.reject(new Error('native passthrough unavailable'))
+      await pendingCollapsedPassthrough.promise.catch(() => {})
     })
 
     await waitFor(() => {
