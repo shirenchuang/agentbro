@@ -2669,21 +2669,32 @@ def supervise_mcp_request(kind, request_id):
             unlink_if_exists(marker)
 
 
-def read_json_line(stream, deadline):
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([stream], [], [], max(0, deadline - time.monotonic()))
+def read_json_line(descriptor, pending, deadline):
+    scanned = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("MCP server response timed out")
+        end = pending.find(b"\n", scanned)
+        if end >= 0:
+            line = pending[:end]
+            del pending[:end + 1]
+            scanned = 0
+            try:
+                value = json.loads(line.decode("utf-8"))
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(value, dict):
+                return value
+            continue
+        scanned = len(pending)
+        ready, _, _ = select.select([descriptor], [], [], remaining)
         if not ready:
-            continue
-        line = stream.readline()
-        if not line:
+            raise TimeoutError("MCP server response timed out")
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
             raise ValueError("MCP process exited before responding")
-        try:
-            value = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(value, dict):
-            return value
-    raise TimeoutError("MCP server response timed out")
+        pending.extend(chunk)
 
 
 @contextmanager
@@ -2708,13 +2719,14 @@ def stdio_mcp_session(server):
         env=environment,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+        stderr=subprocess.DEVNULL,
     )
+    stdout = process.stdout.fileno()
+    pending = bytearray()
 
     def send(value):
-        process.stdin.write(json.dumps(value, separators=(",", ":")) + "\n")
+        line = json.dumps(value, separators=(",", ":")) + "\n"
+        process.stdin.write(line.encode("utf-8"))
         process.stdin.flush()
 
     request_ids = count(1)
@@ -2731,7 +2743,7 @@ def stdio_mcp_session(server):
         send(payload)
         deadline = time.monotonic() + timeout
         while True:
-            response = read_json_line(process.stdout, deadline)
+            response = read_json_line(stdout, pending, deadline)
             if response.get("id") == request_id:
                 if response.get("error"):
                     raise ValueError(json.dumps(response["error"], ensure_ascii=False))

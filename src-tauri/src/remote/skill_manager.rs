@@ -1908,6 +1908,86 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn remote_mcp_stdio_reads_combined_and_split_messages_despite_server_logs() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-mcp-stdio-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let fixture = home.join("stdio_fixture.py");
+        std::fs::write(
+            &fixture,
+            r#"import json
+import os
+import sys
+import time
+
+def frame(value):
+    return json.dumps(value, ensure_ascii=False).encode("utf-8") + b"\n"
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request["method"]
+    response = {"jsonrpc": "2.0", "id": request["id"]}
+    if method == "initialize":
+        response["result"] = {"capabilities": {"tools": {}, "resources": {}, "logging": {}}}
+        os.write(1, frame(response))
+    elif method == "tools/list":
+        response["result"] = {"tools": [{"name": "fixture"}]}
+        notification = {"jsonrpc": "2.0", "method": "notifications/message",
+                        "params": {"level": "info", "data": "Catalog ready"}}
+        os.write(1, frame(notification) + frame(response))
+    elif method == "resources/list":
+        response["result"] = {"resources": [{"uri": "file:///fixture", "name": "雪"}]}
+        data = frame(response)
+        split = data.index("雪".encode("utf-8")) + 1
+        os.write(1, data[:split])
+        time.sleep(0.05)
+        os.write(1, data[split:])
+    elif method == "tools/call":
+        sys.stderr.write("stdio fixture log\n" * 100000)
+        sys.stderr.flush()
+        response["result"] = {"content": [{"type": "text", "text": "工具完成"}]}
+        os.write(1, frame(response))
+"#,
+        )
+        .expect("stdio server fixture");
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({
+                "mcpServers": {"fixture": {"command": "python3", "args": [&fixture]}}
+            })
+            .to_string(),
+        )
+        .expect("fixture configuration");
+        let report = run_script(
+            &home,
+            "inspect_mcp_server_cmd",
+            serde_json::json!({
+                "agent": "claude-code", "serverName": "fixture",
+                "inspectionId": uuid::Uuid::new_v4().to_string(),
+            }),
+        );
+        let operation = run_script(
+            &home,
+            "call_mcp_tool_cmd",
+            serde_json::json!({
+                "agent": "claude-code", "serverName": "fixture", "toolName": "fixture",
+                "operationId": uuid::Uuid::new_v4().to_string(),
+            }),
+        );
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        assert_eq!(report["status"], "connected", "{report}");
+        assert_eq!(report["tools"][0]["name"], "fixture");
+        assert_eq!(report["resources"][0]["name"], "雪");
+        assert_eq!(operation["result"]["content"][0]["text"], "工具完成");
+        assert!(!operation.to_string().contains("stdio fixture log"));
+    }
+
+    #[test]
     fn remote_mcp_cancellation_stops_the_original_stdio_call() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-mcp-cancel-{}",
