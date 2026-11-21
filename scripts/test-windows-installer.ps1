@@ -140,6 +140,7 @@ if ($TracePermissionRenderer) {
     New-ItemProperty -Path $key -Name 'agentbro.exe' -PropertyType String -Force `
         -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$rendererTracePort" | Out-Null
 }
+if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
 $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
@@ -424,6 +425,10 @@ try {
     }
     throw
 } finally {
+    if ($VerifyDrag -and (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
+        Select-String -LiteralPath $stdoutPath -SimpleMatch 'Island position trace ' |
+            Select-Object -ExpandProperty Line
+    }
     if (-not $app.HasExited) {
         Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
     }

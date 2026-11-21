@@ -565,7 +565,8 @@ function Get-IslandCenterX([IntPtr]$WindowHandle) {
 
 function Test-InstalledIslandDrag(
     [Windows.Automation.AutomationElement]$Island,
-    [IntPtr]$WindowHandle
+    [IntPtr]$WindowHandle,
+    [scriptblock]$FindSession
 ) {
     $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
     if ($dpi -eq 0) { throw 'Could not read the native Island DPI' }
@@ -616,7 +617,7 @@ function Test-InstalledIslandDrag(
         $null = Wait-IslandValue 'Windows to report the physical mouse button released' {
             -not [AgentBroSmokeInput]::IsLeftButtonDown()
         }
-        Write-Output 'Windows confirmed the physical mouse button is released.'
+        Write-Output "Windows confirmed the physical mouse button is released at $([DateTimeOffset]::UtcNow.ToString('O'))."
         $releasePositions = [Collections.Generic.List[string]]::new()
         $null = Wait-IslandValue 'the released Island window to settle' {
             $firstCenter = Get-IslandCenterX $WindowHandle
@@ -639,15 +640,35 @@ function Test-InstalledIslandDrag(
         if (-not [AgentBroSmokeInput]::SetCursorPos($probeX, $startY)) {
             throw 'Could not move the cursor after releasing the Island'
         }
+        Write-Output "Moved the released pointer to ($probeX, $startY) at $([DateTimeOffset]::UtcNow.ToString('O'))."
         foreach ($sample in 1..4) {
             Start-Sleep -Milliseconds 150
             $current = Get-IslandCenterX $WindowHandle
             if ([Math]::Abs($current - $released) -gt 2) {
+                Write-Host "Position changed at $([DateTimeOffset]::UtcNow.ToString('O')) after $($releaseClock.ElapsedMilliseconds) ms. After release: $($releasePositions -join ', ')."
                 throw "Island moved after release: $released -> $current (started at $before)"
             }
         }
         Write-Output "Native Island remained at $released after release and further cursor movement."
     }
+
+    $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]$desktop.Left + 24, [int]$desktop.Bottom - 48)) {
+        throw 'Could not move the cursor away from the Island after dragging'
+    }
+    $null = Wait-IslandValue 'the Island session list to collapse after dragging' {
+        -not (& $FindSession)
+    }
+    if ([Math]::Abs((Get-IslandCenterX $WindowHandle) - $released) -gt 2) {
+        throw "The Island lost its released center $released when the session list collapsed"
+    }
+
+    Move-ToIslandHoverPoint $WindowHandle $Island
+    $null = Wait-IslandValue 'the Island session list to reopen at the released position' $FindSession
+    if ([Math]::Abs((Get-IslandCenterX $WindowHandle) - $released) -gt 2) {
+        throw "The Island lost its released center $released when the session list reopened"
+    }
+    Write-Output "Native Island remained at $released through collapse and reopening of the session list."
 }
 
 function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
@@ -778,7 +799,7 @@ try {
             }
             throw
         }
-        Test-InstalledIslandDrag $island $islandWindow.Handle
+        Test-InstalledIslandDrag $island $islandWindow.Handle $findSession
     }
     Click-IslandElement -Description 'Island session' -FindElement $findSession
 

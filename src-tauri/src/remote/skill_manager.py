@@ -280,26 +280,30 @@ CONFIGURED_CENTER_PATH = str(STATE["settings"].get("centerPath") or FIXED_CENTER
 STATE["settings"]["centerPath"] = str(FIXED_CENTER_PATH)
 
 
-def save_state():
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+def write_json_atomically(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
-            dir=STATE_PATH.parent,
-            prefix=f".{STATE_PATH.name}.",
+            dir=path.parent,
+            prefix=f".{path.name}.",
             suffix=".tmp",
             delete=False,
         ) as temp:
-            json.dump(STATE, temp, ensure_ascii=False, indent=2)
+            temp_path = pathlib.Path(temp.name)
+            json.dump(value, temp, ensure_ascii=False, indent=2)
             temp.flush()
             os.fsync(temp.fileno())
-            temp_path = pathlib.Path(temp.name)
-        temp_path.replace(STATE_PATH)
+        temp_path.replace(path)
     finally:
         if temp_path is not None:
             unlink_if_exists(temp_path)
+
+
+def save_state():
+    write_json_atomically(STATE_PATH, STATE)
 
 
 def expand_path(value):
@@ -4023,7 +4027,7 @@ def dispatch():
         return preview
     if command == "skill_manager_export_snapshot":
         snapshot = center_path() / "agentbro-skills.snapshot.json"
-        snapshot.write_text(json.dumps(overview(), ensure_ascii=False, indent=2))
+        write_json_atomically(snapshot, overview())
         return str(snapshot)
     if command in ("open_skill_path", "reveal_skill_path", "open_system_path"):
         path = safe_home_path(args["path"], allow_missing=False)

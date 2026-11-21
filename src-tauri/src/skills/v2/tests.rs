@@ -7,7 +7,7 @@ use crate::skills::v2::service::{AdoptBatchItem, ClaimOrigin, Service, UpsertPac
 use crate::skills::v2::{db, fsutil};
 use rusqlite::params;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -6449,6 +6449,38 @@ fn snapshot_written_and_read() {
     assert_eq!(snap.schema_version, SCHEMA_VERSION);
     assert_eq!(snap.skills.len(), 1);
     assert_eq!(snap.projects.len(), 1);
+}
+
+#[test]
+fn snapshot_refresh_preserves_a_readers_open_file() {
+    let (_home, svc, _lock) = fresh_service("snapshot-open-reader");
+    let path = crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let original = fs::read(&path).unwrap();
+    let mut reader = fs::File::open(&path).unwrap();
+    let project = svc.home.join("工作区/snapshot-project");
+    fs::create_dir_all(&project).unwrap();
+    svc.add_project(project.display().to_string()).unwrap();
+
+    crate::skills::v2::snapshot::export_to_file(&svc).unwrap();
+
+    let mut observed = Vec::new();
+    reader.read_to_end(&mut observed).unwrap();
+    assert_eq!(observed, original);
+    let published: Snapshot = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published.projects.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
 
 #[test]

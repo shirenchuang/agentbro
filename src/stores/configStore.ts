@@ -273,6 +273,7 @@ interface ConfigState {
 
 interface ConfigActions {
   updateConfig: <K extends keyof ConfigState>(key: K, value: ConfigState[K]) => void
+  applyWindowPreferences: (patch: Partial<ConfigState>) => void
   resetIslandDefaults: () => void
   toggleAgentHook: (agentType: AgentType) => void
   toggleSoundEvent: (id: string) => void
@@ -509,8 +510,8 @@ function createIslandDefaults(): Partial<ConfigState> {
   }
 }
 
-export const useConfigStore = create<ConfigStore>()(
-  persist(
+export const useConfigStore = create<ConfigStore>()<[['zustand/persist', ConfigStore]]>(
+  (setWindowState, get, store) => persist<ConfigStore>(
     (set) => ({
   // General
   launchAtLogin: false,
@@ -671,6 +672,9 @@ export const useConfigStore = create<ConfigStore>()(
   interactionMode: 'persistent',
 
   // Actions
+  // A receiving window must not publish its in-memory settings back to the sender.
+  applyWindowPreferences: (patch) => setWindowState(patch),
+
   updateConfig: (key, value) => {
     set((state) => Object.is(state[key], value)
       ? state
@@ -858,5 +862,5 @@ export const useConfigStore = create<ConfigStore>()(
         }
       },
     }
-  )
+  )(setWindowState, get, store)
 )

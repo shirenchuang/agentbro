@@ -10,7 +10,7 @@ import * as tauriApi from '../services/tauriApi'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
 import i18n from '../i18n'
-import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillPackManifest, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
+import type { SkillSummary, AgentSummary, AgentDetail, AgentSkillInventoryAgent, AgentSkillViewSnapshot, AdoptPreview, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackDetail, SkillPackManifest, SkillDetail, SkillTargetDetail, UnmanagedItemDto } from '../services/skillApiV2'
 import type { AgentType, SessionState } from '../types/agent'
 import { useConfigStore } from '../stores/configStore'
 import {
@@ -1900,7 +1900,11 @@ describe('Agent sync local agent chips', () => {
       },
     ]
     let finishFirstAdopt!: () => void
-    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    let finishInventory!: () => void
+    const inventoryRequest = new Promise<AgentSkillInventoryAgent[]>((resolve) => {
+      finishInventory = () => resolve(inventory)
+    })
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockReturnValue(inventoryRequest)
     vi.spyOn(skillApiV2, 'executeAdopt').mockImplementationOnce(
       () => new Promise<string>((resolve) => {
         finishFirstAdopt = () => resolve('')
@@ -1910,8 +1914,14 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    fireEvent.click(await screen.findByText('选择当前可接管'))
-    fireEvent.click(screen.getByText('接管到中心库'))
+    const selectVisible = screen.getByRole('button', { name: '选择当前可接管' })
+    expect(selectVisible).toBeDisabled()
+    await act(async () => finishInventory())
+    await waitFor(() => expect(selectVisible).toBeEnabled())
+    fireEvent.click(selectVisible)
+    const adoptSelected = screen.getByRole('button', { name: '接管到中心库' })
+    expect(adoptSelected).toBeEnabled()
+    fireEvent.click(adoptSelected)
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在接管 1 / 2')
     expect(screen.getByRole('status')).toHaveTextContent('alpha')
@@ -1919,7 +1929,7 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByLabelText('选择 Agent')).not.toBeDisabled()
     fireEvent.click(screen.getByText('beta'))
     expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('beta')
-    finishFirstAdopt()
+    await act(async () => finishFirstAdopt())
   })
 
   it('localizes stale unmanaged adoption errors instead of showing database text', async () => {
@@ -6270,10 +6280,13 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
   it('shows a rescan action inside the empty unmanaged skills section', async () => {
     useSkillStoreV2.setState({ unmanaged: [] })
-    const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockResolvedValue({ agentId: 'claude-code', managed: 1, unmanaged: 0 })
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
-    vi.spyOn(skillApiV2, 'getAgentDetail').mockResolvedValue(agentDetail)
+    const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockResolvedValue({ agentId: 'claude-code', managed: 1, unmanaged: 1 })
+    const scannedItem = makeSharedUnmanaged('scanned-item', { agentId: 'claude-code' })
+    const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView').mockResolvedValue({
+      agentDetail,
+      overview: makeOverview(),
+      unmanaged: [scannedItem],
+    })
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     const { container } = render(<AgentManagementPage />)
@@ -6286,8 +6299,64 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(button).toHaveTextContent('重新扫描此 Agent')
 
     fireEvent.click(button!)
-    await waitFor(() => expect(scan).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(useSkillStoreV2.getState().unmanaged).toEqual([scannedItem]))
+    expect(scan).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(refresh).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
+
+  it.each(['during scan', 'during inventory read', 'away and back', 'before scan failure'] as const)(
+    'keeps the current runtime inventory after switching %s',
+    async (scenario) => {
+      const counts = { agentId: 'claude-code', managed: 1, unmanaged: 1 }
+      let finishScan!: () => void
+      let failScan!: (error: Error) => void
+      const scanPromise = new Promise<typeof counts>((resolve, reject) => {
+        finishScan = () => resolve(counts)
+        failScan = reject
+      })
+      const scan = vi.spyOn(skillApiV2, 'scanAgentInventory').mockReturnValue(scanPromise)
+      const previousRuntimeItem = makeSharedUnmanaged('old-scan', { agentId: 'claude-code' })
+      let finishInventory!: () => void
+      const inventoryPromise = new Promise<AgentSkillViewSnapshot>((resolve) => {
+        finishInventory = () => resolve({
+          agentDetail,
+          overview: makeOverview(),
+          unmanaged: [previousRuntimeItem],
+        })
+      })
+      const refresh = vi.spyOn(skillApiV2, 'refreshAgentSkillView').mockReturnValue(inventoryPromise)
+      vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
+      useSkillStoreV2.setState({ unmanaged: [] })
+
+      const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+      render(<AgentManagementPage />)
+      fireEvent.click(screen.getByRole('button', { name: '重新扫描此 Agent' }))
+      expect(scan).toHaveBeenCalledTimes(1)
+      const waitingForInventory = scenario === 'during inventory read' || scenario === 'away and back'
+      if (waitingForInventory) {
+        await act(async () => finishScan())
+        expect(refresh).toHaveBeenCalledTimes(1)
+      }
+
+      const updatedItem = makeSharedUnmanaged('current-runtime-item', { agentId: 'claude-code' })
+      await act(async () => {
+        const runtime = useRuntimeEnvironmentStore.getState()
+        runtime.selectEnvironment('other-host')
+        if (scenario === 'away and back') runtime.selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+        const runtimeEnvironmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+        useSkillStoreV2.setState({ runtimeEnvironmentId, unmanaged: [updatedItem], error: 'Current runtime status' })
+        if (scenario === 'before scan failure') failScan(new Error('Old scan failed'))
+        else finishScan()
+        finishInventory()
+      })
+
+      expect(useSkillStoreV2.getState().unmanaged).toEqual([updatedItem])
+      expect(useSkillStoreV2.getState().error).toBe('Current runtime status')
+      expect(scan).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      if (waitingForInventory) expect(refresh).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+      else expect(refresh).not.toHaveBeenCalled()
+    },
+  )
 
   it('shows immediate busy feedback while preparing to adopt an unmanaged skill', async () => {
     let resolvePreview: (preview: AdoptPreview) => void = () => {}
