@@ -509,6 +509,18 @@ function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
             }
         }
         Write-Output 'The installed Island changed the desktop task from waiting to running after the database update.'
+    } catch {
+        try {
+            Save-FailedRunnerDesktop
+            Write-Output 'Island controls before removing the QwenWork databases:'
+            $Island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                Select-Object -First 35 -ExpandProperty Current |
+                Select-Object Name, ClassName, IsOffscreen |
+                ConvertTo-Json -Depth 3 -Compress
+        } catch {
+            Write-Output "Could not inspect the QwenWork fixture on the Island: $_"
+        }
+        throw
     } finally {
         $null = Wait-IslandValue 'the QwenWork fixture files to be released and removed' {
             if (Test-Path -LiteralPath $root) {
@@ -544,7 +556,8 @@ function Save-PermissionFrame([Diagnostics.Stopwatch]$Clock, [int]$Attempt, [str
 
 function Save-FailedRunnerDesktop {
     if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) { return }
-    Save-RunnerDesktop (Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png')
+    $path = Join-Path $env:RUNNER_TEMP 'agentbro-island-failure.png'
+    if (-not (Test-Path -LiteralPath $path)) { Save-RunnerDesktop $path }
 }
 
 $previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))
