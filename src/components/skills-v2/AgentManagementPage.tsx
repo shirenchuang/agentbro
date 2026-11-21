@@ -342,15 +342,24 @@ export function AgentManagementPage() {
   }
 
   const scanAgent = async (agentId: string) => {
+    const { selectedEnvironmentId: environmentId, selectionRevision: runtimeSelectionRevision } =
+      useRuntimeEnvironmentStore.getState()
+    const { agentSelectionRevision } = useSkillStoreV2.getState()
+    const scope = { agentId, environmentId, runtimeSelectionRevision, agentSelectionRevision }
+    const isCurrent = () => isCurrentAgentSkillScope(scope)
+    if (!isCurrent()) return
+
     setScanningAgentId(agentId)
     setNotice(null)
     state.setError(null)
     try {
-      const result = await skillApiV2.scanAgentInventory(agentId)
-      const unmanaged = await skillApiV2.listUnmanaged()
-      useSkillStoreV2.setState({ unmanaged })
-      await state.loadAgentDetail(agentId, true)
-      await state.loadOverview(true)
+      const result = await skillApiV2.scanAgentInventory(agentId, environmentId)
+      if (!isCurrent()) return
+      const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+      if (!isCurrent()) return
+      const applied = useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+      if (!applied) return
+
       const readOnlyCount = result.readOnly ?? 0
       const sharedReadOnlyCount = result.sharedReadOnly ?? 0
       setNotice(t(
@@ -371,7 +380,7 @@ export function AgentManagementPage() {
         },
       ))
     } catch (e) {
-      state.setError(String(e))
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
       setScanningAgentId(null)
     }

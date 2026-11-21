@@ -1269,7 +1269,7 @@ export const skillApiV2 = {
   executeDistribute: (preview: DistributionPreview) =>
     isTauriRuntime() ? invoke<DistributionPreview>('execute_distribute_skill', { preview }) : Promise.resolve(preview),
 
-  scanAgentInventory: (agentId: string) =>
+  scanAgentInventory: (agentId: string, environmentId?: string) =>
     isTauriRuntime()
       ? invoke<{
           agentId: string
@@ -1280,7 +1280,7 @@ export const skillApiV2 = {
           sharedManaged?: number
           sharedUnmanaged?: number
           sharedReadOnly?: number
-        }>('scan_agent_inventory', { agentId })
+        }>('scan_agent_inventory', { agentId }, environmentId)
       : Promise.resolve({
           agentId,
           managed: 0,
