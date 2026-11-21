@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
 import { setNotchFocusable } from '../../services/tauriApi'
+import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
@@ -17,22 +18,6 @@ interface ApprovalBarProps {
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
   onJumpToHostApp?: () => void
-}
-
-function runIslandAction(event: MouseEvent<HTMLButtonElement>, action: () => void) {
-  if (event.button !== 0 || (event.type === 'click' && event.detail !== 0)) return
-  event.preventDefault()
-  event.stopPropagation()
-  action()
-}
-
-function islandActionProps(action: () => void) {
-  const handleAction = (event: MouseEvent<HTMLButtonElement>) => runIslandAction(event, action)
-  return {
-    // Handle the pointer action before the Island can lose focus.
-    onMouseDown: handleAction,
-    onClick: handleAction,
-  }
 }
 
 export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {

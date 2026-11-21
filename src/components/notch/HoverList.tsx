@@ -12,6 +12,7 @@ import { useConfigStore } from '../../stores/configStore'
 import { answerDisplayedPermission, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
+import { islandActionProps } from '../../utils/islandActions'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -813,9 +814,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                         key={oi}
                         type="button"
                         className={`hover-list__inline-chip${isSelected ? ' hover-list__inline-chip--selected' : ''}${item.multiSelect ? ' hover-list__inline-chip--checkbox' : ''}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
+                        {...islandActionProps(() => {
                           setNestedSelections((prev) => {
                             if (!item.multiSelect) {
                               if (prev[qi] === oi) {
@@ -837,7 +836,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                           if (!item.multiSelect) {
                             setNestedCustomAnswers((prev) => { const n = { ...prev }; delete n[qi]; return n })
                           }
-                        }}
+                        })}
                       >
                         {item.multiSelect && (
                           <span className={`hover-list__inline-chip-check${isSelected ? ' hover-list__inline-chip-check--checked' : ''}`}>
@@ -889,12 +888,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                     <button
                       type="button"
                       className="hover-list__inline-chip hover-list__inline-chip--other"
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
+                      {...islandActionProps(() => {
                         setNotchFocusable(true)
                         setNestedInputStates((prev) => ({ ...prev, [qi]: true }))
-                      }}
+                      })}
                     >
                       {t('notch.typeHint', { defaultValue: 'Other' })}
                     </button>
@@ -908,11 +905,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
           type="button"
           className="hover-list__inline-submit"
           disabled={!allNestedAnswered}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            handleNestedSubmit()
-          }}
+          {...islandActionProps(handleNestedSubmit)}
         >
           {'✓'} 提交所有回答
         </button>
@@ -965,12 +958,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
               key={`${i}-${opt.label}`}
               type="button"
               className={`hover-list__inline-question-opt${selectedIndices.has(i) ? ' hover-list__inline-question-opt--selected' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
+              {...islandActionProps(() => {
                 if (q.multiSelect) toggleMultiSelect(i)
                 else submitAnswer(opt.label)
-              }}
+              })}
             >
               <span className="hover-list__inline-question-opt-index">
                 {q.multiSelect && selectedIndices.has(i) ? '✓' : i + 1}
@@ -1025,12 +1016,10 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
             <button
               type="button"
               className="hover-list__inline-question-opt hover-list__inline-question-opt--other"
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
+              {...islandActionProps(() => {
                 setNotchFocusable(true)
                 setShowCustomInput(true)
-              }}
+              })}
             >
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
               <span className="hover-list__inline-question-opt-body">
@@ -1043,11 +1032,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
               type="button"
               className="hover-list__inline-submit"
               disabled={selectedIndices.size === 0}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                submitMultiSelect()
-              }}
+              {...islandActionProps(submitMultiSelect)}
             >
               确认 ({selectedIndices.size})
             </button>
@@ -1138,15 +1123,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           type="button"
           className="hover-list__inline-plan-send"
           disabled={!trimmedFeedback}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitFeedback()
-          }}
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-          }}
+          {...islandActionProps(submitFeedback)}
         >
           {t('notch.sendFeedback', { defaultValue: 'Send Feedback' })}
         </button>
@@ -1155,33 +1132,21 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--feedback"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('manual')
-          }}
+          {...islandActionProps(() => submitPlan('manual'))}
         >
           {t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--accept"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('acceptEdits')
-          }}
+          {...islandActionProps(() => submitPlan('acceptEdits'))}
         >
           {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
         </button>
         <button
           type="button"
           className="hover-list__inline-plan-btn hover-list__inline-plan-btn--auto"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            submitPlan('bypassPermissions')
-          }}
+          {...islandActionProps(() => submitPlan('bypassPermissions'))}
         >
           {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
         </button>
@@ -1269,6 +1234,7 @@ function SessionCard({
     handleOpen()
   }
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.target !== event.currentTarget) return
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     handleOpen()
@@ -1531,6 +1497,7 @@ export function HoverList({
     if (visibleSessions.length === 0) return
 
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
 
@@ -1547,6 +1514,7 @@ export function HoverList({
       }
 
       if (event.key === 'Enter') {
+        if (target instanceof HTMLElement && target.closest('button, [role="button"], a[href]')) return
         event.preventDefault()
         const session = visibleSessions[selectedIndexRef.current]
         if (!session) return
