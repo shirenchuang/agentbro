@@ -85,12 +85,12 @@ function Write-IslandPointAccessibility($State, [IntPtr]$WindowHandle) {
     }
 }
 
-function Write-IslandAccessibilityAfterProbe([IntPtr]$WindowHandle, [string]$Probe) {
+function Write-IslandProviderSnapshot([IntPtr]$WindowHandle, [string]$Stage) {
     try {
         $snapshot = Get-IslandAccessibilitySnapshot $WindowHandle.ToInt64() $ProjectName
-        Write-Host "Island UI Automation after ${Probe}: $($snapshot | ConvertTo-Json -Depth 4 -Compress)"
+        Write-Host "Island UI Automation ${Stage}: $($snapshot | ConvertTo-Json -Depth 4 -Compress)"
     } catch {
-        Write-Host "Could not query Windows accessibility after ${Probe}: $_"
+        Write-Host "Could not query Windows accessibility ${Stage}: $_"
     }
 }
 
@@ -115,6 +115,7 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
     const visual = window.visualViewport;
     return {
         panel: panel.dataset.islandState, bounds: bounds(panel.getBoundingClientRect()), controls,
+        focused: document.hasFocus(), visibility: document.visibilityState, capturedAt: new Date().toISOString(),
         viewport: [window.innerWidth, window.innerHeight], devicePixelRatio: window.devicePixelRatio,
         zoomed: Boolean(visual && (visual.scale !== 1 || visual.offsetLeft !== 0 || visual.offsetTop !== 0)),
     };
@@ -134,18 +135,26 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
         try {
             $null = $socket.ConnectAsync($endpoint, $timeout.Token).GetAwaiter().GetResult()
             $stage = 'read DOM'
-            $evaluated = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
+            $domRequest = @{
                 expression = $expression
                 returnByValue = $true
             }
+            $evaluated = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest
             $state = $evaluated.result.value
             if (-not $state) { continue }
             Write-Host "Island renderer DOM at $([DateTimeOffset]::UtcNow.ToString('O')): $($state | ConvertTo-Json -Depth 5 -Compress)"
 
-            # Direct hit-testing and the Chromium request can each refresh provider state.
+            Write-IslandProviderSnapshot $WindowHandle 'before hit testing'
             $stage = 'hit-test Windows accessibility'
             Write-IslandPointAccessibility $state $WindowHandle
-            Write-IslandAccessibilityAfterProbe $WindowHandle 'hit testing'
+            Write-IslandProviderSnapshot $WindowHandle 'after hit testing'
+
+            # A second DOM sample distinguishes a provider update from a real view change.
+            $stage = 'verify DOM after hit testing'
+            $timeout.Dispose()
+            $timeout = [Threading.CancellationTokenSource]::new(6000)
+            $verified = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest
+            Write-Host "Island renderer DOM after hit testing: $($verified.result.value | ConvertTo-Json -Depth 5 -Compress)"
 
             $stage = 'read accessibility'
             $timeout.Dispose()
@@ -156,7 +165,7 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle) {
                     $_.name.value -match '^(Back to sessions|Show all \d+ sessions|Deny|Allow Once|Make agents easier to use)$|smoke\.txt'
             } | ForEach-Object { @{ label = $_.name.value; ignored = $_.ignored } })
             Write-Host "Island renderer accessibility at $([DateTimeOffset]::UtcNow.ToString('O')): $(ConvertTo-Json -InputObject $buttons -Compress)"
-            Write-IslandAccessibilityAfterProbe $WindowHandle 'Chromium accessibility'
+            Write-IslandProviderSnapshot $WindowHandle 'after Chromium accessibility'
             return
         } catch {
             Write-Host "Could not $stage for WebView2 page $($targetNumber): $_"
