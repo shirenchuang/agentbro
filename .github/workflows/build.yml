@@ -18,6 +18,10 @@ on:
           - windows-latest
           - windows-2022
           - windows-11-arm
+      windows_verify_pack_manifest:
+        description: Exercise Skill Pack manifests through the native Open and Save dialogs
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -261,12 +265,15 @@ jobs:
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
+        env:
+          VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
+              -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
       - name: Upload the failed desktop check

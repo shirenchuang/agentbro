@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory)]
     [int]$AppProcessId,
     [Parameter(Mandatory)]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$PackImportPath,
+    [string]$PackExportPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -175,6 +177,10 @@ try {
         $title -and $back -and -not $title.Current.IsOffscreen -and -not $back.Current.IsOffscreen
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
+    if ($PackImportPath) {
+        . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
+        Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
 } catch {
     try {
         Save-FailedRunnerDesktop
@@ -182,7 +188,15 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
-        if ($island) {
+        if ($PackImportPath) {
+            foreach ($window in Get-IslandWindows) {
+                Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
+                $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                    Select-Object -First 85 -ExpandProperty Current |
+                    Select-Object LocalizedControlType, Name, AutomationId, IsEnabled, IsOffscreen |
+                    ConvertTo-Json -Depth 3 -Compress
+            }
+        } elseif ($island) {
             $island.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
                 Select-Object -First 35 -ExpandProperty Current |
                 Select-Object LocalizedControlType, Name, IsOffscreen, @{Name='Bounds'; Expression={$_.BoundingRectangle.ToString()}} |
