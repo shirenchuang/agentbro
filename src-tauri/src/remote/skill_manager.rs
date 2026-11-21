@@ -1781,6 +1781,143 @@ env_http_headers = { "X-Context" = "FIXTURE_CONTEXT" }
     }
 
     #[test]
+    fn remote_config_save_preserves_the_original_on_failure_and_rejects_raw_changes() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let directory = home.path().join(".claude");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let original = b"{\"theme\":\"dark\"}\r\n";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let read = || {
+            run_script(
+                home.path(),
+                "read_agent_config_file_v2",
+                serde_json::json!({
+                    "agentId": "claude-code", "path": path
+                }),
+            )
+        };
+        let write = |revision: &Value| {
+            serde_json::json!({
+                "agentId": "claude-code", "path": path, "content": "{\"theme\":\"light\"}\n",
+                "expectedRevision": revision,
+            })
+        };
+        let opened = read();
+        assert_eq!(opened["content"], "{\"theme\":\"dark\"}\n");
+        let error = run_script_error_with_prelude(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&opened["revision"]),
+            r#"def fail_config_replace(source, target):
+    raise OSError("fixture: replacement failed")
+def fail_direct_config_write(target, text):
+    target.write_bytes(text.encode()[:4])
+    raise OSError("fixture: replacement failed")
+pathlib.Path.replace = fail_config_replace
+pathlib.Path.write_text = fail_direct_config_write"#,
+        );
+        assert!(error.contains("fixture: replacement failed"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+
+        std::fs::write(&path, b"{\"theme\":\"dark\"}\n").unwrap();
+        let stale = run_script_error(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&opened["revision"]),
+        );
+        assert!(stale.contains("Reload before saving"));
+        let refreshed = read();
+        assert_ne!(opened["revision"], refreshed["revision"]);
+        let saved = run_script(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&refreshed["revision"]),
+        );
+        assert_eq!(saved["content"], "{\"theme\":\"light\"}\n");
+        assert_eq!(saved, read());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[test]
+    fn remote_config_save_rejects_an_alias_retargeted_before_or_during_a_save() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let directory = home.path().join(".claude");
+        std::fs::create_dir(&directory).unwrap();
+        let first = directory.join("first.json");
+        let second = directory.join("second.json");
+        let path = directory.join("settings.json");
+        for target in [&first, &second] {
+            std::fs::write(target, b"{}\n").unwrap();
+        }
+        let point_at = |target: &Path| {
+            if path.is_symlink() {
+                std::fs::remove_file(&path).unwrap();
+            }
+            std::os::unix::fs::symlink(target, &path).unwrap();
+        };
+        point_at(&first);
+        let read = || {
+            run_script(
+                home.path(),
+                "read_agent_config_file_v2",
+                serde_json::json!({
+                    "agentId": "claude-code", "path": path
+                }),
+            )
+        };
+        let write = |revision: &Value| {
+            serde_json::json!({
+                "agentId": "claude-code", "path": path, "content": "{\"theme\":\"dark\"}\n",
+                "expectedRevision": revision,
+            })
+        };
+        let opened = read();
+        point_at(&second);
+        let stale = run_script_error(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&opened["revision"]),
+        );
+        assert!(stale.contains("Reload before saving"));
+
+        point_at(&first);
+        let concurrent = run_script_error_with_prelude(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&opened["revision"]),
+            r#"original_sync = os.fsync
+def retarget_after_staging(fd):
+    original_sync(fd)
+    alias = pathlib.Path(ARGS["path"])
+    alias.unlink()
+    alias.symlink_to(alias.with_name("second.json"))
+os.fsync = retarget_after_staging"#,
+        );
+        assert!(concurrent.contains("Reload before saving"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"{}\n");
+        assert_eq!(std::fs::read(&second).unwrap(), b"{}\n");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
+        let refreshed = read();
+        let saved = run_script(
+            home.path(),
+            "write_agent_config_file_v2",
+            write(&refreshed["revision"]),
+        );
+        assert_eq!(saved, read());
+        assert_eq!(std::fs::read_link(&path).unwrap(), second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"{}\n");
+        assert_eq!(std::fs::read(&second).unwrap(), b"{\"theme\":\"dark\"}\n");
+    }
+
+    #[test]
     fn remote_mcp_mutations_reject_stale_revisions() {
         let home =
             std::env::temp_dir().join(format!("agentbro-remote-mcp-{}", uuid::Uuid::new_v4()));
