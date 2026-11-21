@@ -4365,7 +4365,13 @@ pub async fn jump_to_terminal(
         return open_app_host_session(&session);
     }
 
-    let pid = session.pid.unwrap_or(0);
+    let pid = session
+        .pid
+        .filter(|_| {
+            !cfg!(target_os = "windows")
+                || (session.remote_host_id.is_none() && session.remote_host_name.is_none())
+        })
+        .unwrap_or(0);
     let resolved_tty = resolve_session_tty(&session);
     if let Some(tty) = &resolved_tty {
         if session.tty.as_deref() != Some(tty.as_str()) {

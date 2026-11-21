@@ -7,6 +7,9 @@
 
 use super::{process_tree, registry, tmux};
 
+#[cfg(any(target_os = "windows", test))]
+mod windows_terminal;
+
 /// Result of a jump operation
 #[derive(Debug)]
 pub enum JumpResult {
@@ -1125,6 +1128,9 @@ fn jump_to_terminal_windows(
     ctx: &JumpContext,
     tree: &std::collections::HashMap<u32, process_tree::ProcessInfo>,
 ) -> JumpResult {
+    if windows_terminal::focus_existing(ctx.pid, tree) {
+        return JumpResult::Success;
+    }
     if let Some(terminal) = outer_terminal_app(ctx, tree).or_else(|| ctx.terminal_app.clone()) {
         return jump_to_terminal_app_windows(&terminal, ctx.cwd.as_deref());
     }
