@@ -150,9 +150,9 @@ public static class AgentBroSmokeInput {
             using (var process = System.Diagnostics.Process.GetProcessById((int)processId)) {
                 processName = process.ProcessName;
             }
-        } catch (Exception error) when (
-            error is ArgumentException || error is InvalidOperationException ||
-            error is System.ComponentModel.Win32Exception) { }
+        } catch (ArgumentException) { }
+          catch (InvalidOperationException) { }
+          catch (System.ComponentModel.Win32Exception) { }
         return string.Format("foreground {0}, title '{1}', process {2} ({3}), active {4}, focus {5}, capture {6}",
             DescribeWindow(foreground), title, processName, processId, DescribeWindow(info.Active),
             DescribeWindow(info.Focus), DescribeWindow(info.Capture));
