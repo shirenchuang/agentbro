@@ -38,6 +38,10 @@ type PackApplyProgress = {
   percent: number
   detail: string
 }
+type AgentPackRuntime = {
+  environmentId: string
+  selectionRevision: number
+}
 type PackApplyConflictDialogState = {
   packId: string
   packName: string
@@ -45,6 +49,7 @@ type PackApplyConflictDialogState = {
   agentName: string
   mode: 'link' | 'copy'
   preview: DistributionPreview
+  runtime: AgentPackRuntime
 }
 type BatchAdoptPackSelection =
   | { kind: 'none' }
@@ -89,6 +94,10 @@ function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
     && (expectedRevision === undefined || current.selectionRevision === expectedRevision)
 }
 
+function isAgentPackRuntime(runtime: AgentPackRuntime) {
+  return isRuntimeEnvironment(runtime.environmentId, runtime.selectionRevision)
+}
+
 function isCurrentAgentSkillScope(scope: AgentSkillScope) {
   const { selectedAgentId, agentSelectionRevision } = useSkillStoreV2.getState()
   return isRuntimeEnvironment(scope.environmentId, scope.runtimeSelectionRevision)
@@ -108,6 +117,8 @@ export function AgentManagementPage() {
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const packRuntime = { environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision }
   const sessionList = useMemo(() => (
     runtimeEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
       ? allSessions.filter((session) => !session.remoteHostId)
@@ -144,6 +155,9 @@ export function AgentManagementPage() {
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
   const selectedAgentIdRef = useRef<string | null>(null)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
+  const currentPackApplyConflict = packApplyConflict && isAgentPackRuntime(packApplyConflict.runtime)
+    ? packApplyConflict
+    : null
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
 
   const loadPrograms = useCallback(async () => {
@@ -216,6 +230,11 @@ export function AgentManagementPage() {
     setAgentOutput([])
   }, [state.selectedAgentId])
 
+  useEffect(() => () => {
+    packApplyResolverRef.current?.(false)
+    packApplyResolverRef.current = null
+  }, [runtimeEnvironmentId, runtimeSelectionRevision])
+
   useEffect(() => {
     if (!notice) return
     const timer = window.setTimeout(() => setNotice(null), NOTICE_DISMISS_MS)
@@ -248,18 +267,26 @@ export function AgentManagementPage() {
     }
   }
 
+  const finishPackAction = async (runtime: AgentPackRuntime, agentId: string, message: string) => {
+    if (!isAgentPackRuntime(runtime)) return false
+    await state.loadAgentDetail(agentId, true)
+    if (!isAgentPackRuntime(runtime)) return false
+    void state.loadOverview(true)
+    state.setError(null)
+    setNotice(message)
+    return true
+  }
+
   const revoke = async (packId: string, agentId: string) => {
+    if (!isAgentPackRuntime(packRuntime)) return
     setBusy(true)
     setNotice(null)
     state.setError(null)
     try {
-      await skillApiV2.removePackFromAgent(packId, agentId)
-      await state.loadAgentDetail(agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已取消应用')
+      await skillApiV2.removePackFromAgent(packId, agentId, packRuntime.environmentId)
+      await finishPackAction(packRuntime, agentId, '技能包已取消应用')
     } catch (e) {
-      state.setError(String(e))
+      if (isAgentPackRuntime(packRuntime)) state.setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -287,55 +314,54 @@ export function AgentManagementPage() {
       agentName: detail?.id === agentId ? detail.displayName : agentId,
       mode,
       preview,
+      runtime: packRuntime,
     }
   }
 
   const applyPack = async (packId: string, agentId: string): Promise<boolean> => {
+    if (!isAgentPackRuntime(packRuntime)) return false
     setBusy(true)
     setNotice(null)
     state.setError(null)
-    let keepBusyUntilReturn = false
     try {
       const mode = state.settings?.defaultDistributeMode || 'link'
-      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode)
+      const preview = await skillApiV2.executeApplyPack(packId, [agentId], mode, [], undefined, packRuntime.environmentId)
+      if (!isAgentPackRuntime(packRuntime)) return false
       if (preview.blockers.length > 0) {
-        setBusy(false)
-        keepBusyUntilReturn = true
         return openPackApplyConflict(packApplyDialogInfo(packId, agentId, preview, mode))
       }
-      await state.loadAgentDetail(agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已应用')
-      return true
+      return await finishPackAction(packRuntime, agentId, '技能包已应用')
     } catch (e) {
-      state.setError(String(e))
+      if (isAgentPackRuntime(packRuntime)) state.setError(String(e))
       return false
     } finally {
-      if (!keepBusyUntilReturn) setBusy(false)
+      setBusy(false)
     }
   }
 
   const executePackApplyConflict = async (decisions: DistributionBlockerDecision[]) => {
-    if (!packApplyConflict) return
+    const conflict = currentPackApplyConflict
+    if (!conflict || !isAgentPackRuntime(conflict.runtime)) return
     setPackApplyBusy(true)
     try {
       const result = await skillApiV2.executeApplyPack(
-        packApplyConflict.packId,
-        [packApplyConflict.agentId],
-        packApplyConflict.mode,
+        conflict.packId,
+        [conflict.agentId],
+        conflict.mode,
         decisions,
-        packApplyConflict.preview,
+        conflict.preview,
+        conflict.runtime.environmentId,
       )
+      if (!isAgentPackRuntime(conflict.runtime)) return
       if (result.blockers.length > 0) {
-        setPackApplyConflict((current) => current ? { ...current, preview: result } : current)
+        setPackApplyConflict({ ...conflict, preview: result })
         return
       }
-      await state.loadAgentDetail(packApplyConflict.agentId, true)
-      void state.loadOverview(true)
-      state.setError(null)
-      setNotice('技能包已应用')
-      resolvePackApplyConflict(true)
+      if (await finishPackAction(conflict.runtime, conflict.agentId, '技能包已应用')) {
+        resolvePackApplyConflict(true)
+      }
+    } catch (e) {
+      if (isAgentPackRuntime(conflict.runtime)) throw e
     } finally {
       setPackApplyBusy(false)
     }
@@ -769,9 +795,9 @@ export function AgentManagementPage() {
           }}
         />
       )}
-      {packApplyConflict && (
+      {currentPackApplyConflict && (
         <PackApplyConflictDialog
-          dialog={packApplyConflict}
+          dialog={currentPackApplyConflict}
           busy={packApplyBusy}
           onCancel={() => resolvePackApplyConflict(false)}
           onExecute={executePackApplyConflict}
