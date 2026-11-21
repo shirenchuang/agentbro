@@ -17,10 +17,10 @@ function Invoke-PackControl([Windows.Automation.AutomationElement]$Element) {
         return
     }
     Move-ToElement $Element
-    if ([AgentBroSmokeMouse]::ProcessAtCursor() -ne $AppProcessId) {
+    if ([AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId) {
         throw "AgentBro does not own the click point for $($Element.Current.Name)"
     }
-    [AgentBroSmokeMouse]::Click()
+    [AgentBroSmokeInput]::Click()
 }
 
 function Set-PackDialogFile([string]$Action, [string]$Path) {
@@ -51,10 +51,9 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     $value = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     if ($Action -eq 'Save') {
         # Setting ValuePattern alone can leave the default filename selected at submission.
-        Add-Type -AssemblyName System.Windows.Forms
-        Set-Clipboard -Value $Path
         $fileName.SetFocus()
-        [Windows.Forms.SendKeys]::SendWait('^a^v')
+        $null = Wait-IslandValue 'keyboard focus on the Save field' { $fileName.Current.HasKeyboardFocus }
+        [AgentBroSmokeInput]::ReplaceText($Path)
     } else {
         $value.SetValue($Path)
     }
