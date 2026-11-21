@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$Installer,
     [switch]$VerifyIsland,
+    [switch]$VerifyProjectLock,
     [string]$SymbolsDirectory
 )
 
@@ -27,6 +28,46 @@ if (-not $installerProcess.WaitForExit(90000)) {
 }
 if ($installerProcess.ExitCode -ne 0) {
     throw "NSIS installation failed with exit code $($installerProcess.ExitCode)"
+}
+
+$lockProject = Join-Path $stage ('Native project lock, ' + [char]0x6587 + [char]0x4EF6)
+if ($VerifyProjectLock) {
+    $originalSkill = Join-Path $lockProject '.agents/skills/native-existing'
+    $null = New-Item -ItemType Directory -Path $originalSkill -Force
+    Set-Content -LiteralPath (Join-Path $originalSkill 'SKILL.md') -Value 'User fixture' -Encoding utf8
+    $lockPath = Join-Path $lockProject 'skills-lock.json'
+    @'
+{
+  "version": 2,
+  "skills": {
+    "native-restored": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "commit": "57217cf86ba38148a57af9e90d14a4c049558330",
+      "skillName": "find-skills",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "7bc223e2aafbdbf6e50ea243ba6ef67fe432bb069ab439fea0390795dac0bf7f"
+    },
+    "native-mismatch": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "commit": "57217cf86ba38148a57af9e90d14a4c049558330",
+      "skillName": "find-skills",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "native-existing": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "commit": "57217cf86ba38148a57af9e90d14a4c049558330",
+      "skillName": "find-skills",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "7bc223e2aafbdbf6e50ea243ba6ef67fe432bb069ab439fea0390795dac0bf7f"
+    }
+  }
+}
+'@ | Set-Content -LiteralPath $lockPath -Encoding utf8
+    $originalLockHash = (Get-FileHash -LiteralPath $lockPath).Hash
 }
 
 $appPath = Join-Path $installDir 'agentbro.exe'
@@ -153,9 +194,13 @@ function Test-InstalledIsland([string]$ProjectName) {
     $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $start = [System.Diagnostics.ProcessStartInfo]::new($windowsPowerShell)
     $scriptPath = Join-Path $PSScriptRoot 'test-windows-island.ps1'
-    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Mta', '-File', $scriptPath,
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Sta', '-File', $scriptPath,
             '-AppProcessId', [string]$app.Id, '-ProjectName', $ProjectName)) {
         $start.ArgumentList.Add($argument)
+    }
+    if ($VerifyProjectLock) {
+        $start.ArgumentList.Add('-LockProjectPath')
+        $start.ArgumentList.Add($lockProject)
     }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -233,7 +278,28 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland) {
+    if ($VerifyProjectLock) {
+        $desktopFailure = $null
+        try {
+            Test-InstalledIsland 'Native project lock fixture'
+        } catch {
+            $desktopFailure = $_
+            Write-Output "Project lock desktop assertion failed: $($_.Exception.Message)"
+        }
+        $restored = Join-Path $lockProject '.agents/skills/native-restored/SKILL.md'
+        $normalized = [IO.File]::ReadAllText($restored).Replace("`r`n", "`n")
+        $actualHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($normalized)))
+        if ($actualHash -ne 'c00eeea0e13e74fe4a9d84ba0a8542205a1b736d65f13134fe1a6647eb14976f') { throw 'Restored Skill bytes differ from the pinned GitHub file' }
+        if (Test-Path -LiteralPath (Join-Path $lockProject '.agents/skills/native-mismatch')) {
+            throw 'The mismatched Skill was written to the project'
+        }
+        if ((Get-Content -LiteralPath (Join-Path $lockProject '.agents/skills/native-existing/SKILL.md') -Raw).Trim() -ne 'User fixture') {
+            throw 'The existing project Skill was overwritten'
+        }
+        if ((Get-FileHash -LiteralPath $lockPath).Hash -ne $originalLockHash) { throw 'The project lock file changed' }
+        Write-Output 'Verified the pinned GitHub Skill bytes, hash mismatch rejection, and preservation of the existing Skill and lock file.'
+        if ($desktopFailure) { throw $desktopFailure }
+    } elseif ($VerifyIsland) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
