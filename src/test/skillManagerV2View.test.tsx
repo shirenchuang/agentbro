@@ -6856,7 +6856,19 @@ describe('Skill detail slider + agent page render without crashing', () => {
       blockers: [],
       blockerDecisions: [],
     }
-    const latest: DistributionPreview = { ...older, targetAgents: ['codex'], requestedMode: 'copy' }
+    const latest: DistributionPreview = {
+      ...older,
+      targetAgents: ['codex'],
+      requestedMode: 'copy',
+      changes: [{
+        skillId: skill.id,
+        agentId: 'codex',
+        action: 'reinstall',
+        actualMode: 'copy',
+        targetPath: 'C:\\Users\\Tester\\.codex\\skills\\example',
+        targetFingerprint: 'directory:reviewed-version',
+      }],
+    }
     const preview = vi.spyOn(skillApiV2, 'previewApplyPack').mockReturnValueOnce(pending).mockResolvedValue(latest)
     const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(latest)
     fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
@@ -6876,7 +6888,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(review).toHaveTextContent('Codex')
     expect(review).toHaveTextContent('复制')
     fireEvent.click(within(review).getByRole('button', { name: '执行应用' }))
-    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', []))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', [], latest))
   })
 
   it.each([false, true])('invalidates a pack review after changing runtime (returned: %s)', async (returnToLocal) => {

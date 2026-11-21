@@ -2850,6 +2850,7 @@ impl Service {
                             existing_path: None,
                             existing_path_kind: None,
                             resolved_existing_path: None,
+                            target_fingerprint: None,
                         });
                     }
                     continue;
@@ -2866,6 +2867,7 @@ impl Service {
                             existing_path: None,
                             existing_path_kind: None,
                             resolved_existing_path: None,
+                            target_fingerprint: None,
                         });
                         continue;
                     }
@@ -2876,56 +2878,43 @@ impl Service {
                     Some((target_id, _, _)) => {
                         let actual = self.resolve_actual_mode(&requested_mode, agent)?;
                         let current_mode = self.target_actual_mode_for_id(&target_id)?;
-                        if current_mode == "copy" && actual == "copy" {
+                        let target_fingerprint =
+                            Some(distribution_target_fingerprint(&target_path)?);
+                        if current_mode == "copy" {
                             let sync = self.preview_sync_copy_target(&target_id)?;
                             if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged") {
                                 let (existing_path_kind, resolved_existing_path) =
                                     existing_path_info(&target_path);
+                                let operation = if actual == "link" {
+                                    "converting"
+                                } else {
+                                    "redistributing"
+                                };
                                 blockers.push(ConflictBlocker {
                                     skill_id: skill_id.clone(),
                                     agent_id: agent.clone(),
                                     reason: format!(
-                                        "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before redistributing.",
-                                        skill_id
+                                        "Managed copy '{skill_id}' has local changes. Choose whether the center library or the agent copy should win before {operation}."
                                     ),
                                     existing_path: Some(target_path.display().to_string()),
                                     existing_path_kind,
                                     resolved_existing_path,
+                                    target_fingerprint,
                                 });
                                 continue;
                             }
                         }
                         if current_mode != actual {
-                            if current_mode == "copy" && actual == "link" {
-                                let sync = self.preview_sync_copy_target(&target_id)?;
-                                if matches!(sync.state.as_str(), "copy_modified" | "copy_diverged")
-                                {
-                                    let (existing_path_kind, resolved_existing_path) =
-                                        existing_path_info(&target_path);
-                                    blockers.push(ConflictBlocker {
-                                        skill_id: skill_id.clone(),
-                                        agent_id: agent.clone(),
-                                        reason: format!(
-                                            "Managed copy '{}' has local changes. Choose whether the center library or the agent copy should win before converting.",
-                                            skill_id
-                                        ),
-                                        existing_path: Some(target_path.display().to_string()),
-                                        existing_path_kind,
-                                        resolved_existing_path,
-                                    });
-                                    continue;
-                                }
-                            }
                             changes.push(DistributionChange {
                                 skill_id: skill_id.clone(),
                                 agent_id: agent.clone(),
                                 action: "convert".to_string(),
-                                actual_mode: Some(actual),
                                 reason: Some(format!(
-                                    "Already managed as {} — will convert to {}.",
-                                    current_mode, requested_mode
+                                    "Already managed as {current_mode} — will convert to {actual}."
                                 )),
+                                actual_mode: Some(actual),
                                 target_path: target_path.display().to_string(),
+                                target_fingerprint,
                             });
                             continue;
                         }
@@ -2939,6 +2928,7 @@ impl Service {
                                     .to_string(),
                             ),
                             target_path: target_path.display().to_string(),
+                            target_fingerprint,
                         });
                     }
                     None => match inspect_path(&target_path) {
@@ -2951,6 +2941,7 @@ impl Service {
                                 actual_mode: Some(actual),
                                 reason: None,
                                 target_path: target_path.display().to_string(),
+                                target_fingerprint: None,
                             });
                         }
                         _ => {
@@ -2966,6 +2957,7 @@ impl Service {
                                     existing_path: Some(target_path.display().to_string()),
                                     existing_path_kind,
                                     resolved_existing_path,
+                                    target_fingerprint: Some(distribution_target_fingerprint(&target_path)?),
                                 });
                         }
                     },
@@ -3061,6 +3053,7 @@ impl Service {
                             actual_mode: None,
                             reason: Some("Skipped by user decision.".to_string()),
                             target_path: blocker.existing_path.clone().unwrap_or_default(),
+                            target_fingerprint: blocker.target_fingerprint.clone(),
                         });
                     }
                     "overwrite" | "agent_over_center" => {
@@ -3078,6 +3071,10 @@ impl Service {
                             &blocker.skill_id,
                             &blocker.agent_id,
                             path,
+                        )?;
+                        ensure_reviewed_distribution_target(
+                            path,
+                            blocker.target_fingerprint.as_deref(),
                         )?;
                         let actual =
                             self.resolve_actual_mode(&preview.requested_mode, &blocker.agent_id)?;
@@ -3133,6 +3130,7 @@ impl Service {
                                 "Used the center library as source by user decision.".to_string()
                             }),
                             target_path: existing_path.clone(),
+                            target_fingerprint: blocker.target_fingerprint.clone(),
                         });
                     }
                     other => {
@@ -3175,8 +3173,14 @@ impl Service {
                         .actual_mode
                         .clone()
                         .unwrap_or_else(|| preview.requested_mode.clone());
+                    let target = Path::new(&change.target_path);
+                    self.ensure_distribution_target_path(
+                        &change.skill_id,
+                        &change.agent_id,
+                        target,
+                    )?;
                     let (target_id, existing_skill_id, _) = self
-                        .find_target_by_path(&change.agent_id, Path::new(&change.target_path))?
+                        .find_target_by_path(&change.agent_id, target)?
                         .ok_or_else(|| format!("Target not found: {}", change.target_path))?;
                     if existing_skill_id != change.skill_id {
                         return Err(format!(
@@ -3184,6 +3188,10 @@ impl Service {
                             change.target_path, existing_skill_id, change.skill_id
                         ));
                     }
+                    ensure_reviewed_distribution_target(
+                        target,
+                        change.target_fingerprint.as_deref(),
+                    )?;
                     self.convert_target(
                         &target_id,
                         &change.skill_id,
@@ -5491,19 +5499,50 @@ impl Service {
         blocker_decisions: Vec<DistributionBlockerDecision>,
     ) -> Result<DistributionPreview, String> {
         let detail = self.get_skill_pack_detail(pack_id)?;
-        let skill_ids: Vec<String> = detail.members.iter().map(|m| m.skill_id.clone()).collect();
+        let skill_ids = detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect();
         let mut preview =
             self.preview_distribute_skill(skill_ids, target_agents, requested_mode)?;
         preview.blocker_decisions = blocker_decisions;
+        self.execute_skill_pack_preview(pack_id, detail.revision, preview)
+    }
+
+    pub fn apply_reviewed_skill_pack(
+        &self,
+        pack_id: &str,
+        mut preview: DistributionPreview,
+        blocker_decisions: Vec<DistributionBlockerDecision>,
+    ) -> Result<DistributionPreview, String> {
+        let detail = self.get_skill_pack_detail(pack_id)?;
+        let skill_ids: Vec<_> = detail
+            .members
+            .into_iter()
+            .map(|member| member.skill_id)
+            .collect();
+        if skill_ids != preview.skill_ids {
+            return Err("Skill Pack membership changed. Preview the application again.".into());
+        }
+        preview.blocker_decisions = blocker_decisions;
+        self.execute_skill_pack_preview(pack_id, detail.revision, preview)
+    }
+
+    fn execute_skill_pack_preview(
+        &self,
+        pack_id: &str,
+        revision: i64,
+        preview: DistributionPreview,
+    ) -> Result<DistributionPreview, String> {
         if !preview.blockers.is_empty() && preview.blocker_decisions.is_empty() {
             return Ok(preview);
         }
         let result =
             self.execute_distribute_skill(preview, ClaimOrigin::Pack(pack_id.to_string()))?;
         if pack_id != DEFAULT_SKILL_PACK_ID && result.blockers.is_empty() {
-            let revision = self.pack_revision(pack_id)?;
             self.mark_pack_agents_synced(pack_id, &result.target_agents, revision)?;
-            self.update_pack_rollup_status(pack_id, revision)?;
+            self.update_pack_rollup_status(pack_id, self.pack_revision(pack_id)?)?;
         }
         Ok(result)
     }
@@ -6465,6 +6504,44 @@ fn migrate_center_skills_best_effort(source: &Path, target: &Path) {
             );
         }
     }
+}
+
+fn distribution_target_fingerprint(path: &Path) -> Result<String, String> {
+    let inspect_error = |error| format!("Inspect Skill target '{}': {error}", path.display());
+    let file_type = match path.symlink_metadata() {
+        Ok(metadata) => metadata.file_type(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("missing".into()),
+        Err(error) => return Err(inspect_error(error)),
+    };
+    if file_type.is_symlink() {
+        let target = std::fs::read_link(path).map_err(inspect_error)?;
+        Ok(format!(
+            "link:{:x}",
+            Sha256::digest(target.as_os_str().as_encoded_bytes())
+        ))
+    } else if file_type.is_dir() {
+        Ok(format!("directory:{}", fsutil::hash_dir_contents(path)))
+    } else if file_type.is_file() {
+        let mut file = std::fs::File::open(path).map_err(inspect_error)?;
+        let mut digest = Sha256::new();
+        std::io::copy(&mut file, &mut digest).map_err(inspect_error)?;
+        Ok(format!("file:{:x}", digest.finalize()))
+    } else {
+        Err(format!(
+            "Unsupported Skill target type at '{}'.",
+            path.display()
+        ))
+    }
+}
+
+fn ensure_reviewed_distribution_target(path: &Path, expected: Option<&str>) -> Result<(), String> {
+    if expected == Some(distribution_target_fingerprint(path)?.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "Skill target '{}' changed. Preview distribution again.",
+        path.display()
+    ))
 }
 
 fn existing_path_info(path: &Path) -> (Option<String>, Option<String>) {

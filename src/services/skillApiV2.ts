@@ -561,6 +561,7 @@ export interface ConflictBlocker {
   existingPath: string | null
   existingPathKind?: 'symlink' | 'directory' | 'file' | 'broken_symlink' | 'missing' | string | null
   resolvedExistingPath?: string | null
+  targetFingerprint?: string
 }
 
 export interface DistributionChange {
@@ -570,6 +571,7 @@ export interface DistributionChange {
   actualMode?: 'link' | 'copy'
   reason?: string
   targetPath: string
+  targetFingerprint?: string
 }
 
 export interface DistributionBlockerDecision {
@@ -1340,8 +1342,15 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<void>('execute_delete_skill_pack', { packId }) : Promise.resolve(),
   previewApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy') =>
     isTauriRuntime() ? invoke<DistributionPreview>('preview_apply_skill_pack', { packId, targetAgents, requestedMode }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions: [] }),
-  executeApplyPack: (packId: string, targetAgents: string[], requestedMode: 'link' | 'copy', blockerDecisions: DistributionBlockerDecision[] = []) =>
-    isTauriRuntime() ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions }) : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
+  executeApplyPack: (
+    packId: string,
+    targetAgents: string[],
+    requestedMode: 'link' | 'copy',
+    blockerDecisions: DistributionBlockerDecision[] = [],
+    reviewedPreview?: DistributionPreview,
+  ) => isTauriRuntime()
+    ? invoke<DistributionPreview>('execute_apply_skill_pack', { packId, targetAgents, requestedMode, blockerDecisions, reviewedPreview })
+    : Promise.resolve({ skillIds: [], targetAgents, requestedMode, changes: [], blockers: [], blockerDecisions }),
   syncPackToAgents: (packId: string, targetAgents: string[] = []) =>
     isTauriRuntime() ? invoke<SkillPackSyncResult>('execute_sync_skill_pack_to_agents', { packId, targetAgents }) : Promise.resolve({ packId, packName: packId, revision: 1, status: 'synced', agents: [] }),
   previewRemovePackFromAgent: (packId: string, agentId: string) =>

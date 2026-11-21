@@ -1395,6 +1395,7 @@ function PackSyncConflictDialog({
         conflict.targetAgents,
         conflict.requestedMode,
         blockerDecisionsPayload,
+        preview,
       )
       if (result.blockers.length > 0) {
         setPreview(result)
@@ -1591,7 +1592,9 @@ function ApplyPackDialog({
           return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
         })
         .filter((item): item is DistributionBlockerDecision => Boolean(item))
-      const result = await skillApiV2.executeApplyPack(pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload)
+      const result = await skillApiV2.executeApplyPack(
+        pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload, preview,
+      )
       if (!isPackRuntimeCurrent(runtime)) {
         resetPreview()
         return
