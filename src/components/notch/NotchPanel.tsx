@@ -70,7 +70,7 @@ const PET_SURFACE_HEIGHT = 360
 interface NotchDragGesture {
   pointerId: number
   captureTarget: HTMLDivElement
-  started: Promise<boolean>
+  started: Promise<number | null>
 }
 
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
@@ -330,6 +330,7 @@ export function NotchPanel() {
   const [hasInputDraft, setHasInputDraft] = useState(false)
   const activeDragRef = useRef<NotchDragGesture | null>(null)
   const pendingDragEndRef = useRef<Promise<void> | null>(null)
+  const dragStopListenerReadyRef = useRef<Promise<void> | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0, passesOutside: false })
   const hasInputDraftRef = useRef(false)
@@ -1833,7 +1834,7 @@ export function NotchPanel() {
     setIsDragging(false)
 
     const finished = drag.started
-      .then((started) => started ? endNotchDrag() : null)
+      .then((gestureId) => gestureId == null ? null : endNotchDrag(gestureId))
       .then((finalOffset) => {
         if (typeof finalOffset === 'number') updateConfig('panelHorizontalOffset', finalOffset)
       })
@@ -1847,6 +1848,30 @@ export function NotchPanel() {
       drag.captureTarget.releasePointerCapture(drag.pointerId)
     }
   }, [updateConfig])
+
+  useEffect(() => {
+    if (!isTauri()) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    const ready = listenTauriEvent<number>('notch-drag-stopped', ({ payload }) => {
+      const drag = activeDragRef.current
+      if (!drag) return
+      void drag.started.then((gestureId) => {
+        if (!cancelled && activeDragRef.current === drag && gestureId === payload) {
+          finishActiveDrag(drag.pointerId)
+        }
+      })
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(() => {})
+    dragStopListenerReadyRef.current = ready
+    return () => {
+      cancelled = true
+      unlisten?.()
+      dragStopListenerReadyRef.current = null
+    }
+  }, [finishActiveDrag])
 
   useEffect(() => {
     if (!isDragging) return
@@ -1896,26 +1921,25 @@ export function NotchPanel() {
       expandTimerRef.current = undefined
     }
     dragCandidateRef.current = null
-    const { pointerId, currentTarget: captureTarget } = event
-    const start = () => {
+    const { pointerId, pointerType, currentTarget: captureTarget } = event
+    const pendingEnd = pendingDragEndRef.current
+    const start = async () => {
+      await Promise.all([pendingEnd, dragStopListenerReadyRef.current])
+      if (activeDragRef.current !== gesture) return null
       const { width, height } = hostHitboxSizeRef.current
       const { panelHorizontalOffset, displayMonitor } = useConfigStore.getState()
-      return startNotchDrag(panelHorizontalOffset, width, height, displayMonitor)
+      return startNotchDrag(panelHorizontalOffset, width, height, displayMonitor, pointerType === 'mouse')
     }
-    const pendingEnd = pendingDragEndRef.current
     const gesture: NotchDragGesture = {
       pointerId,
       captureTarget,
-      started: (pendingEnd
-        ? pendingEnd.then(() => activeDragRef.current === gesture && start())
-        : start()
-      ).catch(() => false),
+      started: start().catch(() => null),
     }
     activeDragRef.current = gesture
     captureTarget.setPointerCapture?.(pointerId)
     setIsDragging(true)
-    void gesture.started.then((started) => {
-      if (!started && activeDragRef.current === gesture) {
+    void gesture.started.then((gestureId) => {
+      if (gestureId == null && activeDragRef.current === gesture) {
         finishActiveDrag(pointerId)
       }
     })

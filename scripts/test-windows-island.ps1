@@ -72,6 +72,11 @@ public static class AgentBroSmokeInput {
     public static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
+
+    public static bool IsLeftButtonDown() { return GetAsyncKeyState(0x01) < 0; }
+
+    [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
     [DllImport("user32.dll")]
@@ -450,6 +455,10 @@ function Test-InstalledIslandDrag(
             [AgentBroSmokeInput]::ReleaseLeft()
         }
 
+        $null = Wait-IslandValue 'Windows to report the physical mouse button released' {
+            -not [AgentBroSmokeInput]::IsLeftButtonDown()
+        }
+        Write-Output 'Windows confirmed the physical mouse button is released.'
         $null = Wait-IslandValue 'the released Island window to settle' {
             $firstCenter = Get-IslandCenterX $WindowHandle
             Start-Sleep -Milliseconds 200
