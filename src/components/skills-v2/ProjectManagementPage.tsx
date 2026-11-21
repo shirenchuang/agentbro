@@ -298,24 +298,14 @@ function ProjectInstallPanel({ detail }: { detail: ProjectDetail }) {
       { agentId: 'claude-code', displayName: 'Claude Code' },
     ]
   }, [detail.agents])
-  const [agentId, setAgentId] = useState(agentChoices[0]?.agentId ?? 'codex')
-  const [skillId, setSkillId] = useState('')
-  const [packId, setPackId] = useState('')
+  const [selectedAgentId, setAgentId] = useState(agentChoices[0]?.agentId ?? 'codex')
+  const [selectedSkillId, setSkillId] = useState('')
+  const [selectedPackId, setPackId] = useState('')
   const [mode, setMode] = useState<'link' | 'copy'>(state.settings?.defaultDistributeMode || 'link')
   const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    if (agentChoices.some((agent) => agent.agentId === agentId)) return
-    setAgentId(agentChoices[0]?.agentId ?? 'codex')
-  }, [agentChoices, agentId])
-
-  useEffect(() => {
-    if (!skillId && state.skills[0]) setSkillId(state.skills[0].id)
-  }, [skillId, state.skills])
-
-  useEffect(() => {
-    if (!packId && state.packs[0]) setPackId(state.packs[0].id)
-  }, [packId, state.packs])
+  const agentId = agentChoices.find((agent) => agent.agentId === selectedAgentId)?.agentId ?? agentChoices[0]?.agentId ?? 'codex'
+  const skillId = state.skills.find((skill) => skill.id === selectedSkillId)?.id ?? state.skills[0]?.id ?? ''
+  const packId = state.packs.find((pack) => pack.id === selectedPackId)?.id ?? state.packs[0]?.id ?? ''
 
   const install = async (apply: () => Promise<ProjectDetail>) => {
     const view = captureProjectView(detail.id)

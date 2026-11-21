@@ -329,6 +329,38 @@ describe('ProjectManagementPage', () => {
     expect(screen.queryByRole('heading', { name: first.name })).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['Skill', '中心库 Skill', '安装 Skill', 'installCenterSkillsToProject'],
+    ['Pack', '技能包', '应用技能包', 'installSkillPackToProject'],
+  ] as const)('uses the visible replacement after the selected %s disappears', async (kind, label, button, method) => {
+    const overview = makeOverview(makeSkill())
+    const removedId = 'removed-choice'
+    const isSkill = kind === 'Skill'
+    const initialSkill = overview.skills[0]
+    const initialPack = overview.packs[0]
+    const replacementId = isSkill ? initialSkill.id : initialPack.id
+    const project = makeProject()
+    const operation = vi.spyOn(skillApiV2, method).mockResolvedValue(project)
+    render(<ProjectManagementPage />)
+    await screen.findByRole('heading', { name: project.name })
+    act(() => useSkillStoreV2.setState({
+      skills: [initialSkill, { ...initialSkill, id: removedId, name: 'Removed Skill' }],
+      packs: [initialPack, { ...initialPack, id: removedId, name: 'Removed Pack' }],
+    }))
+    const select = screen.getByLabelText(label)
+    fireEvent.change(select, { target: { value: removedId } })
+    expect(select).toHaveValue(removedId)
+
+    act(() => useSkillStoreV2.setState(isSkill ? { skills: [initialSkill] } : { packs: [initialPack] }))
+    expect(select).toHaveValue(replacementId)
+    const install = screen.getByRole('button', { name: button })
+    await act(async () => { fireEvent.click(install) })
+
+    expect(operation).toHaveBeenCalledExactlyOnceWith(project.id, 'codex', isSkill ? [replacementId] : replacementId, 'link')
+    act(() => useSkillStoreV2.setState(isSkill ? { skills: [] } : { packs: [] }))
+    expect(install).toBeDisabled()
+  })
+
   it('reloads the selected project detail when refreshing projects', async () => {
     const project = makeProject()
     vi.mocked(skillApiV2.getProjectDetail)
