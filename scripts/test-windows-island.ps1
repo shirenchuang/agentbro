@@ -12,7 +12,8 @@ param(
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
-    [switch]$CloseStartupSettings
+    [switch]$CloseStartupSettings,
+    [switch]$TabToPermission
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,10 +154,9 @@ public static class AgentBroSmokeInput {
     public static void PressLeft() { SendMouseButton(LeftDown); }
     public static void ReleaseLeft() { SendMouseButton(LeftUp); }
 
-    public static bool PressSpaceInWindow(IntPtr window) {
+    public static bool PressKeyInWindow(IntPtr window, ushort key) {
         if (window == IntPtr.Zero || GetForegroundWindow() != window) return false;
-        const ushort Space = 0x20;
-        InjectInputs(new[] { KeyboardEvent(Space, 0, 0), KeyboardEvent(Space, 0, KeyUp) });
+        InjectInputs(new[] { KeyboardEvent(key, 0, 0), KeyboardEvent(key, 0, KeyUp) });
         return true;
     }
 
@@ -407,15 +407,28 @@ function Test-KeyboardPermissionDenial(
         if ($TracePermissionUi) {
             Write-Host "Before requesting Deny focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
         }
-        $deny.SetFocus()
+        $denyHasFocus = {
+            if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
+            $focused = [Windows.Automation.AutomationElement]::FocusedElement
+            $focused -and $deny.Current.HasKeyboardFocus -and
+                [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $deny.GetRuntimeId())
+        }
         $clock = [Diagnostics.Stopwatch]::new()
         try {
-            $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' {
-                if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
-                $focused = [Windows.Automation.AutomationElement]::FocusedElement
-                $focused -and $deny.Current.HasKeyboardFocus -and
-                    [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $deny.GetRuntimeId())
+            if ($TabToPermission) {
+                $tabs = 0
+                while ($tabs -lt 24 -and -not (& $denyHasFocus)) {
+                    if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)) {
+                        throw 'The Island lost foreground focus during native Tab navigation'
+                    }
+                    $tabs += 1
+                    Start-Sleep -Milliseconds 125
+                }
+                Write-Host "Native Tab presses to reach Deny: $tabs."
+            } else {
+                $deny.SetFocus()
             }
+            $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' $denyHasFocus
         } catch {
             Write-Host "Island window: $WindowHandle. Foreground window: $([AgentBroSmokeInput]::GetForegroundWindow())."
             if ($TracePermissionUi) {
@@ -438,7 +451,7 @@ function Test-KeyboardPermissionDenial(
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock.Start()
-        if (-not [AgentBroSmokeInput]::PressSpaceInWindow($WindowHandle)) {
+        if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x20)) {
             throw "Foreground changed before Space could be sent to the Island window $WindowHandle."
         }
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
