@@ -2311,7 +2311,36 @@ def parse_mcp_config(content):
     return data
 
 
-def mcp_inventory(agent_id):
+def mcp_config_values(values, include_sensitive):
+    items = []
+    for key, raw in values.items():
+        secret = bool(re.search(r"authorization|token|key|secret|password|passwd", key, re.I))
+        configured = raw is not None
+        items.append({
+            "key": key,
+            "value": str(raw) if configured and (include_sensitive or not secret) else None,
+            "secret": secret,
+            "configured": configured,
+        })
+    return items
+
+
+def resolve_mcp_config_values(draft, previous):
+    values = {}
+    for item in draft:
+        key = item.get("key")
+        if not key:
+            continue
+        value = item.get("value")
+        if value == "••••••••" or (value is None and item.get("configured")):
+            value = previous.get(key)
+            if value is None:
+                raise ValueError("No existing sensitive value for " + key)
+        values[key] = "" if value is None else value
+    return values
+
+
+def mcp_inventory(agent_id, include_sensitive=False):
     path = agent_mcp_path(agent_id)
     content = read_mcp_config_bytes(path)
     revision = hashlib.sha256(content).hexdigest()
@@ -2326,24 +2355,8 @@ def mcp_inventory(agent_id):
         transport = value.get("type")
         if not transport:
             transport = "http" if value.get("url") else "stdio"
-        env = [
-            {
-                "key": str(key),
-                "value": str(item),
-                "secret": bool(re.search(r"(token|secret|password|key)", str(key), re.I)),
-                "configured": True,
-            }
-            for key, item in (value.get("env") or {}).items()
-        ]
-        headers = [
-            {
-                "key": str(key),
-                "value": str(item),
-                "secret": bool(re.search(r"(authorization|token|secret|key)", str(key), re.I)),
-                "configured": True,
-            }
-            for key, item in (value.get("headers") or {}).items()
-        ]
+        env = mcp_config_values(value.get("env") or {}, include_sensitive)
+        headers = mcp_config_values(value.get("headers") or {}, include_sensitive)
         servers.append({
             "name": name,
             "transport": transport,
@@ -2405,7 +2418,8 @@ def write_mcp_inventory(
         if name in servers and name != original_name:
             raise ValueError("An MCP server with that name already exists")
         previous = servers.get(original_name or name)
-        value = dict(previous) if isinstance(previous, dict) else {}
+        previous = previous if isinstance(previous, dict) else {}
+        value = dict(previous)
         if original_name and original_name != name:
             servers.pop(original_name, None)
             if original_name in disabled:
@@ -2417,18 +2431,9 @@ def write_mcp_inventory(
         for key in ("command", "args", "cwd", "url"):
             if server.get(key) not in (None, "", []):
                 value[key] = server[key]
-        if server.get("env"):
-            value["env"] = {
-                item["key"]: item.get("value", "")
-                for item in server["env"]
-                if item.get("key")
-            }
-        if server.get("headers"):
-            value["headers"] = {
-                item["key"]: item.get("value", "")
-                for item in server["headers"]
-                if item.get("key")
-            }
+        for key in ("env", "headers"):
+            if server.get(key):
+                value[key] = resolve_mcp_config_values(server[key], previous.get(key) or {})
         servers[name] = value
     data["disabledMcpServers"] = sorted(disabled)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -2453,7 +2458,7 @@ def write_mcp_inventory(
 
 
 def mcp_server(agent_id, server_name):
-    inventory_value = mcp_inventory(agent_id)
+    inventory_value = mcp_inventory(agent_id, include_sensitive=True)
     server = next(
         (item for item in inventory_value["servers"] if item["name"] == server_name),
         None,

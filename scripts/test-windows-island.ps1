@@ -288,7 +288,10 @@ function Test-KeyboardPermissionDenial(
         $reply = $reader.ReadLineAsync()
 
         $showSessions = Wait-IslandValue 'the permission card and its session list button' {
-            Find-IslandButton $Island { param($Name) $Name -eq 'Make agents easier to use' }
+            Find-IslandButton $Island {
+                param($Name)
+                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
+            }
         }
         Click-IslandElement $showSessions 'Permission card session list button' -CenterAfterLayout
         $session = Wait-IslandValue 'the waiting session in the Island list' {

@@ -1,6 +1,7 @@
 import type { CSSProperties, MouseEvent, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
+import { islandActionProps } from '../../utils/islandActions'
 import { SessionContextHeader } from './SessionContextHeader'
 import './OverlayCard.css'
 
@@ -55,16 +56,13 @@ export function OverlayCard({ session, children, onDismiss, onShowSessions, sess
           <button
             type="button"
             className="overlay-card__show-sessions"
-            onMouseDown={(event) => {
-              event.preventDefault()
-              onShowSessions()
-            }}
+            {...islandActionProps(onShowSessions)}
           >
             <span className="overlay-card__brand-logo-stack" aria-hidden="true">
               <img className="overlay-card__brand-logo overlay-card__brand-logo--light" src="/agentbro-logo.png" alt="" />
               <img className="overlay-card__brand-logo overlay-card__brand-logo--dark" src="/agentbro-logo-dark.png" alt="" />
             </span>
-            <span>{t('notch.slogan', { defaultValue: '让 Agent 更好用' })}</span>
+            <span>{t('notch.showAllSessions', { count: sessionCount })}</span>
           </button>
         ) : (
           <div className="overlay-card__show-sessions overlay-card__show-sessions--static">

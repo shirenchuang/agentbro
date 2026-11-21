@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotchPanel } from '../components/notch/NotchPanel'
+import { OverlayCard } from '../components/overlay/OverlayCard'
 import { useConfigStore } from '../stores/configStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useThemeStore } from '../stores/themeStore'
@@ -124,6 +126,23 @@ function deferred<T = void>() {
   })
   return { promise, resolve, reject }
 }
+
+it('opens the notification session list once per keyboard or pointer activation', async () => {
+  const onShowSessions = vi.fn()
+  render(
+    <OverlayCard session={session()} onShowSessions={onShowSessions} sessionCount={1}>
+      <span>Approval details</span>
+    </OverlayCard>,
+  )
+  const sessions = screen.getByRole('button', { name: 'notch.showAllSessions' })
+  sessions.focus()
+  await userEvent.keyboard('{Enter}')
+  expect(onShowSessions).toHaveBeenCalledTimes(1)
+
+  fireEvent.mouseDown(sessions)
+  fireEvent.click(sessions, { detail: 1 })
+  expect(onShowSessions).toHaveBeenCalledTimes(2)
+})
 
 describe('NotchPanel island shell', () => {
   beforeEach(() => {
@@ -1429,7 +1448,7 @@ describe('NotchPanel island shell', () => {
       pendingQuestion: { question: 'Pick one', options: ['Ship it', 'Revise'] },
     })
 
-    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'notch.showAllSessions' })).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
@@ -1592,7 +1611,7 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByText('请求的权限:')).toHaveClass('plan-approval__perms-label')
     expect(screen.getByText('Bash')).toHaveClass('plan-approval__perm-tool')
     expect(screen.getByText('Edit')).toHaveClass('plan-approval__perm-tool')
-    expect(screen.getByText('让 Agent 更好用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'notch.showAllSessions' })).toBeInTheDocument()
 
     fireEvent.click(document.querySelector('.plan-approval__content')!)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
