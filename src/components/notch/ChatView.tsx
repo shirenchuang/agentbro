@@ -107,6 +107,10 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const showAgentActivityDetails = useConfigStore((s) => s.showAgentActivityDetails)
   const islandMonitorSubagents = useConfigStore((s) => s.islandMonitorSubagents)
   const contentRef = useRef<HTMLDivElement>(null)
+  const backRef = useRef<HTMLButtonElement>(null)
+  const restorePermissionFocus = useCallback(() => {
+    backRef.current?.focus({ preventScroll: true })
+  }, [])
   const [userScrolled, setUserScrolled] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -325,7 +329,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
 
   return (
     <div className="chat-view">
-      <ChatHeader session={activeSession} onBack={handleBack} onJump={handleJump} />
+      <ChatHeader session={activeSession} backRef={backRef} onBack={handleBack} onJump={handleJump} />
 
       {islandMonitorSubagents && showAgentActivityDetails && activeSession.subagents && activeSession.subagents.length > 0 && (
         <SubagentList subagents={activeSession.subagents} onOpenHistory={handleOpenSubagentHistory} />
@@ -431,6 +435,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
           onAllow={handleAllow}
           onAllowAlways={handleAllowAlways}
           onDeny={handleDeny}
+          restorePermissionFocus={restorePermissionFocus}
           onAutoApprove={handleAutoApprove}
           onSendMessage={handleSend}
           onDraftStateChange={onInputDraftStateChange}

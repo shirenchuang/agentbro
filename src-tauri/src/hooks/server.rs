@@ -3937,7 +3937,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn permission_ack_and_session_update_do_not_wait_for_audio() {
+    async fn permission_responses_do_not_wait_for_audio() {
         let store = Arc::new(SessionStore::new());
         let server = HookServer::new(
             store.clone(),

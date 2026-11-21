@@ -356,7 +356,11 @@ function Test-KeyboardPermissionDenial(
             }
             $hasBack -and -not $hasDeny
         }
-        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'uia-resolved' }
+        if ($TracePermissionUi) {
+            $focused = [Windows.Automation.AutomationElement]::FocusedElement
+            Write-Output "After approval, native keyboard focus: '$($focused.Current.Name)'."
+            Save-PermissionFrame $clock $Attempt 'uia-resolved'
+        }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
     } finally {
         $connection.Dispose()
