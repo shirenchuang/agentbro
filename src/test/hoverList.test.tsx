@@ -112,6 +112,32 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).toHaveBeenCalledWith('s1')
   })
 
+  it('exposes the session opener and inline actions as independent controls', async () => {
+    const onSessionClick = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={vi.fn()}
+      />,
+    )
+
+    const title = 'agentbro · Fix island interactions'
+    const open = screen.getByRole('button', { name: title })
+    const group = screen.getByRole('group', { name: title })
+    expect(open.tagName).toBe('BUTTON')
+    const mute = within(group).getByRole('button', { name: 'Mute notifications (30 min)' })
+    const jump = within(group).getByRole('button', { name: 'notch.jumpToTerminal' })
+    const deny = within(group).getByRole('button', { name: '拒绝' })
+    for (const action of [mute, jump, deny]) expect(open).not.toContainElement(action)
+
+    await user.tab()
+    expect(open).toHaveFocus()
+    await user.click(open)
+    expect(onSessionClick).toHaveBeenCalledExactlyOnceWith('s1')
+  })
+
   it('ignores right-click without opening the session', () => {
     const onSessionClick = vi.fn()
     render(<HoverList sessions={[session({ cwd: '/tmp/agentbro' })]} onSessionClick={onSessionClick} />)

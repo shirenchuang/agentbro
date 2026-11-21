@@ -252,6 +252,34 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
     }
 }
 
+function Find-IslandSessionGroup(
+    [Windows.Automation.AutomationElement]$Root,
+    [scriptblock]$MatchesTitle,
+    [string]$VisibleText
+) {
+    $groups = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Group)
+    foreach ($group in $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $groups)) {
+        $state = $group.Current
+        if ($state.IsOffscreen -or ($state.ClassName -split '\s+') -notcontains 'hover-list__card' -or
+            -not (& $MatchesTitle ([string]$state.Name))) { continue }
+        if ($VisibleText) {
+            $textName = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::NameProperty, $VisibleText)
+            $visible = $group.FindAll([Windows.Automation.TreeScope]::Descendants, $textName) |
+                Where-Object { -not $_.Current.IsOffscreen } | Select-Object -First 1
+            if (-not $visible) { continue }
+        }
+        return $group
+    }
+}
+
+function Find-IslandSessionOpener([Windows.Automation.AutomationElement]$Group) {
+    if (-not $Group) { return }
+    $title = $Group.Current.Name
+    Find-IslandButton $Group { param($Name) $Name -eq $title }
+}
+
 function Close-StartupSettings {
     $settings = Wait-IslandValue 'the first-run Settings window' {
         foreach ($window in Get-IslandWindows) {
@@ -299,15 +327,10 @@ function Write-IslandAccessibilityBounds {
 function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
-    [Windows.Automation.AutomationElement]$RowAnchor,
     [switch]$CenterAfterLayout,
     [scriptblock]$FindElement
 ) {
-    $point = if ($RowAnchor) {
-        $row = $Element.Current.BoundingRectangle
-        $anchor = $RowAnchor.Current.BoundingRectangle
-        [Windows.Point]::new($row.Left + $row.Width / 2, $anchor.Top + $anchor.Height / 2)
-    } elseif ($CenterAfterLayout) {
+    $point = if ($CenterAfterLayout) {
         $rect = Wait-IslandValue "stable bounds for $Description" {
             $before = $Element.Current.BoundingRectangle
             Start-Sleep -Milliseconds 200
@@ -379,17 +402,23 @@ function Test-KeyboardPermissionDenial(
             }
         }
         Click-IslandElement $showSessions 'Permission card session list button' -CenterAfterLayout
-        $session = Wait-IslandValue 'the waiting session in the Island list' {
-            Find-IslandButton $Island { param($Name) $Name.Contains($ProjectName) }
+        $session = Wait-IslandValue 'the waiting session opener and independent actions' {
+            $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
+            $open = Find-IslandSessionOpener $group
+            if ($open -and
+                (Find-IslandButton $group { param($Name) $Name.StartsWith('Mute notifications') }) -and
+                (Find-IslandButton $group { param($Name) $Name -eq 'Deny' })) {
+                $open
+            }
         }
-        $rowAnchor = Wait-IslandValue 'the waiting session header' {
-            Find-IslandButton $session { param($Name) $Name.StartsWith('Mute notifications') }
+        if (Find-IslandButton $session { $true }) {
+            throw 'The waiting session opener still contains another button in Windows UI Automation'
         }
+        Write-Output 'Windows UI Automation exposed the session opener, mute, and inline Deny as independent buttons.'
         $listFrame = [AgentBroSmokeInput+Rect]::new()
         $hasListFrame = $TracePermissionUi -and $Attempt -eq 1 -and
             [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$listFrame)
-        # The center of a waiting row belongs to the inline permission preview.
-        Click-IslandElement $session 'Island session header with a pending permission' $rowAnchor
+        Click-IslandElement $session 'Island session opener with a pending permission' -CenterAfterLayout
 
         $detailClock = [Diagnostics.Stopwatch]::StartNew()
         try {
@@ -638,11 +667,8 @@ function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the QwenWork fixture databases' }
         $labels = $fixtureOutput | ConvertFrom-Json
         $null = Wait-IslandValue 'both live QwenWork tasks among completed history' {
-            $waiting = Find-IslandButton $Island { param($Name) $Name.Contains($labels.waiting) }
-            $flash = Find-IslandButton $Island {
-                param($Name)
-                $Name.Contains($labels.flashTitle) -and $Name.Contains($labels.running)
-            }
+            $waiting = Find-IslandSessionGroup $Island { param($Name) $Name -eq $labels.agent } $labels.waiting
+            $flash = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($labels.flashTitle) } $labels.running
             $waiting -and $flash
         }
         Write-Output 'The installed Island rendered the waiting desktop task and running Flash task amid 70 newer completed tasks in each database.'
@@ -650,11 +676,7 @@ function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
         & python $fixture $root resume
         if ($LASTEXITCODE -ne 0) { throw 'Could not resume the waiting QwenWork fixture' }
         $null = Wait-IslandValue 'the waiting QwenWork task to resume in the installed Island' {
-            Find-IslandButton $Island {
-                param($Name)
-                $Name.Contains($labels.agent) -and $Name.Contains($labels.running) -and
-                    -not $Name.Contains($labels.flashTitle)
-            }
+            Find-IslandSessionGroup $Island { param($Name) $Name -eq $labels.agent } $labels.running
         }
         Write-Output 'The installed Island changed the desktop task from waiting to running after the database update.'
     } catch {
@@ -678,7 +700,7 @@ function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
         }
     }
     $null = Wait-IslandValue 'the removed QwenWork fixture to leave the Island' {
-        -not (Find-IslandButton $Island { param($Name) $Name.Contains($labels.agent) })
+        -not (Find-IslandSessionGroup $Island { param($Name) $Name.Contains($labels.agent) })
     }
 }
 
@@ -731,7 +753,8 @@ try {
     }
 
     $findSession = {
-        Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
+        $group = Find-IslandSessionGroup $island { param($Name) $Name.Contains($ProjectName) } 'smoke.txt'
+        Find-IslandSessionOpener $group
     }
     if ($VerifyDrag) {
         try {
@@ -742,9 +765,8 @@ try {
                     Write-IslandAccessibilityBounds $islandWindow.Handle -FixtureProject $ProjectName
                     $freshRoot = Find-VisibleIsland
                     if ($freshRoot -and $freshRoot.Handle -eq $islandWindow.Handle) {
-                        $freshRow = Find-IslandButton $freshRoot.Element {
-                            param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt')
-                        }
+                        $freshGroup = Find-IslandSessionGroup $freshRoot.Element { param($Name) $Name.Contains($ProjectName) } 'smoke.txt'
+                        $freshRow = Find-IslandSessionOpener $freshGroup
                         Write-Host "Fresh Island region reports the fixture row: $([bool]$freshRow)."
                     }
                 } catch {
