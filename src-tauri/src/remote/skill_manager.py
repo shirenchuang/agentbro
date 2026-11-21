@@ -2144,21 +2144,36 @@ def agent_skill_view_snapshot(agent_id):
     }
 
 
-def config_document(path):
+def config_file_state(path):
     path = safe_home_path(path)
-    content = path.read_text(errors="replace") if path.is_file() else ""
-    revision = hashlib.sha256(content.encode()).hexdigest()
+    target = path.resolve()
+    try:
+        mode = target.stat().st_mode
+    except FileNotFoundError:
+        return path, target, b""
+    if not stat.S_ISREG(mode):
+        raise ValueError("The remote configuration must be a regular file")
+    return path, target, target.read_bytes()
+
+
+def config_file_revision(target, content):
+    return hashlib.sha256(os.fsencode(target) + b"\0" + content).hexdigest()
+
+
+def config_document(path):
+    path, target, content = config_file_state(path)
+    revision = config_file_revision(target, content)
+    content = content.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     return {"path": str(path), "content": content, "revision": revision}
 
 
 def write_config(path, content, expected_revision):
-    current = config_document(path)
-    if current["revision"] != expected_revision:
-        raise ValueError("The remote configuration changed after it was opened")
-    target = safe_home_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return config_document(target)
+    path, target, current = config_file_state(path)
+    conflict = "The remote configuration changed after it was opened. Reload before saving."
+    if config_file_revision(target, current) != expected_revision:
+        raise ValueError(conflict)
+    replace_remote_config(path, target, current, content.encode("utf-8"), conflict)
+    return config_document(path)
 
 
 def project_summary(project):
@@ -3280,10 +3295,6 @@ def claude_user_plugins(config):
     }
 
 
-def plugin_revision(target, content):
-    return hashlib.sha256(os.fsencode(target) + b"\0" + content).hexdigest()
-
-
 def plugin_inventory(agent_id, configuration=None):
     if not agent_spec(agent_id):
         raise ValueError("Unknown Agent: " + agent_id)
@@ -3320,7 +3331,7 @@ def plugin_inventory(agent_id, configuration=None):
     return {
         "agentId": agent_id,
         "configPath": str(path) if path else None,
-        "revision": plugin_revision(configuration[1], configuration[2]) if configuration else "read-only",
+        "revision": config_file_revision(configuration[1], configuration[2]) if configuration else "read-only",
         "capabilities": {"editable": configuration is not None, "requiresNewSession": True},
         "plugins": plugins,
     }
@@ -3391,7 +3402,7 @@ def set_plugin_enabled(agent_id, plugin_id, revision, enabled):
         raise ValueError("This remote Agent's plugin settings are read-only.")
     path, target, content, document, _states = configuration
     conflict = "The remote plugin settings changed. Reload before saving."
-    if revision != plugin_revision(target, content):
+    if revision != config_file_revision(target, content):
         raise ValueError(conflict)
     if not isinstance(enabled, bool):
         raise ValueError("Plugin enablement must be true or false.")
