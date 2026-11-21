@@ -64,11 +64,13 @@ function Write-WindowsTerminalStarts([string]$SourceIdentifier, [object[]]$Basel
 }
 
 $processTraceId = "AgentBroInstallerProcessStarts-$PID"
-$processTrace = $null
+$processTrace = $false
 $processBaseline = @()
 if ($TracePermissionUi) {
     try {
-        $processTrace = Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier $processTraceId
+        Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier $processTraceId -ErrorAction Stop | Out-Null
+        $processTrace = [bool](Get-EventSubscriber -SourceIdentifier $processTraceId -ErrorAction Stop)
+        Write-Output "Windows process start trace subscribed: $processTrace."
         $processBaseline = @(Get-CimInstance -ClassName Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate |
             Where-Object { $_.CreationDate } | ForEach-Object {
                 [PSCustomObject]@{
