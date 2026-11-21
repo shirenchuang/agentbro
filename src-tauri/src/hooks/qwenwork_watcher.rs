@@ -94,19 +94,22 @@ fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
                            ELSE 1
                        END, ordinal DESC
                    ) AS rank
-            FROM desk_turns WHERE updated_at >= ?1
+            FROM desk_turns
+            WHERE updated_at >= ?1
+              AND typeof(session_id) = 'text' AND typeof(status) = 'text'
+              AND typeof(updated_at) = 'integer' AND typeof(ordinal) = 'integer'
         ) WHERE rank = 1 ORDER BY updated_at DESC LIMIT 64",
     )?;
-    let rows = query.query_map([since], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })?;
+    let mut rows = query.query([since])?;
     let mut turns = Vec::new();
-    for row in rows {
-        let (session_id, status, updated) = row?;
+    while let Some(row) = rows.next()? {
+        let (Ok(session_id), Ok(status), Ok(updated)) = (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, i64>(2),
+        ) else {
+            continue;
+        };
         let (phase, description) = match status.as_str() {
             "queued" => (SessionPhase::Ready, "任务已排队"),
             "in_progress" => (SessionPhase::Processing, "任务进行中"),
@@ -134,6 +137,8 @@ fn read_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
 fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(Duration::from_millis(100))?;
+    // CASE guards extraction even if SQLite reorders WHERE predicates. Flag 10 accepts
+    // JSON5 text and fully validated JSONB, the formats handled by the bundled extractor.
     let mut query = connection.prepare(
         "SELECT s.id, substr(s.title, 1, 120), s.time_updated,
                 COALESCE(answer.time_updated, prompt.time_created),
@@ -142,13 +147,17 @@ fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
          FROM session s
          JOIN message prompt ON prompt.id = (
              SELECT m.id FROM message m
-             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'user'
+             WHERE m.session_id = s.id
+               AND CASE WHEN json_valid(m.data, 10) THEN json_extract(m.data, '$.role') = 'user' END
              ORDER BY m.time_created DESC, m.id DESC LIMIT 1
          )
          LEFT JOIN message answer ON answer.id = (
              SELECT m.id FROM message m
-             WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'assistant'
-                 AND json_extract(m.data, '$.parentID') = prompt.id
+             WHERE m.session_id = s.id
+               AND CASE WHEN json_valid(m.data, 10) THEN
+                   json_extract(m.data, '$.role') = 'assistant'
+                   AND json_extract(m.data, '$.parentID') = prompt.id
+               END
              ORDER BY m.time_created DESC, m.id DESC LIMIT 1
          )
          WHERE s.time_updated >= ?1 AND s.time_archived IS NULL AND s.parent_id IS NULL
@@ -157,19 +166,29 @@ fn read_flash_database(path: &Path, since: i64) -> rusqlite::Result<Vec<Turn>> {
     let mut rows = query.query([since])?;
     let mut turns = Vec::new();
     while let Some(row) = rows.next()? {
-        let session_id = row.get::<_, String>(0)?;
+        let (Ok(session_id), Ok(session_updated), Ok(message_updated)) = (
+            row.get::<_, String>(0),
+            row.get::<_, i64>(2),
+            row.get::<_, i64>(3),
+        ) else {
+            continue;
+        };
         if session_id.is_empty() || session_id.len() > 256 {
             continue;
         }
         let title = row
-            .get::<_, Option<String>>(1)?
+            .get::<_, Option<String>>(1)
+            .ok()
+            .flatten()
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty());
-        let session_updated: i64 = row.get(2)?;
-        let message_updated: i64 = row.get(3)?;
-        let completed: Option<i64> = row.get(4)?;
-        let finish: Option<String> = row.get(5)?;
-        let error: Option<String> = row.get(6)?;
+        let (Ok(completed), Ok(finish), Ok(error)) = (
+            row.get::<_, Option<i64>>(4),
+            row.get::<_, Option<String>>(5),
+            row.get::<_, Option<String>>(6),
+        ) else {
+            continue;
+        };
         let (phase, description, updated) = match (completed, finish.as_deref(), error.as_deref()) {
             (_, _, Some("MessageAbortedError")) => {
                 (SessionPhase::Interrupted, "任务已取消", message_updated)
@@ -305,19 +324,23 @@ mod tests {
             .execute_batch(
                 r#"INSERT INTO message VALUES
                    ('a2', 's', 3001, 4000,
-                    '{"role":"assistant","parentID":"u2","time":{"completed":4000},"finish":"tool-calls"}');"#,
+                    '{"role":"assistant","parentID":"u2","time":{"completed":4000},"finish":"tool-calls"}'),
+                   ('partial', 's', 3999, 4000, '{"role":"assistant"');"#,
             )
             .unwrap();
         assert_eq!(observe(4000).unwrap().phase, SessionPhase::Processing);
         database
             .execute_batch(
-                r#"INSERT INTO message VALUES
+                r#"INSERT INTO session VALUES ('bad', '无效时间', X'FF', NULL, NULL);
+                   INSERT INTO message VALUES
+                   ('bad-prompt', 'bad', 5000, 5000, '{"role":"user"}'),
                    ('a3', 's', 4001, 5000,
-                    '{"role":"assistant","parentID":"u2","time":{"completed":5000},"finish":"stop"}');"#,
+                    '{role:"assistant",parentID:"u2",time:{completed:5000},finish:"stop"}');"#,
             )
             .unwrap();
         assert_eq!(observe(5000).unwrap().phase, SessionPhase::Done);
         assert!(observe(5000 + DONE_MS + 1).is_none());
+        assert!(store.get_session("qwenwork-cn:flash:bad").is_none());
         drop(database);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -334,6 +357,8 @@ mod tests {
                 "INSERT INTO desk_turns VALUES
                ('a', 'in_progress', 1, 1000),
                ('a', 'queued', 2, 1000),
+               ('a', 'in_progress', 3, 'invalid'),
+               (X'FF', 'in_progress', 1, 2000),
                ('b', 'completed', 1, 1000);",
             )
             .unwrap();

@@ -8,6 +8,7 @@ import pathlib
 import re
 import select
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -55,6 +56,10 @@ STATE_MUTATING_COMMANDS = {
     "get_skill_project_detail_v2",
     "scan_skill_project_v2",
     "execute_move_direct_skill_to_pack",
+    "write_agent_config_file_v2",
+    "save_mcp_server_cmd",
+    "set_mcp_server_enabled_cmd",
+    "delete_mcp_server_v2_cmd",
     "add_custom_agent",
     "update_custom_agent",
     "remove_custom_agent",
@@ -2280,22 +2285,40 @@ def github_import(repo_url, selections):
         temporary.cleanup()
 
 
+def read_mcp_config_bytes(path):
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def parse_mcp_config(content):
+    message = "Fix the remote MCP JSON before editing this configuration"
+    try:
+        data = json.loads(content) if content else {}
+    except ValueError as error:
+        raise ValueError(message) from error
+    if not isinstance(data, dict) or not isinstance(data.get("mcpServers", {}), dict):
+        raise ValueError(message)
+    disabled = data.get("disabledMcpServers", [])
+    if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+        raise ValueError(message)
+    for server in data.get("mcpServers", {}).values():
+        if isinstance(server, dict) and any(
+            server.get(key) and not isinstance(server[key], dict) for key in ("env", "headers")
+        ):
+            raise ValueError(message)
+    return data
+
+
 def mcp_inventory(agent_id):
-    spec = agent_spec(agent_id)
-    if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
     path = agent_mcp_path(agent_id)
-    content = path.read_text(errors="replace") if path.is_file() else ""
-    revision = hashlib.sha256(content.encode()).hexdigest()
+    content = read_mcp_config_bytes(path)
+    revision = hashlib.sha256(content).hexdigest()
     editable = path.suffix == ".json"
-    data = {}
-    if content and editable:
-        try:
-            data = json.loads(content)
-        except Exception:
-            data = {}
-    raw_servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
-    disabled = set(data.get("disabledMcpServers", [])) if isinstance(data, dict) else set()
+    data = parse_mcp_config(content) if editable else {}
+    raw_servers = data.get("mcpServers", {})
+    disabled = set(data.get("disabledMcpServers", []))
     servers = []
     for name, value in raw_servers.items():
         if not isinstance(value, dict):
@@ -2354,17 +2377,18 @@ def mcp_inventory(agent_id):
     }
 
 
-def write_mcp_inventory(agent_id, server=None, original_name=None, delete_name=None, toggle=None):
-    current = mcp_inventory(agent_id)
-    if not current["capabilities"]["editable"]:
+def write_mcp_inventory(
+    agent_id, revision, server=None, original_name=None, delete_name=None, toggle=None
+):
+    path = agent_mcp_path(agent_id)
+    if path.suffix != ".json":
         raise ValueError("This remote Agent MCP format is read-only")
-    path = pathlib.Path(current["configPath"])
-    data = {}
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            data = {}
+    target = path.resolve()
+    content = read_mcp_config_bytes(target)
+    conflict = "The remote MCP configuration changed after it was opened. Reload before saving."
+    if hashlib.sha256(content).hexdigest() != revision:
+        raise ValueError(conflict)
+    data = parse_mcp_config(content)
     servers = data.setdefault("mcpServers", {})
     disabled = set(data.get("disabledMcpServers", []))
     if delete_name:
@@ -2378,10 +2402,18 @@ def write_mcp_inventory(agent_id, server=None, original_name=None, delete_name=N
             disabled.add(name)
     elif server:
         name = safe_id(server["name"])
+        if name in servers and name != original_name:
+            raise ValueError("An MCP server with that name already exists")
+        previous = servers.get(original_name or name)
+        value = dict(previous) if isinstance(previous, dict) else {}
         if original_name and original_name != name:
             servers.pop(original_name, None)
-            disabled.discard(original_name)
-        value = {"type": server.get("transport", "stdio")}
+            if original_name in disabled:
+                disabled.remove(original_name)
+                disabled.add(name)
+        value["type"] = server.get("transport", "stdio")
+        for key in ("command", "args", "cwd", "url", "env", "headers"):
+            value.pop(key, None)
         for key in ("command", "args", "cwd", "url"):
             if server.get(key) not in (None, "", []):
                 value[key] = server[key]
@@ -2399,8 +2431,24 @@ def write_mcp_inventory(agent_id, server=None, original_name=None, delete_name=N
             }
         servers[name] = value
     data["disabledMcpServers"] = sorted(disabled)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False
+        ) as temp:
+            temp_path = pathlib.Path(temp.name)
+            if target.is_file():
+                temp_path.chmod(stat.S_IMODE(target.stat().st_mode))
+            json.dump(data, temp, ensure_ascii=False, indent=2)
+            temp.flush()
+            os.fsync(temp.fileno())
+        if path.resolve() != target or read_mcp_config_bytes(target) != content:
+            raise ValueError(conflict)
+        temp_path.replace(target)
+    finally:
+        if temp_path is not None:
+            unlink_if_exists(temp_path)
     return mcp_inventory(agent_id)
 
 
@@ -3423,16 +3471,20 @@ def dispatch():
     if command == "save_mcp_server_cmd":
         return write_mcp_inventory(
             args["agent"],
+            args["revision"],
             server=args["server"],
             original_name=args.get("originalName"),
         )
     if command == "set_mcp_server_enabled_cmd":
         return write_mcp_inventory(
             args["agent"],
+            args["revision"],
             toggle=(args["serverName"], bool(args["enabled"])),
         )
     if command == "delete_mcp_server_v2_cmd":
-        return write_mcp_inventory(args["agent"], delete_name=args["serverName"])
+        return write_mcp_inventory(
+            args["agent"], args["revision"], delete_name=args["serverName"]
+        )
     if command == "test_mcp_server_connection_cmd":
         started = time.time()
         try:

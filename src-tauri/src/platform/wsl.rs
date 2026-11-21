@@ -7,6 +7,9 @@ use std::process::{Output, Stdio};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
+#[cfg(target_os = "windows")]
+mod registry;
+
 const READ_CONFIG: &str = r#"
 set -eu
 target=$(realpath -m -- "$HOME/$1")
@@ -112,19 +115,17 @@ fn valid_distribution(distribution: &str) -> bool {
 
 #[tauri::command]
 pub async fn list_wsl_distributions() -> Result<Vec<String>, String> {
-    if executable().is_none() {
-        return Ok(Vec::new());
+    #[cfg(target_os = "windows")]
+    {
+        if executable().is_none() {
+            return Ok(Vec::new());
+        }
+        registry::list_registered_distributions(registry::WSL_REGISTRATIONS)
     }
-    let output = run(&["--list", "--quiet"], None).await?;
-    if !output.status.success() {
-        return Ok(Vec::new());
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
     }
-    Ok(decode_wsl_output(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|name| valid_distribution(name))
-        .map(ToOwned::to_owned)
-        .collect())
 }
 
 fn successful(output: Output) -> Result<Vec<u8>, String> {
@@ -342,6 +343,77 @@ mod tests {
         assert_eq!(decode_wsl_output(text.as_bytes()), text);
         assert!(!valid_distribution("--user"));
         assert!(valid_distribution("Ubuntu 開発"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn lists_registered_wsl_distributions_without_starting_wsl() {
+        struct RegistryFixture(String);
+
+        impl RegistryFixture {
+            fn set(&self, subkey: &str, name: &str, value_type: &str, value: &str) {
+                let key = if subkey.is_empty() {
+                    format!("HKCU\\{}", self.0)
+                } else {
+                    format!("HKCU\\{}\\{subkey}", self.0)
+                };
+                let output =
+                    Self::run_reg(&["add", &key, "/v", name, "/t", value_type, "/d", value, "/f"]);
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            fn run_reg(args: &[&str]) -> Output {
+                let executable = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                    .join("System32")
+                    .join("reg.exe");
+                crate::platform::process::background_command(executable)
+                    .args(args)
+                    .output()
+                    .expect("run the registry fixture command")
+            }
+        }
+
+        impl Drop for RegistryFixture {
+            fn drop(&mut self) {
+                let _ = Self::run_reg(&["delete", &format!("HKCU\\{}", self.0), "/f"]);
+            }
+        }
+
+        let registry = RegistryFixture(format!(
+            r"Software\AgentBroWslTest-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(registry::list_registered_distributions(&registry.0)
+            .expect("read a missing registry subtree")
+            .is_empty());
+
+        let default_id = "{1099cfcb-79e3-42fb-92a7-efe49c1bf5d1}";
+        registry.set("", "DefaultDistribution", "REG_SZ", default_id);
+        for (guid, name, state) in [
+            (default_id, "开发环境 🚀", "1"),
+            ("{df6ba246-7f6d-45b3-a4a1-f9a1b508c46e}", "Alpine", "2"),
+            ("{c591f291-5124-422d-a758-472f4012ab8f}", "Installing", "3"),
+            ("{aba1ce76-ce87-481c-8551-33681ff42f80}", "--help", "1"),
+            ("Not a registered distribution", "Invalid", "1"),
+        ] {
+            registry.set(guid, "DistributionName", "REG_SZ", name);
+            registry.set(guid, "State", "REG_DWORD", state);
+        }
+        registry.set(
+            "{306b3707-b448-42ce-850b-0e4b419f3e43}",
+            "State",
+            "REG_DWORD",
+            "1",
+        );
+        assert_eq!(
+            registry::list_registered_distributions(&registry.0)
+                .expect("read registered distributions"),
+            ["开发环境 🚀", "Alpine"]
+        );
     }
 
     #[test]

@@ -661,6 +661,13 @@ export function NotchPanel() {
   const ignoreCursorEventsInFlightRef = useRef(false)
   const ignoreCursorEventsDelayTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const lastNativeHostResizeKeyRef = useRef<string | null>(null)
+  const nativeHostResizeTargetRef = useRef<{
+    key: string
+    width: number
+    height: number
+    horizontalOffset: number
+    displayId: string | undefined
+  } | null>(null)
   const inFlightNativeHostResizeKeysRef = useRef(new Set<string>())
   const nativeHostResizeWaitersRef = useRef(new Map<string, Array<(anchorOffsetX: number) => void>>())
   const interactionLockUntilRef = useRef(0)
@@ -1637,15 +1644,16 @@ export function NotchPanel() {
     }
   }, [])
 
-  const requestNativeHostResize = useCallback((
+  const requestNativeHostResize = useCallback(function requestResize(
     width: number,
     height: number,
     horizontalOffset: number,
     displayId: string | undefined,
     onComplete: (anchorOffsetX: number) => void,
     options?: { force?: boolean },
-  ) => {
+  ) {
     const key = nativeHostResizeKey(width, height, horizontalOffset, displayId)
+    nativeHostResizeTargetRef.current = { key, width, height, horizontalOffset, displayId }
     if (!options?.force && lastNativeHostResizeKeyRef.current === key) {
       onComplete(hostAnchorOffsetXRef.current)
       return
@@ -1669,7 +1677,16 @@ export function NotchPanel() {
         lastNativeHostResizeKeyRef.current = key
         const callbacks = waiters.get(key) ?? []
         waiters.delete(key)
-        callbacks.forEach((callback) => callback(result.anchorOffsetX))
+        const target = nativeHostResizeTargetRef.current
+        if (target?.key === key) {
+          callbacks.forEach((callback) => callback(result.anchorOffsetX))
+          return
+        }
+        callbacks.forEach((callback) => callback(hostAnchorOffsetXRef.current))
+        // An older request can finish after the current frame was applied.
+        if (target && !inFlightKeys.has(target.key)) {
+          requestResize(target.width, target.height, target.horizontalOffset, target.displayId, updateHostAnchorOffset)
+        }
       })
       .catch(() => {
         inFlightKeys.delete(key)
@@ -1677,7 +1694,7 @@ export function NotchPanel() {
         waiters.delete(key)
         callbacks.forEach((callback) => callback(hostAnchorOffsetXRef.current))
       })
-  }, [])
+  }, [updateHostAnchorOffset])
 
   // Keep the native transparent host at a stable max canvas. macOS can briefly
   // flash the old WebView backing store when a transparent NSWindow is resized
@@ -1744,13 +1761,14 @@ export function NotchPanel() {
     const repositionToCursorDisplay = () => {
       if (inFlight) return
       inFlight = true
+      const { width, height } = hostHitboxSizeRef.current
       requestNativeHostResize(
-        hostHitboxSize.width,
-        hostHitboxSize.height,
+        width,
+        height,
         effectiveHorizontalOffset,
         'auto',
         (anchorOffsetX) => {
-          updateHostAnchorOffset(anchorOffsetX)
+          if (!cancelled) updateHostAnchorOffset(anchorOffsetX)
           inFlight = false
         },
         { force: true },
@@ -1777,7 +1795,7 @@ export function NotchPanel() {
       cancelled = true
       if (unlisten) unlisten()
     }
-  }, [displayMonitor, effectiveHorizontalOffset, hostHitboxSize.height, hostHitboxSize.width, isDragging, requestNativeHostResize, updateHostAnchorOffset])
+  }, [displayMonitor, effectiveHorizontalOffset, isDragging, requestNativeHostResize, updateHostAnchorOffset])
 
   const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {
     const activePointerId = dragPointerIdRef.current
