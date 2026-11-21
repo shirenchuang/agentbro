@@ -6594,6 +6594,105 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__rail')).toBeNull()
   })
 
+  async function openPackApplication() {
+    const skill = makeSkill()
+    const pack: SkillPackDetail = {
+      id: 'default',
+      name: 'Review pack',
+      description: '',
+      tags: [],
+      members: [{ skillId: skill.id, skillName: skill.name, required: true, sortOrder: 0, missing: false }],
+      appliedAgents: [],
+      createdAt: '',
+      updatedAt: '',
+    }
+    const agents = useSkillStoreV2.getState().agents
+    const overview = {
+      ...makeOverview(),
+      agents: [...agents, { ...agents[0], id: 'codex', displayName: 'Codex', iconKey: 'codex' }],
+      skills: [skill],
+      packs: [{ id: pack.id, name: pack.name, description: '', tags: [], memberCount: 1, appliedAgentCount: 0, healthy: true }],
+    }
+    useSkillStoreV2.setState({
+      ...overview,
+      overview,
+      selectedPackId: pack.id,
+      selectedPackDetail: pack,
+      lastOverviewLoadedAt: Date.now(),
+    })
+    vi.spyOn(skillApiV2, 'overview').mockResolvedValue(overview)
+    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue(pack)
+    const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
+    render(<SkillPackPage />)
+    fireEvent.click(screen.getByRole('button', { name: '应用到 Agent' }))
+    return { pack, skill, dialog: within(screen.getByRole('dialog', { name: '应用「Review pack」' })) }
+  }
+
+  it('discards a late pack preview when the selected Agent and mode change', async () => {
+    const { pack, skill, dialog } = await openPackApplication()
+    let resolvePreview!: (value: DistributionPreview) => void
+    const pending = new Promise<DistributionPreview>((resolve) => { resolvePreview = resolve })
+    const older: DistributionPreview = {
+      skillIds: [skill.id],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    const latest: DistributionPreview = { ...older, targetAgents: ['codex'], requestedMode: 'copy' }
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack').mockReturnValueOnce(pending).mockResolvedValue(latest)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(latest)
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    expect(preview).toHaveBeenCalledWith(pack.id, ['claude-code'], 'link')
+
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: /Codex/ }))
+    fireEvent.change(dialog.getByLabelText('分发方式'), { target: { value: 'copy' } })
+    await act(async () => { resolvePreview(older) })
+
+    expect(screen.queryByRole('dialog', { name: '确认应用预览' })).not.toBeInTheDocument()
+    expect(execute).not.toHaveBeenCalled()
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    expect(preview).toHaveBeenLastCalledWith(pack.id, ['codex'], 'copy')
+    const review = await screen.findByRole('dialog', { name: '确认应用预览' })
+    expect(review).toHaveTextContent('Codex')
+    expect(review).toHaveTextContent('复制')
+    fireEvent.click(within(review).getByRole('button', { name: '执行应用' }))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(pack.id, ['codex'], 'copy', []))
+  })
+
+  it.each([false, true])('invalidates a pack review after changing runtime (returned: %s)', async (returnToLocal) => {
+    const { skill, dialog } = await openPackApplication()
+    const prepared: DistributionPreview = {
+      skillIds: [skill.id],
+      targetAgents: ['claude-code'],
+      requestedMode: 'link',
+      changes: [],
+      blockers: [],
+      blockerDecisions: [],
+    }
+    vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue(prepared)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue(prepared)
+    fireEvent.click(dialog.getByRole('button', { name: /Claude Code/ }))
+    fireEvent.click(dialog.getByRole('button', { name: '预览影响' }))
+    const confirm = await screen.findByRole('button', { name: '执行应用' })
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    try {
+      act(() => {
+        selectEnvironment('other-test-machine')
+        if (returnToLocal) selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      fireEvent.click(confirm)
+
+      expect(execute).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: '执行应用' })).not.toBeInTheDocument()
+    } finally {
+      act(() => selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID))
+    }
+  })
+
   it('opens the pack builder in a dialog instead of replacing the canvas', async () => {
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     const { container } = render(<SkillPackPage />)

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type {
   ConflictBlocker,
@@ -351,15 +352,17 @@ export function SkillPackPage() {
 
       {applyFor && (
         <ApplyPackDialog
+          key={applyFor.id}
           pack={applyFor}
           agents={state.agents}
           defaultMode={state.settings?.defaultDistributeMode || 'link'}
           onClose={() => setApplyFor(null)}
           onDone={async () => {
             const packId = applyFor.id
+            const runtime = useRuntimeEnvironmentStore.getState()
             setApplyFor(null)
             await state.loadOverview(true)
-            await state.selectPack(packId)
+            if (isPackRuntimeCurrent(runtime)) await state.selectPack(packId)
           }}
         />
       )}
@@ -1359,6 +1362,18 @@ function distributionBlockerMessage(blocker: ConflictBlocker) {
   return blocker.reason
 }
 
+type PackApplicationReview = {
+  preview: DistributionPreview
+  runtime: Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+}
+
+function isPackRuntimeCurrent(runtime: PackApplicationReview['runtime']) {
+  const current = useRuntimeEnvironmentStore.getState()
+  return current.selectedEnvironmentId === runtime.selectedEnvironmentId
+    && current.selectionRevision === runtime.selectionRevision
+    && useSkillStoreV2.getState().runtimeEnvironmentId === runtime.selectedEnvironmentId
+}
+
 function ApplyPackDialog({
   pack,
   agents,
@@ -1370,15 +1385,17 @@ function ApplyPackDialog({
   agents: { id: string; displayName: string; iconKey: string; installed: boolean }[]
   defaultMode: 'link' | 'copy'
   onClose: () => void
-  onDone: () => void
+  onDone: () => void | Promise<void>
 }) {
   const { t } = useTranslation()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [mode, setMode] = useState<'link' | 'copy'>(defaultMode)
-  const [preview, setPreview] = useState<DistributionPreview | null>(null)
+  const [review, setReview] = useState<PackApplicationReview | null>(null)
   const [blockerDecisions, setBlockerDecisions] = useState<Record<string, BlockerDecision>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const previewRequest = useRef(0)
+  const preview = review?.preview
 
   const installedAgents = agents.filter((agent) => agent.installed && agent.id !== SHARED_SKILLS_AGENT_ID)
   const changesByAction = useMemo(() => {
@@ -1392,48 +1409,72 @@ function ApplyPackDialog({
     return grouped
   }, [preview])
 
-  const toggle = (id: string) =>
+  const resetPreview = () => {
+    previewRequest.current += 1
+    setReview(null)
+    setBlockerDecisions({})
+    setBusy(false)
+    setError(null)
+  }
+
+  const toggle = (id: string) => {
+    resetPreview()
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
-      setPreview(null)
-      setBlockerDecisions({})
       return next
     })
+  }
 
   const runPreview = async () => {
+    if (busy || !selected.size) return
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    const runtime = { selectedEnvironmentId, selectionRevision }
+    if (!isPackRuntimeCurrent(runtime)) return
+    const requestId = ++previewRequest.current
+    const isCurrent = () => requestId === previewRequest.current && isPackRuntimeCurrent(runtime)
     setBusy(true)
     setError(null)
     try {
-      setPreview(await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode))
-      setBlockerDecisions({})
+      const result = await skillApiV2.previewApplyPack(pack.id, Array.from(selected), mode)
+      if (isCurrent()) setReview({ preview: result, runtime })
     } catch (e) {
-      setError(String(e))
+      if (isCurrent()) setError(String(e))
     } finally {
-      setBusy(false)
+      if (requestId === previewRequest.current) setBusy(false)
     }
   }
 
   const execute = async () => {
+    if (!review || busy) return
+    const { preview, runtime } = review
+    if (!isPackRuntimeCurrent(runtime)) {
+      resetPreview()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
-      const blockerDecisionsPayload = preview?.blockers
+      const blockerDecisionsPayload = preview.blockers
         .map((blocker) => {
           const action = blockerDecisions[blockerKey(blocker)]
           return action ? { skillId: blocker.skillId, agentId: blocker.agentId, action } : null
         })
-        .filter((item): item is DistributionBlockerDecision => Boolean(item)) ?? []
-      const result = await skillApiV2.executeApplyPack(pack.id, Array.from(selected), mode, blockerDecisionsPayload)
+        .filter((item): item is DistributionBlockerDecision => Boolean(item))
+      const result = await skillApiV2.executeApplyPack(pack.id, preview.targetAgents, preview.requestedMode, blockerDecisionsPayload)
+      if (!isPackRuntimeCurrent(runtime)) {
+        resetPreview()
+        return
+      }
       if (result.blockers.length > 0) {
-        setPreview(result)
+        setReview({ preview: result, runtime })
         setBlockerDecisions({})
         return
       }
-      onDone()
+      await onDone()
     } catch (e) {
-      setError(String(e))
+      if (isPackRuntimeCurrent(runtime)) setError(String(e))
     } finally {
       setBusy(false)
     }
@@ -1454,7 +1495,10 @@ function ApplyPackDialog({
           <div className="sm2__apply-grid">
             <div className="sm2__field sm2__field--select">
               <label htmlFor="sm2-pack-apply-mode">分发方式</label>
-              <select id="sm2-pack-apply-mode" value={mode} onChange={(e) => setMode(e.target.value as 'link' | 'copy')}>
+              <select id="sm2-pack-apply-mode" value={mode} onChange={(event) => {
+                resetPreview()
+                setMode(event.target.value as 'link' | 'copy')
+              }}>
                 <option value="link">{skillModeLabel(t, 'link')}</option>
                 <option value="copy">{skillModeLabel(t, 'copy')}</option>
               </select>
@@ -1497,8 +1541,12 @@ function ApplyPackDialog({
       busy={busy}
       disabled={unresolvedBlockers > 0}
       onConfirm={execute}
-      onCancel={() => setPreview(null)}
+      onCancel={() => { if (!busy) resetPreview() }}
     >
+      <div className="sm2__detail-meta">
+        {preview.targetAgents.map((id) => agents.find((agent) => agent.id === id)?.displayName ?? id).join('、')}
+        {' · '}{skillModeLabel(t, preview.requestedMode)}
+      </div>
       <div className="sm2__preview-stats">
         <PackMetric label="新增 target" value={changesByAction.create} />
         <PackMetric label="复用 target" value={changesByAction.reuse} />
