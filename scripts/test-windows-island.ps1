@@ -11,7 +11,8 @@ param(
     [string]$PackExportPath,
     [switch]$TracePermissionUi,
     [switch]$VerifyQwenWork,
-    [switch]$VerifyDrag
+    [switch]$VerifyDrag,
+    [switch]$CloseStartupSettings
 )
 
 $ErrorActionPreference = 'Stop'
@@ -241,6 +242,23 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
         $state = $button.Current
         if (-not $state.IsOffscreen -and (& $MatchesName ([string]$state.Name))) { return $button }
     }
+}
+
+function Close-StartupSettings {
+    $settings = Wait-IslandValue 'the first-run Settings window' {
+        foreach ($window in Get-IslandWindows) {
+            if (Find-IslandButton $window { param($Name) $Name -eq 'Start AgentBro' }) {
+                return $window
+            }
+        }
+    }
+    $handle = $settings.Current.NativeWindowHandle
+    $close = $settings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+    $close.Close()
+    $null = Wait-IslandValue 'the Settings window to close' {
+        -not (Get-IslandWindows | Where-Object { $_.Current.NativeWindowHandle -eq $handle })
+    }
+    Write-Output 'Closed the first-run Settings window before exercising the Island.'
 }
 
 function Write-IslandAccessibilityBounds {
@@ -645,6 +663,7 @@ $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
 try {
+    if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
     Move-ToElement $island
@@ -695,6 +714,12 @@ try {
     try {
         if ($TracePermissionUi -and $islandWindow) {
             Write-IslandAccessibilityBounds $islandWindow.Handle
+            Write-Host "Focus after failure: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe' OR Name = 'wslhost.exe'" |
+                ForEach-Object {
+                    $parent = Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue
+                    Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
+                }
         }
         if ($PackImportPath) {
             foreach ($window in Get-IslandWindows) {
