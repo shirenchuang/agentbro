@@ -226,10 +226,18 @@ function Find-VisibleIsland {
     }
 }
 
-function Move-ToElement([Windows.Automation.AutomationElement]$Element) {
-    $rect = $Element.Current.BoundingRectangle
-    $x = [int]($rect.X + $rect.Width / 2)
-    $y = [int]($rect.Y + $rect.Height / 2)
+function Move-ToIslandHoverPoint([IntPtr]$WindowHandle, [Windows.Automation.AutomationElement]$Region) {
+    $native = [AgentBroSmokeInput+Rect]::new()
+    $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
+    if ($dpi -eq 0 -or -not [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
+        throw 'Could not read the native Island window for cursor entry'
+    }
+    $x = [int](($native.Left + $native.Right) / 2)
+    $y = [int]($native.Top + 12 * ($dpi / 96.0))
+    if ($TracePermissionUi) {
+        $uia = $Region.Current.BoundingRectangle
+        Write-Host "Island cursor entry: ($x, $y). Accessibility region center Y: $($uia.Top + $uia.Height / 2)."
+    }
     if (-not [AgentBroSmokeInput]::SetCursorPos($x, $y)) {
         throw "Could not move the Windows cursor to $x, $y"
     }
@@ -688,7 +696,7 @@ try {
     if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
-    Move-ToElement $island
+    Move-ToIslandHoverPoint $islandWindow.Handle $island
     if ($VerifyQwenWork) {
         Test-InstalledQwenWork $island
         $desktop = [Windows.Automation.AutomationElement]::RootElement.Current.BoundingRectangle
@@ -698,7 +706,7 @@ try {
         Start-Sleep -Milliseconds 250
         $islandWindow = Wait-IslandValue 'the visible Island after the QwenWork fixture' { Find-VisibleIsland }
         $island = $islandWindow.Element
-        Move-ToElement $island
+        Move-ToIslandHoverPoint $islandWindow.Handle $island
     }
 
     $findSession = {
