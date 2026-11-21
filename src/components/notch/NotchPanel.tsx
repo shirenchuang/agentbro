@@ -1,7 +1,7 @@
 import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type CSSProperties, type PointerEvent } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type ComponentProps, type CSSProperties, type PointerEvent } from 'react'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { answerDisplayedPermission, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
@@ -237,6 +237,11 @@ type IslandLayoutPreview = {
   completionCardHeight?: number
   maxPanelHeight?: number
   detailPanelMaxHeight?: number
+}
+
+function IslandLayer(props: ComponentProps<typeof motion.div>) {
+  const isPresent = useIsPresent()
+  return <motion.div {...props} inert={!isPresent} aria-hidden={!isPresent || undefined} />
 }
 
 function LayoutPreviewBody({ mode, contentFontSize }: Pick<IslandLayoutPreview, 'mode' | 'contentFontSize'>) {
@@ -2048,7 +2053,7 @@ export function NotchPanel() {
 
               <AnimatePresence mode="wait">
                 {!preparingOpen && hasBlockingOverlayContent && activeOverlay && (
-                  <motion.div
+                  <IslandLayer
                     key={`alert-${activeOverlay.id}`}
                     className="notch-panel__alert-content"
                     data-overlay-type={activeOverlay.type}
@@ -2064,7 +2069,7 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {!preparingOpen && layoutPreview && (previewMode === 'expanded' || previewMode === 'completion') && (
@@ -2080,7 +2085,7 @@ export function NotchPanel() {
                 )}
 
                 {!preparingOpen && feedbackPresentationOpen && activeOverlay && (
-                  <motion.div
+                  <IslandLayer
                     key={`feedback-${activeOverlay.id}`}
                     className="notch-panel__feedback-content"
                     initial={{ opacity: 0 }}
@@ -2097,12 +2102,12 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {/* Base layer: session list */}
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'hover' && (
-                  <motion.div
+                  <IslandLayer
                     ref={setHoverContentNode}
                     key="hover"
                     className="notch-panel__hover-content"
@@ -2123,12 +2128,12 @@ export function NotchPanel() {
                       }}
                       focusFilteredEmpty={focusFilteredEmpty}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
 
                 {/* Base layer: detail view */}
                 {!preparingOpen && !layoutPreview && !hasBlockingOverlayContent && !feedbackPresentationOpen && panelState === 'expanded' && (
-                  <motion.div
+                  <IslandLayer
                     key="expanded"
                     className="notch-panel__detail-content"
                     initial={{ opacity: 0 }}
@@ -2148,7 +2153,7 @@ export function NotchPanel() {
                       useSessionStore.getState().setActiveSession(null)
                       setPanelState('hover')
                     }} />
-                  </motion.div>
+                  </IslandLayer>
                 )}
               </AnimatePresence>
 
@@ -2168,7 +2173,7 @@ export function NotchPanel() {
               {/* Overlay layer — renders on top of base layer */}
               <AnimatePresence>
                 {!preparingOpen && !layoutPreview && activeOverlay && isNonBlockingOverlay(activeOverlay) && effectivePanelState !== 'collapsed' && !feedbackPresentationOpen && (
-                  <motion.div
+                  <IslandLayer
                     key={`overlay-${activeOverlay.id}`}
                     className="notch-panel__overlay"
                     initial={{ opacity: 0 }}
@@ -2183,7 +2188,7 @@ export function NotchPanel() {
                       onDraftStateChange={setHasInputDraft}
                       sessionCount={displayedSessions.length}
                     />
-                  </motion.div>
+                  </IslandLayer>
                 )}
               </AnimatePresence>
             </>

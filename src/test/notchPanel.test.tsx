@@ -466,6 +466,19 @@ describe('NotchPanel island shell', () => {
     expect(nativeHeight).toBe(detailResize.height)
   })
 
+  it('removes a closing session list from the accessibility tree during its exit animation', () => {
+    mountIsland()
+    const list = screen.getByTestId('notch-hover-content')
+    expect(list).not.toHaveAttribute('inert')
+    expect(list).not.toHaveAttribute('aria-hidden')
+
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+
+    expect(list).toBeInTheDocument()
+    expect(list).toHaveAttribute('inert')
+    expect(list).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('keeps the Windows viewport steady when opening and resolving a permission', async () => {
     const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
     try {
