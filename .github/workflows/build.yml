@@ -139,7 +139,25 @@ jobs:
           workspaces: src-tauri
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
+        shell: pwsh
+        run: |
+          $version = '2.12.6'
+          $asset = 'cargo-tauri-x86_64-pc-windows-msvc.zip'
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $cliDir = Join-Path $env:RUNNER_TEMP 'agentbro-tauri-cli'
+          Invoke-WebRequest -Uri "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v$version/$asset" -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 2
+          $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($digest -ne '39636fa68bc00f13dd610fb57688f292e93742978cc35395f2f1be7c540b88a1') {
+            throw "Tauri CLI $version archive did not match the pinned SHA-256"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $cliDir
+          $env:PATH = "$cliDir;$env:PATH"
+          $reported = cargo tauri --version
+          if ($LASTEXITCODE -ne 0 -or $reported -ne "tauri-cli $version") {
+            throw "Could not start Tauri CLI $version through Cargo: $reported"
+          }
+          Write-Output $reported
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $cliDir -Encoding utf8
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
