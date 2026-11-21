@@ -187,11 +187,11 @@ jobs:
           & $testExecutable --exact agents::programs::tests::windows_qwenwork_candidates_include_the_packaged_launcher
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $qwenworkTest = 'hooks::qwenwork_watcher::tests::mirrors_qwenwork_turn_phases_without_owning_approvals'
-          if (-not (& $testExecutable --list $qwenworkTest --exact | Select-String -SimpleMatch "${qwenworkTest}: test" -Quiet)) {
-            throw 'The QwenWork watcher test was not compiled for Windows'
+          $qwenworkTests = 'hooks::qwenwork_watcher::tests'
+          if (-not (& $testExecutable --list $qwenworkTests | Select-String -SimpleMatch "${qwenworkTests}::" -Quiet)) {
+            throw 'The QwenWork watcher tests were not compiled for Windows'
           }
-          & $testExecutable --exact $qwenworkTest
+          & $testExecutable $qwenworkTests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & $testExecutable --exact agents::programs::tests::windows_workbuddy_launchers_match_the_two_installer_editions
