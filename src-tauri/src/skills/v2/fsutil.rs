@@ -163,7 +163,7 @@ pub fn open_path(target: &str) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| format!("open: {}", e))
 }
 
-/// Reveal a path in Finder without resolving symlinks to their destination.
+/// Reveal a path in the file manager without resolving symlinks to their destination.
 pub fn reveal_path(target: &str) -> Result<(), String> {
     let target = expand_tilde(target);
     #[cfg(target_os = "macos")]
@@ -177,7 +177,7 @@ pub fn reveal_path(target: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        reveal_path_windows(&target)
+        windows_shell::reveal(&target)
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
@@ -199,28 +199,160 @@ fn open_path_windows(target: &str) -> Result<(), String> {
             .map_err(|e| format!("open: {}", e));
     }
 
-    let path = expand_tilde(target);
-    std::process::Command::new("explorer.exe")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("open: {}", e))
+    windows_shell::open(&expand_tilde(target))
 }
 
 #[cfg(target_os = "windows")]
-fn reveal_path_windows(target: &Path) -> Result<(), String> {
-    let target = normalized_path(target);
-    let explorer_arg = if target.is_file() {
-        format!("/select,{}", target.display())
-    } else {
-        target.display().to_string()
+mod windows_shell {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Path, PathBuf, Prefix};
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+        COINIT_DISABLE_OLE1DDE,
     };
+    use windows_sys::Win32::UI::Shell::{
+        Common::ITEMIDLIST, SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteExW,
+        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    std::process::Command::new("explorer.exe")
-        .arg(explorer_arg)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("reveal: {}", e))
+    pub(super) fn open(path: &Path) -> Result<(), String> {
+        let target =
+            prepare_path(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+        let _apartment = ShellApartment::initialize()?;
+        let mut execute = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+            lpFile: target.as_ptr(),
+            nShow: SW_SHOWNORMAL,
+            ..Default::default()
+        };
+        if unsafe { ShellExecuteExW(&mut execute) } == 0 {
+            return Err(format!(
+                "open {}: {}",
+                path.display(),
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn reveal(path: &Path) -> Result<(), String> {
+        let target =
+            prepare_path(path).map_err(|error| format!("reveal {}: {error}", path.display()))?;
+        let _apartment = ShellApartment::initialize()?;
+        let mut item = ShellItem(null_mut());
+        let parsed =
+            unsafe { SHParseDisplayName(target.as_ptr(), null_mut(), &mut item.0, 0, null_mut()) };
+        if parsed < 0 {
+            return Err(format!(
+                "locate {}: {}",
+                path.display(),
+                io::Error::from_raw_os_error(parsed)
+            ));
+        }
+        if item.0.is_null() {
+            return Err(format!("Windows could not locate {}", path.display()));
+        }
+        let shown = unsafe { SHOpenFolderAndSelectItems(item.0, 0, null(), 0) };
+        if shown < 0 {
+            return Err(format!(
+                "reveal {}: {}",
+                path.display(),
+                io::Error::from_raw_os_error(shown)
+            ));
+        }
+        Ok(())
+    }
+
+    struct ShellApartment;
+
+    impl ShellApartment {
+        fn initialize() -> Result<Self, String> {
+            let flags = (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32;
+            let result = unsafe { CoInitializeEx(null(), flags) };
+            if result < 0 {
+                return Err(format!(
+                    "initialize Windows Shell: {}",
+                    io::Error::from_raw_os_error(result)
+                ));
+            }
+            Ok(Self)
+        }
+    }
+
+    impl Drop for ShellApartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    struct ShellItem(*mut ITEMIDLIST);
+
+    impl Drop for ShellItem {
+        fn drop(&mut self) {
+            unsafe { CoTaskMemFree(self.0.cast()) };
+        }
+    }
+
+    fn prepare_path(path: &Path) -> io::Result<Vec<u16>> {
+        let path = std::path::absolute(path)?;
+        std::fs::symlink_metadata(&path)?;
+        let ordinary = ordinary_path(&path).filter(|candidate| {
+            candidate
+                .canonicalize()
+                .is_ok_and(|target| path.canonicalize().is_ok_and(|original| target == original))
+        });
+        let shell_path = ordinary.as_deref().unwrap_or(&path);
+        Ok(shell_path.as_os_str().encode_wide().chain([0]).collect())
+    }
+
+    fn ordinary_path(path: &Path) -> Option<PathBuf> {
+        let mut components = path.components();
+        let Component::Prefix(prefix) = components.next()? else {
+            return None;
+        };
+        let mut base = match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut base = std::ffi::OsString::from(r"\\");
+                base.push(server);
+                base.push(r"\");
+                base.push(share);
+                PathBuf::from(base)
+            }
+            _ => return None,
+        };
+        base.push(components.as_path());
+        Some(base)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn shell_paths_preserve_drive_and_unc_locations() {
+            assert_eq!(
+                ordinary_path(Path::new(r"\\?\C:\Users\Some User\项目, fixture")),
+                Some(PathBuf::from(r"C:\Users\Some User\项目, fixture"))
+            );
+            assert_eq!(
+                ordinary_path(Path::new(r"\\?\UNC\server\share\文件")),
+                Some(PathBuf::from(r"\\server\share\文件"))
+            );
+            assert!(ordinary_path(Path::new(r"\\?\Volume{example}\stay")).is_none());
+        }
+
+        #[test]
+        fn shell_path_returns_an_error_for_a_missing_target() {
+            let path = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+            let error = prepare_path(&path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

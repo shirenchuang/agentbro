@@ -1492,6 +1492,8 @@
     "frontmatter": "Frontmatter",
     "frontmatterAdditional": "{{count}} additional fields",
     "packAutoSyncTitle": "Skill pack sync",
+    "revealSqlite": "Show SQLite in the file manager",
+    "sqliteRevealed": "SQLite file shown in the file manager",
     "packAutoSyncLabel": "Automatically sync skill pack updates to applied Agents",
     "packAutoSyncHelp": "When disabled, pack pages show unsynced changes and provide a manual sync button.",
     "packSyncFailedNotice": "{{count}} Agent(s) failed to sync. Check the status and retry.",

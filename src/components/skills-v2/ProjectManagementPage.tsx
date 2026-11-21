@@ -8,6 +8,10 @@ import { ProjectSkillLockPanel } from './ProjectSkillLockPanel'
 
 type ProjectTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'instructions' | 'config'
 
+function showProjectPathError(error: unknown) {
+  useSkillStoreV2.getState().setError(String(error))
+}
+
 export function ProjectManagementPage() {
   const state = useSkillStoreV2()
   const [rootPath, setRootPath] = useState('')
@@ -205,7 +209,7 @@ function ProjectDetailView({
           ))}
         </div>
         <div className="sm2__btn-row sm2__project-actions">
-          <button className="sm2__btn" disabled={busy} onClick={() => skillApiV2.openPath(detail.rootPath)}>打开</button>
+          <button className="sm2__btn" disabled={busy} onClick={() => void skillApiV2.openPath(detail.rootPath).catch(showProjectPathError)}>打开</button>
           <button className="sm2__btn" disabled={busy} onClick={onScan}>{busy ? '扫描中…' : '重新扫描'}</button>
           <button
             className="sm2__btn sm2__btn--danger-ghost"
@@ -455,7 +459,7 @@ function ProjectSkills({ agents }: { agents: ProjectAgentDetail[] }) {
             {skill.description && <p>{skill.description}</p>}
             <code>{skill.path}</code>
             <div className="sm2__btn-row">
-              <button className="sm2__btn" onClick={() => skillApiV2.revealPath(skill.path)}>定位</button>
+              <button className="sm2__btn" onClick={() => void skillApiV2.revealPath(skill.path).catch(showProjectPathError)}>定位</button>
               <button className="sm2__btn sm2__btn--primary" disabled={importing === importKey} onClick={() => importSkill(agent, skill)}>
                 {importing === importKey ? '导入中…' : skill.status === 'centerDiff' ? '更新中心库' : '导入中心库'}
               </button>
@@ -520,7 +524,7 @@ function ProjectInstructions({ detail, agentFilter }: { detail: ProjectDetail; a
             <span>{file.bytes ? `${Math.round(file.bytes / 1024)} KB` : '已检测'}</span>
             <code>{file.path}</code>
           </div>
-          <button className="sm2__btn" onClick={() => skillApiV2.openPath(file.path)}>打开</button>
+          <button className="sm2__btn" onClick={() => void skillApiV2.openPath(file.path).catch(showProjectPathError)}>打开</button>
         </div>
       ))}
     </div>
@@ -545,7 +549,7 @@ function ProjectConfig({ agents }: { agents: ProjectAgentDetail[] }) {
             <span>{agent.displayName}</span>
             <code>{path}</code>
           </div>
-          <button className="sm2__btn" onClick={() => skillApiV2.revealPath(path)}>定位</button>
+            <button className="sm2__btn" onClick={() => void skillApiV2.revealPath(path).catch(showProjectPathError)}>定位</button>
         </div>
       ))}
     </div>

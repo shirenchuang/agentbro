@@ -123,6 +123,15 @@ describe('ProjectManagementPage', () => {
     vi.spyOn(skillApiV2, 'getProjectDetail').mockResolvedValue(project)
   })
 
+  it('shows the error when the project directory cannot be opened', async () => {
+    const openPath = vi.spyOn(skillApiV2, 'openPath').mockRejectedValue(new Error('Project path no longer exists'))
+    render(<ProjectManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '打开' }))
+    expect(openPath).toHaveBeenCalledWith('/Users/me/agentbro')
+    expect(await screen.findByText(/Project path no longer exists/)).toBeInTheDocument()
+  })
+
   it('renders project resources and installs a center skill into the project', async () => {
     const install = vi.spyOn(skillApiV2, 'installCenterSkillsToProject').mockResolvedValue(makeProject())
     render(<ProjectManagementPage />)

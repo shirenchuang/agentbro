@@ -1533,6 +1533,8 @@
     "frontmatter": "元数据",
     "frontmatterAdditional": "{{count}} 个附加字段",
     "packAutoSyncTitle": "技能包同步",
+    "revealSqlite": "在文件管理器中显示 SQLite",
+    "sqliteRevealed": "已在文件管理器中定位 SQLite 文件",
     "packAutoSyncLabel": "技能包更新后自动同步到已应用的 Agent",
     "packAutoSyncHelp": "关闭后，技能包页面会显示有变更未同步，并提供手动同步按钮。",
     "packSyncFailedNotice": "{{count}} 个 Agent 同步失败，可查看状态后重试。",
