@@ -4,7 +4,6 @@ param(
     [switch]$VerifyIsland,
     [switch]$VerifyPackManifest,
     [switch]$TracePermissionUi,
-    [switch]$TracePermissionRenderer,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
     [switch]$VerifyStartupStackSampler
@@ -26,10 +25,6 @@ $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
 if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
     throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
-}
-
-if ($TracePermissionRenderer -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $TracePermissionUi)) {
-    throw 'Renderer tracing requires permission tracing on an isolated GitHub-hosted runner'
 }
 
 $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
@@ -124,21 +119,8 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
-$rendererTracePort = 0
-$browserArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-try {
-    if ($TracePermissionRenderer) {
-        $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-        $debugListener.Start()
-        $rendererTracePort = $debugListener.LocalEndpoint.Port
-        $debugListener.Stop()
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$rendererTracePort"
-    }
-    $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-} finally {
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $browserArguments
-}
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+    -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
     do {
@@ -287,10 +269,6 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         }
     }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
-    if ($rendererTracePort) {
-        $start.ArgumentList.Add('-RendererTracePort')
-        $start.ArgumentList.Add([string]$rendererTracePort)
-    }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
