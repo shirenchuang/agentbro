@@ -797,6 +797,83 @@ mod unix_tests {
     }
 
     #[test]
+    fn remote_agent_copy_reconciliation_preserves_the_destination_on_faults() {
+        const FAIL_COPY: &str = r#"
+def _agentbro_fail_copy(source, destination, *args, **kwargs):
+    pathlib.Path(destination).mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(destination) / "partial").write_text("partial")
+    raise OSError("injected copy failure")
+shutil.copytree = _agentbro_fail_copy
+"#;
+        const FAIL_ACTIVATION: &str = r#"
+_agentbro_original_replace = os.replace
+def _agentbro_fail_activation(source, destination):
+    if pathlib.Path(source).name == "staged":
+        raise OSError("injected activation failure")
+    return _agentbro_original_replace(source, destination)
+os.replace = _agentbro_fail_activation
+"#;
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-agent-sync-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let center = home.join(".agentbro/skills/demo");
+        let agent = home.join(".codex/skills/demo");
+        write_remote_skill(&center, "Demo", "center version\n");
+        write_remote_skill(&agent, "Demo", "agent version\n");
+        std::fs::write(agent.join("reference.md"), "agent notes").unwrap();
+        std::os::unix::fs::symlink("reference.md", agent.join("alias.md")).unwrap();
+
+        for (command, args) in [
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({"targetId": "codex::demo", "action": "center_over_agent"}),
+            ),
+            (
+                "execute_sync_copy_target",
+                serde_json::json!({"targetId": "codex::demo", "action": "agent_over_center"}),
+            ),
+            (
+                "execute_fix_diagnosis_issue",
+                serde_json::json!({"issueType": "copy_diverged", "entityId": "codex::demo"}),
+            ),
+        ] {
+            for (fault, message) in [
+                (FAIL_COPY, "injected copy failure"),
+                (FAIL_ACTIVATION, "injected activation failure"),
+            ] {
+                let error = run_script_error_with_prelude(&home, command, args.clone(), fault);
+                assert!(error.contains(message), "{error}");
+                assert_eq!(
+                    std::fs::read_to_string(center.join("SKILL.md")).unwrap(),
+                    "---\nname: Demo\n---\ncenter version\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(agent.join("SKILL.md")).unwrap(),
+                    "---\nname: Demo\n---\nagent version\n"
+                );
+                assert!(recovery_artifacts(center.parent().unwrap()).is_empty());
+                assert!(recovery_artifacts(agent.parent().unwrap()).is_empty());
+            }
+        }
+        let result = run_script(
+            &home,
+            "execute_sync_copy_target",
+            serde_json::json!({"targetId": "codex::demo", "action": "agent_over_center"}),
+        );
+        assert_eq!(result["state"], "ok");
+        assert_eq!(
+            std::fs::read_link(center.join("alias.md")).unwrap(),
+            Path::new("reference.md")
+        );
+        assert_eq!(
+            std::fs::read(center.join("SKILL.md")).unwrap(),
+            std::fs::read(agent.join("SKILL.md")).unwrap()
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn remote_shared_copy_replacements_restore_destinations_on_faults() {
         const FAIL_ACTIVATION: &str = r#"
 _agentbro_original_replace = os.replace

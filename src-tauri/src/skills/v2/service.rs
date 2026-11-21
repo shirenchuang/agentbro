@@ -2410,59 +2410,11 @@ impl Service {
             ));
         }
 
-        let staging = center.join(format!(".agentbro-import-{}.tmp", uuid_short()));
-        std::fs::create_dir(&staging)
-            .map_err(|error| format!("Prepare Skill import '{}': {error}", staging.display()))?;
-        let pending = staging.join("incoming");
-        let backup = staging.join("previous");
-        let mut saved_previous = false;
-        let mut activated = false;
-
-        let result = (|| {
-            self.write_center_directory(src, &pending, input)?;
-            if !fsutil::is_skill_dir(&pending) {
-                return Err(format!(
-                    "The imported Skill '{}' is missing SKILL.md.",
-                    src.display()
-                ));
-            }
-            match std::fs::rename(&dest, &backup) {
-                Ok(()) => saved_previous = true,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "Back up existing Skill '{}': {error}",
-                        dest.display()
-                    ));
-                }
-            }
-            std::fs::rename(&pending, &dest)
-                .map_err(|error| format!("Activate Skill '{}': {error}", dest.display()))?;
-            activated = true;
-            self.record_source_after_write(skill_id, &dest, src, input, source_ref)
-        })();
-
-        if let Err(error) = &result {
-            let restore = (|| {
-                if activated {
-                    std::fs::rename(&dest, &pending)?;
-                }
-                if saved_previous {
-                    std::fs::rename(&backup, &dest)?;
-                }
-                Ok::<(), std::io::Error>(())
-            })();
-            if let Err(restore_error) = restore {
-                return Err(format!(
-                    "{error} Restoration failed: {restore_error}. Import recovery files are at '{}'.",
-                    staging.display()
-                ));
-            }
-        }
-        if let Err(error) = fsutil::remove_path(&staging) {
-            log::warn!("Could not clean up Skill import staging directory: {error}");
-        }
-        result
+        fsutil::replace_skill_directory(
+            &dest,
+            |pending| self.write_center_directory(src, pending, input),
+            || self.record_source_after_write(skill_id, &dest, src, input, source_ref),
+        )
     }
 
     fn write_center_directory(
@@ -4334,64 +4286,92 @@ impl Service {
         target_id: &str,
         action: &str,
     ) -> Result<CopySyncPreview, String> {
+        let _sync_guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|_| "Could not lock the Skill library for synchronization.".to_string())?;
         let preview = self.preview_sync_copy_target(target_id)?;
         match action {
-            "center_over_agent" => {
-                let center = self.skill_row(&preview.skill_id)?;
-                let center_path_str = center
-                    .as_ref()
-                    .map(|c| c.center_path.clone())
-                    .unwrap_or_default();
-                let center_path = Path::new(&center_path_str);
+            "center_over_agent" | "agent_over_center" => {
+                let center = self
+                    .skill_row(&preview.skill_id)?
+                    .ok_or("Skill not found")?;
+                let center_path = Path::new(&center.center_path);
                 let target = Path::new(&preview.target_path);
-                fsutil::remove_path(target)?;
-                fsutil::copy_dir_recursive(center_path, target)?;
-                let now = db::now_iso();
-                let new_source = fsutil::hash_dir(center_path);
-                self.db.transaction(|tx| {
-                    tx.execute(
-                        "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
-                        params![new_source, now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2, status = 'ok', updated_at = ?3 WHERE id = ?4",
-                        params![new_source, fsutil::hash_dir(target), now, target_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok(())
-                })?;
-            }
-            "agent_over_center" => {
-                let center = self.skill_row(&preview.skill_id)?;
-                let center_path_str = center
-                    .as_ref()
-                    .map(|c| c.center_path.clone())
-                    .unwrap_or_default();
-                let center_path = Path::new(&center_path_str);
-                let target = Path::new(&preview.target_path);
-                fsutil::remove_path(center_path)?;
-                fsutil::copy_dir_recursive(target, center_path)?;
-                let now = db::now_iso();
-                let new_hash = fsutil::hash_dir(center_path);
-                self.db.transaction(|tx| {
-                    tx.execute(
-                        "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
-                        params![new_hash, now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2, status = 'ok', updated_at = ?3 WHERE id = ?4",
-                        params![new_hash, new_hash, now, target_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    tx.execute(
-                        "UPDATE skill_sources SET source_type = 'agent_override', updated_at = ?1 WHERE skill_id = ?2",
-                        params![now, preview.skill_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Ok(())
-                })?;
+                let replace_center = action == "agent_over_center";
+                let (source, destination) = if replace_center {
+                    (target, center_path)
+                } else {
+                    (center_path, target)
+                };
+                if !fsutil::is_skill_dir(source) {
+                    return Err(format!(
+                        "Source Skill '{}' is unavailable.",
+                        source.display()
+                    ));
+                }
+                if !destination.is_symlink() && fsutil::is_path_within(destination, source) {
+                    return Err(format!(
+                        "Source Skill '{}' overlaps its destination.",
+                        source.display()
+                    ));
+                }
+                let source_hash = fsutil::hash_dir_contents(source);
+                let destination_fingerprint = distribution_target_fingerprint(destination)?;
+                fsutil::replace_skill_directory(
+                    destination,
+                    |pending| {
+                        fsutil::copy_dir_recursive(source, pending)?;
+                        if fsutil::hash_dir_contents(pending) != source_hash
+                            || fsutil::hash_dir_contents(source) != source_hash
+                        {
+                            return Err(format!(
+                                "Source Skill '{}' changed during synchronization.",
+                                source.display()
+                            ));
+                        }
+                        if distribution_target_fingerprint(destination)? != destination_fingerprint
+                        {
+                            return Err(format!(
+                                "Destination Skill '{}' changed during synchronization.",
+                                destination.display()
+                            ));
+                        }
+                        Ok(())
+                    },
+                    || {
+                        let now = db::now_iso();
+                        let new_source = fsutil::hash_dir(center_path);
+                        let new_copy = fsutil::hash_dir(target);
+                        self.db.transaction(|tx| {
+                            let skills = tx.execute(
+                                "UPDATE skills SET current_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                                params![new_source, now, preview.skill_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            let targets = tx.execute(
+                                "UPDATE skill_targets SET source_hash = ?1, current_hash = ?2,
+                                 status = 'ok', updated_at = ?3 WHERE id = ?4",
+                                params![new_source, new_copy, now, target_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            if skills != 1 || targets != 1 {
+                                return Err(
+                                    "Skill or target became unavailable during synchronization.".into(),
+                                );
+                            }
+                            if replace_center {
+                                tx.execute(
+                                    "UPDATE skill_sources SET source_type = 'agent_override',
+                                     updated_at = ?1 WHERE skill_id = ?2",
+                                    params![now, preview.skill_id],
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
+                            Ok(())
+                        })
+                    },
+                )?;
             }
             "keep_diverged" | "none" => {
                 // mark status as copy_diverged, no file writes

@@ -610,10 +610,16 @@ def independent_center_skill_hash(path):
         return None
 
 
-def atomic_replace_skill_directory(source, destination, after_replace=None):
+def atomic_replace_skill_directory(source, destination, after_replace=None, preserve_symlinks=False):
     source = pathlib.Path(source)
     destination = pathlib.Path(destination)
     expected_hash = verified_skill_hash(source, "Source Skill")
+    resolved_source = source.resolve()
+    resolved_parent = destination.parent.resolve()
+    if resolved_source == resolved_parent or resolved_source in resolved_parent.parents:
+        raise ValueError("Source Skill overlaps the staging directory")
+    if preserve_symlinks and not destination.is_symlink() and paths_overlap(source, destination):
+        raise ValueError("Source Skill overlaps its destination")
     destination.parent.mkdir(parents=True, exist_ok=True)
     recovery_root = pathlib.Path(tempfile.mkdtemp(
         prefix=".shared-skill-replace-",
@@ -625,7 +631,7 @@ def atomic_replace_skill_directory(source, destination, after_replace=None):
     keep_recovery = False
     had_destination = path_present(destination)
     try:
-        shutil.copytree(source, staged, symlinks=False)
+        shutil.copytree(source, staged, symlinks=preserve_symlinks)
         if (
             verified_skill_hash(staged, "Staged Skill") != expected_hash
             or verified_skill_hash(source, "Source Skill") != expected_hash
@@ -633,15 +639,17 @@ def atomic_replace_skill_directory(source, destination, after_replace=None):
             raise ValueError("Source Skill changed while its replacement was staged")
         if had_destination:
             os.replace(str(destination), str(backup))
+        activated = False
         try:
             os.replace(str(staged), str(destination))
+            activated = True
             if verified_skill_hash(destination, "Replaced Skill") != expected_hash:
                 raise ValueError("Replaced Skill failed final verification")
             if after_replace is not None:
                 after_replace()
         except Exception as replace_error:
             rollback_errors = []
-            if path_present(destination):
+            if activated and path_present(destination):
                 try:
                     os.replace(str(destination), str(failed_replacement))
                 except Exception as error:
@@ -3076,24 +3084,15 @@ def dispatch():
             action = args.get("action", "center_over_agent")
             source = pathlib.Path(skill["centerPath"])
             destination = pathlib.Path(target["targetPath"])
-            if action == "agent_over_center":
-                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+            if action in ("agent_over_center", "center_over_agent"):
+                shared = target["agentId"] == SHARED_SKILLS_AGENT_ID
+                if shared:
                     destination = prepare_shared_target_write(
-                        destination,
-                        source,
-                        replace_center=True,
+                        destination, source, replace_center=(action == "agent_over_center"),
                     )
-                    atomic_replace_skill_directory(destination, source)
-                else:
-                    remove_path(source)
-                    shutil.copytree(destination, source, symlinks=True)
-            elif action == "center_over_agent":
-                if target["agentId"] == SHARED_SKILLS_AGENT_ID:
-                    destination = prepare_shared_target_write(destination, source)
-                    atomic_replace_skill_directory(source, destination)
-                else:
-                    remove_path(destination)
-                    shutil.copytree(source, destination, symlinks=True)
+                if action == "agent_over_center":
+                    source, destination = destination, source
+                atomic_replace_skill_directory(source, destination, preserve_symlinks=not shared)
             skills, _, _, targets = inventory()
             target = targets[target_id]
             skill = skills[target["skillId"]]
@@ -3480,12 +3479,10 @@ def dispatch():
                 raise ValueError("Target not found")
             source = pathlib.Path(skills[target["skillId"]]["centerPath"])
             destination = pathlib.Path(target["targetPath"])
-            if target["agentId"] == SHARED_SKILLS_AGENT_ID:
+            shared = target["agentId"] == SHARED_SKILLS_AGENT_ID
+            if shared:
                 destination = prepare_shared_target_write(destination, source)
-                atomic_replace_skill_directory(source, destination)
-            else:
-                remove_path(destination)
-                shutil.copytree(source, destination, symlinks=True)
+            atomic_replace_skill_directory(source, destination, preserve_symlinks=not shared)
         return None
     if command == "execute_safe_fixes":
         return 0
