@@ -737,6 +737,7 @@
     "dismiss": "关闭"
   },
   "skills": {
+    "projectsTab": "项目",
     "projectLock": {
       "selectAll": "选择全部可恢复项",
       "restoring": "正在恢复…",

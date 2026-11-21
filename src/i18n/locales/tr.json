@@ -591,6 +591,7 @@
     "dismiss": "Kapat"
   },
   "skills": {
+    "projectsTab": "Projeler",
     "projectLock": {
       "selectAll": "Geri yüklenebilenlerin tümünü seç",
       "restoring": "Geri yükleniyor…",

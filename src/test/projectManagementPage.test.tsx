@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { ProjectManagementPage } from '../components/skills-v2/ProjectManagementPage'
+import { SkillManagerShell } from '../components/skills-v2/SkillManagerShell'
+import { SettingsSidebar } from '../components/settings/SettingsSidebar'
 import { skillApiV2 } from '../services/skillApiV2'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import i18n from '../i18n'
@@ -145,6 +147,7 @@ describe('ProjectManagementPage', () => {
 
   it('previews a project lock and restores only checked Skills with per-Skill feedback', async () => {
     await i18n.changeLanguage('en')
+    useSkillStoreV2.setState({ activeTab: 'library' })
     const project = makeProject()
     const skillLock = {
       version: 2,
@@ -173,7 +176,22 @@ describe('ProjectManagementPage', () => {
       { name: 'missing-skill', error: null },
       { name: 'mismatch', error: 'Downloaded Skill content does not match the lock file' },
     ])
-    render(<ProjectManagementPage />)
+    render(
+      <>
+        <SettingsSidebar
+          activeSection="skill-manager-v2"
+          activeIslandView="overview"
+          activeMonitorView="overview"
+          collapsed={false}
+          onCollapsedChange={() => {}}
+          onSelect={() => {}}
+          onIslandViewChange={() => {}}
+          onMonitorViewChange={() => {}}
+        />
+        <SkillManagerShell />
+      </>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
 
     expect(await screen.findByText('example/skills · locked-commit')).toBeInTheDocument()
     expect(screen.getByText('Unsupported source or version')).toBeInTheDocument()

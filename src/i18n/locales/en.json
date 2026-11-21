@@ -696,6 +696,7 @@
     "dismiss": "Dismiss"
   },
   "skills": {
+    "projectsTab": "Projects",
     "projectLock": {
       "selectAll": "Select all restorable",
       "restoring": "Restoring…",

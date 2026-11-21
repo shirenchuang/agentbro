@@ -697,6 +697,7 @@
     "dismiss": "閉じる"
   },
   "skills": {
+    "projectsTab": "プロジェクト",
     "projectLock": {
       "selectAll": "復元可能な項目をすべて選択",
       "restoring": "復元中…",

@@ -697,6 +697,7 @@
     "dismiss": "닫기"
   },
   "skills": {
+    "projectsTab": "프로젝트",
     "projectLock": {
       "selectAll": "복원 가능한 항목 모두 선택",
       "restoring": "복원 중…",

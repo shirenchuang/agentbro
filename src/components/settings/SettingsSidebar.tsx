@@ -318,6 +318,7 @@ export function SettingsSidebar({
       { id: 'install', label: '安装 Skill', icon: '⬇', iconBg: '#FF9500' },
       { id: 'packs', label: '技能包', icon: '📦', iconBg: '#5856D6' },
       { id: 'agents', label: 'Agent 管理', icon: '🤖', iconBg: '#007AFF' },
+      { id: 'projects', label: t('skills.projectsTab'), icon: '📁', iconBg: '#009C95' },
       { id: 'diagnostics', label: '诊断与修复', icon: '🩺', iconBg: '#FF9500' },
       { id: 'settings', label: '设置', icon: '⚙', iconBg: '#8E8E93' },
     ]

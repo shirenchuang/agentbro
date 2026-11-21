@@ -78,9 +78,10 @@ export function ProjectManagementPage() {
       <div className="sm2__project-layout">
         <aside className="sm2__project-sidebar settings-scroll">
           <div className="sm2__project-import">
-            <label>导入项目</label>
+            <label htmlFor="skill-project-root">导入项目</label>
             <div className="sm2__project-import-row">
               <input
+                id="skill-project-root"
                 className="sm2__search sm2__search--full"
                 value={rootPath}
                 onChange={(event) => setRootPath(event.target.value)}
