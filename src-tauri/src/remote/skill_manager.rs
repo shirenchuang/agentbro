@@ -504,6 +504,71 @@ os.replace = _agentbro_fail_link_activation
     }
 
     #[test]
+    fn remote_skill_pack_create_assigns_independent_ids_and_preserves_the_definition() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let center = home.path().join(".agentbro/skills");
+        for skill in ["review", "release"] {
+            write_remote_skill(&center.join(skill), skill, "Skill instructions\n");
+        }
+        let definition = serde_json::json!({
+            "id": "",
+            "name": "团队审阅",
+            "description": "Review and release",
+            "tags": ["team", "review"],
+            "skillIds": ["review", "release"],
+        });
+        let create = || {
+            run_script(
+                home.path(),
+                "execute_upsert_skill_pack",
+                serde_json::json!({"pack": definition, "deferSync": true}),
+            )
+        };
+        let first = create();
+        let second = create();
+        assert!(first["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("pack-")));
+        assert_ne!(first["id"], second["id"]);
+        for field in ["name", "description", "tags"] {
+            assert_eq!(first[field], definition[field]);
+            assert_eq!(second[field], definition[field]);
+        }
+        assert_eq!(first["appliedAgents"], serde_json::json!([]));
+        assert_eq!(first["members"], second["members"]);
+        assert_eq!(first["members"][0]["skillId"], "review");
+        assert_eq!(first["members"][1]["skillId"], "release");
+        assert_eq!(first["members"][0]["missing"], false);
+        assert_eq!(first["members"][1]["missing"], false);
+
+        let mut edited = definition;
+        edited["id"] = first["id"].clone();
+        edited["name"] = serde_json::json!("Review only");
+        let saved = run_script(
+            home.path(),
+            "execute_upsert_skill_pack",
+            serde_json::json!({"pack": edited}),
+        );
+        assert_eq!(saved["id"], first["id"]);
+        assert_eq!(saved["name"], "Review only");
+        let unchanged = run_script(
+            home.path(),
+            "get_skill_pack_detail",
+            serde_json::json!({"packId": second["id"]}),
+        );
+        assert_eq!(unchanged, second);
+
+        edited["id"] = serde_json::json!("bad/id");
+        let error = run_script_error(
+            home.path(),
+            "execute_upsert_skill_pack",
+            serde_json::json!({"pack": edited}),
+        );
+        assert!(error.contains("Invalid identifier"));
+    }
+
+    #[test]
     fn remote_direct_pack_move_and_revoke_keep_unrelated_targets_and_claims() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-direct-pack-move-{}",

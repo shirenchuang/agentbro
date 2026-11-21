@@ -15,6 +15,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from itertools import count
 from os import readlink
@@ -1921,7 +1922,7 @@ def execute_add(input_value, decisions):
 
 
 def upsert_pack(pack):
-    pack_id = safe_id(pack["id"])
+    pack_id = "pack-" + uuid.uuid4().hex if pack["id"] == "" else safe_id(pack["id"])
     if pack_id == "default":
         raise ValueError("The default Skill Pack cannot be edited")
     existing = STATE["packs"].get(pack_id, {})
