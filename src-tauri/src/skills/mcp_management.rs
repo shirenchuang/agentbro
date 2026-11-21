@@ -1945,7 +1945,6 @@ enum InspectionSession {
         stdin: tokio::process::ChildStdin,
         lines: tokio::io::Lines<BufReader<ChildStdout>>,
         child: Child,
-        stderr_task: Option<tokio::task::JoinHandle<String>>,
         process_group: ProcessGroupCleanup,
         next_id: i64,
     },
@@ -2722,7 +2721,7 @@ async fn open_stdio_inspection_session(
         .args(&draft.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
     if let Some(path) = crate::agents::executable::augmented_path_env() {
         process.env("PATH", path);
@@ -2750,18 +2749,10 @@ async fn open_stdio_inspection_session(
         category: "startup_failed",
         message: "MCP process stdout is unavailable".to_string(),
     })?;
-    let stderr_task = child.stderr.take().map(|stderr| {
-        tokio::spawn(async move {
-            let mut output = Vec::new();
-            let _ = stderr.take(8192).read_to_end(&mut output).await;
-            String::from_utf8_lossy(&output).to_string()
-        })
-    });
     Ok(InspectionSession::Stdio {
         stdin,
         lines: BufReader::new(stdout).lines(),
         child,
-        stderr_task,
         process_group,
         next_id: 1,
     })
@@ -2929,16 +2920,12 @@ impl InspectionSession {
             InspectionSession::Stdio {
                 stdin,
                 mut child,
-                stderr_task,
                 mut process_group,
                 ..
             } => {
                 drop(stdin);
                 terminate_child(&mut child).await;
                 process_group.disarm();
-                if let Some(task) = stderr_task {
-                    let _ = tokio::time::timeout(Duration::from_millis(250), task).await;
-                }
                 Ok(())
             }
             InspectionSession::Streamable {
@@ -3451,77 +3438,87 @@ async fn test_stdio_connection(draft: &McpServerDraft) -> Result<HandshakeInfo, 
         category: "startup_failed",
         message: "MCP process stdout is unavailable".to_string(),
     })?;
-    let stderr_task = child.stderr.take().map(|stderr| {
-        tokio::spawn(async move {
-            let mut output = Vec::new();
-            let _ = stderr.take(8192).read_to_end(&mut output).await;
-            String::from_utf8_lossy(&output).to_string()
-        })
-    });
+    let child_stderr = child.stderr.take();
     let mut lines = BufReader::new(stdout).lines();
-    let result = async {
-        let mut initialize = None;
-        let mut last_error = None;
-        for protocol_version in std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS)
-        {
-            write_stdio_message(&mut stdin, &initialize_request(1, protocol_version)).await?;
-            match read_stdio_response(&mut lines, 1).await {
-                Ok(response) => {
-                    initialize = Some(response);
-                    break;
+    let exchange = async {
+        let result = async {
+            let mut initialize = None;
+            let mut last_error = None;
+            for protocol_version in
+                std::iter::once(MCP_PROTOCOL_VERSION).chain(MCP_PROTOCOL_FALLBACKS)
+            {
+                write_stdio_message(&mut stdin, &initialize_request(1, protocol_version)).await?;
+                match read_stdio_response(&mut lines, 1).await {
+                    Ok(response) => {
+                        initialize = Some(response);
+                        break;
+                    }
+                    Err(error) if error.category == "protocol_incompatible" => {
+                        last_error = Some(error);
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) if error.category == "protocol_incompatible" => {
-                    last_error = Some(error);
-                }
-                Err(error) => return Err(error),
             }
-        }
-        let initialize = initialize.ok_or_else(|| {
-            last_error.unwrap_or(TestFailure {
-                category: "protocol_incompatible",
-                message: "MCP server rejected all supported protocol versions".to_string(),
-            })
-        })?;
-        let info = handshake_info(&initialize)?;
-        write_stdio_message(
-            &mut stdin,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }),
-        )
-        .await?;
-        let tools = initialize.pointer("/result/capabilities/tools").is_some();
-        let tool_count = if tools {
+            let initialize = initialize.ok_or_else(|| {
+                last_error.unwrap_or(TestFailure {
+                    category: "protocol_incompatible",
+                    message: "MCP server rejected all supported protocol versions".to_string(),
+                })
+            })?;
+            let info = handshake_info(&initialize)?;
             write_stdio_message(
                 &mut stdin,
                 &serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/list",
-                    "params": {}
+                    "method": "notifications/initialized"
                 }),
             )
             .await?;
-            let response = read_stdio_response(&mut lines, 2).await?;
-            Some(tool_count_from_response(&response)?)
-        } else {
-            None
-        };
-        Ok(HandshakeInfo { tool_count, ..info })
-    }
-    .await;
-    drop(stdin);
-    terminate_child(&mut child).await;
-    let stderr = if let Some(task) = stderr_task {
-        tokio::time::timeout(Duration::from_millis(250), task)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default()
-    } else {
-        String::new()
+            let tools = initialize.pointer("/result/capabilities/tools").is_some();
+            let tool_count = if tools {
+                write_stdio_message(
+                    &mut stdin,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {}
+                    }),
+                )
+                .await?;
+                let response = read_stdio_response(&mut lines, 2).await?;
+                Some(tool_count_from_response(&response)?)
+            } else {
+                None
+            };
+            Ok(HandshakeInfo { tool_count, ..info })
+        }
+        .await;
+        drop(stdin);
+        terminate_child(&mut child).await;
+        result
     };
+    let mut stderr_output = Vec::new();
+    let result = {
+        let drain = async {
+            if let Some(mut stderr) = child_stderr {
+                let _ = (&mut stderr)
+                    .take(8192)
+                    .read_to_end(&mut stderr_output)
+                    .await;
+                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+            }
+        };
+        tokio::pin!(exchange, drain);
+        tokio::select! {
+            result = &mut exchange => {
+                let _ = tokio::time::timeout(Duration::from_millis(250), &mut drain).await;
+                result
+            }
+            _ = &mut drain => exchange.await,
+        }
+    };
+    let stderr = String::from_utf8_lossy(&stderr_output);
     result.map_err(|mut error: TestFailure| {
         if !stderr.trim().is_empty() && error.message.len() < 1200 {
             error.message = format!("{} · {}", error.message, stderr.trim());
@@ -4361,6 +4358,44 @@ done"#
         assert_eq!(result.tool_count, Some(2));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mcp_keeps_serving_after_verbose_stderr() {
+        let mut draft = stdio_draft("verbose", "python3");
+        draft.args = vec![
+            "-c".to_string(),
+            r#"import json
+import sys
+
+request = json.loads(sys.stdin.readline())
+sys.stderr.write("startup marker\n" + "fixture log\n" * 100000 + "final marker\n")
+sys.stderr.flush()
+if sys.argv[1] == "fail":
+    sys.exit(1)
+print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {
+    "protocolVersion": request["params"]["protocolVersion"],
+    "serverInfo": {"name": "verbose"},
+    "capabilities": {},
+}}), flush=True)
+sys.stdin.readline()
+"#
+            .to_string(),
+            "respond".to_string(),
+        ];
+
+        let connection = test_stdio_connection(&draft).await.unwrap();
+        assert_eq!(connection.server_name.as_deref(), Some("verbose"));
+        let report = perform_mcp_inspection("verbose", &draft, Vec::new()).await;
+        assert_eq!(report.status, "connected", "{:?}", report.warnings);
+        assert_eq!(report.server_name.as_deref(), Some("verbose"));
+
+        *draft.args.last_mut().unwrap() = "fail".to_string();
+        let error = test_stdio_connection(&draft).await.unwrap_err();
+        assert!(error.message.contains("startup marker"));
+        assert!(!error.message.contains("final marker"));
+        assert!(error.message.len() < 8 * 1024 + 200);
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn windows_stdio_mcp_checks_run_without_a_console() {
@@ -4380,6 +4415,8 @@ $name = if ([AgentBroTest.ConsoleProbe]::GetConsoleWindow() -eq [IntPtr]::Zero) 
     'has-console'
 }
 $request = [Console]::ReadLine() | ConvertFrom-Json
+[Console]::Error.WriteLine('fixture log' * 32768)
+[Console]::Error.Flush()
 $response = @{
     jsonrpc = '2.0'
     id = $request.id
