@@ -23,7 +23,7 @@ export function ProjectManagementPage() {
   const [adding, setAdding] = useState(false)
 
   useEffect(() => {
-    state.loadOverview()
+    if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
     state.loadProjects(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

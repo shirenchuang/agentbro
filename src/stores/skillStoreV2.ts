@@ -139,6 +139,8 @@ let latestAgentDetailRequest = 0
 let latestProjectListRequest = 0
 let latestProjectDetailRequest = 0
 let projectSelectionRevision = 0
+let skillRuntimeGeneration = 0
+let pendingInitialization: { generation: number; task: Promise<void> } | null = null
 
 function isProjectRuntime(id: string) {
   return useSkillStoreV2.getState().runtimeEnvironmentId === id
@@ -205,7 +207,11 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   customAgentDialogRequest: 0,
 
   switchRuntimeEnvironment: async (id) => {
-    if (get().runtimeEnvironmentId === id) return
+    if (get().runtimeEnvironmentId === id) {
+      await get().init()
+      return
+    }
+    skillRuntimeGeneration += 1
     latestAgentDetailRequest += 1
     latestProjectListRequest += 1
     latestProjectDetailRequest += 1
@@ -241,6 +247,12 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   },
 
   init: async () => {
+    const runtimeEnvironmentId = get().runtimeEnvironmentId
+    const generation = skillRuntimeGeneration
+    const isCurrent = () => generation === skillRuntimeGeneration
+      && get().runtimeEnvironmentId === runtimeEnvironmentId
+      && useRuntimeEnvironmentStore.getState().selectedEnvironmentId === runtimeEnvironmentId
+    if (!isCurrent()) return
     // Page entry should be cheap: bootstrap only ensures DB/dirs are usable,
     // then reads cached SQLite state. Startup scanning runs in the background
     // so opening the library is not blocked by walking every Agent skill dir.
@@ -248,41 +260,50 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       if (!get().overview) await get().loadOverview(true)
       return
     }
-    const runtimeEnvironmentId = get().runtimeEnvironmentId
-    set({ loading: true, error: null })
-    try {
-      await skillApiV2.bootstrap()
-      await get().loadOverview(true)
-      await get().loadProjects(true)
-      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
-      set({ initialized: true })
+    if (pendingInitialization?.generation === generation) return pendingInitialization.task
+    const task = Promise.resolve().then(async () => {
+      if (!isCurrent()) return
+      set({ loading: true, error: null })
+      try {
+        await skillApiV2.bootstrap()
+        if (!isCurrent()) return
+        await get().loadOverview(true)
+        if (!isCurrent()) return
+        await get().loadProjects(true)
+        const settings = get().settings
+        if (!isCurrent() || !settings) return
+        set({ initialized: true })
 
-      if (get().settings?.startupScan && !get().startupScanInFlight) {
-        set({ startupScanInFlight: true, busyAction: get().busyAction ?? 'startupScan' })
-        void (async () => {
-          try {
-            await skillApiV2.init()
-            await get().loadOverview(true)
-          } catch (e) {
-            if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
-              set({ error: String(e) })
+        if (settings.startupScan && !get().startupScanInFlight) {
+          set({ startupScanInFlight: true, busyAction: get().busyAction ?? 'startupScan' })
+          void (async () => {
+            try {
+              await skillApiV2.init()
+              if (isCurrent()) await get().loadOverview(true)
+            } catch (e) {
+              if (isCurrent()) set({ error: String(e) })
+            } finally {
+              if (isCurrent()) {
+                set((s) => ({
+                  startupScanInFlight: false,
+                  busyAction: s.busyAction === 'startupScan' ? null : s.busyAction,
+                }))
+              }
             }
-          } finally {
-            if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
-              set((s) => ({
-                startupScanInFlight: false,
-                busyAction: s.busyAction === 'startupScan' ? null : s.busyAction,
-              }))
-            }
-          }
-        })()
+          })()
+        }
+      } catch (e) {
+        if (isCurrent()) set({ error: String(e) })
+      } finally {
+        if (isCurrent()) set({ loading: false })
       }
-    } catch (e) {
-      set({ error: String(e) })
+    })
+    const initialization = { generation, task }
+    pendingInitialization = initialization
+    try {
+      await task
     } finally {
-      if (get().runtimeEnvironmentId === runtimeEnvironmentId) {
-        set({ loading: false })
-      }
+      if (pendingInitialization === initialization) pendingInitialization = null
     }
   },
   refresh: async () => {
@@ -339,7 +360,6 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         unmanaged,
         settings: overview.settings,
         lastOverviewLoadedAt: Date.now(),
-        initialized: true,
       })
       void get().loadProjects()
     } catch (e) {
@@ -438,7 +458,6 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       unmanaged: snapshot.unmanaged,
       settings: overview.settings,
       lastOverviewLoadedAt: Date.now(),
-      initialized: true,
     })
     return true
   },

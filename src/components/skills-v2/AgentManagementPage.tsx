@@ -178,7 +178,7 @@ export function AgentManagementPage() {
   }, [state, t])
 
   useEffect(() => {
-    state.loadOverview()
+    if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
     loadPrograms()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -788,7 +788,6 @@ export function AgentManagementPage() {
               unmanaged,
               settings: overview.settings,
               lastOverviewLoadedAt: Date.now(),
-              initialized: true,
               error: null,
             })
             setAdopt(null)

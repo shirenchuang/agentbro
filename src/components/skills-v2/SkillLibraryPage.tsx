@@ -92,11 +92,6 @@ export function SkillLibraryPage() {
   ], [filterablePacks])
 
   useEffect(() => {
-    state.init()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
     if (filterablePacks.length === 0) {
       setPackMembersById({})
