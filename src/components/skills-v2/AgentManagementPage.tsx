@@ -1633,7 +1633,7 @@ function SkillsTab({
   const [managedDeleteReview, setManagedDeleteReview] = useState<AgentSkillReview<AgentDetail['skills'][number]> | null>(null)
   const [unmanagedBatchDeleteReview, setUnmanagedBatchDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [batchAdoptReview, setBatchAdoptReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
-  const [quickTakeoverItems, setQuickTakeoverItems] = useState<UnmanagedItemDto[] | null>(null)
+  const [quickTakeoverReview, setQuickTakeoverReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
   const [unmanagedSingleDeleteReview, setUnmanagedSingleDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
@@ -1725,7 +1725,7 @@ function SkillsTab({
     setManagedDeleteReview(null)
     setUnmanagedBatchDeleteReview(null)
     setBatchAdoptReview(null)
-    setQuickTakeoverItems(null)
+    setQuickTakeoverReview(null)
     setMoveToPackTarget(null)
     setUnmanagedSingleDeleteReview(null)
     setDeleteUnmanagedError(null)
@@ -1945,8 +1945,10 @@ function SkillsTab({
     }
   }
 
-  const takeoverExistingCenterSkills = async (items: UnmanagedItemDto[]) => {
-    if (items.length === 0) return
+  const takeoverExistingCenterSkills = async (review: AgentSkillReview<UnmanagedItemDto>) => {
+    const { items, agentId, environmentId } = review
+    const isCurrent = () => isCurrentAgentSkillScope(review)
+    if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     const names = new Map(items.map((item) => [
       item.id,
@@ -1956,7 +1958,8 @@ function SkillsTab({
     setLocalNotice(t('skills.agentManagement.quickTakeover.running', { count: items.length }))
     state.setError(null)
     try {
-      const result = await skillApiV2.takeoverCenterSkills(detail.id, ids)
+      const result = await skillApiV2.takeoverCenterSkills(agentId, ids, environmentId)
+      if (!isCurrent()) return
       const adopted = result.items.filter((item) => item.skillId !== null).length
       const failures = result.items
         .filter((item) => item.skillId === null)
@@ -1967,8 +1970,11 @@ function SkillsTab({
         }))
       }
       try {
-        await refreshAgentSkills()
+        const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+        if (!isCurrent()) return
+        useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
       } catch (error) {
+        if (!isCurrent()) return
         failures.push(t('skills.agentManagement.quickTakeover.refreshFailed', {
           error: skillErrorMessage(t, error),
         }))
@@ -1980,8 +1986,10 @@ function SkillsTab({
       }))
       state.setError(failures.length > 0 ? failures.slice(0, 3).join('\n') : null)
     } catch (error) {
-      state.setError(skillErrorMessage(t, error))
-      setLocalNotice(null)
+      if (isCurrent()) {
+        state.setError(skillErrorMessage(t, error))
+        setLocalNotice(null)
+      }
     } finally {
       setAdoptingIds(new Set())
     }
@@ -2235,7 +2243,7 @@ function SkillsTab({
                     disabled={quickTakeoverCandidates.length === 0 || actionBusy}
                     busy={unmanagedAdopting}
                     busyLabel={t('skills.agentManagement.quickTakeover.busy')}
-                    onClick={() => setQuickTakeoverItems(quickTakeoverCandidates)}
+                    onClick={() => setQuickTakeoverReview(createSkillReview(quickTakeoverCandidates))}
                   >
                     {t('skills.agentManagement.quickTakeover.action', { count: quickTakeoverCandidates.length })}
                   </ActionButton>
@@ -2425,26 +2433,26 @@ function SkillsTab({
           }}
         />
       )}
-      {quickTakeoverItems && (
+      {quickTakeoverReview && isCurrentAgentSkillScope(quickTakeoverReview) && (
         <PreviewDialog
-          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverItems.length })}
+          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverReview.items.length })}
           confirmLabel={t('skills.agentManagement.quickTakeover.confirm')}
           busyLabel={t('skills.agentManagement.quickTakeover.busy')}
           busy={unmanagedAdopting}
-          disabled={quickTakeoverItems.length === 0}
+          disabled={quickTakeoverReview.items.length === 0}
           modalClassName="sm2__modal--adopt"
-          onCancel={() => setQuickTakeoverItems(null)}
+          onCancel={() => setQuickTakeoverReview(null)}
           onConfirm={async () => {
-            await takeoverExistingCenterSkills(quickTakeoverItems)
-            setQuickTakeoverItems(null)
+            await takeoverExistingCenterSkills(quickTakeoverReview)
+            setQuickTakeoverReview((current) => current === quickTakeoverReview ? null : current)
           }}
         >
           <p>{t('skills.agentManagement.quickTakeover.description', {
-            count: quickTakeoverItems.length,
+            count: quickTakeoverReview.items.length,
             agent: detail.displayName,
           })}</p>
           <p>{t('skills.agentManagement.quickTakeover.preserved', {
-            count: Math.max(0, unmanaged.length - quickTakeoverItems.length),
+            count: Math.max(0, unmanaged.length - quickTakeoverReview.items.length),
           })}</p>
         </PreviewDialog>
       )}

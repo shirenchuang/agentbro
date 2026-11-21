@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from os import readlink
 
 MARKER = "__AGENTBRO_REMOTE_SKILL_MANAGER__"
 REQUEST = json.loads(base64.b64decode("__AGENTBRO_REQUEST_B64__").decode())
@@ -610,7 +611,9 @@ def independent_center_skill_hash(path):
         return None
 
 
-def atomic_replace_skill_directory(source, destination, after_replace=None, preserve_symlinks=False):
+def atomic_replace_skill_directory(
+    source, destination, after_replace=None, preserve_symlinks=False, link=False
+):
     source = pathlib.Path(source)
     destination = pathlib.Path(destination)
     expected_hash = verified_skill_hash(source, "Source Skill")
@@ -618,6 +621,8 @@ def atomic_replace_skill_directory(source, destination, after_replace=None, pres
     resolved_parent = destination.parent.resolve()
     if resolved_source == resolved_parent or resolved_source in resolved_parent.parents:
         raise ValueError("Source Skill overlaps the staging directory")
+    if link and paths_overlap(source, destination):
+        raise ValueError("Center Skill overlaps the Agent copy")
     if preserve_symlinks and not destination.is_symlink() and paths_overlap(source, destination):
         raise ValueError("Source Skill overlaps its destination")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -631,7 +636,10 @@ def atomic_replace_skill_directory(source, destination, after_replace=None, pres
     keep_recovery = False
     had_destination = path_present(destination)
     try:
-        shutil.copytree(source, staged, symlinks=preserve_symlinks)
+        if link:
+            staged.symlink_to(source, target_is_directory=True)
+        else:
+            shutil.copytree(source, staged, symlinks=preserve_symlinks)
         if (
             verified_skill_hash(staged, "Staged Skill") != expected_hash
             or verified_skill_hash(source, "Source Skill") != expected_hash
@@ -1478,6 +1486,27 @@ def find_unmanaged(unmanaged_id):
     if not item:
         raise ValueError("Unmanaged Skill not found: " + unmanaged_id)
     return item
+
+
+def takeover_center_agent_skill(agent_id, unmanaged_id, skills, targets):
+    # Remote inventory represents same-name copies as Skill targets.
+    target = targets.get(unmanaged_id)
+    if not target:
+        raise ValueError("The requested Agent Skill is not present in the center library")
+    if target["agentId"] != agent_id or agent_id == SHARED_SKILLS_AGENT_ID:
+        raise ValueError("The requested Skill does not belong to this Agent's own directory")
+    skill_id = target["skillId"]
+    center = pathlib.Path(skills[skill_id]["centerPath"])
+    agent_copy = pathlib.Path(target["targetPath"])
+    if not (center / "SKILL.md").is_file() or not (agent_copy / "SKILL.md").is_file():
+        raise ValueError("The center or Agent Skill is unavailable on disk")
+    if agent_copy.is_symlink():
+        link_target = normalized_lexical_path(agent_copy.parent / readlink(agent_copy))
+        if link_target == normalized_lexical_path(center):
+            return skill_id
+        raise ValueError("The Agent Skill already links to a different location")
+    atomic_replace_skill_directory(center, agent_copy, link=True)
+    return skill_id
 
 
 def remove_unmanaged_item(item, requested_agent_id):
@@ -3012,26 +3041,28 @@ def dispatch():
             args.get("renamedId"),
         )
     if command in ("execute_adopt_agent_skills", "takeover_center_agent_skills"):
+        takeover = command == "takeover_center_agent_skills"
         items = args.get("items", [])
-        if command == "takeover_center_agent_skills":
+        if takeover:
+            skills, _, _, targets = inventory()
             items = [
-                {
-                    "agentId": args["agentId"],
-                    "unmanagedId": item,
-                    "option": "overwrite_center",
-                    "renamedId": None,
-                }
+                {"agentId": args["agentId"], "unmanagedId": item}
                 for item in args.get("unmanagedIds", [])
             ]
         results = []
         for item in items:
             try:
-                skill_id = execute_adopt(
-                    item["agentId"],
-                    item["unmanagedId"],
-                    item.get("option", "import_link"),
-                    item.get("renamedId"),
-                )
+                if takeover:
+                    skill_id = takeover_center_agent_skill(
+                        item["agentId"], item["unmanagedId"], skills, targets,
+                    )
+                else:
+                    skill_id = execute_adopt(
+                        item["agentId"],
+                        item["unmanagedId"],
+                        item.get("option", "import_link"),
+                        item.get("renamedId"),
+                    )
                 results.append({
                     "unmanagedId": item["unmanagedId"],
                     "skillId": skill_id or None,
