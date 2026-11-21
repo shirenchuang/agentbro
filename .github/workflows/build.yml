@@ -203,6 +203,12 @@ jobs:
           & $testExecutable terminal::jump::windows_terminal::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact terminal::process_tree::tests::windows_build_tree_contains_current_process
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable hooks::session_store::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

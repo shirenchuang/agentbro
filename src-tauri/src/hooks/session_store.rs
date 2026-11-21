@@ -1,9 +1,11 @@
 // SessionStore — Thread-safe session state management
 // Central source of truth for all agent sessions
 
+use crate::terminal::process_tree::{build_tree, ProcessInfo};
 use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -820,7 +822,7 @@ impl SessionStore {
 
     /// Get all sessions as a vector
     pub fn get_all_sessions(&self) -> Vec<SessionState> {
-        self.prune_dead_process_sessions();
+        self.prune_dead_process_sessions(&build_tree());
         self.sessions
             .iter()
             .map(|entry| {
@@ -831,8 +833,11 @@ impl SessionStore {
             .collect()
     }
 
-    fn prune_dead_process_sessions(&self) {
-        let tree = crate::terminal::process_tree::build_tree();
+    fn prune_dead_process_sessions(&self, tree: &HashMap<u32, ProcessInfo>) {
+        // A usable system snapshot always includes the AgentBro process.
+        if !tree.contains_key(&std::process::id()) {
+            return;
+        }
         let mut ended_ids = Vec::new();
         let mut stale_ids = Vec::new();
 
@@ -1038,6 +1043,42 @@ mod tests {
 
         session.tasks[0].status = "completed".to_string();
         assert!(!session.has_unfinished_tasks());
+    }
+
+    #[test]
+    fn preserves_running_and_finished_sessions_when_process_snapshot_is_unavailable() {
+        let store = seeded_store();
+        let pid = std::process::id();
+        store.update_session("s1", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Processing;
+        });
+        store.get_or_create_session("finished", "claude-code", "agentbro", "/tmp/agentbro", "");
+        store.update_session("finished", |session| {
+            session.pid = Some(pid);
+            session.phase = SessionPhase::Done;
+        });
+
+        let incomplete = HashMap::from([(
+            u32::MAX,
+            ProcessInfo {
+                pid: u32::MAX,
+                ppid: 0,
+                command: "other".into(),
+                tty: None,
+            },
+        )]);
+        for snapshot in [HashMap::new(), incomplete] {
+            store.prune_dead_process_sessions(&snapshot);
+            assert_eq!(
+                store.get_session("s1").unwrap().phase,
+                SessionPhase::Processing
+            );
+            assert_eq!(
+                store.get_session("finished").unwrap().phase,
+                SessionPhase::Done
+            );
+        }
     }
 
     #[test]
