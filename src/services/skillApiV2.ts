@@ -203,11 +203,18 @@ export interface SkillPackDetail {
 
 export interface SkillPackManifest {
   format: 'agentbro-skill-pack'
-  version: 1
+  version: 1 | 2
   name: string
   description: string
   tags: string[]
   skillIds: string[]
+  skillFingerprints?: Record<string, string>
+}
+
+export interface SkillPackFingerprint {
+  skillId: string
+  missing: boolean
+  fingerprint: string | null
 }
 
 export interface McpServerStatus {
@@ -377,7 +384,7 @@ export interface PluginStatus {
   id: string
   name: string
   version: string | null
-  enabled: boolean
+  enabled: boolean | null
   source: string | null
 }
 
@@ -1336,6 +1343,14 @@ export const skillApiV2 = {
   readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
+  getPackFingerprints: (skillIds: string[], environmentId: string) =>
+    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds }, environmentId),
+  importReviewedPack: (
+    manifest: SkillPackManifest,
+    reviewed: SkillPackFingerprint[],
+    acceptLocalCopies: boolean,
+    environmentId: string,
+  ) => invoke<SkillPackDetail>('execute_import_skill_pack_manifest', { manifest, reviewed, acceptLocalCopies }, environmentId),
   upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean; environmentId?: string } = {}) =>
     isTauriRuntime()
       ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false }, options.environmentId)

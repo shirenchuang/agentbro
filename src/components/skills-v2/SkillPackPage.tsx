@@ -13,6 +13,7 @@ import type {
   RemovePackFromAgentPreview,
   RemoveSkillFromPackPreview,
   SkillPackDetail,
+  SkillPackFingerprint,
   SkillPackManifest,
   SkillPackSummary,
 } from '../../services/skillApiV2'
@@ -23,6 +24,13 @@ import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
 type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+type PackImport = {
+  manifest: SkillPackManifest
+  runtime: PackRuntime
+  reviewed: SkillPackFingerprint[] | null
+  acceptLocalCopies: boolean
+}
+type PackMemberStatus = 'missing' | 'unavailable' | 'unrecorded' | 'different' | 'match'
 type PackSyncConflictState = {
   pack: SkillPackDetail
   targetAgents: string[]
@@ -117,7 +125,7 @@ export function SkillPackPage() {
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
-  const [packImport, setPackImport] = useState<{ manifest: SkillPackManifest; runtime: PackRuntime } | null>(null)
+  const [packImport, setPackImport] = useState<PackImport | null>(null)
   const [packImportError, setPackImportError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -143,11 +151,32 @@ export function SkillPackPage() {
   }, [packQuery, state.packs])
 
   const detail = state.selectedPackDetail
-  const missingPackSkills = useMemo(() => {
-    if (!packImport) return new Set<string>()
-    const existing = new Set(state.skills.map((skill) => skill.id))
-    return new Set(packImport.manifest.skillIds.filter((id) => !existing.has(id)))
+  const packMemberStatuses = useMemo(() => {
+    const result = new Map<string, PackMemberStatus>()
+    if (!packImport) return result
+    const { manifest, reviewed } = packImport
+    if (!reviewed) {
+      const existing = new Set(state.skills.map((skill) => skill.id))
+      for (const id of manifest.skillIds) {
+        if (!existing.has(id)) result.set(id, 'missing')
+      }
+      return result
+    }
+    const expected = new Map(Object.entries(manifest.skillFingerprints ?? {}))
+    for (const member of reviewed) {
+      if (member.missing) result.set(member.skillId, 'missing')
+      else if (!member.fingerprint) result.set(member.skillId, 'unavailable')
+      else if (!expected.has(member.skillId)) result.set(member.skillId, 'unrecorded')
+      else result.set(member.skillId, expected.get(member.skillId) === member.fingerprint ? 'match' : 'different')
+    }
+    return result
   }, [packImport, state.skills])
+  const importStatuses = [...packMemberStatuses.values()]
+  const hasMissingPackSkills = importStatuses.includes('missing')
+  const hasUnavailablePackSkills = importStatuses.includes('unavailable')
+  const needsLocalCopyConfirmation = importStatuses.includes('different') || importStatuses.includes('unrecorded')
+  const packImportBlocked = hasMissingPackSkills || hasUnavailablePackSkills
+    || (needsLocalCopyConfirmation && !packImport?.acceptLocalCopies)
   const packMemberships = useSkillPackMemberships(state.packs, detail)
   const missingCount = detail?.members.filter((member) => member.missing).length || 0
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
@@ -176,8 +205,11 @@ export function SkillPackPage() {
       if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
       const manifest = await skillApiV2.readPackManifest(path)
       if (!isPackRuntimeCurrent(runtime)) return
-      await state.loadOverview(true)
-      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime })
+      const reviewed = manifest.version === 2
+        ? await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+        : null
+      if (!reviewed) await state.loadOverview(true)
+      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
     } finally {
@@ -185,8 +217,8 @@ export function SkillPackPage() {
     }
   }
 
-  const importPackManifest = async () => {
-    if (busy || !packImport || missingPackSkills.size) return
+  const refreshPackComparison = async () => {
+    if (!packImport || busy) return
     const { manifest, runtime } = packImport
     if (!isPackRuntimeCurrent(runtime)) {
       setPackImport(null)
@@ -195,13 +227,34 @@ export function SkillPackPage() {
     setBusy(true)
     setPackImportError(null)
     try {
-      const pack = await skillApiV2.upsertPack({
-        id: '',
-        name: manifest.name,
-        description: manifest.description,
-        tags: manifest.tags,
-        skillIds: manifest.skillIds,
-      }, { deferSync: true })
+      const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importPackManifest = async () => {
+    if (busy || !packImport || packImportBlocked) return
+    const { manifest, runtime, reviewed, acceptLocalCopies } = packImport
+    if (!isPackRuntimeCurrent(runtime)) {
+      setPackImport(null)
+      return
+    }
+    setBusy(true)
+    setPackImportError(null)
+    try {
+      const pack = reviewed
+        ? await skillApiV2.importReviewedPack(manifest, reviewed, acceptLocalCopies, runtime.selectedEnvironmentId)
+        : await skillApiV2.upsertPack({
+            id: '',
+            name: manifest.name,
+            description: manifest.description,
+            tags: manifest.tags,
+            skillIds: manifest.skillIds,
+          }, { deferSync: true })
       if (!isPackRuntimeCurrent(runtime)) return
       setPackImport(null)
       setPackQuery('')
@@ -227,13 +280,19 @@ export function SkillPackPage() {
         filters: [{ name: 'JSON', extensions: ['json'] }],
       })
       if (!path || !isPackRuntimeCurrent(runtime)) return
+      const skillIds = pack.members.map((member) => member.skillId)
+      const fingerprints = await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId)
+      if (!isPackRuntimeCurrent(runtime)) return
       await skillApiV2.writePackManifest(path, {
         format: 'agentbro-skill-pack',
-        version: 1,
+        version: 2,
         name: pack.name,
         description: pack.description,
         tags: pack.tags,
-        skillIds: pack.members.map((member) => member.skillId),
+        skillIds,
+        skillFingerprints: Object.fromEntries(fingerprints.flatMap(({ skillId, fingerprint }) =>
+          fingerprint ? [[skillId, fingerprint]] : [],
+        )),
       })
       if (isPackRuntimeCurrent(runtime)) setSyncNotice(t('skills.packManifest.exported'))
     } catch (error) {
@@ -424,7 +483,7 @@ export function SkillPackPage() {
           cancelLabel={t('settings.cancel')}
           busyLabel={t('skills.packManifest.creating')}
           busy={busy}
-          disabled={missingPackSkills.size > 0}
+          disabled={packImportBlocked}
           onConfirm={importPackManifest}
           onCancel={() => { if (!busy) setPackImport(null) }}
         >
@@ -432,17 +491,41 @@ export function SkillPackPage() {
           {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
           {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
           <p>{t('skills.packManifest.review')}</p>
-          {missingPackSkills.size > 0 && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
+          {hasMissingPackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
+          {hasUnavailablePackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableHelp')}</div>}
           {packImport.manifest.skillIds.length ? (
             <ul className="sm2__pack-manifest-members">
-              {packImport.manifest.skillIds.map((id) => (
-                <li key={id} className="sm2__change">
-                  <code>{id}</code>
-                  {missingPackSkills.has(id) && <span className="sm2__tag sm2__tag--warn">{t('skills.packManifest.missing')}</span>}
-                </li>
-              ))}
+              {packImport.manifest.skillIds.map((id) => {
+                const status = packMemberStatuses.get(id)
+                return (
+                  <li key={id} className="sm2__change">
+                    <code>{id}</code>
+                    {status && (
+                      <span className={status === 'match' ? 'sm2__tag' : 'sm2__tag sm2__tag--warn'}>
+                        {t(`skills.packManifest.${status}`)}
+                      </span>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           ) : <p>{t('skills.packManifest.empty')}</p>}
+          {needsLocalCopyConfirmation && (
+            <label className="sm2__checkbox-row">
+              <input
+                type="checkbox"
+                checked={packImport.acceptLocalCopies}
+                disabled={busy || hasMissingPackSkills || hasUnavailablePackSkills}
+                onChange={(event) => setPackImport({ ...packImport, acceptLocalCopies: event.target.checked })}
+              />
+              {t('skills.packManifest.useLocalCopies')}
+            </label>
+          )}
+          {packImport.reviewed && (
+            <button className="sm2__btn" type="button" disabled={busy} onClick={refreshPackComparison}>
+              {t('skills.packManifest.recheck')}
+            </button>
+          )}
           {packImportError && <div className="sm2__error" role="alert">{packImportError}</div>}
         </PreviewDialog>
       )}

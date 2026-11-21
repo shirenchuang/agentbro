@@ -417,6 +417,22 @@ pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> R
 }
 
 #[tauri::command(async)]
+pub fn get_skill_pack_fingerprints(
+    skill_ids: Vec<String>,
+) -> Result<Vec<SkillPackFingerprint>, String> {
+    svc()?.skill_pack_fingerprints(&skill_ids)
+}
+
+#[tauri::command(async)]
+pub fn execute_import_skill_pack_manifest(
+    manifest: SkillPackManifest,
+    reviewed: Vec<SkillPackFingerprint>,
+    accept_local_copies: bool,
+) -> Result<SkillPackDetail, String> {
+    svc()?.import_reviewed_skill_pack(manifest, &reviewed, accept_local_copies)
+}
+
+#[tauri::command(async)]
 pub fn execute_upsert_skill_pack(
     pack: UpsertPackInput,
     defer_sync: Option<bool>,

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { captureProjectView, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
@@ -492,6 +493,7 @@ function ProjectMcp({ agents }: { agents: ProjectAgentDetail[] }) {
 }
 
 function ProjectPlugins({ agents }: { agents: ProjectAgentDetail[] }) {
+  const { t } = useTranslation()
   const plugins = agents.flatMap((agent) => agent.plugins.map((plugin) => ({ agent, plugin })))
   if (plugins.length === 0) return <div className="sm2__empty sm2__empty--compact">没有项目级 Plugin 配置</div>
   return (
@@ -501,7 +503,7 @@ function ProjectPlugins({ agents }: { agents: ProjectAgentDetail[] }) {
           <AgentIconBadge iconKey={agent.iconKey} title={agent.displayName} size={22} />
           <div>
             <strong>{plugin.name || plugin.id}</strong>
-            <span>{plugin.enabled ? '已启用' : '已禁用'}{plugin.source ? ` · ${plugin.source}` : ''}</span>
+            <span>{plugin.enabled === null ? t('skills.pluginManagement.unknownTag') : plugin.enabled ? '已启用' : '已禁用'}{plugin.source ? ` · ${plugin.source}` : ''}</span>
             <code>{plugin.id}</code>
           </div>
         </div>

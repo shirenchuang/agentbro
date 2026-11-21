@@ -412,16 +412,32 @@ pub(super) fn verify_installed(
 
 fn hash_installed_skill(destination: &Path, skill: &Path) -> Result<String, String> {
     let skill = skill.canonicalize().map_err(|error| error.to_string())?;
-    if skill.parent() != Some(destination)
-        || !skill
-            .join("SKILL.md")
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.is_file())
+    if skill.parent() != Some(destination) {
+        return Err("The installed path is not a Skill directory".to_string());
+    }
+    fingerprint_canonical_skill_directory(&skill, true)
+}
+
+pub(super) fn fingerprint_canonical_skill_directory(
+    skill: &Path,
+    skip_package_metadata: bool,
+) -> Result<String, String> {
+    if !skill
+        .join("SKILL.md")
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_file())
     {
         return Err("The installed path is not a Skill directory".to_string());
     }
     let mut files = BTreeMap::new();
-    collect_skill_files(&skill, &skill, "", &mut Vec::new(), &mut files)?;
+    collect_skill_files(
+        skill,
+        skill,
+        "",
+        &mut Vec::new(),
+        &mut files,
+        skip_package_metadata,
+    )?;
     let mut hash = Sha256::new();
     for (path, file) in files {
         add_file_to_hash(&mut hash, &path, &file)?;
@@ -613,7 +629,7 @@ fn install_verified_skill(
     expected: &str,
 ) -> Result<(), String> {
     let mut files = BTreeMap::new();
-    collect_skill_files(skill, skill, "", &mut Vec::new(), &mut files)?;
+    collect_skill_files(skill, skill, "", &mut Vec::new(), &mut files, true)?;
     let destination = checked_destination(root, false)?;
     let staging_parent = destination
         .ancestors()
@@ -645,6 +661,7 @@ fn collect_skill_files(
     prefix: &str,
     ancestors: &mut Vec<PathBuf>,
     files: &mut BTreeMap<String, PathBuf>,
+    skip_package_metadata: bool,
 ) -> Result<(), String> {
     let absolute = directory
         .canonicalize()
@@ -659,7 +676,7 @@ fn collect_skill_files(
             .file_name()
             .into_string()
             .map_err(|_| "Skill file names must be UTF-8")?;
-        if name == "metadata.json" {
+        if skip_package_metadata && name == "metadata.json" {
             continue;
         }
         let file_type = item.file_type().map_err(|error| error.to_string())?;
@@ -683,7 +700,14 @@ fn collect_skill_files(
             return Err(format!("Unsupported Skill file name: {name}"));
         }
         if metadata.is_dir() {
-            collect_skill_files(root, &source, &format!("{relative}/"), ancestors, files)?;
+            collect_skill_files(
+                root,
+                &source,
+                &format!("{relative}/"),
+                ancestors,
+                files,
+                skip_package_metadata,
+            )?;
         } else if metadata.is_file() {
             files.insert(relative, source);
         }

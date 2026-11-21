@@ -699,6 +699,13 @@
   "skills": {
     "projectsTab": "プロジェクト",
     "packManifest": {
+      "match": "内容が一致",
+      "different": "内容が異なります",
+      "unrecorded": "マニフェストにフィンガープリントがありません",
+      "unavailable": "内容を確認できません",
+      "unavailableHelp": "中央ライブラリのスキルを読み取れることを確認し、再確認してください。",
+      "useLocalCopies": "内容が異なるか未記録のスキルには、このライブラリのコピーを使用する",
+      "recheck": "スキルを再確認",
       "creating": "作成中…",
       "import": "スキルパックをインポート",
       "export": "スキルパックをエクスポート",
@@ -809,6 +816,7 @@
       "disabled": "プラグイン「{{name}}」を無効にしました",
       "enabledTag": "有効",
       "disabledTag": "無効",
+      "unknownTag": "状態不明",
       "on": "オン",
       "off": "オフ",
       "toggleLabel": "{{name}} を有効または無効にする",

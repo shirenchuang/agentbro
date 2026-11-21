@@ -94,6 +94,71 @@ fn add_center_test_skill(svc: &Service, source_dir: &str, skill_id: &str) -> Pat
     PathBuf::from(svc.get_skill_detail(skill_id).unwrap().summary.center_path)
 }
 
+#[test]
+fn pack_manifest_verifies_live_skill_files_before_import() {
+    let (_home, svc, _lock) = fresh_service("pack-content-review");
+    let directory = add_center_test_skill(&svc, "sender-folder", "review");
+    fs::remove_file(directory.join("reference.md")).unwrap();
+    let docs = directory.join("docs");
+    fs::create_dir(&docs).unwrap();
+    fs::write(
+        directory.join("SKILL.md"),
+        b"---\nname: review\n---\nReview\n",
+    )
+    .unwrap();
+    fs::write(docs.join("data.bin"), b"\0\r\n").unwrap();
+    fs::write(docs.join("metadata.json"), b"{\"task\":\"review\"}\n").unwrap();
+    let mut text = vec![b'x'; 65_535];
+    text.extend_from_slice(b"\nreference\r");
+    fs::write(docs.join("notes.txt"), &text).unwrap();
+    let mut manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 2,
+        name: "Shared review".to_string(),
+        description: String::new(),
+        tags: vec![],
+        skill_ids: vec!["review".to_string()],
+        skill_fingerprints: Default::default(),
+    };
+    let reviewed = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    let expected = "f01a46a872990d61dbb42eb09dcd3d38051e4fa727ddca5a2da56d81968be8ef";
+    assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected));
+    manifest
+        .skill_fingerprints
+        .insert("review".to_string(), expected.to_string());
+    let initial_packs = svc.list_skill_packs().unwrap().len();
+
+    text[0] = b'y';
+    fs::write(docs.join("notes.txt"), &text).unwrap();
+    let error = svc
+        .import_reviewed_skill_pack(manifest.clone(), &reviewed, true)
+        .unwrap_err();
+    assert!(error.contains("changed since review"));
+    let updated = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    assert_ne!(reviewed, updated);
+    let error = svc
+        .import_reviewed_skill_pack(manifest.clone(), &updated, false)
+        .unwrap_err();
+    assert!(error.contains("Confirm the local copy"));
+    assert_eq!(svc.list_skill_packs().unwrap().len(), initial_packs);
+
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &updated, true)
+        .unwrap();
+    assert_eq!(pack.name, "Shared review");
+    assert_eq!(pack.members[0].skill_id, "review");
+    assert!(!pack.members[0].missing);
+    assert!(pack.applied_agents.is_empty());
+    assert_eq!(fs::read(docs.join("notes.txt")).unwrap(), text);
+
+    fs::remove_file(directory.join("SKILL.md")).unwrap();
+    let missing = svc
+        .skill_pack_fingerprints(&["review".to_string()])
+        .unwrap();
+    assert!(missing[0].missing);
+    assert_eq!(missing[0].fingerprint, None);
+}
+
 fn insert_shared_managed_target(
     svc: &Service,
     target_id: &str,

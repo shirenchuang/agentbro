@@ -77,16 +77,49 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     Invoke-PackControl $submit
 }
 
-function Import-PackFixture([Windows.Automation.AutomationElement]$Settings, [string]$Path, [string]$Name) {
+function Test-PackContentMatchLabel([Windows.Automation.AutomationElement]$Settings) {
+    if (Find-PackControl $Settings 'Content matches') { return $true }
+    $document = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)
+    foreach ($element in $Settings.FindAll([Windows.Automation.TreeScope]::Descendants, $document)) {
+        $text = $null
+        if ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$text) -and
+            $text.DocumentRange.FindText('Content matches', $false, $false)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Import-PackFixture(
+    [Windows.Automation.AutomationElement]$Settings,
+    [string]$Path,
+    [string]$Name,
+    [switch]$VerifyContents
+) {
     $open = Wait-IslandValue 'the enabled Import Skill Pack action' {
         $button = Find-PackControl $Settings 'Import Skill Pack'
         if ($button -and $button.Current.IsEnabled) { $button }
     }
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $Path
-    $confirm = Wait-IslandValue 'the enabled Skill Pack import preview' {
-        $button = Find-PackControl $Settings 'Create Skill Pack'
-        if ($button -and $button.Current.IsEnabled -and (Find-PackControl $Settings $Name)) { $button }
+    try {
+        $confirm = Wait-IslandValue 'the enabled Create Skill Pack button in the import preview' {
+            $button = Find-PackControl $Settings 'Create Skill Pack'
+            if ($button -and $button.Current.IsEnabled -and (Find-PackControl $Settings $Name)) { $button }
+        }
+        if ($VerifyContents) {
+            $null = Wait-IslandValue 'the version 2 preview with a matching content label' {
+                (Find-PackControl $Settings 'Recheck Skills') -and (Test-PackContentMatchLabel $Settings)
+            }
+        }
+    } catch {
+        foreach ($label in @($Name, 'Import Skill Pack', 'Create Skill Pack', 'Recheck Skills', 'Content matches')) {
+            $element = Find-PackControl $Settings $label
+            $found = if ($element) { "enabled=$($element.Current.IsEnabled)" } else { 'absent' }
+            Write-Host "Skill Pack preview UI Automation [$label] $found"
+        }
+        throw
     }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the imported Skill Pack confirmation' {
@@ -168,14 +201,20 @@ function Test-InstalledPackManifest(
     }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
     $keys = @($saved.PSObject.Properties.Name | Sort-Object)
-    if (($keys -join ',') -cne 'description,format,name,skillIds,tags,version' -or
-        $saved.format -cne $expected.format -or $saved.version -ne $expected.version -or
+    if (($keys -join ',') -cne 'description,format,name,skillFingerprints,skillIds,tags,version' -or
+        $saved.format -cne $expected.format -or $saved.version -ne 2 -or
         $saved.name -cne $expected.name -or $saved.description -cne $expected.description -or
         ($saved.tags -join ',') -cne ($expected.tags -join ',') -or
         ($saved.skillIds -join ',') -cne ($expected.skillIds -join ',')) {
         throw 'The saved file did not preserve the portable Skill Pack definition and member order'
     }
-    Write-Output 'The native Save dialog wrote the expected Skill Pack definition and ordered members.'
-    Import-PackFixture $settings $ExportPath $expected.name
+    foreach ($skillId in $expected.skillIds) {
+        $fingerprint = $saved.skillFingerprints.PSObject.Properties[$skillId].Value
+        if ($fingerprint -cnotmatch '^[a-f0-9]{64}$') {
+            throw "The export omitted the portable content fingerprint for $skillId"
+        }
+    }
+    Write-Output 'The native Save dialog wrote the ordered Skill Pack and both content fingerprints.'
+    Import-PackFixture $settings $ExportPath $expected.name -VerifyContents
     Write-Output 'The installed app completed the Skill Pack round trip through native Windows file dialogs and Unicode paths.'
 }

@@ -698,6 +698,13 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "match": "Content matches",
+      "different": "Different content",
+      "unrecorded": "No fingerprint in the manifest",
+      "unavailable": "Could not verify content",
+      "unavailableHelp": "Check that the Skills can be read in the center library, then recheck.",
+      "useLocalCopies": "Use this library’s copies for Skills with different or unrecorded content",
+      "recheck": "Recheck Skills",
       "creating": "Creating…",
       "import": "Import Skill Pack",
       "export": "Export Skill Pack",
@@ -808,6 +815,7 @@
       "disabled": "Disabled plugin “{{name}}”",
       "enabledTag": "Enabled",
       "disabledTag": "Disabled",
+      "unknownTag": "Status unknown",
       "on": "On",
       "off": "Off",
       "toggleLabel": "Enable or disable {{name}}",

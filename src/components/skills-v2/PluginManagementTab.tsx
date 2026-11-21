@@ -55,12 +55,12 @@ export function PluginManagementTab({ detail }: { detail: AgentDetail }) {
   }, [notice])
 
   const enabledCount = inventory.plugins.filter((plugin) => plugin.enabled).length
-  const disabledCount = inventory.plugins.length - enabledCount
+  const disabledCount = inventory.plugins.filter((plugin) => plugin.enabled === false).length
   const normalizedQuery = query.trim().toLowerCase()
   const visiblePlugins = useMemo(
     () => inventory.plugins.filter((plugin) => {
-      if (filter === 'enabled' && !plugin.enabled) return false
-      if (filter === 'disabled' && plugin.enabled) return false
+      if (filter === 'enabled' && plugin.enabled !== true) return false
+      if (filter === 'disabled' && plugin.enabled !== false) return false
       if (!normalizedQuery) return true
       return [plugin.name, plugin.id, plugin.source, plugin.version]
         .filter(Boolean)
@@ -72,6 +72,7 @@ export function PluginManagementTab({ detail }: { detail: AgentDetail }) {
   )
 
   const toggle = async (plugin: PluginStatus) => {
+    if (plugin.enabled === null) return
     setBusyPluginId(plugin.id)
     setError(null)
     try {
@@ -211,7 +212,7 @@ export function PluginManagementTab({ detail }: { detail: AgentDetail }) {
                 <PluginRow
                   key={plugin.id}
                   plugin={plugin}
-                  editable={inventory.capabilities.editable}
+                  editable={inventory.capabilities.editable && plugin.enabled !== null}
                   busy={busyPluginId === plugin.id}
                   disabled={loading || busyPluginId !== null}
                   onToggle={() => void toggle(plugin)}
@@ -283,9 +284,9 @@ function PluginRow({
             <div className="sm2__plugin-row-title">
               <strong>{plugin.name}</strong>
               <span className={`sm2__tag sm2__tag--${plugin.enabled ? 'ok' : 'unmanaged'}`}>
-                {t(plugin.enabled
-                  ? 'skills.pluginManagement.enabledTag'
-                  : 'skills.pluginManagement.disabledTag')}
+                {t(plugin.enabled === null
+                  ? 'skills.pluginManagement.unknownTag'
+                  : plugin.enabled ? 'skills.pluginManagement.enabledTag' : 'skills.pluginManagement.disabledTag')}
               </span>
             </div>
             <code>{plugin.id}</code>
@@ -308,7 +309,7 @@ function PluginRow({
                 type="button"
                 className={`sm2__mcp-switch${plugin.enabled ? ' sm2__mcp-switch--on' : ''}`}
                 role="switch"
-                aria-checked={plugin.enabled}
+                aria-checked={plugin.enabled === true}
                 aria-label={t('skills.pluginManagement.toggleLabel', { name: plugin.name })}
                 aria-busy={busy}
                 disabled={disabled}
