@@ -1311,9 +1311,9 @@ export const skillApiV2 = {
       }),
   deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string, environmentId?: string) =>
     isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }, environmentId) : Promise.resolve(),
-  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[]) =>
+  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds })
+      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds }, environmentId)
       : Promise.resolve({ deleted: unmanagedIds.length, failures: [] }),
 
   previewSyncCopy: (targetId: string) =>

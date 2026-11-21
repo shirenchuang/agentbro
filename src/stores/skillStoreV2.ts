@@ -74,6 +74,7 @@ interface SkillV2State {
   selectedPackId: string | null
   selectedPackDetail: SkillPackDetail | null
   selectedAgentId: string | null
+  agentSelectionRevision: number
   selectedAgentDetail: AgentDetail | null
   selectedProjectId: string | null
   selectedProjectDetail: ProjectDetail | null
@@ -181,6 +182,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   selectedPackId: null,
   selectedPackDetail: null,
   selectedAgentId: null,
+  agentSelectionRevision: 0,
   selectedAgentDetail: null,
   selectedProjectId: null,
   selectedProjectDetail: null,
@@ -377,11 +379,17 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
     }
   },
   selectAgent: async (id) => {
-    if (id && get().selectedAgentId === id && get().selectedAgentDetail && !get().agentDetailLoading) {
+    const { selectedAgentId, selectedAgentDetail, agentDetailLoading, agentSelectionRevision } = get()
+    if (id && selectedAgentId === id && selectedAgentDetail && !agentDetailLoading) {
       return
     }
     latestAgentDetailRequest += 1
-    set({ selectedAgentId: id, selectedAgentDetail: null, agentDetailLoading: !!id })
+    set({
+      selectedAgentId: id,
+      agentSelectionRevision: selectedAgentId !== id ? agentSelectionRevision + 1 : agentSelectionRevision,
+      selectedAgentDetail: null,
+      agentDetailLoading: !!id,
+    })
     if (id) await get().loadAgentDetail(id)
     else set({ selectedAgentDetail: null })
   },

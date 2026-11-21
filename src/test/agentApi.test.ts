@@ -112,4 +112,25 @@ describe('agentApi seedAgentPrograms', () => {
       selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     }
   })
+
+  it('routes unmanaged Skill deletion to the confirmed local or remote runtime', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+    const args = { agentId: 'codex', unmanagedIds: ['unmanaged'] }
+
+    try {
+      selectEnvironment('other-host')
+      await skillApiV2.deleteUnmanagedAgentSkills(args.agentId, args.unmanagedIds, LOCAL_RUNTIME_ENVIRONMENT_ID)
+      await skillApiV2.deleteUnmanagedAgentSkills(args.agentId, args.unmanagedIds, 'confirmed-host')
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['delete_unmanaged_agent_skills', args],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'delete_unmanaged_agent_skills', args }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
 })
