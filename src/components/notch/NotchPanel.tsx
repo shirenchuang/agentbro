@@ -1818,7 +1818,6 @@ export function NotchPanel() {
 
     activeDragRef.current = null
     dragCandidateRef.current = null
-    setIsDragging(false)
 
     const finished = drag.started
       .then((gestureId) => gestureId == null ? null : endNotchDrag(gestureId))
@@ -1828,7 +1827,10 @@ export function NotchPanel() {
       .catch(() => {})
     pendingDragEndRef.current = finished
     void finished.then(() => {
-      if (pendingDragEndRef.current === finished) pendingDragEndRef.current = null
+      if (pendingDragEndRef.current !== finished) return
+      pendingDragEndRef.current = null
+      // Resuming normal positioning before the final offset is stored can snap the Island back.
+      if (!activeDragRef.current) setIsDragging(false)
     })
 
     if (drag.captureTarget.hasPointerCapture?.(drag.pointerId)) {
