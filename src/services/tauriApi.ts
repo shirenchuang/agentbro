@@ -1254,14 +1254,15 @@ export async function startNotchDrag(
   width: number,
   height: number,
   displayId?: string,
-): Promise<boolean> {
-  if (!isTauri()) return false
-  return invoke<boolean>('start_notch_drag', { horizontalOffset, width, height, displayId })
+  trackMouseButton = false,
+): Promise<number | null> {
+  if (!isTauri()) return null
+  return invoke<number | null>('start_notch_drag', { horizontalOffset, width, height, displayId, trackMouseButton })
 }
 
-export async function endNotchDrag(): Promise<number | null> {
+export async function endNotchDrag(gestureId: number): Promise<number | null> {
   if (!isTauri()) return null
-  return invoke<number | null>('end_notch_drag')
+  return invoke<number | null>('end_notch_drag', { gestureId })
 }
 
 export async function startPetDrag(
