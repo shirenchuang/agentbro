@@ -6253,6 +6253,34 @@ enabled = true
 }
 
 #[test]
+fn project_inventory_keeps_missing_project_diagnostics() {
+    let (_home, svc, _lock) = fresh_service("missing-project-inventory");
+    let root = svc.home.join("workspace/repo");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("AGENTS.md"), "# Repo instructions").unwrap();
+    let added = svc.add_project(root.display().to_string()).unwrap();
+    assert_eq!(added.summary.instruction_count, 1);
+
+    fs::rename(&root, root.with_file_name("moved")).unwrap();
+    let detail = svc.get_project_detail(&added.summary.id).unwrap();
+    assert!(detail.agents.is_empty());
+    assert!(detail.instructions.is_empty());
+    assert_eq!(detail.summary.instruction_count, 0);
+    assert_eq!(detail.summary.issue_count, 1);
+    assert_eq!(detail.health.len(), 1);
+    assert_eq!(detail.health[0].kind, "project_missing");
+
+    let projects = svc.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, detail.summary.id);
+    assert_eq!(projects[0].issue_count, detail.summary.issue_count);
+    assert_eq!(
+        projects[0].instruction_count,
+        detail.summary.instruction_count
+    );
+}
+
+#[test]
 fn project_inventory_scans_kimi_code_resources() {
     let (_home, svc, _lock) = fresh_service("project-kimi-code");
     let root = svc.home.join("workspace/kimi-repo");

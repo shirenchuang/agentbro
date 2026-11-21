@@ -1657,23 +1657,34 @@ impl Service {
     }
 
     fn project_summary_for_row(&self, row: &ProjectRow) -> Result<ProjectSummary, String> {
-        let root = PathBuf::from(&row.root_path);
-        let agents = self.scan_project_agents(&root)?;
-        let instructions = project_instruction_files(&root);
-        let mut issue_count = 0;
+        let root = Path::new(&row.root_path);
+        let agents = self.scan_project_agents(root)?;
+        let instructions = project_instruction_files(root);
+        Ok(Self::project_summary_from_inventory(
+            row,
+            &agents,
+            instructions.len(),
+            root.is_dir(),
+        ))
+    }
+
+    fn project_summary_from_inventory(
+        row: &ProjectRow,
+        agents: &[ProjectAgentDetail],
+        instruction_count: usize,
+        root_is_dir: bool,
+    ) -> ProjectSummary {
+        let mut issue_count = usize::from(!root_is_dir);
         let mut skill_count = 0;
         let mut mcp_count = 0;
         let mut plugin_count = 0;
-        for agent in &agents {
+        for agent in agents {
             issue_count += agent.health.len();
             skill_count += agent.skills.len();
             mcp_count += agent.mcp_servers.len();
             plugin_count += agent.plugins.len();
         }
-        if !root.is_dir() {
-            issue_count += 1;
-        }
-        Ok(ProjectSummary {
+        ProjectSummary {
             id: row.id.clone(),
             name: row.name.clone(),
             root_path: row.root_path.clone(),
@@ -1684,18 +1695,19 @@ impl Service {
             skill_count,
             mcp_count,
             plugin_count,
-            instruction_count: instructions.len(),
+            instruction_count,
             issue_count,
-        })
+        }
     }
 
     fn project_detail_for_row(&self, row: &ProjectRow) -> Result<ProjectDetail, String> {
-        let root = PathBuf::from(&row.root_path);
-        let agents = self.scan_project_agents(&root)?;
-        let instructions = project_instruction_files(&root);
-        let skill_lock = super::project_lock::preview(&root);
+        let root = Path::new(&row.root_path);
+        let agents = self.scan_project_agents(root)?;
+        let instructions = project_instruction_files(root);
+        let skill_lock = super::project_lock::preview(root);
+        let root_is_dir = root.is_dir();
         let mut health = Vec::new();
-        if !root.is_dir() {
+        if !root_is_dir {
             health.push(ProjectHealthIssue {
                 agent_id: None,
                 kind: "project_missing".to_string(),
@@ -1710,7 +1722,8 @@ impl Service {
                 severity: "info".to_string(),
             });
         }
-        let summary = self.project_summary_for_row(row)?;
+        let summary =
+            Self::project_summary_from_inventory(row, &agents, instructions.len(), root_is_dir);
         Ok(ProjectDetail {
             summary,
             agents,
