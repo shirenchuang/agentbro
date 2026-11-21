@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       windows_trace_permission_ui:
-        description: Record Hook timing, desktop screenshots and accessibility state during approval dismissal
+        description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
 

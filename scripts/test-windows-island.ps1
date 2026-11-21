@@ -260,7 +260,7 @@ function Click-IslandElement(
     [AgentBroSmokeInput]::Click()
 }
 
-function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Island) {
+function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Island, [int]$Attempt) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     try {
         $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
@@ -271,7 +271,7 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             session_id = $SessionId
             cwd = $Workspace
             tool_name = 'Bash'
-            tool_use_id = 'windows-smoke-keyboard-denial'
+            tool_use_id = "windows-smoke-keyboard-denial-$Attempt"
             tool_input = @{ command = 'echo AgentBro Windows permission fixture' }
         }
         $line = ($event | ConvertTo-Json -Compress) + "`n"
@@ -304,7 +304,7 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             if ($TracePermissionUi) {
                 try {
                     Write-PermissionAccessibilityBounds
-                    Save-PermissionFrame $detailClock 'before-space-timeout'
+                    Save-PermissionFrame $detailClock $Attempt 'before-space-timeout'
                 } catch {
                     Write-Host "Could not capture permission accessibility bounds: $_"
                 }
@@ -317,7 +317,7 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock = [Diagnostics.Stopwatch]::new()
-        if ($TracePermissionUi) { Save-PermissionFrame $clock 'before-space' }
+        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'before-space' }
         $clock.Start()
         [AgentBroSmokeInput]::PressSpace()
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
@@ -325,13 +325,13 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         $decision = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
         if ($decision.decision -ne 'deny') { throw "Unexpected Hook permission decision: $($decision.decision)" }
         Write-Output "Original Hook socket confirmed deny at $($clock.ElapsedMilliseconds) ms."
-        if ($TracePermissionUi) { Save-PermissionFrame $clock 'hook-confirmed' }
+        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'hook-confirmed' }
         $sampleTimes = @(250, 1000, 3000, 7000, 12000)
         $observation = @{ last = ''; sampleIndex = 0 }
         $null = Wait-IslandValue 'the resolved permission in the detail' {
             if ($TracePermissionUi -and $observation.sampleIndex -lt $sampleTimes.Count -and
                 $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex]) {
-                Save-PermissionFrame $clock 'while-polling'
+                Save-PermissionFrame $clock $Attempt 'while-polling'
                 do { $observation.sampleIndex += 1 } while ($observation.sampleIndex -lt $sampleTimes.Count -and
                     $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex])
             }
@@ -346,7 +346,7 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
             }
             $hasBack -and -not $hasDeny
         }
-        if ($TracePermissionUi) { Save-PermissionFrame $clock 'uia-resolved' }
+        if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'uia-resolved' }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
     } finally {
         $connection.Dispose()
@@ -367,8 +367,8 @@ function Save-RunnerDesktop([string]$Path) {
     }
 }
 
-function Save-PermissionFrame([Diagnostics.Stopwatch]$Clock, [string]$Stage) {
-    $name = '{0:D5}-{1}.png' -f $Clock.ElapsedMilliseconds, $Stage
+function Save-PermissionFrame([Diagnostics.Stopwatch]$Clock, [int]$Attempt, [string]$Stage) {
+    $name = '{0:D2}-{1:D5}-{2}.png' -f $Attempt, $Clock.ElapsedMilliseconds, $Stage
     Save-RunnerDesktop (Join-Path $permissionTraceDirectory $name)
     Write-Host "Permission desktop frame $name"
 }
@@ -399,7 +399,11 @@ try {
             (Find-IslandButton $island { param($Name) $Name -eq 'Back to sessions' })
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
-    Test-KeyboardPermissionDenial $island
+    $attemptCount = if ($TracePermissionUi) { 6 } else { 1 }
+    foreach ($attempt in 1..$attemptCount) {
+        Write-Output "Windows approval attempt $attempt of $attemptCount."
+        Test-KeyboardPermissionDenial $island $attempt
+    }
     if ($PackImportPath) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
