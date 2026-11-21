@@ -784,6 +784,109 @@ fn distribute_link_and_copy_record_actual_mode() {
 }
 
 #[test]
+fn windows_skill_paths_distribution_preserves_a_target_created_after_preview() {
+    let (_home, svc, _lock) = fresh_service("late-distribution-target");
+    let skill_id = "review";
+    add_center_test_skill(&svc, "source", skill_id);
+    let agent_id = "claude-code";
+    let mode = if cfg!(windows) { "link" } else { "copy" };
+    let preview = || {
+        svc.preview_distribute_skill(
+            vec![skill_id.to_string()],
+            vec![agent_id.to_string()],
+            mode.to_string(),
+        )
+        .unwrap()
+    };
+    let reviewed = preview();
+    assert!(reviewed.blockers.is_empty());
+    assert_eq!(reviewed.changes[0].action, "create");
+    assert_eq!(reviewed.changes[0].actual_mode.as_deref(), Some("copy"));
+
+    let target = Path::new(&reviewed.changes[0].target_path);
+    let local = write_skill(target.parent().unwrap(), skill_id, skill_id, Some("local"));
+    let error = svc
+        .execute_distribute_skill(reviewed, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+    assert_eq!(
+        fs::read_to_string(local.join("reference.md")).unwrap(),
+        "local"
+    );
+    assert!(svc.get_skill_detail(skill_id).unwrap().targets.is_empty());
+
+    let mut refreshed = preview();
+    assert!(refreshed.changes.is_empty());
+    assert_eq!(refreshed.blockers.len(), 1);
+    refreshed
+        .blocker_decisions
+        .push(DistributionBlockerDecision {
+            skill_id: skill_id.to_string(),
+            agent_id: agent_id.to_string(),
+            action: "overwrite".to_string(),
+        });
+    svc.execute_distribute_skill(refreshed, ClaimOrigin::Direct)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(local.join("reference.md")).unwrap(),
+        "center"
+    );
+    assert_eq!(svc.get_skill_detail(skill_id).unwrap().targets.len(), 1);
+}
+
+#[test]
+fn windows_skill_paths_distribution_cleans_up_a_failed_new_copy() {
+    let (_home, svc, _lock) = fresh_service("failed-distribution-copy");
+    let center = add_center_test_skill(&svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    let target = PathBuf::from(&preview.changes[0].target_path);
+    fs::remove_dir_all(center).unwrap();
+
+    assert!(svc
+        .execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .is_err());
+    assert!(!target.exists());
+    assert!(svc.get_skill_detail("review").unwrap().targets.is_empty());
+}
+
+#[test]
+fn windows_skill_paths_distribution_rolls_back_a_new_copy_if_registration_fails() {
+    let (_home, svc, _lock) = fresh_service("failed-distribution-registration");
+    add_center_test_skill(&svc, "source", "review");
+    let preview = svc
+        .preview_distribute_skill(
+            vec!["review".to_string()],
+            vec!["claude-code".to_string()],
+            "copy".to_string(),
+        )
+        .unwrap();
+    let target = PathBuf::from(&preview.changes[0].target_path);
+    svc.db()
+        .with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_new_target BEFORE INSERT ON skill_targets
+                     BEGIN SELECT RAISE(ABORT, 'registration failed'); END;",
+                )
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+    let error = svc
+        .execute_distribute_skill(preview, ClaimOrigin::Direct)
+        .unwrap_err();
+    assert!(error.contains("registration failed"), "{error}");
+    assert!(!target.exists());
+    assert!(svc.get_skill_detail("review").unwrap().targets.is_empty());
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn windows_link_distribution_falls_back_to_copy_even_with_ask_policy() {
     let (_home, svc, _lock) = fresh_service("windows-link-fallback");
