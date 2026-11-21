@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
 import { useConfigStore } from '../stores/configStore'
@@ -649,6 +650,45 @@ describe('HoverList interactions', () => {
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
+  it('opens a focused row with Enter or Space without jumping to the terminal', async () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const user = userEvent.setup()
+    render(<HoverList sessions={[session()]} onSessionClick={onSessionClick} onJumpToTerminal={onJumpToTerminal} />)
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+
+    screen.getByRole('button', { name: /Fix island interactions/ }).focus()
+    await user.keyboard('{Enter}')
+    expect(onSessionClick).toHaveBeenCalledExactlyOnceWith('s1')
+    await user.keyboard(' ')
+    expect(onSessionClick).toHaveBeenCalledTimes(2)
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('keeps Enter and Space on the focused inline permission control', async () => {
+    const onSessionClick = vi.fn()
+    const onJumpToTerminal = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({ phase: 'waiting_approval', pendingPermission: { toolName: 'Bash', toolInput: 'pnpm test' } })]}
+        onSessionClick={onSessionClick}
+        onJumpToTerminal={onJumpToTerminal}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+
+    screen.getByRole('button', { name: '拒绝' }).focus()
+    await user.keyboard('{Enter}')
+    screen.getByRole('button', { name: '允许一次' }).focus()
+    await user.keyboard(' ')
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(1, 's1', false, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenNthCalledWith(2, 's1', true, undefined, undefined)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(2)
+    expect(onSessionClick).not.toHaveBeenCalled()
+    expect(onJumpToTerminal).not.toHaveBeenCalled()
+  })
+
   it('routes inline permission actions without opening the row', () => {
     const onSessionClick = vi.fn()
     render(
@@ -1100,6 +1140,48 @@ describe('HoverList interactions', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
     expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined)
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('accepts an inline plan once per native keyboard or primary pointer activation', async () => {
+    const onSessionClick = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({ phase: 'waiting_approval', planTitle: 'Implementation plan' })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    const accept = screen.getByRole('button', { name: 'Accept Edits' })
+    accept.focus()
+    await user.keyboard('{Enter}')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined)
+    fireEvent.mouseDown(accept, { button: 2 })
+    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(1)
+    await user.click(accept)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledTimes(2)
+    expect(onSessionClick).not.toHaveBeenCalled()
+  })
+
+  it('selects and submits an inline multi-select reply with the keyboard', async () => {
+    const onSessionClick = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <HoverList
+        sessions={[session({
+          phase: 'waiting_input',
+          pendingQuestion: { question: 'Pick a target', options: ['Preview', 'Ship'], multiSelect: true },
+        })]}
+        onSessionClick={onSessionClick}
+      />,
+    )
+
+    screen.getByRole('button', { name: /Preview$/ }).focus()
+    await user.keyboard(' ')
+    screen.getByRole('button', { name: '确认 (1)' }).focus()
+    await user.keyboard('{Enter}')
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview')
     expect(onSessionClick).not.toHaveBeenCalled()
   })
 
