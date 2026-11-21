@@ -353,15 +353,26 @@ jobs:
           if (-not $installer) {
               throw 'Windows NSIS installer was not found in the build artifact'
           }
-          ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
-              -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
-              -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
-              -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
-              -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
-              -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
-              -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
-              -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
-              -SymbolsDirectory (Join-Path $PWD 'windows-installers')
+          $wslPromptWatcher = if ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and $env:RUNNER_ARCH -eq 'ARM64') {
+              Start-Job -FilePath ./scripts/windows-hosted-wsl-prompt.ps1
+          }
+          try {
+              ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
+                  -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
+                  -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
+                  -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+                  -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
+                  -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
+                  -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
+                  -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
+                  -SymbolsDirectory (Join-Path $PWD 'windows-installers')
+          } finally {
+              if ($wslPromptWatcher) {
+                  Stop-Job -Job $wslPromptWatcher
+                  Receive-Job -Job $wslPromptWatcher -ErrorAction Continue
+                  Remove-Job -Job $wslPromptWatcher
+              }
+          }
 
       - name: Upload the failed desktop check
         if: failure() && runner.environment == 'github-hosted'
