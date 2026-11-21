@@ -1,6 +1,6 @@
 import type { MouseEvent } from 'react'
 
-export function runIslandAction(event: MouseEvent<HTMLButtonElement>, action: () => void) {
+export function runIslandAction(event: MouseEvent<HTMLElement>, action: () => void) {
   if (event.button !== 0 || (event.type === 'click' && event.detail !== 0)) return
   event.preventDefault()
   event.stopPropagation()
