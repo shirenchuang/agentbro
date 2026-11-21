@@ -192,7 +192,8 @@ mod unix_tests {
     use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn remote_snapshot_refresh_and_write_failure_preserve_complete_files() {
@@ -2133,7 +2134,7 @@ for line in sys.stdin:
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&home).expect("test home");
-        let mut fixture = start_rendered_script(
+        let (mut fixture, port) = start_http_fixture(
             &home,
             r#"from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -2235,13 +2236,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400)
 
 with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-    (home / "http-port").write_text(str(server.server_port))
+    (home / "http-port").write_text(str(server.server_port) + "\n")
     server.serve_forever()
 "#,
         );
-        let port = home.join("http-port");
-        assert!(wait_for_fixture(|| port.is_file()));
-        let port = std::fs::read_to_string(port).expect("fixture port");
         let names = ["strict", "legacy", "failing"];
         let servers: serde_json::Map<String, Value> = names
             .iter()
@@ -2320,7 +2318,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&home).expect("test home");
-        let mut http = start_rendered_script(
+        let (mut http, port) = start_http_fixture(
             &home,
             r#"from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -2363,12 +2361,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 server = HTTPServer(("127.0.0.1", 0), Handler)
-(Path.home() / "http-port").write_text(str(server.server_port))
+(Path.home() / "http-port").write_text(str(server.server_port) + "\n")
 server.serve_forever()
 "#,
         );
-        assert!(wait_for_fixture(|| home.join("http-port").is_file()));
-        let port = std::fs::read_to_string(home.join("http-port")).expect("fixture port");
         std::fs::write(
             home.join(".claude.json"),
             serde_json::json!({"mcpServers": {"fixture": {
@@ -2528,6 +2524,34 @@ server.serve_forever()
             before
         );
         std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    fn start_http_fixture(home: &Path, script: &str) -> (Child, u16) {
+        let mut server = start_rendered_script(home, script);
+        let port_file = home.join("http-port");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let failure = loop {
+            if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|text| {
+                text.strip_suffix('\n')?
+                    .parse::<std::num::NonZeroU16>()
+                    .ok()
+            }) {
+                return (server, port.get());
+            }
+            if let Some(status) = server.try_wait().expect("poll HTTP fixture") {
+                break format!("exited with {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = server.kill();
+                break "did not publish a valid port in 10 seconds".to_string();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let output = server.wait_with_output().expect("finish HTTP fixture");
+        panic!(
+            "HTTP fixture {failure}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
     fn wait_for_fixture(mut condition: impl FnMut() -> bool) -> bool {
