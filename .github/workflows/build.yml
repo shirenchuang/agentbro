@@ -338,6 +338,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Enable renderer accessibility for AgentBro on the hosted runner
+        if: inputs.windows_force_webview_accessibility && runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'agentbro.exe' -PropertyType String `
+            -Value '--force-renderer-accessibility' -Force | Out-Null
+
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
