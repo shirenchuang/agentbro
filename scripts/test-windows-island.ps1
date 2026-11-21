@@ -91,11 +91,14 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
-    public static uint ProcessAtCursor() {
+    public static IntPtr RootWindowAtCursor() {
         Point point;
-        if (!GetCursorPos(out point)) return 0;
+        return GetCursorPos(out point) ? GetAncestor(WindowFromPoint(point), 2) : IntPtr.Zero;
+    }
+
+    public static uint ProcessAtCursor() {
         uint processId;
-        GetWindowThreadProcessId(GetAncestor(WindowFromPoint(point), 2), out processId);
+        GetWindowThreadProcessId(RootWindowAtCursor(), out processId);
         return processId;
     }
 
@@ -228,7 +231,8 @@ function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
     [Windows.Automation.AutomationElement]$RowAnchor,
-    [switch]$CenterAfterLayout
+    [switch]$CenterAfterLayout,
+    [IntPtr]$ExpectedWindow = [IntPtr]::Zero
 ) {
     $point = if ($RowAnchor) {
         $row = $Element.Current.BoundingRectangle
@@ -260,7 +264,20 @@ function Click-IslandElement(
     if ($nativeOwner -ne $AppProcessId) {
         throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
     }
+    if ($ExpectedWindow -ne [IntPtr]::Zero -and [AgentBroSmokeInput]::RootWindowAtCursor() -ne $ExpectedWindow) {
+        throw "A different AgentBro window owns the click point for $Description"
+    }
     [AgentBroSmokeInput]::Click()
+}
+
+function Write-ForegroundWindow([IntPtr]$Handle) {
+    try {
+        $element = [Windows.Automation.AutomationElement]::FromHandle($Handle)
+        $process = Get-Process -Id $element.Current.ProcessId -ErrorAction SilentlyContinue
+        Write-Host "Foreground window $Handle belongs to $($process.ProcessName) ($($element.Current.ClassName))."
+    } catch {
+        Write-Host "Could not describe foreground window $Handle."
+    }
 }
 
 function Test-KeyboardPermissionDenial(
@@ -321,9 +338,25 @@ function Test-KeyboardPermissionDenial(
         $deny.SetFocus()
         $clock = [Diagnostics.Stopwatch]::new()
         if ($TracePermissionUi) { Save-PermissionFrame $clock $Attempt 'before-space' }
+        $activation = @{ attempted = $false }
         try {
             $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' {
-                if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
+                $foreground = [AgentBroSmokeInput]::GetForegroundWindow()
+                if ($foreground -ne $WindowHandle) {
+                    if (-not $activation.attempted) {
+                        $activation.attempted = $true
+                        Write-ForegroundWindow $foreground
+                        $name = [Windows.Automation.PropertyCondition]::new(
+                            [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
+                        $title = $Island.FindFirst([Windows.Automation.TreeScope]::Descendants, $name)
+                        if ($title -and $title.Current.ControlType -eq [Windows.Automation.ControlType]::Text) {
+                            Click-IslandElement $title 'Island detail title for foreground activation' -CenterAfterLayout -ExpectedWindow $WindowHandle |
+                                Out-Host
+                            $deny.SetFocus()
+                        }
+                    }
+                    return $false
+                }
                 $focused = [Windows.Automation.AutomationElement]::FocusedElement
                 $focused -and $deny.Current.HasKeyboardFocus -and
                     [Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $deny.GetRuntimeId())
