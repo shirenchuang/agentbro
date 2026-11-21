@@ -443,7 +443,7 @@ function Test-KeyboardPermissionDenial(
             Write-IslandAccessibilityBounds $WindowHandle
         }
         if ($TracePermissionUi) {
-            Write-Host "Before requesting Deny focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            Write-Host "Before requesting Deny focus at $([DateTimeOffset]::UtcNow.ToString('O')): $([AgentBroSmokeInput]::DescribeForegroundFocus())."
         }
         $denyHasFocus = {
             if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $WindowHandle) { return $false }
@@ -805,7 +805,7 @@ try {
     try {
         if ($TracePermissionUi -and $islandWindow) {
             Write-IslandAccessibilityBounds $islandWindow.Handle
-            Write-Host "Focus after failure: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            Write-Host "Focus after failure at $([DateTimeOffset]::UtcNow.ToString('O')): $([AgentBroSmokeInput]::DescribeForegroundFocus())."
             Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe' OR Name = 'wslhost.exe'" |
                 ForEach-Object {
                     $parent = Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue
