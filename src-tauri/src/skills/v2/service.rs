@@ -3219,72 +3219,100 @@ impl Service {
         let center = Path::new(&row.center_path);
         let target = Path::new(target_path);
         self.ensure_distribution_target_path(skill_id, agent_id, target)?;
+        match target.symlink_metadata() {
+            Ok(_) => {
+                return Err(format!(
+                    "Skill target '{}' already exists. Preview distribution again.",
+                    target.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Inspect Skill target '{}': {error}",
+                    target.display()
+                ))
+            }
+        }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
         }
         let actual = match actual_mode {
+            "link" if fsutil::try_symlink(center, target)? => "link",
+            "link" if self.effective_link_fail_policy()? == "copy" => "copy",
             "link" => {
-                let linked = fsutil::try_symlink(center, target)?;
-                if linked {
-                    "link".to_string()
-                } else {
-                    let policy = self.effective_link_fail_policy()?;
-                    if policy == "copy" {
-                        fsutil::copy_dir_recursive(center, target)?;
-                        "copy".to_string()
-                    } else {
-                        return Err(format!(
-                            "Could not create symlink at {}. Set link-fail policy to copy, or choose copy.",
-                            target.display()
-                        ));
-                    }
-                }
+                return Err(format!(
+                    "Could not create symlink at {}. Preview distribution again or choose copy.",
+                    target.display()
+                ))
             }
-            "copy" => {
-                fsutil::copy_dir_recursive(center, target)?;
-                "copy".to_string()
-            }
+            "copy" => "copy",
             other => return Err(format!("Unknown mode: {other}")),
         };
-        let source_hash = fsutil::hash_dir(center);
-        let now = db::now_iso();
-        let target_id = format!("tgt-{}", uuid_short());
-        let current_hash = if actual == "copy" {
-            Some(fsutil::hash_dir(target))
-        } else {
-            None
-        };
-        self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode, actual_mode, source_hash, current_hash, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ok', ?9, ?9)",
-                params![target_id, skill_id, agent_id, target_path, requested_mode, actual, source_hash, current_hash, now],
-            )
-            .map_err(|e| e.to_string())?;
-            let claim_type = match &origin {
-                ClaimOrigin::Direct => "direct",
-                ClaimOrigin::Pack(_) => "pack",
+        if actual == "copy" {
+            std::fs::create_dir(target).map_err(|error| {
+                format!(
+                    "Create Skill target '{}': {error}. Preview distribution again.",
+                    target.display()
+                )
+            })?;
+        }
+        let install = (|| {
+            let current_hash = if actual == "copy" {
+                fsutil::copy_dir_recursive(center, target)?;
+                Some(fsutil::hash_dir(target))
+            } else {
+                None
             };
-            let pack_id = match &origin {
-                ClaimOrigin::Pack(id) => Some(id.clone()),
-                _ => None,
+            let source_hash = fsutil::hash_dir(center);
+            let now = db::now_iso();
+            let target_id = format!("tgt-{}", uuid_short());
+            let (claim_type, pack_id) = match origin {
+                ClaimOrigin::Direct => ("direct", None),
+                ClaimOrigin::Pack(id) => ("pack", Some(id)),
             };
-            tx.execute(
-                "INSERT OR IGNORE INTO skill_target_claims(id, target_id, claim_type, pack_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    format!("clm-{}", uuid_short()),
-                    target_id,
-                    claim_type,
-                    pack_id,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })?;
-        Ok(())
+            self.db.transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO skill_targets(id, skill_id, agent_id, target_path, install_mode,
+                     actual_mode, source_hash, current_hash, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ok', ?9, ?9)",
+                    params![
+                        target_id,
+                        skill_id,
+                        agent_id,
+                        target_path,
+                        requested_mode,
+                        actual,
+                        source_hash,
+                        current_hash,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO skill_target_claims
+                     (id, target_id, claim_type, pack_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        format!("clm-{}", uuid_short()),
+                        target_id,
+                        claim_type,
+                        pack_id,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+        })();
+        if let Err(error) = &install {
+            if let Err(cleanup_error) = fsutil::remove_path(target) {
+                return Err(format!(
+                    "{error}. Could not remove incomplete Skill target: {cleanup_error}"
+                ));
+            }
+        }
+        install
     }
 
     fn convert_target(
