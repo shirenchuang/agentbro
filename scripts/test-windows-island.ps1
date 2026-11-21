@@ -243,7 +243,8 @@ function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
     [Windows.Automation.AutomationElement]$RowAnchor,
-    [switch]$CenterAfterLayout
+    [switch]$CenterAfterLayout,
+    [scriptblock]$FindElement
 ) {
     $point = if ($RowAnchor) {
         $row = $Element.Current.BoundingRectangle
@@ -260,8 +261,14 @@ function Click-IslandElement(
         [Windows.Point]::new($rect.Left + $rect.Width / 2, $rect.Top + $rect.Height / 2)
     } else {
         Wait-IslandValue "a clickable point on $Description" {
-            $candidate = [Windows.Point]::new(0, 0)
-            if ($Element.TryGetClickablePoint([ref]$candidate)) { $candidate }
+            try {
+                $current = if ($FindElement) { & $FindElement } else { $Element }
+                $candidate = [Windows.Point]::new(0, 0)
+                if ($current -and $current.TryGetClickablePoint([ref]$candidate)) { $candidate }
+            } catch {
+                if (-not $FindElement -or ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                    $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException])) { throw }
+            }
         }
     }
     if (-not [AgentBroSmokeInput]::SetCursorPos([int]$point.X, [int]$point.Y)) {
@@ -610,16 +617,14 @@ try {
         Move-ToElement $island
     }
 
-    $session = Wait-IslandValue 'the fixture session and its Read target in the hover list' {
+    $findSession = {
         Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
     }
     if ($VerifyDrag) {
+        $null = Wait-IslandValue 'the fixture session and its Read target in the hover list' $findSession
         Test-InstalledIslandDrag $island $islandWindow.Handle
-        $session = Wait-IslandValue 'the fixture session after dragging the Island' {
-            Find-IslandButton $island { param($Name) $Name.Contains($ProjectName) -and $Name.Contains('smoke.txt') }
-        }
     }
-    Click-IslandElement $session 'Island session'
+    Click-IslandElement -Description 'Island session' -FindElement $findSession
 
     $titleName = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::NameProperty, $ProjectName)
