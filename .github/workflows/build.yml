@@ -42,10 +42,6 @@ on:
         description: Reproduce programmatic UI Automation focus on the permission button
         type: boolean
         default: false
-      windows_force_webview_accessibility:
-        description: Compare the same installer with renderer accessibility enabled at startup
-        type: boolean
-        default: false
       windows_verify_startup_stacks:
         description: Verify that the x64 Windows startup sampler resolves AgentBro frames
         type: boolean
@@ -338,15 +334,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Enable renderer accessibility for AgentBro on the hosted runner
-        if: inputs.windows_force_webview_accessibility && runner.environment == 'github-hosted'
-        shell: pwsh
-        run: |
-          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-          New-Item -Path $key -Force | Out-Null
-          New-ItemProperty -Path $key -Name 'agentbro.exe' -PropertyType String `
-            -Value '--force-renderer-accessibility' -Force | Out-Null
-
       - name: Install and exercise the Windows app
         shell: pwsh
         timeout-minutes: 5
@@ -357,7 +344,6 @@ jobs:
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
-          FORCE_WEBVIEW_ACCESSIBILITY: ${{ inputs.windows_force_webview_accessibility }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
@@ -371,7 +357,6 @@ jobs:
               -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
               -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
               -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
-              -ForceWebViewAccessibility:($env:FORCE_WEBVIEW_ACCESSIBILITY -eq 'true') `
               -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 

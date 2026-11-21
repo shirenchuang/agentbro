@@ -9,7 +9,6 @@ param(
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
-    [switch]$ForceWebViewAccessibility,
     [switch]$VerifyStartupStackSampler
 )
 
@@ -305,13 +304,6 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
-    if ($ForceWebViewAccessibility) {
-        Wait-AppCondition 'the installed WebView2 process to receive the renderer accessibility flag' {
-            Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe' AND ParentProcessId = $($app.Id)" |
-                Where-Object { $_.CommandLine -match '(?:^|[\s"])--force-renderer-accessibility(?:[\s"]|$)' }
-        }
-        Write-Output 'The installed WebView2 process received --force-renderer-accessibility.'
-    }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
         Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'
