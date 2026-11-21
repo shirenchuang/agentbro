@@ -66,6 +66,13 @@ const EXPANDED_PREVIEW_ROW_HEIGHT = 58
 const EXPANDED_PREVIEW_VERTICAL_PADDING = 48
 const PET_SURFACE_WIDTH = 820
 const PET_SURFACE_HEIGHT = 360
+
+interface NotchDragGesture {
+  pointerId: number
+  captureTarget: HTMLDivElement
+  started: Promise<boolean>
+}
+
 function nativeHostResizeKey(width: number, height: number, horizontalOffset: number, displayId?: string): string {
   return `${width.toFixed(2)}:${height.toFixed(2)}:${horizontalOffset.toFixed(2)}:${displayId ?? ''}`
 }
@@ -321,7 +328,8 @@ export function NotchPanel() {
   const [keepCompactAfterActive, setKeepCompactAfterActive] = useState(false)
   const [inlineBlockingOverlayIds, setInlineBlockingOverlayIds] = useState<Set<string>>(() => new Set())
   const [hasInputDraft, setHasInputDraft] = useState(false)
-  const dragPointerIdRef = useRef<number | null>(null)
+  const activeDragRef = useRef<NotchDragGesture | null>(null)
+  const pendingDragEndRef = useRef<Promise<void> | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0 })
   const hasInputDraftRef = useRef(false)
@@ -1803,20 +1811,27 @@ export function NotchPanel() {
     }
   }, [displayMonitor, effectiveHorizontalOffset, isDragging, requestNativeHostResize, updateHostAnchorOffset])
 
-  const finishActiveDrag = useCallback((pointerId?: number, captureTarget?: Element) => {
-    const activePointerId = dragPointerIdRef.current
-    if (activePointerId == null) return
-    if (pointerId != null && activePointerId !== pointerId) return
+  const finishActiveDrag = useCallback((pointerId?: number) => {
+    const drag = activeDragRef.current
+    if (!drag || (pointerId != null && drag.pointerId !== pointerId)) return
 
-    dragPointerIdRef.current = null
+    activeDragRef.current = null
     dragCandidateRef.current = null
     setIsDragging(false)
-    endNotchDrag().then((finalOffset) => {
-      if (typeof finalOffset === 'number') updateConfig('panelHorizontalOffset', finalOffset)
-    }).catch(() => {})
 
-    if (captureTarget?.hasPointerCapture?.(activePointerId)) {
-      captureTarget.releasePointerCapture(activePointerId)
+    const finished = drag.started
+      .then((started) => started ? endNotchDrag() : null)
+      .then((finalOffset) => {
+        if (typeof finalOffset === 'number') updateConfig('panelHorizontalOffset', finalOffset)
+      })
+      .catch(() => {})
+    pendingDragEndRef.current = finished
+    void finished.then(() => {
+      if (pendingDragEndRef.current === finished) pendingDragEndRef.current = null
+    })
+
+    if (drag.captureTarget.hasPointerCapture?.(drag.pointerId)) {
+      drag.captureTarget.releasePointerCapture(drag.pointerId)
     }
   }, [updateConfig])
 
@@ -1840,7 +1855,7 @@ export function NotchPanel() {
   }, [finishActiveDrag, isDragging])
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (!allowHorizontalDrag || event.button !== 0 || isDragIgnoredTarget(event.target)) return
+    if (!allowHorizontalDrag || activeDragRef.current || event.button !== 0 || isDragIgnoredTarget(event.target)) return
     dragCandidateRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -1849,7 +1864,7 @@ export function NotchPanel() {
   }
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (dragPointerIdRef.current === event.pointerId) {
+    if (activeDragRef.current?.pointerId === event.pointerId) {
       event.preventDefault()
       event.stopPropagation()
       return
@@ -1868,26 +1883,27 @@ export function NotchPanel() {
       expandTimerRef.current = undefined
     }
     dragCandidateRef.current = null
-    dragPointerIdRef.current = event.pointerId
-    event.currentTarget.setPointerCapture?.(event.pointerId)
+    const { pointerId, currentTarget: captureTarget } = event
+    const start = () => {
+      const { width, height } = hostHitboxSizeRef.current
+      const { panelHorizontalOffset, displayMonitor } = useConfigStore.getState()
+      return startNotchDrag(panelHorizontalOffset, width, height, displayMonitor)
+    }
+    const pendingEnd = pendingDragEndRef.current
+    const gesture: NotchDragGesture = {
+      pointerId,
+      captureTarget,
+      started: (pendingEnd
+        ? pendingEnd.then(() => activeDragRef.current === gesture && start())
+        : start()
+      ).catch(() => false),
+    }
+    activeDragRef.current = gesture
+    captureTarget.setPointerCapture?.(pointerId)
     setIsDragging(true)
-    const dragWindowWidth = hostHitboxSizeRef.current.width
-    const dragWindowHeight = hostHitboxSizeRef.current.height
-    startNotchDrag(panelHorizontalOffset, dragWindowWidth, dragWindowHeight, displayMonitor).then((started) => {
-      if (!started && dragPointerIdRef.current === event.pointerId) {
-        dragPointerIdRef.current = null
-        setIsDragging(false)
-        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-          event.currentTarget.releasePointerCapture(event.pointerId)
-        }
-      }
-    }).catch(() => {
-      if (dragPointerIdRef.current === event.pointerId) {
-        dragPointerIdRef.current = null
-        setIsDragging(false)
-        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-          event.currentTarget.releasePointerCapture(event.pointerId)
-        }
+    void gesture.started.then((started) => {
+      if (!started && activeDragRef.current === gesture) {
+        finishActiveDrag(pointerId)
       }
     })
   }
@@ -1899,10 +1915,9 @@ export function NotchPanel() {
         event.currentTarget.releasePointerCapture(event.pointerId)
       }
     }
-    const pointerId = dragPointerIdRef.current
-    if (pointerId == null || pointerId !== event.pointerId) return
+    if (activeDragRef.current?.pointerId !== event.pointerId) return
     event.preventDefault()
-    finishActiveDrag(pointerId, event.currentTarget)
+    finishActiveDrag(event.pointerId)
   }
 
   return (

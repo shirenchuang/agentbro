@@ -29,7 +29,7 @@ const tauriMocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => false),
   resizeNotch: vi.fn<typeof import('../services/tauriApi').resizeNotch>(() => Promise.resolve({ anchorOffsetX: 0 })),
   startNotchDrag: vi.fn(() => Promise.resolve(true)),
-  endNotchDrag: vi.fn(() => Promise.resolve(null)),
+  endNotchDrag: vi.fn<typeof import('../services/tauriApi').endNotchDrag>(() => Promise.resolve(null)),
 }))
 
 function primaryModifierKeyEvent() {
@@ -660,6 +660,74 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => {
       expect(tauriMocks.endNotchDrag).toHaveBeenCalled()
     })
+  })
+
+  it('waits for native drag startup before ending a released gesture', async () => {
+    const start = deferred<boolean>()
+    tauriMocks.startNotchDrag.mockReturnValueOnce(start.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1)
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    fireEvent.mouseUp(window)
+    expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
+    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-dragging', 'false')
+
+    await act(async () => { start.resolve(true) })
+    expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1)
+  })
+
+  it('finishes the previous drag before starting another with the same pointer', async () => {
+    const finish = deferred<number | null>()
+    tauriMocks.endNotchDrag.mockReturnValueOnce(finish.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+    const handle = screen.getByTestId('notch-drag-handle')
+
+    const beginDrag = () => {
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+      fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    }
+    beginDrag()
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    beginDrag()
+    expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1)
+
+    await act(async () => { finish.resolve(25) })
+    expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(2)
+    expect(tauriMocks.startNotchDrag).toHaveBeenLastCalledWith(25, 686, 192, 'auto')
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(2))
+  })
+
+  it('releases pointer capture when native drag startup rejects', async () => {
+    const start = deferred<boolean>()
+    tauriMocks.startNotchDrag.mockReturnValueOnce(start.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+
+    const island = screen.getByRole('region', { name: 'AgentBro' })
+    const capture = vi.fn()
+    const release = vi.fn()
+    Object.assign(island, {
+      setPointerCapture: capture,
+      hasPointerCapture: () => true,
+      releasePointerCapture: release,
+    })
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    expect(capture).toHaveBeenCalledWith(7)
+
+    await act(async () => { start.reject(new Error('native drag failed')) })
+    expect(release).toHaveBeenCalledWith(7)
+    expect(island).toHaveAttribute('data-dragging', 'false')
+    expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
   })
 
   it('keeps native interaction enabled when opening session detail', async () => {
