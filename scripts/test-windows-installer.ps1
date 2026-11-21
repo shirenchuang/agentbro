@@ -3,6 +3,7 @@ param(
     [string]$Installer,
     [switch]$VerifyIsland,
     [switch]$VerifyPackManifest,
+    [switch]$TracePermissionUi,
     [string]$SymbolsDirectory
 )
 
@@ -20,6 +21,9 @@ $listener.Start()
 $port = $listener.LocalEndpoint.Port
 $listener.Stop()
 $env:AGENTBRO_HOOK_PORT = "$port"
+if ($TracePermissionUi -and ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not ($VerifyIsland -or $VerifyPackManifest))) {
+    throw 'Permission tracing requires an Island check on an isolated GitHub-hosted runner'
+}
 
 $installerProcess = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installDir" -PassThru
 if (-not $installerProcess.WaitForExit(90000)) {
@@ -198,6 +202,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             $start.ArgumentList.Add($argument)
         }
     }
+    if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true

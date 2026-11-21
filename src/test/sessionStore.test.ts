@@ -25,6 +25,7 @@ describe('sessionStore backend overlays', () => {
     useConfigStore.setState({ idleTimeoutMinutes: 0, sessionTimeoutMinutes: 30, sessionSilenceRules: [], excludedHookCwdSubstrings: '' })
     useSessionStore.setState({
       sessions: {},
+      acknowledgedPermissionIds: new Map(),
       sessionList: [],
       activeSessionId: null,
       panelState: 'collapsed',
@@ -122,6 +123,27 @@ describe('sessionStore backend overlays', () => {
     expect(overlay?.type).toBe('permission')
     expect(overlay?.data).toMatchObject({ options: ['allow', 'deny'] })
   })
+
+  it.each(['after the decision', 'after the next request'])(
+    'ignores a stale snapshot of an acknowledged permission %s', (when) => {
+      const older = { toolUseId: 'tool-1', toolName: 'Bash', toolInput: '{"command":"pnpm test"}' }
+      const newer = { ...older, toolUseId: 'tool-2' }
+      const stale = session({ phase: 'waiting_approval', pendingPermission: older })
+      const next = session({ phase: 'waiting_approval', pendingPermission: newer })
+      const store = useSessionStore.getState()
+      store.replaceAllSessions([stale])
+      if (when === 'after the next request') store.replaceAllSessions([next])
+      store.clearPermission('s1', older)
+      store.replaceAllSessions([stale])
+
+      const expected = when === 'after the next request' ? newer : undefined
+      expect(useSessionStore.getState().sessions.s1?.pendingPermission).toEqual(expected)
+      expect(useSessionStore.getState().activeOverlay?.data).toEqual(expected)
+      store.replaceAllSessions([next])
+      expect(useSessionStore.getState().sessions.s1?.pendingPermission).toEqual(newer)
+      expect(useSessionStore.getState().activeOverlay?.data).toEqual(newer)
+    },
+  )
 
   it('uses backend response text instead of generic completion text', () => {
     useSessionStore.getState().replaceAllSessions([session({ phase: 'processing' })])

@@ -14,16 +14,23 @@ interface ApprovalBarProps {
   onAllow: () => void
   onAllowAlways: () => void
   onDeny: () => void
+  restorePermissionFocus?: () => void
   onAutoApprove?: () => void
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
   onJumpToHostApp?: () => void
 }
 
-export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
+export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePermissionFocus, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
   const { t } = useTranslation()
   const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
   const inputRef = useRef<HTMLInputElement>(null)
+  const permissionButtonsRef = useCallback((buttons: HTMLDivElement | null) => {
+    if (!buttons || !restorePermissionFocus) return
+    return () => {
+      if (buttons.contains(buttons.ownerDocument.activeElement)) restorePermissionFocus()
+    }
+  }, [restorePermissionFocus])
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [draftState, setDraftState] = useState({ sessionId: session.id, value: '' })
   const [questionState, setQuestionState] = useState<{
@@ -143,7 +150,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         </div>
 
         {/* 4 action buttons */}
-        <div className="approval-bar__buttons">
+        <div className="approval-bar__buttons" ref={permissionButtonsRef}>
           <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
             {t('notch.deny')}
           </button>

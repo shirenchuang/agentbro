@@ -25,9 +25,11 @@ const saveSessionsDebounced = debounce(() => {
 }, 1000)
 
 type PermissionIdentity = Pick<PermissionRequest, 'toolUseId' | 'toolName'> & { toolInput?: unknown }
+const MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION = 16
 
 interface SessionStore {
   sessions: Record<string, SessionState>
+  acknowledgedPermissionIds: ReadonlyMap<string, readonly string[]>
   sessionList: SessionState[]
   activeSessionId: string | null
   panelState: PanelState
@@ -404,6 +406,7 @@ export const selectOverlayQueue = (s: SessionStore) => s.overlayQueue
 
 export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<SessionStore>((set) => ({
   sessions: {},
+  acknowledgedPermissionIds: new Map(),
   sessionList: [],
   activeSessionId: null,
   panelState: 'collapsed',
@@ -812,12 +815,14 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     set((state) => {
       const sessions = { ...state.sessions }
       delete sessions[id]
+      const acknowledgedPermissionIds = new Map(state.acknowledgedPermissionIds)
+      acknowledgedPermissionIds.delete(id)
       let activeSessionId = state.activeSessionId
       if (activeSessionId === id) {
         const ids = Object.keys(sessions)
         activeSessionId = ids[0] ?? null
       }
-      return { sessions, sessionList: toList(sessions), activeSessionId }
+      return { sessions, sessionList: toList(sessions), activeSessionId, acknowledgedPermissionIds }
     })
     saveSessionsDebounced()
   },
@@ -834,6 +839,11 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
       for (const incoming of newSessions) {
         const prev = prevState.sessions[incoming.id]
         const existing = state.sessions[incoming.id]
+        const toolUseId = incoming.pendingPermission?.toolUseId
+        if (existing && toolUseId && state.acknowledgedPermissionIds.get(incoming.id)?.includes(toolUseId)) {
+          sessions[incoming.id] = existing
+          continue
+        }
         const enteredIdle = incoming.phase === 'idle' && existing?.phase !== 'idle'
         const enteredDone = incoming.phase === 'done' && existing?.phase !== 'done'
         const lastUserMessageChanged = Boolean(incoming.lastUserMessage)
@@ -1045,7 +1055,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (overlay.type === 'compacting') return session.phase === 'compacting'
         return true
       })
-      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      const acknowledgedPermissionIds = state.acknowledgedPermissionIds.size
+        ? new Map([...state.acknowledgedPermissionIds].filter(([sessionId]) => Object.hasOwn(sessions, sessionId)))
+        : state.acknowledgedPermissionIds
+      return { sessions, sessionList, activeSessionId, overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds }
     })
     // Push new overlays after state update
     if (newOverlays.length > 0) {
@@ -1096,13 +1109,24 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
   clearPermission: (sessionId, permission) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session?.pendingPermission || !samePermission(session.pendingPermission, permission)) return state
+      if (!session) return state
+      const toolUseId = permission?.toolUseId
+      const previousIds = state.acknowledgedPermissionIds.get(sessionId) ?? []
+      const acknowledgedPermissionIds = toolUseId && !previousIds.includes(toolUseId)
+        ? new Map(state.acknowledgedPermissionIds).set(
+            sessionId,
+            [...previousIds, toolUseId].slice(-MAX_ACKNOWLEDGED_PERMISSIONS_PER_SESSION),
+          )
+        : state.acknowledgedPermissionIds
+      if (!session.pendingPermission || !samePermission(session.pendingPermission, permission)) {
+        return acknowledgedPermissionIds === state.acknowledgedPermissionIds ? state : { acknowledgedPermissionIds }
+      }
       const sessions = {
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined, unattendedSince: undefined },
       }
       const overlayQueue = state.overlayQueue.filter((o) => !(o.sessionId === sessionId && o.type === 'permission'))
-      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null }
+      return { sessions, sessionList: toList(sessions), overlayQueue, activeOverlay: overlayQueue[0] ?? null, acknowledgedPermissionIds }
     })
   },
 

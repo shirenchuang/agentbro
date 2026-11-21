@@ -22,6 +22,10 @@ on:
         description: Exercise Skill Pack manifests through the native Open and Save dialogs
         type: boolean
         default: false
+      windows_trace_permission_ui:
+        description: Repeat approval and record Hook timing, screenshots and accessibility state
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -267,6 +271,7 @@ jobs:
         timeout-minutes: 5
         env:
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
+          TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
           if (-not $installer) {
@@ -274,6 +279,7 @@ jobs:
           }
           ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
               -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
+              -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 
       - name: Upload the failed desktop check
@@ -282,4 +288,12 @@ jobs:
         with:
           name: agentbro-windows-desktop-failure
           path: ${{ runner.temp }}/agentbro-island-failure.png
+          if-no-files-found: ignore
+
+      - name: Upload the permission dismissal timeline
+        if: ${{ !cancelled() && inputs.windows_trace_permission_ui && runner.environment == 'github-hosted' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentbro-windows-permission-trace
+          path: ${{ runner.temp }}/agentbro-permission-trace/
           if-no-files-found: ignore
