@@ -66,6 +66,7 @@ STATE_MUTATING_COMMANDS = {
     "scan_skill_project_v2",
     "execute_move_direct_skill_to_pack",
     "write_agent_config_file_v2",
+    "set_plugin_enabled_v2",
     "save_mcp_server_cmd",
     "set_mcp_server_enabled_cmd",
     "delete_mcp_server_v2_cmd",
@@ -431,6 +432,8 @@ def agent_config_path(agent_id):
         return expand_path(configured) if configured else openclaw_state_path() / "openclaw.json"
     if agent_id == "codex" and os.environ.get("CODEX_HOME"):
         return expand_path(os.environ["CODEX_HOME"]) / "config.toml"
+    if agent_id == "claude-code" and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return expand_path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
     return HOME / spec["config"]
 
 
@@ -447,6 +450,8 @@ def agent_plugin_path(agent_id):
         raise ValueError("Unknown Agent: " + str(agent_id))
     if agent_id == "openclaw":
         return openclaw_state_path() / "extensions"
+    if agent_id in ("codex", "claude-code"):
+        return agent_config_path(agent_id).parent / "plugins" / "cache"
     return HOME / spec["plugins"]
 
 
@@ -2116,7 +2121,7 @@ def agent_detail_from_inventory(
             targets,
         )["packs"],
         "mcpServers": [],
-        "plugins": [],
+        "plugins": plugin_inventory(agent_id)["plugins"],
         "health": [],
     }
 
@@ -2413,7 +2418,7 @@ def github_import(repo_url, selections):
         temporary.cleanup()
 
 
-def read_mcp_config_bytes(path):
+def read_config_bytes(path):
     try:
         return path.read_bytes()
     except FileNotFoundError:
@@ -2439,20 +2444,27 @@ def parse_mcp_config(content):
     return data
 
 
+def toml_config_parser():
+    try:
+        import tomllib as parser
+    except ImportError:
+        try:
+            import tomli as parser
+        except ImportError:
+            return None
+    return parser
+
+
 def parse_codex_mcp_config(content):
     if not content.strip():
         return {}
-    try:
-        import tomllib as toml_parser
-    except ImportError:
-        try:
-            import tomli as toml_parser
-        except ImportError:
-            raise ValueError("Reading remote Codex MCP TOML requires Python 3.11+ or an installed tomli parser.") from None
+    parser = toml_config_parser()
+    if parser is None:
+        raise ValueError("Reading remote Codex MCP TOML requires Python 3.11+ or an installed tomli parser.")
 
     message = "Fix the remote Codex MCP TOML configuration before inspecting its servers."
     try:
-        servers = toml_parser.loads(content.decode("utf-8")).get("mcp_servers", {})
+        servers = parser.loads(content.decode("utf-8")).get("mcp_servers", {})
     except ValueError:
         raise ValueError(message) from None
     if not isinstance(servers, dict) or any(not isinstance(server, dict) for server in servers.values()):
@@ -2545,7 +2557,7 @@ def resolve_mcp_config_values(draft, previous):
 
 def mcp_inventory(agent_id, include_sensitive=False):
     path = agent_mcp_path(agent_id)
-    content = read_mcp_config_bytes(path)
+    content = read_config_bytes(path)
     revision = hashlib.sha256(content).hexdigest()
     codex = agent_id == "codex"
     editable = not codex and path.suffix == ".json"
@@ -2625,7 +2637,7 @@ def write_mcp_inventory(
     if agent_id == "codex" or path.suffix != ".json":
         raise ValueError("This remote Agent MCP format is read-only")
     target = path.resolve()
-    content = read_mcp_config_bytes(target)
+    content = read_config_bytes(target)
     conflict = "The remote MCP configuration changed after it was opened. Reload before saving."
     if hashlib.sha256(content).hexdigest() != revision:
         raise ValueError(conflict)
@@ -2664,25 +2676,30 @@ def write_mcp_inventory(
                 value[key] = resolve_mcp_config_values(server[key], previous.get(key) or {})
         servers[name] = value
     data["disabledMcpServers"] = sorted(disabled)
+    updated = json.dumps(data, ensure_ascii=False, indent=2).encode()
+    replace_remote_config(path, target, content, updated, conflict)
+    return mcp_inventory(agent_id)
+
+
+def replace_remote_config(path, target, content, updated, conflict):
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False
+            mode="wb", dir=target.parent, suffix=".tmp", delete=False
         ) as temp:
             temp_path = pathlib.Path(temp.name)
             if target.is_file():
                 temp_path.chmod(stat.S_IMODE(target.stat().st_mode))
-            json.dump(data, temp, ensure_ascii=False, indent=2)
+            temp.write(updated)
             temp.flush()
             os.fsync(temp.fileno())
-        if path.resolve() != target or read_mcp_config_bytes(target) != content:
+        if path.resolve() != target or read_config_bytes(target) != content:
             raise ValueError(conflict)
         temp_path.replace(target)
     finally:
         if temp_path is not None:
             unlink_if_exists(temp_path)
-    return mcp_inventory(agent_id)
 
 
 def mcp_server(agent_id, server_name):
@@ -3176,40 +3193,221 @@ def inspect_mcp(agent_id, server_name, inspection_id):
     }
 
 
-def plugin_inventory(agent_id):
-    spec = agent_spec(agent_id)
-    if not spec:
-        raise ValueError("Unknown Agent: " + agent_id)
-    root = agent_plugin_path(agent_id)
-    plugins = []
-    if root.is_dir():
-        for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
-            if not path.is_dir():
+def read_plugin_json(path):
+    try:
+        document = json.loads(path.read_bytes())
+        return document if isinstance(document, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def plugin_manifest_path(agent_id, directory):
+    if agent_id == "codex":
+        return directory / ".codex-plugin" / "plugin.json"
+    if agent_id == "claude-code":
+        return directory / ".claude-plugin" / "plugin.json"
+    return directory / "package.json"
+
+
+def plugin_configuration(agent_id):
+    if agent_id not in ("codex", "claude-code"):
+        return None
+    try:
+        path = safe_home_path(agent_config_path(agent_id))
+        target = path.resolve()
+        content = read_config_bytes(target)
+        if agent_id == "codex":
+            parser = toml_config_parser()
+            if parser is None:
+                return None
+            document = parser.loads(content.decode("utf-8"))
+            plugins = document.get("plugins", {})
+            if not isinstance(plugins, dict) or any(
+                not isinstance(item, dict) or not isinstance(item.get("enabled", True), bool)
+                for item in plugins.values()
+            ):
+                return None
+            states = {key: item.get("enabled", True) for key, item in plugins.items()}
+        else:
+            document = json.loads(content) if content.strip() else {}
+            if not isinstance(document, dict):
+                return None
+            states = document.get("enabledPlugins", {})
+            if not isinstance(states, dict) or any(not isinstance(value, bool) for value in states.values()):
+                return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return path, target, content, document, states
+
+
+def discovered_plugins(agent_id, root):
+    records = {}
+    native = agent_id in ("codex", "claude-code")
+    if not root.is_dir():
+        return records
+    directories = root.glob("*/*/*") if native else root.iterdir()
+    for directory in sorted(directories):
+        if not directory.is_dir():
+            continue
+        manifest = plugin_manifest_path(agent_id, directory)
+        resolved = manifest.resolve()
+        if root not in resolved.parents:
+            continue
+        metadata = read_plugin_json(manifest)
+        if native:
+            name = metadata.get("name")
+            if not isinstance(name, str) or not name:
                 continue
-            manifest = path / "package.json"
-            metadata = {}
-            if manifest.is_file():
-                try:
-                    metadata = json.loads(manifest.read_text())
-                except Exception:
-                    metadata = {}
-            plugins.append({
-                "id": path.name,
-                "name": metadata.get("name", path.name),
-                "version": metadata.get("version"),
-                "enabled": not (path / ".disabled").exists(),
-                "source": str(path),
-            })
-    revision = hashlib.sha256(
-        json.dumps(plugins, sort_keys=True).encode()
-    ).hexdigest()
+            plugin_id = f"{name}@{directory.parent.parent.name}"
+        else:
+            plugin_id = directory.name
+        current = records.get(plugin_id)
+        if current is None or current.name < directory.name:
+            records[plugin_id] = directory
+    return records
+
+
+def claude_user_plugins(config):
+    registry = read_plugin_json(config.parent / "plugins" / "installed_plugins.json").get("plugins", {})
+    if not isinstance(registry, dict):
+        return set()
+    return {
+        plugin_id for plugin_id, entries in registry.items()
+        if any(
+            isinstance(entry, dict) and entry.get("scope", "user") == "user"
+            for entry in (entries if isinstance(entries, list) else [entries])
+        )
+    }
+
+
+def plugin_revision(target, content):
+    return hashlib.sha256(os.fsencode(target) + b"\0" + content).hexdigest()
+
+
+def plugin_inventory(agent_id, configuration=None):
+    if not agent_spec(agent_id):
+        raise ValueError("Unknown Agent: " + agent_id)
+    native = agent_id in ("codex", "claude-code")
+    try:
+        root = safe_home_path(agent_plugin_path(agent_id)).resolve()
+        records = discovered_plugins(agent_id, root)
+    except (OSError, ValueError, RuntimeError):
+        records = {}
+    path = agent_config_path(agent_id) if native else None
+    configuration = configuration if configuration is not None else plugin_configuration(agent_id)
+    states = configuration[4] if configuration else {}
+    ids = set(states) if configuration else set(records)
+    if agent_id == "claude-code" and configuration:
+        ids.update(claude_user_plugins(path))
+
+    plugins = []
+    for plugin_id in sorted(ids, key=lambda value: (value.lower(), value)):
+        fallback_name = plugin_id.partition("@")[0]
+        directory = records.get(plugin_id)
+        metadata = read_plugin_json(plugin_manifest_path(agent_id, directory)) if directory else {}
+        interface = metadata.get("interface")
+        display_name = interface.get("displayName") if isinstance(interface, dict) else None
+        name = next((value for value in (display_name, metadata.get("displayName"), metadata.get("name"))
+                     if isinstance(value, str) and value), fallback_name)
+        version = metadata.get("version")
+        plugins.append({
+            "id": plugin_id,
+            "name": name,
+            "version": version if isinstance(version, str) else None,
+            "enabled": states.get(plugin_id, True) if configuration else None,
+            "source": str(directory) if directory else None,
+        })
     return {
         "agentId": agent_id,
-        "configPath": str(root),
-        "revision": revision,
-        "capabilities": {"editable": True, "requiresNewSession": True},
+        "configPath": str(path) if path else None,
+        "revision": plugin_revision(configuration[1], configuration[2]) if configuration else "read-only",
+        "capabilities": {"editable": configuration is not None, "requiresNewSession": True},
         "plugins": plugins,
     }
+
+
+def update_codex_plugin_setting(content, document, plugin_id, enabled):
+    parser = toml_config_parser()
+    text = content.decode("utf-8")
+    plugin = document["plugins"][plugin_id]
+    previous = plugin.get("enabled")
+    plugin["enabled"] = enabled
+    value = "true" if enabled else "false"
+
+    # Match the parsed document so comments and strings cannot be mistaken for the setting.
+    def verified(candidate):
+        try:
+            return parser.loads(candidate) == document
+        except ValueError:
+            return False
+
+    if previous is not None:
+        old_value = "true" if previous else "false"
+        for match in re.finditer(r"\b" + old_value + r"\b", text):
+            candidate = text[:match.start()] + value + text[match.end():]
+            if verified(candidate):
+                return candidate.encode()
+    else:
+        newline = "\r\n" if "\r\n" in text else "\n"
+        assignment = "enabled = " + value
+        key = json.dumps(plugin_id, ensure_ascii=False)
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            offset += len(line)
+            if not line.lstrip().startswith("["):
+                continue
+            try:
+                table = parser.loads(line)
+            except ValueError:
+                continue
+            if table == {"plugins": {plugin_id: {}}}:
+                entry = assignment
+            elif table == {"plugins": {}}:
+                entry = key + "." + assignment
+            else:
+                continue
+            separator = "" if line.endswith(("\n", "\r")) else newline
+            candidate = text[:offset] + separator + entry + newline + text[offset:]
+            if verified(candidate):
+                return candidate.encode()
+        for match in re.finditer(r"\{", text):
+            index = match.end()
+            separator = "" if text[index:].lstrip().startswith("}") else ", "
+            candidate = text[:index] + assignment + separator + text[index:]
+            if verified(candidate):
+                return candidate.encode()
+        candidate = "plugins." + key + "." + assignment + newline + text
+        if verified(candidate):
+            return candidate.encode()
+        candidate = text + newline + "[plugins." + key + "]" + newline + assignment + newline
+        if verified(candidate):
+            return candidate.encode()
+    raise ValueError("Could not update this Codex plugin without changing other settings.")
+
+
+def set_plugin_enabled(agent_id, plugin_id, revision, enabled):
+    configuration = plugin_configuration(agent_id)
+    if configuration is None:
+        raise ValueError("This remote Agent's plugin settings are read-only.")
+    path, target, content, document, _states = configuration
+    conflict = "The remote plugin settings changed. Reload before saving."
+    if revision != plugin_revision(target, content):
+        raise ValueError(conflict)
+    if not isinstance(enabled, bool):
+        raise ValueError("Plugin enablement must be true or false.")
+    inventory_value = plugin_inventory(agent_id, configuration)
+    plugin = next((item for item in inventory_value["plugins"] if item["id"] == plugin_id), None)
+    if plugin is None:
+        raise ValueError("Plugin is no longer configured. Reload the plugin list.")
+    if plugin["enabled"] == enabled:
+        return inventory_value
+    if agent_id == "codex":
+        updated = update_codex_plugin_setting(content, document, plugin_id, enabled)
+    else:
+        document.setdefault("enabledPlugins", {})[plugin_id] = enabled
+        updated = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode()
+    replace_remote_config(path, target, content, updated, conflict)
+    return plugin_inventory(agent_id)
 
 
 def plugin_file_tree(path, root):
@@ -3251,14 +3449,11 @@ def plugin_detail(agent_id, plugin_id):
     )
     if not plugin:
         raise ValueError("Plugin not found: " + plugin_id)
-    root = safe_home_path(plugin["source"], allow_missing=False)
-    manifest = root / "package.json"
-    metadata = {}
-    if manifest.is_file():
-        try:
-            metadata = json.loads(manifest.read_text())
-        except Exception:
-            metadata = {}
+    if not plugin["source"]:
+        raise ValueError("Installed files are not available for this plugin.")
+    root = safe_home_path(plugin["source"], allow_missing=False).resolve()
+    manifest = plugin_manifest_path(agent_id, root)
+    metadata = read_plugin_json(manifest)
     file_count = sum(1 for item in root.rglob("*") if item.is_file())
     return {
         **plugin,
@@ -3280,8 +3475,8 @@ def plugin_file(agent_id, plugin_id, relative_path):
     relative = pathlib.Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("Invalid plugin file path")
-    path = root / relative
-    if not path.is_file():
+    path = (root / relative).resolve()
+    if root not in path.parents or not path.is_file():
         raise ValueError("Plugin file not found")
     data = path.read_bytes()
     truncated = len(data) > 2 * 1024 * 1024
@@ -3933,19 +4128,7 @@ def dispatch():
     if command == "list_plugin_inventory_v2":
         return plugin_inventory(args["agentId"])
     if command == "set_plugin_enabled_v2":
-        inventory_value = plugin_inventory(args["agentId"])
-        plugin = next(
-            (item for item in inventory_value["plugins"] if item["id"] == args["pluginId"]),
-            None,
-        )
-        if not plugin:
-            raise ValueError("Plugin not found")
-        marker = pathlib.Path(plugin["source"]) / ".disabled"
-        if args["enabled"]:
-            unlink_if_exists(marker)
-        else:
-            marker.touch()
-        return plugin_inventory(args["agentId"])
+        return set_plugin_enabled(args["agentId"], args["pluginId"], args["revision"], args["enabled"])
     if command == "get_plugin_detail_v2":
         return plugin_detail(args["agentId"], args["pluginId"])
     if command == "read_plugin_file_v2":

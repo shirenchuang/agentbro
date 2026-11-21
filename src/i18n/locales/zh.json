@@ -856,6 +856,7 @@
       "disabled": "已停用插件「{{name}}」",
       "enabledTag": "启用",
       "disabledTag": "停用",
+      "unknownTag": "状态未知",
       "on": "开启",
       "off": "关闭",
       "toggleLabel": "启用或停用 {{name}}",

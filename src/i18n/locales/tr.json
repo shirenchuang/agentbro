@@ -708,6 +708,7 @@
       "disabled": "“{{name}}” eklentisi devre dışı bırakıldı",
       "enabledTag": "Etkin",
       "disabledTag": "Devre dışı",
+      "unknownTag": "Durum bilinmiyor",
       "on": "Açık",
       "off": "Kapalı",
       "toggleLabel": "{{name}} eklentisini etkinleştir veya devre dışı bırak",

@@ -816,6 +816,7 @@
       "disabled": "플러그인 ‘{{name}}’을(를) 사용 중지했습니다",
       "enabledTag": "사용",
       "disabledTag": "사용 안 함",
+      "unknownTag": "상태 알 수 없음",
       "on": "켜짐",
       "off": "꺼짐",
       "toggleLabel": "{{name}} 사용 또는 사용 중지",
