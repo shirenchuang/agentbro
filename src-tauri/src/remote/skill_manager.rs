@@ -1687,16 +1687,17 @@ env_http_headers = { "X-Context" = "FIXTURE_CONTEXT" }
             .replace(
                 "\ntry:\n    RESPONSE = json_safe(dispatch())",
                 r#"
-def assert_local_values(server, method, params):
+@contextmanager
+def assert_local_values(server):
     if server["transport"] == "stdio":
         values = {item["key"]: item["value"] for item in server["env"]}
         assert values["API_TOKEN"] == "fixture-token"
     else:
         values = {item["key"]: item["value"] for item in server["headers"]}
         assert values["Authorization"] == "Bearer fixture-value"
-    return {"serverInfo": {"name": "fixture"}}, {"tools": []}
-stdio_mcp_request = assert_local_values
-http_mcp_request = assert_local_values
+    yield {"serverInfo": {"name": "fixture"}}, lambda method, params: {"tools": []}
+stdio_mcp_session = assert_local_values
+http_mcp_session = assert_local_values
 try:
     RESPONSE = json_safe(dispatch())"#,
             );
@@ -1705,6 +1706,131 @@ try:
             assert!(!response.to_string().contains(fixture));
         }
         std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_mcp_inspection_uses_the_advertised_capabilities_of_one_stdio_session() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-mcp-capabilities-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&home).expect("test home");
+        let fixture = home.join("mcp_fixture.py");
+        std::fs::write(
+            &fixture,
+            r#"import json
+from pathlib import Path
+import sys
+
+mode = sys.argv[1]
+trace = Path.home() / ("trace-" + mode)
+capabilities = {
+    "tools": {"tools": {}},
+    "resources": {"resources": {}},
+    "partial": {"tools": {}, "resources": {}},
+}[mode]
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    with trace.open("a") as output:
+        print(method, file=output)
+    if "id" not in request:
+        continue
+    response = {"jsonrpc": "2.0", "id": request["id"]}
+    if method == "initialize":
+        response["result"] = {
+            "protocolVersion": "2025-06-18",
+            "serverInfo": {"name": mode},
+            "capabilities": capabilities,
+        }
+    elif method == "tools/list" and "tools" in capabilities:
+        response["result"] = {"tools": [{"name": "seen"}] if mode == "partial" else []}
+    elif method == "resources/list" and mode == "resources":
+        response["result"] = {"resources": [{"name": "fixture", "uri": "file:///fixture"}]}
+    elif method == "resources/list" and mode == "partial":
+        response["error"] = {"code": -32000, "message": "Catalog failed"}
+    else:
+        response["error"] = {"code": -32601, "message": "Method not found"}
+    print(json.dumps(response), flush=True)
+"#,
+        )
+        .expect("stdio server fixture");
+        let names = ["tools", "resources", "partial"];
+        let servers: serde_json::Map<String, Value> = names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    serde_json::json!({"command": "python3", "args": [&fixture, name]}),
+                )
+            })
+            .collect();
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({"mcpServers": servers}).to_string(),
+        )
+        .expect("fixture configuration");
+        let reports: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                let script = render_script(
+                    "inspect_mcp_server_cmd",
+                    serde_json::json!({
+                        "agent": "claude-code", "serverName": name,
+                        "inspectionId": uuid::Uuid::new_v4().to_string(),
+                    }),
+                )
+                .expect("render inspection");
+                let output = execute_rendered_script(&home, &script);
+                let trace = std::fs::read_to_string(home.join(format!("trace-{name}")))
+                    .expect("fixture trace");
+                (name, output, trace)
+            })
+            .collect();
+        std::fs::remove_dir_all(home).expect("remove test home");
+
+        for (name, output, trace) in reports {
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let payload = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(RESPONSE_MARKER))
+                .expect("marked response");
+            let report: Value = serde_json::from_str(payload).expect("inspection JSON");
+            let expected = match name {
+                "tools" => vec!["initialize", "notifications/initialized", "tools/list"],
+                "resources" => vec!["initialize", "notifications/initialized", "resources/list"],
+                _ => vec![
+                    "initialize",
+                    "notifications/initialized",
+                    "tools/list",
+                    "resources/list",
+                ],
+            };
+            assert_eq!(trace.lines().collect::<Vec<_>>(), expected, "{name}");
+            assert_eq!(
+                report["status"],
+                if name == "partial" {
+                    "partial"
+                } else {
+                    "connected"
+                }
+            );
+            assert_eq!(report["capabilities"]["tools"], name != "resources");
+            assert_eq!(report["capabilities"]["resources"], name != "tools");
+            assert_eq!(report["capabilities"]["prompts"], false);
+            if name == "partial" {
+                assert_eq!(report["tools"][0]["name"], "seen");
+                assert!(report["warnings"][0]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Catalog failed"));
+            }
+        }
     }
 
     #[test]
@@ -1839,11 +1965,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(401)
             return
         if method == "initialize":
+            if name == "strict" and name in states:
+                self.reply(400)
+                return
             states[name] = "initializing"
+            capabilities = {"tools": {}, "resources": {}} if name == "strict" else {"tools": {}}
             self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {
                 "protocolVersion": versions[name],
                 "serverInfo": {"name": name},
-                "capabilities": {"tools": {}},
+                "capabilities": capabilities,
             }}, "session-" + name)
         elif not self.has_session(name):
             self.reply(400)
@@ -1856,6 +1986,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(503)
             else:
                 self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": [{"name": "fixture"}]}})
+        elif name == "strict" and method == "resources/list" and states[name] == "used" and request["id"] == 3:
+            states[name] = "listed-resources"
+            self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": {"resources": []}})
         else:
             self.reply(400)
 
@@ -1865,7 +1998,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         name = self.path.lstrip("/")
-        if states.get(name) == "used" and self.has_session(name) and self.headers.get("Authorization") == "Bearer fixture":
+        expected = "listed-resources" if name == "strict" else "used"
+        if states.get(name) == expected and self.has_session(name) and self.headers.get("Authorization") == "Bearer fixture":
             (home / ("closed-" + name)).touch()
             self.reply(204 if name == "strict" else 405)
         else:
@@ -1897,11 +2031,22 @@ with HTTPServer(("127.0.0.1", 0), Handler) as server:
         let results: Vec<_> = names
             .into_iter()
             .map(|name| {
-                let result = run_script(
-                    &home,
-                    "test_mcp_server_connection_cmd",
-                    serde_json::json!({"agent": "claude-code", "serverName": name}),
-                );
+                let result = if name == "strict" {
+                    run_script(
+                        &home,
+                        "inspect_mcp_server_cmd",
+                        serde_json::json!({
+                            "agent": "claude-code", "serverName": name,
+                            "inspectionId": uuid::Uuid::new_v4().to_string(),
+                        }),
+                    )
+                } else {
+                    run_script(
+                        &home,
+                        "test_mcp_server_connection_cmd",
+                        serde_json::json!({"agent": "claude-code", "serverName": name}),
+                    )
+                };
                 (name, result, home.join(format!("closed-{name}")).is_file())
             })
             .collect();
@@ -1910,7 +2055,12 @@ with HTTPServer(("127.0.0.1", 0), Handler) as server:
         std::fs::remove_dir_all(home).expect("remove test home");
 
         for (name, result, tried_to_close) in results {
-            if name == "failing" {
+            if name == "strict" {
+                assert_eq!(result["status"], "connected", "{result}");
+                assert_eq!(result["capabilities"]["resources"], true);
+                assert_eq!(result["tools"][0]["name"], "fixture");
+                assert_eq!(result["resources"], serde_json::json!([]));
+            } else if name == "failing" {
                 assert_eq!(result["success"], false, "{result}");
                 assert!(
                     result["message"]

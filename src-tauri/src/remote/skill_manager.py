@@ -15,6 +15,8 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
+from itertools import count
 from os import readlink
 
 MARKER = "__AGENTBRO_REMOTE_SKILL_MANAGER__"
@@ -2682,7 +2684,8 @@ def read_json_line(stream, timeout):
     raise TimeoutError("MCP server response timed out")
 
 
-def stdio_mcp_request(server, method, params=None):
+@contextmanager
+def stdio_mcp_session(server):
     command = server.get("command")
     if not command:
         raise ValueError("MCP stdio server has no command")
@@ -2712,14 +2715,17 @@ def stdio_mcp_request(server, method, params=None):
         process.stdin.write(json.dumps(value, separators=(",", ":")) + "\n")
         process.stdin.flush()
 
-    def request(request_id, request_method, request_params=None):
+    request_ids = count(1)
+
+    def request(method, params=None):
+        request_id = next(request_ids)
         payload = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "method": request_method,
+            "method": method,
         }
-        if request_params is not None:
-            payload["params"] = request_params
+        if params is not None:
+            payload["params"] = params
         send(payload)
         while True:
             response = read_json_line(process.stdout, 15)
@@ -2729,14 +2735,13 @@ def stdio_mcp_request(server, method, params=None):
                 return response.get("result")
 
     try:
-        initialized = request(1, "initialize", {
+        initialized = request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "AgentBro", "version": "remote"},
         })
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        result = request(2, method, params)
-        return initialized, result
+        yield initialized, request
     finally:
         process.terminate()
         try:
@@ -2780,7 +2785,8 @@ def http_mcp_exchange(url, headers, payload=None, session_id=None, protocol_vers
     return value.get("result"), session
 
 
-def http_mcp_request(server, method, params=None):
+@contextmanager
+def http_mcp_session(server):
     url = server.get("url")
     if not url:
         raise ValueError("Remote MCP server has no URL")
@@ -2814,14 +2820,19 @@ def http_mcp_request(server, method, params=None):
             session_id=session_id,
             protocol_version=protocol_version,
         )
-        result, _ = http_mcp_exchange(
-            url,
-            headers,
-            {"jsonrpc": "2.0", "id": 2, "method": method, "params": params or {}},
-            session_id=session_id,
-            protocol_version=protocol_version,
-        )
-        return initialized, result
+        request_ids = count(2)
+
+        def request(method, params=None):
+            result, _ = http_mcp_exchange(
+                url,
+                headers,
+                {"jsonrpc": "2.0", "id": next(request_ids), "method": method, "params": params or {}},
+                session_id=session_id,
+                protocol_version=protocol_version,
+            )
+            return result
+
+        yield initialized, request
     finally:
         if session_id:
             try:
@@ -2831,44 +2842,66 @@ def http_mcp_request(server, method, params=None):
                 pass
 
 
+def mcp_error_message(server, error):
+    message = str(error)
+    if not server.get("codexConnection"):
+        return message
+    values = {item["value"] for item in server["env"] + server["headers"] if item["value"]}
+    values.update(value[7:] for value in list(values) if value.lower().startswith("bearer "))
+    if server["url"]:
+        query = urllib.parse.urlsplit(server["url"]).query
+        values.update(value for _, value in urllib.parse.parse_qsl(query) if value)
+    for value in sorted(values, key=len, reverse=True):
+        if value:
+            message = message.replace(value, "***")
+    return message
+
+
+@contextmanager
+def mcp_session(server):
+    transport = stdio_mcp_session if server["transport"] == "stdio" else http_mcp_session
+    try:
+        with transport(server) as (initialized, request):
+            if initialized is not None and not isinstance(initialized, dict):
+                raise ValueError("Invalid remote MCP initialization result.")
+            yield initialized or {}, request
+    except Exception as error:
+        if not server.get("codexConnection"):
+            raise
+        raise ValueError(mcp_error_message(server, error)) from None
+
+
 def mcp_request(agent_id, server_name, method, params=None):
     server = mcp_server(agent_id, server_name)
-    try:
-        if server["transport"] == "stdio":
-            initialized, result = stdio_mcp_request(server, method, params)
-        else:
-            initialized, result = http_mcp_request(server, method, params)
-    except Exception as error:
-        if agent_id != "codex":
-            raise
-        message = str(error)
-        values = {item["value"] for item in server["env"] + server["headers"] if item["value"]}
-        values.update(value[7:] for value in list(values) if value.lower().startswith("bearer "))
-        if server["url"]:
-            query = urllib.parse.urlsplit(server["url"]).query
-            values.update(value for _, value in urllib.parse.parse_qsl(query) if value)
-        for value in sorted(values, key=len, reverse=True):
-            if value:
-                message = message.replace(value, "***")
-        raise ValueError(message) from None
-    return server, initialized, result
+    with mcp_session(server) as (_, request):
+        return request(method, params)
+
+
+def advertised_mcp_capabilities(initialized):
+    capabilities = initialized.get("capabilities")
+    return capabilities if isinstance(capabilities, dict) else None
 
 
 def inspect_mcp(agent_id, server_name, inspection_id):
     started = time.time()
-    server, initialized, tools = mcp_request(agent_id, server_name, "tools/list", {})
+    server = mcp_server(agent_id, server_name)
     warnings = []
-    try:
-        _, _, resources = mcp_request(agent_id, server_name, "resources/list", {})
-    except Exception as error:
-        resources = {"resources": []}
-        warnings.append(str(error))
-    try:
-        _, _, prompts = mcp_request(agent_id, server_name, "prompts/list", {})
-    except Exception as error:
-        prompts = {"prompts": []}
-        warnings.append(str(error))
-    server_info = (initialized or {}).get("serverInfo", {})
+    catalogs = {}
+    with mcp_session(server) as (initialized, request):
+        advertised = advertised_mcp_capabilities(initialized)
+        for capability in ("tools", "resources", "prompts"):
+            if advertised is not None and capability not in advertised:
+                continue
+            try:
+                result = request(capability + "/list", {}) or {}
+                entries = result.get(capability)
+                if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+                    raise ValueError("Invalid remote MCP catalog.")
+                catalogs[capability] = entries
+            except Exception as error:
+                warnings.append(capability + "/list: " + mcp_error_message(server, error))
+    available = advertised if advertised is not None else catalogs
+    server_info = initialized.get("serverInfo", {})
     return {
         "inspectionId": inspection_id,
         "status": "partial" if warnings else "connected",
@@ -2876,15 +2909,12 @@ def inspect_mcp(agent_id, server_name, inspection_id):
         "summary": "Remote MCP inspection completed",
         "inspectedAtMs": int(time.time() * 1000),
         "durationMs": int((time.time() - started) * 1000),
-        "protocolVersion": (initialized or {}).get("protocolVersion"),
+        "protocolVersion": initialized.get("protocolVersion"),
         "serverName": server_info.get("name"),
         "serverVersion": server_info.get("version"),
         "transport": server["transport"],
         "capabilities": {
-            "tools": bool((tools or {}).get("tools")),
-            "resources": bool((resources or {}).get("resources")),
-            "prompts": bool((prompts or {}).get("prompts")),
-            "logging": False,
+            name: name in available for name in ("tools", "resources", "prompts", "logging")
         },
         "tools": [
             {
@@ -2902,7 +2932,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 },
                 "hasAnnotations": bool(item.get("annotations")),
             }
-            for item in (tools or {}).get("tools", [])
+            for item in catalogs.get("tools", [])
         ],
         "resources": [
             {
@@ -2913,7 +2943,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 "mimeType": item.get("mimeType"),
                 "size": item.get("size"),
             }
-            for item in (resources or {}).get("resources", [])
+            for item in catalogs.get("resources", [])
         ],
         "prompts": [
             {
@@ -2922,7 +2952,7 @@ def inspect_mcp(agent_id, server_name, inspection_id):
                 "description": item.get("description"),
                 "arguments": item.get("arguments", []),
             }
-            for item in (prompts or {}).get("prompts", [])
+            for item in catalogs.get("prompts", [])
         ],
         "steps": [],
         "warnings": warnings,
@@ -3734,19 +3764,17 @@ def dispatch():
     if command == "test_mcp_server_connection_cmd":
         started = time.time()
         try:
-            _, initialized, tools = mcp_request(
-                args["agent"],
-                args["serverName"],
-                "tools/list",
-                {},
-            )
-            server_info = (initialized or {}).get("serverInfo", {})
+            server = mcp_server(args["agent"], args["serverName"])
+            with mcp_session(server) as (initialized, request):
+                capabilities = advertised_mcp_capabilities(initialized)
+                tools = request("tools/list", {}) if capabilities is None or "tools" in capabilities else {}
+            server_info = initialized.get("serverInfo", {})
             return {
                 "success": True,
                 "category": "success",
                 "message": "Remote MCP connection succeeded",
                 "latencyMs": int((time.time() - started) * 1000),
-                "protocolVersion": (initialized or {}).get("protocolVersion"),
+                "protocolVersion": initialized.get("protocolVersion"),
                 "serverName": server_info.get("name"),
                 "serverVersion": server_info.get("version"),
                 "toolCount": len((tools or {}).get("tools", [])),
@@ -3770,7 +3798,7 @@ def dispatch():
         )
     if command == "call_mcp_tool_cmd":
         started = time.time()
-        _, _, result = mcp_request(
+        result = mcp_request(
             args["agent"],
             args["serverName"],
             "tools/call",
@@ -3790,7 +3818,7 @@ def dispatch():
         }
     if command == "get_mcp_prompt_cmd":
         started = time.time()
-        _, _, result = mcp_request(
+        result = mcp_request(
             args["agent"],
             args["serverName"],
             "prompts/get",
