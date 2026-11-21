@@ -5306,7 +5306,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         option: 'import_cleanup',
         renamedId: null,
       },
-    ]))
+    ], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('switches unmanaged skills into a peer tab and batch adopts them like agent sync', async () => {
@@ -5342,7 +5342,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         unmanagedId: 'unmanaged-1',
         option: 'import_keep',
         renamedId: null,
-      }])
+      }], LOCAL_RUNTIME_ENVIRONMENT_ID)
     })
     expect(listUnmanaged).toHaveBeenCalled()
   })
@@ -5469,7 +5469,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/当前选择的接管方式已不可用/)).not.toBeInTheDocument()
   })
 
-  it('syncs successfully batch-adopted unmanaged skills into an existing skill pack', async () => {
+  it.each([false, true])('syncs batch-adopted skills into the original pack (switch during lookup: %s)', async (switchRuntime) => {
     useSkillStoreV2.setState({
       selectedAgentDetail: {
         ...agentDetail,
@@ -5486,7 +5486,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       finalizationError: null,
     })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
-    vi.spyOn(skillApiV2, 'getPackDetail').mockResolvedValue({
+    const existingPack: SkillPackDetail = {
       id: 'agent-tools',
       name: 'Agent Tools',
       description: 'Daily agent tools',
@@ -5495,7 +5495,10 @@ describe('Skill detail slider + agent page render without crashing', () => {
       appliedAgents: [],
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
-    } as SkillPackDetail)
+    }
+    let finishLookup!: (pack: SkillPackDetail) => void
+    const pendingLookup = new Promise<SkillPackDetail>((resolve) => { finishLookup = resolve })
+    const getPackDetail = vi.spyOn(skillApiV2, 'getPackDetail').mockReturnValue(switchRuntime ? pendingLookup : Promise.resolve(existingPack))
     const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
       id: 'agent-tools',
       name: 'Agent Tools',
@@ -5522,22 +5525,35 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.change(screen.getByLabelText('目标技能包'), { target: { value: 'agent-tools' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
+    if (switchRuntime) {
+      await waitFor(() => expect(getPackDetail).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+        finishLookup(existingPack)
+      })
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+    }
     await waitFor(() => {
+      expect(getPackDetail).toHaveBeenCalledWith('agent-tools', LOCAL_RUNTIME_ENVIRONMENT_ID)
       expect(upsertPack).toHaveBeenCalledWith({
         id: 'agent-tools',
         name: 'Agent Tools',
         description: 'Daily agent tools',
         tags: [],
         skillIds: ['release-checklist', 'manual-skill'],
-      })
+      }, { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     })
   })
 
-  it('creates a skill pack from successfully batch-adopted unmanaged skills', async () => {
-    vi.spyOn(skillApiV2, 'executeAdoptBatch').mockResolvedValue({
+  it.each([false, true])('creates a pack on the adoption runtime (switch during adoption: %s)', async (switchRuntime) => {
+    const result = {
       items: [{ unmanagedId: 'unmanaged-1', skillId: 'manual-skill', error: null }],
       finalizationError: null,
-    })
+    }
+    let finishAdoption!: (value: typeof result) => void
+    const pendingAdoption = new Promise<typeof result>((resolve) => { finishAdoption = resolve })
+    const adopt = vi.spyOn(skillApiV2, 'executeAdoptBatch').mockReturnValue(switchRuntime ? pendingAdoption : Promise.resolve(result))
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
     const upsertPack = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
       id: 'pack-manual',
@@ -5562,6 +5578,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.change(screen.getByLabelText('新技能包名称'), { target: { value: 'Manual Pack' } })
     fireEvent.click(screen.getByRole('button', { name: '确认接管' }))
 
+    if (switchRuntime) {
+      await waitFor(() => expect(adopt).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+        finishAdoption(result)
+      })
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+      expect(screen.queryByText(/批量接管完成/)).not.toBeInTheDocument()
+    }
     await waitFor(() => {
       expect(upsertPack).toHaveBeenCalledWith({
         id: '',
@@ -5569,8 +5595,25 @@ describe('Skill detail slider + agent page render without crashing', () => {
         description: '',
         tags: [],
         skillIds: ['manual-skill'],
-      })
+      }, { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     })
+  })
+
+  it('closes an unconfirmed batch Skill adoption when the runtime changes', async () => {
+    const adopt = vi.spyOn(skillApiV2, 'executeAdoptBatch')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByText('选择当前可接管'))
+    fireEvent.click(screen.getByRole('button', { name: '接管到中心库' }))
+    expect(screen.getByRole('button', { name: '确认接管' })).toBeInTheDocument()
+
+    act(() => useRuntimeEnvironmentStore.getState().selectEnvironment('different-host'))
+
+    expect(screen.queryByRole('button', { name: '确认接管' })).not.toBeInTheDocument()
+    expect(adopt).not.toHaveBeenCalled()
   })
 
   it('localizes managed mode, direct claim, and unmanaged reason labels on the agent page', async () => {

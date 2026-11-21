@@ -50,6 +50,12 @@ type BatchAdoptPackSelection =
   | { kind: 'none' }
   | { kind: 'existing'; packId: string }
   | { kind: 'new'; name: string }
+type BatchAdoptReview = {
+  items: UnmanagedItemDto[]
+  agentId: string
+  environmentId: string
+  selectionRevision: number
+}
 type BatchAdoptPackOption = {
   id: string
   name: string
@@ -1617,7 +1623,7 @@ function SkillsTab({
   const [adoptingIds, setAdoptingIds] = useState<Set<string>>(() => new Set())
   const [batchDeleteTargets, setBatchDeleteTargets] = useState<AgentDetail['skills'] | null>(null)
   const [batchDeleteUnmanagedTargets, setBatchDeleteUnmanagedTargets] = useState<UnmanagedItemDto[] | null>(null)
-  const [batchAdoptItems, setBatchAdoptItems] = useState<UnmanagedItemDto[] | null>(null)
+  const [batchAdoptReview, setBatchAdoptReview] = useState<BatchAdoptReview | null>(null)
   const [quickTakeoverItems, setQuickTakeoverItems] = useState<UnmanagedItemDto[] | null>(null)
   const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
   const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
@@ -1709,11 +1715,12 @@ function SkillsTab({
     setSelectedUnmanagedIds(new Set())
     setBatchDeleteTargets(null)
     setBatchDeleteUnmanagedTargets(null)
+    setBatchAdoptReview(null)
     setQuickTakeoverItems(null)
     setMoveToPackTarget(null)
     setDeleteUnmanagedTarget(null)
     setDeleteUnmanagedError(null)
-  }, [detail.id, packFilter, source, status])
+  }, [detail.id, packFilter, source, state.runtimeEnvironmentId, status])
 
   useEffect(() => {
     if (!inheritsSharedSkills && source === 'shared') {
@@ -1783,7 +1790,7 @@ function SkillsTab({
     })()
   }
 
-  const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[]) => {
+  const syncAdoptedSkillsToPack = async (selection: BatchAdoptPackSelection, skillIds: string[], environmentId: string) => {
     const uniqueSkillIds = uniqueValues(skillIds)
     if (selection.kind === 'none' || uniqueSkillIds.length === 0) return null
     if (selection.kind === 'new') {
@@ -1793,11 +1800,11 @@ function SkillsTab({
         description: '',
         tags: [],
         skillIds: uniqueSkillIds,
-      })
+      }, { environmentId })
       return { packName: saved.name, added: saved.members.length }
     }
 
-    const existing = await skillApiV2.getPackDetail(selection.packId)
+    const existing = await skillApiV2.getPackDetail(selection.packId, environmentId)
     const existingIds = existing.members.map((member) => member.skillId)
     const merged = uniqueValues([...existingIds, ...uniqueSkillIds])
     if (merged.length === existingIds.length) {
@@ -1809,7 +1816,7 @@ function SkillsTab({
       description: existing.description,
       tags: existing.tags,
       skillIds: merged,
-    })
+    }, { environmentId })
     return { packName: saved.name, added: merged.length - existingIds.length }
   }
 
@@ -1847,8 +1854,18 @@ function SkillsTab({
     }
   }
 
-  const adoptUnmanaged = async (items: UnmanagedItemDto[], packSelection: BatchAdoptPackSelection = { kind: 'none' }) => {
-    if (items.length === 0) return
+  const openBatchAdoptReview = (items: UnmanagedItemDto[]) => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
+      setBatchAdoptReview({ items, agentId: detail.id, environmentId: selectedEnvironmentId, selectionRevision })
+    }
+  }
+
+  const adoptUnmanaged = async (review: BatchAdoptReview, packSelection: BatchAdoptPackSelection) => {
+    const { items, agentId, environmentId, selectionRevision } = review
+    const isCurrent = () => isRuntimeEnvironment(environmentId, selectionRevision)
+      && useSkillStoreV2.getState().selectedAgentId === agentId
+    if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     setAdoptingIds(new Set(ids))
     setLocalNotice(null)
@@ -1861,11 +1878,11 @@ function SkillsTab({
       const failed: string[] = []
       const itemsById = new Map(items.map((item) => [item.id, item]))
       const result = await skillApiV2.executeAdoptBatch(items.map((item) => ({
-        agentId: adoptOwnerAgentId(detail.id, item),
+        agentId: adoptOwnerAgentId(agentId, item),
         unmanagedId: item.id,
         option: defaultAgentDetailAdoptMode(item),
         renamedId: null,
-      })))
+      })), environmentId)
       for (const itemResult of result.items) {
         const item = itemsById.get(itemResult.unmanagedId)
         const name = item?.inferredSkillId || (item ? pathBasename(item.path) : '') || itemResult.unmanagedId
@@ -1882,11 +1899,11 @@ function SkillsTab({
         failed.push(`批量刷新失败: ${skillErrorMessage(t, result.finalizationError)}`)
       }
       try {
-        packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds)
+        packResult = await syncAdoptedSkillsToPack(packSelection, adoptedSkillIds, environmentId)
       } catch (e) {
         failed.push(`技能包同步失败: ${skillErrorMessage(t, e)}`)
       }
-      await refreshAgentSkills()
+      if (!isCurrent() || !(await refreshAgentSkills()) || !isCurrent()) return
       setSelectedUnmanagedIds(new Set())
       setUnmanagedSelectionMode(false)
       const packNotice = packResult
@@ -1908,7 +1925,7 @@ function SkillsTab({
       if (failed.length > 0) messages.push(failed.slice(0, 3).join('\n'))
       state.setError(messages.length > 0 ? messages.join('\n') : null)
     } catch (e) {
-      state.setError(skillErrorMessage(t, e))
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
       setAdoptingIds(new Set())
     }
@@ -2186,7 +2203,7 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedUnmanagedIds.size === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set())}>
                   {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => setBatchAdoptItems(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => openBatchAdoptReview(selectedUnmanaged)}>
                   {t('skills.agentManagement.actions.adoptToCenter')}
                 </ActionButton>
                 <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteUnmanagedTargets(selectedUnmanaged)}>
@@ -2379,17 +2396,16 @@ function SkillsTab({
           )}
         </PreviewDialog>
       )}
-      {batchAdoptItems && (
+      {batchAdoptReview?.agentId === detail.id && isRuntimeEnvironment(batchAdoptReview.environmentId, batchAdoptReview.selectionRevision) && (
         <BatchAdoptPackDialog
-          items={batchAdoptItems}
+          items={batchAdoptReview.items}
           agentName={detail.displayName}
           packOptions={packOptionsForBatchAdopt(detail, state.packs)}
           busy={unmanagedAdopting}
-          onCancel={() => setBatchAdoptItems(null)}
+          onCancel={() => setBatchAdoptReview(null)}
           onConfirm={async (selection) => {
-            const items = batchAdoptItems
-            setBatchAdoptItems(null)
-            await adoptUnmanaged(items, selection)
+            setBatchAdoptReview(null)
+            await adoptUnmanaged(batchAdoptReview, selection)
           }}
         />
       )}
@@ -2531,6 +2547,7 @@ function BatchAdoptPackDialog({
   onConfirm: (selection: BatchAdoptPackSelection) => Promise<void> | void
 }) {
   const { t } = useTranslation()
+  const { selectedEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const [mode, setMode] = useState<BatchAdoptPackSelection['kind']>('none')
   const [packId, setPackId] = useState(packOptions[0]?.id ?? '')
   const [newPackName, setNewPackName] = useState('')
@@ -2583,6 +2600,11 @@ function BatchAdoptPackDialog({
       onConfirm={execute}
     >
       <div className="sm2-adopt sm2-batch-adopt-pack">
+        <p>{t('skills.runtimeEnvironment.currentLabel', {
+          name: isLocal
+            ? t(isWindowsPlatform() ? 'skills.runtimeEnvironment.localWindowsName' : 'skills.runtimeEnvironment.localName')
+            : remoteHost?.name || selectedEnvironmentId,
+        })}</p>
         <div className="sm2-adopt__summary">
           <div>
             <span>{t('skills.batchAdoptPack.agent')}</span>

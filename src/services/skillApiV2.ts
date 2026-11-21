@@ -1295,9 +1295,9 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<AdoptPreview>('preview_adopt_agent_skill', { agentId, unmanagedId }) : Promise.resolve(null as unknown as AdoptPreview),
   executeAdopt: (agentId: string, unmanagedId: string, option: string, renamedId?: string | null) =>
     isTauriRuntime() ? invoke<string>('execute_adopt_agent_skill', { agentId, unmanagedId, option, renamedId: renamedId ?? null }) : Promise.resolve(''),
-  executeAdoptBatch: (items: AdoptBatchItem[]) =>
+  executeAdoptBatch: (items: AdoptBatchItem[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items })
+      ? invoke<AdoptBatchResult>('execute_adopt_agent_skills', { items }, environmentId)
       : Promise.resolve({
         items: items.map((item) => ({ unmanagedId: item.unmanagedId, skillId: '', error: null })),
         finalizationError: null,
@@ -1330,14 +1330,14 @@ export const skillApiV2 = {
       : Promise.resolve({ deleted: targetIds.length, failures: [] }),
 
   listPacks: () => (isTauriRuntime() ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
-  getPackDetail: (packId: string) =>
-    isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }) : Promise.resolve(null as unknown as SkillPackDetail),
+  getPackDetail: (packId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }, environmentId) : Promise.resolve(null as unknown as SkillPackDetail),
   readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
-  upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean } = {}) =>
+  upsertPack: (pack: UpsertPackInput, options: { deferSync?: boolean; environmentId?: string } = {}) =>
     isTauriRuntime()
-      ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false })
+      ? invoke<SkillPackDetail>('execute_upsert_skill_pack', { pack, deferSync: options.deferSync ?? false }, options.environmentId)
       : Promise.resolve(null as unknown as SkillPackDetail),
   previewDeletePack: (packId: string) =>
     isTauriRuntime() ? invoke<DeleteSkillPackPreview>('preview_delete_skill_pack', { packId }) : Promise.resolve({ packId, packName: packId, appliedAgents: [], affectedTargets: [], removable: true, warnings: [] }),
