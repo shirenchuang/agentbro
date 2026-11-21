@@ -4746,7 +4746,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('button', { name: '批量删除 0 个' })).toBeInTheDocument()
   })
 
-  it('moves a directly distributed Skill into a selected skill pack', async () => {
+  it.each([
+    'same selection', 'switch before confirming', 'switch during move', 'switch during refresh',
+  ] as const)('keeps a direct Skill move on its reviewed Agent view with %s', async (scenario) => {
     const pack = {
       id: 'daily-pack',
       name: 'Daily Pack',
@@ -4785,10 +4787,27 @@ describe('Skill detail slider + agent page render without crashing', () => {
       },
     }
     const previewMove = vi.spyOn(skillApiV2, 'previewMoveDirectSkillToPack').mockResolvedValue(movePreview)
-    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockResolvedValue(movePreview)
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    let finishMove!: () => void
+    const executeMove = vi.spyOn(skillApiV2, 'moveDirectSkillToPack').mockImplementation(() => {
+      if (scenario !== 'switch during move') return Promise.resolve(movePreview)
+      return new Promise((resolve) => { finishMove = () => resolve(movePreview) })
+    })
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    const snapshot = {
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [],
+    }
+    if (scenario === 'switch during refresh') {
+      refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+        finishRefresh = () => resolve(snapshot)
+      }))
+    } else refreshAgentSkillView.mockResolvedValue(snapshot)
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
     const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
     const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    loadOverview.mockClear()
 
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
@@ -4796,16 +4815,46 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(screen.getByRole('heading', { name: '将直接分发归入技能包' })).toBeInTheDocument()
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'daily-pack'))
     expect(await screen.findByText('加入技能包成员')).toBeInTheDocument()
     expect(screen.getByText('不处理其他成员')).toBeInTheDocument()
     expect(screen.getByText(/不会安装、更新或删除「Daily Pack」中的其他 2 个成员/)).toBeInTheDocument()
     expect(screen.getByText('切换为技能包控制')).toBeInTheDocument()
 
+    if (scenario === 'switch before confirming') {
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      expect(screen.queryByRole('dialog', { name: '将直接分发归入技能包' })).not.toBeInTheDocument()
+      expect(executeMove).not.toHaveBeenCalled()
+      return
+    }
+
     fireEvent.click(screen.getByRole('button', { name: '移动并交由技能包管理' }))
-    await waitFor(() => expect(executeMove).toHaveBeenCalledWith('target-1', 'daily-pack', []))
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(executeMove).toHaveBeenCalledTimes(1)
+
+    if (scenario === 'same selection') {
+      await waitFor(() => expect(screen.getByText('已将「Release Checklist」归入「Daily Pack」')).toBeInTheDocument())
+    } else {
+      if (scenario === 'switch during refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+      const remoteItem = makeSharedUnmanaged('remote-only', { agentId: 'claude-code' })
+      await act(async () => {
+        useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+        useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', unmanaged: [remoteItem], error: 'New host status' })
+        if (scenario === 'switch during move') finishMove()
+        else finishRefresh()
+      })
+      expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+      expect(useSkillStoreV2.getState().error).toBe('New host status')
+      expect(screen.queryByText(/Release Checklist.*Daily Pack/)).not.toBeInTheDocument()
+    }
+    expect(previewMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(executeMove).toHaveBeenCalledExactlyOnceWith('target-1', 'daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+    expect(loadOverview).not.toHaveBeenCalledWith(true)
+    if (scenario === 'switch during move') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('shows every claim and defaults moving to the skill existing pack', async () => {
@@ -4888,7 +4937,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '归入技能包 release-checklist' }))
 
     expect(document.querySelector('#sm2-move-to-pack-select')).toHaveValue('nice-try')
-    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try'))
+    await waitFor(() => expect(previewMove).toHaveBeenCalledWith('target-1', 'nice-try', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('shows immediate deleting feedback for a managed skill card', async () => {
@@ -4920,7 +4969,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByText('Skills (2)'))
 
     fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-1']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-1'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(screen.queryByRole('button', { name: '删除 release-checklist' })).not.toBeInTheDocument())
 
     act(() => {
@@ -4954,6 +5003,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledTimes(2))
     expect(listUnmanaged).not.toHaveBeenCalled()
     expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
+  it('does not retry a deletion refresh after switching away and back to the same runtime', async () => {
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    let failRefresh!: (error: Error) => void
+    refreshAgentSkillView.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      failRefresh = reject
+    }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+    await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ selectedAgentDetail: agentDetail, error: 'New view status' })
+      failRefresh(new Error('old refresh failed'))
+    })
+
+    expect(refreshAgentSkillView).toHaveBeenCalledTimes(1)
+    expect(useSkillStoreV2.getState().error).toBe('New view status')
+    expect(screen.getByRole('button', { name: '删除 release-checklist' })).toBeInTheDocument()
+  })
+
+  it('keeps the new Agent view error when an earlier deletion fails after leaving and returning', async () => {
+    let failDelete!: (error: Error) => void
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockImplementationOnce(() => (
+      new Promise((_resolve, reject) => { failDelete = reject })
+    ))
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (id) => ({ ...agentDetail, id }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '删除 release-checklist' }))
+    expect(deleteTargets).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await useSkillStoreV2.getState().selectAgent('codex') })
+    await act(async () => { await useSkillStoreV2.getState().selectAgent('claude-code') })
+    await act(async () => {
+      useSkillStoreV2.setState({ error: 'New Agent status' })
+      failDelete(new Error('old deletion failed'))
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('New Agent status')
+    expect(vi.mocked(skillApiV2.refreshAgentSkillView)).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a deletion review when the runtime changes and returns before confirmation', async () => {
+    const deleteTargets = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('Skills (2)'))
+    fireEvent.click(screen.getByRole('button', { name: '批量选择' }))
+    fireEvent.click(screen.getByLabelText('选择 release-checklist'))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 1 个' }))
+    expect(screen.getByRole('dialog', { name: '确认批量删除 Skill？' })).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog', { name: '确认批量删除 Skill？' })).not.toBeInTheDocument()
+    expect(deleteTargets).not.toHaveBeenCalled()
   })
 
   it('cancels managed skill batch deletion from the confirmation dialog', async () => {
@@ -5006,7 +5122,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
     expect(screen.queryByRole('dialog', { name: '移除共享的已管理 Skill？' })).not.toBeInTheDocument()
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(screen.getByRole('button', { name: '删除中 shared-review' })).toHaveAttribute('aria-busy', 'true')
     expect(finishDelete).toBeTypeOf('function')
     ;(finishDelete as unknown as () => void)()
@@ -5046,7 +5162,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const dialog = screen.getByRole('dialog', { name: '移除共享的已管理 Skill？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
-    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review', 'target-shared-writing']))
+    await waitFor(() => expect(deleteTargets).toHaveBeenCalledWith(['target-shared-review', 'target-shared-writing'], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('deletes an unmanaged agent skill from the skill card after confirmation', async () => {
@@ -5064,7 +5180,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '直接删除' }))
     expect(screen.queryByRole('dialog', { name: '删除 Skill「manual-skill」？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledWith('claude-code'))
   })
 
@@ -5099,7 +5215,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
     expect(screen.queryByRole('dialog', { name: '永久删除共享的未管理 Skill？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing'], LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('closes the unmanaged confirmation dialog and keeps failed items visible', async () => {
@@ -5144,7 +5260,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '直接删除' }))
 
     expect(screen.queryByRole('dialog', { name: '删除 Skill「bird」？' })).not.toBeInTheDocument()
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('codex', ['unmanaged-codex-bird']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('codex', ['unmanaged-codex-bird'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText(/该未管理 Skill 不属于 Agent「codex」，请重新扫描后重试/)).toBeInTheDocument()
     expect(useSkillStoreV2.getState().unmanaged).toContainEqual(codexItem)
   })
@@ -5181,7 +5297,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
     expect(screen.queryByRole('dialog', { name: '确认批量删除未管理 Skill？' })).not.toBeInTheDocument()
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('claude-code', ['unmanaged-1', 'unmanaged-2'], LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalledWith('claude-code'))
   })
 
@@ -5252,7 +5368,62 @@ describe('Skill detail slider + agent page render without crashing', () => {
     const dialog = screen.getByRole('dialog', { name: '永久删除共享的未管理 Skill？' })
     fireEvent.click(within(dialog).getByRole('button', { name: '从共享目录删除' }))
 
-    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing', 'raw-shared-review']))
+    await waitFor(() => expect(deleteUnmanaged).toHaveBeenCalledWith('agents', ['raw-shared-writing', 'raw-shared-review'], LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('finishes confirmed unmanaged deletion on the original runtime for every owner', async () => {
+    useSkillStoreV2.setState({
+      selectedAgentDetail: {
+        ...agentDetail,
+        id: 'codex',
+        displayName: 'Codex',
+        iconKey: 'codex',
+        inheritsSharedSkills: true,
+        inheritedUnmanagedSkills: [
+          makeSharedUnmanaged('shared-writing'),
+          makeSharedUnmanaged('shared-review', { agentId: 'codex' }),
+        ],
+      },
+      selectedAgentId: 'codex',
+      agents: [makeSidebarAgent('codex', 'Codex')],
+      unmanaged: [],
+    })
+    const ownerRuntimes: string[] = []
+    let finishFirstOwner!: () => void
+    const pendingFirstOwner = new Promise<{ deleted: number; failures: [] }>((resolve) => {
+      finishFirstOwner = () => resolve({ deleted: 1, failures: [] })
+    })
+    const deleteUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkills').mockImplementation(
+      (owner, _ids, environmentId?: string) => {
+        ownerRuntimes.push(environmentId ?? useRuntimeEnvironmentStore.getState().selectedEnvironmentId)
+        return owner === 'agents' ? pendingFirstOwner : Promise.resolve({ deleted: 1, failures: [] })
+      },
+    )
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (3)' }))
+    fireEvent.click(screen.getByRole('button', { name: '共享继承 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量管理' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择当前可接管' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除 2 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '从共享目录删除' }))
+    expect(deleteUnmanaged).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', error: 'New host status' })
+      finishFirstOwner()
+    })
+
+    expect(deleteUnmanaged.mock.calls.map(([owner, ids]) => [owner, ids])).toEqual([
+      ['agents', ['raw-shared-writing']],
+      ['codex', ['raw-shared-review']],
+    ])
+    expect(ownerRuntimes).toEqual([LOCAL_RUNTIME_ENVIRONMENT_ID, LOCAL_RUNTIME_ENVIRONMENT_ID])
+    expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().error).toBe('New host status')
   })
 
   it('batch adopts shared unmanaged Skills through the standard flow with owner agents', async () => {
@@ -5386,9 +5557,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
       })),
       finalizationError: null,
     })
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([localOnly])
-    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
-    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockResolvedValueOnce({
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [localOnly],
+    })
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (4)'))
@@ -5407,12 +5581,83 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(takeover).toHaveBeenCalledWith('claude-code', [
         'unmanaged-same',
         'unmanaged-conflict',
-      ])
+      ], LOCAL_RUNTIME_ENVIRONMENT_ID)
     })
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(await screen.findByText('一键接管完成：已接管 2 个，失败 0 个；其他未管理 Skill 保持不变。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+  })
+
+  it('closes an unconfirmed one-click takeover when the runtime changes and returns', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [{
+        ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+        reason: 'same_name_as_center_skill',
+      }],
+    })
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    expect(screen.getByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).not.toBeInTheDocument()
+    expect(takeover).not.toHaveBeenCalled()
+  })
+
+  it.each(['takeover', 'refresh'] as const)('keeps another runtime intact when one-click takeover is pending in %s', async (phase) => {
+    const item = {
+      ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+      reason: 'same_name_as_center_skill',
+    }
+    const remoteItem = makeSharedUnmanaged('remote-skill', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [item] })
+    const result = {
+      items: [{ unmanagedId: item.id, skillId: 'same-skill', error: null }],
+      finalizationError: null,
+    }
+    let finishTakeover!: () => void
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills').mockImplementation(() => {
+      if (phase === 'refresh') return Promise.resolve(result)
+      return new Promise((resolve) => { finishTakeover = () => resolve(result) })
+    })
+    const snapshot = { agentDetail, overview: makeOverview(), unmanaged: [] }
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+      finishRefresh = () => resolve(snapshot)
+    }))
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '以中心库为准接管' }))
+    expect(takeover).toHaveBeenCalledTimes(1)
+    if (phase === 'refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', unmanaged: [remoteItem], error: 'New host status' })
+      if (phase === 'takeover') finishTakeover()
+      else finishRefresh()
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('New host status')
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+    expect(screen.queryByText(/一键接管完成/)).not.toBeInTheDocument()
+    expect(takeover).toHaveBeenCalledWith('claude-code', [item.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    if (phase === 'takeover') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('explains which batch adoption conflicts require individual review', async () => {
