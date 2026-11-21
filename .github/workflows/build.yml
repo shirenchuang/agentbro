@@ -208,6 +208,9 @@ jobs:
           & $testExecutable skills::v2::db::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::v2::tests::snapshot_refresh_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable data_dir::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -189,10 +189,56 @@ mod tests {
 mod unix_tests {
     use super::{render_script, RESPONSE_MARKER};
     use serde_json::Value;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn remote_snapshot_refresh_and_write_failure_preserve_complete_files() {
+        let home = crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir())
+            .expect("temporary remote home");
+        let command = "skill_manager_export_snapshot";
+        let args = serde_json::json!({});
+        let path = run_script(home.path(), command, args.clone());
+        let path = Path::new(path.as_str().expect("snapshot path"));
+        let original = std::fs::read(path).expect("original snapshot");
+        let mut reader = std::fs::File::open(path).expect("open original snapshot");
+        let skill = home.path().join(".agentbro/skills/snapshot-demo");
+        write_remote_skill(&skill, "Snapshot 演示", "Remote content");
+
+        run_script(home.path(), command, args.clone());
+
+        let mut observed = Vec::new();
+        reader
+            .read_to_end(&mut observed)
+            .expect("read original file");
+        assert_eq!(observed, original);
+        let published = std::fs::read(path).expect("published snapshot");
+        let snapshot: Value = serde_json::from_slice(&published).expect("valid JSON snapshot");
+        assert_eq!(snapshot["skills"][0]["name"], "Snapshot 演示");
+
+        let failure = run_script_error_with_prelude(
+            home.path(),
+            command,
+            args,
+            r#"
+def fail_snapshot_write(value, output, **options):
+    output.write("{")
+    raise OSError("fixture snapshot write failed")
+json.dump = fail_snapshot_write
+"#,
+        );
+        assert!(failure.contains("fixture snapshot write failed"));
+        assert_eq!(std::fs::read(path).unwrap(), published);
+        assert!(std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+    }
 
     #[test]
     fn remote_script_preserves_overview_and_distribution_shapes() {
