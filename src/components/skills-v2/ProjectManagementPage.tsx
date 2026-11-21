@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { captureProjectView, useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { ProjectAgentDetail, ProjectDetail, ProjectSkillItem } from '../../services/skillApiV2'
 import { isWindowsPlatform } from '../../utils/platform'
@@ -15,6 +15,7 @@ export function ProjectManagementPage() {
   const [tab, setTab] = useState<ProjectTab>('overview')
   const [agentFilter, setAgentFilter] = useState('all')
   const [busy, setBusy] = useState(false)
+  const [adding, setAdding] = useState(false)
 
   useEffect(() => {
     state.loadOverview()
@@ -41,20 +42,25 @@ export function ProjectManagementPage() {
     )
   }, [query, state.projects])
 
-  const detail = state.selectedProjectDetail
+  const detail = state.selectedProjectDetail?.id === state.selectedProjectId ? state.selectedProjectDetail : null
 
   const addProject = async () => {
     const value = rootPath.trim()
     if (!value) return
-    await state.addProject(value)
-    setRootPath('')
+    setAdding(true)
+    try {
+      await state.addProject(value)
+      setRootPath((current) => current.trim() === value ? '' : current)
+    } finally {
+      setAdding(false)
+    }
   }
 
   const refreshProjects = async () => {
     setBusy(true)
+    state.setError(null)
     try {
-      await state.loadProjects(true)
-      if (state.selectedProjectId) await state.selectProject(state.selectedProjectId)
+      await state.refreshProject(state.selectedProjectId)
     } finally {
       setBusy(false)
     }
@@ -88,7 +94,7 @@ export function ProjectManagementPage() {
                 onChange={(event) => setRootPath(event.target.value)}
                 placeholder={isWindowsPlatform() ? 'C:\\Users\\me\\work\\repo' : '/Users/me/work/repo'}
               />
-              <button className="sm2__btn sm2__btn--primary" disabled={!rootPath.trim() || state.projectDetailLoading} onClick={addProject}>
+              <button className="sm2__btn sm2__btn--primary" disabled={!rootPath.trim() || adding || state.projectDetailLoading} onClick={addProject}>
                 添加
               </button>
             </div>
@@ -134,6 +140,7 @@ export function ProjectManagementPage() {
             </div>
           ) : (
             <ProjectDetailView
+              key={detail.id}
               detail={detail}
               tab={tab}
               onTab={setTab}
@@ -156,8 +163,8 @@ function ProjectDetailView({
   onTab,
   agentFilter,
   onAgentFilter,
-  busy,
-  onScan,
+  busy: projectDetailLoading,
+  onScan: scanProject,
   onRemove,
 }: {
   detail: ProjectDetail
@@ -166,9 +173,19 @@ function ProjectDetailView({
   agentFilter: string
   onAgentFilter: (agentId: string) => void
   busy: boolean
-  onScan: () => void
+  onScan: () => Promise<void>
   onRemove: () => void
 }) {
+  const [scanning, setScanning] = useState(false)
+  const busy = projectDetailLoading || scanning
+  const onScan = async () => {
+    setScanning(true)
+    try {
+      await scanProject()
+    } finally {
+      setScanning(false)
+    }
+  }
   const tabs: Array<{ id: ProjectTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${detail.skillCount})` },
@@ -256,7 +273,7 @@ function ProjectDetailView({
 
       <div className="sm2__subtab-body">
         {tab === 'overview' && <ProjectOverview agents={visibleAgents} />}
-        {tab === 'skills' && <ProjectSkills agents={visibleAgents} />}
+        {tab === 'skills' && <ProjectSkills projectId={detail.id} agents={visibleAgents} />}
         {tab === 'mcp' && <ProjectMcp agents={visibleAgents} />}
         {tab === 'plugins' && <ProjectPlugins agents={visibleAgents} />}
         {tab === 'instructions' && <ProjectInstructions detail={detail} agentFilter={agentFilter} />}
@@ -296,35 +313,23 @@ function ProjectInstallPanel({ detail }: { detail: ProjectDetail }) {
     if (!packId && state.packs[0]) setPackId(state.packs[0].id)
   }, [packId, state.packs])
 
-  const installSkill = async () => {
-    if (!skillId) return
+  const install = async (apply: () => Promise<ProjectDetail>) => {
+    const view = captureProjectView(detail.id)
+    if (!view.isSelected()) return
     setBusy(true)
     state.setError(null)
     try {
-      const next = await skillApiV2.installCenterSkillsToProject(detail.id, agentId, [skillId], mode)
-      useSkillStoreV2.setState({ selectedProjectDetail: next })
-      await state.loadProjects(true)
+      await apply()
+      if (view.isRuntimeCurrent()) await state.refreshProject(detail.id)
     } catch (e) {
-      state.setError(String(e))
+      if (view.isSelected()) state.setError(String(e))
     } finally {
       setBusy(false)
     }
   }
 
-  const applyPack = async () => {
-    if (!packId) return
-    setBusy(true)
-    state.setError(null)
-    try {
-      const next = await skillApiV2.installSkillPackToProject(detail.id, agentId, packId, mode)
-      useSkillStoreV2.setState({ selectedProjectDetail: next })
-      await state.loadProjects(true)
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const installSkill = () => install(() => skillApiV2.installCenterSkillsToProject(detail.id, agentId, [skillId], mode))
+  const applyPack = () => install(() => skillApiV2.installSkillPackToProject(detail.id, agentId, packId, mode))
 
   return (
     <section className="sm2__project-install-panel">
@@ -403,12 +408,14 @@ function ProjectOverview({ agents }: { agents: ProjectAgentDetail[] }) {
   )
 }
 
-function ProjectSkills({ agents }: { agents: ProjectAgentDetail[] }) {
+function ProjectSkills({ projectId, agents }: { projectId: string; agents: ProjectAgentDetail[] }) {
   const state = useSkillStoreV2()
   const [importing, setImporting] = useState<string | null>(null)
   const skills = agents.flatMap((agent) => agent.skills.map((skill) => ({ agent, skill })))
 
   const importSkill = async (agent: ProjectAgentDetail, skill: ProjectSkillItem) => {
+    const view = captureProjectView(projectId)
+    if (!view.isSelected()) return
     setImporting(`${agent.agentId}:${skill.path}`)
     state.setError(null)
     try {
@@ -420,8 +427,11 @@ function ProjectSkills({ agents }: { agents: ProjectAgentDetail[] }) {
         importMode: 'copy' as const,
       }
       const preview = await skillApiV2.previewAddCenterSkill(input)
+      if (!view.isRuntimeCurrent()) return
       if (preview.blockers.length > 0) {
-        state.setError(preview.blockers.map((blocker) => blocker.reason || `${blocker.proposedSkillId} 无法导入`).join('；'))
+        if (view.isSelected()) {
+          state.setError(preview.blockers.map((blocker) => blocker.reason || `${blocker.proposedSkillId} 无法导入`).join('；'))
+        }
         return
       }
       await skillApiV2.executeAddCenterSkill(input, preview.candidates.map((candidate) => ({
@@ -429,10 +439,11 @@ function ProjectSkills({ agents }: { agents: ProjectAgentDetail[] }) {
         proposedSkillId: candidate.proposedSkillId,
         resolution: candidate.action === 'update' ? 'update' : 'create',
       })))
+      if (!view.isRuntimeCurrent()) return
       await state.loadOverview(true)
-      if (state.selectedProjectId) await state.scanProject(state.selectedProjectId)
+      if (view.isRuntimeCurrent()) await state.scanProject(projectId)
     } catch (e) {
-      state.setError(String(e))
+      if (view.isSelected()) state.setError(String(e))
     } finally {
       setImporting(null)
     }

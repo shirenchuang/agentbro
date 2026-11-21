@@ -6,6 +6,7 @@ export const LOCAL_RUNTIME_ENVIRONMENT_ID = 'local'
 
 interface RuntimeEnvironmentState {
   selectedEnvironmentId: string
+  selectionRevision: number
 }
 
 interface RuntimeEnvironmentActions {
@@ -20,10 +21,14 @@ export const useRuntimeEnvironmentStore = create<RuntimeEnvironmentStore>()(
   persist(
     (set, get) => ({
       selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+      selectionRevision: 0,
 
       selectEnvironment: (id) => {
         const nextId = id.trim() || LOCAL_RUNTIME_ENVIRONMENT_ID
-        set({ selectedEnvironmentId: nextId })
+        const { selectedEnvironmentId, selectionRevision } = get()
+        if (nextId !== selectedEnvironmentId) {
+          set({ selectedEnvironmentId: nextId, selectionRevision: selectionRevision + 1 })
+        }
       },
 
       refreshEnvironments: async () => {
@@ -34,7 +39,7 @@ export const useRuntimeEnvironmentStore = create<RuntimeEnvironmentStore>()(
         const selectedEnvironmentId = get().selectedEnvironmentId
         const selectedStillExists = selectedEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
           || remoteHosts.some((host) => host.id === selectedEnvironmentId)
-        if (!selectedStillExists) set({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+        if (!selectedStillExists) get().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
       },
 
       connectEnvironment: async (id) => {
