@@ -50,5 +50,9 @@ describe('configuration notifications between windows', () => {
 
     expect(useConfigStore.getState().panelHorizontalOffset).toBe(35)
     expect(useConfigStore.getState().volume).toBe(70)
+    expect(window.localStorage.getItem(configKey)).toBe(snapshot)
+
+    await act(async () => useConfigStore.getState().updateConfig('panelHorizontalOffset', 42))
+    expect(JSON.parse(window.localStorage.getItem(configKey)!).state.panelHorizontalOffset).toBe(42)
   })
 })

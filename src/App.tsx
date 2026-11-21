@@ -50,7 +50,7 @@ function applyPersistedConfig(raw: string | null) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(filtered as any)[key] = (persisted.state as any)[key]
     }
-    useConfigStore.setState(filtered)
+    useConfigStore.getState().applyWindowPreferences(filtered)
   } catch {
     // Ignore malformed persisted config payloads.
   }
