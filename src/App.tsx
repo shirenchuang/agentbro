@@ -144,10 +144,13 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const configKey = 'agentbro-config'
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === 'agentbro-config') applyPersistedConfig(event.newValue)
+      if (event.key === configKey && event.newValue === window.localStorage.getItem(configKey)) {
+        applyPersistedConfig(event.newValue)
+      }
     }
-    const handleFocus = () => applyPersistedConfig(window.localStorage.getItem('agentbro-config'))
+    const handleFocus = () => applyPersistedConfig(window.localStorage.getItem(configKey))
 
     handleFocus()
     window.addEventListener('storage', handleStorage)
