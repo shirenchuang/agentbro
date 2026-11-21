@@ -88,6 +88,7 @@ export interface SkillSourceUpdateCheck {
   latestRef: string
   currentHash: string
   updateAvailable: boolean
+  fileChanges: { path: string; kind: 'added' | 'modified' | 'removed' }[]
 }
 
 export interface SkillTargetDetail {

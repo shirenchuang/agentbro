@@ -13,7 +13,7 @@ param(
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
-    [switch]$TabToPermission
+    [switch]$AutomationFocusPermission
 )
 
 $ErrorActionPreference = 'Stop'
@@ -415,7 +415,9 @@ function Test-KeyboardPermissionDenial(
         }
         $clock = [Diagnostics.Stopwatch]::new()
         try {
-            if ($TabToPermission) {
+            if ($AutomationFocusPermission) {
+                $deny.SetFocus()
+            } else {
                 $tabs = 0
                 while ($tabs -lt 24 -and -not (& $denyHasFocus)) {
                     if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)) {
@@ -424,9 +426,7 @@ function Test-KeyboardPermissionDenial(
                     $tabs += 1
                     Start-Sleep -Milliseconds 125
                 }
-                Write-Host "Native Tab presses to reach Deny: $tabs."
-            } else {
-                $deny.SetFocus()
+                Write-Output "Native Tab presses to reach Deny: $tabs."
             }
             $null = Wait-IslandValue 'keyboard focus on Deny in the foreground Island window' $denyHasFocus
         } catch {

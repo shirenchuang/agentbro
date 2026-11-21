@@ -4454,6 +4454,38 @@
   padding: 16px 20px;
 }
 
+.sm2__skill-source-update-files {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: min(300px, 42vh);
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+  border-radius: 8px;
+}
+
+.sm2__skill-source-update-files li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  color: var(--text-secondary, #556070);
+}
+
+.sm2__skill-source-update-files li + li {
+  border-top: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+}
+
+.sm2__skill-source-update-files code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary, #17191f);
+}
+
+.sm2__skill-source-update-files li span {
+  flex: 0 0 auto;
+}
+
 .sm2__modal-actions {
   display: flex;
   justify-content: flex-end;

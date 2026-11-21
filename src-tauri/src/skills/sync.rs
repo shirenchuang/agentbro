@@ -7,8 +7,6 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const SYNC_AUTH_HEADER: &str = "AGENTBRO_SKILL_SYNC_AUTHORIZATION";
-
 struct GitHubSyncRemote {
     url: String,
     token: String,
@@ -61,19 +59,10 @@ impl GitHubSyncRemote {
 
     fn command(&self) -> Command {
         let mut command = git();
+        installer::configure_github_git_auth(&mut command, &self.url, &self.encoded_auth);
         command
-            .args(["-c", "http.followRedirects=false"])
-            .arg(format!(
-                "--config-env=http.{}.extraHeader={SYNC_AUTH_HEADER}",
-                self.url
-            ))
-            .env(
-                SYNC_AUTH_HEADER,
-                format!("Authorization: Basic {}", self.encoded_auth),
-            )
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "Never")
-            .env("GIT_TRACE_REDACT", "1");
+            .env("GCM_INTERACTIVE", "Never");
         command
     }
 

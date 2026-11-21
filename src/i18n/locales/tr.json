@@ -639,7 +639,14 @@
       "current": "Kaynak beceri değişmedi.",
       "matches": "Yerel dosyalar kaynakla eşleşiyor.",
       "applied": "Beceri {{version}} sürümüne güncellendi.",
-      "confirm": "Merkez kütüphanedeki beceri dosyaları {{version}} ile değiştirilsin mi?"
+      "confirm": "Merkez kütüphanedeki beceri dosyaları {{version}} ile değiştirilsin mi?",
+      "fileChanges": "Dosya değişiklikleri",
+      "noFileChanges": "Listelenen Skill dosyaları değişmedi.",
+      "fileChange": {
+        "added": "Eklendi",
+        "modified": "Değiştirildi",
+        "removed": "Kaldırıldı"
+      }
     },
     "runtimeEnvironment": {
       "localName": "Bu Mac",

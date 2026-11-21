@@ -2779,7 +2779,14 @@ describe('Skill detail slider + agent page render without crashing', () => {
       ...makeSkill({ sourceType: 'skillssh', sourceUri }), source,
       centerResolvedPath: null, files: null, frontmatter: {}, targets: [],
     }
-    const checked = { sourceUri, installedRef: oldVersion, latestRef: newVersion, currentHash: 'check-hash', updateAvailable: true }
+    const checked = {
+      sourceUri, installedRef: oldVersion, latestRef: newVersion, currentHash: 'check-hash', updateAvailable: true,
+      fileChanges: [
+        { path: 'examples/说明.md', kind: 'added' as const },
+        { path: 'SKILL.md', kind: 'modified' as const },
+        { path: 'old-guide.md', kind: 'removed' as const },
+      ],
+    }
     vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue(detail)
     vi.spyOn(skillApiV2, 'overview').mockResolvedValue(makeOverview())
     const check = vi.spyOn(skillApiV2, 'checkSkillSourceUpdate').mockResolvedValue(checked)
@@ -2798,6 +2805,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '更新 Skill' }))
     const dialog = await screen.findByRole('dialog', { name: '更新 Skill' })
     expect(apply).not.toHaveBeenCalled()
+    const changes = within(dialog).getByRole('list', { name: '文件变更' })
+    expect(within(changes).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
+      'examples/说明.md新增',
+      'SKILL.md修改',
+      'old-guide.md删除',
+    ])
     fireEvent.click(within(dialog).getByRole('button', { name: '更新 Skill' }))
     expect(await screen.findByText('Skill 已更新到 bbbbbbbbbbbb。')).toBeInTheDocument()
     expect(apply).toHaveBeenCalledWith(detail.id, checked, 'fixture-token')

@@ -8,7 +8,7 @@ param(
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
-    [switch]$TabToPermission,
+    [switch]$AutomationFocusPermission,
     [switch]$VerifyStartupStackSampler
 )
 
@@ -275,7 +275,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($VerifyDrag) { $start.ArgumentList.Add('-VerifyDrag') }
     if ($CloseStartupSettings) { $start.ArgumentList.Add('-CloseStartupSettings') }
-    if ($TabToPermission) { $start.ArgumentList.Add('-TabToPermission') }
+    if ($AutomationFocusPermission) { $start.ArgumentList.Add('-AutomationFocusPermission') }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true

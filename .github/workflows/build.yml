@@ -38,8 +38,8 @@ on:
         description: Close the first-run settings window before exercising the installed Island
         type: boolean
         default: false
-      windows_tab_to_permission:
-        description: Navigate to the permission button with native Tab input
+      windows_automation_focus_permission:
+        description: Reproduce programmatic UI Automation focus on the permission button
         type: boolean
         default: false
       windows_verify_startup_stacks:
@@ -193,6 +193,12 @@ jobs:
           & $testExecutable source_update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable skills::installer::tests::private_git
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable skills::installer::tests::curl_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable skills::sync::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -307,7 +313,7 @@ jobs:
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
-          TAB_TO_PERMISSION: ${{ inputs.windows_tab_to_permission }}
+          AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
@@ -320,7 +326,7 @@ jobs:
               -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
               -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
               -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
-              -TabToPermission:($env:TAB_TO_PERMISSION -eq 'true') `
+              -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
               -VerifyStartupStackSampler:($env:VERIFY_STARTUP_STACKS -eq 'true') `
               -SymbolsDirectory (Join-Path $PWD 'windows-installers')
 

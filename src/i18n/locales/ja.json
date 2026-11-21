@@ -745,7 +745,14 @@
       "current": "配布元のスキルに変更はありません。",
       "matches": "ローカルのファイルは配布元と一致しています。",
       "applied": "スキルを {{version}} に更新しました。",
-      "confirm": "ライブラリ内のスキルファイルを {{version}} で置き換えますか？"
+      "confirm": "ライブラリ内のスキルファイルを {{version}} で置き換えますか？",
+      "fileChanges": "ファイルの変更",
+      "noFileChanges": "一覧の Skill ファイルに変更はありません。",
+      "fileChange": {
+        "added": "追加",
+        "modified": "変更",
+        "removed": "削除"
+      }
     },
     "title": "Skill Management",
     "description": "Manage AI Agent skills, MCP servers, and plugins with cross-device sync.",
