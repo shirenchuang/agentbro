@@ -5508,9 +5508,12 @@ describe('Skill detail slider + agent page render without crashing', () => {
       })),
       finalizationError: null,
     })
-    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([localOnly])
-    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue(undefined)
-    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue(undefined)
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockResolvedValueOnce({
+      agentDetail,
+      overview: { ...makeOverview(), agents: useSkillStoreV2.getState().agents },
+      unmanaged: [localOnly],
+    })
     const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
     render(<AgentManagementPage />)
     fireEvent.click(screen.getByText('Skills (4)'))
@@ -5529,12 +5532,83 @@ describe('Skill detail slider + agent page render without crashing', () => {
       expect(takeover).toHaveBeenCalledWith('claude-code', [
         'unmanaged-same',
         'unmanaged-conflict',
-      ])
+      ], LOCAL_RUNTIME_ENVIRONMENT_ID)
     })
-    expect(loadAgentDetail).toHaveBeenCalledWith('claude-code', true)
-    expect(loadOverview).toHaveBeenCalledWith(true)
+    expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(await screen.findByText('一键接管完成：已接管 2 个，失败 0 个；其他未管理 Skill 保持不变。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '批量管理' })).toBeInTheDocument()
+  })
+
+  it('closes an unconfirmed one-click takeover when the runtime changes and returns', async () => {
+    useSkillStoreV2.setState({
+      unmanaged: [{
+        ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+        reason: 'same_name_as_center_skill',
+      }],
+    })
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    expect(screen.getByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog', { name: '接管中心库已有的 1 个 Skill？' })).not.toBeInTheDocument()
+    expect(takeover).not.toHaveBeenCalled()
+  })
+
+  it.each(['takeover', 'refresh'] as const)('keeps another runtime intact when one-click takeover is pending in %s', async (phase) => {
+    const item = {
+      ...makeSharedUnmanaged('same-skill', { agentId: 'claude-code' }),
+      reason: 'same_name_as_center_skill',
+    }
+    const remoteItem = makeSharedUnmanaged('remote-skill', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [item] })
+    const result = {
+      items: [{ unmanagedId: item.id, skillId: 'same-skill', error: null }],
+      finalizationError: null,
+    }
+    let finishTakeover!: () => void
+    const takeover = vi.spyOn(skillApiV2, 'takeoverCenterSkills').mockImplementation(() => {
+      if (phase === 'refresh') return Promise.resolve(result)
+      return new Promise((resolve) => { finishTakeover = () => resolve(result) })
+    })
+    const snapshot = { agentDetail, overview: makeOverview(), unmanaged: [] }
+    let finishRefresh!: () => void
+    const refreshAgentSkillView = vi.mocked(skillApiV2.refreshAgentSkillView)
+    refreshAgentSkillView.mockImplementation(() => new Promise((resolve) => {
+      finishRefresh = () => resolve(snapshot)
+    }))
+    const listUnmanaged = vi.spyOn(skillApiV2, 'listUnmanaged')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '未管理 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '一键接管 1 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '以中心库为准接管' }))
+    expect(takeover).toHaveBeenCalledTimes(1)
+    if (phase === 'refresh') await waitFor(() => expect(refreshAgentSkillView).toHaveBeenCalled())
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('new-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'new-host', unmanaged: [remoteItem], error: 'New host status' })
+      if (phase === 'takeover') finishTakeover()
+      else finishRefresh()
+    })
+
+    expect(useSkillStoreV2.getState().error).toBe('New host status')
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([remoteItem])
+    expect(screen.queryByText(/一键接管完成/)).not.toBeInTheDocument()
+    expect(takeover).toHaveBeenCalledWith('claude-code', [item.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(listUnmanaged).not.toHaveBeenCalled()
+    if (phase === 'takeover') expect(refreshAgentSkillView).not.toHaveBeenCalled()
+    else expect(refreshAgentSkillView).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('explains which batch adoption conflicts require individual review', async () => {

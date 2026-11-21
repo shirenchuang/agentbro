@@ -365,6 +365,98 @@ mod unix_tests {
     }
 
     #[test]
+    fn remote_one_click_takeover_preserves_center_and_links_matching_agent_copies() {
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-center-takeover-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let center = home.join(".agentbro/skills/matching");
+        let matching = home.join(".codex/skills/matching");
+        let unmatched = home.join(".codex/skills/unmatched");
+        let other_agent = home.join(".claude/skills/matching");
+        write_remote_skill(&center, "Matching", "center\n");
+        write_remote_skill(&matching, "Matching", "agent copy\n");
+        write_remote_skill(&unmatched, "Unmatched", "only in agent\n");
+        write_remote_skill(&other_agent, "Matching", "other agent\n");
+
+        let result = run_script(
+            &home,
+            "takeover_center_agent_skills",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedIds": ["codex::matching", "codex::unmatched", "claude-code::matching"],
+            }),
+        );
+
+        assert!(!home.join(".agentbro/skills/unmatched").exists());
+        assert_eq!(result["items"][0]["skillId"], "matching");
+        assert!(result["items"][1]["error"].is_string());
+        assert!(result["items"][2]["error"].is_string());
+        assert_eq!(
+            std::fs::read_to_string(center.join("SKILL.md")).expect("center document"),
+            "---\nname: Matching\n---\ncenter\n"
+        );
+        assert_eq!(
+            std::fs::read_link(&matching).expect("agent link"),
+            center.canonicalize().expect("canonical center path")
+        );
+        assert!(unmatched.is_dir());
+        assert!(!unmatched.is_symlink());
+        assert!(other_agent.is_dir());
+        assert!(!other_agent.is_symlink());
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
+    fn remote_one_click_takeover_restores_agent_copy_when_link_activation_fails() {
+        const FAIL_LINK_ACTIVATION: &str = r#"
+_agentbro_original_replace = os.replace
+def _agentbro_fail_link_activation(source, destination):
+    staged = pathlib.Path(source)
+    if staged.name == "staged" and staged.is_symlink():
+        raise OSError("injected link activation failure")
+    return _agentbro_original_replace(source, destination)
+os.replace = _agentbro_fail_link_activation
+"#;
+        let home = std::env::temp_dir().join(format!(
+            "agentbro-remote-center-takeover-rollback-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let center = home.join(".agentbro/skills/matching");
+        let agent_copy = home.join(".codex/skills/matching");
+        write_remote_skill(&center, "Matching", "center\n");
+        write_remote_skill(&agent_copy, "Matching", "agent copy\n");
+        let script = render_script(
+            "takeover_center_agent_skills",
+            serde_json::json!({
+                "agentId": "codex",
+                "unmanagedIds": ["codex::matching"],
+            }),
+        )
+        .expect("render remote takeover")
+        .replace(
+            "\ntry:\n    RESPONSE = json_safe(dispatch())",
+            &format!("\n{FAIL_LINK_ACTIVATION}\ntry:\n    RESPONSE = json_safe(dispatch())"),
+        );
+        let result = run_rendered_script(&home, &script);
+
+        assert!(result["items"][0]["skillId"].is_null());
+        assert!(result["items"][0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("injected link activation failure")));
+        assert_eq!(
+            std::fs::read_to_string(center.join("SKILL.md")).expect("center document"),
+            "---\nname: Matching\n---\ncenter\n"
+        );
+        assert!(!agent_copy.is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(agent_copy.join("SKILL.md")).expect("original Agent document"),
+            "---\nname: Matching\n---\nagent copy\n"
+        );
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[test]
     fn remote_batch_delete_and_composite_refresh_each_build_one_inventory() {
         let home = std::env::temp_dir().join(format!(
             "agentbro-remote-skill-manager-fast-delete-test-{}",

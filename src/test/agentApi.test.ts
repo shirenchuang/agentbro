@@ -133,4 +133,24 @@ describe('agentApi seedAgentPrograms', () => {
       selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     }
   })
+
+  it('routes one-click takeover and its inventory to the confirmed runtime', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+
+    try {
+      selectEnvironment('other-host')
+      await skillApiV2.takeoverCenterSkills('codex', ['unmanaged'], 'confirmed-host')
+      await skillApiV2.refreshAgentSkillView('codex', 'confirmed-host')
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'takeover_center_agent_skills', args: { agentId: 'codex', unmanagedIds: ['unmanaged'] } }],
+        ['remote_skill_manager_invoke', { id: 'confirmed-host', command: 'refresh_agent_skill_view_v2', args: { agentId: 'codex' } }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
 })
