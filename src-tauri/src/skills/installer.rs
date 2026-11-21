@@ -1651,9 +1651,10 @@ fn curl_request(
         "=http,https"
     };
     let mut command = background_command(crate::agents::executable::command_path("curl"));
+    // On some curl versions, --no-location-trusted also clears --location.
     command.args([
-        "--location",
         "--no-location-trusted",
+        "--location",
         "--globoff",
         "--proto",
         protocols,
@@ -2497,11 +2498,15 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(4)))
                 .unwrap();
-            BufReader::new(stream)
+            let lines = BufReader::new(stream)
                 .lines()
                 .map_while(Result::ok)
-                .take_while(|line| !line.is_empty())
-                .any(|line| line == "Authorization: Bearer synthetic-token")
+                .take_while(|line| !line.is_empty());
+            let mut authorized = false;
+            for line in lines {
+                authorized |= line == "Authorization: Bearer synthetic-token";
+            }
+            authorized
         }
 
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -2519,26 +2524,20 @@ mod tests {
             let (mut redirected, _) = listener.accept().unwrap();
             let redirect_authorized = has_authorization(&mut redirected);
             redirected
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 .unwrap();
             (initial_authorized, redirect_authorized)
         });
 
-        let mut command = background_command(crate::agents::executable::command_path("curl"));
+        let url = Url::parse(&format!("http://{address}/skill")).unwrap();
+        let (mut command, token) = curl_request(&url, None).unwrap();
+        assert!(token.is_none());
         command
-            .args([
-                "--noproxy",
-                "*",
-                "--max-time",
-                "5",
-                "--location",
-                "--no-location-trusted",
-                "--header",
-                "@-",
-            ])
-            .arg(format!("http://{address}/skill"));
+            .args(["--noproxy", "*", "--max-time", "5", "--header", "@-"])
+            .arg(url.as_str());
         let output = curl_output(&mut command, Some("synthetic-token")).unwrap();
         assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
         assert_eq!(server.join().unwrap(), (true, false));
     }
 
