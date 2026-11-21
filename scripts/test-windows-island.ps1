@@ -62,6 +62,9 @@ public static class AgentBroSmokeInput {
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
     [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(Point point);
 
     [DllImport("user32.dll")]

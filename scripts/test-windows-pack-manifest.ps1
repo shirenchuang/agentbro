@@ -92,6 +92,38 @@ function Import-PackFixture([Windows.Automation.AutomationElement]$Settings, [st
     Write-Output 'The installed app opened the selected manifest and created a Skill Pack.'
 }
 
+function Assert-CompactPackHeader([Windows.Automation.AutomationElement]$Settings, [string]$PackName) {
+    $bounds = $Settings.Current.BoundingRectangle
+    $scale = [AgentBroSmokeInput]::GetDpiForWindow([IntPtr]$Settings.Current.NativeWindowHandle) / 96.0
+    if ($scale -le 0) { throw 'Could not read the Settings window DPI' }
+    if ($bounds.Width / $scale -gt 1050) {
+        $transform = $Settings.GetCurrentPattern([Windows.Automation.TransformPattern]::Pattern)
+        $transform.Resize(1024 * $scale, $bounds.Height)
+    }
+    $heroClass = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ClassNameProperty, 'sm2__pack-detail-hero')
+    $hero = Wait-IslandValue 'the compact Skill Pack header' {
+        $header = $Settings.FindFirst([Windows.Automation.TreeScope]::Descendants, $heroClass)
+        if ($header -and $header.Current.BoundingRectangle.Width / $scale -le 440) { $header }
+    }
+    $title = Wait-IslandValue 'the selected pack title' { Find-PackControl $hero $PackName }
+    $titleBounds = $title.Current.BoundingRectangle
+    $heroBounds = $hero.Current.BoundingRectangle
+    if ($titleBounds.Width -lt ($heroBounds.Width * 0.55)) {
+        throw "The pack title is squeezed into $([int]($titleBounds.Width / $scale))px"
+    }
+    $labels = @('应用到 Agent', '编辑', '更多操作')
+    foreach ($label in $labels) {
+        $control = Wait-IslandValue "the visible $label pack action" { Find-PackControl $hero $label }
+        $actionBounds = $control.Current.BoundingRectangle
+        if ($actionBounds.IsEmpty -or $actionBounds.Top -lt $titleBounds.Bottom -or
+            $actionBounds.Left -lt $heroBounds.Left -or $actionBounds.Right -gt $heroBounds.Right) {
+            throw "The $label action does not fit below the pack title ($([int]($heroBounds.Width / $scale))px header)"
+        }
+    }
+    Write-Output "Skill Pack actions fit below the title in a $([int]($heroBounds.Width / $scale))px Windows header."
+}
+
 function Test-InstalledPackManifest(
     [Windows.Automation.AutomationElement]$Island,
     [string]$ImportPath,
@@ -116,6 +148,7 @@ function Test-InstalledPackManifest(
     Write-Output 'Opened Skill Packs from the installed app.'
 
     Import-PackFixture $settings $ImportPath $expected.name
+    Assert-CompactPackHeader $settings $expected.name
     $menu = Wait-IslandValue 'the new pack actions menu' { Find-PackControl $settings '更多操作' }
     Invoke-PackControl $menu
     $export = Wait-IslandValue 'the Export Skill Pack action' { Find-PackControl $settings 'Export Skill Pack' }
