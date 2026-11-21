@@ -77,7 +77,12 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     Invoke-PackControl $submit
 }
 
-function Import-PackFixture([Windows.Automation.AutomationElement]$Settings, [string]$Path, [string]$Name) {
+function Import-PackFixture(
+    [Windows.Automation.AutomationElement]$Settings,
+    [string]$Path,
+    [string]$Name,
+    [switch]$VerifyContents
+) {
     $open = Wait-IslandValue 'the enabled Import Skill Pack action' {
         $button = Find-PackControl $Settings 'Import Skill Pack'
         if ($button -and $button.Current.IsEnabled) { $button }
@@ -86,7 +91,8 @@ function Import-PackFixture([Windows.Automation.AutomationElement]$Settings, [st
     Set-PackDialogFile 'Open' $Path
     $confirm = Wait-IslandValue 'the enabled Skill Pack import preview' {
         $button = Find-PackControl $Settings 'Create Skill Pack'
-        if ($button -and $button.Current.IsEnabled -and (Find-PackControl $Settings $Name)) { $button }
+        $contentMatches = -not $VerifyContents -or (Find-PackControl $Settings 'Content matches')
+        if ($button -and $button.Current.IsEnabled -and $contentMatches -and (Find-PackControl $Settings $Name)) { $button }
     }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the imported Skill Pack confirmation' {
@@ -168,14 +174,20 @@ function Test-InstalledPackManifest(
     }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
     $keys = @($saved.PSObject.Properties.Name | Sort-Object)
-    if (($keys -join ',') -cne 'description,format,name,skillIds,tags,version' -or
-        $saved.format -cne $expected.format -or $saved.version -ne $expected.version -or
+    if (($keys -join ',') -cne 'description,format,name,skillFingerprints,skillIds,tags,version' -or
+        $saved.format -cne $expected.format -or $saved.version -ne 2 -or
         $saved.name -cne $expected.name -or $saved.description -cne $expected.description -or
         ($saved.tags -join ',') -cne ($expected.tags -join ',') -or
         ($saved.skillIds -join ',') -cne ($expected.skillIds -join ',')) {
         throw 'The saved file did not preserve the portable Skill Pack definition and member order'
     }
-    Write-Output 'The native Save dialog wrote the expected Skill Pack definition and ordered members.'
-    Import-PackFixture $settings $ExportPath $expected.name
+    foreach ($skillId in $expected.skillIds) {
+        $fingerprint = $saved.skillFingerprints.PSObject.Properties[$skillId].Value
+        if ($fingerprint -cnotmatch '^[a-f0-9]{64}$') {
+            throw "The export omitted the portable content fingerprint for $skillId"
+        }
+    }
+    Write-Output 'The native Save dialog wrote the ordered Skill Pack and both content fingerprints.'
+    Import-PackFixture $settings $ExportPath $expected.name -VerifyContents
     Write-Output 'The installed app completed the Skill Pack round trip through native Windows file dialogs and Unicode paths.'
 }

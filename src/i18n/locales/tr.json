@@ -593,6 +593,13 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "match": "İçerik eşleşiyor",
+      "different": "Farklı içerik",
+      "unrecorded": "Bildirim dosyasında parmak izi yok",
+      "unavailable": "İçerik doğrulanamadı",
+      "unavailableHelp": "Merkezi kitaplıktaki becerilerin okunabildiğini kontrol edin ve yeniden karşılaştırın.",
+      "useLocalCopies": "İçeriği farklı veya kayıtsız beceriler için bu kitaplıktaki kopyaları kullan",
+      "recheck": "Becerileri yeniden karşılaştır",
       "creating": "Oluşturuluyor…",
       "import": "Beceri paketi içe aktar",
       "export": "Beceri paketini dışa aktar",

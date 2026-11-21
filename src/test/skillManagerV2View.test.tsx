@@ -7150,7 +7150,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     return { pack, skill, dialog: within(screen.getByRole('dialog', { name: '应用「Review pack」' })) }
   }
 
-  it('exports a Skill Pack manifest with only the ordered definition', async () => {
+  it('exports the Skill Pack definition and its reviewed contents', async () => {
     const { pack, skill } = await renderPackPage()
     act(() => useSkillStoreV2.setState({
       selectedPackDetail: {
@@ -7162,18 +7162,24 @@ describe('Skill detail slider + agent page render without crashing', () => {
     }))
     const destination = 'C:/Team Files/技能包.agentbro-pack.json'
     vi.mocked(saveDialog).mockResolvedValueOnce(destination)
+    const fingerprint = 'a'.repeat(64)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint },
+    ])
     const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
     fireEvent.click(screen.getByLabelText('更多操作'))
     fireEvent.click(screen.getByRole('menuitem', { name: '导出技能包' }))
 
     expect(await screen.findByText('技能包已导出。')).toBeInTheDocument()
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(write).toHaveBeenCalledWith(destination, {
       format: 'agentbro-skill-pack',
-      version: 1,
+      version: 2,
       name: pack.name,
       description: 'Review before publishing',
       tags: ['team'],
       skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: fingerprint },
     })
   })
 
@@ -7249,6 +7255,48 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     expect(upsert).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
+  })
+
+  it('requires fresh confirmation when the reviewed Skill Pack copy changed', async () => {
+    const { pack, skill } = await renderPackPage()
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 2,
+      name: 'Shared review pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: 'a'.repeat(64) },
+    }
+    const firstReview = [{ skillId: skill.id, missing: false, fingerprint: 'b'.repeat(64) }]
+    const secondReview = [{ skillId: skill.id, missing: false, fingerprint: 'c'.repeat(64) }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/shared.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce(firstReview)
+      .mockResolvedValueOnce(secondReview)
+    const saved = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockRejectedValueOnce('The selected library changed since review.')
+      .mockResolvedValueOnce({ ...pack, id: 'pack-shared', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const confirm = preview.getByRole('button', { name: '创建技能包' })
+    const useCopy = preview.getByRole('checkbox', { name: /使用当前库中的技能/ })
+    expect(preview.getByText('内容不同')).toBeInTheDocument()
+    expect(confirm).toBeDisabled()
+    fireEvent.click(useCopy)
+    fireEvent.click(confirm)
+    expect(await preview.findByRole('alert')).toHaveTextContent('changed since review')
+    expect(saved).toHaveBeenCalledWith(manifest, firstReview, true, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    fireEvent.click(preview.getByRole('button', { name: '重新比对技能' }))
+    await waitFor(() => expect(useCopy).not.toBeChecked())
+    expect(confirm).toBeDisabled()
+    fireEvent.click(useCopy)
+    fireEvent.click(confirm)
+    expect(await screen.findByText('已将「Shared review pack」导入为新技能包。')).toBeInTheDocument()
+    expect(saved).toHaveBeenLastCalledWith(manifest, secondReview, true, LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('discards a late pack preview when the selected Agent and mode change', async () => {
