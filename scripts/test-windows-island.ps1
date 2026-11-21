@@ -269,30 +269,67 @@ function Close-StartupSettings {
     Write-Output 'Closed the first-run Settings window before exercising the Island.'
 }
 
-function Write-IslandAccessibilityBounds {
-    param([IntPtr]$WindowHandle, [string]$FixtureProject = '')
+function Get-IslandAccessibilitySnapshot([long]$WindowHandle, [string]$FixtureProject) {
+    $ErrorActionPreference = 'Stop'
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $started = [DateTimeOffset]::UtcNow.ToString('O')
+    $window = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]$WindowHandle)
+    $elements = @($window.FindAll(
+        [Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition
+    ) | Select-Object -ExpandProperty Current |
+        Where-Object {
+            $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel', 'hover-list__card') -or
+            $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
+            $_.Name -in @('Back to sessions', 'Deny', 'Allow Once') -or
+            $_.Name -match '^Show all \d+ sessions$' -or
+            ($FixtureProject -and $_.Name -and $_.Name.Contains($FixtureProject))
+        } | Select-Object Name, ClassName, IsOffscreen, HasKeyboardFocus, @{
+            Name = 'Bounds'
+            Expression = { $_.BoundingRectangle.ToString([Globalization.CultureInfo]::InvariantCulture) }
+        })
+    [PSCustomObject]@{
+        ClientPid = $PID
+        WindowHandle = $WindowHandle
+        StartedAt = $started
+        FinishedAt = [DateTimeOffset]::UtcNow.ToString('O')
+        Elements = $elements
+    }
+}
 
+function Write-IslandAccessibilityBounds([IntPtr]$WindowHandle) {
     $native = [AgentBroSmokeInput+Rect]::new()
     if ([AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$native)) {
         $dpi = [AgentBroSmokeInput]::GetDpiForWindow($WindowHandle)
         Write-Host "Native window $WindowHandle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
     }
-    $window = [Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
-    if ($window) {
-        $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
-            Select-Object -ExpandProperty Current |
-            Where-Object {
-                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel', 'hover-list__card') -or
-                $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
-                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once') -or
-                ($FixtureProject -and $_.Name -and $_.Name.Contains($FixtureProject))
-            } |
-            Select-Object Name, ClassName, IsOffscreen, @{
-                Name = 'Bounds'
-                Expression = { $_.BoundingRectangle.ToString([Globalization.CultureInfo]::InvariantCulture) }
-            } |
-            ConvertTo-Json -Depth 3 -Compress |
-            Write-Host
+    Get-IslandAccessibilitySnapshot $WindowHandle.ToInt64() $ProjectName | ConvertTo-Json -Depth 4 -Compress | Write-Host
+}
+
+function Write-IslandAccessibilityComparison([IntPtr]$WindowHandle, [string]$Stage) {
+    $job = $null
+    try {
+        $job = Start-Job -ScriptBlock ${function:Get-IslandAccessibilitySnapshot} -ArgumentList $WindowHandle.ToInt64(), $ProjectName
+        Write-Host "Comparing accessibility clients for $Stage at $([DateTimeOffset]::UtcNow.ToString('O'))."
+        Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-before-clients.png")
+        try {
+            Write-IslandAccessibilityBounds $WindowHandle
+        } catch {
+            Write-Host "The smoke test's accessibility client failed: $_"
+        }
+        if (-not (Wait-Job -Job $job -Timeout 8)) {
+            throw 'The independent accessibility client timed out'
+        }
+        $snapshot = Receive-Job -Job $job
+        if (-not $snapshot -or $snapshot.ClientPid -eq $PID) {
+            throw 'The independent accessibility client did not return a distinct process snapshot'
+        }
+        Write-Host "Independent accessibility client: $($snapshot | ConvertTo-Json -Depth 4 -Compress)"
+        Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-after-clients.png")
+        Write-Host "Finished comparing accessibility clients at $([DateTimeOffset]::UtcNow.ToString('O'))."
+    } catch {
+        Write-Host "Could not compare accessibility clients: $_"
+    } finally {
+        if ($job) { Remove-Job -Job $job -Force }
     }
 }
 
@@ -505,6 +542,11 @@ function Test-KeyboardPermissionDenial(
             Save-PermissionFrame $clock $Attempt 'uia-resolved'
         }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
+    } catch {
+        if ($TracePermissionUi) {
+            Write-IslandAccessibilityComparison $WindowHandle "approval-$Attempt-failure"
+        }
+        throw
     } finally {
         $connection.Dispose()
     }
@@ -692,6 +734,7 @@ $originalCursor = [AgentBroSmokeInput+Point]::new()
 $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
+$testingPermissions = $false
 try {
     if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
@@ -718,7 +761,7 @@ try {
         } catch {
             if ($TracePermissionUi) {
                 try {
-                    Write-IslandAccessibilityBounds $islandWindow.Handle -FixtureProject $ProjectName
+                    Write-IslandAccessibilityBounds $islandWindow.Handle
                     $freshRoot = Find-VisibleIsland
                     if ($freshRoot -and $freshRoot.Handle -eq $islandWindow.Handle) {
                         $freshRow = Find-IslandButton $freshRoot.Element {
@@ -745,9 +788,14 @@ try {
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
     $attemptCount = if ($TracePermissionUi) { 6 } else { 1 }
+    $testingPermissions = $true
     foreach ($attempt in 1..$attemptCount) {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
+    }
+    $testingPermissions = $false
+    if ($TracePermissionUi) {
+        Write-IslandAccessibilityComparison $islandWindow.Handle 'after-denials'
     }
     if ($PackImportPath) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
@@ -761,7 +809,9 @@ try {
     }
     try {
         if ($TracePermissionUi -and $islandWindow) {
-            Write-IslandAccessibilityBounds $islandWindow.Handle
+            if (-not $testingPermissions) {
+                Write-IslandAccessibilityComparison $islandWindow.Handle 'island-failure'
+            }
             Write-Host "Focus after failure: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
             Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe' OR Name = 'wslhost.exe'" |
                 ForEach-Object {
