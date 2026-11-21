@@ -213,7 +213,7 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
     }
 }
 
-function Write-PermissionAccessibilityBounds {
+function Write-IslandAccessibilityBounds {
     param([IntPtr]$WindowHandle)
 
     $native = [AgentBroSmokeInput+Rect]::new()
@@ -226,7 +226,7 @@ function Write-PermissionAccessibilityBounds {
         $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
             Select-Object -ExpandProperty Current |
             Where-Object {
-                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel') -or
+                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel', 'hover-list__card') -or
                 $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
                 $_.Name -in @('Back to sessions', 'Deny', 'Allow Once')
             } |
@@ -344,7 +344,7 @@ function Test-KeyboardPermissionDenial(
         } catch {
             if ($TracePermissionUi) {
                 try {
-                    Write-PermissionAccessibilityBounds $WindowHandle
+                    Write-IslandAccessibilityBounds $WindowHandle
                     Save-PermissionFrame $detailClock $Attempt 'before-space-timeout'
                 } catch {
                     Write-Host "Could not capture permission accessibility bounds: $_"
@@ -354,7 +354,7 @@ function Test-KeyboardPermissionDenial(
         }
         if ($hasListFrame) {
             Write-Output "Waiting session list HWND size: $($listFrame.Right - $listFrame.Left)x$($listFrame.Bottom - $listFrame.Top)."
-            Write-PermissionAccessibilityBounds $WindowHandle
+            Write-IslandAccessibilityBounds $WindowHandle
         }
         $deny.SetFocus()
         $clock = [Diagnostics.Stopwatch]::new()
@@ -374,7 +374,7 @@ function Test-KeyboardPermissionDenial(
                     Write-Host ("Focused UIA control: '{0}' ({1}). Deny focusable: {2}. Deny focused: {3}." -f
                         $focused.Current.Name, $focused.Current.ClassName,
                         $deny.Current.IsKeyboardFocusable, $deny.Current.HasKeyboardFocus)
-                    Write-PermissionAccessibilityBounds $WindowHandle
+                    Write-IslandAccessibilityBounds $WindowHandle
                     Save-PermissionFrame $clock $Attempt 'focus-timeout'
                 } catch {
                     Write-Host "Could not inspect keyboard focus: $_"
@@ -405,7 +405,7 @@ function Test-KeyboardPermissionDenial(
                 do { $observation.sampleIndex += 1 } while ($observation.sampleIndex -lt $sampleTimes.Count -and
                     $clock.ElapsedMilliseconds -ge $sampleTimes[$observation.sampleIndex])
                 if ($observation.sampleIndex -eq $sampleTimes.Count) {
-                    Write-PermissionAccessibilityBounds $WindowHandle
+                    Write-IslandAccessibilityBounds $WindowHandle
                 }
             }
             $hasBack = [bool](Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' })
@@ -422,7 +422,7 @@ function Test-KeyboardPermissionDenial(
         if ($TracePermissionUi) {
             $focused = [Windows.Automation.AutomationElement]::FocusedElement
             Write-Output "After approval, native keyboard focus: '$($focused.Current.Name)'."
-            if ($Attempt -eq 1) { Write-PermissionAccessibilityBounds $WindowHandle }
+            if ($Attempt -eq 1) { Write-IslandAccessibilityBounds $WindowHandle }
             Save-PermissionFrame $clock $Attempt 'uia-resolved'
         }
         Write-Output "Windows Island accepted Space on the detail Deny button and the waiting Hook received deny. Detail verified at $($clock.ElapsedMilliseconds) ms."
@@ -604,6 +604,7 @@ $previousDpi = [AgentBroSmokeInput]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $originalCursor = [AgentBroSmokeInput+Point]::new()
 $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
+$islandWindow = $null
 try {
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
@@ -653,6 +654,9 @@ try {
         Write-Output "Could not capture the runner desktop: $_"
     }
     try {
+        if ($TracePermissionUi -and $islandWindow) {
+            Write-IslandAccessibilityBounds $islandWindow.Handle
+        }
         if ($PackImportPath) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
