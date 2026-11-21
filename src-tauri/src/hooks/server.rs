@@ -1141,20 +1141,12 @@ impl HookServer {
                             }
                             Err(err) => Err(err.to_string()),
                         };
-                        if write_result.is_ok() {
-                            // Play confirmation sound
-                            Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-
-                            // Clear pending permission
+                        let delivered = write_result.is_ok();
+                        if delivered || harness {
                             store
                                 .clear_matching_permission(session_id, Some(&resolved_tool_use_id));
-                        } else if let Err(err) = &write_result {
-                            if harness {
-                                store.clear_matching_permission(
-                                    session_id,
-                                    Some(&resolved_tool_use_id),
-                                );
-                            }
+                        }
+                        if let Err(err) = &write_result {
                             log::warn!(
                                 "Permission response write failed for session {} tool {}: {}",
                                 session_id,
@@ -1163,6 +1155,12 @@ impl HookServer {
                             );
                         }
                         let _ = reply.ack.send(write_result);
+                        if delivered {
+                            let sound = Arc::clone(&sound);
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     None => {
                         // Timeout or channel closed — let Claude Code handle it normally
@@ -3936,6 +3934,83 @@ mod tests {
             assert_eq!(response["decision"], expected);
             task.await.unwrap().unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permission_ack_and_session_update_do_not_wait_for_audio() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let handler = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        let event = serde_json::json!({
+            "agent": "claude-code",
+            "event": "PermissionRequest",
+            "session_id": "audio-busy",
+            "cwd": "/workspace/project",
+            "tool_name": "Read",
+            "tool_use_id": "read-file",
+            "tool_input": {"file_path": "/workspace/project/example.txt"},
+        });
+        client
+            .write_all(format!("{event}\n").as_bytes())
+            .await
+            .expect("send permission request");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !server
+                .pending_permissions
+                .lock()
+                .await
+                .keys()
+                .any(|key| key.session_id == "audio-busy")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("permission request should be queued");
+
+        let sound = server.sound_engine.clone();
+        let (locked, lock_ready) = oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let sound_holder = std::thread::spawn(move || {
+            let _guard = sound.lock().expect("lock sound engine");
+            locked.send(()).expect("report sound lock");
+            released.recv().expect("release sound lock");
+        });
+        lock_ready.await.expect("sound lock acquired");
+
+        let mut reply = String::new();
+        let mut reader = BufReader::new(client);
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            let (response, read) = tokio::join!(
+                server.respond_permission("audio-busy", false, false, Some("read-file")),
+                reader.read_line(&mut reply),
+            );
+            response.expect("acknowledge the delivered permission");
+            read.expect("read Hook decision");
+        })
+        .await;
+        let session = store.get_session("audio-busy").expect("active session");
+        release.send(()).expect("release held sound lock");
+        sound_holder.join().expect("finish sound holder");
+        result.expect("audio must not block the permission acknowledgement");
+        assert_eq!(session.phase, SessionPhase::Processing);
+        assert!(session.pending_permission.is_none());
+        let response: serde_json::Value =
+            serde_json::from_str(&reply).expect("valid Hook decision");
+        assert_eq!(response["decision"], "deny");
+        handler
+            .await
+            .expect("finish Hook task")
+            .expect("handle request");
     }
 
     #[tokio::test]
