@@ -108,6 +108,9 @@ public static class AgentBroSmokeInput {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr window, StringBuilder title, int capacity);
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
@@ -137,8 +140,21 @@ public static class AgentBroSmokeInput {
         var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
         if (!GetGUIThreadInfo(0, ref info))
             return string.Format("GetGUIThreadInfo failed: {0}", Marshal.GetLastWin32Error());
-        return string.Format("foreground {0}, active {1}, focus {2}, capture {3}",
-            DescribeWindow(GetForegroundWindow()), DescribeWindow(info.Active),
+        var foreground = GetForegroundWindow();
+        var title = new StringBuilder(256);
+        GetWindowText(foreground, title, title.Capacity);
+        uint processId;
+        GetWindowThreadProcessId(foreground, out processId);
+        string processName = "unknown";
+        try {
+            using (var process = System.Diagnostics.Process.GetProcessById((int)processId)) {
+                processName = process.ProcessName;
+            }
+        } catch (Exception error) when (
+            error is ArgumentException || error is InvalidOperationException ||
+            error is System.ComponentModel.Win32Exception) { }
+        return string.Format("foreground {0}, title '{1}', process {2} ({3}), active {4}, focus {5}, capture {6}",
+            DescribeWindow(foreground), title, processName, processId, DescribeWindow(info.Active),
             DescribeWindow(info.Focus), DescribeWindow(info.Capture));
     }
 
