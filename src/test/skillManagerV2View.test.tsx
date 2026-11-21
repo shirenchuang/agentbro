@@ -1900,7 +1900,11 @@ describe('Agent sync local agent chips', () => {
       },
     ]
     let finishFirstAdopt!: () => void
-    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockResolvedValue(inventory)
+    let finishInventory!: () => void
+    const inventoryRequest = new Promise<AgentSkillInventoryAgent[]>((resolve) => {
+      finishInventory = () => resolve(inventory)
+    })
+    vi.spyOn(skillApiV2, 'listAgentSkillInventory').mockReturnValue(inventoryRequest)
     vi.spyOn(skillApiV2, 'executeAdopt').mockImplementationOnce(
       () => new Promise<string>((resolve) => {
         finishFirstAdopt = () => resolve('')
@@ -1910,8 +1914,14 @@ describe('Agent sync local agent chips', () => {
     const { AgentSyncPanel } = await import('../components/skills-v2/InstallView')
     render(<AgentSyncPanel onDone={() => {}} />)
 
-    fireEvent.click(await screen.findByText('选择当前可接管'))
-    fireEvent.click(screen.getByText('接管到中心库'))
+    const selectVisible = screen.getByRole('button', { name: '选择当前可接管' })
+    expect(selectVisible).toBeDisabled()
+    await act(async () => finishInventory())
+    await waitFor(() => expect(selectVisible).toBeEnabled())
+    fireEvent.click(selectVisible)
+    const adoptSelected = screen.getByRole('button', { name: '接管到中心库' })
+    expect(adoptSelected).toBeEnabled()
+    fireEvent.click(adoptSelected)
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在接管 1 / 2')
     expect(screen.getByRole('status')).toHaveTextContent('alpha')
@@ -1919,7 +1929,7 @@ describe('Agent sync local agent chips', () => {
     expect(screen.getByLabelText('选择 Agent')).not.toBeDisabled()
     fireEvent.click(screen.getByText('beta'))
     expect(document.body.querySelector('.sm2__slideover-title')).toHaveTextContent('beta')
-    finishFirstAdopt()
+    await act(async () => finishFirstAdopt())
   })
 
   it('localizes stale unmanaged adoption errors instead of showing database text', async () => {
