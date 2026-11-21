@@ -165,6 +165,12 @@ jobs:
           & $testExecutable skills::sync::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable hooks::server::tests::permission_responses_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $testExecutable --exact hooks::server::tests::harness_turn_and_permission_round_trip_share_the_island_session
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

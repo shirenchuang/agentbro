@@ -543,7 +543,7 @@ describe('PetSurface (companion)', () => {
 
     fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement)
 
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
 
   it('hides blocking pet prompts on Escape without dismissing or approving them', () => {
@@ -597,6 +597,6 @@ describe('PetSurface (companion)', () => {
     fireEvent.click(getByText('notch.allowOnce').closest('button') as HTMLElement)
 
     expect(tauriMocks.respondPermission).toHaveBeenCalledTimes(1)
-    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true)
+    expect(tauriMocks.respondPermission).toHaveBeenCalledWith('s1', true, undefined, undefined)
   })
 })

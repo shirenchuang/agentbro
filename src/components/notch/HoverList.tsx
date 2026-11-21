@@ -9,9 +9,9 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
-import { useSessionStore } from '../../stores/sessionStore'
+import { answerDisplayedPermission, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
-import { respondAutoApprove, respondPermission, respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
+import { respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -588,6 +588,7 @@ function getOverlayPermissionForSession(session: SessionState, activeOverlay: Ov
   const data = activeOverlay.data as Partial<InlinePermissionRequest> | null | undefined
   if (!data || typeof data.toolName !== 'string' || !data.toolName.trim()) return undefined
   return {
+    toolUseId: data.toolUseId,
     toolName: data.toolName,
     toolInput: data.toolInput,
     diff: data.diff,
@@ -607,12 +608,6 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
     ? getWritePermissionPreview(parsedInput, WRITE_PERMISSION_PREVIEW_LINES)
     : null
   const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
-
-  const clearAfter = (work: Promise<void>) => {
-    work
-      .then(() => useSessionStore.getState().clearPermission(session.id))
-      .catch((error) => console.warn('[notch] inline permission response:', error))
-  }
 
   return (
     <div
@@ -669,7 +664,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
           className="hover-list__inline-btn hover-list__inline-btn--deny"
           onClick={(e) => {
             e.stopPropagation()
-            clearAfter(respondPermission(session.id, false))
+            answerDisplayedPermission(session.id, permission, false)
           }}
         >
           {t('notch.deny', { defaultValue: '拒绝' })}
@@ -679,7 +674,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
           className="hover-list__inline-btn hover-list__inline-btn--allow"
           onClick={(e) => {
             e.stopPropagation()
-            clearAfter(respondPermission(session.id, true))
+            answerDisplayedPermission(session.id, permission, true)
           }}
         >
           {t('notch.allowOnce', { defaultValue: '允许一次' })}
@@ -691,7 +686,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
               className="hover-list__inline-btn hover-list__inline-btn--always"
               onClick={(e) => {
                 e.stopPropagation()
-                clearAfter(respondPermission(session.id, true, true))
+                answerDisplayedPermission(session.id, permission, true, true)
               }}
             >
               <span>{t('notch.allowAlways', { defaultValue: '始终允许' })}</span>
@@ -701,7 +696,7 @@ function InlinePermissionPreview({ session, permission }: { session: SessionStat
               className="hover-list__inline-btn hover-list__inline-btn--auto"
               onClick={(e) => {
                 e.stopPropagation()
-                clearAfter(respondAutoApprove(session.id))
+                answerDisplayedPermission(session.id, permission, 'auto')
               }}
             >
               {t('notch.autoApprove', { defaultValue: '自动批准' })}

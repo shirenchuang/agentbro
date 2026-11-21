@@ -519,6 +519,23 @@ impl SessionStore {
         self.emit_update();
     }
 
+    pub fn clear_matching_permission(&self, session_id: &str, tool_use_id: Option<&str>) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            let Some(permission) = session.pending_permission.as_ref() else {
+                return;
+            };
+            if permission.tool_use_id.as_deref() != tool_use_id {
+                return;
+            }
+            session.pending_permission = None;
+            if session.phase == SessionPhase::WaitingApproval && session.pending_plan.is_none() {
+                session.phase = SessionPhase::Processing;
+            }
+            session.update_duration();
+        }
+        self.emit_update();
+    }
+
     /// Set pending question on a session
     pub fn set_pending_question(&self, session_id: &str, question: Option<PendingQuestion>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {

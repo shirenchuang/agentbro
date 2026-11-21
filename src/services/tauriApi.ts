@@ -521,12 +521,12 @@ export async function removeClaudeWrapper(): Promise<ClaudeWrapperStatus> {
   return invoke<ClaudeWrapperStatus>('remove_claude_wrapper')
 }
 
-export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean): Promise<void> {
+export async function respondPermission(sessionId: string, allowed: boolean, always?: boolean, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondPermission(${sessionId}, ${allowed}, always=${always})`)
     return
   }
-  return invoke('respond_permission', { sessionId, allowed, always: always ?? false })
+  return invoke('respond_permission', { sessionId, allowed, always: always ?? false, toolUseId: toolUseId ?? null })
 }
 
 export async function respondQuestion(sessionId: string, answer: string): Promise<void> {
@@ -545,12 +545,12 @@ export async function respondPlan(sessionId: string, mode: string, message?: str
   return invoke('respond_plan', { sessionId, mode, message: message ?? null })
 }
 
-export async function respondAutoApprove(sessionId: string): Promise<void> {
+export async function respondAutoApprove(sessionId: string, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondAutoApprove(${sessionId})`)
     return
   }
-  return invoke('respond_auto_approve', { sessionId })
+  return invoke('respond_auto_approve', { sessionId, toolUseId: toolUseId ?? null })
 }
 
 export async function sendMessage(sessionId: string, message: string): Promise<void> {

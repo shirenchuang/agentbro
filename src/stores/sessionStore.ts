@@ -1,13 +1,13 @@
 /* AgentBro — Session State Management (Zustand) */
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useConfigStore } from './configStore'
-import type { AgentEvent, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, RateLimitInfo, SessionState } from '../types/agent'
+import type { AgentEvent, BaseLayer, ChatHistoryMeta, ChatMessage, OverlayItem, PanelState, PermissionRequest, RateLimitInfo, SessionState } from '../types/agent'
 import { OVERLAY_PRIORITY } from '../types/agent'
 import { isQuietHours } from '../utils/quietHours'
 import { isSessionPastDisplayTimeout, timestampToMs } from '../utils/sessionDisplay'
 import { sessionMatchesLegacyCwdExclusion, sessionMatchesSilenceRule } from '../utils/sessionSilence'
 import { isCodexTitleMetadata } from '../utils/codexMetadata'
-import { respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
+import { respondAutoApprove, respondPermission, saveSessions as saveSessionsToBackend } from '../services/tauriApi'
 
 // Debounce helper
 function debounce<T extends (...args: Parameters<T>) => void>(fn: T, ms: number): T {
@@ -23,6 +23,8 @@ const saveSessionsDebounced = debounce(() => {
   const sessions = useSessionStore.getState().sessionList
   saveSessionsToBackend(sessions).catch((err) => console.warn('Failed to persist sessions:', err))
 }, 1000)
+
+type PermissionIdentity = Pick<PermissionRequest, 'toolUseId' | 'toolName'> & { toolInput?: unknown }
 
 interface SessionStore {
   sessions: Record<string, SessionState>
@@ -53,7 +55,7 @@ interface SessionStore {
   replaceAllSessions: (sessions: SessionState[], options?: { suppressed?: boolean }) => void
   setChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
   prependChatHistory: (sessionId: string, messages: ChatMessage[], meta?: ChatHistoryMeta) => void
-  clearPermission: (sessionId: string) => void
+  clearPermission: (sessionId: string, permission?: PermissionIdentity) => void
   clearQuestion: (sessionId: string) => void
   clearPlan: (sessionId: string) => void
   setRateLimits: (limits: RateLimitInfo) => void
@@ -73,6 +75,29 @@ interface SessionStore {
 
 function toList(sessions: Record<string, SessionState>, now = Date.now()): SessionState[] {
   return Object.values(sessions).filter((session) => isDisplayableSession(session, now))
+}
+
+function samePermission(first: PermissionIdentity | undefined, second: PermissionIdentity | undefined): boolean {
+  if (!first || !second) return first === second
+  if (first.toolUseId || second.toolUseId) return first.toolUseId === second.toolUseId
+  return first.toolName === second.toolName && first.toolInput === second.toolInput
+}
+
+export function answerDisplayedPermission(
+  sessionId: string,
+  permission: PermissionIdentity | undefined,
+  allowed: boolean | 'auto',
+  always?: boolean,
+): boolean {
+  const pending = useSessionStore.getState().sessions[sessionId]?.pendingPermission
+  if ((permission?.toolUseId || pending?.toolUseId) && !samePermission(permission, pending)) return false
+  const reply = allowed === 'auto'
+    ? respondAutoApprove(sessionId, permission?.toolUseId)
+    : respondPermission(sessionId, allowed, always, permission?.toolUseId)
+  void reply
+    .then(() => useSessionStore.getState().clearPermission(sessionId, permission))
+    .catch((error) => console.warn('[approval] response failed:', error))
+  return true
 }
 
 function hasPendingInteraction(session: SessionState): boolean {
@@ -537,38 +562,35 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
               sessions[event.sessionId] = { ...session, phase: 'processing', lastActivityAt: Date.now() }
             }
             // Fire auto-approve response asynchronously
-            respondPermission(event.sessionId, true).catch(() => {})
+            respondPermission(event.sessionId, true, undefined, event.toolUseId).catch(() => {})
             break
           }
 
+          const permission: PermissionRequest = {
+            toolUseId: event.toolUseId,
+            toolName: event.toolName,
+            toolInput: event.toolInput || '',
+            diff: event.diff,
+            options: event.options,
+          }
           const session = sessions[event.sessionId]
           if (session) {
             const msg: ChatMessage = { role: 'permission', toolName: event.toolName, toolInput: event.toolInput, diff: event.diff, options: event.options, timestamp: Date.now() }
             sessions[event.sessionId] = {
               ...session,
               phase: 'waiting_approval',
-              pendingPermission: {
-                toolName: event.toolName,
-                toolInput: event.toolInput || '',
-                diff: event.diff,
-                options: event.options,
-              },
+              pendingPermission: permission,
               chatHistory: [...session.chatHistory, msg],
               unattendedSince: session.unattendedSince ?? Date.now(),
             }
           }
           // Push overlay instead of forcing panel state
-          const permOverlayId = `perm-${event.sessionId}-${Date.now()}`
+          const permOverlayId = `perm-${event.sessionId}-${permission.toolUseId ?? Date.now()}`
           const permOverlay: OverlayItem = {
             id: permOverlayId,
             sessionId: event.sessionId,
             type: 'permission',
-            data: {
-              toolName: event.toolName,
-              toolInput: event.toolInput || '',
-              diff: event.diff,
-              options: event.options,
-            },
+            data: permission,
             createdAt: Date.now(),
           }
           // Queue overlay after set() — use setTimeout(0) to run after state update
@@ -899,7 +921,7 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         }
 
         // Detect new pendingPermission — create permission overlay and chat message
-        if (s.pendingPermission && !prev?.pendingPermission) {
+        if (s.pendingPermission && !samePermission(s.pendingPermission, prev?.pendingPermission)) {
           // Add permission message to chat history so ChatView shows tool details
           const permMsg: ChatMessage = {
             role: 'permission',
@@ -911,22 +933,14 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
           }
           s.chatHistory = [...(s.chatHistory ?? []), permMsg]
 
-          const existingOverlay = state.overlayQueue.find((o) => o.sessionId === s.id && o.type === 'permission')
-          if (!existingOverlay) {
-            newOverlays.push({
-              id: `permission-${s.id}-${Date.now()}`,
-              sessionId: s.id,
-              type: 'permission',
-              data: {
-                toolName: s.pendingPermission.toolName,
-                toolInput: s.pendingPermission.toolInput,
-                diff: s.pendingPermission.diff,
-                options: s.pendingPermission.options,
-              },
-              createdAt: Date.now(),
-              suppressed,
-            })
-          }
+          newOverlays.push({
+            id: `permission-${s.id}-${s.pendingPermission.toolUseId ?? Date.now()}`,
+            sessionId: s.id,
+            type: 'permission',
+            data: s.pendingPermission,
+            createdAt: Date.now(),
+            suppressed,
+          })
         }
 
         // Detect new pending plan approval from backend hook flow.
@@ -1022,7 +1036,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
         if (remoteNewPromptSessionIds.has(overlay.sessionId) && isNonBlockingOverlayType(overlay.type)) return false
         const session = sessions[overlay.sessionId]
         if (!session) return false
-        if (overlay.type === 'permission') return Boolean(session.pendingPermission)
+        if (overlay.type === 'permission') {
+          return Boolean(session.pendingPermission)
+            && samePermission(overlay.data as PermissionRequest | undefined, session.pendingPermission)
+        }
         if (overlay.type === 'question') return Boolean(session.pendingQuestion)
         if (overlay.type === 'plan') return Boolean(session.planTitle || session.planContent)
         if (overlay.type === 'compacting') return session.phase === 'compacting'
@@ -1076,10 +1093,10 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     })
   },
 
-  clearPermission: (sessionId) => {
+  clearPermission: (sessionId, permission) => {
     set((state) => {
       const session = state.sessions[sessionId]
-      if (!session) return state
+      if (!session?.pendingPermission || !samePermission(session.pendingPermission, permission)) return state
       const sessions = {
         ...state.sessions,
         [sessionId]: { ...session, phase: 'processing' as const, pendingPermission: undefined, unattendedSince: undefined },
@@ -1196,7 +1213,15 @@ export const useSessionStore: UseBoundStore<StoreApi<SessionStore>> = create<Ses
     if (isNonBlocking && useSessionStore.getState().isWakeSilenced()) return
 
     set((state) => {
-      const queue = [...state.overlayQueue, item].sort(
+      if (item.type === 'permission') {
+        const permission = item.data as PermissionRequest | undefined
+        const pending = state.sessions[item.sessionId]?.pendingPermission
+        if ((pending || permission?.toolUseId) && !samePermission(permission, pending)) return state
+      }
+      const previous = item.type === 'permission'
+        ? state.overlayQueue.filter((overlay) => overlay.sessionId !== item.sessionId || overlay.type !== 'permission')
+        : state.overlayQueue
+      const queue = [...previous, item].sort(
         (a, b) => (OVERLAY_PRIORITY[b.type] ?? 0) - (OVERLAY_PRIORITY[a.type] ?? 0)
       )
       return { overlayQueue: queue, activeOverlay: queue[0] ?? null }

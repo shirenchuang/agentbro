@@ -1,7 +1,7 @@
 /* ChatView — Conversation-style message list for active session */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useSessionStore, selectActiveSession } from '../../stores/sessionStore'
+import { answerDisplayedPermission, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
@@ -12,19 +12,13 @@ import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
 import type { ChatMessage, SessionState, SubagentInfo, ToolStatus } from '../../types/agent'
-import { respondPermission, respondQuestion, respondPlan, sendMessage, jumpToTerminal, respondAutoApprove, setNotchFocusable } from '../../services/tauriApi'
+import { respondQuestion, respondPlan, sendMessage, jumpToTerminal, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName } from '../../utils/sessionDisplay'
 import './ChatView.css'
 
 interface MessageGroup {
   type: 'collapsed' | 'single'
   messages: ChatMessage[]
-}
-
-function clearPermissionAfter(sessionId: string, work: Promise<void>) {
-  work
-    .then(() => useSessionStore.getState().clearPermission(sessionId))
-    .catch((error) => console.warn('[chat] permission response failed:', error))
 }
 
 function isCollapsible(msg: ChatMessage): boolean {
@@ -199,7 +193,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, false))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, false)
   }
 
   const handleAllowAlways = () => {
@@ -209,7 +203,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, true, true))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, true, true)
   }
 
   const handleDeny = () => {
@@ -219,7 +213,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    clearPermissionAfter(activeSession.id, respondPermission(activeSession.id, false))
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, false)
   }
 
   const handleAutoApprove = () => {
@@ -229,8 +223,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
       useSessionStore.getState().clearPlan(activeSession.id)
       return
     }
-    respondAutoApprove(activeSession.id)
-    useSessionStore.getState().clearPermission(activeSession.id)
+    answerDisplayedPermission(activeSession.id, activeSession.pendingPermission, 'auto')
   }
 
   const handleSend = async (msg: string) => {
