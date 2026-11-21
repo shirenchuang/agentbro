@@ -204,24 +204,130 @@ fn open_path_windows(target: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 mod windows_shell {
+    use std::collections::HashSet;
     use std::io;
-    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::path::{Component, Path, PathBuf, Prefix};
-    use std::ptr::{null, null_mut};
+    use std::ptr::null;
+    use std::time::{Duration, Instant};
+    use windows::core::{Interface, BSTR};
+    use windows::Win32::System::Com::{CoCreateInstance, IDispatch, CLSCTX_LOCAL_SERVER};
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Shell::{
+        Folder, Folder2, IShellFolderViewDual, IShellWindows, IWebBrowserApp, ShellWindows,
+        SVSI_DESELECTOTHERS, SVSI_ENSUREVISIBLE, SVSI_FOCUSED, SVSI_SELECT,
+    };
     use windows_sys::Win32::System::Com::{
-        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
-        COINIT_DISABLE_OLE1DDE,
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
     };
     use windows_sys::Win32::UI::Shell::{
-        Common::ITEMIDLIST, SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteExW,
-        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SW_SHOWNORMAL};
 
     pub(super) fn open(path: &Path) -> Result<(), String> {
         let target =
             prepare_path(path).map_err(|error| format!("open {}: {error}", path.display()))?;
         let _apartment = ShellApartment::initialize()?;
+        open_in_shell(&target).map_err(|error| format!("open {}: {error}", path.display()))
+    }
+
+    pub(super) fn reveal(path: &Path) -> Result<(), String> {
+        let target =
+            prepare_path(path).map_err(|error| format!("reveal {}: {error}", path.display()))?;
+        let _apartment = ShellApartment::initialize()?;
+        let Some(parent) = target.parent() else {
+            return open_in_shell(&target)
+                .map_err(|error| format!("reveal {}: {error}", path.display()));
+        };
+        let filename = BSTR::from_wide(
+            &target
+                .file_name()
+                .ok_or_else(|| format!("Could not identify {}", path.display()))?
+                .encode_wide()
+                .collect::<Vec<_>>(),
+        );
+        let shell: IShellWindows =
+            unsafe { CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER) }
+                .map_err(|error| format!("connect to File Explorer: {error}"))?;
+        let existing_windows: HashSet<_> = explorer_windows(&shell)
+            .filter_map(|window| unsafe { window.HWND() }.ok().map(|id| id.0))
+            .collect();
+        open_in_shell(parent).map_err(|error| format!("open {}: {error}", parent.display()))?;
+
+        let start = Instant::now();
+        loop {
+            let foreground = unsafe { GetForegroundWindow() } as isize;
+            for window in explorer_windows(&shell) {
+                let Ok(id) = (unsafe { window.HWND() }) else {
+                    continue;
+                };
+                if id.0 != foreground
+                    && existing_windows.contains(&id.0)
+                    && start.elapsed() < Duration::from_secs(1)
+                {
+                    continue;
+                }
+                if select_in_explorer(&window, parent, &filename, &target)
+                    .is_ok_and(|selected| selected)
+                {
+                    return Ok(());
+                }
+            }
+            if start.elapsed() >= Duration::from_secs(5) {
+                return Err(format!("File Explorer did not select {}", path.display()));
+            }
+            std::thread::sleep(Duration::from_millis(75));
+        }
+    }
+
+    fn explorer_windows(shell: &IShellWindows) -> impl Iterator<Item = IWebBrowserApp> + '_ {
+        let count = unsafe { shell.Count() }.unwrap_or(0);
+        (0..count).filter_map(|index| {
+            let window = unsafe { shell.Item(&VARIANT::from(index)) }.ok()?;
+            window.cast().ok()
+        })
+    }
+
+    fn select_in_explorer(
+        window: &IWebBrowserApp,
+        parent: &Path,
+        filename: &BSTR,
+        target: &Path,
+    ) -> windows::core::Result<bool> {
+        let view: IShellFolderViewDual = unsafe { window.Document()? }.cast()?;
+        let folder: Folder = unsafe { view.Folder()? };
+        let location = unsafe { folder.cast::<Folder2>()?.Self_()?.Path()? };
+        if !matches_shell_path(&location, parent) {
+            return Ok(false);
+        }
+
+        let item: IDispatch = unsafe { folder.ParseName(filename)? }.cast()?;
+        let item = VARIANT::from(item);
+        let flags = SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0;
+        unsafe { view.SelectItem(&item, flags)? };
+        let selected = unsafe { view.SelectedItems()? };
+        if unsafe { selected.Count()? } != 1 {
+            return Ok(false);
+        }
+        let selected_path = unsafe { selected.Item(&VARIANT::from(0i32))?.Path()? };
+        Ok(matches_shell_path(&selected_path, target))
+    }
+
+    fn matches_shell_path(location: &BSTR, target: &Path) -> bool {
+        let location = PathBuf::from(std::ffi::OsString::from_wide(location));
+        location == target
+            || (location.to_string_lossy().to_lowercase()
+                == target.to_string_lossy().to_lowercase()
+                && location.canonicalize().is_ok_and(|resolved| {
+                    target
+                        .canonicalize()
+                        .is_ok_and(|expected| expected == resolved)
+                }))
+    }
+
+    fn open_in_shell(path: &Path) -> io::Result<()> {
+        let target: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
         let mut execute = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
             fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
@@ -230,39 +336,7 @@ mod windows_shell {
             ..Default::default()
         };
         if unsafe { ShellExecuteExW(&mut execute) } == 0 {
-            return Err(format!(
-                "open {}: {}",
-                path.display(),
-                io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-
-    pub(super) fn reveal(path: &Path) -> Result<(), String> {
-        let target =
-            prepare_path(path).map_err(|error| format!("reveal {}: {error}", path.display()))?;
-        let _apartment = ShellApartment::initialize()?;
-        let mut item = ShellItem(null_mut());
-        let parsed =
-            unsafe { SHParseDisplayName(target.as_ptr(), null_mut(), &mut item.0, 0, null_mut()) };
-        if parsed < 0 {
-            return Err(format!(
-                "locate {}: {}",
-                path.display(),
-                io::Error::from_raw_os_error(parsed)
-            ));
-        }
-        if item.0.is_null() {
-            return Err(format!("Windows could not locate {}", path.display()));
-        }
-        let shown = unsafe { SHOpenFolderAndSelectItems(item.0, 0, null(), 0) };
-        if shown < 0 {
-            return Err(format!(
-                "reveal {}: {}",
-                path.display(),
-                io::Error::from_raw_os_error(shown)
-            ));
+            return Err(io::Error::last_os_error());
         }
         Ok(())
     }
@@ -289,15 +363,7 @@ mod windows_shell {
         }
     }
 
-    struct ShellItem(*mut ITEMIDLIST);
-
-    impl Drop for ShellItem {
-        fn drop(&mut self) {
-            unsafe { CoTaskMemFree(self.0.cast()) };
-        }
-    }
-
-    fn prepare_path(path: &Path) -> io::Result<Vec<u16>> {
+    fn prepare_path(path: &Path) -> io::Result<PathBuf> {
         let path = std::path::absolute(path)?;
         std::fs::symlink_metadata(&path)?;
         let ordinary = ordinary_path(&path).filter(|candidate| {
@@ -305,8 +371,7 @@ mod windows_shell {
                 .canonicalize()
                 .is_ok_and(|target| path.canonicalize().is_ok_and(|original| target == original))
         });
-        let shell_path = ordinary.as_deref().unwrap_or(&path);
-        Ok(shell_path.as_os_str().encode_wide().chain([0]).collect())
+        Ok(ordinary.unwrap_or(path))
     }
 
     fn ordinary_path(path: &Path) -> Option<PathBuf> {
