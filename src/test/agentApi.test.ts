@@ -87,4 +87,29 @@ describe('agentApi seedAgentPrograms', () => {
       selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     }
   })
+
+  it('routes batch adoption and pack sync IPC to the confirmed runtime', async () => {
+    const { skillApiV2 } = await import('../services/skillApiV2')
+    const { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } = await import('../stores/runtimeEnvironmentStore')
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const selectEnvironment = useRuntimeEnvironmentStore.getState().selectEnvironment
+    const items = [{ agentId: 'codex', unmanagedId: 'unmanaged', option: 'import_keep', renamedId: null }]
+    const pack = { id: 'team', name: 'Team Skills', description: '', tags: [], skillIds: ['existing', 'adopted'] }
+
+    try {
+      selectEnvironment('first-host')
+      await skillApiV2.executeAdoptBatch(items, 'first-host')
+      selectEnvironment('second-host')
+      await skillApiV2.getPackDetail(pack.id, 'first-host')
+      await skillApiV2.upsertPack(pack, { deferSync: true, environmentId: 'first-host' })
+
+      expect(vi.mocked(invoke).mock.calls).toEqual([
+        ['remote_skill_manager_invoke', { id: 'first-host', command: 'execute_adopt_agent_skills', args: { items } }],
+        ['remote_skill_manager_invoke', { id: 'first-host', command: 'get_skill_pack_detail', args: { packId: pack.id } }],
+        ['remote_skill_manager_invoke', { id: 'first-host', command: 'execute_upsert_skill_pack', args: { pack, deferSync: true } }],
+      ])
+    } finally {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+  })
 })
