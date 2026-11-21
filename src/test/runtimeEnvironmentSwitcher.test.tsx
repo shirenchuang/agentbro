@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsSidebar } from '../components/settings/SettingsSidebar'
 import { RuntimeEnvironmentBadge, RuntimeEnvironmentSwitcher } from '../components/settings/RuntimeEnvironmentSwitcher'
@@ -163,6 +164,40 @@ describe('runtime environment switcher', () => {
     expect(screen.getByRole('status', { name })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name }))
     expect(screen.getByRole('option', { name: /This PC/, selected: true })).toBeInTheDocument()
+  })
+
+  it.each(['packs', 'agents'] as const)('indexes local center Skills when the first manager tab is %s', async (tab) => {
+    const fixture = {
+      ...remoteOverview.skills[0], id: 'startup-fixture', name: 'Skill from the center folder',
+      sourceType: 'manual_center', centerPath: '/local/skills/startup-fixture', installedAgents: [],
+    }
+    const cachedOverview = { ...remoteOverview, skills: [], packs: [], agents: [] }
+    let indexed = false
+    const bootstrap = vi.spyOn(skillApiV2, 'bootstrap').mockResolvedValue(undefined)
+    const scan = vi.spyOn(skillApiV2, 'init').mockImplementation(async () => { indexed = true })
+    const overview = vi.spyOn(skillApiV2, 'overview').mockImplementation(async () =>
+      indexed ? { ...cachedOverview, skills: [fixture] } : cachedOverview,
+    )
+    useSkillStoreV2.setState({
+      activeTab: tab, initialized: false, startupScanInFlight: false, overview: null,
+      settings: null, skills: [], agents: [], packs: [], error: null, loading: false,
+    })
+    if (tab === 'packs') await useSkillStoreV2.getState().loadOverview(true)
+    expect(useSkillStoreV2.getState().skills).toEqual([])
+    overview.mockClear()
+
+    const { unmount } = render(<StrictMode><SkillManagerShell /></StrictMode>)
+    await waitFor(() => expect(useSkillStoreV2.getState().skills).toEqual([fixture]))
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(scan).toHaveBeenCalledTimes(1)
+    expect(overview).toHaveBeenCalledTimes(2)
+    act(() => useSkillStoreV2.getState().setTab('library'))
+    expect(await screen.findByText(fixture.name)).toBeInTheDocument()
+
+    unmount()
+    render(<SkillManagerShell />)
+    expect(await screen.findByText(fixture.name)).toBeInTheDocument()
+    expect(scan).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the original Agent management interface for a remote server', () => {
