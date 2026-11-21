@@ -593,6 +593,8 @@
   "skills": {
     "projectsTab": "Projeler",
     "projectLock": {
+      "verify": "Yüklü becerileri doğrula",
+      "verifying": "Doğrulanıyor…",
       "selectAll": "Geri yüklenebilenlerin tümünü seç",
       "restoring": "Geri yükleniyor…",
       "restore": "Seçilenleri geri yükle ({{count}})",
@@ -601,6 +603,9 @@
       "restored": "Geri yüklendi",
       "status": {
         "existing": "Zaten var",
+        "verified": "Kilit dosyasıyla eşleşiyor",
+        "modified": "Kilit dosyasından farklı",
+        "unverified": "Doğrulanamadı",
         "ready": "Geri yüklenebilir",
         "legacy": "Eski karma biçimi",
         "unsupported": "Desteklenmeyen kaynak veya sürüm",

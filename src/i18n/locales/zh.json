@@ -739,6 +739,8 @@
   "skills": {
     "projectsTab": "项目",
     "projectLock": {
+      "verify": "校验已安装的 Skill",
+      "verifying": "正在校验…",
       "selectAll": "选择全部可恢复项",
       "restoring": "正在恢复…",
       "restore": "恢复选中项（{{count}}）",
@@ -747,6 +749,9 @@
       "restored": "已恢复",
       "status": {
         "existing": "已存在",
+        "verified": "与锁文件一致",
+        "modified": "与锁文件不一致",
+        "unverified": "无法校验",
         "ready": "可恢复",
         "legacy": "旧版校验格式",
         "unsupported": "暂不支持的来源或版本",

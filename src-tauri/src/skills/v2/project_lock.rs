@@ -6,7 +6,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const LOCK_FILE: &str = "skills-lock.json";
@@ -287,6 +287,63 @@ pub(super) fn restore(
     })
 }
 
+pub(super) fn verify_installed(
+    root: &Path,
+    revision: &str,
+) -> Result<BTreeMap<String, ProjectLockedSkillStatus>, String> {
+    use ProjectLockedSkillStatus::{Modified, Unverified, Verified};
+
+    let lock = lock_at_revision(root, revision)?;
+    let destination = checked_destination(root, false)?;
+    let duplicates = duplicate_names(lock.skills.keys());
+    let mut results = BTreeMap::new();
+    for (name, entry) in lock.skills {
+        if !valid_skill_name(&name) || duplicates.contains(&name.to_lowercase()) {
+            continue;
+        }
+        let skill = destination.join(&name);
+        let is_directory = match fs::symlink_metadata(&skill) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(_) => false,
+        };
+        let expected = entry
+            .get("computedHash")
+            .and_then(|hash| hash.as_str())
+            .filter(|hash| lock.version == 2 && is_hex(hash, 64));
+        let status = match expected {
+            Some(hash) if is_directory => match hash_installed_skill(&destination, &skill) {
+                Ok(actual) if actual.eq_ignore_ascii_case(hash) => Verified,
+                Ok(_) => Modified,
+                Err(_) => Unverified,
+            },
+            _ => Unverified,
+        };
+        results.insert(name, status);
+    }
+    lock_at_revision(root, revision)?;
+    Ok(results)
+}
+
+fn hash_installed_skill(destination: &Path, skill: &Path) -> Result<String, String> {
+    let skill = skill.canonicalize().map_err(|error| error.to_string())?;
+    if skill.parent() != Some(destination)
+        || !skill
+            .join("SKILL.md")
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_file())
+    {
+        return Err("The installed path is not a Skill directory".to_string());
+    }
+    let mut files = BTreeMap::new();
+    collect_skill_files(&skill, &skill, "", &mut Vec::new(), &mut files)?;
+    let mut hash = Sha256::new();
+    for (path, file) in files {
+        add_file_to_hash(&mut hash, &path, &file)?;
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 fn restore_with(
     root: &Path,
     revision: &str,
@@ -342,9 +399,7 @@ fn restore_with(
 fn lock_at_revision(root: &Path, revision: &str) -> Result<LockFile, String> {
     let (lock, actual) = read_lock(root)?.ok_or("The project lock file is missing")?;
     if revision != actual {
-        return Err(
-            "The project lock file changed. Rescan the project before restoring.".to_string(),
-        );
+        return Err("The project lock file changed. Rescan the project and try again.".to_string());
     }
     Ok(lock)
 }
@@ -430,8 +485,7 @@ fn install_verified_skill(
         let parent = target.parent().ok_or("Invalid Skill file destination")?;
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         fs::copy(original, &target).map_err(|error| error.to_string())?;
-        let bytes = fs::read(&target).map_err(|error| error.to_string())?;
-        add_to_hash(&mut staged_hash, &path, &bytes);
+        add_file_to_hash(&mut staged_hash, &path, &target)?;
     }
     if !format!("{:x}", staged_hash.finalize()).eq_ignore_ascii_case(expected) {
         return Err("Downloaded Skill content does not match the lock file".to_string());
@@ -495,27 +549,72 @@ fn collect_skill_files(
     Ok(())
 }
 
-fn add_to_hash(hash: &mut Sha256, path: &str, bytes: &[u8]) {
-    let text = !bytes.contains(&0) && bytes.windows(2).any(|window| window == b"\r\n");
-    let normalized;
-    let bytes = if text {
-        normalized = bytes
-            .iter()
-            .copied()
-            .enumerate()
-            .filter_map(|(i, byte)| {
-                (byte != b'\r' || bytes.get(i + 1) != Some(&b'\n')).then_some(byte)
-            })
-            .collect::<Vec<_>>();
-        normalized.as_slice()
-    } else {
-        bytes
-    };
+fn add_file_to_hash(hash: &mut Sha256, path: &str, source: &Path) -> Result<(), String> {
+    let mut file = fs::File::open(source).map_err(|error| error.to_string())?;
+    let mut buffer = [0; 16 * 1024];
+    let mut size = 0;
+    let mut crlf = 0;
+    let mut binary = false;
+    let mut trailing_cr = false;
+    // The portable format prefixes the normalized length and leaves any file containing NUL untouched.
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        let bytes = &buffer[..count];
+        size += count as u64;
+        binary |= bytes.contains(&0);
+        if !binary {
+            crlf += bytes.windows(2).filter(|window| *window == b"\r\n").count() as u64;
+            crlf += u64::from(trailing_cr && bytes[0] == b'\n');
+            trailing_cr = bytes[count - 1] == b'\r';
+        }
+    }
+    let normalize = !binary && crlf != 0;
+    let normalized_size = if normalize { size - crlf } else { size };
     hash.update(path.as_bytes());
     hash.update([0]);
-    hash.update(bytes.len().to_string().as_bytes());
+    hash.update(normalized_size.to_string().as_bytes());
     hash.update([0]);
-    hash.update(bytes);
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    let mut hashed = 0;
+    trailing_cr = false;
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        if !normalize {
+            hash.update(&buffer[..count]);
+            hashed += count as u64;
+            continue;
+        }
+        if trailing_cr && buffer[0] != b'\n' {
+            hash.update(b"\r");
+            hashed += 1;
+        }
+        trailing_cr = buffer[count - 1] == b'\r';
+        let mut length = 0;
+        for index in 0..count - usize::from(trailing_cr) {
+            if buffer[index] != b'\r' || buffer[index + 1] != b'\n' {
+                buffer[length] = buffer[index];
+                length += 1;
+            }
+        }
+        hash.update(&buffer[..length]);
+        hashed += length as u64;
+    }
+    if trailing_cr {
+        hash.update(b"\r");
+        hashed += 1;
+    }
+    if hashed != normalized_size {
+        return Err("A Skill file changed while it was being verified".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -647,6 +746,82 @@ mod tests {
             panic!("A changed preview must not fetch anything")
         });
         assert!(result.unwrap_err().contains("lock file changed"));
+    }
+
+    #[test]
+    fn verifies_installed_content_without_changing_existing_paths() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let target = root.join(".agents/skills");
+        let matching = target.join("match");
+        let modified = target.join("modified");
+        let incomplete = target.join("incomplete");
+        fs::create_dir_all(matching.join("scripts")).unwrap();
+        fs::write(matching.join("SKILL.md"), MANIFEST).unwrap();
+        fs::write(matching.join("scripts/data.bin"), b"\0\r\n").unwrap();
+        fs::write(matching.join("metadata.json"), "{}").unwrap();
+        fs::create_dir_all(&modified).unwrap();
+        fs::write(modified.join("SKILL.md"), "local edit").unwrap();
+        fs::create_dir_all(&incomplete).unwrap();
+        let entry = json!({
+            "source": "example/skills",
+            "sourceType": "github",
+            "computedHash": PORTABLE_HASH,
+        });
+        write_lock(
+            &root,
+            json!({
+                "version": 2,
+                "skills": {
+                    "match": entry,
+                    "modified": entry,
+                    "incomplete": entry,
+                    "missing": entry,
+                }
+            }),
+        );
+        let before = fs::read(root.join(LOCK_FILE)).unwrap();
+        let lock = preview(&root).unwrap();
+        let results = verify_installed(&root, &lock.revision).unwrap();
+        assert_eq!(
+            results,
+            BTreeMap::from([
+                ("match".to_string(), Verified),
+                ("modified".to_string(), Modified),
+                ("incomplete".to_string(), Unverified),
+            ])
+        );
+        assert_eq!(fs::read(root.join(LOCK_FILE)).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(modified.join("SKILL.md")).unwrap(),
+            "local edit"
+        );
+        assert!(!target.join("missing").exists());
+
+        write_lock(&root, json!({ "version": 2, "skills": {} }));
+        assert!(verify_installed(&root, &lock.revision)
+            .unwrap_err()
+            .contains("lock file changed"));
+    }
+
+    #[test]
+    fn portable_hash_normalizes_crlf_across_reads_and_keeps_a_trailing_cr() {
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let file = temporary.path().join("SKILL.md");
+        let prefix = vec![b'x'; 16 * 1024 - 1];
+        let raw = [prefix.as_slice(), b"\r\nnext\r\nlast\r"].concat();
+        let normalized = [prefix.as_slice(), b"\nnext\nlast\r"].concat();
+        fs::write(&file, raw).unwrap();
+        let mut hash = Sha256::new();
+        add_file_to_hash(&mut hash, "SKILL.md", &file).unwrap();
+        let expected = Sha256::digest(
+            [
+                format!("SKILL.md\0{}\0", normalized.len()).as_bytes(),
+                &normalized,
+            ]
+            .concat(),
+        );
+        assert_eq!(hash.finalize(), expected);
     }
 
     #[test]

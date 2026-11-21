@@ -1732,6 +1732,17 @@ impl Service {
         super::project_lock::restore(Path::new(&row.root_path), revision, skill_names)
     }
 
+    pub fn verify_project_skill_lock(
+        &self,
+        project_id: &str,
+        revision: &str,
+    ) -> Result<BTreeMap<String, ProjectLockedSkillStatus>, String> {
+        let row = self
+            .project_row(project_id)?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        super::project_lock::verify_installed(Path::new(&row.root_path), revision)
+    }
+
     fn scan_project_agents(&self, root: &Path) -> Result<Vec<ProjectAgentDetail>, String> {
         if !root.is_dir() {
             return Ok(Vec::new());

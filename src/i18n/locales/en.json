@@ -698,6 +698,8 @@
   "skills": {
     "projectsTab": "Projects",
     "projectLock": {
+      "verify": "Verify installed Skills",
+      "verifying": "Verifying…",
       "selectAll": "Select all restorable",
       "restoring": "Restoring…",
       "restore": "Restore selected ({{count}})",
@@ -706,6 +708,9 @@
       "restored": "Restored",
       "status": {
         "existing": "Already exists",
+        "verified": "Matches lock file",
+        "modified": "Differs from lock file",
+        "unverified": "Unable to verify",
         "ready": "Ready to restore",
         "legacy": "Legacy hash format",
         "unsupported": "Unsupported source or version",

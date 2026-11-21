@@ -699,6 +699,8 @@
   "skills": {
     "projectsTab": "プロジェクト",
     "projectLock": {
+      "verify": "インストール済みスキルを検証",
+      "verifying": "検証中…",
       "selectAll": "復元可能な項目をすべて選択",
       "restoring": "復元中…",
       "restore": "選択項目を復元（{{count}}）",
@@ -707,6 +709,9 @@
       "restored": "復元済み",
       "status": {
         "existing": "既存",
+        "verified": "ロックファイルと一致",
+        "modified": "ロックファイルと不一致",
+        "unverified": "検証できません",
         "ready": "復元可能",
         "legacy": "旧形式のハッシュ",
         "unsupported": "未対応のソースまたはバージョン",

@@ -151,6 +151,9 @@ pub struct ProjectLockedSkill {
 #[serde(rename_all = "camelCase")]
 pub enum ProjectLockedSkillStatus {
     Existing,
+    Verified,
+    Modified,
+    Unverified,
     Ready,
     Legacy,
     Unsupported,
