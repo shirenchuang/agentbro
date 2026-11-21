@@ -1,5 +1,5 @@
 /* ApprovalBar — AgentBro style: warning card + 4 colored buttons, plan approval bar */
-import { useEffect, useRef, useCallback, useState, type MouseEvent } from 'react'
+import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -17,6 +17,22 @@ interface ApprovalBarProps {
   onSendMessage: (msg: string) => void
   onDraftStateChange?: (hasDraft: boolean) => void
   onJumpToHostApp?: () => void
+}
+
+function runIslandAction(event: MouseEvent<HTMLButtonElement>, action: () => void) {
+  if (event.button !== 0 || (event.type === 'click' && event.detail !== 0)) return
+  event.preventDefault()
+  event.stopPropagation()
+  action()
+}
+
+function islandActionProps(action: () => void) {
+  const handleAction = (event: MouseEvent<HTMLButtonElement>) => runIslandAction(event, action)
+  return {
+    // Handle the pointer action before the Island can lose focus.
+    onMouseDown: handleAction,
+    onClick: handleAction,
+  }
 }
 
 export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApprove, onSendMessage, onDraftStateChange, onJumpToHostApp }: ApprovalBarProps) {
@@ -47,7 +63,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     return () => onDraftStateChange?.(false)
   }, [onDraftStateChange])
 
-  const handleInputFocus = useCallback(() => {
+  const handleComposerFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
     if (blurTimerRef.current) {
       clearTimeout(blurTimerRef.current)
       blurTimerRef.current = null
@@ -55,7 +72,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     setNotchFocusable(true).catch(() => {})
   }, [])
 
-  const handleInputBlur = useCallback(() => {
+  const handleComposerBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
     blurTimerRef.current = setTimeout(() => {
       blurTimerRef.current = null
       setNotchFocusable(false).catch(() => {})
@@ -69,18 +87,22 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     setDraftState({ sessionId: session.id, value: '' })
   }, [draft, onSendMessage, session.id])
 
-  const runActionOnMouseDown = useCallback((event: MouseEvent<HTMLButtonElement>, action: () => void) => {
-    event.preventDefault()
-    event.stopPropagation()
-    action()
-  }, [])
+  const handleSendButton = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    runIslandAction(event, () => {
+      if (blurTimerRef.current) {
+        clearTimeout(blurTimerRef.current)
+        blurTimerRef.current = null
+      }
+      sendDraft()
+    })
+  }, [sendDraft])
 
   // Plan approval uses the same waiting_approval phase as permissions, so it
   // must be checked first. Otherwise the detail composer labels it as a normal
   // deny/allow/always permission request.
   if (session.planContent || session.planTitle) {
     return (
-      <div className="approval-bar approval-bar--plan">
+      <div className="approval-bar approval-bar--plan" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
         <div className="approval-bar__input-row">
           <input
             ref={inputRef}
@@ -89,8 +111,6 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
             value={draft}
             onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -99,13 +119,13 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           />
         </div>
         <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
+          <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
             {t('notch.manualReview', { defaultValue: '\u624B\u52A8\u5BA1\u6279' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--accept-edits" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
+          <button className="approval-bar__btn approval-bar__btn--accept-edits" {...islandActionProps(onAllow)}>
             {t('notch.acceptEdits', { defaultValue: '\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91' })}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, () => onAutoApprove?.())}>
+          <button className="approval-bar__btn approval-bar__btn--auto" {...islandActionProps(() => onAutoApprove?.())}>
             {t('notch.autoApprovePerms', { defaultValue: '\u81EA\u52A8\u6279\u51C6\u6743\u9650' })}
           </button>
         </div>
@@ -139,19 +159,19 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
 
         {/* 4 action buttons */}
         <div className="approval-bar__buttons">
-          <button className="approval-bar__btn approval-bar__btn--deny" onMouseDown={(event) => runActionOnMouseDown(event, onDeny)}>
+          <button className="approval-bar__btn approval-bar__btn--deny" {...islandActionProps(onDeny)}>
             {t('notch.deny')}
           </button>
-          <button className="approval-bar__btn approval-bar__btn--allow" onMouseDown={(event) => runActionOnMouseDown(event, onAllow)}>
+          <button className="approval-bar__btn approval-bar__btn--allow" {...islandActionProps(onAllow)}>
             {t('notch.allowOnce')}
           </button>
           {supportsPersistentActions && (
-            <button className="approval-bar__btn approval-bar__btn--always" onMouseDown={(event) => runActionOnMouseDown(event, onAllowAlways)}>
+            <button className="approval-bar__btn approval-bar__btn--always" {...islandActionProps(onAllowAlways)}>
               {t('notch.allowAlways')}
             </button>
           )}
           {supportsPersistentActions && onAutoApprove && (
-            <button className="approval-bar__btn approval-bar__btn--auto" onMouseDown={(event) => runActionOnMouseDown(event, onAutoApprove)}>
+            <button className="approval-bar__btn approval-bar__btn--auto" {...islandActionProps(onAutoApprove)}>
               {t('notch.autoApprove')}
             </button>
           )}
@@ -210,7 +230,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
     }
 
     return (
-      <div className="approval-bar">
+      <div className="approval-bar" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
         {hasMultipleQuestions ? (
           <div className="approval-bar__question-set">
             <div className="approval-bar__question-title">
@@ -230,7 +250,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
                       <button
                         key={`${questionIndex}-${optionIndex}-${opt.label}`}
                         className={`approval-bar__btn approval-bar__btn--option ${selectedSet.has(optionIndex) ? 'approval-bar__btn--selected' : ''}`}
-                        onMouseDown={(event) => runActionOnMouseDown(event, () => toggleNestedQuestionOption(questionIndex, optionIndex, question.multiSelect))}
+                        {...islandActionProps(() => toggleNestedQuestionOption(questionIndex, optionIndex, question.multiSelect))}
                       >
                         {question.multiSelect && selectedSet.has(optionIndex) ? '✓ ' : ''}
                         {opt.label}
@@ -243,7 +263,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             <button
               className="approval-bar__btn approval-bar__btn--confirm"
               disabled={!allNestedAnswered}
-              onMouseDown={(event) => runActionOnMouseDown(event, submitNestedQuestions)}
+              {...islandActionProps(submitNestedQuestions)}
             >
               {t('notch.submitAll', { defaultValue: 'Submit All' })}
             </button>
@@ -254,7 +274,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               <button
                 key={i}
                 className={`approval-bar__btn approval-bar__btn--option ${selected.includes(i) ? 'approval-bar__btn--selected' : ''}`}
-                onMouseDown={(event) => runActionOnMouseDown(event, () => {
+                {...islandActionProps(() => {
                   if (pendingQuestion.multiSelect) toggleSingleQuestionOption(i)
                   else onSendMessage(opt)
                 })}
@@ -268,7 +288,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
               <button
                 className="approval-bar__btn approval-bar__btn--confirm"
                 disabled={selected.length === 0}
-                onMouseDown={(event) => runActionOnMouseDown(event, submitSingleMultiSelect)}
+                {...islandActionProps(submitSingleMultiSelect)}
               >
                 {t('notch.confirmSelection', { defaultValue: 'Confirm' })} ({selected.length})
               </button>
@@ -282,8 +302,6 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
             placeholder={t('notch.typeReply')}
             value={draft}
             onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-            onFocus={handleInputFocus}
-            onBlur={handleInputBlur}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -309,7 +327,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
   }
 
   return (
-    <div className="approval-bar">
+    <div className="approval-bar" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
       <div className="approval-bar__input-row">
         <input
           ref={inputRef}
@@ -318,8 +336,6 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
           placeholder={t('notch.typeMessage')}
           value={draft}
           onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
-          onFocus={handleInputFocus}
-          onBlur={handleInputBlur}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               sendDraft()
@@ -328,14 +344,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, onAutoApp
         />
         <button
           className="approval-bar__send"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            if (blurTimerRef.current) {
-              clearTimeout(blurTimerRef.current)
-              blurTimerRef.current = null
-            }
-            sendDraft()
-          }}
+          onMouseDown={handleSendButton}
+          onClick={handleSendButton}
           aria-label={t('notch.send')}
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
@@ -362,11 +372,7 @@ function ComposerHint({ reason, onJumpToHostApp }: ComposerHintProps) {
         <button
           className="approval-bar__hint-cta"
           type="button"
-          onMouseDown={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            onJumpToHostApp()
-          }}
+          {...islandActionProps(onJumpToHostApp)}
         >
           {t(ctaKey)}
         </button>
