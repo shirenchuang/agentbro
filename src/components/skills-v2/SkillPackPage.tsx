@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { skillApiV2 } from '../../services/skillApiV2'
@@ -12,6 +13,7 @@ import type {
   RemovePackFromAgentPreview,
   RemoveSkillFromPackPreview,
   SkillPackDetail,
+  SkillPackManifest,
   SkillPackSummary,
 } from '../../services/skillApiV2'
 import { PreviewDialog } from './PreviewDialog'
@@ -20,6 +22,7 @@ import { SkillDetailSlider } from './SkillDetailSlider'
 import { skillModeLabel, skillSourceTypeLabel } from './skillLabels'
 
 type BuilderMode = 'create' | 'edit' | 'duplicate'
+type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
 type PackSyncConflictState = {
   pack: SkillPackDetail
   targetAgents: string[]
@@ -114,6 +117,8 @@ export function SkillPackPage() {
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
+  const [packImport, setPackImport] = useState<{ manifest: SkillPackManifest; runtime: PackRuntime } | null>(null)
+  const [packImportError, setPackImportError] = useState<string | null>(null)
 
   useEffect(() => {
     state.loadOverview()
@@ -138,6 +143,11 @@ export function SkillPackPage() {
   }, [packQuery, state.packs])
 
   const detail = state.selectedPackDetail
+  const missingPackSkills = useMemo(() => {
+    if (!packImport) return new Set<string>()
+    const existing = new Set(state.skills.map((skill) => skill.id))
+    return new Set(packImport.manifest.skillIds.filter((id) => !existing.has(id)))
+  }, [packImport, state.skills])
   const packMemberships = useSkillPackMemberships(state.packs, detail)
   const missingCount = detail?.members.filter((member) => member.missing).length || 0
   const totalMembers = state.packs.reduce((sum, pack) => sum + pack.memberCount, 0)
@@ -153,6 +163,85 @@ export function SkillPackPage() {
 
   const startEdit = () => setBuilderMode('edit')
   const startDuplicate = () => setBuilderMode('duplicate')
+
+  const reviewPackManifest = async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
+    setBusy(true)
+    state.setError(null)
+    setSyncNotice(null)
+    setPackImportError(null)
+    try {
+      const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
+      const manifest = await skillApiV2.readPackManifest(path)
+      if (!isPackRuntimeCurrent(runtime)) return
+      await state.loadOverview(true)
+      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime })
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importPackManifest = async () => {
+    if (busy || !packImport || missingPackSkills.size) return
+    const { manifest, runtime } = packImport
+    if (!isPackRuntimeCurrent(runtime)) {
+      setPackImport(null)
+      return
+    }
+    setBusy(true)
+    setPackImportError(null)
+    try {
+      const pack = await skillApiV2.upsertPack({
+        id: '',
+        name: manifest.name,
+        description: manifest.description,
+        tags: manifest.tags,
+        skillIds: manifest.skillIds,
+      }, { deferSync: true })
+      if (!isPackRuntimeCurrent(runtime)) return
+      setPackImport(null)
+      setPackQuery('')
+      useSkillStoreV2.setState({ selectedPackId: pack.id, selectedPackDetail: pack })
+      setSyncNotice(t('skills.packManifest.imported', { name: pack.name }))
+      await state.loadOverview(true)
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exportPackManifest = async (pack: SkillPackDetail) => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
+    setBusy(true)
+    state.setError(null)
+    setSyncNotice(null)
+    try {
+      const path = await save({
+        defaultPath: 'skill-pack.agentbro-pack.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (!path || !isPackRuntimeCurrent(runtime)) return
+      await skillApiV2.writePackManifest(path, {
+        format: 'agentbro-skill-pack',
+        version: 1,
+        name: pack.name,
+        description: pack.description,
+        tags: pack.tags,
+        skillIds: pack.members.map((member) => member.skillId),
+      })
+      if (isPackRuntimeCurrent(runtime)) setSyncNotice(t('skills.packManifest.exported'))
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const openDelete = async (packId: string) => {
     setBusy(true)
@@ -245,6 +334,9 @@ export function SkillPackPage() {
         </div>
         <div className="sm2__tabs">
           <button className="sm2__btn sm2__btn--primary" onClick={startCreate}>＋ 新建技能包</button>
+          <button className="sm2__btn" disabled={busy || state.loading} onClick={reviewPackManifest}>
+            {t('skills.packManifest.import')}
+          </button>
           <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || busy}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -305,6 +397,7 @@ export function SkillPackPage() {
               busy={busy}
               onApply={() => setApplyFor(detail)}
               onEdit={startEdit}
+              onExport={() => exportPackManifest(detail)}
               onDuplicate={startDuplicate}
               onDelete={() => openDelete(detail.id)}
               onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
@@ -323,6 +416,36 @@ export function SkillPackPage() {
         open={Boolean(detailSkillId)}
         onClose={() => setDetailSkillId(null)}
       />
+
+      {packImport && (
+        <PreviewDialog
+          title={t('skills.packManifest.import')}
+          confirmLabel={t('skills.packManifest.create')}
+          cancelLabel={t('settings.cancel')}
+          busyLabel={t('skills.packManifest.creating')}
+          busy={busy}
+          disabled={missingPackSkills.size > 0}
+          onConfirm={importPackManifest}
+          onCancel={() => { if (!busy) setPackImport(null) }}
+        >
+          <h4>{packImport.manifest.name}</h4>
+          {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
+          {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
+          <p>{t('skills.packManifest.review')}</p>
+          {missingPackSkills.size > 0 && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
+          {packImport.manifest.skillIds.length ? (
+            <ul className="sm2__pack-manifest-members">
+              {packImport.manifest.skillIds.map((id) => (
+                <li key={id} className="sm2__change">
+                  <code>{id}</code>
+                  {missingPackSkills.has(id) && <span className="sm2__tag sm2__tag--warn">{t('skills.packManifest.missing')}</span>}
+                </li>
+              ))}
+            </ul>
+          ) : <p>{t('skills.packManifest.empty')}</p>}
+          {packImportError && <div className="sm2__error" role="alert">{packImportError}</div>}
+        </PreviewDialog>
+      )}
 
       {builderMode && (
         <PackBuilderDialog
@@ -570,6 +693,7 @@ function PackDetail({
   membershipsLoading,
   onApply,
   onEdit,
+  onExport,
   onDuplicate,
   onDelete,
   onRemoveSkill,
@@ -583,6 +707,7 @@ function PackDetail({
   membershipsLoading: boolean
   onApply: () => void
   onEdit: () => void
+  onExport: () => void
   onDuplicate: () => void
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
@@ -590,6 +715,7 @@ function PackDetail({
   onRevoke: (agentId: string) => void
   onSync: (agentIds?: string[]) => void
 }) {
+  const { t } = useTranslation()
   const missing = detail.members.filter((member) => member.missing)
   const isDefault = detail.id === DEFAULT_SKILL_PACK_ID
   const syncStatus = detail.syncStatus || 'synced'
@@ -631,15 +757,18 @@ function PackDetail({
               {busy ? '同步中…' : '同步全部'}
             </button>
           )}
-          {!isDefault && (
-            <details className="sm2__pack-more">
-              <summary aria-label="更多操作">•••</summary>
-              <div role="menu">
-                <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
-                <button role="menuitem" className="sm2__pack-more-danger" onClick={onDelete} disabled={busy}>删除技能包</button>
-              </div>
-            </details>
-          )}
+          <details className="sm2__pack-more">
+            <summary aria-label="更多操作">•••</summary>
+            <div role="menu">
+              <button role="menuitem" onClick={onExport} disabled={busy}>{t('skills.packManifest.export')}</button>
+              {!isDefault && (
+                <>
+                  <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>
+                  <button role="menuitem" className="sm2__pack-more-danger" onClick={onDelete} disabled={busy}>删除技能包</button>
+                </>
+              )}
+            </div>
+          </details>
         </div>
       </header>
 
@@ -1364,10 +1493,10 @@ function distributionBlockerMessage(blocker: ConflictBlocker) {
 
 type PackApplicationReview = {
   preview: DistributionPreview
-  runtime: Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
+  runtime: PackRuntime
 }
 
-function isPackRuntimeCurrent(runtime: PackApplicationReview['runtime']) {
+function isPackRuntimeCurrent(runtime: PackRuntime) {
   const current = useRuntimeEnvironmentStore.getState()
   return current.selectedEnvironmentId === runtime.selectedEnvironmentId
     && current.selectionRevision === runtime.selectionRevision

@@ -738,6 +738,18 @@
   },
   "skills": {
     "projectsTab": "项目",
+    "packManifest": {
+      "creating": "正在创建…",
+      "import": "导入技能包",
+      "export": "导出技能包",
+      "create": "创建技能包",
+      "exported": "技能包已导出。",
+      "imported": "已将「{{name}}」导入为新技能包。",
+      "review": "此技能包引用所选运行环境中心库中已有的 Skill。",
+      "missing": "缺失",
+      "missingHelp": "请先在中心库中安装缺失的 Skill，再导入此技能包。",
+      "empty": "此技能包没有成员。"
+    },
     "projectLock": {
       "verify": "校验已安装的 Skill",
       "verifying": "正在校验…",

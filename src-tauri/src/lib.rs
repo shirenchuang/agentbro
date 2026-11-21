@@ -6403,6 +6403,8 @@ pub fn run() {
             skills::v2::commands::delete_skill_target_distributions,
             skills::v2::commands::list_skill_packs_v2,
             skills::v2::commands::get_skill_pack_detail,
+            skills::v2::commands::read_skill_pack_manifest,
+            skills::v2::commands::write_skill_pack_manifest,
             skills::v2::commands::execute_upsert_skill_pack,
             skills::v2::commands::preview_delete_skill_pack,
             skills::v2::commands::execute_delete_skill_pack,

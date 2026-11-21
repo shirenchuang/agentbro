@@ -118,6 +118,7 @@ If you use Claude Code, Codex, Gemini CLI, Cursor, Kimi, Doubao, Qoder, OpenCode
 - Install and repair hooks per agent, inspect bridge commands and config paths, and control approval, notification, lifecycle, and activity events separately.
 - Scan skills scattered across agent folders, adopt them into a center library, and distribute them to agents or projects by symlink or copy. Batch jobs, conflict decisions, and diagnostics stay visible.
 - Group common skills into reusable packs, apply them to several agents, and safely revoke them later.
+- [Import and export Skill Pack manifests](docs/skill-pack-manifest.md) to share and maintain pack definitions in your own Git repository.
 - Manage stdio, HTTP, and SSE MCP servers. Inspect tools, resources, prompts, and connection logs, with arguments and a risk confirmation before tool calls.
 - Browse plugins for Codex, Claude Code, WorkBuddy, ZCode, Kimi, and other supported agents. Search, enable or disable supported plugins, inspect manifests and packaged capabilities, and preview files.
 - Edit supported JSON or text config files with validation. The Projects view imports repositories and checks project-level instructions, skills, MCP servers, and plugins.
