@@ -126,7 +126,6 @@ $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 $rendererTracePort = 0
 $browserArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-$browserDataFolder = $env:WEBVIEW2_USER_DATA_FOLDER
 try {
     if ($TracePermissionRenderer) {
         $debugListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -134,13 +133,11 @@ try {
         $rendererTracePort = $debugListener.LocalEndpoint.Port
         $debugListener.Stop()
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$rendererTracePort"
-        $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $stage 'renderer trace profile'
     }
     $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
         -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 } finally {
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $browserArguments
-    $env:WEBVIEW2_USER_DATA_FOLDER = $browserDataFolder
 }
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
@@ -323,15 +320,6 @@ try {
         Get-NetTCPConnection -LocalPort $port -State Listen -OwningProcess $app.Id -ErrorAction SilentlyContinue
     }
     $hookReady = $true
-    if ($rendererTracePort) {
-        $browser = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -match ('--remote-debugging-port=' + $rendererTracePort + '(?!\d)') } |
-            Select-Object -First 1
-        $debugSocket = Get-NetTCPConnection -LocalPort $rendererTracePort -State Listen -ErrorAction SilentlyContinue |
-            Where-Object { $_.LocalAddress -in @('127.0.0.1', '::1') } |
-            Select-Object -First 1
-        Write-Output "WebView2 renderer trace argument detected: $([bool]$browser). Loopback listener detected: $([bool]$debugSocket)."
-    }
     if ($VerifyStartupStackSampler) {
         Write-StartupStacks
         Write-Output 'Local stack sampler resolved AgentBro frames before the installed desktop check.'
