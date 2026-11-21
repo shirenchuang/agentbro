@@ -1,5 +1,5 @@
 /* Hover List — Flat session list sorted by priority */
-import { useCallback, useEffect, useRef, useState, useMemo, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, useMemo, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -12,7 +12,7 @@ import { useConfigStore } from '../../stores/configStore'
 import { answerDisplayedPermission, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
 import { respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
-import { islandActionProps } from '../../utils/islandActions'
+import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { formatModelName, getAgentDisplayName, getSessionAppLabel, getSessionTerminalLabel, isPassiveSession, isTtyLabel, shouldShowAgentBadge } from '../../utils/sessionDisplay'
@@ -1188,6 +1188,7 @@ function SessionCard({
   const termBadge = terminalLabel ? getTerminalBadge(terminalLabel) : null
   const recentUserMessage = latestUserMessage(session)
   const title = getHoverSessionTitle(session, recentUserMessage)
+  const titleId = useId()
   const assistantPreview = latestAssistantPreview(session)
   const priority = computePriority(session)
   const showCacheTTL = useConfigStore((s) => s.showCacheTTL)
@@ -1195,7 +1196,6 @@ function SessionCard({
   const mutedSessions = useSessionStore((s) => s.mutedSessions)
   const muteSession = useSessionStore((s) => s.muteSession)
   const unmuteSession = useSessionStore((s) => s.unmuteSession)
-  const openedOnMouseDownRef = useRef(false)
   const isMuted = Boolean(mutedSessions[session.id])
   const isCompactingContext = session.phase === 'compacting'
     || (session.phase === 'processing' && !session.lastToolName && isCompactingContextDescription(session.description))
@@ -1216,28 +1216,8 @@ function SessionCard({
       target.closest('button, a, input, select, textarea, [data-no-open]'),
     )
   }
-  const handleClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (openedOnMouseDownRef.current) {
-      openedOnMouseDownRef.current = false
-      return
-    }
-    if (shouldIgnoreOpen(event.target)) return
-    event.preventDefault()
-    event.stopPropagation()
-    handleOpen()
-  }
-  const handleMouseDownCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || shouldIgnoreOpen(event.target)) return
-    event.preventDefault()
-    event.stopPropagation()
-    openedOnMouseDownRef.current = true
-    handleOpen()
-  }
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented || event.target !== event.currentTarget) return
-    if (event.key !== 'Enter' && event.key !== ' ') return
-    event.preventDefault()
-    handleOpen()
+  const handleCardAction = (event: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreOpen(event.target)) runIslandAction(event, handleOpen)
   }
   const handleJump = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -1256,13 +1236,11 @@ function SessionCard({
     >
       <div
         data-no-drag
-        role="button"
-        tabIndex={0}
-        aria-selected={selected}
+        role="group"
+        aria-labelledby={titleId}
         className={`hover-list__card${selected ? ' hover-list__card--selected' : ''}${session.phase === 'done' ? ' hover-list__card--done' : ''}${showPassiveDot ? ' hover-list__card--passive' : ''}${isMuted ? ' hover-list__card--muted' : ''}`}
-        onMouseDownCapture={handleMouseDownCapture}
-        onClickCapture={handleClickCapture}
-        onKeyDown={handleKeyDown}
+        onMouseDownCapture={handleCardAction}
+        onClickCapture={handleCardAction}
       >
         <div className="hover-list__row-layout">
           {/* Left: mascot / status indicator */}
@@ -1283,7 +1261,14 @@ function SessionCard({
           <div className="hover-list__content-col">
             {/* Row 1: title + badges + duration + mute + jump */}
             <div className="hover-list__row1">
-              <span className="hover-list__session-title">{title}</span>
+              <button
+                id={titleId}
+                type="button"
+                className="hover-list__session-title"
+                {...islandActionProps(handleOpen)}
+              >
+                {title}
+              </button>
 
               <div className="hover-list__meta">
                 {showAgentBadge && (

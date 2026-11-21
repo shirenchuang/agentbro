@@ -43,8 +43,7 @@ vi.mock('../services/tauriApi', async (importOriginal) => {
 
 function openPetSessionDetail(container: HTMLElement, title: string) {
   fireEvent.click(container.querySelector('.pet-surface__pet') as HTMLElement)
-  const titleElement = within(container).getByText(title)
-  fireEvent.keyDown(titleElement.closest('[role="button"]') as HTMLElement, { key: 'Enter' })
+  fireEvent.mouseDown(within(container).getByRole('button', { name: title }), { button: 0 })
 }
 
 function session(overrides: Partial<SessionState> = {}): SessionState {

@@ -138,11 +138,18 @@
   min-width: 0;
   flex: 1 1 260px;
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
   color: var(--island-text);
+  font-family: inherit;
   font-size: 12px;
   font-weight: 700;
   line-height: 16px;
   letter-spacing: 0;
+  cursor: inherit;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -308,6 +315,14 @@
 
 .hover-list__card:hover .hover-list__mute-btn {
   opacity: 1;
+}
+
+.hover-list__session-title:focus-visible,
+.hover-list__jump:focus-visible,
+.hover-list__mute-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--island-accent);
+  outline-offset: 1px;
 }
 
 .hover-list__mute-btn--active {
