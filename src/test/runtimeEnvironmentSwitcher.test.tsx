@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsSidebar } from '../components/settings/SettingsSidebar'
+import { RuntimeEnvironmentBadge, RuntimeEnvironmentSwitcher } from '../components/settings/RuntimeEnvironmentSwitcher'
 import { SkillManagerShell } from '../components/skills-v2/SkillManagerShell'
 import { agentApi } from '../services/agentApi'
 import { skillApiV2 } from '../services/skillApiV2'
@@ -118,6 +119,8 @@ describe('runtime environment switcher', () => {
   })
 
   it('switches the global target from this Mac to a configured remote server', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Darwin)')
     const onSelect = vi.fn()
     render(
       <SettingsSidebar
@@ -145,6 +148,21 @@ describe('runtime environment switcher', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Current runtime environment: GPU Box' }))
     fireEvent.click(screen.getByRole('button', { name: 'Manage servers' }))
     expect(onSelect).toHaveBeenCalledWith('remote-servers')
+  })
+
+  it('shows the local PC in both the Windows selector and its badge', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+    const name = 'Current runtime environment: This PC'
+    render(
+      <>
+        <RuntimeEnvironmentSwitcher collapsed={false} onManageRemote={() => {}} />
+        <RuntimeEnvironmentBadge />
+      </>,
+    )
+
+    expect(screen.getByRole('status', { name })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name }))
+    expect(screen.getByRole('option', { name: /This PC/, selected: true })).toBeInTheDocument()
   })
 
   it('keeps the original Agent management interface for a remote server', () => {

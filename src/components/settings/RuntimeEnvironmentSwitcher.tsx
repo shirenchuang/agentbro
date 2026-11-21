@@ -8,6 +8,7 @@ import {
 import type { ConnectionStatus, RemoteHost } from '../../services/tauriApi'
 import { useRuntimeEnvironmentView } from '../../hooks/useRuntimeEnvironment'
 import { useRemoteServerStore } from '../../stores/remoteServerStore'
+import { isWindowsPlatform } from '../../utils/platform'
 
 interface RuntimeEnvironmentSwitcherProps {
   collapsed: boolean
@@ -30,8 +31,9 @@ export function RuntimeEnvironmentSwitcher({
   const selectedHost = hosts.find((host) => host.id === selectedEnvironmentId) ?? null
   const isRemoteSelection = selectedEnvironmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID
   const selectedStatus = selectedHost ? statuses[selectedHost.id] : null
+  const localName = localEnvironmentName(t)
   const selectedName = selectedHost?.name
-    ?? (isRemoteSelection ? selectedEnvironmentId : t('skills.runtimeEnvironment.localName'))
+    ?? (isRemoteSelection ? selectedEnvironmentId : localName)
   const selectedMeta = selectedHost
     ? statusLabel(t, selectedStatus)
     : isRemoteSelection
@@ -87,7 +89,7 @@ export function RuntimeEnvironmentSwitcher({
           <div className="runtime-environment__section-label">{t('skills.runtimeEnvironment.localSection')}</div>
           <EnvironmentOption
             selected={selectedEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID}
-            name={t('skills.runtimeEnvironment.localName')}
+            name={localName}
             meta={t('skills.runtimeEnvironment.localMeta')}
             status="connected"
             kind="local"
@@ -168,7 +170,7 @@ export function RuntimeEnvironmentBadge() {
   const selectedHost = hosts.find((host) => host.id === selectedEnvironmentId) ?? null
   const status = selectedHost ? statuses[selectedHost.id] : null
   const name = selectedHost?.name
-    ?? (isRemoteSelection ? selectedEnvironmentId : t('skills.runtimeEnvironment.localName'))
+    ?? (isRemoteSelection ? selectedEnvironmentId : localEnvironmentName(t))
   const isConnecting = status?.state === 'connecting'
   const showConnect = isRemoteSelection && selectedHost && status?.state !== 'connected'
   const connectLabel = isConnecting
@@ -252,6 +254,10 @@ function EnvironmentOption({
       )}
     </div>
   )
+}
+
+function localEnvironmentName(t: ReturnType<typeof useTranslation>['t']) {
+  return t(isWindowsPlatform() ? 'skills.runtimeEnvironment.localWindowsName' : 'skills.runtimeEnvironment.localName')
 }
 
 function statusLabel(
