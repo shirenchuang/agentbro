@@ -10,6 +10,8 @@ import {
   type McpServerEntry,
   type McpTransport,
 } from '../../services/skillApiV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
+import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { McpInspectorDrawer } from './McpInspectorDrawer'
 import { PreviewDialog } from './PreviewDialog'
 import { SlideOver } from './SlideOver'
@@ -17,6 +19,18 @@ import { SlideOver } from './SlideOver'
 interface EditorState {
   originalName: string | null
   draft: McpServerDraft
+  selection: ReturnType<typeof readMcpEditorSelection>
+}
+
+function readMcpEditorSelection() {
+  const runtime = useRuntimeEnvironmentStore.getState()
+  const skill = useSkillStoreV2.getState()
+  return {
+    environmentId: runtime.selectedEnvironmentId,
+    runtimeRevision: runtime.selectionRevision,
+    agentId: skill.selectedAgentId,
+    agentRevision: skill.agentSelectionRevision,
+  }
 }
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -71,6 +85,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: null,
+      selection: readMcpEditorSelection(),
       draft: emptyDraft(firstSupportedTransport(inventory)),
     })
   }
@@ -79,6 +94,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
     setEditorError(null)
     setEditor({
       originalName: server.name,
+      selection: readMcpEditorSelection(),
       draft: {
         name: server.name,
         transport: server.transport,
@@ -94,6 +110,18 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
 
   const save = async () => {
     if (!editor) return
+    const matchesSelection = () => {
+      const current = readMcpEditorSelection()
+      const reviewed = editor.selection
+      if (current.environmentId === reviewed.environmentId
+        && current.runtimeRevision === reviewed.runtimeRevision
+        && current.agentId === reviewed.agentId
+        && current.agentRevision === reviewed.agentRevision) return true
+
+      setEditor((active) => active?.selection === reviewed ? null : active)
+      return false
+    }
+    if (!matchesSelection()) return
     const draft = normalizeDraft(editor.draft)
     setBusyAction('save')
     setEditorError(null)
@@ -103,6 +131,7 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         draft,
         editor.originalName,
       )
+      if (!matchesSelection()) return
       if (!validation.valid) {
         setEditorError(validation.message)
         return
@@ -113,12 +142,13 @@ export function McpManagementTab({ detail }: { detail: AgentDetail }) {
         inventory.revision,
         editor.originalName,
       )
+      if (!matchesSelection()) return
       setInventory(next)
       setEditor(null)
       setNotice(t('skills.mcpManagement.saved', { name: draft.name }))
       setError(null)
     } catch (nextError) {
-      setEditorError(String(nextError))
+      if (matchesSelection()) setEditorError(String(nextError))
     } finally {
       setBusyAction(null)
     }
