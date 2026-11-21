@@ -42,6 +42,9 @@ public static class AgentBroSmokeInput {
     public struct Point { public int X; public int Y; }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct MouseInput {
         public int X, Y;
         public uint Data, Flags, Time;
@@ -75,6 +78,9 @@ public static class AgentBroSmokeInput {
 
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr window, out Rect rect);
 
     [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(Point point);
@@ -200,6 +206,31 @@ function Find-IslandButton([Windows.Automation.AutomationElement]$Root, [scriptb
     }
 }
 
+function Write-PermissionAccessibilityBounds {
+    foreach ($window in Get-IslandWindows) {
+        $state = $window.Current
+        $handle = [IntPtr]$state.NativeWindowHandle
+        $native = [AgentBroSmokeInput+Rect]::new()
+        if ([AgentBroSmokeInput]::GetWindowRect($handle, [ref]$native)) {
+            $dpi = [AgentBroSmokeInput]::GetDpiForWindow($handle)
+            Write-Host "Native window $handle bounds: $($native.Left),$($native.Top),$($native.Right),$($native.Bottom) at $dpi DPI."
+        }
+        $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+            Select-Object -ExpandProperty Current |
+            Where-Object {
+                $_.ClassName -in @('WRY_WEBVIEW', 'Chrome_WidgetWin_1', 'BrowserRootView', 'notch-panel') -or
+                $_.ControlType -eq [Windows.Automation.ControlType]::Document -or
+                $_.Name -in @('Back to sessions', 'Deny', 'Allow Once')
+            } |
+            Select-Object Name, ClassName, IsOffscreen, @{
+                Name = 'Bounds'
+                Expression = { $_.BoundingRectangle.ToString([Globalization.CultureInfo]::InvariantCulture) }
+            } |
+            ConvertTo-Json -Depth 3 -Compress |
+            Write-Host
+    }
+}
+
 function Click-IslandElement(
     [Windows.Automation.AutomationElement]$Element,
     [string]$Description,
@@ -262,10 +293,23 @@ function Test-KeyboardPermissionDenial([Windows.Automation.AutomationElement]$Is
         # The center of a waiting row belongs to the inline permission preview.
         Click-IslandElement $session 'Island session header with a pending permission' $rowAnchor
 
-        $deny = Wait-IslandValue 'Deny in the session detail' {
-            if (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) {
-                Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+        $detailClock = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $deny = Wait-IslandValue 'Deny in the session detail' {
+                if (Find-IslandButton $Island { param($Name) $Name -eq 'Back to sessions' }) {
+                    Find-IslandButton $Island { param($Name) $Name -eq 'Deny' }
+                }
             }
+        } catch {
+            if ($TracePermissionUi) {
+                try {
+                    Write-PermissionAccessibilityBounds
+                    Save-PermissionFrame $detailClock 'before-space-timeout'
+                } catch {
+                    Write-Host "Could not capture permission accessibility bounds: $_"
+                }
+            }
+            throw
         }
         $deny.SetFocus()
         $null = Wait-IslandValue 'native keyboard focus on detail Deny' {
