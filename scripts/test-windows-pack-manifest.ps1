@@ -48,7 +48,11 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
             }
         }
     }
-    $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($Path)
+    $value = $fileName.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+    $value.SetValue($Path)
+    if ($value.Current.Value -cne $Path) {
+        throw "The $Action file name control did not accept the requested path"
+    }
     $submit = Wait-IslandValue "the enabled $Action button" {
         $button = Find-PackControl $dialog $Action
         if ($button -and $button.Current.IsEnabled) { $button }
@@ -103,9 +107,17 @@ function Test-InstalledPackManifest(
     $export = Wait-IslandValue 'the Export Skill Pack action' { Find-PackControl $settings 'Export Skill Pack' }
     Invoke-PackControl $export
     Set-PackDialogFile 'Save' $ExportPath
-    $null = Wait-IslandValue 'the exported manifest and completion notice' {
-        (Test-Path -LiteralPath $ExportPath -PathType Leaf) -and
-            (Find-PackControl $settings 'Skill Pack exported.')
+    $null = Wait-IslandValue 'the export completion notice' {
+        Find-PackControl $settings 'Skill Pack exported.'
+    }
+    if (-not (Test-Path -LiteralPath $ExportPath -PathType Leaf)) {
+        $fixtureRoot = Split-Path (Split-Path $ExportPath)
+        $savedCandidates = Get-ChildItem -LiteralPath $fixtureRoot -Filter '*.agentbro-pack.json*' -File -Recurse
+        $documents = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+        $defaultPath = Join-Path $documents 'skill-pack.agentbro-pack.json'
+        Write-Output "Files in the fixture: $($savedCandidates.FullName -join ', ')"
+        Write-Output "Default file in Documents exists: $(Test-Path -LiteralPath $defaultPath -PathType Leaf)"
+        throw 'The export reported success but the file was absent from the requested path'
     }
     $saved = Get-Content -LiteralPath $ExportPath -Encoding UTF8 -Raw | ConvertFrom-Json
     $keys = @($saved.PSObject.Properties.Name | Sort-Object)
