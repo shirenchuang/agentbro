@@ -675,10 +675,36 @@ describe('NotchPanel island shell', () => {
     fireEvent.pointerUp(handle, { pointerId: 7 })
     fireEvent.mouseUp(window)
     expect(tauriMocks.endNotchDrag).not.toHaveBeenCalled()
-    expect(screen.getByRole('region', { name: 'AgentBro' })).toHaveAttribute('data-dragging', 'false')
+    const panel = screen.getByRole('region', { name: 'AgentBro' })
+    expect(panel).toHaveAttribute('data-dragging', 'true')
 
     await act(async () => { start.resolve(4) })
     expect(tauriMocks.endNotchDrag).toHaveBeenCalledExactlyOnceWith(4)
+    expect(panel).toHaveAttribute('data-dragging', 'false')
+  })
+
+  it('waits for the final drag offset before resizing the Island after release', async () => {
+    const finish = deferred<number | null>()
+    tauriMocks.isTauri.mockReturnValue(true)
+    tauriMocks.endNotchDrag.mockReturnValueOnce(finish.promise)
+    useConfigStore.setState({ allowHorizontalDrag: true })
+    mountIsland(null, { phase: 'idle' })
+    await waitFor(() => expect(tauriMocks.resizeNotch).toHaveBeenCalled())
+
+    const handle = screen.getByTestId('notch-drag-handle')
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100, clientY: 2 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 118, clientY: 2 })
+    await waitFor(() => expect(tauriMocks.startNotchDrag).toHaveBeenCalledTimes(1))
+
+    tauriMocks.resizeNotch.mockClear()
+    act(() => { useSessionStore.getState().setPanelState('expanded') })
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    await waitFor(() => expect(tauriMocks.endNotchDrag).toHaveBeenCalledTimes(1))
+    expect(tauriMocks.resizeNotch).not.toHaveBeenCalled()
+
+    await act(async () => { finish.resolve(36) })
+    expect(tauriMocks.resizeNotch).toHaveBeenCalled()
+    expect(tauriMocks.resizeNotch.mock.calls.every(([, , offset]) => offset === 36)).toBe(true)
   })
 
   it('finishes the previous drag before starting another with the same pointer', async () => {
