@@ -31,6 +31,7 @@ if ($TracePermissionUi) {
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -109,6 +110,25 @@ public static class AgentBroSmokeInput {
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+
+    private delegate bool EnumChildProc(IntPtr window, IntPtr data);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr window, EnumChildProc callback, IntPtr data);
+
+    public static IntPtr[] WebContentWindows(IntPtr window) {
+        var handles = new List<IntPtr>();
+        EnumChildWindows(window, (child, data) => {
+            var name = new StringBuilder(128);
+            GetClassName(child, name, name.Capacity);
+            string className = name.ToString();
+            if (className == "Chrome_RenderWidgetHostHWND" || className == "Chrome_WidgetWin_1") {
+                handles.Add(child);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return handles.ToArray();
+    }
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr window, uint flags);
@@ -292,6 +312,7 @@ function Get-IslandAccessibilitySnapshot([long]$WindowHandle, [string]$FixturePr
     [PSCustomObject]@{
         ClientPid = $PID
         WindowHandle = $WindowHandle
+        RootClass = $window.Current.ClassName
         StartedAt = $started
         FinishedAt = [DateTimeOffset]::UtcNow.ToString('O')
         Elements = $elements
@@ -326,6 +347,17 @@ function Write-IslandAccessibilityComparison([IntPtr]$WindowHandle, [string]$Sta
             throw 'The independent accessibility client did not return a distinct process snapshot'
         }
         Write-Host "Independent accessibility client: $($snapshot | ConvertTo-Json -Depth 4 -Compress)"
+        Write-Host "Foreground during child accessibility queries: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+        $children = [AgentBroSmokeInput]::WebContentWindows($WindowHandle)
+        if (-not $children) { Write-Host "No Chromium child window was found under Island HWND $WindowHandle." }
+        foreach ($child in $children) {
+            try {
+                $direct = Get-IslandAccessibilitySnapshot $child.ToInt64() $ProjectName
+                Write-Host "Direct child accessibility client: $($direct | ConvertTo-Json -Depth 4 -Compress)"
+            } catch {
+                Write-Host "Could not inspect Chromium child HWND ${child}: $_"
+            }
+        }
         Save-RunnerDesktop (Join-Path $permissionTraceDirectory "$Stage-after-clients.png")
         Write-Host "Finished comparing accessibility clients at $([DateTimeOffset]::UtcNow.ToString('O'))."
         if ($RendererTracePort) { Write-IslandRendererState $RendererTracePort }
