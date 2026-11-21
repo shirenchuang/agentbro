@@ -221,13 +221,16 @@ try {
         }
         [AgentBroSmokeMouse]::ScrollDown()
         $lockPanel = Wait-IslandValue 'the lock panel after scrolling' { Find-NamedControl $settings 'skills-lock.json' }
-        $success = Wait-IslandValue 'the visible restored result in the native panel' {
-            $item = Find-NamedControl $lockPanel 'Restored'
-            if ($item -and -not $item.Current.IsOffscreen) { return $item }
-        }
-        $null = Wait-IslandValue 'the content mismatch result in the native panel' {
-            $item = Find-NamedControl $lockPanel 'Downloaded Skill content does not match the lock file'
-            if ($item -and -not $item.Current.IsOffscreen) { return $item }
+        $items = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::ListItem)
+        $null = Wait-IslandValue 'the restored and checksum mismatch rows in the native panel' {
+            $visibleNames = @($lockPanel.FindAll([Windows.Automation.TreeScope]::Descendants, $items) |
+                Where-Object { -not $_.Current.IsOffscreen } |
+                ForEach-Object { $_.Current.Name })
+            if (($visibleNames -like 'native-restored*Restored') -and
+                ($visibleNames -like 'native-mismatch*Downloaded Skill content does not match the lock file')) {
+                return $true
+            }
         }
         Write-Output 'The native Projects UI restored the selected Skill and reported a separate hash mismatch.'
         return
