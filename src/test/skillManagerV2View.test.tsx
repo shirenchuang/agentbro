@@ -3263,7 +3263,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       settingsFile: '~/.codefuse/engine/cc/settings.json',
       mcpConfig: '~/.codefuse/engine/cc/settings.json',
       pluginDir: '~/.codefuse/engine/cc/plugins/cache',
-    }))
+    }, LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(dialog).not.toBeInTheDocument())
     expect(loadOverview).toHaveBeenCalledWith(true)
   })
@@ -3310,9 +3310,112 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByRole('dialog', { name: '删除 Agent「AntCC」' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => expect(removeCustom).toHaveBeenCalledWith('custom-antcc'))
+    await waitFor(() => expect(removeCustom).toHaveBeenCalledWith('custom-antcc', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(loadOverview).toHaveBeenCalledWith(true)
     expect(useSkillStoreV2.getState().selectedAgentId).toBeNull()
+  })
+
+  it('keeps a same-ID custom Agent in the new runtime after a deletion finishes elsewhere', async () => {
+    const id = 'custom-team'
+    const local = makeSidebarAgent(id, 'Local Agent')
+    const remote = makeSidebarAgent(id, 'Remote Agent')
+    useSkillStoreV2.setState({
+      agents: [local],
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, ...local },
+    })
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ id, isCustom: true })])
+    let finishRemoval!: () => void
+    vi.spyOn(agentApi, 'removeCustom').mockReturnValue(new Promise((resolve) => { finishRemoval = resolve }))
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { unmount } = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '删除此 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    unmount()
+
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+      useSkillStoreV2.setState({
+        runtimeEnvironmentId: 'other-host',
+        agents: [remote],
+        selectedAgentId: id,
+        selectedAgentDetail: { ...agentDetail, ...remote },
+      })
+    })
+    loadOverview.mockClear()
+    await act(async () => finishRemoval())
+
+    expect(useSkillStoreV2.getState().agents).toEqual([remote])
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe(id)
+    expect(loadOverview).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { operation: 'install', status: 'notInstalled', button: '安装此 Agent' },
+    { operation: 'update', status: 'updateAvailable', button: '更新此 Agent' },
+  ] as const)('ignores completion of an Agent $operation after leaving and returning to a runtime', async ({ operation, status, button }) => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      status, installedVersion: '1.0.0', latestVersion: '2.0.0',
+    })])
+    let finishOperation!: () => void
+    vi.spyOn(agentApi, operation).mockReturnValue(new Promise((resolve) => { finishOperation = resolve }))
+    const loadOverview = vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    const loadAgentDetail = vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: button }))
+    await act(async () => {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    loadOverview.mockClear()
+    loadAgentDetail.mockClear()
+    await act(async () => finishOperation())
+
+    expect(loadOverview).not.toHaveBeenCalled()
+    expect(loadAgentDetail).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Agent (安装|更新)完成/)).not.toBeInTheDocument()
+  })
+
+  it('does not publish an old Agent update error to the newly selected runtime', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0',
+    })])
+    let failUpdate!: (error: Error) => void
+    vi.spyOn(agentApi, 'update').mockReturnValue(new Promise((_, reject) => { failUpdate = reject }))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { unmount } = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    unmount()
+    act(() => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('other-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-host', error: 'Remote host status' })
+    })
+    await act(async () => failUpdate(new Error('Old update failed')))
+
+    expect(useSkillStoreV2.getState().error).toBe('Remote host status')
+  })
+
+  it('keeps a newer Agent version when the page-entry program lookup finishes late', async () => {
+    let finishInitialLookup!: (programs: AgentProgramInfo[]) => void
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockReturnValueOnce(new Promise((resolve) => { finishInitialLookup = resolve }))
+      .mockResolvedValueOnce([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(useSkillStoreV2.getState(), 'refresh').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: '刷新总览' }))
+    expect(await screen.findByText('当前版本 2.0.0')).toBeInTheDocument()
+    await act(async () => finishInitialLookup([makeProgram({ installedVersion: '1.0.0' })]))
+
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
   })
 
   it('does not treat the shared .agents directory as an agent in management views', async () => {
@@ -6671,7 +6774,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('安装此 Agent'))
-    await waitFor(() => expect(install).toHaveBeenCalledWith('codex'))
+    await waitFor(() => expect(install).toHaveBeenCalledWith('codex', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('opens the download page when an uninstalled app has no install command', async () => {
@@ -6790,7 +6893,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     render(<AgentManagementPage />)
 
     fireEvent.click(await screen.findByText('更新此 Agent'))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code'))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID))
   })
 
   it('uninstalls a supported agent from the page header after confirmation', async () => {
