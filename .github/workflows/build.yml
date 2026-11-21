@@ -221,10 +221,14 @@ jobs:
           exit $LASTEXITCODE
 
   smoke-windows:
-    name: Smoke test installed Windows app
+    name: Sample installed Windows startup (${{ matrix.trial }})
     if: ${{ !cancelled() && (inputs.windows_artifact_run || needs.build-windows.result == 'success') }}
     runs-on: ${{ inputs.windows_smoke_runner || 'windows-latest' }}
     needs: build-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2, 3, 4, 5, 6]
     permissions:
       actions: read
       contents: read
@@ -313,6 +317,6 @@ jobs:
         if: failure() && runner.environment == 'github-hosted'
         uses: actions/upload-artifact@v4
         with:
-          name: agentbro-windows-desktop-failure
+          name: agentbro-windows-startup-failure-${{ matrix.trial }}
           path: ${{ runner.temp }}/agentbro-island-failure.png
           if-no-files-found: ignore
