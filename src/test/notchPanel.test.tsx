@@ -474,6 +474,7 @@ describe('NotchPanel island shell', () => {
       useConfigStore.setState({ islandAnimationScale: 0.1 })
       mountIsland()
       const container = document.querySelector<HTMLElement>('.notch-container')!
+      const panel = screen.getByRole('region', { name: 'AgentBro' })
       const hostHeight = () => parseFloat(container.style.getPropertyValue('--notch-host-height'))
       const hitboxHeight = () => parseFloat(container.style.getPropertyValue('--notch-hitbox-height'))
       const viewportHeight = hostHeight()
@@ -506,10 +507,13 @@ describe('NotchPanel island shell', () => {
       const waitingSession = await screen.findByText('agentbro · Port dynamic island')
       const listHeight = hitboxHeight()
       expect(hitboxWidthVar()).toBe('686px')
+      const listPanelHeight = parseFloat(panel.style.height)
       fireEvent.mouseDown(waitingSession, { button: 0 })
       await waitFor(() => expect(useSessionStore.getState().panelState).toBe('expanded'))
 
       expect(hitboxHeight()).toBeGreaterThan(listHeight)
+      expect(parseFloat(panel.style.height)).toBeGreaterThan(listPanelHeight)
+      expect(panel).toHaveStyle({ width: '658px', height: '500px' })
       expect(hostHeight()).toBe(viewportHeight)
       expect(viewportHeight).toBeGreaterThanOrEqual(hitboxHeight())
       const deny = await screen.findByRole('button', { name: 'notch.deny' })

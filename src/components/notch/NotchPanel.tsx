@@ -1643,6 +1643,12 @@ export function NotchPanel() {
   const renderedShellWidth = preparingOpen ? lastCollapsedVisualRef.current.shellWidth : shellWidth
   const renderedPanelHeight = preparingOpen ? lastCollapsedVisualRef.current.panelHeight : panelHeight
   const renderedClipPath = preparingOpen ? lastCollapsedVisualRef.current.clipPath : notchShellClipPath
+  const renderedGeometry = {
+    width: renderedShellWidth,
+    height: renderedPanelHeight,
+    clipPath: renderedClipPath,
+    WebkitClipPath: renderedClipPath,
+  }
   const renderedVisualState = preparingOpen
     ? (isMicro ? 'micro' : 'compact')
     : visualState
@@ -1989,13 +1995,10 @@ export function NotchPanel() {
           aria-expanded={effectivePanelState !== 'collapsed'}
           initial={false}
           animate={{
-            width: renderedShellWidth,
-            height: renderedPanelHeight,
+            ...(!windowsIsland && renderedGeometry),
             x: shellX,
             opacity: layoutPreview ? 1 : displayChanging || islandHidden ? 0 : 1,
-            clipPath: renderedClipPath,
-            WebkitClipPath: renderedClipPath,
-          } as { width: number; height: number; x: number | number[]; opacity: number; clipPath: string; WebkitClipPath: string }}
+          }}
           transition={panelTransition}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
@@ -2005,6 +2008,8 @@ export function NotchPanel() {
             if (allowHorizontalDrag) event.preventDefault()
           }}
           style={{
+            // Set the clipping bounds before WebView2 exposes the newly mounted controls.
+            ...(windowsIsland && renderedGeometry),
             display: isPetMode ? 'none' : undefined,
             overflow: 'hidden',
             cursor: allowHorizontalDrag ? (isDragging ? 'grabbing' : 'grab') : 'default',
