@@ -529,6 +529,7 @@ function Test-InstalledIslandDrag(
         }
 
         $before = Get-IslandCenterX $WindowHandle
+        $releaseClock = [Diagnostics.Stopwatch]::new()
         [AgentBroSmokeInput]::PressLeft()
         try {
             Start-Sleep -Milliseconds 40
@@ -552,6 +553,8 @@ function Test-InstalledIslandDrag(
             } else {
                 Start-Sleep -Milliseconds 20
             }
+            $heldCenter = Get-IslandCenterX $WindowHandle
+            $releaseClock.Start()
         } finally {
             [AgentBroSmokeInput]::ReleaseLeft()
         }
@@ -560,13 +563,18 @@ function Test-InstalledIslandDrag(
             -not [AgentBroSmokeInput]::IsLeftButtonDown()
         }
         Write-Output 'Windows confirmed the physical mouse button is released.'
+        $releasePositions = [Collections.Generic.List[string]]::new()
         $null = Wait-IslandValue 'the released Island window to settle' {
             $firstCenter = Get-IslandCenterX $WindowHandle
+            $releasePositions.Add("$($releaseClock.ElapsedMilliseconds) ms: $firstCenter")
             Start-Sleep -Milliseconds 200
-            [Math]::Abs((Get-IslandCenterX $WindowHandle) - $firstCenter) -le 1
+            $secondCenter = Get-IslandCenterX $WindowHandle
+            $releasePositions.Add("$($releaseClock.ElapsedMilliseconds) ms: $secondCenter")
+            [Math]::Abs($secondCenter - $firstCenter) -le 1
         }
         $released = Get-IslandCenterX $WindowHandle
         if ($direction -gt 0 -and $released - $before -lt (12 * $scale)) {
+            Write-Host "Native Island center immediately before releasing: $heldCenter. After release: $($releasePositions -join ', ')."
             throw "Island returned toward its starting point on release: $before -> $released"
         }
         $cursor = [AgentBroSmokeInput+Point]::new()
