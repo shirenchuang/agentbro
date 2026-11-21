@@ -77,6 +77,20 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     Invoke-PackControl $submit
 }
 
+function Test-PackContentMatchLabel([Windows.Automation.AutomationElement]$Settings) {
+    if (Find-PackControl $Settings 'Content matches') { return $true }
+    $document = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)
+    foreach ($element in $Settings.FindAll([Windows.Automation.TreeScope]::Descendants, $document)) {
+        $text = $null
+        if ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$text) -and
+            $text.DocumentRange.FindText('Content matches', $false, $false)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Import-PackFixture(
     [Windows.Automation.AutomationElement]$Settings,
     [string]$Path,
@@ -89,10 +103,23 @@ function Import-PackFixture(
     }
     Invoke-PackControl $open
     Set-PackDialogFile 'Open' $Path
-    $confirm = Wait-IslandValue 'the enabled Skill Pack import preview' {
-        $button = Find-PackControl $Settings 'Create Skill Pack'
-        $contentMatches = -not $VerifyContents -or (Find-PackControl $Settings 'Content matches')
-        if ($button -and $button.Current.IsEnabled -and $contentMatches -and (Find-PackControl $Settings $Name)) { $button }
+    try {
+        $confirm = Wait-IslandValue 'the enabled Create Skill Pack button in the import preview' {
+            $button = Find-PackControl $Settings 'Create Skill Pack'
+            if ($button -and $button.Current.IsEnabled -and (Find-PackControl $Settings $Name)) { $button }
+        }
+        if ($VerifyContents) {
+            $null = Wait-IslandValue 'the version 2 preview with a matching content label' {
+                (Find-PackControl $Settings 'Recheck Skills') -and (Test-PackContentMatchLabel $Settings)
+            }
+        }
+    } catch {
+        foreach ($label in @($Name, 'Import Skill Pack', 'Create Skill Pack', 'Recheck Skills', 'Content matches')) {
+            $element = Find-PackControl $Settings $label
+            $found = if ($element) { "enabled=$($element.Current.IsEnabled)" } else { 'absent' }
+            Write-Host "Skill Pack preview UI Automation [$label] $found"
+        }
+        throw
     }
     Invoke-PackControl $confirm
     $null = Wait-IslandValue 'the imported Skill Pack confirmation' {
