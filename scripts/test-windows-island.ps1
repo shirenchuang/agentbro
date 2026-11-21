@@ -10,6 +10,7 @@ param(
     [string]$PackImportPath,
     [string]$PackExportPath,
     [switch]$TracePermissionUi,
+    [int]$RendererTracePort,
     [switch]$VerifyDrag
 )
 
@@ -568,6 +569,14 @@ try {
         Save-FailedRunnerDesktop
     } catch {
         Write-Output "Could not capture the runner desktop: $_"
+    }
+    if ($RendererTracePort) {
+        try {
+            . (Join-Path $PSScriptRoot 'windows-island-renderer.ps1')
+            Write-IslandRendererState $RendererTracePort $SessionId
+        } catch {
+            Write-Output "Could not inspect the Island renderer: $_"
+        }
     }
     try {
         if ($PackImportPath) {
