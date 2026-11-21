@@ -181,6 +181,7 @@ describe('NotchPanel island shell', () => {
       collapsedWidthScale: 100,
       compactPillWidth: useConfigStore.getInitialState().compactPillWidth,
       customNotchHeight: useConfigStore.getInitialState().customNotchHeight,
+      displayMonitor: 'auto',
       microPillWidth: 112,
       notchHeightMode: 'matchNotch',
       notchStyle: 'compact',
@@ -306,6 +307,40 @@ describe('NotchPanel island shell', () => {
       expect(useSessionStore.getState().panelState).toBe('hover')
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it.each(['auto', 'fixed'])('handles queued cursor display changes after a pending resize in %s mode', async (mode) => {
+    const firstResize = deferred<{ anchorOffsetX: number }>()
+    tauriMocks.isTauri.mockReturnValue(true)
+    let cursorMonitor = 'monitor-a'
+    const positionedMonitors: string[] = []
+    tauriMocks.resizeNotch.mockImplementation((_width, _height, _offset, displayId) => {
+      if (displayId !== 'auto') return Promise.resolve({ anchorOffsetX: 0 })
+      positionedMonitors.push(cursorMonitor)
+      return positionedMonitors.length === 1 ? firstResize.promise : Promise.resolve({ anchorOffsetX: 0 })
+    })
+    mountIsland()
+    await waitFor(() => expect(tauriMocks.listen).toHaveBeenCalledWith('cursor-monitor-changed', expect.any(Function)))
+    const onMonitorChange = tauriMocks.listen.mock.calls.find(([event]) => event === 'cursor-monitor-changed')![1]
+
+    act(() => {
+      for (const monitorId of ['monitor-b', 'monitor-c']) {
+        cursorMonitor = monitorId
+        onMonitorChange({ event: 'cursor-monitor-changed', id: 1, payload: { monitorId } })
+      }
+    })
+    expect(positionedMonitors).toEqual(['monitor-a'])
+
+    if (mode === 'fixed') {
+      act(() => useConfigStore.setState({ displayMonitor: 'monitor-fixed' }))
+    }
+    await act(async () => { firstResize.resolve({ anchorOffsetX: 0 }) })
+    expect(positionedMonitors).toEqual(mode === 'auto' ? ['monitor-a', 'monitor-c'] : ['monitor-a'])
+    if (mode === 'fixed') {
+      expect(tauriMocks.resizeNotch).toHaveBeenLastCalledWith(
+        expect.any(Number), expect.any(Number), 0, 'monitor-fixed',
+      )
     }
   })
 

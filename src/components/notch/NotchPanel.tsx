@@ -1755,12 +1755,18 @@ export function NotchPanel() {
   useEffect(() => {
     if (!isTauri() || displayMonitor !== 'auto' || isDragging) return
     let inFlight = false
+    let repositionPending = false
     let unlisten: (() => void) | undefined
     let cancelled = false
 
     const repositionToCursorDisplay = () => {
-      if (inFlight) return
+      if (cancelled) return
+      if (inFlight) {
+        repositionPending = true
+        return
+      }
       inFlight = true
+      repositionPending = false
       const { width, height } = hostHitboxSizeRef.current
       requestNativeHostResize(
         width,
@@ -1768,8 +1774,13 @@ export function NotchPanel() {
         effectiveHorizontalOffset,
         'auto',
         (anchorOffsetX) => {
-          if (!cancelled) updateHostAnchorOffset(anchorOffsetX)
           inFlight = false
+          if (cancelled) return
+          if (repositionPending) {
+            repositionToCursorDisplay()
+          } else {
+            updateHostAnchorOffset(anchorOffsetX)
+          }
         },
         { force: true },
       )
@@ -1781,14 +1792,9 @@ export function NotchPanel() {
 
     // Then react to monitor transitions broadcast by the backend tracker.
     // No more polling from this window.
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      if (cancelled) return
-      listen('cursor-monitor-changed', () => {
-        repositionToCursorDisplay()
-      }).then((fn) => {
-        if (cancelled) { fn(); return }
-        unlisten = fn
-      }).catch(() => {})
+    listenTauriEvent('cursor-monitor-changed', repositionToCursorDisplay).then((fn) => {
+      if (cancelled) { fn(); return }
+      unlisten = fn
     }).catch(() => {})
 
     return () => {
