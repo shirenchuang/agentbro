@@ -8,19 +8,36 @@ import {
   type McpOperationResult,
   type McpServerEntry,
 } from '../../services/skillApiV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { SlideOver } from './SlideOver'
 
 type InspectorTab = 'overview' | 'tools' | 'resources' | 'prompts' | 'logs'
 
+export interface McpInspectorTarget {
+  server: McpServerEntry
+  environmentId: string
+  selectionRevision: number
+}
+
 interface McpInspectorDrawerProps {
   agentId: string
   agentName: string
-  server: McpServerEntry | null
+  target: McpInspectorTarget | null
   onClose: () => void
   onReport: (serverName: string, report: McpInspectionReport) => void
 }
 
+interface PendingMcpRequest {
+  id: string
+  environmentId: string
+}
+
 const INSPECTOR_TABS: InspectorTab[] = ['overview', 'tools', 'resources', 'prompts', 'logs']
+
+function matchesRuntime(target: McpInspectorTarget, runtime = useRuntimeEnvironmentStore.getState()) {
+  return target.environmentId === runtime.selectedEnvironmentId
+    && target.selectionRevision === runtime.selectionRevision
+}
 
 function createInspectionId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -32,52 +49,57 @@ function createInspectionId() {
 export function McpInspectorDrawer({
   agentId,
   agentName,
-  server,
+  target,
   onClose,
   onReport,
 }: McpInspectorDrawerProps) {
   const { t } = useTranslation()
+  const activeTarget = useRuntimeEnvironmentStore((runtime) => (
+    target && matchesRuntime(target, runtime) ? target : null
+  ))
+  const server = activeTarget?.server
   const [activeTab, setActiveTab] = useState<InspectorTab>('overview')
   const [report, setReport] = useState<McpInspectionReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const inspectionIdRef = useRef<string | null>(null)
+  const inspectionRef = useRef<PendingMcpRequest | null>(null)
 
   const cancelCurrent = useCallback(() => {
-    const inspectionId = inspectionIdRef.current
-    inspectionIdRef.current = null
-    if (inspectionId) {
-      void skillApiV2.cancelMcpInspection(inspectionId).catch(() => undefined)
+    const pending = inspectionRef.current
+    inspectionRef.current = null
+    if (pending) {
+      void skillApiV2.cancelMcpInspection(pending.id, pending.environmentId).catch(() => undefined)
     }
   }, [])
 
   const inspect = useCallback(async () => {
-    if (!server) return
+    if (!activeTarget || !matchesRuntime(activeTarget)) return
     cancelCurrent()
-    const inspectionId = createInspectionId()
-    inspectionIdRef.current = inspectionId
+    const { server, environmentId } = activeTarget
+    const pending = { id: createInspectionId(), environmentId }
+    inspectionRef.current = pending
     setActiveTab('overview')
     setReport(null)
     setError(null)
     setLoading(true)
     try {
-      const next = await skillApiV2.inspectMcpServer(agentId, server.name, inspectionId)
-      if (inspectionIdRef.current !== inspectionId) return
+      const next = await skillApiV2.inspectMcpServer(agentId, server.name, pending.id, environmentId)
+      if (inspectionRef.current !== pending || !matchesRuntime(activeTarget)) return
       setReport(next)
       onReport(server.name, next)
     } catch (nextError) {
-      if (inspectionIdRef.current !== inspectionId) return
+      if (inspectionRef.current !== pending || !matchesRuntime(activeTarget)) return
       setError(String(nextError))
     } finally {
-      if (inspectionIdRef.current === inspectionId) {
-        inspectionIdRef.current = null
+      if (inspectionRef.current === pending) {
+        inspectionRef.current = null
         setLoading(false)
       }
     }
-  }, [agentId, cancelCurrent, onReport, server])
+  }, [activeTarget, agentId, cancelCurrent, onReport])
 
   useEffect(() => {
-    if (!server) {
+    if (!activeTarget) {
       cancelCurrent()
       setReport(null)
       setError(null)
@@ -86,7 +108,7 @@ export function McpInspectorDrawer({
     }
     void inspect()
     return cancelCurrent
-  }, [cancelCurrent, inspect, server])
+  }, [activeTarget, cancelCurrent, inspect])
 
   const close = () => {
     cancelCurrent()
@@ -144,7 +166,7 @@ export function McpInspectorDrawer({
           </div>
         )}
 
-        {report && !loading && (
+        {activeTarget && report && !loading && (
           <>
             <InspectorStatus report={report} />
             <nav
@@ -174,7 +196,7 @@ export function McpInspectorDrawer({
               {activeTab === 'tools' && (
                 <InspectorTools
                   agentId={agentId}
-                  serverName={server?.name || ''}
+                  target={activeTarget}
                   report={report}
                 />
               )}
@@ -182,7 +204,7 @@ export function McpInspectorDrawer({
               {activeTab === 'prompts' && (
                 <InspectorPrompts
                   agentId={agentId}
-                  serverName={server?.name || ''}
+                  target={activeTarget}
                   report={report}
                 />
               )}
@@ -344,11 +366,11 @@ function InspectorMessages({
 
 function InspectorTools({
   agentId,
-  serverName,
+  target,
   report,
 }: {
   agentId: string
-  serverName: string
+  target: McpInspectorTarget
   report: McpInspectionReport
 }) {
   const { t } = useTranslation()
@@ -404,7 +426,7 @@ function InspectorTools({
           <InspectorToolCard
             key={tool.name}
             agentId={agentId}
-            serverName={serverName}
+            target={target}
             tool={tool}
             expanded={activeTool === tool.name}
             onToggle={() => setActiveTool((current) => current === tool.name ? null : tool.name)}
@@ -422,13 +444,13 @@ function InspectorTools({
 
 function InspectorToolCard({
   agentId,
-  serverName,
+  target,
   tool,
   expanded,
   onToggle,
 }: {
   agentId: string
-  serverName: string
+  target: McpInspectorTarget
   tool: McpInspectionTool
   expanded: boolean
   onToggle: () => void
@@ -516,7 +538,7 @@ function InspectorToolCard({
       {expanded && (
         <ToolRunner
           agentId={agentId}
-          serverName={serverName}
+          target={target}
           tool={tool}
         />
       )}
@@ -526,11 +548,11 @@ function InspectorToolCard({
 
 function ToolRunner({
   agentId,
-  serverName,
+  target,
   tool,
 }: {
   agentId: string
-  serverName: string
+  target: McpInspectorTarget
   tool: McpInspectionTool
 }) {
   const { t } = useTranslation()
@@ -541,16 +563,16 @@ function ToolRunner({
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<McpOperationResult | null>(null)
-  const operationIdRef = useRef<string | null>(null)
+  const operationRef = useRef<PendingMcpRequest | null>(null)
   const needsConfirmation = !tool.hasAnnotations
     || tool.annotations.destructive !== false
     || tool.annotations.openWorld === true
 
   const cancel = useCallback(() => {
-    const operationId = operationIdRef.current
-    operationIdRef.current = null
-    if (operationId) {
-      void skillApiV2.cancelMcpOperation(operationId).catch(() => undefined)
+    const pending = operationRef.current
+    operationRef.current = null
+    if (pending) {
+      void skillApiV2.cancelMcpOperation(pending.id, pending.environmentId).catch(() => undefined)
     }
     setLoading(false)
   }, [])
@@ -558,6 +580,7 @@ function ToolRunner({
   useEffect(() => cancel, [cancel])
 
   const run = async (confirmed: boolean) => {
+    if (!matchesRuntime(target)) return
     if (needsConfirmation && !confirmed) {
       setConfirming(true)
       return
@@ -575,8 +598,8 @@ function ToolRunner({
     }
 
     cancel()
-    const operationId = createInspectionId()
-    operationIdRef.current = operationId
+    const pending = { id: createInspectionId(), environmentId: target.environmentId }
+    operationRef.current = pending
     setConfirming(false)
     setError(null)
     setResult(null)
@@ -584,21 +607,22 @@ function ToolRunner({
     try {
       const next = await skillApiV2.callMcpTool(
         agentId,
-        serverName,
-        operationId,
+        target.server.name,
+        pending.id,
         tool.name,
         argumentsValue,
+        pending.environmentId,
       )
-      if (operationIdRef.current === operationId) {
+      if (operationRef.current === pending && matchesRuntime(target)) {
         setResult(next)
       }
     } catch (nextError) {
-      if (operationIdRef.current === operationId) {
+      if (operationRef.current === pending && matchesRuntime(target)) {
         setError(String(nextError))
       }
     } finally {
-      if (operationIdRef.current === operationId) {
-        operationIdRef.current = null
+      if (operationRef.current === pending) {
+        operationRef.current = null
         setLoading(false)
       }
     }
@@ -698,11 +722,11 @@ function InspectorResources({ report }: { report: McpInspectionReport }) {
 
 function InspectorPrompts({
   agentId,
-  serverName,
+  target,
   report,
 }: {
   agentId: string
-  serverName: string
+  target: McpInspectorTarget
   report: McpInspectionReport
 }) {
   const { t } = useTranslation()
@@ -751,7 +775,7 @@ function InspectorPrompts({
           {activePrompt === prompt.name && (
             <PromptPreview
               agentId={agentId}
-              serverName={serverName}
+              target={target}
               prompt={prompt}
             />
           )}
@@ -763,11 +787,11 @@ function InspectorPrompts({
 
 function PromptPreview({
   agentId,
-  serverName,
+  target,
   prompt,
 }: {
   agentId: string
-  serverName: string
+  target: McpInspectorTarget
   prompt: McpInspectionPrompt
 }) {
   const { t } = useTranslation()
@@ -777,13 +801,13 @@ function PromptPreview({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<McpOperationResult | null>(null)
-  const operationIdRef = useRef<string | null>(null)
+  const operationRef = useRef<PendingMcpRequest | null>(null)
 
   const cancel = useCallback(() => {
-    const operationId = operationIdRef.current
-    operationIdRef.current = null
-    if (operationId) {
-      void skillApiV2.cancelMcpOperation(operationId).catch(() => undefined)
+    const pending = operationRef.current
+    operationRef.current = null
+    if (pending) {
+      void skillApiV2.cancelMcpOperation(pending.id, pending.environmentId).catch(() => undefined)
     }
     setLoading(false)
   }, [])
@@ -791,6 +815,7 @@ function PromptPreview({
   useEffect(() => cancel, [cancel])
 
   const preview = async () => {
+    if (!matchesRuntime(target)) return
     const missing = prompt.arguments.find(
       (argument) => argument.required && !argumentsValue[argument.name]?.trim(),
     )
@@ -801,29 +826,30 @@ function PromptPreview({
       return
     }
     cancel()
-    const operationId = createInspectionId()
-    operationIdRef.current = operationId
+    const pending = { id: createInspectionId(), environmentId: target.environmentId }
+    operationRef.current = pending
     setError(null)
     setResult(null)
     setLoading(true)
     try {
       const next = await skillApiV2.getMcpPrompt(
         agentId,
-        serverName,
-        operationId,
+        target.server.name,
+        pending.id,
         prompt.name,
         argumentsValue,
+        pending.environmentId,
       )
-      if (operationIdRef.current === operationId) {
+      if (operationRef.current === pending && matchesRuntime(target)) {
         setResult(next)
       }
     } catch (nextError) {
-      if (operationIdRef.current === operationId) {
+      if (operationRef.current === pending && matchesRuntime(target)) {
         setError(String(nextError))
       }
     } finally {
-      if (operationIdRef.current === operationId) {
-        operationIdRef.current = null
+      if (operationRef.current === pending) {
+        operationRef.current = null
         setLoading(false)
       }
     }

@@ -1465,13 +1465,13 @@ export const skillApiV2 = {
           serverVersion: null,
           toolCount: null,
         }),
-  inspectMcpServer: (agent: string, serverName: string, inspectionId: string) =>
+  inspectMcpServer: (agent: string, serverName: string, inspectionId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<McpInspectionReport>('inspect_mcp_server_cmd', { agent, serverName, inspectionId })
+      ? invoke<McpInspectionReport>('inspect_mcp_server_cmd', { agent, serverName, inspectionId }, environmentId)
       : Promise.resolve(demoMcpInspectionReport(serverName, inspectionId)),
-  cancelMcpInspection: (inspectionId: string) =>
+  cancelMcpInspection: (inspectionId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId })
+      ? invoke<void>('cancel_mcp_inspection_cmd', { inspectionId }, environmentId)
       : Promise.resolve(),
   callMcpTool: (
     agent: string,
@@ -1479,6 +1479,7 @@ export const skillApiV2 = {
     operationId: string,
     toolName: string,
     argumentsValue: Record<string, unknown>,
+    environmentId: string,
   ) =>
     isTauriRuntime()
       ? invoke<McpOperationResult>('call_mcp_tool_cmd', {
@@ -1487,7 +1488,7 @@ export const skillApiV2 = {
         operationId,
         toolName,
         arguments: argumentsValue,
-      })
+      }, environmentId)
       : Promise.resolve({
         operationId,
         kind: 'tool' as const,
@@ -1506,6 +1507,7 @@ export const skillApiV2 = {
     operationId: string,
     promptName: string,
     argumentsValue: Record<string, string>,
+    environmentId: string,
   ) =>
     isTauriRuntime()
       ? invoke<McpOperationResult>('get_mcp_prompt_cmd', {
@@ -1514,7 +1516,7 @@ export const skillApiV2 = {
         operationId,
         promptName,
         arguments: argumentsValue,
-      })
+      }, environmentId)
       : Promise.resolve({
         operationId,
         kind: 'prompt' as const,
@@ -1527,9 +1529,9 @@ export const skillApiV2 = {
         },
         warnings: [],
       }),
-  cancelMcpOperation: (operationId: string) =>
+  cancelMcpOperation: (operationId: string, environmentId: string) =>
     isTauriRuntime()
-      ? invoke<void>('cancel_mcp_operation_cmd', { operationId })
+      ? invoke<void>('cancel_mcp_operation_cmd', { operationId }, environmentId)
       : Promise.resolve(),
   listUnmanaged: (environmentId?: string) =>
     isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2', undefined, environmentId) : Promise.resolve([]),
