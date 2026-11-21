@@ -25,7 +25,6 @@ if ($TracePermissionUi) {
 
 Add-Type -TypeDefinition @'
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class AgentBroSmokeInput {
@@ -35,8 +34,6 @@ public static class AgentBroSmokeInput {
     private const uint LeftUp = 0x0004;
     private const uint KeyUp = 0x0002;
     private const uint KeyUnicode = 0x0004;
-    private const ushort Control = 0x11;
-    private const ushort LetterA = 0x41;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Point { public int X; public int Y; }
@@ -122,17 +119,14 @@ public static class AgentBroSmokeInput {
         InjectInputs(new[] { KeyboardEvent(Space, 0, 0), KeyboardEvent(Space, 0, KeyUp) });
     }
 
-    public static void ReplaceText(string text) {
-        var inputs = new List<Input>(4 + text.Length * 2);
-        inputs.Add(KeyboardEvent(Control, 0, 0));
-        inputs.Add(KeyboardEvent(LetterA, 0, 0));
-        inputs.Add(KeyboardEvent(LetterA, 0, KeyUp));
-        inputs.Add(KeyboardEvent(Control, 0, KeyUp));
-        foreach (char unit in text) {
-            inputs.Add(KeyboardEvent(0, unit, KeyUnicode));
-            inputs.Add(KeyboardEvent(0, unit, KeyUnicode | KeyUp));
-        }
-        InjectInputs(inputs.ToArray());
+    public static void AppendCharacter(char unit) {
+        const ushort End = 0x23;
+        InjectInputs(new[] {
+            KeyboardEvent(End, 0, 0),
+            KeyboardEvent(End, 0, KeyUp),
+            KeyboardEvent(0, unit, KeyUnicode),
+            KeyboardEvent(0, unit, KeyUnicode | KeyUp)
+        });
     }
 
     private static Input KeyboardEvent(ushort virtualKey, ushort scanCode, uint flags) {

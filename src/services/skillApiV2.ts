@@ -1302,18 +1302,18 @@ export const skillApiV2 = {
         items: items.map((item) => ({ unmanagedId: item.unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
-  takeoverCenterSkills: (agentId: string, unmanagedIds: string[]) =>
+  takeoverCenterSkills: (agentId: string, unmanagedIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AdoptBatchResult>('takeover_center_agent_skills', { agentId, unmanagedIds })
+      ? invoke<AdoptBatchResult>('takeover_center_agent_skills', { agentId, unmanagedIds }, environmentId)
       : Promise.resolve({
         items: unmanagedIds.map((unmanagedId) => ({ unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
   deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string, environmentId?: string) =>
     isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }, environmentId) : Promise.resolve(),
-  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[]) =>
+  deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds })
+      ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds }, environmentId)
       : Promise.resolve({ deleted: unmanagedIds.length, failures: [] }),
 
   previewSyncCopy: (targetId: string) =>
@@ -1376,9 +1376,9 @@ export const skillApiV2 = {
   listAgents: () => (isTauriRuntime() ? invoke<AgentSummary[]>('list_managed_agents_v2') : Promise.resolve([])),
   getAgentDetail: (agentId: string) =>
     isTauriRuntime() ? invoke<AgentDetail>('get_agent_detail_v2', { agentId }) : Promise.resolve(null as unknown as AgentDetail),
-  refreshAgentSkillView: (agentId: string) =>
+  refreshAgentSkillView: (agentId: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId })
+      ? invoke<AgentSkillViewSnapshot>('refresh_agent_skill_view_v2', { agentId }, environmentId)
       : Promise.all([
           skillApiV2.getAgentDetail(agentId),
           skillApiV2.overview(),

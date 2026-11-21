@@ -50,12 +50,13 @@ type BatchAdoptPackSelection =
   | { kind: 'none' }
   | { kind: 'existing'; packId: string }
   | { kind: 'new'; name: string }
-type BatchAdoptReview = {
-  items: UnmanagedItemDto[]
+type AgentSkillScope = {
   agentId: string
   environmentId: string
-  selectionRevision: number
+  runtimeSelectionRevision: number
+  agentSelectionRevision: number
 }
+type AgentSkillReview<T> = AgentSkillScope & { items: T[] }
 type BatchAdoptPackOption = {
   id: string
   name: string
@@ -86,6 +87,13 @@ function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
   return current.selectedEnvironmentId === expectedId
     && useSkillStoreV2.getState().runtimeEnvironmentId === expectedId
     && (expectedRevision === undefined || current.selectionRevision === expectedRevision)
+}
+
+function isCurrentAgentSkillScope(scope: AgentSkillScope) {
+  const { selectedAgentId, agentSelectionRevision } = useSkillStoreV2.getState()
+  return isRuntimeEnvironment(scope.environmentId, scope.runtimeSelectionRevision)
+    && selectedAgentId === scope.agentId
+    && agentSelectionRevision === scope.agentSelectionRevision
 }
 
 function assertRuntimeEnvironment(expectedId: string, message: string) {
@@ -1621,12 +1629,13 @@ function SkillsTab({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set())
   const [deletingUnmanagedIds, setDeletingUnmanagedIds] = useState<Set<string>>(() => new Set())
   const [adoptingIds, setAdoptingIds] = useState<Set<string>>(() => new Set())
-  const [batchDeleteTargets, setBatchDeleteTargets] = useState<AgentDetail['skills'] | null>(null)
-  const [batchDeleteUnmanagedTargets, setBatchDeleteUnmanagedTargets] = useState<UnmanagedItemDto[] | null>(null)
-  const [batchAdoptReview, setBatchAdoptReview] = useState<BatchAdoptReview | null>(null)
-  const [quickTakeoverItems, setQuickTakeoverItems] = useState<UnmanagedItemDto[] | null>(null)
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const [managedDeleteReview, setManagedDeleteReview] = useState<AgentSkillReview<AgentDetail['skills'][number]> | null>(null)
+  const [unmanagedBatchDeleteReview, setUnmanagedBatchDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
+  const [batchAdoptReview, setBatchAdoptReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
+  const [quickTakeoverReview, setQuickTakeoverReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [moveToPackTarget, setMoveToPackTarget] = useState<AgentDetail['skills'][number] | null>(null)
-  const [deleteUnmanagedTarget, setDeleteUnmanagedTarget] = useState<UnmanagedItemDto | null>(null)
+  const [unmanagedSingleDeleteReview, setUnmanagedSingleDeleteReview] = useState<AgentSkillReview<UnmanagedItemDto> | null>(null)
   const [deleteUnmanagedError, setDeleteUnmanagedError] = useState<string | null>(null)
   const reconciliationGenerationRef = useRef(0)
   const [confirmingPackApply, setConfirmingPackApply] = useState(false)
@@ -1713,14 +1722,18 @@ function SkillsTab({
     setUnmanagedSelectionMode(false)
     setSelectedManagedIds(new Set())
     setSelectedUnmanagedIds(new Set())
-    setBatchDeleteTargets(null)
-    setBatchDeleteUnmanagedTargets(null)
+    setManagedDeleteReview(null)
+    setUnmanagedBatchDeleteReview(null)
     setBatchAdoptReview(null)
-    setQuickTakeoverItems(null)
+    setQuickTakeoverReview(null)
     setMoveToPackTarget(null)
-    setDeleteUnmanagedTarget(null)
+    setUnmanagedSingleDeleteReview(null)
     setDeleteUnmanagedError(null)
-  }, [detail.id, packFilter, source, state.runtimeEnvironmentId, status])
+  }, [detail.id, packFilter, runtimeSelectionRevision, source, state.agentSelectionRevision, state.runtimeEnvironmentId, status])
+
+  useEffect(() => {
+    setLocalNotice(null)
+  }, [detail.id, runtimeSelectionRevision, state.agentSelectionRevision])
 
   useEffect(() => {
     if (!inheritsSharedSkills && source === 'shared') {
@@ -1763,26 +1776,25 @@ function SkillsTab({
     return isCurrent()
   }
 
-  const reconcileDeletedAgentSkills = (agentId: string, runtimeEnvironmentId: string) => {
+  const reconcileDeletedAgentSkills = (scope: AgentSkillScope) => {
+    const { agentId, environmentId } = scope
     const generation = reconciliationGenerationRef.current + 1
     reconciliationGenerationRef.current = generation
+    const isCurrent = () => reconciliationGenerationRef.current === generation && isCurrentAgentSkillScope(scope)
     void (async () => {
       let lastError: unknown = null
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!isCurrent()) return
         try {
           const snapshot = await skillApiV2.refreshAgentSkillView(agentId)
-          if (reconciliationGenerationRef.current !== generation) return
-          useSkillStoreV2.getState().applyAgentSkillViewSnapshot(runtimeEnvironmentId, agentId, snapshot)
+          if (!isCurrent()) return
+          useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
           return
         } catch (error) {
           lastError = error
         }
       }
-      if (
-        reconciliationGenerationRef.current === generation
-        && useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId
-        && useSkillStoreV2.getState().selectedAgentId === agentId
-      ) {
+      if (isCurrent()) {
         state.setError(t('skills.agentManagement.deleteRefreshFailed', {
           error: skillErrorMessage(t, lastError),
         }))
@@ -1820,29 +1832,39 @@ function SkillsTab({
     return { packName: saved.name, added: merged.length - existingIds.length }
   }
 
-  const deleteManaged = async (targets: AgentDetail['skills']) => {
-    if (targets.length === 0) return
+  const createSkillReview = <T,>(items: T[]): AgentSkillReview<T> | null => {
+    const scope = {
+      agentId: detail.id,
+      environmentId: state.runtimeEnvironmentId,
+      runtimeSelectionRevision,
+      agentSelectionRevision: state.agentSelectionRevision,
+    }
+    return isCurrentAgentSkillScope(scope) ? { ...scope, items } : null
+  }
+
+  const deleteManaged = async (review: AgentSkillReview<AgentDetail['skills'][number]>) => {
+    const { items: targets, agentId, environmentId } = review
+    if (targets.length === 0 || !isCurrentAgentSkillScope(review)) return
     const ids = targets.map((target) => target.id)
-    const runtimeEnvironmentId = state.runtimeEnvironmentId
-    const agentId = detail.id
     setDeletingIds((current) => new Set([...current, ...ids]))
     setLocalNotice(`正在删除 ${targets.length} 个 Skill 分发...`)
     state.setError(null)
     try {
       const targetNames = new Map(targets.map((target) => [target.id, pathBasename(target.targetPath) || target.skillId]))
-      const result = await skillApiV2.deleteSkillTargetDistributions(ids)
+      const result = await skillApiV2.deleteSkillTargetDistributions(ids, environmentId)
+      if (!isCurrentAgentSkillScope(review)) return
       const failed = result.failures.map((failure) => `${targetNames.get(failure.targetId) || failure.targetId}: ${failure.error}`)
       const failedIds = new Set(result.failures.map((failure) => failure.targetId))
       const deletedIds = ids.filter((id) => !failedIds.has(id))
-      useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, deletedIds, [])
+      useSkillStoreV2.getState().removeAgentSkillItems(environmentId, agentId, deletedIds, [])
       setSelectedManagedIds(failedIds)
       setManagedSelectionMode(failedIds.size > 0)
       setLocalNotice(`已删除 ${result.deleted} 个 Skill 分发${failed.length ? `，${failed.length} 个失败` : ''}`)
       if (failed.length === 0) state.setError(null)
       if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
-      if (deletedIds.length > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
+      if (deletedIds.length > 0) reconcileDeletedAgentSkills(review)
     } catch (e) {
-      if (useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId) {
+      if (isCurrentAgentSkillScope(review)) {
         state.setError(String(e))
       }
     } finally {
@@ -1854,17 +1876,9 @@ function SkillsTab({
     }
   }
 
-  const openBatchAdoptReview = (items: UnmanagedItemDto[]) => {
-    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
-    if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
-      setBatchAdoptReview({ items, agentId: detail.id, environmentId: selectedEnvironmentId, selectionRevision })
-    }
-  }
-
-  const adoptUnmanaged = async (review: BatchAdoptReview, packSelection: BatchAdoptPackSelection) => {
-    const { items, agentId, environmentId, selectionRevision } = review
-    const isCurrent = () => isRuntimeEnvironment(environmentId, selectionRevision)
-      && useSkillStoreV2.getState().selectedAgentId === agentId
+  const adoptUnmanaged = async (review: AgentSkillReview<UnmanagedItemDto>, packSelection: BatchAdoptPackSelection) => {
+    const { items, agentId, environmentId } = review
+    const isCurrent = () => isCurrentAgentSkillScope(review)
     if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     setAdoptingIds(new Set(ids))
@@ -1931,8 +1945,10 @@ function SkillsTab({
     }
   }
 
-  const takeoverExistingCenterSkills = async (items: UnmanagedItemDto[]) => {
-    if (items.length === 0) return
+  const takeoverExistingCenterSkills = async (review: AgentSkillReview<UnmanagedItemDto>) => {
+    const { items, agentId, environmentId } = review
+    const isCurrent = () => isCurrentAgentSkillScope(review)
+    if (items.length === 0 || !isCurrent()) return
     const ids = items.map((item) => item.id)
     const names = new Map(items.map((item) => [
       item.id,
@@ -1942,7 +1958,8 @@ function SkillsTab({
     setLocalNotice(t('skills.agentManagement.quickTakeover.running', { count: items.length }))
     state.setError(null)
     try {
-      const result = await skillApiV2.takeoverCenterSkills(detail.id, ids)
+      const result = await skillApiV2.takeoverCenterSkills(agentId, ids, environmentId)
+      if (!isCurrent()) return
       const adopted = result.items.filter((item) => item.skillId !== null).length
       const failures = result.items
         .filter((item) => item.skillId === null)
@@ -1953,8 +1970,11 @@ function SkillsTab({
         }))
       }
       try {
-        await refreshAgentSkills()
+        const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+        if (!isCurrent()) return
+        useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
       } catch (error) {
+        if (!isCurrent()) return
         failures.push(t('skills.agentManagement.quickTakeover.refreshFailed', {
           error: skillErrorMessage(t, error),
         }))
@@ -1966,17 +1986,18 @@ function SkillsTab({
       }))
       state.setError(failures.length > 0 ? failures.slice(0, 3).join('\n') : null)
     } catch (error) {
-      state.setError(skillErrorMessage(t, error))
-      setLocalNotice(null)
+      if (isCurrent()) {
+        state.setError(skillErrorMessage(t, error))
+        setLocalNotice(null)
+      }
     } finally {
       setAdoptingIds(new Set())
     }
   }
 
-  const deleteUnmanaged = async (items: UnmanagedItemDto[]) => {
-    if (items.length === 0) return false
-    const runtimeEnvironmentId = state.runtimeEnvironmentId
-    const agentId = detail.id
+  const deleteUnmanaged = async (review: AgentSkillReview<UnmanagedItemDto>) => {
+    const { items, agentId, environmentId } = review
+    if (items.length === 0 || !isCurrentAgentSkillScope(review)) return
     const itemNames = new Map(items.map((item) => [item.id, item.inferredSkillId || pathBasename(item.path) || item.id]))
     const itemIds = new Set(items.map((item) => item.id))
     setDeletingUnmanagedIds((current) => new Set([...current, ...itemIds]))
@@ -1991,39 +2012,40 @@ function SkillsTab({
     const failedIds = new Set<string>()
     const itemsByOwner = new Map<string, UnmanagedItemDto[]>()
     items.forEach((item) => {
-      const owner = adoptOwnerAgentId(detail.id, item)
+      const owner = adoptOwnerAgentId(agentId, item)
       itemsByOwner.set(owner, [...(itemsByOwner.get(owner) || []), item])
     })
-    for (const [owner, ownerItems] of itemsByOwner) {
-      try {
-        const result = await skillApiV2.deleteUnmanagedAgentSkills(owner, ownerItems.map((item) => item.id))
-        const ownerFailedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
-        ownerItems.forEach((item) => {
-          if (ownerFailedIds.has(item.id)) failedIds.add(item.id)
-          else deletedIds.add(item.id)
-        })
-        failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${skillErrorMessage(t, failure.error)}`))
-      } catch (e) {
-        failed.push(`${owner}: ${skillErrorMessage(t, e)}`)
-        ownerItems.forEach((item) => failedIds.add(item.id))
+    try {
+      for (const [owner, ownerItems] of itemsByOwner) {
+        try {
+          const result = await skillApiV2.deleteUnmanagedAgentSkills(owner, ownerItems.map((item) => item.id), environmentId)
+          const ownerFailedIds = new Set(result.failures.map((failure) => failure.unmanagedId))
+          ownerItems.forEach((item) => {
+            if (ownerFailedIds.has(item.id)) failedIds.add(item.id)
+            else deletedIds.add(item.id)
+          })
+          failed.push(...result.failures.map((failure) => `${itemNames.get(failure.unmanagedId) || failure.unmanagedId}: ${skillErrorMessage(t, failure.error)}`))
+        } catch (e) {
+          failed.push(`${owner}: ${skillErrorMessage(t, e)}`)
+          ownerItems.forEach((item) => failedIds.add(item.id))
+        }
       }
+      if (!isCurrentAgentSkillScope(review)) return
+      useSkillStoreV2.getState().removeAgentSkillItems(environmentId, agentId, [], [...deletedIds])
+      setSelectedUnmanagedIds(failedIds)
+      setUnmanagedSelectionMode(failedIds.size > 0)
+      setLocalNotice(items.length === 1 && deletedIds.size === 1
+        ? t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(items[0].id) })
+        : `已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
+      state.setError(failed.length > 0 ? failed.slice(0, 3).join('\n') : null)
+      if (deletedIds.size > 0) reconcileDeletedAgentSkills(review)
+    } finally {
+      setDeletingUnmanagedIds((current) => {
+        const next = new Set(current)
+        itemIds.forEach((id) => next.delete(id))
+        return next
+      })
     }
-    useSkillStoreV2.getState().removeAgentSkillItems(runtimeEnvironmentId, agentId, [], [...deletedIds])
-    setSelectedUnmanagedIds(failedIds)
-    if (failed.length === 0) setUnmanagedSelectionMode(false)
-    setUnmanagedSelectionMode(failedIds.size > 0)
-    setLocalNotice(items.length === 1 && deletedIds.size === 1
-      ? t('skills.agentManagement.unmanagedDelete.deleted', { name: itemNames.get(items[0].id) })
-      : `已删除 ${deletedIds.size} 个未管理 Skill${failed.length ? `，${failed.length} 个失败` : ''}`)
-    if (failed.length === 0) state.setError(null)
-    if (failed.length > 0) state.setError(failed.slice(0, 3).join('\n'))
-    if (deletedIds.size > 0) reconcileDeletedAgentSkills(agentId, runtimeEnvironmentId)
-    setDeletingUnmanagedIds((current) => {
-      const next = new Set(current)
-      itemIds.forEach((id) => next.delete(id))
-      return next
-    })
-    return deletedIds.size === items.length
   }
 
   const toggleManaged = (targetId: string) => {
@@ -2036,15 +2058,12 @@ function SkillsTab({
 
   const selectedManaged = filteredManaged.filter((item) => selectedManagedIds.has(item.id))
   const selectedUnmanaged = filteredUnmanaged.filter((item) => selectedUnmanagedIds.has(item.id))
+  const batchDeleteTargets = managedDeleteReview?.items
+  const batchDeleteUnmanagedTargets = unmanagedBatchDeleteReview?.items
+  const deleteUnmanagedTarget = unmanagedSingleDeleteReview?.items[0]
   const deletingSharedManaged = batchDeleteTargets?.some(isSharedManagedSkill) ?? false
   const deletingSharedUnmanaged = batchDeleteUnmanagedTargets?.some(isSharedAgentsUnmanaged) ?? false
   const deletingSingleSharedUnmanaged = deleteUnmanagedTarget ? isSharedAgentsUnmanaged(deleteUnmanagedTarget) : false
-  const confirmBatchDelete = async () => {
-    if (!batchDeleteTargets || batchDeleteTargets.length === 0) return
-    const targets = batchDeleteTargets
-    setBatchDeleteTargets(null)
-    await deleteManaged(targets)
-  }
   const applyPackFromRail = async (packId: string, agentId: string) => {
     const pack = detail.availablePacks.find((item) => item.id === packId)
     if (!pack) return false
@@ -2177,7 +2196,7 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedManagedIds.size === 0 || actionBusy} onClick={() => setSelectedManagedIds(new Set())}>
                   {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteTargets(selectedManaged)}>
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedManaged.length === 0 || actionBusy} busy={managedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setManagedDeleteReview(createSkillReview(selectedManaged))}>
                   {t('skills.agentManagement.actions.batchDelete', { count: selectedManaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
@@ -2203,10 +2222,10 @@ function SkillsTab({
                 <button className="sm2__btn" disabled={selectedUnmanagedIds.size === 0 || actionBusy} onClick={() => setSelectedUnmanagedIds(new Set())}>
                   {t('skills.agentManagement.actions.clear')}
                 </button>
-                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => openBatchAdoptReview(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--primary" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedAdopting} busyLabel={t('skills.agentManagement.actions.adopting')} onClick={() => setBatchAdoptReview(createSkillReview(selectedUnmanaged))}>
                   {t('skills.agentManagement.actions.adoptToCenter')}
                 </ActionButton>
-                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setBatchDeleteUnmanagedTargets(selectedUnmanaged)}>
+                <ActionButton className="sm2__btn sm2__btn--danger" disabled={selectedUnmanaged.length === 0 || actionBusy} busy={unmanagedDeleting} busyLabel={t('skills.agentManagement.actions.deleting')} onClick={() => setUnmanagedBatchDeleteReview(createSkillReview(selectedUnmanaged))}>
                   {t('skills.agentManagement.actions.batchDelete', { count: selectedUnmanaged.length })}
                 </ActionButton>
                 <button className="sm2__btn sm2__btn--ghost" disabled={actionBusy} onClick={() => {
@@ -2224,7 +2243,7 @@ function SkillsTab({
                     disabled={quickTakeoverCandidates.length === 0 || actionBusy}
                     busy={unmanagedAdopting}
                     busyLabel={t('skills.agentManagement.quickTakeover.busy')}
-                    onClick={() => setQuickTakeoverItems(quickTakeoverCandidates)}
+                    onClick={() => setQuickTakeoverReview(createSkillReview(quickTakeoverCandidates))}
                   >
                     {t('skills.agentManagement.quickTakeover.action', { count: quickTakeoverCandidates.length })}
                   </ActionButton>
@@ -2269,8 +2288,10 @@ function SkillsTab({
                 : undefined}
             onToggle={toggleManaged}
             onDelete={(skill) => {
-              if (source === 'shared') setBatchDeleteTargets([skill])
-              else void deleteManaged([skill])
+              const review = createSkillReview([skill])
+              if (!review) return
+              if (source === 'shared') setManagedDeleteReview(review)
+              else void deleteManaged(review)
             }}
             onMoveToPack={capabilities.moveToPack && moveToPackOptions.length > 0 ? setMoveToPackTarget : undefined}
             onOpenSkillDetail={onOpenSkillDetail}
@@ -2316,7 +2337,7 @@ function SkillsTab({
                 onAdopt={onAdopt}
                 onDelete={(item) => {
                   setDeleteUnmanagedError(null)
-                  setDeleteUnmanagedTarget(item)
+                  setUnmanagedSingleDeleteReview(createSkillReview([item]))
                 }}
                 onOpenSkillDetail={onOpenSkillDetail}
               />
@@ -2369,7 +2390,7 @@ function SkillsTab({
         </>
       )}
 
-      {batchDeleteTargets && (
+      {managedDeleteReview && batchDeleteTargets && isCurrentAgentSkillScope(managedDeleteReview) && (
         <PreviewDialog
           title={deletingSharedManaged
             ? t('skills.agentManagement.sharedDelete.managedTitle')
@@ -2383,8 +2404,11 @@ function SkillsTab({
           destructive
           busy={managedDeleting}
           disabled={batchDeleteTargets.length === 0}
-          onCancel={() => setBatchDeleteTargets(null)}
-          onConfirm={confirmBatchDelete}
+          onCancel={() => setManagedDeleteReview(null)}
+          onConfirm={async () => {
+            setManagedDeleteReview(null)
+            await deleteManaged(managedDeleteReview)
+          }}
         >
           {deletingSharedManaged ? (
             <>
@@ -2396,7 +2420,7 @@ function SkillsTab({
           )}
         </PreviewDialog>
       )}
-      {batchAdoptReview?.agentId === detail.id && isRuntimeEnvironment(batchAdoptReview.environmentId, batchAdoptReview.selectionRevision) && (
+      {batchAdoptReview && isCurrentAgentSkillScope(batchAdoptReview) && (
         <BatchAdoptPackDialog
           items={batchAdoptReview.items}
           agentName={detail.displayName}
@@ -2409,30 +2433,30 @@ function SkillsTab({
           }}
         />
       )}
-      {quickTakeoverItems && (
+      {quickTakeoverReview && isCurrentAgentSkillScope(quickTakeoverReview) && (
         <PreviewDialog
-          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverItems.length })}
+          title={t('skills.agentManagement.quickTakeover.title', { count: quickTakeoverReview.items.length })}
           confirmLabel={t('skills.agentManagement.quickTakeover.confirm')}
           busyLabel={t('skills.agentManagement.quickTakeover.busy')}
           busy={unmanagedAdopting}
-          disabled={quickTakeoverItems.length === 0}
+          disabled={quickTakeoverReview.items.length === 0}
           modalClassName="sm2__modal--adopt"
-          onCancel={() => setQuickTakeoverItems(null)}
+          onCancel={() => setQuickTakeoverReview(null)}
           onConfirm={async () => {
-            await takeoverExistingCenterSkills(quickTakeoverItems)
-            setQuickTakeoverItems(null)
+            await takeoverExistingCenterSkills(quickTakeoverReview)
+            setQuickTakeoverReview((current) => current === quickTakeoverReview ? null : current)
           }}
         >
           <p>{t('skills.agentManagement.quickTakeover.description', {
-            count: quickTakeoverItems.length,
+            count: quickTakeoverReview.items.length,
             agent: detail.displayName,
           })}</p>
           <p>{t('skills.agentManagement.quickTakeover.preserved', {
-            count: Math.max(0, unmanaged.length - quickTakeoverItems.length),
+            count: Math.max(0, unmanaged.length - quickTakeoverReview.items.length),
           })}</p>
         </PreviewDialog>
       )}
-      {batchDeleteUnmanagedTargets && (
+      {unmanagedBatchDeleteReview && batchDeleteUnmanagedTargets && isCurrentAgentSkillScope(unmanagedBatchDeleteReview) && (
         <PreviewDialog
           title={deletingSharedUnmanaged
             ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
@@ -2446,11 +2470,10 @@ function SkillsTab({
           destructive
           busy={unmanagedDeleting}
           disabled={batchDeleteUnmanagedTargets.length === 0}
-          onCancel={() => setBatchDeleteUnmanagedTargets(null)}
+          onCancel={() => setUnmanagedBatchDeleteReview(null)}
           onConfirm={async () => {
-            const items = batchDeleteUnmanagedTargets
-            setBatchDeleteUnmanagedTargets(null)
-            await deleteUnmanaged(items)
+            setUnmanagedBatchDeleteReview(null)
+            await deleteUnmanaged(unmanagedBatchDeleteReview)
           }}
         >
           {deletingSharedUnmanaged ? (
@@ -2481,7 +2504,7 @@ function SkillsTab({
           }}
         />
       )}
-      {deleteUnmanagedTarget && (
+      {unmanagedSingleDeleteReview && deleteUnmanagedTarget && isCurrentAgentSkillScope(unmanagedSingleDeleteReview) && (
         <PreviewDialog
           title={deletingSingleSharedUnmanaged
             ? t('skills.agentManagement.sharedDelete.unmanagedTitle')
@@ -2499,13 +2522,12 @@ function SkillsTab({
           busy={deletingUnmanagedIds.has(deleteUnmanagedTarget.id)}
           onCancel={() => {
             setDeleteUnmanagedError(null)
-            setDeleteUnmanagedTarget(null)
+            setUnmanagedSingleDeleteReview(null)
           }}
           onConfirm={async () => {
-            const item = deleteUnmanagedTarget
             setDeleteUnmanagedError(null)
-            setDeleteUnmanagedTarget(null)
-            await deleteUnmanaged([item])
+            setUnmanagedSingleDeleteReview(null)
+            await deleteUnmanaged(unmanagedSingleDeleteReview)
           }}
         >
           <p>{deletingSingleSharedUnmanaged
