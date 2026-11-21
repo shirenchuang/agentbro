@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { skillApiV2, type ProjectSkillLock, type ProjectSkillRestoreResult } from '../../services/skillApiV2'
-import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { captureProjectView, useSkillStoreV2 } from '../../stores/skillStoreV2'
 
 export function ProjectSkillLockPanel({ projectId, lock }: { projectId: string; lock: ProjectSkillLock }) {
   const { t } = useTranslation()
@@ -15,25 +15,16 @@ export function ProjectSkillLockPanel({ projectId, lock }: { projectId: string; 
 
   async function restore() {
     if (busy || !selected.length) return
-    const runtimeEnvironmentId = useSkillStoreV2.getState().runtimeEnvironmentId
+    const view = captureProjectView(projectId)
+    if (!view.isSelected()) return
     setBusy(true)
     setError('')
     try {
       const outcomes = await skillApiV2.restoreProjectSkillLock(projectId, lock.revision, selected)
-      setResults(outcomes)
-      const matchesProject = () => {
-        const current = useSkillStoreV2.getState()
-        return current.selectedProjectId === projectId && current.runtimeEnvironmentId === runtimeEnvironmentId
-      }
-      if (matchesProject()) {
-        const detail = await skillApiV2.getProjectDetail(projectId)
-        if (matchesProject()) useSkillStoreV2.setState({ selectedProjectDetail: detail })
-      }
-      if (useSkillStoreV2.getState().runtimeEnvironmentId === runtimeEnvironmentId) {
-        await useSkillStoreV2.getState().loadProjects(true)
-      }
+      if (view.isSelected()) setResults(outcomes)
+      if (view.isRuntimeCurrent()) await useSkillStoreV2.getState().refreshProject(projectId)
     } catch (error) {
-      setError(String(error))
+      if (view.isSelected()) setError(String(error))
     } finally {
       setBusy(false)
     }
