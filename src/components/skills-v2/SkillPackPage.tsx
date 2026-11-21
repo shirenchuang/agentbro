@@ -150,7 +150,7 @@ export function SkillPackPage() {
     )
   }, [packQuery, state.packs])
 
-  const detail = state.selectedPackDetail
+  const detail = state.selectedPackDetail?.id === state.selectedPackId ? state.selectedPackDetail : null
   const packMemberStatuses = useMemo(() => {
     const result = new Map<string, PackMemberStatus>()
     if (!packImport) return result
