@@ -8,6 +8,7 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::Url;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +24,7 @@ const GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS: u64 = 180;
 const GITHUB_TREE_TIMEOUT_SECS: u64 = 20;
 const MAX_GITHUB_SKILL_PREVIEWS: usize = 500;
 const SKILL_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+const SKILL_GITHUB_AUTH_HEADER: &str = "AGENTBRO_SKILL_GITHUB_AUTHORIZATION";
 
 pub(crate) struct TempInstallDir(PathBuf);
 
@@ -410,7 +412,7 @@ pub(crate) fn checkout_skill_lock_ref(
     let checkout = temporary.path().join("repo");
     fs::create_dir(&checkout).map_err(|error| error.to_string())?;
     let cancel = AtomicBool::new(false);
-    let network_env = git_network_env();
+    let network = GitNetwork::new(None, None);
     for (args, operation) in [
         (
             &["init", "--quiet", "--template="][..],
@@ -446,7 +448,7 @@ pub(crate) fn checkout_skill_lock_ref(
             args,
             Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
             &cancel,
-            &network_env,
+            &network,
             None,
             operation,
         )?;
@@ -526,6 +528,9 @@ fn git_skill_tree_changed(
     }
 
     if read_git_object_id(repo_dir, &format!("{installed}^{{commit}}")).is_none() {
+        let token = effective_github_token(github_token);
+        let origin = token.as_ref().and_then(|_| skill_checkout_origin(repo_dir));
+        let network = GitNetwork::new(origin.as_deref(), token.as_deref());
         let output = run_git_with_cancel(
             repo_dir,
             &[
@@ -539,14 +544,14 @@ fn git_skill_tree_changed(
             ],
             Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
             &AtomicBool::new(false),
-            &git_network_env(),
+            &network,
             None,
             "fetching the installed Skill version",
         )?;
         if !output.status.success() {
             return Err(format!(
                 "Could not fetch the installed Skill version: {}",
-                redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+                redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
             ));
         }
     }
@@ -1022,8 +1027,8 @@ fn curl_text_with_timeout(
     github_token: Option<&str>,
 ) -> Result<String, String> {
     let url = Url::parse(url).map_err(|error| format!("Invalid GitHub URL: {error}"))?;
-    let output = background_command(crate::agents::executable::command_path("curl"))
-        .args(http_curl_args(&url, github_token))
+    let (mut command, token) = curl_request(&url, github_token)?;
+    command
         .arg("--fail")
         .arg("--connect-timeout")
         .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
@@ -1034,13 +1039,12 @@ fn curl_text_with_timeout(
         .arg("-H")
         .arg("User-Agent: AgentBro")
         .arg("--url")
-        .arg(url.as_str())
-        .output()
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
+        .arg(url.as_str());
+    let output = curl_output(&mut command, token.as_deref())?;
     if !output.status.success() {
         return Err(format!(
             "Failed to fetch {url}: {}",
-            redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+            redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
         ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("GitHub response was not UTF-8: {e}"))
@@ -1108,8 +1112,10 @@ fn clone_repo_with_cancel(
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
+    let token = effective_github_token(github_token);
+    let github_token = token.as_deref();
     let clone_urls = github_clone_urls(repo_url, github_token);
-    let network_env = git_network_env();
+    let network = GitNetwork::new(Some(repo_url), github_token);
     let single_attempt = clone_urls.len() == 1;
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -1134,10 +1140,8 @@ fn clone_repo_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = background_command(crate::agents::executable::command_path("git"));
+        let mut attempt = network.command();
         attempt
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "Never")
             .arg("clone")
             .arg("--quiet")
             .arg("--depth")
@@ -1148,9 +1152,6 @@ fn clone_repo_with_cancel(
         {
             use std::os::unix::process::CommandExt;
             attempt.process_group(0);
-        }
-        for (name, value) in &network_env {
-            attempt.env(name, value);
         }
         if let Some(branch) = branch {
             attempt.arg("--branch").arg(branch);
@@ -1202,8 +1203,10 @@ fn clone_repo_skills_with_cancel(
     let started_at = Instant::now();
     let mut cloned = false;
     let mut last_error = "No GitHub clone attempts were available".to_string();
+    let token = effective_github_token(github_token);
+    let github_token = token.as_deref();
     let clone_urls = github_clone_urls(repo_url, github_token);
-    let network_env = git_network_env();
+    let network = GitNetwork::new(Some(repo_url), github_token);
     let single_attempt = clone_urls.len() == 1;
 
     for (attempt_index, clone_url) in clone_urls.into_iter().enumerate() {
@@ -1229,10 +1232,8 @@ fn clone_repo_skills_with_cancel(
             attempt_index + 1,
             attempt_timeout.as_secs()
         );
-        let mut attempt = background_command(crate::agents::executable::command_path("git"));
+        let mut attempt = network.command();
         attempt
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "Never")
             .arg("clone")
             .arg("--quiet")
             .arg("--filter=blob:none")
@@ -1245,9 +1246,6 @@ fn clone_repo_skills_with_cancel(
         {
             use std::os::unix::process::CommandExt;
             attempt.process_group(0);
-        }
-        for (name, value) in &network_env {
-            attempt.env(name, value);
         }
         if let Some(branch) = branch {
             attempt.arg("--branch").arg(branch);
@@ -1288,7 +1286,7 @@ fn clone_repo_skills_with_cancel(
         &["ls-tree", "-r", "--name-only", "HEAD"],
         Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
         cancel,
-        &network_env,
+        &network,
         Some(&tree_file),
         "Reading the GitHub repository directory",
     )?;
@@ -1318,7 +1316,7 @@ fn clone_repo_skills_with_cancel(
             &["sparse-checkout", "init", "--no-cone"],
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Preparing Skill manifests",
         )?;
@@ -1338,7 +1336,7 @@ fn clone_repo_skills_with_cancel(
             &sparse_args,
             Duration::from_secs(GITHUB_TREE_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Selecting Skill manifests",
         )?;
@@ -1352,7 +1350,7 @@ fn clone_repo_skills_with_cancel(
             &["checkout", "--quiet", "HEAD"],
             Duration::from_secs(GITHUB_CLONE_ATTEMPT_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Downloading Skill manifests",
         )?;
@@ -1374,7 +1372,7 @@ fn clone_repo_skills_with_cancel(
             &sparse_args,
             Duration::from_secs(GITHUB_SPARSE_CHECKOUT_TIMEOUT_SECS),
             cancel,
-            &network_env,
+            &network,
             None,
             "Downloading selected Skills",
         )?;
@@ -1472,14 +1470,12 @@ fn run_git_with_cancel(
     args: &[&str],
     timeout: Duration,
     cancel: &AtomicBool,
-    network_env: &[(String, String)],
+    network: &GitNetwork,
     stdout_file: Option<&Path>,
     operation: &str,
 ) -> Result<Output, String> {
-    let mut command = background_command(crate::agents::executable::command_path("git"));
+    let mut command = network.command();
     command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
         .arg("-C")
         .arg(repo_dir)
         .args(args)
@@ -1488,9 +1484,6 @@ fn run_git_with_cancel(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
-    }
-    for (name, value) in network_env {
-        command.env(name, value);
     }
     if let Some(path) = stdout_file {
         let file = fs::File::create(path)
@@ -1593,8 +1586,8 @@ fn download_skill_file(
     dest: &Path,
     github_token: Option<&str>,
 ) -> Result<(), String> {
-    let output = background_command(crate::agents::executable::command_path("curl"))
-        .args(http_curl_args(source, github_token))
+    let (mut command, token) = curl_request(source, github_token)?;
+    command
         .arg("--fail")
         .arg("--connect-timeout")
         .arg(GITHUB_API_CONNECT_TIMEOUT_SECS.to_string())
@@ -1603,13 +1596,12 @@ fn download_skill_file(
         .arg("--output")
         .arg(dest)
         .arg("--url")
-        .arg(source.as_str())
-        .output()
-        .map_err(|error| format!("Failed to run curl: {error}"))?;
+        .arg(source.as_str());
+    let output = curl_output(&mut command, token.as_deref())?;
     if !output.status.success() {
         return Err(format!(
             "Failed to download Skill: {}",
-            redact_token(&String::from_utf8_lossy(&output.stderr), github_token)
+            redact_token(&String::from_utf8_lossy(&output.stderr), token.as_deref())
         ));
     }
     Ok(())
@@ -1635,21 +1627,8 @@ fn effective_github_token(explicit_token: Option<&str>) -> Option<String> {
         .or_else(github_token)
 }
 
-fn http_curl_args(url: &Url, github_token: Option<&str>) -> Vec<String> {
-    let https = url.scheme() == "https";
-    let protocols = if https { "=https" } else { "=http,https" };
-    let mut args = [
-        "--location",
-        "--no-location-trusted",
-        "--globoff",
-        "--proto",
-        protocols,
-        "--proto-redir",
-        protocols,
-    ]
-    .map(str::to_string)
-    .to_vec();
-    let github_https = https
+fn is_github_https(url: &Url) -> bool {
+    url.scheme() == "https"
         && url.port_or_known_default() == Some(443)
         && matches!(
             url.host_str(),
@@ -1659,33 +1638,155 @@ fn http_curl_args(url: &Url, github_token: Option<&str>) -> Vec<String> {
                     | "raw.githubusercontent.com"
                     | "codeload.github.com"
             )
-        );
-    if let Some(token) = github_https
-        .then(|| effective_github_token(github_token))
-        .flatten()
-    {
-        args.extend([
-            "--no-insecure".to_string(),
-            "-H".to_string(),
-            format!("Authorization: Bearer {token}"),
-        ]);
-    }
-    args
+        )
 }
 
-fn authenticated_github_url(repo_url: &str, github_token: Option<&str>) -> String {
-    let Some(token) = effective_github_token(github_token) else {
-        return repo_url.to_string();
+fn curl_request(
+    url: &Url,
+    github_token: Option<&str>,
+) -> Result<(Command, Option<String>), String> {
+    let protocols = if url.scheme() == "https" {
+        "=https"
+    } else {
+        "=http,https"
     };
-    if let Some(rest) = repo_url.strip_prefix("https://github.com/") {
-        return format!("https://x-access-token:{token}@github.com/{rest}");
+    let mut command = background_command(crate::agents::executable::command_path("curl"));
+    command.args([
+        "--location",
+        "--no-location-trusted",
+        "--globoff",
+        "--proto",
+        protocols,
+        "--proto-redir",
+        protocols,
+    ]);
+    let token = is_github_https(url)
+        .then(|| effective_github_token(github_token))
+        .flatten();
+    if let Some(token) = token {
+        if token.contains(['\r', '\n']) {
+            return Err("The GitHub access token must be a single line.".to_string());
+        }
+        command.args(["--no-insecure", "--header", "@-"]);
+        return Ok((command, Some(token)));
     }
-    repo_url.to_string()
+    Ok((command, None))
+}
+
+fn curl_output(command: &mut Command, token: Option<&str>) -> Result<Output, String> {
+    let Some(token) = token else {
+        return command
+            .output()
+            .map_err(|error| format!("Failed to run curl: {error}"));
+    };
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to run curl: {error}"))?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Could not open the curl header input.".to_string())
+        .and_then(|mut input| {
+            writeln!(input, "Authorization: Bearer {token}")
+                .map_err(|error| format!("Could not pass the GitHub authorization header: {error}"))
+        });
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Failed to read curl output: {error}"))?;
+    if output.status.success() {
+        written?;
+    }
+    Ok(output)
+}
+
+struct GitNetwork {
+    proxy_env: Vec<(String, String)>,
+    github_auth: Option<(String, String)>,
+}
+
+impl GitNetwork {
+    fn new(repository: Option<&str>, github_token: Option<&str>) -> Self {
+        let github_auth = repository
+            .and_then(|repository| {
+                let url = Url::parse(repository).ok()?;
+                (is_github_https(&url)
+                    && url.host_str() == Some("github.com")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none())
+                .then_some(repository)
+            })
+            .and_then(|repository| {
+                github_token.map(|token| {
+                    let value = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+                    (repository.to_string(), value)
+                })
+            });
+        Self {
+            proxy_env: git_network_env(),
+            github_auth,
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = background_command(crate::agents::executable::command_path("git"));
+        command
+            .envs(self.proxy_env.iter().map(|(name, value)| (name, value)))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "Never");
+        if let Some((repository, encoded_auth)) = &self.github_auth {
+            configure_github_git_auth(&mut command, repository, encoded_auth);
+        }
+        command
+    }
+}
+
+pub(super) fn configure_github_git_auth(
+    command: &mut Command,
+    repository: &str,
+    encoded_auth: &str,
+) {
+    command
+        .args(["-c", "http.followRedirects=false"])
+        .arg(format!(
+            "--config-env=http.{repository}.extraHeader={SKILL_GITHUB_AUTH_HEADER}"
+        ))
+        .env(
+            SKILL_GITHUB_AUTH_HEADER,
+            format!("Authorization: Basic {encoded_auth}"),
+        )
+        .env("GIT_TRACE_REDACT", "1");
+}
+
+fn skill_checkout_origin(repo_dir: &Path) -> Option<String> {
+    let mut command = background_command(crate::agents::executable::command_path("git"));
+    command
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["config", "--local", "--get", "remote.origin.url"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout_named(
+        &mut command,
+        Duration::from_secs(5),
+        None,
+        "reading the Skill's Git remote",
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let origin = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!origin.is_empty()).then_some(origin)
 }
 
 fn github_clone_urls(repo_url: &str, github_token: Option<&str>) -> Vec<String> {
-    let mut urls = vec![authenticated_github_url(repo_url, github_token)];
-    if effective_github_token(github_token).is_some() {
+    let mut urls = vec![repo_url.to_string()];
+    if github_token.is_some() {
         return urls;
     }
     if repo_url.starts_with("https://github.com/") {
@@ -1714,8 +1815,9 @@ fn git_network_env() -> Vec<(String, String)> {
 }
 
 fn redact_token(value: &str, github_token: Option<&str>) -> String {
-    if let Some(token) = effective_github_token(github_token) {
-        value.replace(&token, "***")
+    if let Some(token) = github_token {
+        let basic = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        value.replace(&basic, "***").replace(token, "***")
     } else {
         value.to_string()
     }
@@ -2263,7 +2365,93 @@ mod tests {
     }
 
     #[test]
-    fn git_credentials_are_only_used_for_github_https_downloads() {
+    fn private_git_transport_scopes_credentials_to_the_checkout_origin() {
+        let repository = "https://github.com/example/private-skills.git";
+        let token = "synthetic-token";
+        let network = GitNetwork::new(Some(repository), Some(token));
+        let command = network.command();
+        let basic = general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        assert!(command.get_args().all(|argument| {
+            let argument = argument.to_string_lossy();
+            !argument.contains(token) && !argument.contains(&basic)
+        }));
+        let configured_header = |url: &str| {
+            network
+                .command()
+                .args(["config", "--get-urlmatch", "http.extraHeader", url])
+                .output()
+                .unwrap()
+        };
+        let output = configured_header(&format!("{repository}/info/refs"));
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            format!("Authorization: Basic {basic}")
+        );
+        for url in [
+            "https://github.com/example/other.git",
+            "https://github.com:8443/example/private-skills.git",
+            "https://example.test/example/private-skills.git",
+        ] {
+            assert!(!String::from_utf8_lossy(&configured_header(url).stdout).contains(&basic));
+            if !url.starts_with("https://github.com/example/") {
+                assert!(GitNetwork::new(Some(url), Some(token))
+                    .github_auth
+                    .is_none());
+            }
+        }
+        assert_eq!(
+            redact_token(&format!("{token} / {basic}"), Some(token)),
+            "*** / ***"
+        );
+
+        let temporary = TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let checkout = temporary.path().join("checkout");
+        let fixture = temporary.path().join("fixture.git");
+        let mut command = network.command();
+        assert!(command
+            .args(["init", "--bare"])
+            .arg(&fixture)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let fixture = Url::from_file_path(fixture).unwrap();
+        let replacement = format!("url.{fixture}.insteadOf={repository}");
+        assert!(network
+            .command()
+            .args(["-c", &replacement, "clone", "--", repository])
+            .arg(&checkout)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let origin = skill_checkout_origin(&checkout).unwrap();
+        assert_eq!(origin, repository);
+        let config = fs::read_to_string(checkout.join(".git/config")).unwrap();
+        assert!(!config.contains(token) && !config.contains(&basic));
+        let output_path = temporary.path().join("fetch-command-config");
+        let matched_url = format!("{repository}/git-upload-pack");
+        let follow_on = GitNetwork::new(Some(&origin), Some(token));
+        let output = run_git_with_cancel(
+            &checkout,
+            &["config", "--get-urlmatch", "http.extraHeader", &matched_url],
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+            &follow_on,
+            Some(&output_path),
+            "reading authentication for the follow-on Git command",
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            fs::read_to_string(output_path).unwrap().trim(),
+            format!("Authorization: Basic {basic}")
+        );
+    }
+
+    #[test]
+    fn curl_places_github_credentials_in_header_input_only() {
         let token = Some("synthetic-test-token");
         for host in [
             "api.github.com",
@@ -2272,11 +2460,14 @@ mod tests {
             "codeload.github.com",
         ] {
             let url = Url::parse(&format!("https://{host}/test")).unwrap();
-            let args = http_curl_args(&url, token);
+            let (command, input) = curl_request(&url, token).unwrap();
+            assert_eq!(input.as_deref(), Some("synthetic-test-token"));
+            let args = command.get_args().collect::<Vec<_>>();
             assert!(args
                 .iter()
-                .any(|arg| arg == "Authorization: Bearer synthetic-test-token"));
-            assert!(args.iter().any(|arg| arg == "--no-location-trusted"));
+                .all(|arg| !arg.to_string_lossy().contains("synthetic-test-token")));
+            assert!(args.iter().any(|arg| *arg == "--no-location-trusted"));
+            assert!(args.windows(2).any(|pair| pair == ["--header", "@-"]));
             assert!(args
                 .windows(2)
                 .any(|pair| pair == ["--proto-redir", "=https"]));
@@ -2284,12 +2475,71 @@ mod tests {
         for source in [
             "https://example.test/skill.zip",
             "https://raw.githubusercontent.com.example.test/skill.md",
-            "http://raw.githubusercontent.com/skill.md",
+            "http://github.com/example/skills.git",
             "https://api.github.com:8443/test",
         ] {
-            let args = http_curl_args(&Url::parse(source).unwrap(), token);
-            assert!(!args.iter().any(|arg| arg.starts_with("Authorization:")));
+            let (_, input) = curl_request(&Url::parse(source).unwrap(), token).unwrap();
+            assert!(input.is_none());
         }
+        assert!(curl_request(
+            &Url::parse("https://api.github.com/test").unwrap(),
+            Some("synthetic\r\ninvalid"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn curl_reads_header_input_and_drops_credentials_on_host_redirect() {
+        use std::io::{BufRead, BufReader};
+        use std::net::{Ipv4Addr, TcpListener, TcpStream};
+
+        fn has_authorization(stream: &mut TcpStream) -> bool {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .unwrap();
+            BufReader::new(stream)
+                .lines()
+                .map_while(Result::ok)
+                .take_while(|line| !line.is_empty())
+                .any(|line| line == "Authorization: Bearer synthetic-token")
+        }
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut initial, _) = listener.accept().unwrap();
+            let initial_authorized = has_authorization(&mut initial);
+            write!(
+                initial,
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/redirect\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                address.port()
+            ).unwrap();
+            drop(initial);
+
+            let (mut redirected, _) = listener.accept().unwrap();
+            let redirect_authorized = has_authorization(&mut redirected);
+            redirected
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            (initial_authorized, redirect_authorized)
+        });
+
+        let mut command = background_command(crate::agents::executable::command_path("curl"));
+        command
+            .args([
+                "--noproxy",
+                "*",
+                "--max-time",
+                "5",
+                "--location",
+                "--no-location-trusted",
+                "--header",
+                "@-",
+            ])
+            .arg(format!("http://{address}/skill"));
+        let output = curl_output(&mut command, Some("synthetic-token")).unwrap();
+        assert!(output.status.success());
+        assert_eq!(server.join().unwrap(), (true, false));
     }
 
     #[test]
@@ -2455,8 +2705,7 @@ mod tests {
             "https://github.com/owner/private-repo.git",
             Some("test-token"),
         );
-        assert_eq!(urls.len(), 1);
-        assert!(urls[0].contains("x-access-token:test-token@github.com"));
+        assert_eq!(urls, ["https://github.com/owner/private-repo.git"]);
         assert_eq!(
             redact_token("clone failed for test-token", Some("test-token")),
             "clone failed for ***",
