@@ -320,6 +320,45 @@ describe('skillStoreV2 refresh', () => {
   })
 })
 
+describe('skillStoreV2 Pack selection', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    useSkillStoreV2.setState({ selectedPackId: null, selectedPackDetail: null, error: null })
+  })
+
+  it.each(['cleared', 'switched', 'returned'] as const)('ignores an old pack error after the selection was %s', async (scenario) => {
+    const { selectPack } = useSkillStoreV2.getState()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    let rejectDetail!: (error: Error) => void
+    const detail = vi.spyOn(skillApiV2, 'getPackDetail').mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectDetail = reject
+    }))
+    const previous = selectPack('previous-pack')
+    expect(detail).toHaveBeenCalledOnce()
+
+    if (scenario === 'cleared') {
+      await selectPack(null)
+    } else {
+      selectEnvironment('other-pack-runtime')
+      if (scenario === 'returned') selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    }
+    useSkillStoreV2.setState({ error: 'Current status' })
+    rejectDetail(new Error('Stale pack failure'))
+    await previous
+
+    expect(useSkillStoreV2.getState().error).toBe('Current status')
+  })
+
+  it('reports an error from the latest request for the selected pack', async () => {
+    vi.spyOn(skillApiV2, 'getPackDetail').mockRejectedValueOnce(new Error('Active pack failure'))
+
+    await useSkillStoreV2.getState().selectPack('active-pack')
+
+    expect(useSkillStoreV2.getState().error).toBe('Error: Active pack failure')
+  })
+})
+
 describe('skillStoreV2 tab navigation', () => {
   it('switches active tab', () => {
     useSkillStoreV2.getState().setTab('packs')
