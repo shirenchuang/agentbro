@@ -312,14 +312,22 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   },
   loadOverview: async (force = false) => {
     const runtimeEnvironmentId = get().runtimeEnvironmentId
+    const selection = useRuntimeEnvironmentStore.getState()
+    const isCurrent = () => {
+      const current = useRuntimeEnvironmentStore.getState()
+      return get().runtimeEnvironmentId === runtimeEnvironmentId
+        && current.selectedEnvironmentId === selection.selectedEnvironmentId
+        && current.selectionRevision === selection.selectionRevision
+    }
     const now = Date.now()
     if (!force && get().overview && now - get().lastOverviewLoadedAt < OVERVIEW_CACHE_TTL_MS) {
       return
     }
     try {
       const overview = await skillApiV2.overview()
+      if (!isCurrent()) return
       const unmanaged = await skillApiV2.listUnmanaged()
-      if (get().runtimeEnvironmentId !== runtimeEnvironmentId) return
+      if (!isCurrent()) return
       set({
         overview,
         skills: overview.skills,
@@ -333,7 +341,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       })
       void get().loadProjects()
     } catch (e) {
-      set({ error: String(e) })
+      if (isCurrent()) set({ error: String(e) })
     }
   },
   setTab: (tab) => set({ activeTab: tab }),

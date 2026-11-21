@@ -6,8 +6,11 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 
-async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+async function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId,
+): Promise<T> {
   const usesLocalDiscovery = command === 'search_marketplace_skills'
     || command === 'fetch_marketplace_skill_detail'
   if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID || usesLocalDiscovery) {
@@ -1306,8 +1309,8 @@ export const skillApiV2 = {
         items: unmanagedIds.map((unmanagedId) => ({ unmanagedId, skillId: '', error: null })),
         finalizationError: null,
       }),
-  deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string) =>
-    isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }) : Promise.resolve(),
+  deleteUnmanagedAgentSkill: (agentId: string, unmanagedId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('delete_unmanaged_agent_skill', { agentId, unmanagedId }, environmentId) : Promise.resolve(),
   deleteUnmanagedAgentSkills: (agentId: string, unmanagedIds: string[]) =>
     isTauriRuntime()
       ? invoke<DeleteUnmanagedAgentSkillsResult>('delete_unmanaged_agent_skills', { agentId, unmanagedIds })
@@ -1321,9 +1324,9 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<CopySyncPreview>('execute_sync_copy_target', { targetId, action }) : Promise.resolve(null as unknown as CopySyncPreview),
   deleteSkillTargetDistribution: (targetId: string) =>
     isTauriRuntime() ? invoke<void>('delete_skill_target_distribution', { targetId }) : Promise.resolve(),
-  deleteSkillTargetDistributions: (targetIds: string[]) =>
+  deleteSkillTargetDistributions: (targetIds: string[], environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds })
+      ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds }, environmentId)
       : Promise.resolve({ deleted: targetIds.length, failures: [] }),
 
   listPacks: () => (isTauriRuntime() ? invoke<SkillPackSummary[]>('list_skill_packs_v2') : Promise.resolve([])),
@@ -1523,7 +1526,8 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? invoke<void>('cancel_mcp_operation_cmd', { operationId })
       : Promise.resolve(),
-  listUnmanaged: () => (isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2') : Promise.resolve([])),
+  listUnmanaged: (environmentId?: string) =>
+    isTauriRuntime() ? invoke<UnmanagedItemDto[]>('list_unmanaged_v2', undefined, environmentId) : Promise.resolve([]),
   listAgentSkillInventory: () =>
     isTauriRuntime() ? invoke<AgentSkillInventoryAgent[]>('list_agent_skill_inventory_v2') : Promise.resolve(demoAgentInventory()),
   listProjects: () =>

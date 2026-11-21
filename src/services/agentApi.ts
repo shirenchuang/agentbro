@@ -6,8 +6,11 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 
-async function invoke<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
+async function invoke<T = void>(
+  command: string,
+  args?: Record<string, unknown>,
+  environmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId,
+): Promise<T> {
   if (environmentId === LOCAL_RUNTIME_ENVIRONMENT_ID) {
     return tauriInvoke<T>(command, args)
   }
@@ -263,8 +266,8 @@ export const agentApi = {
     ? invoke('agent_update', { agentId })
     : Promise.resolve(),
 
-  uninstall: (agentId: string) => isTauriRuntime()
-    ? invoke('agent_uninstall', { agentId })
+  uninstall: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('agent_uninstall', { agentId }, environmentId)
     : Promise.resolve(),
 
   openDownload: (agentId: string) => isTauriRuntime()
@@ -279,8 +282,8 @@ export const agentApi = {
     ? invoke('install_agent_hook', { toolName: agentId })
     : Promise.resolve(),
 
-  uninstallHook: (agentId: string) => isTauriRuntime()
-    ? invoke('uninstall_agent_hook', { toolName: agentId })
+  uninstallHook: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('uninstall_agent_hook', { toolName: agentId }, environmentId)
     : Promise.resolve(),
 
   openPath: (path: string) => isTauriRuntime()

@@ -8,6 +8,7 @@ import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgen
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
   useRuntimeEnvironmentStore,
@@ -20,6 +21,7 @@ import { PluginManagementTab } from './PluginManagementTab'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
 import { distributionBlockerReason, isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
+import { isWindowsPlatform } from '../../utils/platform'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
 type AgentSkillViewMode = 'cards' | 'list'
@@ -62,6 +64,11 @@ type AdoptDialogState = {
   preview: AdoptPreview
   runtimeEnvironmentId: string
 }
+type AgentUninstallTarget = {
+  agent: AgentDetail
+  environmentId: string
+  selectionRevision: number
+}
 
 const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
@@ -86,7 +93,7 @@ export function AgentManagementPage() {
   const state = useSkillStoreV2()
   const allSessions = useSessionStore((s) => s.sessionList)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  const runtimeEnvironmentId = useRuntimeEnvironmentStore((s) => s.selectedEnvironmentId)
+  const { selectedEnvironmentId: runtimeEnvironmentId, isLocal, remoteHost } = useSelectedRuntimeEnvironment()
   const sessionList = useMemo(() => (
     runtimeEnvironmentId === LOCAL_RUNTIME_ENVIRONMENT_ID
       ? allSessions.filter((session) => !session.remoteHostId)
@@ -118,7 +125,7 @@ export function AgentManagementPage() {
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
   const [customDialogOpen, setCustomDialogOpen] = useState(false)
-  const [uninstallAgentTarget, setUninstallAgentTarget] = useState<AgentDetail | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<AgentUninstallTarget | null>(null)
   const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentDetail | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
   const selectedAgentIdRef = useRef<string | null>(null)
@@ -126,12 +133,17 @@ export function AgentManagementPage() {
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
 
   const loadPrograms = useCallback(async () => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
     setProgramLoading(true)
     try {
       const next = await agentApi.refresh()
-      setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
+      if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
+        setPrograms(Object.fromEntries(next.map((agent) => [agent.id, agent])))
+      }
     } catch (e) {
-      state.setError(skillErrorMessage(t, e))
+      if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
+        state.setError(skillErrorMessage(t, e))
+      }
     } finally {
       setProgramLoading(false)
     }
@@ -157,6 +169,7 @@ export function AgentManagementPage() {
     let unlisten: (() => void) | null = null
     let alive = true
     agentApi.onOutput((event) => {
+      if (useRuntimeEnvironmentStore.getState().selectedEnvironmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID) return
       if (event.agentId !== selectedAgentIdRef.current) return
       setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
     }).then((next) => {
@@ -386,7 +399,22 @@ export function AgentManagementPage() {
     }
   }
 
-  const uninstallAgent = async (agent: AgentDetail) => {
+  const requestUninstall = (agent: AgentDetail) => {
+    const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+    if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
+      setUninstallTarget({ agent, environmentId: selectedEnvironmentId, selectionRevision })
+    }
+  }
+
+  const uninstallAgent = async ({ agent, environmentId, selectionRevision }: AgentUninstallTarget) => {
+    const isCurrent = () => isRuntimeEnvironment(environmentId, selectionRevision)
+    if (!isCurrent()) {
+      setUninstallTarget(null)
+      return
+    }
+
+    const unmanagedItems = useSkillStoreV2.getState().unmanaged
+      .filter((item) => item.agentId === agent.id && !isReadOnlyUnmanaged(item) && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
     setUninstallingAgentId(agent.id)
     setNotice(null)
     state.setError(null)
@@ -398,7 +426,7 @@ export function AgentManagementPage() {
       const programInstalled = program?.status === 'installed' || program?.status === 'updateAvailable'
       if (programInstalled && program.uninstallCommand) {
         try {
-          await agentApi.uninstall(agent.id)
+          await agentApi.uninstall(agent.id, environmentId)
         } catch (error) {
           failures.push(`程序：${skillErrorMessage(t, error)}`)
         }
@@ -407,7 +435,7 @@ export function AgentManagementPage() {
       const targetIds = agent.skills.map((skill) => skill.id)
       if (targetIds.length > 0) {
         try {
-          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds)
+          const result = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
           removedSkills += result.deleted
           failures.push(...result.failures.map((failure) => `Skill：${failure.error}`))
         } catch (error) {
@@ -415,11 +443,9 @@ export function AgentManagementPage() {
         }
       }
 
-      const unmanagedItems = useSkillStoreV2.getState().unmanaged
-        .filter((item) => item.agentId === agent.id && !isReadOnlyUnmanaged(item) && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
       for (const item of unmanagedItems) {
         try {
-          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id)
+          await skillApiV2.deleteUnmanagedAgentSkill(agent.id, item.id, environmentId)
           removedSkills += 1
         } catch (error) {
           failures.push(`${item.inferredSkillId || item.path}：${skillErrorMessage(t, error)}`)
@@ -428,21 +454,23 @@ export function AgentManagementPage() {
 
       if (program?.hooksInstalled) {
         try {
-          await agentApi.uninstallHook(agent.id)
+          await agentApi.uninstallHook(agent.id, environmentId)
         } catch (error) {
           failures.push(`Hook：${skillErrorMessage(t, error)}`)
         }
       }
 
-      const remainingUnmanaged = await skillApiV2.listUnmanaged()
+      const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+      if (!isCurrent()) return
       useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
-      setUninstallAgentTarget(null)
+      setUninstallTarget(null)
       await Promise.all([loadPrograms(), state.loadOverview(true)])
+      if (!isCurrent()) return
       if (failures.length > 0) {
         if (useSkillStoreV2.getState().selectedAgentId === agent.id) {
           await state.loadAgentDetail(agent.id, true)
         }
-        state.setError(`部分卸载失败：${failures.slice(0, 3).join('；')}`)
+        if (isCurrent()) state.setError(`部分卸载失败：${failures.slice(0, 3).join('；')}`)
       } else {
         const programRemoved = !programInstalled || Boolean(program?.uninstallCommand)
         if (programRemoved) {
@@ -464,10 +492,10 @@ export function AgentManagementPage() {
           }
         }
         const cleanup = removedSkills > 0 ? `，已清理 ${removedSkills} 个 Skills` : ''
-        setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
+        if (isCurrent()) setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
       }
     } catch (e) {
-      state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
+      if (isCurrent()) state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
     } finally {
       setUninstallingAgentId(null)
     }
@@ -571,6 +599,9 @@ export function AgentManagementPage() {
     && !selectedProgram.isCustom
     && ((selectedProgramInstalled && selectedProgram?.uninstallCommand) || selectedHasResiduals),
   )
+  const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
+    ? uninstallTarget.agent
+    : null
   const uninstallProgram = uninstallAgentTarget ? programs[uninstallAgentTarget.id] ?? null : null
   const uninstallProgramInstalled = uninstallProgram?.status === 'installed' || uninstallProgram?.status === 'updateAvailable'
   const uninstallUnmanagedItems = uninstallAgentTarget
@@ -591,7 +622,7 @@ export function AgentManagementPage() {
               disabled={state.loading || actionBusy}
               busy={uninstallingAgentId === detail.id}
               busyLabel="卸载中"
-              onClick={() => setUninstallAgentTarget(detail)}
+              onClick={() => requestUninstall(detail)}
             >
               卸载 Agent
             </ActionButton>
@@ -730,7 +761,7 @@ export function AgentManagementPage() {
           onSubmit={addCustomAgent}
         />
       )}
-      {uninstallAgentTarget && (
+      {uninstallTarget && uninstallAgentTarget && (
         <PreviewDialog
           title={`卸载 Agent「${uninstallAgentTarget.displayName}」`}
           confirmLabel="确认卸载"
@@ -738,10 +769,17 @@ export function AgentManagementPage() {
           modalClassName="sm2__modal--agent-uninstall"
           destructive
           busy={uninstallingAgentId === uninstallAgentTarget.id}
-          onCancel={() => setUninstallAgentTarget(null)}
-          onConfirm={() => uninstallAgent(uninstallAgentTarget)}
+          onCancel={() => setUninstallTarget(null)}
+          onConfirm={() => uninstallAgent(uninstallTarget)}
         >
-          <p className="sm2-agent-uninstall__intro">卸载会移除支持自动卸载的程序，并清理 AgentBro 检测到的本地能力残留。</p>
+          <p className="sm2-agent-uninstall__intro">
+            {t('skills.runtimeEnvironment.currentLabel', {
+              name: isLocal
+                ? t(isWindowsPlatform() ? 'skills.runtimeEnvironment.localWindowsName' : 'skills.runtimeEnvironment.localName')
+                : remoteHost?.name || uninstallTarget.environmentId,
+            })}
+          </p>
+          <p className="sm2-agent-uninstall__intro">卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。</p>
           <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
             {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
               <div><strong>程序</strong><span>{uninstallProgram.kind === 'app' ? '移到废纸篓' : '执行卸载命令'}</span></div>
