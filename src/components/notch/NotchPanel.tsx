@@ -14,7 +14,7 @@ import { getCollapsedIslandHeight } from '../../utils/islandLayout'
 import { getBlockingOverlayPanelHeight, getNotificationPanelHeight, getReadableNotificationHeight, isCompactPermissionPrompt, type NotificationContentMetrics } from '../../utils/notificationLayout'
 import { getSessionListSubagents } from '../../utils/subagents'
 import { shortcutMatchesEvent } from '../../utils/keyboardShortcuts'
-import { primaryModifierPressed } from '../../utils/platform'
+import { isWindowsPlatform, primaryModifierPressed } from '../../utils/platform'
 import { energyIntervalMs, getAppEnergyMode, shouldSilenceAfterWake } from '../../utils/energyPolicy'
 import { CollapsedBar } from './CollapsedBar'
 import { UpdateBanner } from './UpdateBanner'
@@ -331,7 +331,7 @@ export function NotchPanel() {
   const activeDragRef = useRef<NotchDragGesture | null>(null)
   const pendingDragEndRef = useRef<Promise<void> | null>(null)
   const dragCandidateRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
-  const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0 })
+  const nativeHoverProbeRef = useRef({ width: 420, height: 52, anchorOffsetX: 0, passesOutside: false })
   const hasInputDraftRef = useRef(false)
 
   useEffect(() => {
@@ -993,9 +993,12 @@ export function NotchPanel() {
       if (cancelled || inFlight || isDragging) return
       inFlight = true
       try {
-        const { width, height, anchorOffsetX } = nativeHoverProbeRef.current
+        const probe = nativeHoverProbeRef.current
+        const { width, height, anchorOffsetX } = probe
         const isOver = await isCursorOverNotch(width, height, anchorOffsetX)
         if (cancelled) return
+        const currentProbe = nativeHoverProbeRef.current
+        if (width !== currentProbe.width || height !== currentProbe.height || anchorOffsetX !== currentProbe.anchorOffsetX) return
         const currentPanelState = useSessionStore.getState().panelState
         const visibleFeedbackOverlay = Boolean(
           activeOverlay
@@ -1007,8 +1010,7 @@ export function NotchPanel() {
             !isDragging
             && !isOver
             && !preparingOpen
-            && currentPanelState === 'collapsed'
-            && !visibleFeedbackOverlay
+            && (currentProbe.passesOutside || (currentPanelState === 'collapsed' && !visibleFeedbackOverlay))
           )
         requestNativeIgnoreCursorEvents(ignoreTransparentHost)
         const wasOver = nativeHoverInsideRef.current
@@ -1549,8 +1551,14 @@ export function NotchPanel() {
   const stableHostHitboxHeight = expandedHostPanelHeight + maxHostSlopY
   const islandHidden = !islandEnabled || isPetMode || (!layoutPreview && interaction.isHidden)
   const hostUsesStableCanvas = !isPetMode && islandEnabled && effectivePanelState === 'collapsed'
+  const windowsIsland = !isPetMode && isTauri() && isWindowsPlatform()
+  // WebView2 can keep the previous accessibility viewport when the approval list grows into detail.
+  const holdApprovalHeight = windowsIsland && islandEnabled && !layoutPreview
+    && (activeOverlay?.type === 'permission' || displayedSessions.some((session) => session.pendingPermission))
   const hostTargetHitboxWidth = hostUsesStableCanvas ? stableHostHitboxWidth : hitboxWidth
-  const hostTargetHitboxHeight = hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
+  const hostTargetHitboxHeight = holdApprovalHeight
+    ? Math.max(stableHostHitboxHeight, hitboxHeight)
+    : hostUsesStableCanvas ? stableHostHitboxHeight : hitboxHeight
   const [hostHitboxSize, setHostHitboxSize] = useState(() => ({
     width: hostTargetHitboxWidth,
     height: hostTargetHitboxHeight,
@@ -1615,7 +1623,12 @@ export function NotchPanel() {
     ? shellAnchorOffsetX
     : 0
   const nativeHoverAnchorOffsetX = effectivePanelState === 'collapsed' ? effectiveShellAnchorOffsetX : 0
-  nativeHoverProbeRef.current = { width: hitboxWidth, height: hitboxHeight, anchorOffsetX: nativeHoverAnchorOffsetX }
+  nativeHoverProbeRef.current = {
+    width: hitboxWidth,
+    height: hitboxHeight,
+    anchorOffsetX: nativeHoverAnchorOffsetX,
+    passesOutside: windowsIsland && effectivePanelState !== 'collapsed' && hostHitboxSize.height > hitboxHeight,
+  }
   const shellX = effectivePanelState === 'collapsed' || isDragging
     ? effectiveShellAnchorOffsetX
     : effectiveShellAnchorOffsetX === 0

@@ -308,6 +308,9 @@ function Test-KeyboardPermissionDenial(
         $rowAnchor = Wait-IslandValue 'the waiting session header' {
             Find-IslandButton $session { param($Name) $Name.StartsWith('Mute notifications') }
         }
+        $listFrame = [AgentBroSmokeInput+Rect]::new()
+        $hasListFrame = $TracePermissionUi -and $Attempt -eq 1 -and
+            [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$listFrame)
         # The center of a waiting row belongs to the inline permission preview.
         Click-IslandElement $session 'Island session header with a pending permission' $rowAnchor
 
@@ -328,6 +331,10 @@ function Test-KeyboardPermissionDenial(
                 }
             }
             throw
+        }
+        if ($hasListFrame) {
+            Write-Output "Waiting session list HWND height: $($listFrame.Bottom - $listFrame.Top)."
+            Write-PermissionAccessibilityBounds
         }
         $deny.SetFocus()
         $clock = [Diagnostics.Stopwatch]::new()
