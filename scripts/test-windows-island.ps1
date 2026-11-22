@@ -14,7 +14,8 @@ param(
     [switch]$VerifyQwenWork,
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
-    [switch]$AutomationFocusPermission
+    [switch]$AutomationFocusPermission,
+    [switch]$VerifyAgentPackageConsole
 )
 
 $ErrorActionPreference = 'Stop'
@@ -930,9 +931,15 @@ try {
     if ($TracePermissionUi) {
         Write-IslandAccessibilityComparison $islandWindow.Handle 'after-denials'
     }
-    if ($PackImportPath) {
+    if ($PackImportPath -or $VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
+    }
+    if ($PackImportPath) {
         Test-InstalledPackManifest $island $PackImportPath $PackExportPath
+    }
+    if ($VerifyAgentPackageConsole) {
+        . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
+        Test-InstalledAgentPackageConsole $island
     }
 } catch {
     try {
@@ -952,7 +959,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath) {
+        if ($PackImportPath -or $VerifyAgentPackageConsole) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |

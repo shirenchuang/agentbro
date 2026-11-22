@@ -160,12 +160,10 @@ function Assert-CompactPackHeader([Windows.Automation.AutomationElement]$Setting
     Write-Output "Skill Pack actions fit below the title in a $([int]($heroBounds.Width / $scale))px Windows header."
 }
 
-function Test-InstalledPackManifest(
-    [Windows.Automation.AutomationElement]$Island,
-    [string]$ImportPath,
-    [string]$ExportPath
-) {
-    $expected = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
+function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island) {
+    foreach ($window in Get-IslandWindows) {
+        if (Find-PackControl $window '技能包') { return $window }
+    }
     $open = Wait-IslandValue 'the Island Settings button' { Find-PackControl $Island 'Settings' }
     Invoke-PackControl $open
     $settings = Wait-IslandValue 'the native Settings window' {
@@ -179,6 +177,16 @@ function Test-InstalledPackManifest(
     if ($welcome) { Invoke-PackControl $welcome }
     $agentSkills = Wait-IslandValue 'the Agent Skills section' { Find-PackControl $settings 'Agent Skills' }
     Invoke-PackControl $agentSkills
+    $settings
+}
+
+function Test-InstalledPackManifest(
+    [Windows.Automation.AutomationElement]$Island,
+    [string]$ImportPath,
+    [string]$ExportPath
+) {
+    $expected = Get-Content -LiteralPath $ImportPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    $settings = Open-InstalledAgentSkills $Island
     $packs = Wait-IslandValue 'the Skill Packs navigation item' { Find-PackControl $settings '技能包' }
     Invoke-PackControl $packs
     Write-Output 'Opened Skill Packs from the installed app.'

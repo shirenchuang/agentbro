@@ -10,17 +10,50 @@ param(
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
-    [switch]$VerifyStartupStackSampler
+    [switch]$VerifyStartupStackSampler,
+    [switch]$VerifyAgentPackageConsole
 )
 
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro smoke $([Guid]::NewGuid().ToString('N'))"
 $installDir = Join-Path $stage 'installed app'
+$appWorkingDirectory = $installDir
 $fixtureBin = Join-Path $stage 'bin'
 $env:CLAUDE_CONFIG_DIR = Join-Path $stage 'Claude config'
 $env:Path = "$fixtureBin;$env:Path"
 New-Item -ItemType Directory -Path $fixtureBin, $env:CLAUDE_CONFIG_DIR | Out-Null
 Set-Content -LiteralPath (Join-Path $fixtureBin 'claude.cmd') -Value '@echo 2.0.0' -Encoding ascii
+if ($VerifyAgentPackageConsole) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not $env:RUNNER_TEMP) {
+        throw 'The package manager fixture requires an isolated GitHub-hosted runner'
+    }
+    $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
+    $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
+    $env:npm_config_offline = 'true'
+    $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
+    $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
+    $appWorkingDirectory = $fixtureBin
+    $fixtureNpm = @'
+@echo off
+if /i "%~1"=="list" (
+    if "%~3"=="@anthropic-ai/claude-code" echo {"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}
+    exit /b 0
+)
+if /i "%~1"=="view" (
+    if "%~2"=="@anthropic-ai/claude-code" echo 999.0.0
+    exit /b 0
+)
+if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
+    if errorlevel 1 exit /b 1
+    echo agentbro-package-fixture-stdout
+    >&2 echo agentbro-package-fixture-stderr
+    exit /b 0
+)
+exit /b 1
+'@
+    Set-Content -LiteralPath (Join-Path $fixtureBin 'npm.cmd') -Value ($fixtureNpm -replace '\r?\n', "`r`n") -Encoding ascii
+}
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $listener.Start()
@@ -196,7 +229,7 @@ if ($TracePermissionRenderer) {
         -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$rendererTracePort" | Out-Null
 }
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
-$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
+$app = Start-Process -FilePath $appPath -WorkingDirectory $appWorkingDirectory -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
@@ -346,6 +379,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         }
     }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
+    if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
     if ($rendererTracePort) {
         $start.ArgumentList.Add('-RendererTracePort')
@@ -362,7 +396,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        $desktopTimeout = if ($VerifyPackManifest) { 180000 } else { 120000 }
+        $desktopTimeout = if ($VerifyPackManifest -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
         }
@@ -445,7 +479,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyDrag -or $VerifyQwenWork) {
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession

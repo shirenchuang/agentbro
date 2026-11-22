@@ -26,6 +26,10 @@ on:
         description: Exercise Skill Pack manifests through the native Open and Save dialogs
         type: boolean
         default: false
+      windows_verify_agent_package_console:
+        description: Observe the Windows console used by a package update from installed Agent Management
+        type: boolean
+        default: false
       windows_trace_permission_ui:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
@@ -347,6 +351,7 @@ jobs:
         env:
           VERIFY_QWENWORK: ${{ inputs.windows_verify_qwenwork }}
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
+          VERIFY_AGENT_PACKAGE_CONSOLE: ${{ inputs.windows_verify_agent_package_console }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           TRACE_PERMISSION_RENDERER: ${{ inputs.windows_trace_permission_renderer }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
@@ -365,6 +370,7 @@ jobs:
               ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
                   -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
                   -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
+                  -VerifyAgentPackageConsole:($env:VERIFY_AGENT_PACKAGE_CONSOLE -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
                   -TracePermissionRenderer:($env:TRACE_PERMISSION_RENDERER -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `

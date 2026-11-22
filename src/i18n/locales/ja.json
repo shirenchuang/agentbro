@@ -1233,6 +1233,10 @@
       "packNamed": "パック: {{name}}"
     },
     "agentManagement": {
+      "remoteHooks": {
+        "unsupported": "このエージェントのフックは SSH 経由で管理できません。",
+        "confirmUninstall": "{{host}} の {{agent}} フックをアンインストールしますか？"
+      },
       "sidebarSearch": "Agent を検索",
       "sidebarSearchEmpty": "一致する Agent がありません",
       "scanComplete": "スキャン完了：管理済み {{managed}}、未管理 {{unmanaged}}",

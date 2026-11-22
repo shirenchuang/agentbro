@@ -27,6 +27,16 @@ pub struct RemoteProbeCheck {
     pub detail: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteAgentHookStatus {
+    Unsupported,
+    NotInstalled,
+    Installed,
+    NeedsReinstall,
+    SettingsCorrupted,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCodexThreadSnapshot {
@@ -178,11 +188,26 @@ impl RemoteInstaller {
                 Some(p) => p,
                 None => continue,
             };
-            if Self::check_hooks_for_profile(host, &profile).await {
+            if matches!(
+                Self::check_hooks_for_profile(host, &profile).await,
+                Ok(RemoteAgentHookStatus::Installed)
+            ) {
                 installed.push(agent_id.to_string());
             }
         }
         installed
+    }
+
+    pub async fn check_agent_hook(
+        host: &RemoteHost,
+        agent_id: &str,
+    ) -> Result<RemoteAgentHookStatus, String> {
+        if !REMOTE_INSTALLABLE_AGENTS.contains(&agent_id) {
+            return Ok(RemoteAgentHookStatus::Unsupported);
+        }
+        let profile = profiles::profile_for_agent(agent_id)
+            .ok_or_else(|| format!("Missing remote Hook profile for {agent_id}"))?;
+        Self::check_hooks_for_profile(host, &profile).await
     }
 
     /// Read recent Codex app-server thread activity from the remote
@@ -249,45 +274,15 @@ impl RemoteInstaller {
     async fn check_hooks_for_profile(
         host: &RemoteHost,
         profile: &profiles::AgentIntegrationProfile,
-    ) -> bool {
-        let config_path_parts_json = profile_config_path_parts_json(profile);
-
-        let script = format!(
-            r#"
-import json, pathlib
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-hook_script = home / ".agentbro" / "remote" / "hook.py"
-if not hook_script.exists():
-    print("no_script")
-elif not config_path.exists():
-    print("no_config")
-else:
-    try:
-        data = json.loads(config_path.read_text() or "{{}}")
-        hooks = data.get("hooks", {{}})
-        found = any(
-            "remote-hook.py" in json.dumps(entry, sort_keys=True) or "remote/hook.py" in json.dumps(entry, sort_keys=True)
-            for entries in hooks.values()
-            if isinstance(entries, list)
-            for entry in entries
-        )
-        print("installed" if found else "no_hook_entry")
-    except Exception as e:
-        print(f"error:{{e}}")
-"#,
-            config_path_parts_json = config_path_parts_json,
-        );
-
+    ) -> Result<RemoteAgentHookStatus, String> {
+        let script = hook_status_script(profile);
         let encoded = base64_encode(script.as_bytes());
         let cmd = format!(
             "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
             encoded
         );
         let result = run_ssh(host, &cmd, 15).await;
-        result.exit_code == 0 && result.stdout.trim() == "installed"
+        parse_hook_status(result)
     }
 
     async fn upload_remote_agent_script(host: &RemoteHost) -> InstallResult {
@@ -369,92 +364,7 @@ print(target)
         host: &RemoteHost,
         profile: &profiles::AgentIntegrationProfile,
     ) -> InstallResult {
-        let socket = &host.remote_socket_path;
-        let host_id = &host.id;
-        let host_name = &host.name;
-        let source = profile.source;
-        let config_path_parts_json = profile_config_path_parts_json(profile);
-        let event_specs_json = remote_event_specs_json(profile);
-        let socket_json = json_string(socket);
-        let host_id_json = json_string(host_id);
-        let host_name_json = json_string(host_name);
-        let source_json = json_string(source);
-
-        let script = format!(
-            r#"
-import json, pathlib, os, shlex
-
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-event_specs = json.loads(r'''{event_specs_json}''')
-socket_path = json.loads(r'''{socket_json}''')
-host_id = json.loads(r'''{host_id_json}''')
-host_name = json.loads(r'''{host_name_json}''')
-source = json.loads(r'''{source_json}''')
-hook_cmd = " ".join([
-    "AGENTBRO_SOCKET=" + shlex.quote(socket_path),
-    "AGENTBRO_HOST_ID=" + shlex.quote(host_id),
-    "AGENTBRO_HOST_NAME=" + shlex.quote(host_name),
-    "AGENTBRO_AGENT=" + shlex.quote(source),
-    "python3 ~/.agentbro/remote/hook.py",
-])
-
-def is_agentbro_entry(value):
-    try:
-        text = json.dumps(value, sort_keys=True)
-    except Exception:
-        text = str(value)
-    return (
-        "remote-hook.py" in text
-        or "remote/hook.py" in text
-        or "agentbro-bridge" in text
-        or "AgentBro managed integration" in text
-    )
-
-try:
-    if config_path.exists():
-        data = json.loads(config_path.read_text() or "{{}}")
-    else:
-        data = {{}}
-    hooks = data.setdefault("hooks", {{}})
-    for event_name, value in list(hooks.items()):
-        if not isinstance(value, list):
-            continue
-        filtered = [entry for entry in value if not is_agentbro_entry(entry)]
-        if filtered:
-            hooks[event_name] = filtered
-        else:
-            hooks.pop(event_name, None)
-
-    for event in event_specs:
-        inner = {{"type": "command", "command": hook_cmd}}
-        if event.get("timeout") is not None:
-            inner["timeout"] = event["timeout"]
-        entry = {{"hooks": [inner]}}
-        if event.get("matcher") is not None:
-            entry["matcher"] = event["matcher"]
-        hooks.setdefault(event["name"], []).append(entry)
-
-    if hooks:
-        data["hooks"] = hooks
-    else:
-        data.pop("hooks", None)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(data, indent=2))
-    print(f"{{source}} hooks configured: {{len(event_specs)}} events")
-except Exception as e:
-    print(f"{{source}} config error: {{e}}")
-"#,
-            config_path_parts_json = config_path_parts_json,
-            event_specs_json = event_specs_json,
-            socket_json = socket_json,
-            host_id_json = host_id_json,
-            host_name_json = host_name_json,
-            source_json = source_json,
-        );
-
+        let script = hook_install_script(host, profile);
         let encoded = base64_encode(script.as_bytes());
         let cmd = format!(
             "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
@@ -482,64 +392,7 @@ except Exception as e:
         host: &RemoteHost,
         profile: &profiles::AgentIntegrationProfile,
     ) -> InstallResult {
-        let source = profile.source;
-        let config_path_parts_json = profile_config_path_parts_json(profile);
-        let source_json = json_string(source);
-
-        let script = format!(
-            r#"
-import json, pathlib
-
-home = pathlib.Path.home()
-config_path = home
-for part in json.loads(r'''{config_path_parts_json}'''):
-    config_path = config_path / part
-source = json.loads(r'''{source_json}''')
-hook_script = home / ".agentbro" / "remote" / "hook.py"
-
-def is_agentbro_entry(value):
-    try:
-        text = json.dumps(value, sort_keys=True)
-    except Exception:
-        text = str(value)
-    return (
-        "remote-hook.py" in text
-        or "remote/hook.py" in text
-        or "agentbro-bridge" in text
-        or "AgentBro managed integration" in text
-    )
-
-try:
-    removed = 0
-    if config_path.exists():
-        data = json.loads(config_path.read_text() or "{{}}")
-        hooks = data.get("hooks")
-        if isinstance(hooks, dict):
-            for event_name, value in list(hooks.items()):
-                if not isinstance(value, list):
-                    continue
-                filtered = [entry for entry in value if not is_agentbro_entry(entry)]
-                removed += len(value) - len(filtered)
-                if filtered:
-                    hooks[event_name] = filtered
-                else:
-                    hooks.pop(event_name, None)
-            if hooks:
-                data["hooks"] = hooks
-            else:
-                data.pop("hooks", None)
-            config_path.write_text(json.dumps(data, indent=2))
-    if hook_script.exists():
-        hook_script.unlink()
-    print(f"{{source}} hooks removed: {{removed}}")
-except Exception as e:
-    print(f"{{source}} uninstall error: {{e}}")
-    raise
-"#,
-            config_path_parts_json = config_path_parts_json,
-            source_json = source_json,
-        );
-
+        let script = hook_remove_script(profile);
         let encoded = base64_encode(script.as_bytes());
         let cmd = format!(
             "\"${{SHELL:-/bin/bash}}\" -lc \"echo '{}' | base64 -d | python3\"",
@@ -1014,6 +867,210 @@ fn profile_config_path_parts_json(profile: &profiles::AgentIntegrationProfile) -
 
 fn json_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn hook_status_script(profile: &profiles::AgentIntegrationProfile) -> String {
+    let config_path_parts_json = profile_config_path_parts_json(profile);
+
+    format!(
+        r#"
+import json, pathlib
+home = pathlib.Path.home()
+config_path = home
+for part in json.loads(r'''{config_path_parts_json}'''):
+    config_path = config_path / part
+hook_script = home / ".agentbro" / "remote" / "hook.py"
+
+def status():
+    try:
+        data = json.loads(config_path.read_text() or "{{}}")
+    except FileNotFoundError:
+        return "notInstalled"
+    except ValueError:
+        return "settingsCorrupted"
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {{}}), dict):
+        return "settingsCorrupted"
+    found = any(
+        "remote-hook.py" in json.dumps(entry, sort_keys=True) or "remote/hook.py" in json.dumps(entry, sort_keys=True)
+        for entries in data.get("hooks", {{}}).values()
+        if isinstance(entries, list)
+        for entry in entries
+    )
+    if not found:
+        return "notInstalled"
+    return "installed" if hook_script.is_file() else "needsReinstall"
+
+print("agentbro_hook_status=" + json.dumps(status()))
+"#,
+        config_path_parts_json = config_path_parts_json,
+    )
+}
+
+fn parse_hook_status(result: SshResult) -> Result<RemoteAgentHookStatus, String> {
+    if result.exit_code != 0 {
+        let detail = result.stderr.trim();
+        return if detail.is_empty() {
+            Err(format!(
+                "SSH Hook status check exited with code {}",
+                result.exit_code
+            ))
+        } else {
+            Err(detail.chars().take(300).collect())
+        };
+    }
+    let response = result
+        .stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("agentbro_hook_status="))
+        .ok_or_else(|| "SSH Hook status check returned no status".to_string())?;
+    serde_json::from_str(response).map_err(|error| format!("Invalid SSH Hook status: {error}"))
+}
+
+fn hook_install_script(host: &RemoteHost, profile: &profiles::AgentIntegrationProfile) -> String {
+    let socket = &host.remote_socket_path;
+    let host_id = &host.id;
+    let host_name = &host.name;
+    let source = profile.source;
+    let config_path_parts_json = profile_config_path_parts_json(profile);
+    let event_specs_json = remote_event_specs_json(profile);
+    let socket_json = json_string(socket);
+    let host_id_json = json_string(host_id);
+    let host_name_json = json_string(host_name);
+    let source_json = json_string(source);
+
+    format!(
+        r#"
+import json, pathlib, shlex, sys
+
+home = pathlib.Path.home()
+config_path = home
+for part in json.loads(r'''{config_path_parts_json}'''):
+    config_path = config_path / part
+event_specs = json.loads(r'''{event_specs_json}''')
+socket_path = json.loads(r'''{socket_json}''')
+host_id = json.loads(r'''{host_id_json}''')
+host_name = json.loads(r'''{host_name_json}''')
+source = json.loads(r'''{source_json}''')
+hook_cmd = " ".join([
+    "AGENTBRO_SOCKET=" + shlex.quote(socket_path),
+    "AGENTBRO_HOST_ID=" + shlex.quote(host_id),
+    "AGENTBRO_HOST_NAME=" + shlex.quote(host_name),
+    "AGENTBRO_AGENT=" + shlex.quote(source),
+    "python3 ~/.agentbro/remote/hook.py",
+])
+
+def is_agentbro_entry(value):
+    try:
+        text = json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    return (
+        "remote-hook.py" in text
+        or "remote/hook.py" in text
+        or "agentbro-bridge" in text
+        or "AgentBro managed integration" in text
+    )
+
+try:
+    if config_path.exists():
+        data = json.loads(config_path.read_text() or "{{}}")
+    else:
+        data = {{}}
+    hooks = data.setdefault("hooks", {{}})
+    for event_name, value in list(hooks.items()):
+        if not isinstance(value, list):
+            continue
+        filtered = [entry for entry in value if not is_agentbro_entry(entry)]
+        if filtered:
+            hooks[event_name] = filtered
+        else:
+            hooks.pop(event_name, None)
+
+    for event in event_specs:
+        inner = {{"type": "command", "command": hook_cmd}}
+        if event.get("timeout") is not None:
+            inner["timeout"] = event["timeout"]
+        entry = {{"hooks": [inner]}}
+        if event.get("matcher") is not None:
+            entry["matcher"] = event["matcher"]
+        hooks.setdefault(event["name"], []).append(entry)
+
+    if hooks:
+        data["hooks"] = hooks
+    else:
+        data.pop("hooks", None)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(data, indent=2))
+    print(f"{{source}} hooks configured: {{len(event_specs)}} events")
+except Exception as e:
+    print(f"{{source}} config error: {{e}}", file=sys.stderr)
+    raise SystemExit(1)
+"#,
+        config_path_parts_json = config_path_parts_json,
+        event_specs_json = event_specs_json,
+        socket_json = socket_json,
+        host_id_json = host_id_json,
+        host_name_json = host_name_json,
+        source_json = source_json,
+    )
+}
+
+fn hook_remove_script(profile: &profiles::AgentIntegrationProfile) -> String {
+    let source = profile.source;
+    let config_path_parts_json = profile_config_path_parts_json(profile);
+    let source_json = json_string(source);
+
+    format!(
+        r#"
+import json, pathlib, sys
+
+home = pathlib.Path.home()
+config_path = home
+for part in json.loads(r'''{config_path_parts_json}'''):
+    config_path = config_path / part
+source = json.loads(r'''{source_json}''')
+
+def is_agentbro_entry(value):
+    try:
+        text = json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    return (
+        "remote-hook.py" in text
+        or "remote/hook.py" in text
+        or "agentbro-bridge" in text
+        or "AgentBro managed integration" in text
+    )
+
+try:
+    removed = 0
+    if config_path.exists():
+        data = json.loads(config_path.read_text() or "{{}}")
+        hooks = data.get("hooks")
+        if isinstance(hooks, dict):
+            for event_name, value in list(hooks.items()):
+                if not isinstance(value, list):
+                    continue
+                filtered = [entry for entry in value if not is_agentbro_entry(entry)]
+                removed += len(value) - len(filtered)
+                if filtered:
+                    hooks[event_name] = filtered
+                else:
+                    hooks.pop(event_name, None)
+            if hooks:
+                data["hooks"] = hooks
+            else:
+                data.pop("hooks", None)
+            config_path.write_text(json.dumps(data, indent=2))
+    print(f"{{source}} hooks removed: {{removed}}")
+except Exception as e:
+    print(f"{{source}} uninstall error: {{e}}", file=sys.stderr)
+    raise SystemExit(1)
+"#,
+        config_path_parts_json = config_path_parts_json,
+        source_json = source_json,
+    )
 }
 
 fn remote_agent_control_socket_path(host: &RemoteHost) -> String {
@@ -2018,6 +2075,128 @@ pub(super) fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    struct HookTestHome(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl HookTestHome {
+        fn new() -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("agentbro-remote-hooks-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn write(&self, path: &str, content: &str) {
+            let target = self.0.join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, content).unwrap();
+        }
+
+        fn run(&self, script: &str) -> std::process::Output {
+            std::process::Command::new("python3")
+                .args(["-c", "import pathlib, sys; pathlib.Path.home = lambda: pathlib.Path(sys.argv[1]); exec(sys.argv[2])"])
+                .arg(&self.0)
+                .arg(script)
+                .output()
+                .unwrap()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for HookTestHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_one_remote_agent_keeps_the_bridge_and_other_agents_hooks() {
+        let fixture = HookTestHome::new();
+        let claude = profiles::profile_for_agent("claude-code").unwrap();
+        let codex = profiles::profile_for_agent("codex").unwrap();
+        let bridge = ".agentbro/remote/hook.py";
+        fixture.write(bridge, "# shared bridge");
+        for profile in [&claude, &codex] {
+            let installed = fixture.run(&hook_install_script(&host(), profile));
+            assert!(
+                installed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&installed.stderr)
+            );
+        }
+
+        let removed = fixture.run(&hook_remove_script(&claude));
+        assert!(
+            removed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&removed.stderr)
+        );
+        assert!(
+            fixture.0.join(bridge).is_file(),
+            "Codex still uses the bridge"
+        );
+        let codex_config =
+            std::fs::read_to_string(fixture.0.join(codex.configuration_path)).unwrap();
+        assert!(codex_config.contains("remote/hook.py"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_hook_install_reports_invalid_settings_as_a_failure() {
+        let fixture = HookTestHome::new();
+        let profile = profiles::profile_for_agent("claude-code").unwrap();
+        fixture.write(profile.configuration_path, "not valid JSON");
+        let installed = fixture.run(&hook_install_script(&host(), &profile));
+
+        assert!(
+            !installed.status.success(),
+            "invalid settings must fail the SSH command"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join(profile.configuration_path)).unwrap(),
+            "not valid JSON"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_hook_status_distinguishes_missing_bridge_and_invalid_settings() {
+        let fixture = HookTestHome::new();
+        let profile = profiles::profile_for_agent("codex").unwrap();
+        let check = || {
+            let output = fixture.run(&hook_status_script(&profile));
+            parse_hook_status(SshResult {
+                exit_code: output.status.code().unwrap(),
+                stdout: format!(
+                    "SSH login banner\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                ),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+            .unwrap()
+        };
+        assert_eq!(check(), RemoteAgentHookStatus::NotInstalled);
+        assert!(fixture
+            .run(&hook_install_script(&host(), &profile))
+            .status
+            .success());
+        assert_eq!(check(), RemoteAgentHookStatus::NeedsReinstall);
+        fixture.write(".agentbro/remote/hook.py", "# shared bridge");
+        assert_eq!(check(), RemoteAgentHookStatus::Installed);
+        fixture.write(profile.configuration_path, "not valid JSON");
+        assert_eq!(check(), RemoteAgentHookStatus::SettingsCorrupted);
+    }
+
+    #[tokio::test]
+    async fn remote_hook_status_for_an_unsupported_agent_skips_ssh() {
+        let result = RemoteInstaller::check_agent_hook(&host(), "deepseek-harness")
+            .await
+            .unwrap();
+        assert_eq!(result, RemoteAgentHookStatus::Unsupported);
+    }
 
     fn host() -> RemoteHost {
         RemoteHost {

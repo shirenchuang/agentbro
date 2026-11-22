@@ -21,6 +21,10 @@ import {
 // SkillManagerShell imports pages that call skillApiV2 at mount; we stub the api
 // so tests run without the Tauri runtime.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@tauri-apps/api/path', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tauri-apps/api/path')>(),
+  homeDir: vi.fn().mockResolvedValue('/Profiles/owner/'),
+}))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn().mockResolvedValue(null), save: vi.fn().mockResolvedValue(null) }))
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn().mockResolvedValue(undefined) }))
 
@@ -6676,6 +6680,91 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(openPath).toHaveBeenCalledWith('/Users/me/Library/Application Support/com.vibetunnel.agentbro/agentbro-bridge')
   })
 
+  it('does not read the local Hook settings from Agent Management on an SSH host', async () => {
+    const localStatus = vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: 'claude-code',
+      name: 'claude-code',
+      displayName: 'Local Claude',
+      installed: true,
+      status: 'Installed',
+      configPath: '/local-machine/claude/settings.json',
+    }])
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    await act(async () => {})
+
+    expect(localStatus).not.toHaveBeenCalled()
+    expect(screen.queryByText('/local-machine/claude/settings.json')).not.toBeInTheDocument()
+  })
+
+  it('installs and removes a Hook on the SSH host shown in Agent Management', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('notInstalled')
+      .mockResolvedValueOnce('installed')
+      .mockResolvedValueOnce('notInstalled')
+    const install = vi.spyOn(agentApi, 'installHook').mockResolvedValue()
+    const uninstall = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    expect(await screen.findByText(i18n.t('skills.runtimeEnvironment.currentLabel', { name: 'build-host' }))).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.installHooks') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.uninstallHooks') }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('build-host'))
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+    expect(await screen.findByRole('button', { name: i18n.t('settings.installHooks') })).toBeEnabled()
+    expect(remoteStatus.mock.calls).toEqual(Array.from({ length: 3 }, () => ['claude-code', 'build-host']))
+  })
+
+  it('does not reload Hook status for an abandoned SSH host after install finishes', async () => {
+    const remoteStatus = vi.spyOn(agentApi, 'remoteHookStatus')
+      .mockResolvedValueOnce('needsReinstall')
+      .mockResolvedValueOnce('settingsCorrupted')
+    let finishInstall!: () => void
+    const install = vi.spyOn(agentApi, 'installHook').mockReturnValue(new Promise((resolve) => { finishInstall = resolve }))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('build-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'build-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    fireEvent.click(await screen.findByRole('button', { name: i18n.t('settings.reinstall') }))
+    expect(install).toHaveBeenCalledExactlyOnceWith('claude-code', 'build-host')
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('gpu-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'gpu-host' })
+    })
+    expect(await screen.findByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+    await act(async () => finishInstall())
+
+    expect(remoteStatus.mock.calls).toEqual([['claude-code', 'build-host'], ['claude-code', 'gpu-host']])
+    expect(screen.getByText(i18n.t('settings.hookSettingsCorrupted'))).toBeInTheDocument()
+  })
+
+  it('shows SSH connection errors without marking the remote Hook uninstalled', async () => {
+    vi.spyOn(agentApi, 'remoteHookStatus').mockRejectedValue(new Error('SSH connection refused'))
+    useRuntimeEnvironmentStore.getState().selectEnvironment('offline-host')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'offline-host' })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('SSH connection refused')
+    expect(screen.queryByRole('button', { name: i18n.t('settings.installHooks') })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: i18n.t('settings.detectNow') })).toBeEnabled()
+  })
+
   it('routes custom Claude Code hook actions through its engine instance', async () => {
     const customDetail: AgentDetail = {
       ...agentDetail,
@@ -6744,6 +6833,105 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '卸载 Hook' }))
 
     await waitFor(() => expect(uninstallHook).toHaveBeenCalledWith('engine:custom-codefuse'))
+  })
+
+  it.each([
+    { id: 'cursor-cli', name: 'Cursor CLI', otherTool: 'cursor', otherAdapter: 'cursor', configPath: '~/.cursor/settings.json' },
+    { id: 'claude-code', name: 'Claude Code', otherTool: 'engine:team', otherAdapter: 'claude-code', configPath: '~/.claude/settings.json' },
+  ])('uses the exact $name Hook profile even when another entry appears first', async ({ id, name, otherTool, otherAdapter, configPath }) => {
+    const agent = makeSidebarAgent(id, name)
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([
+      {
+        toolId: otherTool,
+        adapterId: otherAdapter,
+        name: otherAdapter,
+        displayName: 'Other profile',
+        installed: true,
+        configPath,
+        status: 'Installed',
+        isCustom: otherTool.startsWith('engine:'),
+        customId: otherTool.startsWith('engine:') ? 'team' : undefined,
+      },
+      {
+        toolId: id,
+        adapterId: id,
+        name: id,
+        displayName: name,
+        installed: true,
+        configPath,
+        status: 'Installed',
+      },
+    ])
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    const button = await screen.findByRole('button', { name: '卸载 Hook' })
+    await act(async () => fireEvent.click(button))
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(id)
+  })
+
+  it('does not show a sibling built-in Hook when the selected profile has no status', async () => {
+    const agent = makeSidebarAgent('cursor-cli', 'Cursor CLI')
+    const configPath = '~/.cursor/settings.json'
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: agent.id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([{
+      toolId: 'cursor',
+      adapterId: 'cursor',
+      name: 'cursor',
+      displayName: 'Cursor',
+      installed: true,
+      configPath,
+      status: 'Installed',
+    }])
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+
+    expect(await screen.findByText('该 Agent 暂不支持 Hook 接入')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Hook' })).not.toBeInTheDocument()
+  })
+
+  it('resolves the custom Hook for the same config file with an expanded home path', async () => {
+    const agent = makeSidebarAgent('custom-registered', 'Registered Agent')
+    useSkillStoreV2.setState({
+      agents: [agent],
+      selectedAgentId: agent.id,
+      selectedAgentDetail: { ...agentDetail, ...agent, configPath: '/Profiles/owner/registered/settings.json' },
+    })
+    vi.spyOn(tauriApi, 'getAllHookStatus').mockResolvedValue([
+      {
+        toolId: 'custom:other', customId: 'other', name: 'claude-code', displayName: agent.displayName,
+        installed: true, status: 'Installed', isCustom: true, configPath: '~/other/settings.json',
+      },
+      {
+        toolId: 'custom:matching', customId: 'matching', name: 'claude-code', displayName: 'Matching',
+        installed: true, status: 'Installed', isCustom: true, configPath: '~/registered/settings.json',
+      },
+    ])
+    const uninstall = vi.spyOn(tauriApi, 'uninstallAgentHook').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hooks' }))
+    const button = await screen.findByRole('button', { name: '卸载 Hook' })
+    await act(async () => fireEvent.click(button))
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('custom:matching')
   })
 
   it('uses the install action when the selected agent is not installed', async () => {

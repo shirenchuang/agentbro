@@ -1273,6 +1273,10 @@
       "packNamed": "技能包：{{name}}"
     },
     "agentManagement": {
+      "remoteHooks": {
+        "unsupported": "此 Agent 暂不支持通过 SSH 管理 Hook。",
+        "confirmUninstall": "从 {{host}} 卸载 {{agent}} 的 Hook？"
+      },
       "sidebarSearch": "搜索 Agent",
       "sidebarSearchEmpty": "没有匹配的 Agent",
       "scanComplete": "扫描完成：已管理 {{managed}}，未管理 {{unmanaged}}",
