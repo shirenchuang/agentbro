@@ -2,6 +2,12 @@
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
     Invoke-PackControl $agents
+    if (-not (Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' })) {
+        $uninstalled = Wait-IslandValue 'the collapsed Agent list' {
+            Find-IslandButton $settings { param($Name) $Name -like '*未安装 Agent*' }
+        }
+        Invoke-PackControl $uninstalled
+    }
     $claude = Wait-IslandValue 'Claude Code in Agent Management' {
         Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
     }
