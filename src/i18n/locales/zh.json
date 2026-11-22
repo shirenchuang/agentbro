@@ -1285,6 +1285,9 @@
       "packNamed": "技能包：{{name}}"
     },
     "agentManagement": {
+      "programResultUnverified": "命令已执行，无法确认 {{agent}} 的安装状态或版本。",
+      "programStillUndetected": "命令已执行，仍未检测到 {{agent}}。",
+      "programVersionUnchanged": "更新命令已执行，{{agent}} 仍为 {{version}}。",
       "remoteHooks": {
         "unsupported": "此 Agent 暂不支持通过 SSH 管理 Hook。",
         "confirmUninstall": "从 {{host}} 卸载 {{agent}} 的 Hook？"

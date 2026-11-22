@@ -3524,6 +3524,76 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/Agent (安装|更新)完成/)).not.toBeInTheDocument()
   })
 
+  it('reports an install whose command exits successfully without a detected Agent', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
+    vi.spyOn(agentApi, 'install').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '安装此 Agent' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍未检测到 Claude Code')
+    expect(screen.queryByText('Agent 安装完成')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '安装此 Agent' })).toBeEnabled()
+  })
+
+  it('reports an unchanged version and confirms a retry only after detecting the update', async () => {
+    const outdated = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([outdated])
+      .mockResolvedValueOnce([outdated])
+      .mockResolvedValue([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code 仍为 1.0.0')
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '更新此 Agent' }))
+
+    expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the installed version after a failed update and preserves the command error', async () => {
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })])
+      .mockResolvedValue([makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })])
+    vi.spyOn(agentApi, 'update').mockRejectedValue('Update script failed after changing files')
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Update script failed after changing files')
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.queryByText('Agent 更新完成')).not.toBeInTheDocument()
+  })
+
+  it('reports an unverified Agent installation when program detection fails', async () => {
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram({ status: 'notInstalled', binaryPath: null })])
+      .mockRejectedValue('Detection failed')
+    vi.spyOn(agentApi, 'install').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '安装此 Agent' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法确认 Claude Code 的安装状态或版本'))
+    expect(screen.queryByText('Agent 安装完成')).not.toBeInTheDocument()
+  })
+
   it('does not publish an old Agent update error to the newly selected runtime', async () => {
     vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
       status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0',

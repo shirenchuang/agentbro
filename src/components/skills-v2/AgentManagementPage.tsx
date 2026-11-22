@@ -427,6 +427,8 @@ export function AgentManagementPage() {
 
   const changeAgentProgram = async (agentId: string, operation: 'install' | 'update') => {
     if (!isCurrentRuntime()) return
+    const previous = programs[agentId]
+    const previousVersion = previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
     const setPendingAgentId = operation === 'install' ? setInstallingAgentId : setUpdatingAgentId
     const active = { runtime: runtimeSelection, agentId, operation }
     programOperationRef.current = active
@@ -435,14 +437,46 @@ export function AgentManagementPage() {
     state.setError(null)
     setAgentOutput([])
     try {
-      await agentApi[operation](agentId, runtimeSelection.environmentId)
+      let commandError: string | null = null
+      try {
+        await agentApi[operation](agentId, runtimeSelection.environmentId)
+      } catch (error) {
+        commandError = String(error)
+      }
       if (!isCurrentRuntime()) return
-      await loadPrograms(runtimeSelection)
+      const refreshed = await loadPrograms(runtimeSelection)
       if (!isCurrentRuntime()) return
       await state.loadOverview(true)
       if (!isCurrentRuntime()) return
       await state.loadAgentDetail(agentId, true)
-      if (isCurrentRuntime()) setNotice(operation === 'install' ? 'Agent 安装完成' : 'Agent 更新完成')
+      if (!isCurrentRuntime()) return
+
+      if (commandError !== null) {
+        state.setError(commandError)
+        return
+      }
+      const detected = refreshed?.[agentId]
+      const agent = detected?.displayName ?? previous?.displayName ?? agentId
+      if (!detected) {
+        state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
+        return
+      }
+      if (detected.status !== 'installed' && detected.status !== 'updateAvailable') {
+        state.setError(t('skills.agentManagement.programStillUndetected', { agent }))
+        return
+      }
+      if (operation === 'update') {
+        const { installedVersion, latestVersion } = detected
+        if (!installedVersion || (!previousVersion && installedVersion !== latestVersion)) {
+          state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
+          return
+        }
+        if (installedVersion === previousVersion && installedVersion !== latestVersion) {
+          state.setError(t('skills.agentManagement.programVersionUnchanged', { agent, version: installedVersion }))
+          return
+        }
+      }
+      setNotice(operation === 'install' ? 'Agent 安装完成' : 'Agent 更新完成')
     } catch (e) {
       if (isCurrentRuntime()) state.setError(String(e))
     } finally {
