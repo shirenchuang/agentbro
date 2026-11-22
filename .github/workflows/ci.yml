@@ -60,7 +60,37 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo check --locked --tests --manifest-path src-tauri/Cargo.toml
+      - name: Prepare Windows Rust test executable
+        shell: pwsh
+        run: |
+          $testExecutable = cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json |
+            ForEach-Object { ConvertFrom-Json -InputObject $_ } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.executable } |
+            Select-Object -ExpandProperty executable
+          if ($LASTEXITCODE -ne 0 -or @($testExecutable).Count -ne 1) {
+            throw 'Could not build and locate the Rust library test executable'
+          }
+
+          $manifest = Join-Path $env:RUNNER_TEMP 'agentbro-rust-tests.manifest'
+          @'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <dependency>
+              <dependentAssembly>
+                <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+                  processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*" />
+              </dependentAssembly>
+            </dependency>
+          </assembly>
+          '@ | Set-Content -LiteralPath $manifest -Encoding utf8
+
+          $manifestTool = Get-Item "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\mt.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          & $manifestTool.FullName -nologo -manifest $manifest "-outputresource:$testExecutable;#1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "AGENTBRO_WINDOWS_AGENT_TEST_EXE=$testExecutable" >> $env:GITHUB_ENV
       - name: Test Agent program management
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib agents::programs::tests
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::programs::tests'
       - name: Test Agent launcher discovery
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib agents::executable::tests
+        run: '& $env:AGENTBRO_WINDOWS_AGENT_TEST_EXE agents::executable::tests'
