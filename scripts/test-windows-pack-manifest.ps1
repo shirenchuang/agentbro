@@ -170,19 +170,31 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
     foreach ($window in Get-IslandWindows) {
         if (Find-PackControl $window '技能包') { return $window }
     }
-    $open = Wait-IslandValue 'the Island Settings button' { Find-PackControl $Island 'Settings' }
-    Invoke-PackControl $open
-    $settings = Wait-IslandValue 'the native Settings window' {
+    $findSettings = {
         foreach ($window in Get-IslandWindows) {
             if ((Find-PackControl $window 'Agent Skills') -or (Find-PackControl $window 'Start AgentBro')) {
                 return $window
             }
         }
     }
+    $settings = & $findSettings
+    if (-not $settings) {
+        Click-IslandElement $null 'Island Settings' -FindElement {
+            Find-PackControl $Island 'Settings' ([Windows.Automation.ControlType]::Button)
+        } | Out-Host
+        $settings = Wait-IslandValue 'the native Settings window' $findSettings
+    }
     $welcome = Find-PackControl $settings 'Start AgentBro'
-    if ($welcome) { Invoke-PackControl $welcome }
-    $agentSkills = Wait-IslandValue 'the Agent Skills section' { Find-PackControl $settings 'Agent Skills' }
-    Invoke-PackControl $agentSkills
+    if ($welcome) {
+        Click-IslandElement $null 'Start AgentBro' -FindElement {
+            Find-PackControl $settings 'Start AgentBro' ([Windows.Automation.ControlType]::Button)
+        } | Out-Host
+    }
+    Click-IslandElement $null 'Agent Skills section' -FindElement {
+        if (-not (Find-PackControl $settings 'Start AgentBro')) {
+            Find-PackControl $settings 'Agent Skills' ([Windows.Automation.ControlType]::Button)
+        }
+    } | Out-Host
     $settings
 }
 
