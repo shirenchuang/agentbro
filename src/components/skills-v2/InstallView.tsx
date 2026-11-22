@@ -18,6 +18,7 @@ import { isMarketItemInstalled, marketSkillId } from './marketInstallState'
 import { skillErrorMessage, skillModeLabel, unmanagedReasonLabel } from './skillLabels'
 import { extractSkillDescription, stripSkillFrontmatter } from './frontmatter'
 import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
+import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 
 type Tab = 'market' | 'agent' | 'local' | 'git'
 type MarketBoard = 'alltime' | 'trending' | 'hot'
@@ -4214,16 +4215,32 @@ interface GitDoneSummary {
   skills: string[]
 }
 
-function buildGitRef(url: string, branch: string): string {
+function buildGitRef(url: string, branch: string, isRemote: boolean): string {
   const trimmedUrl = url.trim().replace(/\/+$/, '')
   const trimmedBranch = branch.trim()
-  if (!trimmedBranch || /\/tree\//.test(trimmedUrl)) return trimmedUrl
-  return `${trimmedUrl}/tree/${trimmedBranch}`
+  if (!trimmedBranch || /\/tree\//.test(trimmedUrl)
+    || (isRemote && (/\/blob\//.test(trimmedUrl) || trimmedUrl.startsWith('https://raw.githubusercontent.com/')))) {
+    return trimmedUrl
+  }
+  return `${trimmedUrl}/tree/${isRemote ? encodeURIComponent(trimmedBranch) : trimmedBranch}`
 }
 
 function urlHasSubpath(ref: string): boolean {
   const match = ref.match(/\/tree\/[^/]+\/(.+)$/)
   return Boolean(match && match[1])
+}
+
+type GitImportRuntime = ReturnType<typeof readGitImportRuntime>
+
+function readGitImportRuntime() {
+  const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
+  return { selectedEnvironmentId, selectionRevision }
+}
+
+function isGitImportRuntimeCurrent(runtime: GitImportRuntime) {
+  const current = readGitImportRuntime()
+  return runtime.selectedEnvironmentId === current.selectedEnvironmentId
+    && runtime.selectionRevision === current.selectionRevision
 }
 
 export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: InstallDoneHandler }) {
@@ -4238,12 +4255,15 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
   const [stage, setStage] = useState<GitStage>('input')
   const [repo, setRepo] = useState<GitHubRepoPreview | null>(null)
   const [activeRef, setActiveRef] = useState('')
+  const [previewRuntime, setPreviewRuntime] = useState<GitImportRuntime | null>(null)
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const runtimeRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [conflictMode, setConflictMode] = useState<Record<string, ConflictMode>>({})
   const [renames, setRenames] = useState<Record<string, string>>({})
   const [summary, setSummary] = useState<GitDoneSummary | null>(null)
 
-  const resetToInput = () => {
+  const resetToInput = useCallback(() => {
     setStage('input')
     setRepo(null)
     setSelected(new Set())
@@ -4251,7 +4271,14 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setRenames({})
     setSummary(null)
     setError(null)
-  }
+    setPreviewRuntime(null)
+    setBusy(false)
+  }, [])
+
+  useEffect(() => {
+    resetToInput()
+    setToken('')
+  }, [environmentId, runtimeRevision, resetToInput])
 
   const buildSelections = (skills: GitRepoSkill[], picked: Set<string>) =>
     skills
@@ -4270,9 +4297,17 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     selections: ReturnType<typeof buildSelections>,
     skills: GitRepoSkill[],
     picked: Set<string>,
+    runtime: GitImportRuntime,
+    expectedCommit?: string | null,
   ) => {
-    const result = await skillApiV2.importGitHubRepoSkills(ref, selections, token)
-    await skillApiV2.refresh()
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    const result = await skillApiV2.importGitHubRepoSkills(ref, selections, token, {
+      environmentId: runtime.selectedEnvironmentId,
+      expectedCommit,
+    })
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    await skillApiV2.refresh(runtime.selectedEnvironmentId)
+    if (!isGitImportRuntimeCurrent(runtime)) return
     const importedCount = result.importedSkills.length || selections.filter((s) => s.resolution !== 'skip').length
     const skippedCount = result.skippedSkills.length || selections.filter((s) => s.resolution === 'skip').length
     setSummary({
@@ -4290,21 +4325,28 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
       setError('请输入 Git 仓库 URL')
       return
     }
-    const ref = buildGitRef(url, branch)
+    const runtime = { selectedEnvironmentId: environmentId, selectionRevision: runtimeRevision }
+    if (!isGitImportRuntimeCurrent(runtime)) return
+    const ref = buildGitRef(url, branch, runtime.selectedEnvironmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID)
     setBusy(true)
     setError(null)
     try {
-      const preview = await skillApiV2.previewGitHubRepoImport(ref, token)
+      const preview = await skillApiV2.previewGitHubRepoImport(ref, token, runtime.selectedEnvironmentId)
+      if (!isGitImportRuntimeCurrent(runtime)) return
       if (preview.skills.length === 0) {
         setError('该仓库未检测到任何 Skill（需含 SKILL.md）')
         return
       }
       setActiveRef(ref)
+      setPreviewRuntime(runtime)
       setRepo(preview)
 
       const single = preview.skills[0]
+      const hasSkillPath = preview.repo.requestedPath === undefined
+        ? urlHasSubpath(ref)
+        : Boolean(preview.repo.requestedPath)
       // 具体 skill 路径 + 唯一 + 无冲突 → 直接安装，零额外点击
-      if (preview.skills.length === 1 && urlHasSubpath(ref) && !single.conflict) {
+      if (preview.skills.length === 1 && hasSkillPath && !single.conflict) {
         const picked = new Set([single.sourcePath])
         setSelected(picked)
         await importSelections(
@@ -4312,6 +4354,8 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
           [{ sourcePath: single.sourcePath, resolution: 'overwrite' as const }],
           preview.skills,
           picked,
+          runtime,
+          preview.repo.revision,
         )
         return
       }
@@ -4322,14 +4366,14 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
       setRenames({})
       setStage('select')
     } catch (e) {
-      setError(String(e))
+      if (isGitImportRuntimeCurrent(runtime)) setError(String(e))
     } finally {
-      setBusy(false)
+      if (isGitImportRuntimeCurrent(runtime)) setBusy(false)
     }
   }
 
   const installSelected = async () => {
-    if (!repo) return
+    if (!repo || !previewRuntime || !isGitImportRuntimeCurrent(previewRuntime)) return
     const selections = buildSelections(repo.skills, selected)
     const effective = selections.filter((s) => s.resolution !== 'skip')
     if (effective.length === 0) {
@@ -4339,11 +4383,11 @@ export function GitPanel({ initialUrl, onDone }: { initialUrl?: string; onDone: 
     setBusy(true)
     setError(null)
     try {
-      await importSelections(activeRef, selections, repo.skills, selected)
+      await importSelections(activeRef, selections, repo.skills, selected, previewRuntime, repo.repo.revision)
     } catch (e) {
-      setError(String(e))
+      if (isGitImportRuntimeCurrent(previewRuntime)) setError(String(e))
     } finally {
-      setBusy(false)
+      if (isGitImportRuntimeCurrent(previewRuntime)) setBusy(false)
     }
   }
 
