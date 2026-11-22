@@ -157,6 +157,15 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
             {
                 if focusable {
                     let _ = window.set_ignore_cursor_events(false);
+                    #[cfg(target_os = "windows")]
+                    if window.is_focused().unwrap_or(false) {
+                        match window.as_ref().set_focus() {
+                            Ok(()) => return,
+                            Err(error) => {
+                                log::debug!("Could not focus the Island WebView2: {error}")
+                            }
+                        }
+                    }
                     let _ = window.set_focus();
                 }
             }
