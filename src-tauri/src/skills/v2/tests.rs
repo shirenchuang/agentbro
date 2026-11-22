@@ -159,6 +159,44 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
     assert_eq!(missing[0].fingerprint, None);
 }
 
+#[test]
+fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
+    let (_home, svc, _lock) = fresh_service("pack-recheck-manual-copy");
+    let center = svc.center_path().unwrap();
+    let skill_ids = vec!["manual-review".to_string()];
+    let initial_review = svc.skill_pack_fingerprints(&skill_ids).unwrap();
+    assert!(initial_review[0].missing);
+
+    let skill = write_skill(&center, "copied-folder", "manual-review", Some("copied"));
+    let fingerprint = super::project_lock::fingerprint_canonical_skill_directory(
+        &skill.canonicalize().unwrap(),
+        false,
+    )
+    .unwrap();
+    let manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 2,
+        name: "Portable review".to_string(),
+        description: String::new(),
+        tags: Vec::new(),
+        skill_ids,
+        skill_fingerprints: [(String::from("manual-review"), fingerprint.clone())].into(),
+    };
+
+    let reviewed = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    assert!(!reviewed[0].missing);
+    assert_eq!(
+        reviewed[0].fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .unwrap();
+    assert_eq!(pack.members[0].skill_id, "manual-review");
+    assert!(!pack.members[0].missing);
+    assert!(skill.join("SKILL.md").is_file());
+}
+
 fn insert_shared_managed_target(
     svc: &Service,
     target_id: &str,
