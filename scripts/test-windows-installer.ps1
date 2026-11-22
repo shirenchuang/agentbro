@@ -262,6 +262,10 @@ function Write-LocalStartupStacks {
         $errors = $capture.StandardError.ReadToEndAsync()
         if (-not $capture.WaitForExit(15000)) {
             $capture.Kill()
+            if ($capture.WaitForExit(3000)) {
+                Write-Output ($output.GetAwaiter().GetResult())
+                Write-Output ($errors.GetAwaiter().GetResult())
+            }
             throw 'Local startup stack capture timed out'
         }
         $stacks = $output.GetAwaiter().GetResult()
@@ -271,6 +275,12 @@ function Write-LocalStartupStacks {
         }
         if ($stacks -notmatch '(?m)^  agentbro![^+]+\+0x') {
             throw 'Local startup stacks do not contain a resolved AgentBro frame'
+        }
+        if ($VerifyStartupStackSampler -and (
+            $stacks -notmatch '(?m)^  native-window top .* class=Tauri Window\r?$' -or
+            $stacks -notmatch '(?m)^  native-window child .* class=Chrome_(WidgetWin_1|RenderWidgetHostHWND)\r?$'
+        )) {
+            throw 'Startup sampler did not capture both a native AgentBro host and a WebView2 child'
         }
     } finally {
         $capture.Dispose()

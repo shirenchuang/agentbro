@@ -6,6 +6,56 @@
 #include <cstring>
 #include <cwchar>
 
+#pragma comment(lib, "user32.lib")
+
+static void print_window(HWND window, const char* scope) {
+    DWORD process_id = 0;
+    const DWORD thread_id = GetWindowThreadProcessId(window, &process_id);
+    wchar_t class_name[256]{};
+    char class_utf8[1024]{};
+    if (GetClassNameW(window, class_name, 256)) {
+        WideCharToMultiByte(CP_UTF8, 0, class_name, -1, class_utf8, sizeof(class_utf8), nullptr, nullptr);
+    }
+    RECT bounds{};
+    GetWindowRect(window, &bounds);
+    std::printf("  native-window %s hwnd=%p parent=%p pid=%lu tid=%lu visible=%s size=%ldx%ld class=%s\n",
+                scope, static_cast<void*>(window), static_cast<void*>(GetParent(window)),
+                process_id, thread_id, IsWindowVisible(window) ? "yes" : "no",
+                bounds.right - bounds.left, bounds.bottom - bounds.top, class_utf8);
+}
+
+static BOOL CALLBACK print_child_window(HWND window, LPARAM) {
+    print_window(window, "child");
+    return TRUE;
+}
+
+struct WindowSnapshot {
+    DWORD process_id;
+    unsigned roots;
+};
+
+static BOOL CALLBACK print_app_window(HWND window, LPARAM context) {
+    auto& snapshot = *reinterpret_cast<WindowSnapshot*>(context);
+    DWORD process_id = 0;
+    GetWindowThreadProcessId(window, &process_id);
+    if (process_id == snapshot.process_id) {
+        ++snapshot.roots;
+        print_window(window, "top");
+        EnumChildWindows(window, print_child_window, 0);
+    }
+    return TRUE;
+}
+
+static void print_startup_windows(DWORD process_id) {
+    WindowSnapshot snapshot{process_id, 0};
+    if (!EnumWindows(print_app_window, reinterpret_cast<LPARAM>(&snapshot))) {
+        std::printf("Could not enumerate desktop windows: %lu\n", GetLastError());
+    } else {
+        std::printf("Sampled %u AgentBro top-level windows (including hidden windows)\n", snapshot.roots);
+    }
+    std::fflush(stdout);
+}
+
 static void print_frame(HANDLE process, DWORD64 address) {
     IMAGEHLP_MODULE64 module{};
     module.SizeOfStruct = sizeof(module);
@@ -89,6 +139,7 @@ int wmain(int argc, wchar_t** argv) {
     const DWORD process_id = std::wcstoul(argv[1], &rest, 10);
     if (process_id == 0 || *rest != L'\0') return 2;
 
+    print_startup_windows(process_id);
     HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
     if (!process) {
         std::fprintf(stderr, "OpenProcess failed: %lu\n", GetLastError());
