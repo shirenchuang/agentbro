@@ -5804,6 +5804,23 @@ async fn resize_notch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    let context = {
+        let mut context = context;
+        if let Some(island) = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .find(|window| window.label == "notch" && !window.visible)
+        {
+            // Wry 0.55 can abort WebView2 creation when the host cannot take focus.
+            island.focus = false;
+        }
+        context
+    };
+
     let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -6644,7 +6661,7 @@ pub fn run() {
             skills::v2::commands::open_skill_path,
             skills::v2::commands::reveal_skill_path,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building AgentBro");
     log::info!("Startup: creating configured windows");
     app.run(|_, _| {});
