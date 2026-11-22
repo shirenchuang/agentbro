@@ -58,8 +58,11 @@
   }, true)
   for (const type of ['keydown', 'keyup']) {
     document.addEventListener(type, (event) => {
-      if (event.code !== 'Space' && event.code !== 'Tab') return
-      record(type, { code: event.code, trusted: event.isTrusted })
+      if (event.code === 'Tab' || event.key === 'Tab') {
+        record(type, { code: 'Tab', trusted: event.isTrusted })
+      } else if (event.code === 'Space' || event.key === ' ') {
+        record(type, { code: 'Space', trusted: event.isTrusted })
+      }
     }, true)
   }
   document.addEventListener('focusin', (event) => {
