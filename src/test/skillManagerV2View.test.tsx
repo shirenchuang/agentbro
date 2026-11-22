@@ -6581,7 +6581,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('编辑配置文件内容')
-    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json')
+    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(editor).toHaveValue('{\n  "enabled": false,\n  "threshold": 9007199254740993\n}\n')
     expect(screen.getByText('JSON 语法正确')).toBeInTheDocument()
     expect(within(configRow as HTMLElement).queryByRole('button', { name: /复制/ })).not.toBeInTheDocument()
@@ -6601,11 +6601,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
       '/c/config.json',
       '{\n  "enabled": true\n}\n',
       'sha256:before',
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
     )
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '定位' }))
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/c/config.json'))
+  })
+
+  it('keeps Agent config edits typed during a save and saves them with the new revision', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"count":0}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+      .mockResolvedValueOnce({ path, content: '{"count":2}', revision: 'second' })
+      .mockRejectedValueOnce('Configuration write failed temporarily')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+
+    fireEvent.change(editor, { target: { value: '{"count":1}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+    fireEvent.change(editor, { target: { value: '{"count":2}' } })
+    await act(async () => saved({ path, content: '{"count":1}', revision: 'first' }))
+    expect(editor).toHaveValue('{"count":2}')
+    const save = screen.getByRole('button', { name: '保存更改' })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() => expect(write).toHaveBeenNthCalledWith(
+      2, 'claude-code', path, '{"count":2}', 'first', LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+    await within(screen.getByRole('dialog')).findByText('配置已保存，原文件已备份')
+
+    fireEvent.change(editor, { target: { value: '{"count":3}' } })
+    fireEvent.click(save)
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent('Configuration write failed temporarily')
+    expect(editor).toHaveValue('{"count":3}')
+    expect(save).toBeEnabled()
+  })
+
+  it('ignores an Agent config save response after changing environments', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"enabled":false}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+    fireEvent.change(editor, { target: { value: '{"enabled":true}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('different-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => saved({ path, content: '{"enabled":true}', revision: 'saved' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('配置已保存，原文件已备份')).not.toBeInTheDocument()
+    expect(write).toHaveBeenCalledTimes(1)
   })
 
   it('shows hook bridge command details and open actions', async () => {

@@ -4384,12 +4384,17 @@ type ConfigResource = {
 
 function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
   const { t } = useTranslation()
+  const runtimeSelectionRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const environmentId = useSkillStoreV2((state) => state.runtimeEnvironmentId)
+  const agentSelectionRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
+  const scope = { agentId: detail.id, environmentId, runtimeSelectionRevision, agentSelectionRevision }
   const currentVersion = program?.installedVersion ?? detail.version
   const latestVersion = program?.latestVersion ?? detail.latestVersion
   const executablePath = program?.appPath ?? program?.binaryPath ?? null
   const executableIsApp = Boolean(program?.appPath)
   const skillsDir = detail.skillsDir ?? program?.skillsDir ?? null
-  const [editorTarget, setEditorTarget] = useState<ConfigResource | null>(null)
+  const [editorTarget, setEditorTarget] = useState<{ resource: ConfigResource; scope: AgentSkillScope } | null>(null)
+  const activeEditor = editorTarget && isCurrentAgentSkillScope(editorTarget.scope) ? editorTarget : null
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const resources = useMemo(() => {
@@ -4457,13 +4462,14 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
   ])
 
   const runResourceAction = async (action: () => Promise<void>, notice: string) => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setActionError(null)
     setActionNotice(null)
     try {
       await action()
-      setActionNotice(notice)
+      if (isCurrentAgentSkillScope(scope)) setActionNotice(notice)
     } catch (error) {
-      setActionError(skillErrorMessage(t, error))
+      if (isCurrentAgentSkillScope(scope)) setActionError(skillErrorMessage(t, error))
     }
   }
 
@@ -4523,8 +4529,9 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
                     type="button"
                     className="sm2__btn sm2__btn--primary sm2__config-resource-primary"
                     onClick={() => {
+                      if (!isCurrentAgentSkillScope(scope)) return
                       setActionError(null)
-                      setEditorTarget(resource)
+                      setEditorTarget({ resource, scope })
                     }}
                   >
                     {t('skills.agentManagement.pathSettings.actions.edit')}
@@ -4554,10 +4561,10 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
           </div>
         )}
       </section>
-      {editorTarget && (
+      {activeEditor && (
         <ConfigFileEditorDialog
-          agentId={detail.id}
-          resource={editorTarget}
+          scope={activeEditor.scope}
+          resource={activeEditor.resource}
           onClose={() => setEditorTarget(null)}
           onSaved={() => {
             setActionError(null)
@@ -4570,12 +4577,12 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
 }
 
 function ConfigFileEditorDialog({
-  agentId,
+  scope,
   resource,
   onClose,
   onSaved,
 }: {
-  agentId: string
+  scope: AgentSkillScope
   resource: ConfigResource
   onClose: () => void
   onSaved: () => void
@@ -4603,22 +4610,25 @@ function ConfigFileEditorDialog({
   }, [draft, isJson])
 
   const loadDocument = useCallback(async () => {
+    if (!isCurrentAgentSkillScope(scope)) return
     setLoading(true)
     setError(null)
     setSaved(false)
     try {
-      const next = await skillApiV2.readAgentConfigFile(agentId, resource.value)
+      const next = await skillApiV2.readAgentConfigFile(scope.agentId, resource.value, scope.environmentId)
+      if (!isCurrentAgentSkillScope(scope)) return
       const prepared = prepareConfigEditorContent(next.content, resource.value)
       setConfigDocument(next)
       setDraft(prepared)
       setBaseline(prepared)
     } catch (nextError) {
+      if (!isCurrentAgentSkillScope(scope)) return
       setConfigDocument(null)
       setError(skillErrorMessage(t, nextError))
     } finally {
-      setLoading(false)
+      if (isCurrentAgentSkillScope(scope)) setLoading(false)
     }
-  }, [agentId, resource.value, t])
+  }, [scope, resource.value, t])
 
   useEffect(() => {
     void loadDocument()
@@ -4631,27 +4641,30 @@ function ConfigFileEditorDialog({
   }
 
   const save = async () => {
-    if (!configDocument || !dirty || saving || !jsonValid) return
+    if (!configDocument || !dirty || saving || !jsonValid || !isCurrentAgentSkillScope(scope)) return
+    const submitted = draft
     setSaving(true)
     setError(null)
     setSaved(false)
     try {
       const next = await skillApiV2.writeAgentConfigFile(
-        agentId,
+        scope.agentId,
         configDocument.path,
-        draft,
+        submitted,
         configDocument.revision,
+        scope.environmentId,
       )
+      if (!isCurrentAgentSkillScope(scope)) return
       const prepared = prepareConfigEditorContent(next.content, resource.value)
       setConfigDocument(next)
-      setDraft(prepared)
+      setDraft((current) => current === submitted ? prepared : current)
       setBaseline(prepared)
       setSaved(true)
       onSaved()
     } catch (nextError) {
-      setError(skillErrorMessage(t, nextError))
+      if (isCurrentAgentSkillScope(scope)) setError(skillErrorMessage(t, nextError))
     } finally {
-      setSaving(false)
+      if (isCurrentAgentSkillScope(scope)) setSaving(false)
     }
   }
 
@@ -4675,7 +4688,7 @@ function ConfigFileEditorDialog({
       actions={(
         <>
           <div className="sm2__config-editor-action-status" aria-live="polite">
-            {saved && t('skills.agentManagement.pathSettings.editor.saved')}
+            {saved && !dirty && t('skills.agentManagement.pathSettings.editor.saved')}
           </div>
           <button type="button" className="sm2__btn" disabled={saving} onClick={requestClose}>
             {t('skills.agentManagement.pathSettings.editor.close')}
