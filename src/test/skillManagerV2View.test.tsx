@@ -3698,6 +3698,42 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
   })
 
+  it.each(['detected', 'manual', 'inventory'] as const)('selects the appropriate Agent after startup lookup: %s', async (choice) => {
+    const other = { ...makeSidebarAgent('antigravity', 'Antigravity'), installed: choice === 'inventory' }
+    const claude = { ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false }
+    useSkillStoreV2.setState({
+      agents: [other, claude],
+      selectedAgentId: null,
+      selectedAgentDetail: null,
+    })
+    let finishLookup!: (programs: AgentProgramInfo[]) => void
+    let failLookup!: (error: Error) => void
+    const refresh = vi.spyOn(agentApi, 'refresh').mockReturnValue(new Promise((resolve, reject) => {
+      finishLookup = resolve
+      failLookup = reject
+    }))
+    vi.spyOn(skillApiV2, 'getAgentDetail').mockImplementation(async (agentId) => ({
+      ...agentDetail,
+      id: agentId,
+      displayName: agentId === other.id ? other.displayName : claude.displayName,
+    }))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    expect(useSkillStoreV2.getState().selectedAgentId).toBeNull()
+
+    if (choice === 'manual') {
+      await act(async () => useSkillStoreV2.getState().selectAgent(other.id))
+    }
+    await act(async () => {
+      if (choice === 'inventory') failLookup(new Error('Program detection unavailable'))
+      else finishLookup([makeProgram()])
+    })
+
+    expect(useSkillStoreV2.getState().selectedAgentId).toBe(choice === 'detected' ? claude.id : other.id)
+  })
+
   it('does not treat the shared .agents directory as an agent in management views', async () => {
     const sharedDetail: AgentDetail = {
       ...agentDetail,
@@ -7450,7 +7486,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText(/已卸载/)).not.toBeInTheDocument()
   })
 
-  it('removes an uninstalled Agent from the installed sidebar and selects the next one', async () => {
+  it('removes an uninstalled Agent from the sidebar and selects the next detected installation', async () => {
     const codexDetail: AgentDetail = {
       ...agentDetail,
       id: 'codex',
@@ -7465,13 +7501,16 @@ describe('Skill detail slider + agent page render without crashing', () => {
       selectedAgentDetail: agentDetail,
       agents: [
         makeSidebarAgent('claude-code', 'Claude Code', { managed: 1 }),
-        makeSidebarAgent('codex', 'Codex'),
+        makeSidebarAgent('gemini', 'Gemini'),
+        { ...makeSidebarAgent('codex', 'Codex'), installed: false },
       ],
       unmanaged: [],
     })
+    const codexProgram = makeProgram({ id: 'codex', displayName: 'Codex' })
+    const geminiProgram = makeProgram({ id: 'gemini', displayName: 'Gemini', status: 'notInstalled', binaryPath: null })
     vi.spyOn(agentApi, 'refresh')
-      .mockResolvedValueOnce([makeProgram()])
-      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
+      .mockResolvedValueOnce([makeProgram(), codexProgram, geminiProgram])
+      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null }), codexProgram, geminiProgram])
     vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
     vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
     vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
