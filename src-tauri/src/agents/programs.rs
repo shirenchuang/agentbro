@@ -422,7 +422,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     } else {
         app_path
             .clone()
-            .or_else(|| default_app_path_for_display(&id, &meta))
+            .or_else(|| default_app_path_for_display(&id, &meta, RuntimePlatform::current()))
     };
     let installed =
         program_is_installed_for_agent(&id, &meta, binary_path.is_some(), app_path.is_some());
@@ -1178,13 +1178,17 @@ fn app_path_candidates_for_platform(
     paths
 }
 
-fn default_app_path_for_display(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    match RuntimePlatform::current() {
-        RuntimePlatform::Linux => None,
-        platform => app_path_candidates_for_platform(agent_id, meta, platform)
-            .into_iter()
-            .next(),
+fn default_app_path_for_display(
+    agent_id: &str,
+    meta: &ProgramMetadata,
+    platform: RuntimePlatform,
+) -> Option<String> {
+    if meta.kind != AgentProgramKind::App || platform == RuntimePlatform::Linux {
+        return None;
     }
+    app_path_candidates_for_platform(agent_id, meta, platform)
+        .into_iter()
+        .next()
 }
 
 pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
@@ -1867,6 +1871,21 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn desktop_fallback_paths_do_not_replace_windows_cli_launchers() {
+        use super::{default_app_path_for_display, metadata_for, RuntimePlatform};
+
+        let cli = metadata_for("claude-code").unwrap();
+        assert!(
+            default_app_path_for_display("claude-code", &cli, RuntimePlatform::Windows).is_none()
+        );
+
+        let desktop = metadata_for("cursor").unwrap();
+        assert!(
+            default_app_path_for_display("cursor", &desktop, RuntimePlatform::Windows).is_some()
+        );
+    }
 
     #[test]
     fn windows_app_version_prefers_product_and_falls_back_to_file() {
