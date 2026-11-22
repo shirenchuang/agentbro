@@ -5,6 +5,7 @@ if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'ARM64'
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class AgentBroWslPrompt {
@@ -22,14 +23,29 @@ public static class AgentBroWslPrompt {
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr window, int command);
 
-    public static int MinimizeWindows(string className, string title) {
-        var count = 0;
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    public static string[] MinimizeWindows(string className, string title) {
+        var requests = new List<string>();
         for (var window = FindWindowEx(IntPtr.Zero, IntPtr.Zero, className, title);
              window != IntPtr.Zero;
              window = FindWindowEx(IntPtr.Zero, window, className, title)) {
-            if (IsWindowVisible(window) && !IsIconic(window) && ShowWindowAsync(window, Minimize)) count++;
+            if (!IsWindowVisible(window) || IsIconic(window)) continue;
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            var now = DateTime.UtcNow;
+            var foreground = GetForegroundWindow();
+            if (ShowWindowAsync(window, Minimize)) {
+                requests.Add(string.Format(
+                    "Requested minimization for hosted WSL prompt HWND {0} ({1}, PID {2}) at {3:O}. Foreground HWND {4}.",
+                    window, className, processId, now, foreground));
+            }
         }
-        return count;
+        return requests.ToArray();
     }
 }
 '@
@@ -38,10 +54,7 @@ $title = Join-Path $env:SystemRoot 'System32\wsl.exe'
 Write-Output 'Watching for the hosted Windows ARM64 WSL update prompt.'
 while ($true) {
     foreach ($windowClass in 'CASCADIA_HOSTING_WINDOW_CLASS', 'ConsoleWindowClass') {
-        $requestCount = [AgentBroWslPrompt]::MinimizeWindows($windowClass, $title)
-        if ($requestCount) {
-            Write-Output "Requested minimization for $requestCount hosted WSL prompt window(s) at $([DateTimeOffset]::UtcNow.ToString('O'))."
-        }
+        [AgentBroWslPrompt]::MinimizeWindows($windowClass, $title)
     }
     Start-Sleep -Milliseconds 100
 }

@@ -142,14 +142,15 @@ public static class AgentBroSmokeInput {
     }
 
     public static string DescribeForegroundFocus() {
-        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-        if (!GetGUIThreadInfo(0, ref info))
-            return string.Format("GetGUIThreadInfo failed: {0}", Marshal.GetLastWin32Error());
-        var foreground = GetForegroundWindow();
+        return DescribeForegroundFocus(GetForegroundWindow());
+    }
+
+    private static string DescribeForegroundFocus(IntPtr foreground) {
+        if (foreground == IntPtr.Zero) return "no foreground window";
+        uint processId;
+        uint thread = GetWindowThreadProcessId(foreground, out processId);
         var title = new StringBuilder(256);
         GetWindowText(foreground, title, title.Capacity);
-        uint processId;
-        GetWindowThreadProcessId(foreground, out processId);
         string processName = "unknown";
         try {
             using (var process = System.Diagnostics.Process.GetProcessById((int)processId)) {
@@ -158,9 +159,14 @@ public static class AgentBroSmokeInput {
         } catch (ArgumentException) { }
           catch (InvalidOperationException) { }
           catch (System.ComponentModel.Win32Exception) { }
-        return string.Format("foreground {0}, title '{1}', process {2} ({3}), active {4}, focus {5}, capture {6}",
-            DescribeWindow(foreground), title, processName, processId, DescribeWindow(info.Active),
-            DescribeWindow(info.Focus), DescribeWindow(info.Capture));
+        string owner = string.Format("foreground {0}, title '{1}', process {2} ({3})",
+            DescribeWindow(foreground), title, processName, processId);
+        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (thread != 0 && GetGUIThreadInfo(thread, ref info)) {
+            owner += string.Format(", active {0}, focus {1}, capture {2}",
+                DescribeWindow(info.Active), DescribeWindow(info.Focus), DescribeWindow(info.Capture));
+        }
+        return owner;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -175,10 +181,14 @@ public static class AgentBroSmokeInput {
     public static void PressLeft() { SendMouseButton(LeftDown); }
     public static void ReleaseLeft() { SendMouseButton(LeftUp); }
 
-    public static bool PressKeyInWindow(IntPtr window, ushort key) {
-        if (window == IntPtr.Zero || GetForegroundWindow() != window) return false;
+    public static void PressKeyInWindow(IntPtr window, ushort key) {
+        var foreground = GetForegroundWindow();
+        if (window == IntPtr.Zero || foreground != window) {
+            throw new InvalidOperationException(string.Format(
+                "Refused native key 0x{0:X2} for HWND {1} at {2:O}. Observed {3}.",
+                key, window, DateTime.UtcNow, DescribeForegroundFocus(foreground)));
+        }
         InjectInputs(new[] { KeyboardEvent(key, 0, 0), KeyboardEvent(key, 0, KeyUp) });
-        return true;
     }
 
     public static bool PasteInWindow(IntPtr window) {
@@ -500,9 +510,7 @@ function Test-KeyboardPermissionDenial(
             } else {
                 $tabs = 0
                 while ($tabs -lt 24 -and -not (& $denyHasFocus)) {
-                    if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)) {
-                        throw 'The Island lost foreground focus during native Tab navigation'
-                    }
+                    [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x09)
                     $tabs += 1
                     Start-Sleep -Milliseconds 125
                 }
@@ -531,9 +539,7 @@ function Test-KeyboardPermissionDenial(
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock.Start()
-        if (-not [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x20)) {
-            throw "Foreground changed before Space could be sent to the Island window $WindowHandle."
-        }
+        [AgentBroSmokeInput]::PressKeyInWindow($WindowHandle, 0x20)
         Write-Output 'Sent native Space to the focused Deny button in the session detail.'
         if (-not $reply.Wait(8000)) {
             if ($TracePermissionUi) {
