@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { open } from '@tauri-apps/plugin-dialog'
+import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
 import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
@@ -1339,7 +1340,7 @@ function AgentDetailView({
         )}
         {tab === 'mcp' && <McpTab detail={detail} />}
         {tab === 'plugins' && <PluginManagementTab detail={detail} />}
-        {tab === 'hooks' && <HooksTab detail={detail} program={program} />}
+        {tab === 'hooks' && <HooksTab key={detail.id} detail={detail} />}
         {tab === 'config' && <ConfigTab detail={detail} program={program} />}
       </div>
     </div>
@@ -4115,7 +4116,7 @@ function McpTab({ detail }: { detail: AgentDetail }) {
   return <McpManagementTab detail={detail} />
 }
 
-function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProgramInfo | null }) {
+function HooksTab({ detail }: { detail: AgentDetail }) {
   const agentId = detail.id
   const [hook, setHook] = useState<HookStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -4126,7 +4127,7 @@ function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProg
     setLoading(true)
     try {
       const all = await getAllHookStatus()
-      const found = all.find((h) => hookMatchesAgent(h, detail, program))
+      const found = await findAgentHookStatus(all, detail)
       setHook(found || null)
     } catch (e) {
       setError(String(e))
@@ -4271,34 +4272,30 @@ function HooksTab({ detail, program }: { detail: AgentDetail; program: AgentProg
   )
 }
 
-function hookMatchesAgent(hook: HookStatus, detail: AgentDetail, program: AgentProgramInfo | null) {
+async function findAgentHookStatus(hooks: HookStatus[], detail: AgentDetail) {
   const agentId = detail.id
-  if (hook.adapterId === agentId || hook.toolId === agentId || hook.name === agentId) return true
-  const displayName = detail.displayName.toLowerCase()
-  if (hook.isCustom && hook.displayName.toLowerCase() === displayName) return true
-  const hookValues = [
-    hook.displayName,
-    hook.name,
-    hook.toolId,
-    hook.adapterId,
-    hook.profileId,
-    hook.configPath,
-    hook.configDir,
-    hook.bridgeCommand,
-  ].map((value) => String(value || '').toLowerCase())
-  const targetValues = [
-    agentId,
-    detail.displayName,
-    detail.configPath,
-    detail.mcpConfigPath,
-    detail.pluginDir,
-    detail.skillsDir,
-    program?.configDir,
-    program?.skillsDir,
-  ].map((value) => String(value || '').toLowerCase()).filter(Boolean)
-  return hookValues.some((hookValue) =>
-    targetValues.some((target) => hookValue === target || hookValue.includes(target)),
-  )
+  const exact = hooks.find((hook) => hook.toolId === agentId)
+    ?? hooks.find((hook) => hook.customId === agentId
+      || hook.toolId === `engine:${agentId}` || hook.toolId === `custom:${agentId}`)
+    ?? hooks.find((hook) => !hook.toolId && !hook.isCustom && !hook.customId
+      && (hook.adapterId === agentId || hook.name === agentId))
+  if (exact || !detail.configPath) return exact
+
+  const windows = isWindowsPlatform()
+  const normalize = (path: string) => windows ? path.replace(/\\/g, '/').toLowerCase() : path
+  const customHooks = hooks.flatMap((hook) => hook.isCustom && hook.toolId && hook.configPath
+    ? [{ hook, path: normalize(hook.configPath) }]
+    : [])
+  if (customHooks.length === 0) return undefined
+
+  const path = normalize(detail.configPath)
+  const home = path.startsWith('~/') || customHooks.some((entry) => entry.path.startsWith('~/'))
+    ? normalize(await homeDir().catch(() => '')).replace(/\/+$/, '')
+    : ''
+  const expandHome = (value: string) => home && value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
+  const target = expandHome(path)
+  const matches = customHooks.filter((entry) => expandHome(entry.path) === target)
+  return matches.length === 1 ? matches[0].hook : undefined
 }
 
 function groupHookEvents(events: HookEventStatus[]) {
