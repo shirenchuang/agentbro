@@ -29,6 +29,7 @@ if ($VerifyAgentPackageConsole) {
         throw 'The package manager fixture requires an isolated GitHub-hosted runner'
     }
     $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
+    $env:AGENTBRO_PACKAGE_CONSOLE_HOST = (Get-Process -Id $PID).Path
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
     $env:AGENTBRO_PACKAGE_FIXTURE_RESUME = Join-Path $stage 'package-resume'
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
@@ -68,7 +69,7 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
+    "%AGENTBRO_PACKAGE_CONSOLE_HOST%" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
     if errorlevel 1 (
         >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo PowerShell probe exited with an error
         exit /b 1
