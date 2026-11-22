@@ -70,12 +70,12 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
     >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
-    if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
     "%AGENTBRO_PACKAGE_CONSOLE_HOST%" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
     if errorlevel 1 (
         >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo PowerShell probe exited with an error
         exit /b 1
     )
+    if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
     if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
