@@ -1283,10 +1283,11 @@ function AgentDetailView({
   const inheritedSkillCount = inheritedManagedSkills.length + inheritedUnmanagedSkills.length
   const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkillCount > 0
   const installed = program ? isAgentProgramInstalled(program) : agentInstalled
+  const desktopManaged = installed && program?.kind === 'cli' && program.packageManager === 'app'
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
-  const installedVersion = program?.installedVersion ?? detail.version
+  const installedVersion = desktopManaged ? program.installedVersion : program?.installedVersion ?? detail.version
   const logicalSkillCount = countLogicalAgentSkills(
     detail.skills,
     unmanaged,
@@ -1296,7 +1297,7 @@ function AgentDetailView({
   )
   const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
-  const updateLabel = !installed
+  const updateLabel = desktopManaged ? t('skills.agentManagement.desktopManagedUpdate') : !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
     : updateAvailable
       ? `可更新到 ${program.latestVersion}`
@@ -1341,9 +1342,11 @@ function AgentDetailView({
           <Stat value={detail.mcpServers.length + detail.plugins.length} label="MCP/插件" />
         </div>
         <div className="sm2__btn-row" style={{ margin: 0 }}>
-          <ActionButton className="sm2__btn sm2__btn--primary" disabled={primaryAction.disabled} onClick={primaryAction.onClick} busy={primaryAction.busy} busyLabel={primaryAction.label}>
-            {primaryAction.label}
-          </ActionButton>
+          {!desktopManaged && (
+            <ActionButton className="sm2__btn sm2__btn--primary" disabled={primaryAction.disabled} onClick={primaryAction.onClick} busy={primaryAction.busy} busyLabel={primaryAction.label}>
+              {primaryAction.label}
+            </ActionButton>
+          )}
           <ActionButton className="sm2__btn" disabled={busy || scanning || updating || installing || !installed} onClick={() => onScan(detail.id)} busy={scanning} busyLabel="正在扫描">
             {scanning ? '正在扫描' : '重新扫描此 Agent'}
           </ActionButton>
@@ -4463,7 +4466,8 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
   const environmentId = useSkillStoreV2((state) => state.runtimeEnvironmentId)
   const agentSelectionRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
   const scope = { agentId: detail.id, environmentId, runtimeSelectionRevision, agentSelectionRevision }
-  const currentVersion = program?.installedVersion ?? detail.version
+  const desktopManaged = program?.kind === 'cli' && program.packageManager === 'app'
+  const currentVersion = desktopManaged ? program.installedVersion : program?.installedVersion ?? detail.version
   const latestVersion = program?.latestVersion ?? detail.latestVersion
   const executablePath = program?.appPath ?? program?.binaryPath ?? null
   const executableIsApp = Boolean(program?.appPath)

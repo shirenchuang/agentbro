@@ -272,6 +272,9 @@ jobs:
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::programs::tests::desktop_codex_version_runs_the_selected_launcher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact agents::executable::tests::agent_package_shell_respects_inherited_path_precedence
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
