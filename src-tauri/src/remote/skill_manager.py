@@ -409,8 +409,51 @@ def project_root_path(value):
     return resolved
 
 
+def custom_agent_spec(record):
+    root = safe_home_path(record["configDir"]).absolute()
+    settings = safe_home_path(record.get("settingsFile") or root / "settings.json").absolute()
+    return {
+        "id": record["id"],
+        "displayName": record["displayName"],
+        "iconKey": record.get("icon") or "custom",
+        "commands": [],
+        "configDir": root,
+        "config": settings,
+        "mcp": safe_home_path(record.get("mcpConfig") or settings).absolute(),
+        "plugins": safe_home_path(record.get("pluginDir") or root / "plugins" / "cache").absolute(),
+        "skills": safe_home_path(record["skillsDir"]).absolute(),
+        "category": record.get("category") or (
+            "claude-compatible" if record.get("icon") == "claude-code" else "custom"
+        ),
+    }
+
+
 def agent_spec(agent_id):
-    return next((item for item in AGENTS if item["id"] == agent_id), None)
+    built_in = next((item for item in AGENTS if item["id"] == agent_id), None)
+    if built_in or agent_id == SHARED_SKILLS_AGENT_ID:
+        return built_in
+    record = STATE["customAgents"].get(agent_id)
+    if record:
+        try:
+            return custom_agent_spec(record)
+        except (OSError, ValueError, RuntimeError):
+            return None
+    return None
+
+
+def management_agent_specs():
+    yield from AGENTS
+    for agent_id in STATE["customAgents"]:
+        spec = agent_spec(agent_id)
+        if spec and "configDir" in spec:
+            yield spec
+
+
+def is_claude_agent(agent_id):
+    if agent_id == "claude-code":
+        return True
+    spec = agent_spec(agent_id)
+    return bool(spec and spec.get("category") == "claude-compatible")
 
 
 def openclaw_state_path():
@@ -512,6 +555,8 @@ def agent_binary(spec):
 def agent_installed(spec, binary=None):
     if binary:
         return True
+    if "configDir" in spec:
+        return spec["configDir"].is_dir() or spec["skills"].parent.is_dir()
     if spec["id"] == "openclaw" and openclaw_state_path().exists():
         return True
     return agent_skills_path(spec["id"]).exists()
@@ -1081,7 +1126,7 @@ def inventory():
     unmanaged = []
     agents = []
     targets = {}
-    for spec in AGENTS:
+    for spec in management_agent_specs():
         root = agent_skills_path(spec["id"])
         installed = agent_installed(spec, agent_binary(spec))
         managed_count = 0
@@ -2108,7 +2153,7 @@ def agent_detail_from_inventory(
         "configPath": str(agent_config_path(agent_id)),
         "mcpConfigPath": str(agent_mcp_path(agent_id)),
         "pluginDir": str(agent_plugin_path(agent_id)),
-        "agentDir": str(agent_skills_path(agent_id).parent),
+        "agentDir": str(spec.get("configDir") or agent_skills_path(agent_id).parent),
         "skills": [item for item in targets.values() if item["agentId"] == agent_id],
         "inheritsSharedSkills": agent_id in SHARED_SKILL_CONSUMERS,
         "inheritedManagedSkills": inherited_managed,
@@ -3219,13 +3264,13 @@ def read_plugin_json(path):
 def plugin_manifest_path(agent_id, directory):
     if agent_id == "codex":
         return directory / ".codex-plugin" / "plugin.json"
-    if agent_id == "claude-code":
+    if is_claude_agent(agent_id):
         return directory / ".claude-plugin" / "plugin.json"
     return directory / "package.json"
 
 
 def plugin_configuration(agent_id):
-    if agent_id not in ("codex", "claude-code"):
+    if agent_id != "codex" and not is_claude_agent(agent_id):
         return None
     try:
         path = safe_home_path(agent_config_path(agent_id))
@@ -3257,7 +3302,7 @@ def plugin_configuration(agent_id):
 
 def discovered_plugins(agent_id, root):
     records = {}
-    native = agent_id in ("codex", "claude-code")
+    native = agent_id == "codex" or is_claude_agent(agent_id)
     if not root.is_dir():
         return records
     directories = root.glob("*/*/*") if native else root.iterdir()
@@ -3298,7 +3343,7 @@ def claude_user_plugins(config):
 def plugin_inventory(agent_id, configuration=None):
     if not agent_spec(agent_id):
         raise ValueError("Unknown Agent: " + agent_id)
-    native = agent_id in ("codex", "claude-code")
+    native = agent_id == "codex" or is_claude_agent(agent_id)
     try:
         root = safe_home_path(agent_plugin_path(agent_id)).resolve()
         records = discovered_plugins(agent_id, root)
@@ -3308,7 +3353,7 @@ def plugin_inventory(agent_id, configuration=None):
     configuration = configuration if configuration is not None else plugin_configuration(agent_id)
     states = configuration[4] if configuration else {}
     ids = set(states) if configuration else set(records)
-    if agent_id == "claude-code" and configuration:
+    if is_claude_agent(agent_id) and configuration:
         ids.update(claude_user_plugins(path))
 
     plugins = []
@@ -3622,8 +3667,53 @@ def agent_programs():
             "skillsDir": str(agent_skills_path(spec["id"])),
             "isCustom": False,
         })
-    result.extend(STATE["customAgents"].values())
+    for agent_id, record in STATE["customAgents"].items():
+        spec = agent_spec(agent_id)
+        if spec and "configDir" in spec:
+            program = {key: value for key, value in record.items()
+                       if key not in ("category", "settingsFile", "mcpConfig", "pluginDir")}
+            program["configDir"] = str(spec["configDir"])
+            program["skillsDir"] = str(spec["skills"])
+            program["status"] = "installed" if agent_installed(spec) else "notInstalled"
+            result.append(program)
     return result
+
+
+def custom_agent_program(agent_id, config):
+    name = config["displayName"].strip()
+    skills_dir = config["globalSkillsDir"].strip()
+    if not name or not skills_dir:
+        raise ValueError("Agent display name and Skills directory are required")
+    root = config.get("configDir")
+    if root and not safe_home_path(root).is_dir():
+        raise ValueError("The Agent configuration directory does not exist on this SSH host")
+    value = {
+        "id": agent_id,
+        "displayName": name,
+        "icon": config.get("iconName") or "custom",
+        "kind": "cli",
+        "packageManager": "custom",
+        "packageName": None,
+        "installedVersion": None,
+        "latestVersion": None,
+        "binaryPath": None,
+        "configDir": root or skills_dir,
+        "appPath": None,
+        "downloadUrl": None,
+        "installCommand": None,
+        "updateCommand": None,
+        "uninstallCommand": None,
+        "hooksInstalled": False,
+        "skillsDir": skills_dir,
+        "isCustom": True,
+        "category": config.get("category") or "custom",
+        "settingsFile": config.get("settingsFile"),
+        "mcpConfig": config.get("mcpConfig"),
+        "pluginDir": config.get("pluginDir"),
+    }
+    spec = custom_agent_spec(value)
+    value["status"] = "installed" if agent_installed(spec) else "notInstalled"
+    return value
 
 
 def run_agent_package_operation(agent_id, operation):
@@ -4361,46 +4451,29 @@ def dispatch():
         return None
     if command == "add_custom_agent":
         config = args["config"]
-        agent_id = safe_id(
-            config.get("id")
-            or "custom-" + re.sub(r"[^a-z0-9]+", "-", config["displayName"].lower()).strip("-")
-        )
-        value = {
-            "id": agent_id,
-            "displayName": config["displayName"],
-            "icon": config.get("iconName") or "custom",
-            "kind": "cli",
-            "status": "installed",
-            "packageManager": "custom",
-            "packageName": None,
-            "installedVersion": None,
-            "latestVersion": None,
-            "binaryPath": None,
-            "configDir": config.get("configDir") or config["globalSkillsDir"],
-            "appPath": None,
-            "downloadUrl": None,
-            "installCommand": None,
-            "updateCommand": None,
-            "uninstallCommand": None,
-            "hooksInstalled": False,
-            "skillsDir": config["globalSkillsDir"],
-            "isCustom": True,
-        }
+        slug = re.sub(r"[^a-z0-9]+", "-", config["displayName"].lower()).strip("-")
+        agent_id = safe_id(config.get("id") or "custom-" + (slug or uuid.uuid4().hex[:10]))
+        if (
+            agent_id == SHARED_SKILLS_AGENT_ID
+            or any(spec["id"] == agent_id for spec in AGENTS)
+            or agent_id in STATE["customAgents"]
+        ):
+            raise ValueError("Agent already exists: " + agent_id)
+        value = custom_agent_program(agent_id, config)
         STATE["customAgents"][agent_id] = value
         save_state()
         return value
     if command == "update_custom_agent":
         agent_id = args["agentId"]
-        if agent_id not in STATE["customAgents"]:
+        existing = STATE["customAgents"].get(agent_id)
+        if existing is None:
             raise ValueError("Custom Agent not found")
-        config = args["config"]
-        value = STATE["customAgents"][agent_id]
-        value.update({
-            "displayName": config["displayName"],
-            "icon": config.get("iconName") or "custom",
-            "configDir": config.get("configDir") or config["globalSkillsDir"],
-            "skillsDir": config["globalSkillsDir"],
-        })
+        config = dict(args["config"])
+        for field in ("category", "settingsFile", "mcpConfig", "pluginDir"):
+            if field not in config:
+                config[field] = existing.get(field)
+        value = custom_agent_program(agent_id, config)
+        STATE["customAgents"][agent_id] = value
         save_state()
         return value
     if command == "remove_custom_agent":

@@ -1191,9 +1191,9 @@ export const skillApiV2 = {
         }),
   readFileContent: (filePath: string) =>
     isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
-  browseRemoteSkillSources: (path = '~') =>
+  browseRemoteSkillSources: (path = '~', environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path })
+      ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path }, environmentId)
       : Promise.resolve({ path: '/home/agent', parentPath: null, entries: [] }),
   getSkillExplanation: (skillId: string, lang: string) =>
     isTauriRuntime() ? invoke<SkillExplanation | null>('get_skill_explanation_cmd', { skillId, lang }) : Promise.resolve(null),

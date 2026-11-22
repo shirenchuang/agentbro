@@ -1264,7 +1264,7 @@ describe('Local skill import', () => {
     fireEvent.click(screen.getByRole('button', { name: '浏览远程文件夹' }))
 
     expect(await screen.findByRole('dialog', { name: '选择 ubuntu 上的文件夹' })).toBeInTheDocument()
-    await waitFor(() => expect(browse).toHaveBeenCalledWith('~'))
+    await waitFor(() => expect(browse).toHaveBeenCalledWith('~', 'ubuntu'))
     fireEvent.click(await screen.findByRole('button', { name: /skills.*Skill 文件夹/ }))
     await waitFor(() => expect(screen.getByLabelText('远程目录路径')).toHaveValue('/home/agent/skills'))
     fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
@@ -3270,6 +3270,66 @@ describe('Skill detail slider + agent page render without crashing', () => {
     }, LOCAL_RUNTIME_ENVIRONMENT_ID))
     await waitFor(() => expect(dialog).not.toBeInTheDocument())
     expect(loadOverview).toHaveBeenCalledWith(true)
+  })
+
+  it('browses the selected SSH host when configuring a custom Agent', async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    const hostId = 'company-ssh'
+    runtime.selectEnvironment(hostId)
+    useSkillStoreV2.setState({ runtimeEnvironmentId: hostId })
+    const openLocal = vi.mocked(openDialog)
+    openLocal.mockClear()
+    const browse = vi.spyOn(skillApiV2, 'browseRemoteSkillSources').mockResolvedValue({
+      path: '/home/remote/branch',
+      parentPath: '/home/remote',
+      entries: [],
+    })
+    const add = vi.spyOn(agentApi, 'addCustom').mockRejectedValue(new Error('Fixture ends before persistence'))
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    act(() => useSkillStoreV2.getState().requestCustomAgentDialog())
+    fireEvent.change(await screen.findByLabelText('显示名称'), { target: { value: 'Remote branch' } })
+    fireEvent.click(screen.getByRole('button', { name: '选择目录' }))
+    expect(await screen.findByRole('dialog', { name: `选择 ${hostId} 上的文件夹` })).toBeInTheDocument()
+    await waitFor(() => expect(browse).toHaveBeenCalledExactlyOnceWith('~', hostId))
+    await waitFor(() => expect(screen.getByRole('button', { name: '选择当前文件夹' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '选择当前文件夹' }))
+
+    expect(screen.getByLabelText('配置根目录')).toHaveValue('/home/remote/branch')
+    expect(openLocal).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '保存 Agent' }))
+    expect(add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      displayName: 'Remote branch',
+      configDir: '/home/remote/branch',
+      globalSkillsDir: '/home/remote/branch/skills',
+      settingsFile: '/home/remote/branch/settings.json',
+    }), hostId)
+  })
+
+  it('drops a custom Agent folder browse when the SSH host changes', async () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    runtime.selectEnvironment('earlier-ssh')
+    useSkillStoreV2.setState({ runtimeEnvironmentId: 'earlier-ssh' })
+    let finishBrowse!: (value: Awaited<ReturnType<typeof skillApiV2.browseRemoteSkillSources>>) => void
+    const browse = vi.spyOn(skillApiV2, 'browseRemoteSkillSources').mockReturnValue(
+      new Promise((resolve) => { finishBrowse = resolve }),
+    )
+    const add = vi.spyOn(agentApi, 'addCustom')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    act(() => useSkillStoreV2.getState().requestCustomAgentDialog())
+    fireEvent.click(await screen.findByRole('button', { name: '选择目录' }))
+    expect(browse).toHaveBeenCalledExactlyOnceWith('~', 'earlier-ssh')
+    await act(async () => {
+      runtime.selectEnvironment('other-ssh')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'other-ssh' })
+      finishBrowse({ path: '/home/earlier/branch', parentPath: null, entries: [] })
+    })
+    expect(screen.queryByRole('button', { name: '选择当前文件夹' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保存 Agent' })).not.toBeInTheDocument()
+    expect(add).not.toHaveBeenCalled()
   })
 
   it('deletes a custom agent from the agent detail header', async () => {
