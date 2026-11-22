@@ -7397,6 +7397,30 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(await screen.findByText('Agent「Claude Code」已卸载，已清理 1 个 Skills')).toBeInTheDocument()
   })
 
+  it('keeps Agent resources when the native package command is already busy', async () => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ hooksInstalled: true })])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('agent_package_operation_in_progress')
+    const removeManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(removeManaged).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+    expect(alert).toHaveTextContent('另一个 Agent 程序操作正在运行')
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+  })
+
   it('cleans AgentBro resources while keeping an installed app without an uninstall command', async () => {
     useSkillStoreV2.setState({
       unmanaged: [makeSharedUnmanaged('builtin', { agentId: 'claude-code', readOnly: true })],

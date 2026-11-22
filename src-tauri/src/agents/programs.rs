@@ -9,10 +9,13 @@ use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
 
 #[cfg(target_os = "windows")]
 mod windows_app_paths;
+
+static AGENT_PACKAGE_OPERATION: Mutex<()> = Mutex::const_new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -718,6 +721,12 @@ fn info_for_custom_agent(agent: registry::CustomAgentEntry) -> AgentProgramInfo 
     }
 }
 
+fn claim_agent_package_operation() -> Result<MutexGuard<'static, ()>, String> {
+    AGENT_PACKAGE_OPERATION
+        .try_lock()
+        .map_err(|_| "agent_package_operation_in_progress".to_string())
+}
+
 async fn run_agent_command(
     app: AppHandle,
     _adapters: &[std::sync::Arc<dyn AgentAdapter>],
@@ -725,6 +734,7 @@ async fn run_agent_command(
     operation: &str,
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    let _package_operation = claim_agent_package_operation()?;
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -1849,6 +1859,17 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn agent_package_operation_rejects_overlap_until_the_guard_is_released() {
+        let running = super::claim_agent_package_operation().unwrap();
+        assert_eq!(
+            super::claim_agent_package_operation().unwrap_err(),
+            "agent_package_operation_in_progress"
+        );
+        drop(running);
+        assert!(super::claim_agent_package_operation().is_ok());
+    }
 
     #[test]
     fn desktop_fallback_paths_do_not_replace_windows_cli_launchers() {

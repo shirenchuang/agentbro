@@ -28,6 +28,61 @@
     $settings
 }
 
+function Test-InstalledAgentPackageAcrossSettingsWindows(
+    [Windows.Automation.AutomationElement]$Settings,
+    [string]$FixtureLauncher
+) {
+    Set-Content -LiteralPath $FixtureLauncher -Value '@echo 2.0.0' -Encoding ascii
+    Remove-Item -LiteralPath @(
+        $env:AGENTBRO_PACKAGE_CONSOLE_RESULT,
+        $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED,
+        $env:AGENTBRO_PACKAGE_FIXTURE_RESUME
+    )
+    Click-IslandElement $null 'refresh Agent versions before reopening Settings' -FindElement {
+        $button = Find-PackControl $Settings '获取版本' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    $restored = Wait-IslandValue 'the restored Claude Code fixture in Installed Agents' {
+        $agent = Find-IslandButton $Settings { param($Name) $Name -eq 'Claude Code' }
+        if ($agent) {
+            $classes = $agent.Current.ClassName -split '\s+'
+            if ($classes -contains 'sm2-sidebar__subitem' -and $classes -notcontains 'sm2-sidebar__subitem--muted') { $agent }
+        }
+    }
+    Click-IslandElement $restored 'select the restored Claude Code fixture' -CenterAfterLayout
+    Click-IslandElement $null 'start a package update before closing Settings' -FindElement {
+        $button = Find-PackControl $Settings '更新此 Agent' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    try {
+        $null = Wait-IslandValue 'the package command holding across Settings close' {
+            Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -PathType Leaf
+        }
+        $handle = $Settings.Current.NativeWindowHandle
+        $Settings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
+        $null = Wait-IslandValue 'destruction of Settings during the package command' {
+            -not (Get-IslandWindows | Where-Object { $_.Current.NativeWindowHandle -eq $handle })
+        }
+
+        $island = Wait-IslandValue 'the Island after closing Settings' { Find-VisibleIsland }
+        Move-ToIslandHoverPoint $island.Handle $island.Element
+        $reopened = Open-ManagedAgent $island.Element 'Claude Code'
+        Click-IslandElement $null 'try another update from the new Settings window' -FindElement {
+            $button = Find-PackControl $reopened '更新此 Agent' ([Windows.Automation.ControlType]::Button)
+            if ($button -and $button.Current.IsEnabled) { $button }
+        }
+        $null = Wait-IslandValue 'the busy result from the native package command' {
+            if (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED) {
+                throw 'The reopened Settings window started another package update while the first was still running'
+            }
+            Test-PackVisibleText $reopened 'Another Agent package operation is running.'
+        }
+        Write-Output 'The native app rejected an overlapping package update from the reopened Settings window.'
+    } finally {
+        $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
+    }
+}
+
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
@@ -169,6 +224,7 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
     }
     Write-Output 'Agent Management confirmed the uninstall after the fixture launcher was removed.'
+    Test-InstalledAgentPackageAcrossSettingsWindows $settings $fixtureLauncher
 }
 
 function Test-InstalledRegisteredAgentApp([Windows.Automation.AutomationElement]$Island) {

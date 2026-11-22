@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
+import { agentApi, isAgentPackageOperationBusy, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -438,6 +438,10 @@ export function AgentManagementPage() {
       try {
         await agentApi[operation](agentId, runtimeSelection.environmentId)
       } catch (error) {
+        if (isAgentPackageOperationBusy(error)) {
+          if (isCurrentRuntime()) state.setError(t('skills.agentManagement.programOperationInProgress'))
+          return
+        }
         commandError = String(error)
       }
       if (!isCurrentRuntime()) return
@@ -514,6 +518,13 @@ export function AgentManagementPage() {
           await agentApi.uninstall(agent.id, environmentId)
           commandSucceeded = true
         } catch (error) {
+          if (isAgentPackageOperationBusy(error)) {
+            if (isCurrent()) {
+              setUninstallTarget(null)
+              state.setError(t('skills.agentManagement.programOperationInProgress'))
+            }
+            return
+          }
           failures.push(`程序：${skillErrorMessage(t, error)}`)
         }
       }
