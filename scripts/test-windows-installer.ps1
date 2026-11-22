@@ -396,6 +396,11 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         $errors = $tester.StandardError.ReadToEndAsync()
         $desktopTimeout = if ($VerifyPackManifest -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
+            $tester.Kill($true)
+            if ($tester.WaitForExit(3000)) {
+                Write-Output ($output.GetAwaiter().GetResult())
+                Write-Output ($errors.GetAwaiter().GetResult())
+            }
             throw 'The installed desktop interaction check timed out'
         }
         Write-Output ($output.GetAwaiter().GetResult())

@@ -522,28 +522,29 @@ function Test-PermissionFocusOutsideIsland(
     [uri]$Endpoint,
     [Threading.Tasks.Task[string]]$Reply
 ) {
-    $title = 'AgentBro focus test window'
-    $job = Start-Job -ArgumentList $title -ScriptBlock {
-        param($Title)
-        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-        $form = [Windows.Forms.Form]::new()
-        try {
-            $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-            $form.Text = $Title
-            $form.Width = 250
-            $form.Height = 90
-            $form.StartPosition = 'Manual'
-            $form.Location = [Drawing.Point]::new($area.Right - 265, $area.Bottom - 105)
-            $form.TopMost = $true
-            $null = $form.ShowDialog()
-        } finally {
-            $form.Dispose()
-        }
-    }
+    $script = @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$form = [Windows.Forms.Form]::new()
+$area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$form.Text = 'AgentBro focus test window'
+$form.Width = 250
+$form.Height = 90
+$form.StartPosition = 'Manual'
+$form.Location = [Drawing.Point]::new($area.Right - 265, $area.Bottom - 105)
+$form.TopMost = $true
+$null = $form.ShowDialog()
+'@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    $start = [Diagnostics.ProcessStartInfo]::new(
+        (Get-Process -Id $PID).Path, "-NoProfile -NonInteractive -Sta -EncodedCommand $encoded")
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $fixtureProcess = [Diagnostics.Process]::Start($start)
     try {
         $condition = [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::NameProperty, $title)
+            [Windows.Automation.AutomationElement]::ProcessIdProperty, $fixtureProcess.Id)
         $fixture = Wait-IslandValue 'the separate focus test window' {
+            if ($fixtureProcess.HasExited) { throw 'The separate focus test process closed early.' }
             [Windows.Automation.AutomationElement]::RootElement.FindFirst(
                 [Windows.Automation.TreeScope]::Children, $condition)
         }
@@ -568,8 +569,11 @@ function Test-PermissionFocusOutsideIsland(
         }
         Write-Output 'The separate desktop window kept focus and the original Hook received no decision.'
     } finally {
-        Stop-Job -Job $job
-        Remove-Job -Job $job
+        if (-not $fixtureProcess.HasExited) {
+            $fixtureProcess.Kill()
+            $null = $fixtureProcess.WaitForExit(3000)
+        }
+        $fixtureProcess.Dispose()
     }
 }
 
