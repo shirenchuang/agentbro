@@ -88,6 +88,7 @@ const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
 const NOTICE_DISMISS_MS = 3200
 const PACK_PROGRESS_DONE_DISMISS_MS = 2400
+let latestAgentProgramRequest = 0
 
 function isRuntimeEnvironment(expectedId: string, expectedRevision?: number) {
   const current = useRuntimeEnvironmentStore.getState()
@@ -135,9 +136,6 @@ export function AgentManagementPage() {
   const [refreshingOverview, setRefreshingOverview] = useState(false)
   const [refreshingAll, setRefreshingAll] = useState(false)
   const [scanningAgentId, setScanningAgentId] = useState<string | null>(null)
-  const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null)
-  const [installingAgentId, setInstallingAgentId] = useState<string | null>(null)
-  const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
   const [pendingAdoption, setPendingAdoption] = useState<(AgentSkillScope & { unmanagedId: string }) | null>(null)
   const programs = useCurrentAgentPrograms()
@@ -150,11 +148,6 @@ export function AgentManagementPage() {
   const [uninstallTarget, setUninstallTarget] = useState<AgentActionTarget | null>(null)
   const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentActionTarget | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
-  const programOperationRef = useRef<{
-    runtime: AgentRuntimeSelection
-    agentId: string
-    operation: string
-  } | null>(null)
   const programRequestRef = useRef(0)
   const packApplyResolverRef = useRef<((applied: boolean) => void) | null>(null)
   const currentPackApplyConflict = packApplyConflict && isAgentRuntimeSelection(packApplyConflict.runtime)
@@ -162,24 +155,27 @@ export function AgentManagementPage() {
     : null
   const currentAdopt = adopt && isCurrentAgentSkillScope(adopt.scope) ? adopt : null
   const adoptingUnmanagedId = pendingAdoption && isCurrentAgentSkillScope(pendingAdoption) ? pendingAdoption.unmanagedId : null
-  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
+  const operation = state.agentProgramOperation
+  const visibleOperation = operation?.environmentId === runtimeEnvironmentId ? operation : null
+  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || operation !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
   const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
 
   const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
     if (!isAgentRuntimeSelection(runtime)) return
-    const request = ++programRequestRef.current
-    const isCurrent = () => request === programRequestRef.current && isAgentRuntimeSelection(runtime)
+    const request = ++latestAgentProgramRequest
+    programRequestRef.current = request
+    const isLatest = () => request === latestAgentProgramRequest && isAgentRuntimeSelection(runtime)
     setProgramLoading(true)
     try {
       const next = await agentApi.refresh(runtime.environmentId)
-      if (!isCurrent()) return
+      if (!isAgentRuntimeSelection(runtime)) return
       const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
-      useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
+      if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
-      if (isCurrent()) setError(skillErrorMessage(t, e))
+      if (request === programRequestRef.current && isLatest()) setError(skillErrorMessage(t, e))
     } finally {
-      if (isCurrent()) setProgramLoading(false)
+      if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setProgramLoading(false)
     }
   }, [setError, t])
 
@@ -190,7 +186,7 @@ export function AgentManagementPage() {
 
   useEffect(() => {
     void loadPrograms({ environmentId: runtimeEnvironmentId, selectionRevision: runtimeSelectionRevision })
-    return () => { programRequestRef.current += 1 }
+    return () => { programRequestRef.current = 0 }
   }, [loadPrograms, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
@@ -203,12 +199,12 @@ export function AgentManagementPage() {
     let unlisten: (() => void) | null = null
     let alive = true
     agentApi.onOutput((event) => {
-      const active = programOperationRef.current
+      const { agentProgramOperation: active, selectedAgentId } = useSkillStoreV2.getState()
       if (
-        !alive || !active || active.runtime.environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID
-        || !isAgentRuntimeSelection(active.runtime)
+        !alive || !active || active.environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID
+        || !isAgentRuntimeSelection(active)
         || event.agentId !== active.agentId || event.operation !== active.operation
-        || event.agentId !== useSkillStoreV2.getState().selectedAgentId
+        || event.agentId !== selectedAgentId
       ) return
       setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
     }).then((next) => {
@@ -429,10 +425,8 @@ export function AgentManagementPage() {
     if (!isCurrentRuntime()) return
     const previous = programs[agentId]
     const previousVersion = previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
-    const setPendingAgentId = operation === 'install' ? setInstallingAgentId : setUpdatingAgentId
-    const active = { runtime: runtimeSelection, agentId, operation }
-    programOperationRef.current = active
-    setPendingAgentId(agentId)
+    const active = { ...runtimeSelection, agentId, operation }
+    if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
     setAgentOutput([])
@@ -480,8 +474,7 @@ export function AgentManagementPage() {
     } catch (e) {
       if (isCurrentRuntime()) state.setError(String(e))
     } finally {
-      if (programOperationRef.current === active) programOperationRef.current = null
-      setPendingAgentId(null)
+      state.finishAgentProgramOperation(active)
     }
   }
 
@@ -493,7 +486,7 @@ export function AgentManagementPage() {
   }
 
   const uninstallAgent = async (target: AgentActionTarget) => {
-    const { agent, environmentId } = target
+    const { agent, environmentId, selectionRevision } = target
     const isCurrent = () => isAgentRuntimeSelection(target)
     if (!isCurrent()) {
       setUninstallTarget(null)
@@ -501,9 +494,8 @@ export function AgentManagementPage() {
     }
 
     const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
-    setUninstallingAgentId(agent.id)
-    const active = { runtime: target, agentId: agent.id, operation: 'uninstall' }
-    programOperationRef.current = active
+    const active = { environmentId, selectionRevision, agentId: agent.id, operation: 'uninstall' } as const
+    if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
     setAgentOutput([])
@@ -603,8 +595,7 @@ export function AgentManagementPage() {
     } catch (e) {
       if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
-      if (programOperationRef.current === active) programOperationRef.current = null
-      setUninstallingAgentId(null)
+      state.finishAgentProgramOperation(active)
     }
   }
 
@@ -744,7 +735,7 @@ export function AgentManagementPage() {
             <ActionButton
               className="sm2__btn sm2__btn--danger"
               disabled={state.loading || actionBusy}
-              busy={uninstallingAgentId === detail.id}
+              busy={visibleOperation?.operation === 'uninstall' && visibleOperation.agentId === detail.id}
               busyLabel={canUninstallProgram ? '卸载中' : t('skills.agentManagement.cleanupBusy')}
               onClick={() => requestUninstall(detail)}
             >
@@ -779,8 +770,8 @@ export function AgentManagementPage() {
             onTab={setTab}
             busy={actionBusy}
             scanning={scanningAgentId === detail.id}
-            updating={updatingAgentId === detail.id}
-            installing={installingAgentId === detail.id}
+            updating={visibleOperation?.operation === 'update' && visibleOperation.agentId === detail.id}
+            installing={visibleOperation?.operation === 'install' && visibleOperation.agentId === detail.id}
             opening={openingAgentId === detail.id}
             adoptingUnmanagedId={adoptingUnmanagedId}
             program={programs[detail.id] || null}
@@ -861,7 +852,7 @@ export function AgentManagementPage() {
           busyLabel={cleanupOnly ? t('skills.agentManagement.cleanupBusy') : '卸载中'}
           modalClassName="sm2__modal--agent-uninstall"
           destructive
-          busy={uninstallingAgentId === uninstallAgentTarget.id}
+          busy={visibleOperation?.operation === 'uninstall' && visibleOperation.agentId === uninstallAgentTarget.id}
           onCancel={() => setUninstallTarget(null)}
           onConfirm={() => uninstallAgent(uninstallTarget)}
         >

@@ -62,6 +62,13 @@ export interface SkillFilters {
   type: string
 }
 
+interface AgentProgramOperation {
+  agentId: string
+  environmentId: string
+  selectionRevision: number
+  operation: 'install' | 'update' | 'uninstall'
+}
+
 interface SkillV2State {
   runtimeEnvironmentId: string
   activeTab: SkillManagerTab
@@ -85,6 +92,7 @@ interface SkillV2State {
     selectionRevision: number
     programs: Record<string, AgentProgramInfo>
   } | null
+  agentProgramOperation: AgentProgramOperation | null
   packs: SkillPackSummary[]
   projects: ProjectSummary[]
   issues: DiagnosisIssue[]
@@ -117,6 +125,8 @@ interface SkillV2Actions {
   selectPack: (id: string | null) => Promise<void>
   selectAgent: (id: string | null) => Promise<void>
   loadAgentDetail: (agentId: string, force?: boolean) => Promise<void>
+  beginAgentProgramOperation: (operation: AgentProgramOperation) => boolean
+  finishAgentProgramOperation: (operation: AgentProgramOperation) => void
   applyAgentSkillViewSnapshot: (expectedRuntimeEnvironmentId: string, agentId: string, snapshot: AgentSkillViewSnapshot) => boolean
   removeAgentSkillItems: (expectedRuntimeEnvironmentId: string, agentId: string, managedTargetIds: string[], unmanagedIds: string[]) => boolean
   loadProjects: (force?: boolean) => Promise<void>
@@ -214,6 +224,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   selectedProjectDetail: null,
   agents: [],
   agentProgramSnapshot: null,
+  agentProgramOperation: null,
   packs: [],
   projects: [],
   issues: [],
@@ -480,6 +491,14 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
         set({ error: String(e), agentDetailLoading: false })
       }
     }
+  },
+  beginAgentProgramOperation: (operation) => {
+    if (get().agentProgramOperation) return false
+    set({ agentProgramOperation: operation })
+    return true
+  },
+  finishAgentProgramOperation: (operation) => {
+    if (get().agentProgramOperation === operation) set({ agentProgramOperation: null })
   },
   applyAgentSkillViewSnapshot: (expectedRuntimeEnvironmentId, agentId, snapshot) => {
     if (
