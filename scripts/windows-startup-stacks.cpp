@@ -132,7 +132,7 @@ static bool sample_thread(HANDLE process, DWORD process_id, DWORD thread_id) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3) {
-        std::fputs("Usage: windows-startup-stacks.exe <pid> <local-symbol-directory>\n", stderr);
+        std::fputs("Usage: windows-startup-stacks.exe <pid> <local-symbol-directory|--windows-only>\n", stderr);
         return 2;
     }
     wchar_t* rest = nullptr;
@@ -140,6 +140,7 @@ int wmain(int argc, wchar_t** argv) {
     if (process_id == 0 || *rest != L'\0') return 2;
 
     print_startup_windows(process_id);
+    if (std::wcscmp(argv[2], L"--windows-only") == 0) return 0;
     HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
     if (!process) {
         std::fprintf(stderr, "OpenProcess failed: %lu\n", GetLastError());
