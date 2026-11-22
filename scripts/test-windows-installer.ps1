@@ -33,6 +33,7 @@ if ($VerifyAgentPackageConsole) {
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
     $env:AGENTBRO_PACKAGE_FIXTURE_RESUME = Join-Path $stage 'package-resume'
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
+    $env:AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION = Join-Path $stage 'package-changed-version'
     $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG = Join-Path $stage 'package-new-tag'
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
@@ -74,6 +75,7 @@ if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
         >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo PowerShell probe exited with an error
         exit /b 1
     )
+    if exist "%AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION%" set "agentbro_retry=1"
     if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr

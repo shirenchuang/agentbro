@@ -61,6 +61,7 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         }
     }
     Click-IslandElement $restored 'select the restored Claude Code fixture' -CenterAfterLayout
+    $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_CHANGED_VERSION -Force
     Click-IslandElement $null 'start a package update before closing Settings' -FindElement {
         $button = Find-PackControl $Settings '更新此 Agent' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) { $button }
@@ -84,6 +85,9 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         $null = Wait-IslandValue 'package output restored in the new Settings window' {
             Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@latest'
         }
+        $null = Wait-IslandValue 'the old version in the new Settings window before the update finishes' {
+            Test-PackVisibleText $reopened '当前版本 2.0.0'
+        }
         Write-Output 'Agent Management restored the package command output after recreating Settings.'
         Click-IslandElement $null 'try another update from the new Settings window' -FindElement {
             $button = Find-PackControl $reopened '更新此 Agent' ([Windows.Automation.ControlType]::Button)
@@ -103,6 +107,11 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
             (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
     }
+    $null = Wait-IslandValue 'the new installed version in the recreated Settings window without a manual refresh' {
+        (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED -PathType Leaf) -and
+            (Test-PackVisibleText $reopened '当前版本 999.0.0')
+    }
+    Write-Output 'The recreated Settings window refreshed the installed version when the package command finished.'
 }
 
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {

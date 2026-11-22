@@ -5,7 +5,7 @@ import { AgentIconBadge } from '../components/skills-v2/AgentIconBadge'
 import { useSkillStoreV2 } from '../stores/skillStoreV2'
 import { useSessionStore } from '../stores/sessionStore'
 import { skillApiV2 } from '../services/skillApiV2'
-import { agentApi, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
+import { agentApi, type AgentOutputEvent, type AgentPackageOutput, type AgentProgramInfo } from '../services/agentApi'
 import * as tauriApi from '../services/tauriApi'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { open as openShell } from '@tauri-apps/plugin-shell'
@@ -3675,6 +3675,69 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await act(async () => failLookup(new Error('Old Agent lookup failed')))
     expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
+  it('refreshes the new Settings window after an external package finishes and ignores the older entry scan', async () => {
+    const old = makeProgram({ status: 'updateAvailable', installedVersion: '2.0.0', latestVersion: '999.0.0' })
+    const updated = makeProgram({ status: 'installed', installedVersion: '999.0.0', latestVersion: '999.0.0' })
+    let finishEntryScan!: (programs: AgentProgramInfo[]) => void
+    let finishSubscription!: () => void
+    let emit: ((event: AgentOutputEvent) => void) | undefined
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockReturnValueOnce(new Promise((resolve) => { finishEntryScan = resolve }))
+      .mockResolvedValue([updated])
+    vi.spyOn(agentApi, 'onOutput').mockImplementation((callback) => {
+      emit = callback
+      return new Promise((resolve) => {
+        finishSubscription = () => resolve(() => { emit = undefined })
+      })
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const page = render(<AgentManagementPage />)
+    expect(refresh).not.toHaveBeenCalled()
+    await act(async () => finishSubscription())
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    const completion: AgentOutputEvent = {
+      agentId: 'claude-code',
+      operation: 'update',
+      stream: 'info',
+      line: 'Operation completed',
+      done: true,
+      success: true,
+    }
+    const active = {
+      agentId: 'claude-code',
+      operation: 'update',
+      environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+      selectionRevision: useRuntimeEnvironmentStore.getState().selectionRevision,
+    } as const
+    act(() => {
+      useSkillStoreV2.getState().beginAgentProgramOperation(active)
+      emit?.(completion)
+      useSkillStoreV2.getState().finishAgentProgramOperation(active)
+      emit?.({ ...completion, done: false })
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    await act(async () => emit?.(completion))
+    expect(await screen.findByText('当前版本 999.0.0')).toBeInTheDocument()
+    await act(async () => finishEntryScan([old]))
+    expect(screen.getByText('当前版本 999.0.0')).toBeInTheDocument()
+    expect(refresh).toHaveBeenCalledTimes(2)
+
+    const oldListener = emit
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-package-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'remote-package-host' })
+    })
+    expect(refresh).toHaveBeenLastCalledWith('remote-package-host')
+    oldListener?.(completion)
+    expect(refresh).toHaveBeenCalledTimes(3)
+    page.unmount()
+    oldListener?.(completion)
+    expect(refresh).toHaveBeenCalledTimes(3)
   })
 
   it('restores package output on return and ignores late snapshots and other runtimes', async () => {
