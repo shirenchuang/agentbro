@@ -593,6 +593,12 @@
   "skills": {
     "projectsTab": "Projeler",
     "packManifest": {
+      "importFromLink": "Bağlantıdan içe aktar",
+      "reviewLink": "Beceri paketini incele",
+      "readingLink": "GitHub dosyası yükleniyor…",
+      "linkHint": "Herkese açık bir GitHub deposundaki beceri paketi dosyasının bağlantısını yapıştırın.",
+      "link": "GitHub bağlantısı",
+      "linkSource": "İndirme kaynağı",
       "exportWithSources": "GitHub kaynaklarıyla dışa aktar",
       "exportedWithoutSources": "Beceri paketi dışa aktarıldı. Sabitlenmiş GitHub kaynağı bulunamadı.",
       "pinnedReview": "Eksik becerileri kayıtlı GitHub kaynaklarından geri yükleyin ve içe aktarmadan önce sonucu gözden geçirin.",

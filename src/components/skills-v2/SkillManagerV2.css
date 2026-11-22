@@ -641,6 +641,8 @@
   overflow-wrap: anywhere;
 }
 
+.sm2__pack-manifest-url { overflow-wrap: anywhere; }
+
 .sm2__pack-manifest-source {
   display: flex;
   flex-basis: 100%;

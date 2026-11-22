@@ -698,6 +698,12 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "importFromLink": "Import from link",
+      "reviewLink": "Review Skill Pack",
+      "readingLink": "Loading GitHub file…",
+      "linkHint": "Paste a link to a Skill Pack file in a public GitHub repository.",
+      "link": "GitHub link",
+      "linkSource": "Downloaded from",
       "exportWithSources": "Export with GitHub sources",
       "exportedWithoutSources": "Skill Pack exported. No pinned GitHub sources were available.",
       "pinnedReview": "Restore missing Skills from their recorded GitHub sources, then review the result before importing.",

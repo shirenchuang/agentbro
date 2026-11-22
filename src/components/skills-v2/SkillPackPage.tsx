@@ -26,9 +26,16 @@ type BuilderMode = 'create' | 'edit' | 'duplicate'
 type PackRuntime = Pick<ReturnType<typeof useRuntimeEnvironmentStore.getState>, 'selectedEnvironmentId' | 'selectionRevision'>
 type PackImport = {
   manifest: SkillPackManifest
+  sourceUrl?: string
   runtime: PackRuntime
   reviewed: SkillPackFingerprint[] | null
   acceptLocalCopies: boolean
+}
+type PackLink = {
+  runtime: PackRuntime
+  url: string
+  loading: boolean
+  error: string | null
 }
 type PackMemberStatus = 'missing' | 'unavailable' | 'unrecorded' | 'different' | 'match'
 type PackSyncConflictState = {
@@ -126,10 +133,12 @@ export function SkillPackPage() {
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
   const [packImportDraft, setPackImport] = useState<PackImport | null>(null)
+  const [packLinkDraft, setPackLink] = useState<PackLink | null>(null)
   const [packImportError, setPackImportError] = useState<string | null>(null)
   const [restoringMember, setRestoringMember] = useState<{ runtime: PackRuntime; skillId: string } | null>(null)
   const runtimeRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
   const packImport = packImportDraft?.runtime.selectionRevision === runtimeRevision ? packImportDraft : null
+  const packLink = packLinkDraft?.runtime.selectionRevision === runtimeRevision ? packLinkDraft : null
   const activeRestore = restoringMember?.runtime.selectionRevision === runtimeRevision ? restoringMember : null
   const packImportBusy = busy || Boolean(activeRestore)
 
@@ -198,6 +207,17 @@ export function SkillPackPage() {
   const startEdit = () => setBuilderMode('edit')
   const startDuplicate = () => setBuilderMode('duplicate')
 
+  const preparePackReview = async (manifest: SkillPackManifest, runtime: PackRuntime, sourceUrl?: string) => {
+    if (!isPackRuntimeCurrent(runtime)) return
+    const reviewed = manifest.version >= 2
+      ? await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      : null
+    if (!reviewed) await state.loadOverview(true)
+    if (isPackRuntimeCurrent(runtime)) {
+      setPackImport({ manifest, sourceUrl, runtime, reviewed, acceptLocalCopies: false })
+    }
+  }
+
   const reviewPackManifest = async () => {
     const runtime = useRuntimeEnvironmentStore.getState()
     if (busy || !isPackRuntimeCurrent(runtime)) return
@@ -209,16 +229,35 @@ export function SkillPackPage() {
       const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] })
       if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
       const manifest = await skillApiV2.readPackManifest(path)
-      if (!isPackRuntimeCurrent(runtime)) return
-      const reviewed = manifest.version >= 2
-        ? await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
-        : null
-      if (!reviewed) await state.loadOverview(true)
-      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
+      await preparePackReview(manifest, runtime)
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const startPackLinkReview = () => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (packImportBusy || !isPackRuntimeCurrent(runtime)) return
+    state.setError(null)
+    setSyncNotice(null)
+    setPackImportError(null)
+    setPackLink({ runtime, url: '', loading: false, error: null })
+  }
+
+  const reviewPackLink = async () => {
+    if (!packLink || packLink.loading || !isPackRuntimeCurrent(packLink.runtime)) return
+    const { runtime } = packLink
+    const url = packLink.url.trim()
+    if (!url) return
+    setPackLink({ ...packLink, loading: true, error: null })
+    try {
+      const { manifest, sourceUrl } = await skillApiV2.readPackManifestLink(url)
+      await preparePackReview(manifest, runtime, sourceUrl)
+      if (isPackRuntimeCurrent(runtime)) setPackLink(null)
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackLink({ ...packLink, loading: false, error: String(error) })
     }
   }
 
@@ -233,7 +272,7 @@ export function SkillPackPage() {
     setPackImportError(null)
     try {
       const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
-      if (isPackRuntimeCurrent(runtime)) setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
+      if (isPackRuntimeCurrent(runtime)) setPackImport({ ...packImport, reviewed, acceptLocalCopies: false })
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
     } finally {
@@ -254,7 +293,7 @@ export function SkillPackPage() {
       if (!isPackRuntimeCurrent(runtime)) return
       const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
       if (isPackRuntimeCurrent(runtime)) {
-        setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
+        setPackImport({ ...packImport, reviewed, acceptLocalCopies: false })
         await state.loadOverview(true)
       }
     } catch (error) {
@@ -433,6 +472,9 @@ export function SkillPackPage() {
           <button className="sm2__btn" disabled={busy || state.loading} onClick={reviewPackManifest}>
             {t('skills.packManifest.import')}
           </button>
+          <button className="sm2__btn" disabled={busy || state.loading} onClick={startPackLinkReview}>
+            {t('skills.packManifest.importFromLink')}
+          </button>
           <button className="sm2__btn" onClick={() => state.loadOverview(true)} disabled={state.loading || busy}>
             {state.loading ? '刷新中…' : '刷新'}
           </button>
@@ -513,6 +555,37 @@ export function SkillPackPage() {
         onClose={() => setDetailSkillId(null)}
       />
 
+      {packLink && (
+        <PreviewDialog
+          title={t('skills.packManifest.importFromLink')}
+          confirmLabel={t('skills.packManifest.reviewLink')}
+          cancelLabel={t('settings.cancel')}
+          busyLabel={t('skills.packManifest.readingLink')}
+          busy={packLink.loading}
+          disabled={!packLink.url.trim()}
+          onConfirm={reviewPackLink}
+          onCancel={() => setPackLink(null)}
+        >
+          <p id="sm2-pack-link-hint">{t('skills.packManifest.linkHint')}</p>
+          <div className="sm2__field">
+            <label htmlFor="sm2-pack-link">{t('skills.packManifest.link')}</label>
+            <input
+              id="sm2-pack-link"
+              type="url"
+              aria-describedby="sm2-pack-link-hint"
+              autoFocus
+              value={packLink.url}
+              disabled={packLink.loading}
+              onChange={(event) => setPackLink({ ...packLink, url: event.target.value, error: null })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) void reviewPackLink()
+              }}
+            />
+          </div>
+          {packLink.error && <div className="sm2__error" role="alert">{packLink.error}</div>}
+        </PreviewDialog>
+      )}
+
       {packImport && (
         <PreviewDialog
           title={t('skills.packManifest.import')}
@@ -525,6 +598,9 @@ export function SkillPackPage() {
           onCancel={() => { if (!packImportBusy) setPackImport(null) }}
         >
           <h4>{packImport.manifest.name}</h4>
+          {packImport.sourceUrl && (
+            <p className="sm2__pack-manifest-url">{t('skills.packManifest.linkSource')} <code>{packImport.sourceUrl}</code></p>
+          )}
           {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
           {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
           <p>{t(packImport.manifest.version >= 3 ? 'skills.packManifest.pinnedReview' : 'skills.packManifest.review')}</p>
