@@ -145,7 +145,8 @@ fn read_flash_database(path: &Path, now: i64) -> rusqlite::Result<Vec<Turn>> {
     let mut query = connection.prepare(
         "WITH latest_turns AS (
             SELECT s.id, substr(s.title, 1, 120) AS title, s.time_updated AS session_updated,
-                   COALESCE(answer.time_updated, prompt.time_created) AS message_updated,
+                   COALESCE(prompt.time_updated, prompt.time_created) AS prompt_updated,
+                   COALESCE(answer.time_updated, prompt.time_updated, prompt.time_created) AS message_updated,
                    json_extract(answer.data, '$.time.completed') AS completed_at,
                    json_extract(answer.data, '$.finish') AS finish_reason,
                    json_extract(answer.data, '$.error.name') AS error_name
@@ -165,23 +166,24 @@ fn read_flash_database(path: &Path, now: i64) -> rusqlite::Result<Vec<Turn>> {
                   END
                 ORDER BY m.time_created DESC, m.id DESC LIMIT 1
             )
-            WHERE s.time_updated >= ?1 AND s.time_archived IS NULL AND s.parent_id IS NULL
+            WHERE typeof(s.time_updated) = 'integer' AND s.time_archived IS NULL AND s.parent_id IS NULL
         ), classified AS (
-            SELECT *, CASE
+            SELECT *, MAX(session_updated, prompt_updated, message_updated) AS activity_at,
+            CASE
                 WHEN error_name IS NOT NULL THEN message_updated
                 WHEN finish_reason NOT IN ('tool-calls', 'unknown') THEN completed_at
             END AS terminal_at
             FROM latest_turns
         )
-        SELECT id, title, session_updated, message_updated, completed_at, finish_reason, error_name
+        SELECT id, title, activity_at, message_updated, completed_at, finish_reason, error_name
         FROM classified
-        WHERE terminal_at IS NULL OR terminal_at >= ?2
-        ORDER BY terminal_at IS NOT NULL, COALESCE(terminal_at, session_updated) DESC LIMIT 64",
+        WHERE activity_at >= ?1 AND (terminal_at IS NULL OR terminal_at >= ?2)
+        ORDER BY terminal_at IS NOT NULL, COALESCE(terminal_at, activity_at) DESC LIMIT 64",
     )?;
     let mut rows = query.query([now - STALE_MS, now - DONE_MS])?;
     let mut turns = Vec::new();
     while let Some(row) = rows.next()? {
-        let (Ok(session_id), Ok(session_updated), Ok(message_updated)) = (
+        let (Ok(session_id), Ok(activity_at), Ok(message_updated)) = (
             row.get::<_, String>(0),
             row.get::<_, i64>(2),
             row.get::<_, i64>(3),
@@ -212,11 +214,7 @@ fn read_flash_database(path: &Path, now: i64) -> rusqlite::Result<Vec<Turn>> {
             (Some(at), Some(reason), None) if !matches!(reason, "tool-calls" | "unknown") => {
                 (SessionPhase::Done, "任务已完成", at)
             }
-            _ => (
-                SessionPhase::Processing,
-                "任务进行中",
-                session_updated.max(message_updated),
-            ),
+            _ => (SessionPhase::Processing, "任务进行中", activity_at),
         };
         turns.push(Turn {
             session_id: format!("{AGENT}:flash:{session_id}"),
@@ -308,6 +306,68 @@ mod tests {
         id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
         time_updated INTEGER, data TEXT
     );";
+
+    #[test]
+    fn flash_uses_prompt_and_reply_activity_when_session_metadata_is_stale() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro-qwenwork-{}", uuid::Uuid::new_v4()));
+        let flash_root = directory.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&flash_root).unwrap();
+        let database = Connection::open(flash_root.join(FLASH_DATABASE)).unwrap();
+        database.execute_batch(FLASH_SCHEMA).unwrap();
+        let now = STALE_MS + 10_000;
+        database
+            .execute_batch(&format!(
+                r#"INSERT INTO session VALUES
+                    ('new-prompt', 'Resumed conversation', 1000, NULL, NULL),
+                    ('live-reply', 'Long-running reply', 1000, NULL, NULL),
+                    ('archived', 'Archived conversation', 1000, 2000, NULL),
+                    ('child', 'Child conversation', 1000, NULL, 'new-prompt');
+                   INSERT INTO message VALUES
+                    ('np-user', 'new-prompt', {now}, {now}, '{{"role":"user"}}'),
+                    ('lr-user', 'live-reply', 1000, 1000, '{{"role":"user"}}'),
+                    ('lr-assistant', 'live-reply', 1001, {now},
+                     '{{"role":"assistant","parentID":"lr-user","finish":"tool-calls"}}'),
+                    ('archived-user', 'archived', {now}, {now}, '{{"role":"user"}}'),
+                    ('child-user', 'child', {now}, {now}, '{{"role":"user"}}');"#,
+            ))
+            .unwrap();
+        let store = SessionStore::new();
+        let mut visible = HashSet::new();
+        let mut cached = HashMap::new();
+        let mut observe = |at| {
+            let observed = read_recent_turns(&directory, at);
+            reconcile(&store, &mut visible, &mut cached, observed, at);
+        };
+
+        observe(now);
+        let phase = |id: &str| {
+            store
+                .get_session(&format!("qwenwork-cn:flash:{id}"))
+                .map(|session| session.phase)
+        };
+        assert_eq!(phase("new-prompt"), Some(SessionPhase::Processing));
+        assert_eq!(phase("live-reply"), Some(SessionPhase::Processing));
+        assert_eq!(phase("archived"), None);
+        assert_eq!(phase("child"), None);
+
+        database
+            .execute(
+                "UPDATE message SET data = json_object(
+                    'role','assistant','parentID','lr-user',
+                    'time',json_object('completed',?1),'finish','stop'
+                ) WHERE id = 'lr-assistant'",
+                [now],
+            )
+            .unwrap();
+        observe(now);
+        assert_eq!(phase("live-reply"), Some(SessionPhase::Done));
+        observe(now + DONE_MS + 1);
+        assert_eq!(phase("live-reply"), None);
+        assert_eq!(phase("new-prompt"), Some(SessionPhase::Processing));
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn flash_tasks_follow_the_latest_user_message_through_tool_steps() {
