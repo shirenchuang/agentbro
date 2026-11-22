@@ -65,6 +65,7 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         }
 
         $island = Wait-IslandValue 'the Island after closing Settings' { Find-VisibleIsland }
+        Move-ToIslandHoverPoint $island.Handle $island.Element
         $reopened = Open-ManagedAgent $island.Element 'Claude Code'
         Click-IslandElement $null 'try another update from the new Settings window' -FindElement {
             $button = Find-PackControl $reopened '更新此 Agent' ([Windows.Automation.ControlType]::Button)
