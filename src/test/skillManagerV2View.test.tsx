@@ -7576,6 +7576,71 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(await screen.findByText('Agent「Claude Code」已卸载，已清理 1 个 Skills')).toBeInTheDocument()
   })
 
+  it('keeps an uninstall limited to the Skills shown before another Skill was discovered', async () => {
+    const reviewed = makeSharedUnmanaged('reviewed', { agentId: 'claude-code' })
+    const discovered = makeSharedUnmanaged('discovered', { agentId: 'claude-code' })
+    useSkillStoreV2.setState({ unmanaged: [reviewed] })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([makeProgram()])
+      .mockResolvedValue([makeProgram({ status: 'notInstalled', binaryPath: null })])
+    vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([discovered])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockImplementation(async (force) => {
+      if (force) useSkillStoreV2.setState({ agents: [makeSidebarAgent('claude-code', 'Claude Code', { unmanaged: 1 })] })
+    })
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '卸载 Agent' }))
+    act(() => useSkillStoreV2.setState({ unmanaged: [reviewed, discovered] }))
+    const reviewedCount = within(screen.getByRole('dialog')).getByText('未管理 Skills').parentElement?.textContent
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+
+    expect(await screen.findByText(/Agent「Claude Code」已卸载/)).toBeInTheDocument()
+    expect(removeUnmanaged).toHaveBeenCalledExactlyOnceWith('claude-code', reviewed.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(reviewedCount).toBe('1未管理 Skills')
+    expect(useSkillStoreV2.getState().unmanaged).toEqual([discovered])
+    expect(useSkillStoreV2.getState().agents[0]?.unmanagedSkillCount).toBe(1)
+  })
+
+  it.each([
+    { change: 'a new installation', reviewed: makeProgram({ status: 'notInstalled', binaryPath: null }), current: makeProgram() },
+    { change: 'a replaced launcher', reviewed: makeProgram({ binaryPath: '/previous/claude' }), current: makeProgram() },
+    { change: 'an additional Hook', reviewed: makeProgram(), current: makeProgram({ hooksInstalled: true }) },
+  ])('requires a fresh cleanup review after detecting $change', async ({ reviewed, current }) => {
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([reviewed])
+    const uninstall = vi.spyOn(agentApi, 'uninstall').mockResolvedValue(undefined)
+    const removeManaged = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const removeUnmanaged = vi.spyOn(skillApiV2, 'deleteUnmanagedAgentSkill').mockResolvedValue(undefined)
+    const uninstallHook = vi.spyOn(agentApi, 'uninstallHook').mockResolvedValue(undefined)
+    vi.spyOn(skillApiV2, 'listUnmanaged').mockResolvedValue([])
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    const cleanupOnly = reviewed.status === 'notInstalled'
+    fireEvent.click(await screen.findByRole('button', { name: cleanupOnly ? '清理残留' : '卸载 Agent' }))
+    act(() => useSkillStoreV2.setState({
+      agentProgramSnapshot: {
+        environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+        selectionRevision: useRuntimeEnvironmentStore.getState().selectionRevision,
+        programs: { [current.id]: current },
+      },
+    }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /确认(卸载|清理)/ }))
+
+    expect(uninstall).not.toHaveBeenCalled()
+    expect(removeManaged).not.toHaveBeenCalled()
+    expect(removeUnmanaged).not.toHaveBeenCalled()
+    expect(uninstallHook).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Claude Code 的程序或 Hook 状态已变化')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+  })
+
   it('keeps Agent resources when the native package command is already busy', async () => {
     vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({ hooksInstalled: true })])
     const uninstall = vi.spyOn(agentApi, 'uninstall').mockRejectedValue('agent_package_operation_in_progress')

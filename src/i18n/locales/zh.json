@@ -1310,6 +1310,7 @@
       "cleanupComplete": "已清理 {{agent}} 的 AgentBro 资源。",
       "cleanupSkillCount": "已清理 {{count}} 个 Skills。",
       "cleanupPartial": "部分清理失败，{{errors}}",
+      "uninstallReviewChanged": "{{agent}} 的程序或 Hook 状态已变化。请重新打开确认窗口，核对清理范围。",
       "programStillInstalled": "卸载命令已执行，仍检测到 {{agent}}。",
       "uninstallUnverified": "卸载命令已执行，无法确认 {{agent}} 是否已卸载。",
       "cleanupBusy": "清理中",
