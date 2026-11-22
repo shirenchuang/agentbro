@@ -1168,6 +1168,10 @@ export async function setNotchFocusable(focusable: boolean): Promise<void> {
   return invoke('set_notch_focusable', { focusable })
 }
 
+export async function restoreNotchWebviewFocus(): Promise<boolean> {
+  return isTauri() ? invoke<boolean>('restore_notch_webview_focus') : false
+}
+
 export async function setNotchIgnoreCursorEvents(
   ignore: boolean,
   windowLabel?: 'notch' | 'pet',
