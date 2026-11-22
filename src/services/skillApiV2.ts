@@ -1177,15 +1177,15 @@ export const skillApiV2 = {
 
   listCenterSkills: () =>
     isTauriRuntime() ? invoke<SkillSummary[]>('list_center_skills_v2') : Promise.resolve([]),
-  getSkillDetail: (skillId: string) =>
-    isTauriRuntime() ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }) : Promise.resolve(null as unknown as SkillDetail),
+  getSkillDetail: (skillId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<SkillDetail>('get_skill_detail_v2', { skillId }, environmentId) : Promise.resolve(null as unknown as SkillDetail),
   checkSkillSourceUpdate: (skillId: string, githubToken?: string) =>
     invoke<SkillSourceUpdateCheck>('check_skill_source_update', { skillId, githubToken }),
   applySkillSourceUpdate: (skillId: string, expected: SkillSourceUpdateCheck, githubToken?: string) =>
     invoke<SkillDetail>('apply_skill_source_update', { skillId, expected, githubToken }),
-  readFileTree: (skillPath: string) =>
+  readFileTree: (skillPath: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<FileTreeNode>('read_skill_files', { skillPath })
+      ? invoke<FileTreeNode>('read_skill_files', { skillPath }, environmentId)
       : Promise.resolve({
           name: skillPath.split(/[\\/]+/).filter(Boolean).pop() || 'skill',
           nodeType: 'dir' as const,
@@ -1199,8 +1199,8 @@ export const skillApiV2 = {
             },
           ],
         }),
-  readFileContent: (filePath: string) =>
-    isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }) : Promise.resolve(''),
+  readFileContent: (filePath: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<string>('read_skill_file_content', { filePath }, environmentId) : Promise.resolve(''),
   browseRemoteSkillSources: (path = '~', environmentId?: string) =>
     isTauriRuntime()
       ? invoke<RemoteSkillSourceListing>('browse_remote_skill_sources', { path }, environmentId)
@@ -1344,8 +1344,8 @@ export const skillApiV2 = {
     isTauriRuntime() ? invoke<CopyTargetDiffPreview>('preview_copy_target_diff', { targetId }) : Promise.resolve(null as unknown as CopyTargetDiffPreview),
   executeSyncCopy: (targetId: string, action: string) =>
     isTauriRuntime() ? invoke<CopySyncPreview>('execute_sync_copy_target', { targetId, action }) : Promise.resolve(null as unknown as CopySyncPreview),
-  deleteSkillTargetDistribution: (targetId: string) =>
-    isTauriRuntime() ? invoke<void>('delete_skill_target_distribution', { targetId }) : Promise.resolve(),
+  deleteSkillTargetDistribution: (targetId: string, environmentId?: string) =>
+    isTauriRuntime() ? invoke<void>('delete_skill_target_distribution', { targetId }, environmentId) : Promise.resolve(),
   deleteSkillTargetDistributions: (targetIds: string[], environmentId?: string) =>
     isTauriRuntime()
       ? invoke<DeleteSkillTargetDistributionsResult>('delete_skill_target_distributions', { targetIds }, environmentId)
