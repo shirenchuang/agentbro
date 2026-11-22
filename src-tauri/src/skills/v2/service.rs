@@ -5140,6 +5140,22 @@ impl Service {
         &self,
         skill_ids: &[String],
     ) -> Result<Vec<SkillPackFingerprint>, String> {
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = self.read_skill_pack_fingerprints(skill_ids)?;
+        if current.iter().any(|member| member.missing) {
+            self.scan_center_into_db()?;
+            return self.read_skill_pack_fingerprints(skill_ids);
+        }
+        Ok(current)
+    }
+
+    fn read_skill_pack_fingerprints(
+        &self,
+        skill_ids: &[String],
+    ) -> Result<Vec<SkillPackFingerprint>, String> {
         skill_ids
             .iter()
             .map(|id| {
@@ -5188,7 +5204,7 @@ impl Service {
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let current = self.skill_pack_fingerprints(&manifest.skill_ids)?;
+        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids)?;
         super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
