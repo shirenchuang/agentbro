@@ -22,10 +22,9 @@
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    $agent = Wait-IslandValue "$AgentName in Agent Management" {
+    Click-IslandElement $null "$AgentName in Agent Management" -FindElement {
         Find-IslandButton $settings { param($Name) $Name -eq $AgentName }
-    }
-    Invoke-PackControl $agent | Out-Host
+    } | Out-Host
     $settings
 }
 
@@ -34,8 +33,9 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
     $fixtureLauncher = Join-Path $fixtureStage 'bin\claude.cmd'
     $fallbackLauncher = Join-Path $fixtureStage 'fallback bin\claude.exe'
-    $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
-    Invoke-PackControl $paths
+    Click-IslandElement $null 'Paths & settings tab' -FindElement {
+        Find-PackControl $settings 'Paths & settings' ([Windows.Automation.ControlType]::Button)
+    }
     $heading = Wait-IslandValue 'the Paths & settings panel' { Find-PackControl $settings 'Local resources and configuration' }
     $bounds = $heading.Current.BoundingRectangle
     if (-not [AgentBroSmokeInput]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) -or
@@ -54,8 +54,9 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     Write-Output 'Agent Management displayed the earlier Claude command shim while the later executable was present.'
     [AgentBroSmokeInput]::ScrollWheel(240)
     Remove-Item -LiteralPath $fallbackLauncher
-    $overview = Wait-IslandValue 'the Agent overview tab' { Find-PackControl $settings '概览' }
-    Invoke-PackControl $overview
+    Click-IslandElement $null 'Agent overview tab' -FindElement {
+        Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
+    }
 
     $null = Wait-IslandValue 'the fixture Claude Code version' {
         Find-PackControl $settings '可更新到 999.0.0'
