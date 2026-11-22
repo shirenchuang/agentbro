@@ -788,12 +788,13 @@ function Test-InstalledQwenWork([Windows.Automation.AutomationElement]$Island) {
         $fixtureOutput = & python $fixture $root seed
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the QwenWork fixture databases' }
         $labels = $fixtureOutput | ConvertFrom-Json
-        $null = Wait-IslandValue 'both live QwenWork tasks among completed history' {
-            $waiting = Find-IslandSessionGroup $Island { param($Name) $Name -eq $labels.agent } $labels.waiting
-            $flash = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($labels.flashTitle) } $labels.running
-            $waiting -and $flash
+        $null = Wait-IslandValue 'the waiting QwenWork desktop task among completed history' {
+            Find-IslandSessionGroup $Island { param($Name) $Name -eq $labels.agent } $labels.waiting
         }
-        Write-Output 'The installed Island rendered the waiting desktop task and running Flash task amid 70 newer completed tasks in each database.'
+        $null = Wait-IslandValue 'the running QwenWork Flash task with recent messages and stale session metadata' {
+            Find-IslandSessionGroup $Island { param($Name) $Name.Contains($labels.flashTitle) } $labels.running
+        }
+        Write-Output 'The installed Island kept the waiting desktop task and the recently active Flash task visible amid completed history.'
 
         & python $fixture $root resume
         if ($LASTEXITCODE -ne 0) { throw 'Could not resume the waiting QwenWork fixture' }

@@ -20,6 +20,7 @@ if mode == "resume":
             raise RuntimeError("Did not find the waiting desktop task")
 elif mode == "seed":
     live_at = now - 120_000
+    stale_session_at = now - 45 * 60_000
     completed_at = now - 60_000
     flash_title = "QwenWork Flash smoke task"
 
@@ -37,6 +38,7 @@ elif mode == "seed":
         database.executescript("""
             CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_updated INTEGER, time_archived INTEGER, parent_id TEXT);
             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
         """)
         for index in range(70):
             session_id = f"flash-{index}"
@@ -51,7 +53,7 @@ elif mode == "seed":
                 "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
                 (f"{session_id}-reply", session_id, completed_at, completed_at, reply),
             )
-        database.execute("INSERT INTO session VALUES ('live-flash', ?, ?, NULL, NULL)", (flash_title, live_at))
+        database.execute("INSERT INTO session VALUES ('live-flash', ?, ?, NULL, NULL)", (flash_title, stale_session_at))
         database.execute(
             "INSERT INTO message VALUES ('live-prompt', 'live-flash', ?, ?, ?)",
             (live_at, live_at, '{"role":"user"}'),
