@@ -36,6 +36,13 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $fallbackLauncher = Join-Path $fixtureStage 'fallback bin\claude.exe'
     $paths = Wait-IslandValue 'the Paths & settings tab' { Find-PackControl $settings 'Paths & settings' }
     Invoke-PackControl $paths
+    $heading = Wait-IslandValue 'the Paths & settings panel' { Find-PackControl $settings 'Local resources and configuration' }
+    $bounds = $heading.Current.BoundingRectangle
+    if (-not [AgentBroSmokeInput]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) -or
+        [AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId) {
+        throw 'AgentBro does not own the Paths & settings scroll point'
+    }
+    [AgentBroSmokeInput]::ScrollWheel(-240)
     $detectedLauncher = Wait-IslandValue 'the Claude launcher in Paths & settings' {
         foreach ($candidate in @($fixtureLauncher, $fallbackLauncher)) {
             if (Test-PackVisibleText $settings $candidate) { return $candidate }
@@ -45,6 +52,7 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         throw "Agent Management selected the later executable: $detectedLauncher"
     }
     Write-Output 'Agent Management displayed the earlier Claude command shim while the later executable was present.'
+    [AgentBroSmokeInput]::ScrollWheel(240)
     Remove-Item -LiteralPath $fallbackLauncher
     $overview = Wait-IslandValue 'the Agent overview tab' { Find-PackControl $settings '概览' }
     Invoke-PackControl $overview
