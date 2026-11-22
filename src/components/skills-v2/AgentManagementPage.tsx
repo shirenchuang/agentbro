@@ -76,7 +76,7 @@ type MoveToPackOption = BatchAdoptPackOption & {
 }
 type AdoptDialogState = {
   preview: AdoptPreview
-  runtimeEnvironmentId: string
+  scope: AgentSkillScope
 }
 type AgentActionTarget = AgentRuntimeSelection & {
   agent: AgentDetail
@@ -103,12 +103,6 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
   return isRuntimeEnvironment(scope.environmentId, scope.runtimeSelectionRevision)
     && selectedAgentId === scope.agentId
     && agentSelectionRevision === scope.agentSelectionRevision
-}
-
-function assertRuntimeEnvironment(expectedId: string, message: string) {
-  if (!isRuntimeEnvironment(expectedId)) {
-    throw new Error(message)
-  }
 }
 
 export function AgentManagementPage() {
@@ -143,7 +137,7 @@ export function AgentManagementPage() {
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null)
   const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
-  const [adoptingUnmanagedId, setAdoptingUnmanagedId] = useState<string | null>(null)
+  const [pendingAdoption, setPendingAdoption] = useState<(AgentSkillScope & { unmanagedId: string }) | null>(null)
   const [programSnapshot, setProgramSnapshot] = useState<{
     runtime: AgentRuntimeSelection
     programs: Record<string, AgentProgramInfo>
@@ -167,7 +161,9 @@ export function AgentManagementPage() {
   const currentPackApplyConflict = packApplyConflict && isAgentRuntimeSelection(packApplyConflict.runtime)
     ? packApplyConflict
     : null
-  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null
+  const currentAdopt = adopt && isCurrentAgentSkillScope(adopt.scope) ? adopt : null
+  const adoptingUnmanagedId = pendingAdoption && isCurrentAgentSkillScope(pendingAdoption) ? pendingAdoption.unmanagedId : null
+  const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
   const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
   const programs = programSnapshot && isAgentRuntimeSelection(programSnapshot.runtime) ? programSnapshot.programs : {}
 
@@ -260,29 +256,25 @@ export function AgentManagementPage() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
-  const openAdopt = async (agentId: string, unmanagedId: string) => {
-    const previewRuntimeEnvironmentId = useRuntimeEnvironmentStore.getState().selectedEnvironmentId
-    setAdoptingUnmanagedId(unmanagedId)
-    setBusy(true)
+  const openAdopt = async (ownerAgentId: string, unmanagedId: string) => {
+    if (!detail) return
+    const scope = {
+      agentId: detail.id,
+      environmentId: runtimeEnvironmentId,
+      runtimeSelectionRevision,
+      agentSelectionRevision: state.agentSelectionRevision,
+      unmanagedId,
+    }
+    if (!isCurrentAgentSkillScope(scope)) return
+
+    setPendingAdoption(scope)
     try {
-      assertRuntimeEnvironment(
-        previewRuntimeEnvironmentId,
-        '运行环境已切换，已忽略原环境的接管预览；请在当前环境重新扫描。',
-      )
-      const p = await skillApiV2.previewAdopt(agentId, unmanagedId)
-      assertRuntimeEnvironment(
-        previewRuntimeEnvironmentId,
-        '运行环境已切换，已忽略原环境的接管预览；请在当前环境重新扫描。',
-      )
-      setAdopt({
-        preview: p,
-        runtimeEnvironmentId: previewRuntimeEnvironmentId,
-      })
-    } catch (e) {
-      state.setError(String(e))
+      const preview = await skillApiV2.previewAdopt(ownerAgentId, unmanagedId)
+      if (isCurrentAgentSkillScope(scope)) setAdopt({ preview, scope })
+    } catch (error) {
+      if (isCurrentAgentSkillScope(scope)) setError(String(error))
     } finally {
-      setAdoptingUnmanagedId(null)
-      setBusy(false)
+      setPendingAdoption((pending) => pending === scope ? null : pending)
     }
   }
 
@@ -764,52 +756,27 @@ export function AgentManagementPage() {
         }}
       />
 
-      {adopt && (
+      {currentAdopt && (
         <AdoptDialog
-          preview={adopt.preview}
+          preview={currentAdopt.preview}
           packs={state.packs}
           onClose={() => setAdopt(null)}
           validateContext={() => {
-            assertRuntimeEnvironment(
-              adopt.runtimeEnvironmentId,
-              '运行环境已切换，已停止原环境的接管后续操作；请在当前环境重新扫描。',
-            )
+            if (!isCurrentAgentSkillScope(currentAdopt.scope)) {
+              throw new Error('Agent 或运行环境已切换，请重新打开接管预览。')
+            }
           }}
           onDone={async () => {
-            const refreshRuntimeEnvironmentId = adopt.runtimeEnvironmentId
-            const ensureRefreshRuntime = () => {
-              assertRuntimeEnvironment(
-                refreshRuntimeEnvironmentId,
-                '运行环境已切换，已丢弃原环境的刷新结果；请在当前环境重新扫描。',
-              )
-            }
-            ensureRefreshRuntime()
-            const agentId = adopt.preview.agentId
-            const visibleDetailId = detail?.id
-            const unmanaged = await skillApiV2.listUnmanaged()
-            ensureRefreshRuntime()
-            const detailIds = new Set<string>()
-            if (agentId !== SHARED_SKILLS_AGENT_ID) {
-              detailIds.add(agentId)
-            }
-            if (visibleDetailId && visibleDetailId !== agentId) {
-              detailIds.add(visibleDetailId)
-            }
-            for (const detailId of detailIds) {
-              const refreshedDetail = await skillApiV2.getAgentDetail(detailId)
-              ensureRefreshRuntime()
-              if (useSkillStoreV2.getState().selectedAgentId === detailId) {
-                useSkillStoreV2.setState({
-                  selectedAgentDetail: refreshedDetail,
-                  agentDetailLoading: false,
-                })
-              }
-            }
-            const overview = await skillApiV2.overview()
-            ensureRefreshRuntime()
-            useSkillStoreV2.getState().applyInventoryOverview(overview, unmanaged)
-            state.setError(null)
-            setAdopt(null)
+            const { scope } = currentAdopt
+            if (!isCurrentAgentSkillScope(scope)) return
+            const { agentId, environmentId } = scope
+            const snapshot = await skillApiV2.refreshAgentSkillView(agentId, environmentId)
+            if (!isCurrentAgentSkillScope(scope)) return
+            const applied = useSkillStoreV2.getState().applyAgentSkillViewSnapshot(environmentId, agentId, snapshot)
+            if (!applied) return
+
+            setError(null)
+            setAdopt((active) => active === currentAdopt ? null : active)
           }}
         />
       )}

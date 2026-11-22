@@ -255,6 +255,9 @@ jobs:
           & $testExecutable agents::executable::tests::windows_
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::executable::tests::agent_package_shell_respects_inherited_path_precedence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact agents::copilot::tests::finds_local_copilot_installations
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
