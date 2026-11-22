@@ -9,7 +9,7 @@ import { agentApi, type AgentOutputEvent, type AgentProgramInfo, type CustomAgen
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
-import { useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
+import { useCurrentAgentPrograms, useSelectedRuntimeEnvironment } from '../../hooks/useRuntimeEnvironment'
 import {
   LOCAL_RUNTIME_ENVIRONMENT_ID,
   useRuntimeEnvironmentStore,
@@ -24,6 +24,7 @@ import { RemoteSourcePicker } from './RemoteSourcePicker'
 import { SkillDetailSlider, type SkillDetailFallback } from './SkillDetailSlider'
 import { distributionBlockerReason, isAdoptOptionUnavailableError, skillErrorMessage, skillModeLabel, skillSourceTypeLabel, skillStatusLabel, targetClaimLabel, unmanagedReasonLabel } from './skillLabels'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries } from '../../utils/agentOrdering'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
 import { isWindowsPlatform } from '../../utils/platform'
 
 type DetailTab = 'overview' | 'skills' | 'mcp' | 'plugins' | 'hooks' | 'config'
@@ -139,10 +140,7 @@ export function AgentManagementPage() {
   const [uninstallingAgentId, setUninstallingAgentId] = useState<string | null>(null)
   const [openingAgentId, setOpeningAgentId] = useState<string | null>(null)
   const [pendingAdoption, setPendingAdoption] = useState<(AgentSkillScope & { unmanagedId: string }) | null>(null)
-  const [programSnapshot, setProgramSnapshot] = useState<{
-    runtime: AgentRuntimeSelection
-    programs: Record<string, AgentProgramInfo>
-  } | null>(null)
+  const programs = useCurrentAgentPrograms()
   const [programLoading, setProgramLoading] = useState(false)
   const [agentOutput, setAgentOutput] = useState<string[]>([])
   const [notice, setNotice] = useState<string | null>(null)
@@ -166,7 +164,6 @@ export function AgentManagementPage() {
   const adoptingUnmanagedId = pendingAdoption && isCurrentAgentSkillScope(pendingAdoption) ? pendingAdoption.unmanagedId : null
   const actionBusy = busy || refreshingOverview || refreshingAll || scanningAgentId !== null || updatingAgentId !== null || installingAgentId !== null || uninstallingAgentId !== null || openingAgentId !== null || deletingAgentId !== null || adoptingUnmanagedId !== null
   const isCurrentRuntime = () => isAgentRuntimeSelection(runtimeSelection)
-  const programs = programSnapshot && isAgentRuntimeSelection(programSnapshot.runtime) ? programSnapshot.programs : {}
 
   const loadPrograms = useCallback(async (runtime: AgentRuntimeSelection) => {
     if (!isAgentRuntimeSelection(runtime)) return
@@ -177,7 +174,7 @@ export function AgentManagementPage() {
       const next = await agentApi.refresh(runtime.environmentId)
       if (!isCurrent()) return
       const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
-      setProgramSnapshot({ runtime, programs })
+      useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
       if (isCurrent()) setError(skillErrorMessage(t, e))
@@ -233,10 +230,13 @@ export function AgentManagementPage() {
       return
     }
     if (state.selectedAgentId && agents.some((agent) => agent.id === state.selectedAgentId)) return
-    const first = agents.find((a) => a.installed) || agents[0]
+    const first = agents.find((agent) => {
+      const program = programs[agent.id]
+      return program ? isAgentProgramInstalled(program) : agent.installed
+    }) || agents[0]
     if (first) state.selectAgent(first.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, state.selectedAgentId])
+  }, [agents, programs, state.selectedAgentId])
 
   useEffect(() => {
     setTab('overview')
@@ -1273,12 +1273,11 @@ function AgentDetailView({
   const inheritedUnmanagedSkills = detail.inheritedUnmanagedSkills ?? []
   const inheritedSkillCount = inheritedManagedSkills.length + inheritedUnmanagedSkills.length
   const inheritsSharedSkills = detail.inheritsSharedSkills ?? inheritedSkillCount > 0
-  const installed = program ? program.status === 'installed' || program.status === 'updateAvailable' : agentInstalled
+  const installed = program ? isAgentProgramInstalled(program) : agentInstalled
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
   const installedVersion = program?.installedVersion ?? detail.version
-  const latestVersion = program?.latestVersion ?? detail.latestVersion
   const logicalSkillCount = countLogicalAgentSkills(
     detail.skills,
     unmanaged,
@@ -1286,18 +1285,20 @@ function AgentDetailView({
     inheritedUnmanagedSkills,
     readOnlySkills,
   )
-  const hasUpdate = installed && Boolean(latestVersion && latestVersion !== installedVersion)
+  const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
   const updateLabel = !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
-    : latestVersion
-      ? hasUpdate ? `可更新到 ${latestVersion}` : '已是最新版本'
-      : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+    : updateAvailable
+      ? `可更新到 ${program.latestVersion}`
+      : program?.latestVersion
+        ? program.latestVersion === installedVersion ? '已是最新版本' : null
+        : programLoading ? '正在获取最新版本' : '未检测到最新版本'
   const primaryAction = !installed
     ? canInstall
       ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
       : { label: opening ? '正在打开' : '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: opening }
-    : { label: updating ? '正在更新' : hasUpdate ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !hasUpdate, onClick: () => onUpdate(detail.id), busy: updating }
+    : { label: updating ? '正在更新' : updateAvailable ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !updateAvailable, onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${logicalSkillCount})` },
@@ -1315,9 +1316,11 @@ function AgentDetailView({
           <div className="sm2__agent-hero-title">{detail.displayName}</div>
           <div className="sm2__agent-version-row">
             <span className="sm2__agent-version-pill">当前版本 {versionLabel}</span>
-            <span className={`sm2__agent-update-state${hasUpdate ? ' sm2__agent-update-state--available' : ''}`}>
-              {updateLabel}
-            </span>
+            {updateLabel && (
+              <span className={`sm2__agent-update-state${updateAvailable ? ' sm2__agent-update-state--available' : ''}`}>
+                {updateLabel}
+              </span>
+            )}
           </div>
         </div>
         <div className="sm2__agent-summary-strip" aria-label="Agent 摘要">

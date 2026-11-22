@@ -218,6 +218,7 @@ function transformSession(bs: BackendSession): SessionState {
       source: bs.pendingQuestion.source ?? undefined,
       responseMode: bs.pendingQuestion.responseMode ?? undefined,
     } : undefined,
+    planRequestId: bs.pendingPlan?.requestId ?? undefined,
     planTitle: bs.pendingPlan?.title ?? undefined,
     planContent: bs.pendingPlan?.content ?? undefined,
     planPermissions: bs.pendingPlan?.permissions ?? undefined,

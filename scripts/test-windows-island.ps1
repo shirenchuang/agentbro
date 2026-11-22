@@ -626,6 +626,41 @@ function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Isla
     }
 }
 
+function Test-InstalledPlanReview([Windows.Automation.AutomationElement]$Island) {
+    $connection = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
+        $stream = $connection.GetStream()
+        $event = @{
+            agent = 'claude-code'
+            event = 'PlanApproval'
+            session_id = $SessionId
+            cwd = $Workspace
+            plan_title = 'Windows Island plan review'
+            plan_content = 'Confirm that the Island returns the manual review decision.'
+        }
+        $line = ($event | ConvertTo-Json -Compress) + "`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $reader = [System.IO.StreamReader]::new($stream)
+        $reply = $reader.ReadLineAsync()
+
+        $manual = Wait-IslandValue 'the plan manual review button' {
+            Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' }
+        }
+        Click-IslandElement $manual 'Plan manual review' -CenterAfterLayout
+        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive the review decision from the Windows Island' }
+        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($response.mode -ne 'manual') { throw "Unexpected Hook plan decision: $($response.mode)" }
+        $null = Wait-IslandValue 'the answered plan to disappear' {
+            -not (Find-IslandButton $Island { param($Name) $Name -eq 'Manual Review' })
+        }
+        Write-Output 'Windows Island sent the manual review decision to the original Hook socket.'
+    } finally {
+        $connection.Dispose()
+    }
+}
+
 function Get-IslandCenterX([IntPtr]$WindowHandle) {
     $bounds = [AgentBroSmokeInput+Rect]::new()
     if (-not [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$bounds)) {
@@ -880,6 +915,7 @@ try {
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
     Test-InstalledQuestionReply $island
+    Test-InstalledPlanReview $island
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }

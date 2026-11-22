@@ -12,6 +12,7 @@ interface OverlayCardProps {
   onShowSessions?: () => void
   sessionCount?: number
   maxHeight?: number
+  controls?: ReactNode
   className?: string
   bodyClassName?: string
   onCardClick?: () => void
@@ -23,7 +24,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   )
 }
 
-export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, className, bodyClassName, onCardClick }: OverlayCardProps) {
+export function OverlayCard({ session, children, onDismiss, onShowSessions, sessionCount, maxHeight, controls, className, bodyClassName, onCardClick }: OverlayCardProps) {
   const { t } = useTranslation()
   const cardClassName = ['overlay-card', onCardClick ? 'overlay-card--clickable' : undefined, className].filter(Boolean).join(' ')
   const bodyClass = ['overlay-card__body', bodyClassName].filter(Boolean).join(' ')
@@ -51,6 +52,7 @@ export function OverlayCard({ session, children, onDismiss, onShowSessions, sess
       <div className={bodyClass}>
         {children}
       </div>
+      {controls}
       <div className="overlay-card__secondary">
         {onShowSessions && sessionCount != null ? (
           <button

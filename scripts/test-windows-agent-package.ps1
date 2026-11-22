@@ -58,9 +58,34 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         Find-PackControl $settings '概览' ([Windows.Automation.ControlType]::Button)
     }
 
+    $null = Wait-IslandValue 'the installed fixture version' {
+        Test-PackVisibleText $settings '当前版本 2.0.0'
+    }
+    if (Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }) {
+        throw 'Agent Management offered an update while the registry tag was lower than the installed version'
+    }
+    $noUpdate = Find-IslandButton $settings { param($Name) $Name -eq '无需更新' }
+    if (-not $noUpdate -or $noUpdate.Current.IsEnabled) {
+        throw 'Agent Management did not disable updates for the lower registry tag'
+    }
+    Write-Output 'Agent Management kept 2.0.0 installed when the registry offered 1.0.0.'
+    $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG
+    $fetchVersions = Wait-IslandValue 'the enabled version refresh after advancing the registry tag' {
+        $button = Find-PackControl $settings '获取版本'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $fetchVersions
     $null = Wait-IslandValue 'the fixture Claude Code version' {
         Find-PackControl $settings '可更新到 999.0.0'
     }
+    $null = Wait-IslandValue 'the detected CLI under Installed Agents' {
+        $agent = Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
+        if ($agent) {
+            $classes = $agent.Current.ClassName -split '\s+'
+            $classes -contains 'sm2-sidebar__subitem' -and $classes -notcontains 'sm2-sidebar__subitem--muted'
+        }
+    }
+    Write-Output 'The sidebar grouped the detected Claude Code CLI under Installed Agents.'
     $update = Wait-IslandValue 'the Claude Code update action' {
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }

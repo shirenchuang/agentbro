@@ -7,6 +7,8 @@ import type { SkillManagerTab } from '../../stores/skillStoreV2'
 import { AgentIconBadge } from '../skills-v2/AgentIconBadge'
 import type { IslandSettingsView, MonitorSettingsView } from '../../types/capability'
 import { buildAgentUsageScores, readStoredAgentOrder, sortAgentSummaries, writeStoredAgentOrder } from '../../utils/agentOrdering'
+import { isAgentProgramInstalled } from '../../utils/agentPrograms'
+import { useCurrentAgentPrograms } from '../../hooks/useRuntimeEnvironment'
 import { RuntimeEnvironmentSwitcher } from './RuntimeEnvironmentSwitcher'
 
 interface SidebarItem {
@@ -72,6 +74,7 @@ export function SettingsSidebar({
   const setSkillInstallTab = useSkillStoreV2((s) => s.setInstallTab)
   const marketplaceInstallTask = useSkillStoreV2((s) => s.marketplaceInstallTask)
   const skillAgents = useSkillStoreV2((s) => s.agents)
+  const agentPrograms = useCurrentAgentPrograms()
   const skillSelectedAgentId = useSkillStoreV2((s) => s.selectedAgentId)
   const selectAgent = useSkillStoreV2((s) => s.selectAgent)
   const requestCustomAgentDialog = useSkillStoreV2((s) => s.requestCustomAgentDialog)
@@ -100,7 +103,10 @@ export function SettingsSidebar({
   const visibleSkillAgents = useMemo(() => skillAgents.filter((agent) =>
     agent.id !== SHARED_SKILLS_AGENT_ID
     && (agent.displayName.toLowerCase().includes(agentQuery) || agent.id.toLowerCase().includes(agentQuery)),
-  ), [agentQuery, skillAgents])
+  ).map((agent) => {
+    const program = agentPrograms[agent.id]
+    return program ? { ...agent, installed: isAgentProgramInstalled(program) } : agent
+  }), [agentPrograms, agentQuery, skillAgents])
   const installedSkillAgents = useMemo(
     () => sortAgentSummaries(
       visibleSkillAgents.filter((agent) => agent.installed),

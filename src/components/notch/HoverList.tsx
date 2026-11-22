@@ -9,9 +9,9 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
-import { answerDisplayedPermission, answerDisplayedQuestion, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, planKey, planReplyError, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
-import { respondPlan, setNotchFocusable } from '../../services/tauriApi'
+import { setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
@@ -1045,20 +1045,18 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
 function InlinePlanPreview({ session }: { session: SessionState }) {
   const { t } = useTranslation()
   const [feedback, setFeedback] = useState('')
+  const error = useSessionStore((state) => planReplyError(state, session.id, session))
   if (!session.planTitle && !session.planContent) return null
   const permissions = session.planPermissions || []
   const trimmedFeedback = feedback.trim()
 
   const submitPlan = (mode: string, message?: string) => {
-    respondPlan(session.id, mode, message)
-      .then(() => useSessionStore.getState().clearPlan(session.id))
-      .catch((error) => console.warn('[notch] inline respondPlan:', error))
+    void answerDisplayedPlan(session.id, session, mode, message)
   }
 
   const submitFeedback = () => {
     if (!trimmedFeedback) return
     submitPlan('feedback', trimmedFeedback)
-    setFeedback('')
   }
 
   return (
@@ -1150,6 +1148,7 @@ function InlinePlanPreview({ session }: { session: SessionState }) {
           {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
         </button>
       </div>
+      {error && <div className="plan-approval__error" role="alert">{error}</div>}
     </div>
   )
 }
@@ -1431,7 +1430,7 @@ function SessionCard({
         {inlineQuestion && <InlineQuestionPreview key={questionKey(inlineQuestion)} session={session} onDraftStateChange={onInputDraftStateChange} />}
 
         {/* Row 9: inline plan */}
-        {showInlinePlan && <InlinePlanPreview session={session} />}
+        {showInlinePlan && <InlinePlanPreview key={planKey(session)} session={session} />}
       </div>
     </motion.div>
   )

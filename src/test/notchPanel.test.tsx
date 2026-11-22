@@ -101,6 +101,7 @@ function mountIsland(activeOverlay: OverlayItem | null = null, sessionOverrides:
     activeOverlay,
     overlayQueue: activeOverlay ? [activeOverlay] : [],
     questionReplies: new Map(),
+    planReplies: new Map(),
     rateLimits: undefined,
     hookNotification: null,
     wakeSilencedUntil: 0,
@@ -1553,7 +1554,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s2.pendingQuestion).toEqual(otherQuestion)
   })
 
-  it('routes configured approval shortcuts to plan modes when a plan is pending', () => {
+  it('routes configured approval shortcuts to plan modes when a plan is pending', async () => {
     useConfigStore.setState({
       shortcuts: [
         { action: 'approve-action', label: 'Approve Action', keys: '⌘+a' },
@@ -1568,8 +1569,9 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'a', metaKey: true })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, undefined)
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planTitle).toBeUndefined())
 
     cleanup()
     tauriMocks.respondPlan.mockClear()
@@ -1581,8 +1583,9 @@ describe('NotchPanel island shell', () => {
 
     fireEvent.keyDown(window, { key: 'd', metaKey: true })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual', undefined, undefined)
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.planTitle).toBeUndefined())
   })
 
   it('routes recorded symbol shortcuts to permission actions', () => {
@@ -1997,7 +2000,7 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes plan overlay decisions to respondPlan and dismisses the overlay', () => {
+  it('routes plan overlay decisions to respondPlan and dismisses the overlay', async () => {
     mountIsland({
       id: 'plan-s1',
       sessionId: 's1',
@@ -2038,16 +2041,19 @@ describe('NotchPanel island shell', () => {
     fireEvent.click(document.querySelector('.plan-approval__content')!)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
 
-    fireEvent.click(screen.getByText('Accept Edits'))
+    const accept = screen.getByRole('button', { name: 'Accept Edits' })
+    expect(accept.closest('.overlay-card__body')).toBeNull()
+    fireEvent.mouseDown(accept)
+    fireEvent.click(accept, { detail: 1 })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, undefined)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledTimes(1)
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
     expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()
     expect(useSessionStore.getState().sessions.s1.phase).toBe('processing')
   })
 
-  it('routes plan overlay manual review and auto approval actions', () => {
+  it('routes plan overlay manual review and auto approval actions', async () => {
     mountIsland({
       id: 'plan-s1-manual',
       sessionId: 's1',
@@ -2060,7 +2066,8 @@ describe('NotchPanel island shell', () => {
     })
 
     fireEvent.click(screen.getByText('Manual Review'))
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'manual', undefined, undefined)
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
 
     cleanup()
     mountIsland({
@@ -2075,32 +2082,70 @@ describe('NotchPanel island shell', () => {
     })
 
     fireEvent.click(screen.getByText('Auto'))
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'bypassPermissions', undefined, undefined)
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
-  it('routes plan overlay feedback through feedback mode', () => {
+  it('keeps failed plan feedback visible and retries it for the displayed plan', async () => {
+    tauriMocks.respondPlan.mockRejectedValueOnce(new Error('Plan Hook disconnected'))
+    const plan = { planRequestId: 'plan-feedback', planTitle: 'Implementation plan', planContent: '1. Fix jump' }
     mountIsland({
       id: 'plan-s1-feedback',
       sessionId: 's1',
       type: 'plan',
-      data: { planTitle: 'Implementation plan', planContent: '1. Fix jump' },
+      data: plan,
       createdAt: Date.now(),
-    }, {
-      planTitle: 'Implementation plan',
-      planContent: '1. Fix jump',
-    })
+    }, { ...plan, phase: 'waiting_approval' })
 
-    fireEvent.change(screen.getByPlaceholderText('Tell Claude what to change...'), {
+    const input = screen.getByPlaceholderText('Tell Claude what to change...')
+    fireEvent.change(input, {
       target: { value: 'Revise the migration order' },
     })
     fireEvent.click(screen.getByText('Send Feedback'))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith(
+    expect(await screen.findByRole('alert')).toHaveTextContent('Plan Hook disconnected')
+    expect(input).toHaveValue('Revise the migration order')
+    fireEvent.click(screen.getByText('Send Feedback'))
+    expect(tauriMocks.respondPlan).toHaveBeenNthCalledWith(
+      2,
       's1',
       'feedback',
       'Revise the migration order',
+      'plan-feedback',
     )
-    expect(useSessionStore.getState().activeOverlay).toBeNull()
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
+  })
+
+  it('keeps a replacement plan with identical text awaiting a decision', async () => {
+    const sending = deferred()
+    tauriMocks.respondPlan.mockReturnValueOnce(sending.promise)
+    const first = { planRequestId: 'first-plan', planTitle: 'Implementation plan', planContent: 'Review changes' }
+    mountIsland({
+      id: 'plan-first',
+      sessionId: 's1',
+      type: 'plan',
+      data: first,
+      createdAt: Date.now(),
+    }, { ...first, phase: 'waiting_approval' })
+
+    const option = screen.getByRole('button', { name: 'Accept Edits' })
+    fireEvent.click(option)
+    fireEvent.click(option)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, 'first-plan')
+
+    const replacement = { ...first, planRequestId: 'replacement-plan' }
+    act(() => {
+      const state = useSessionStore.getState()
+      state.replaceAllSessions([{ ...state.sessions.s1, ...replacement }])
+    })
+    await act(async () => sending.resolve())
+
+    expect(useSessionStore.getState().sessions.s1.planRequestId).toBe('replacement-plan')
+    expect(useSessionStore.getState().activeOverlay?.data).toMatchObject(replacement)
+    await waitFor(() => expect(option).not.toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Manual Review' }))
+    expect(tauriMocks.respondPlan).toHaveBeenNthCalledWith(2, 's1', 'manual', undefined, 'replacement-plan')
+    await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
   })
 
   it('focuses plan feedback inputs through the island hitbox capture path', () => {
