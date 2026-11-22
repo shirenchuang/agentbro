@@ -284,6 +284,9 @@ jobs:
           & $testExecutable --exact agents::programs::tests::desktop_trash_uninstall_is_available_only_on_macos
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable --exact agents::programs::tests::npm_updates_require_a_higher_semver_precedence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           $qwenworkTests = 'hooks::qwenwork_watcher::tests'
           if (-not (& $testExecutable --list $qwenworkTests | Select-String -SimpleMatch "${qwenworkTests}::" -Quiet)) {
             throw 'The QwenWork watcher tests were not compiled for Windows'

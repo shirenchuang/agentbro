@@ -31,6 +31,7 @@ if ($VerifyAgentPackageConsole) {
     $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
+    $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG = Join-Path $stage 'package-new-tag'
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
@@ -47,7 +48,13 @@ if /i "%~1"=="list" (
     exit /b 0
 )
 if /i "%~1"=="view" (
-    if "%~2"=="@anthropic-ai/claude-code" echo 999.0.0
+    if "%~2"=="@anthropic-ai/claude-code" (
+        if exist "%AGENTBRO_PACKAGE_FIXTURE_NEW_TAG%" (
+            echo 999.0.0
+        ) else (
+            echo 1.0.0
+        )
+    )
     exit /b 0
 )
 if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
