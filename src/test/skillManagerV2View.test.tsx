@@ -8411,6 +8411,68 @@ describe('Skill detail slider + agent page render without crashing', () => {
     await waitFor(() => expect(screen.queryByText('确认同步冲突')).not.toBeInTheDocument())
   })
 
+  it.each([false, true])('drops a Pack deletion review after changing runtimes, already visible=%s', async (visible) => {
+    const { pack } = await renderPackPage({ id: 'review-pack' })
+    const preview = {
+      packId: pack.id, packName: pack.name, appliedAgents: [], affectedTargets: [], removable: true, warnings: [],
+    }
+    let resolveReview!: (value: typeof preview) => void
+    const pending = new Promise<typeof preview>((resolve) => { resolveReview = resolve })
+    vi.spyOn(skillApiV2, 'previewDeletePack').mockReturnValue(pending)
+    const remove = vi.spyOn(skillApiV2, 'deletePack').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除技能包' }))
+
+    if (visible) await act(async () => { resolveReview(preview) })
+    const confirm = screen.queryByRole('button', { name: '删除' })
+    if (visible) expect(confirm).toBeInTheDocument()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    if (!visible) await act(async () => { resolveReview(preview) })
+    if (confirm) fireEvent.click(confirm)
+
+    expect(remove).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: `删除技能包「${pack.name}」` })).not.toBeInTheDocument()
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(pack.id)
+  })
+
+  it.each([false, true])('preserves the selected Pack after a member removal, switch runtime=%s', async (switchRuntime) => {
+    const { pack, skill, overview } = await renderPackPage({ id: 'removal-pack' })
+    const other = { ...pack, id: 'other-pack', name: 'Other Pack' }
+    const packs = [...overview.packs, { ...overview.packs[0], id: other.id, name: other.name }]
+    act(() => useSkillStoreV2.setState({ packs }))
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, packs })
+    vi.mocked(skillApiV2.getPackDetail).mockImplementation(async (id) => id === other.id ? other : pack)
+    vi.spyOn(skillApiV2, 'previewRemoveSkillFromPack').mockResolvedValue({
+      packId: pack.id, packName: pack.name, skillId: skill.id, skillName: skill.name,
+      affectedTargets: [], appliedAgentCount: 0, canKeepStandalone: true, canRemoveTargets: true,
+    })
+    let finishRemoval!: () => void
+    const pending = new Promise<void>((resolve) => { finishRemoval = resolve })
+    const remove = vi.spyOn(skillApiV2, 'removeSkillFromPack').mockReturnValue(pending)
+    fireEvent.click(screen.getByRole('button', { name: '移除' }))
+    fireEvent.click(await screen.findByRole('button', { name: switchRuntime ? '同步从 Agent 移除' : '保留为直接分发' }))
+    expect(remove).toHaveBeenCalledWith(pack.id, skill.id, switchRuntime, LOCAL_RUNTIME_ENVIRONMENT_ID)
+
+    if (switchRuntime) {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      act(() => {
+        selectEnvironment('other-machine')
+        selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+    }
+    fireEvent.click(screen.getByRole('button', { name: /^Other Pack/ }))
+    expect(await screen.findByRole('heading', { name: other.name })).toBeInTheDocument()
+    await act(async () => { finishRemoval() })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(other.id)
+    expect(screen.getByRole('heading', { name: other.name })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保留为直接分发' })).not.toBeInTheDocument()
+  })
+
   it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {
     const appliedPack = { packId: 'default', packName: '全量技能包', memberCount: 1, agentId: 'claude-code', displayName: 'Claude Code' }
     const defaultPack: SkillPackDetail = {

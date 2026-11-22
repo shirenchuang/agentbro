@@ -38,6 +38,11 @@ type PackLink = {
   error: string | null
 }
 type PackMemberStatus = 'missing' | 'unavailable' | 'unrecorded' | 'different' | 'match'
+type PackRemoval =
+  | { kind: 'delete'; preview: DeleteSkillPackPreview }
+  | { kind: 'member'; preview: RemoveSkillFromPackPreview }
+  | { kind: 'revoke'; preview: RemovePackFromAgentPreview }
+type PackRemovalReview = PackRemoval & { runtime: PackRuntime }
 type PackSyncConflictState = {
   packId: string
   runtime: PackRuntime
@@ -126,9 +131,8 @@ export function SkillPackPage() {
   const [packQuery, setPackQuery] = useState('')
   const [builderDraft, setBuilder] = useState<{ mode: BuilderMode; runtime: PackRuntime } | null>(null)
   const [applyFor, setApplyFor] = useState<SkillPackDetail | null>(null)
-  const [deletePreview, setDeletePreview] = useState<DeleteSkillPackPreview | null>(null)
-  const [removeSkillPreview, setRemoveSkillPreview] = useState<RemoveSkillFromPackPreview | null>(null)
-  const [revokePreview, setRevokePreview] = useState<RemovePackFromAgentPreview | null>(null)
+  const [removalDraft, setRemovalReview] = useState<PackRemovalReview | null>(null)
+  const [removalOperation, setRemovalOperation] = useState<{ runtime: PackRuntime } | null>(null)
   const [syncConflictDraft, setSyncConflict] = useState<PackSyncConflictState | null>(null)
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [actionBusy, setBusy] = useState(false)
@@ -145,7 +149,11 @@ export function SkillPackPage() {
   const syncConflict = syncConflictDraft?.runtime.selectionRevision === runtimeRevision && syncConflictDraft.packId === state.selectedPackId
     ? syncConflictDraft
     : null
+  const removalReview = removalDraft?.runtime.selectionRevision === runtimeRevision && removalDraft.preview.packId === state.selectedPackId
+    ? removalDraft
+    : null
   const busy = actionBusy || foregroundSync?.runtime.selectionRevision === runtimeRevision
+    || removalOperation?.runtime.selectionRevision === runtimeRevision
   const syncNotice = notice?.revision === runtimeRevision && (!notice.packId || notice.packId === state.selectedPackId)
     ? notice.message
     : null
@@ -393,44 +401,66 @@ export function SkillPackPage() {
     }
   }
 
-  const openDelete = async (packId: string) => {
-    setBusy(true)
-    try {
-      setDeletePreview(await skillApiV2.previewDeletePack(packId))
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const openRemoveSkill = async (packId: string, skillId: string) => {
-    setBusy(true)
-    try {
-      setRemoveSkillPreview(await skillApiV2.previewRemoveSkillFromPack(packId, skillId))
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const openRevoke = async (packId: string, agentId: string) => {
-    setBusy(true)
-    try {
-      setRevokePreview(await skillApiV2.previewRemovePackFromAgent(packId, agentId))
-    } catch (e) {
-      state.setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const refreshSelectedPack = async (packId: string, runtime: PackRuntime) => {
     if (!isPackRuntimeCurrent(runtime)) return
     await state.loadOverview(true)
     if (isPackRuntimeCurrent(runtime) && useSkillStoreV2.getState().selectedPackId === packId) {
       await state.selectPack(packId)
+    }
+  }
+
+  const reviewPackRemoval = async (packId: string, load: (environmentId: string) => Promise<PackRemoval>) => {
+    const runtime = useRuntimeEnvironmentStore.getState()
+    if (busy || !isPackRuntimeCurrent(runtime)) return
+    const operation = { runtime }
+    const isReviewCurrent = () => isPackRuntimeCurrent(runtime) && useSkillStoreV2.getState().selectedPackId === packId
+    setRemovalOperation(operation)
+    try {
+      const removal = await load(runtime.selectedEnvironmentId)
+      if (isReviewCurrent()) setRemovalReview({ ...removal, runtime })
+    } catch (error) {
+      if (isReviewCurrent()) state.setError(String(error))
+    } finally {
+      setRemovalOperation((current) => current === operation ? null : current)
+    }
+  }
+
+  const executePackRemoval = async (review: PackRemovalReview, alsoRemoveTargets = false) => {
+    const { runtime } = review
+    const { packId } = review.preview
+    const environmentId = runtime.selectedEnvironmentId
+    const isSelected = () => useSkillStoreV2.getState().selectedPackId === packId
+    if (busy || !isPackRuntimeCurrent(runtime) || !isSelected()) return
+    const operation = { runtime }
+    setRemovalOperation(operation)
+    try {
+      switch (review.kind) {
+        case 'delete':
+          await skillApiV2.deletePack(packId, environmentId)
+          break
+        case 'member':
+          await skillApiV2.removeSkillFromPack(packId, review.preview.skillId, alsoRemoveTargets, environmentId)
+          break
+        case 'revoke':
+          await skillApiV2.removePackFromAgent(packId, review.preview.agentId, environmentId)
+          break
+      }
+      if (!isPackRuntimeCurrent(runtime)) return
+      setRemovalReview((current) => current === review ? null : current)
+      if (review.kind === 'delete') {
+        await state.loadOverview(true)
+        if (isPackRuntimeCurrent(runtime) && isSelected()) await state.selectPack(null)
+        return
+      }
+      await refreshSelectedPack(packId, runtime)
+      if (review.kind === 'revoke' && isPackRuntimeCurrent(runtime)
+        && useSkillStoreV2.getState().selectedAgentId === review.preview.agentId) {
+        await state.loadAgentDetail(review.preview.agentId, true)
+      }
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime) && isSelected()) state.setError(String(error))
+    } finally {
+      setRemovalOperation((current) => current === operation ? null : current)
     }
   }
 
@@ -557,6 +587,7 @@ export function SkillPackPage() {
                   onClick={() => {
                     setBuilder(null)
                     setSyncConflict(null)
+                    setRemovalReview(null)
                     state.selectPack(pack.id)
                   }}
                 />
@@ -577,10 +608,16 @@ export function SkillPackPage() {
               onEdit={startEdit}
               onExport={(withSources) => exportPackManifest(detail, withSources)}
               onDuplicate={startDuplicate}
-              onDelete={() => openDelete(detail.id)}
-              onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
+              onDelete={() => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'delete', preview: await skillApiV2.previewDeletePack(detail.id, environmentId),
+              }))}
+              onRemoveSkill={(skillId) => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'member', preview: await skillApiV2.previewRemoveSkillFromPack(detail.id, skillId, environmentId),
+              }))}
               onOpenSkill={setDetailSkillId}
-              onRevoke={(agentId) => openRevoke(detail.id, agentId)}
+              onRevoke={(agentId) => reviewPackRemoval(detail.id, async (environmentId) => ({
+                kind: 'revoke', preview: await skillApiV2.previewRemovePackFromAgent(detail.id, agentId, environmentId),
+              }))}
               onSync={(agentIds) => syncPack(detail.id, agentIds)}
               membershipsBySkillId={packMemberships.membershipsBySkillId}
               membershipsLoading={packMemberships.loading}
@@ -739,70 +776,28 @@ export function SkillPackPage() {
           }}
         />
       )}
-      {deletePreview && (
+      {removalReview?.kind === 'delete' && (
         <DeletePackDialog
-          preview={deletePreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setDeletePreview(null)}
-          onDelete={async () => {
-            setBusy(true)
-            try {
-              await skillApiV2.deletePack(deletePreview.packId)
-              setDeletePreview(null)
-              await state.selectPack(null)
-              await state.loadOverview(true)
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onDelete={() => executePackRemoval(removalReview)}
         />
       )}
-      {removeSkillPreview && (
+      {removalReview?.kind === 'member' && (
         <RemoveSkillFromPackDialog
-          preview={removeSkillPreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setRemoveSkillPreview(null)}
-          onExecute={async (alsoRemoveTargets) => {
-            setBusy(true)
-            try {
-              await skillApiV2.removeSkillFromPack(removeSkillPreview.packId, removeSkillPreview.skillId, alsoRemoveTargets)
-              const packId = removeSkillPreview.packId
-              setRemoveSkillPreview(null)
-              await state.selectPack(packId)
-              await state.loadOverview(true)
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onExecute={(alsoRemoveTargets) => executePackRemoval(removalReview, alsoRemoveTargets)}
         />
       )}
-      {revokePreview && (
+      {removalReview?.kind === 'revoke' && (
         <RevokePackDialog
-          preview={revokePreview}
+          preview={removalReview.preview}
           busy={busy}
-          onClose={() => setRevokePreview(null)}
-          onExecute={async () => {
-            setBusy(true)
-            try {
-              await skillApiV2.removePackFromAgent(revokePreview.packId, revokePreview.agentId)
-              const packId = revokePreview.packId
-              const agentId = revokePreview.agentId
-              setRevokePreview(null)
-              await state.selectPack(packId)
-              await state.loadOverview(true)
-              if (useSkillStoreV2.getState().selectedAgentId === agentId) {
-                await state.loadAgentDetail(agentId, true)
-              }
-            } catch (e) {
-              state.setError(String(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
+          onClose={() => setRemovalReview(null)}
+          onExecute={() => executePackRemoval(removalReview)}
         />
       )}
       {syncConflict && (
