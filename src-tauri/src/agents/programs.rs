@@ -98,6 +98,7 @@ enum RuntimePlatform {
 }
 
 const APP_TRASH_UNINSTALL_COMMAND: &str = "Move application to Trash";
+const CLAUDE_NATIVE_UPDATE_COMMAND: &str = "claude update";
 
 impl RuntimePlatform {
     fn current() -> Self {
@@ -411,12 +412,20 @@ async fn build_agent_list(
 
 async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> AgentProgramInfo {
     let id = seed.id;
-    let meta = metadata_for(&id).unwrap_or_else(default_metadata);
+    let mut meta = metadata_for(&id).unwrap_or_else(default_metadata);
     let binary_path = match &meta.kind {
-        AgentProgramKind::Cli => which_agent_binary(&id, &meta),
-        AgentProgramKind::App if id == "antigravity" => which_agent_binary(&id, &meta),
+        AgentProgramKind::Cli => find_agent_binary(&id, &meta),
+        AgentProgramKind::App if id == "antigravity" => find_agent_binary(&id, &meta),
         AgentProgramKind::App => None,
     };
+    let native_claude = native_claude_launcher(&id, binary_path.as_deref());
+    if native_claude.is_some() {
+        meta.package_manager = Some("native");
+        meta.package_name = None;
+        meta.install_command = None;
+        meta.update_command = Some(CLAUDE_NATIVE_UPDATE_COMMAND);
+        meta.uninstall_command = None;
+    }
     let app_path = match &meta.kind {
         AgentProgramKind::Cli => None,
         AgentProgramKind::App => installed_app_path(&id, &meta),
@@ -433,7 +442,9 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     let paths = agent_paths::paths_for_agent(&id);
     let skill_path = paths.skill_dirs.first().map(PathBuf::as_path);
     let skills_dir = skill_path.map(|path| path.display().to_string());
-    let (installed_version, latest_version) = if installed {
+    let (installed_version, latest_version) = if let Some(launcher) = native_claude {
+        (native_claude_version(launcher).await, None)
+    } else if installed {
         version_info_for(&meta, app_path.as_deref(), include_latest).await
     } else {
         (None, None)
@@ -466,7 +477,7 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         package_name: meta.package_name.map(ToString::to_string),
         installed_version,
         latest_version,
-        binary_path,
+        binary_path: binary_path.map(|path| path.display().to_string()),
         config_dir,
         app_path: display_app_path,
         download_url: meta.download_url.map(ToString::to_string),
@@ -477,6 +488,23 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         skills_dir,
         is_custom: false,
     }
+}
+
+async fn native_claude_version(launcher: &Path) -> Option<String> {
+    let path = executable::augmented_path_env();
+    let mut command = package_command(launcher, path.as_deref());
+    let output = package_probe_output(command.arg("--version"), Duration::from_secs(5)).await?;
+    if !output.status.success() {
+        return None;
+    }
+    std::str::from_utf8(&output.stdout)
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            let version = line.strip_suffix(" (Claude Code)").unwrap_or(line);
+            parse_semver(version).map(|_| version.to_string())
+        })
 }
 
 async fn version_info_for(
@@ -671,15 +699,15 @@ async fn package_probe_output(
 
 fn versions_indicate_update(installed: Option<&str>, latest: Option<&str>) -> bool {
     match (
-        installed.and_then(parse_npm_version),
-        latest.and_then(parse_npm_version),
+        installed.and_then(parse_semver),
+        latest.and_then(parse_semver),
     ) {
         (Some(installed), Some(latest)) => latest.cmp_precedence(&installed).is_gt(),
         _ => false,
     }
 }
 
-fn parse_npm_version(version: &str) -> Option<semver::Version> {
+fn parse_semver(version: &str) -> Option<semver::Version> {
     let version = version.trim();
     semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).ok()
 }
@@ -738,11 +766,16 @@ async fn run_agent_command(
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
+    let installed_binary = if agent_id == "claude-code" || operation == "uninstall" {
+        find_agent_binary(agent_id, &meta)
+    } else {
+        None
+    };
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
             &meta,
-            find_agent_binary(agent_id, &meta).is_some(),
+            installed_binary.is_some(),
             installed_app_path(agent_id, &meta).is_some(),
         )
     {
@@ -763,20 +796,26 @@ async fn run_agent_command(
     {
         return trash_agent_app(app, agent_id, &meta).await;
     }
-    let (command_line, mut command) = if agent_id == "aider" && operation == "uninstall" {
-        aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
-    } else {
-        let command_line = match operation {
-            "install" => meta.install_command,
-            "update" => meta.update_command,
-            "uninstall" => meta.uninstall_command,
-            _ => None,
-        }
-        .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
-        .to_string();
-        let command = package_operation_command(&command_line);
-        (command_line, command)
-    };
+    let (command_line, mut command) =
+        if let Some(launcher) = native_claude_launcher(agent_id, installed_binary.as_deref()) {
+            (
+                CLAUDE_NATIVE_UPDATE_COMMAND.to_string(),
+                native_claude_package_command(launcher, operation)?,
+            )
+        } else if agent_id == "aider" && operation == "uninstall" {
+            aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
+        } else {
+            let command_line = match operation {
+                "install" => meta.install_command,
+                "update" => meta.update_command,
+                "uninstall" => meta.uninstall_command,
+                _ => None,
+            }
+            .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
+            .to_string();
+            let command = package_operation_command(&command_line);
+            (command_line, command)
+        };
 
     emit_output(
         &app,
@@ -845,6 +884,18 @@ async fn run_agent_command(
     } else {
         Err(format!("{operation} failed for {agent_id}"))
     }
+}
+
+fn native_claude_package_command(launcher: &Path, operation: &str) -> Result<Command, String> {
+    if operation != "update" {
+        return Err(format!(
+            "{operation} is not supported for the native Claude Code installation"
+        ));
+    }
+    let path = executable::augmented_path_env();
+    let mut command = package_command(launcher, path.as_deref());
+    command.arg("update").stdin(Stdio::null());
+    Ok(command)
 }
 
 async fn aider_uninstall_command(
@@ -1109,8 +1160,36 @@ fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> 
         .find_map(executable::find_binary)
 }
 
-fn which_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    find_agent_binary(agent_id, meta).map(|path| path.display().to_string())
+fn native_claude_launcher<'a>(agent_id: &str, binary: Option<&'a Path>) -> Option<&'a Path> {
+    if agent_id != "claude-code" {
+        return None;
+    }
+    let launcher = binary?;
+    let home = dirs::home_dir()?;
+    is_native_claude_launcher(launcher, &home, RuntimePlatform::current()).then_some(launcher)
+}
+
+fn is_native_claude_launcher(binary: &Path, home: &Path, platform: RuntimePlatform) -> bool {
+    let local = home.join(".local");
+    if platform == RuntimePlatform::Windows {
+        let launcher = local.join("bin").join("claude.exe");
+        let same_path = binary.components().count() == launcher.components().count()
+            && binary
+                .components()
+                .zip(launcher.components())
+                .all(|(left, right)| left.as_os_str().eq_ignore_ascii_case(right.as_os_str()));
+        return same_path
+            || binary
+                .canonicalize()
+                .ok()
+                .zip(launcher.canonicalize().ok())
+                .is_some_and(|(binary, launcher)| binary == launcher);
+    }
+    let versions = local.join("share/claude/versions");
+    let versions = versions.canonicalize().unwrap_or(versions);
+    binary
+        .canonicalize()
+        .is_ok_and(|path| path.starts_with(versions))
 }
 
 fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'static str> {
@@ -1893,6 +1972,106 @@ mod tests {
         );
         drop(running);
         assert!(super::claim_agent_package_operation().is_ok());
+    }
+
+    #[test]
+    fn native_claude_windows_launcher_is_distinct_from_npm_shims() {
+        let home = Path::new("test-user");
+        assert!(super::is_native_claude_launcher(
+            &home.join(".local/bin/CLAUDE.EXE"),
+            home,
+            RuntimePlatform::Windows,
+        ));
+        assert!(!super::is_native_claude_launcher(
+            &home.join("AppData/Roaming/npm/claude.cmd"),
+            home,
+            RuntimePlatform::Windows,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_claude_unix_launcher_resolves_to_the_native_version_store() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        let home = temporary.path();
+        let local_bin = home.join(".local/bin");
+        let version_directory = home.join(".local/share/claude/versions");
+        let launcher = local_bin.join("claude");
+        let installed_version = version_directory.join("2.1.89");
+        let npm = home.join("npm-global/claude");
+        for directory in [&local_bin, &version_directory, npm.parent().unwrap()] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(&installed_version, "").unwrap();
+        std::fs::write(&npm, "").unwrap();
+        std::os::unix::fs::symlink(&installed_version, &launcher).unwrap();
+
+        assert!(super::is_native_claude_launcher(
+            &launcher,
+            home,
+            RuntimePlatform::Macos
+        ));
+        assert!(!super::is_native_claude_launcher(
+            &npm,
+            home,
+            RuntimePlatform::Macos
+        ));
+        std::fs::remove_file(&launcher).unwrap();
+        std::os::unix::fs::symlink(&npm, &launcher).unwrap();
+        assert!(!super::is_native_claude_launcher(
+            &launcher,
+            home,
+            RuntimePlatform::Macos
+        ));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn native_claude_version_and_update_use_the_selected_launcher() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            temporary.path().join("native launcher.cmd"),
+            concat!(
+                "@echo off\r\n",
+                "if \"%~1\"==\"--version\" (\r\n",
+                "    echo 2.1.89 ^(Claude Code^)\r\n",
+                "    exit /b 0\r\n",
+                ")\r\n",
+                "if not \"%~1\"==\"update\" exit /b 1\r\n",
+                "echo native updater ran\r\n",
+            ),
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            temporary.path().join("native launcher"),
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo '2.1.89 (Claude Code)' ;;\nupdate) echo 'native updater ran' ;;\n*) exit 1 ;;\nesac\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            super::native_claude_version(&launcher).await.as_deref(),
+            Some("2.1.89")
+        );
+        assert!(super::native_claude_package_command(&launcher, "install").is_err());
+        assert!(super::native_claude_package_command(&launcher, "uninstall").is_err());
+        let output = super::native_claude_package_command(&launcher, "update")
+            .unwrap()
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "native updater ran"
+        );
     }
 
     #[test]
