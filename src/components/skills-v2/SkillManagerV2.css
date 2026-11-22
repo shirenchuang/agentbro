@@ -8373,7 +8373,7 @@
 .sm2-sidebar__subgroup-label { display: flex; align-items: center; gap: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--settings-text-tertiary, rgba(104,113,129,0.72)); padding: 0 10px 6px; }
 .sm2-sidebar__subgroup-label span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm2-sidebar__subgroup-add {
-  width: calc(100% - 12px);
+  max-width: calc(100% - 12px);
   min-height: 30px;
   display: flex;
   align-items: center;
