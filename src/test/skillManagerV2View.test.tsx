@@ -2808,6 +2808,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
       agentProgramSnapshot: null,
+      agentProgramOperation: null,
       viewMode: 'cards',
       filters: { query: '', source: '', status: '', type: '' },
       skills: [makeSkill()],
@@ -3560,6 +3561,54 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
     expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps an update active across Agent Management navigation and keeps its verified version', async () => {
+    const oldProgram = makeProgram({ status: 'updateAvailable', installedVersion: '1.0.0', latestVersion: '2.0.0' })
+    const newProgram = makeProgram({ installedVersion: '2.0.0', latestVersion: '2.0.0' })
+    let finishUpdate!: () => void
+    let finishReturnLookup!: (programs: AgentProgramInfo[]) => void
+    let finishVerification!: (programs: AgentProgramInfo[]) => void
+    const refresh = vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([oldProgram])
+      .mockReturnValueOnce(new Promise((resolve) => { finishReturnLookup = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishVerification = resolve }))
+    const update = vi.spyOn(agentApi, 'update').mockReturnValue(new Promise((resolve) => { finishUpdate = resolve }))
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const firstPage = render(<AgentManagementPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '更新此 Agent' }))
+    expect(update).toHaveBeenCalledTimes(1)
+    firstPage.unmount()
+    render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByRole('button', { name: '正在更新' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeDisabled()
+    await act(async () => finishUpdate())
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3))
+    expect(screen.getByRole('button', { name: '正在更新' })).toBeDisabled()
+
+    await act(async () => finishVerification([newProgram]))
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '卸载 Agent' })).toBeEnabled()
+    await act(async () => finishReturnLookup([oldProgram]))
+    expect(screen.getByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards an entry lookup error once Agent Management is closed', async () => {
+    let failLookup!: (error: Error) => void
+    const refresh = vi.spyOn(agentApi, 'refresh').mockReturnValue(new Promise((_, reject) => { failLookup = reject }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const page = render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    page.unmount()
+
+    await act(async () => failLookup(new Error('Old Agent lookup failed')))
+    expect(useSkillStoreV2.getState().error).toBeNull()
   })
 
   it.each([
