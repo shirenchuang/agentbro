@@ -194,6 +194,12 @@
   color: var(--island-warning-text);
 }
 
+.plan-approval__error {
+  color: var(--island-warning-text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .plan-approval__subagent-status--error {
   color: var(--island-danger-text);
 }
@@ -366,6 +372,13 @@
 
 .plan-approval__perm-prompt {
   color: var(--plan-text-muted);
+}
+
+.plan-approval__controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .plan-approval__input-row {

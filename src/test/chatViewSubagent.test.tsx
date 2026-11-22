@@ -267,9 +267,10 @@ describe('ChatView subagent history', () => {
     expect(focusTarget === 'approval' ? back : jump).toHaveFocus()
   })
 
-  it('shows plan-specific detail actions and routes them to plan modes', () => {
+  it('shows plan-specific detail actions and routes them to plan modes', async () => {
     const current = session({
       phase: 'waiting_approval',
+      planRequestId: 'detail-plan',
       planTitle: 'Implementation plan',
       planContent: '1. Fix detail approval',
     })
@@ -288,8 +289,9 @@ describe('ChatView subagent history', () => {
 
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Accept Edits' }))
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits')
+    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, 'detail-plan')
     expect(tauriMocks.respondPermission).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Accept Edits' })).not.toBeInTheDocument())
   })
 
   it('confirms detail multi-select questions instead of submitting the first clicked option', () => {

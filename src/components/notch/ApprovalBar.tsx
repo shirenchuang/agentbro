@@ -2,7 +2,7 @@
 import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
-import { questionKey, useSessionStore } from '../../stores/sessionStore'
+import { planKey, questionKey, useSessionStore } from '../../stores/sessionStore'
 import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { isWindowsPlatform } from '../../utils/platform'
@@ -57,9 +57,10 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     }
   }, [restorePermissionFocus])
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasPlan = Boolean(session.planTitle || session.planContent)
   const pendingQuestionKey = session.pendingQuestion ? questionKey(session.pendingQuestion) : ''
   const questionScope = `${session.id}:${pendingQuestionKey}`
-  const draftScope = pendingQuestionKey ? questionScope : session.id
+  const draftScope = hasPlan ? `${session.id}:plan:${planKey(session)}` : pendingQuestionKey ? questionScope : session.id
   const [draftState, setDraftState] = useState({ scope: draftScope, value: '' })
   const [questionState, setQuestionState] = useState<{
     key: string
@@ -101,8 +102,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     const val = draft.trim()
     if (!val) return
     onSendMessage(draft)
-    if (!pendingQuestionKey) setDraftState({ scope: draftScope, value: '' })
-  }, [draft, draftScope, onSendMessage, pendingQuestionKey])
+    if (!hasPlan && !pendingQuestionKey) setDraftState({ scope: draftScope, value: '' })
+  }, [draft, draftScope, hasPlan, onSendMessage, pendingQuestionKey])
 
   const handleSendButton = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     runIslandAction(event, () => {
@@ -117,7 +118,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
   // Plan approval uses the same waiting_approval phase as permissions, so it
   // must be checked first. Otherwise the detail composer labels it as a normal
   // deny/allow/always permission request.
-  if (session.planContent || session.planTitle) {
+  if (hasPlan) {
     return (
       <div className="approval-bar approval-bar--plan" onFocus={handleComposerFocus} onBlur={handleComposerBlur}>
         <div className="approval-bar__input-row">

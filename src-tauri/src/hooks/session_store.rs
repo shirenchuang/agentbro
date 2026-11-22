@@ -232,6 +232,8 @@ pub struct QuestionOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub title: String,
     pub content: String,
     pub permissions: Vec<String>,
@@ -632,6 +634,31 @@ impl SessionStore {
             }
             session.update_duration();
         }
+        self.emit_update();
+    }
+
+    pub fn clear_matching_plan(&self, session_id: &str, request_id: &str) {
+        let Some(mut session) = self.sessions.get_mut(session_id) else {
+            return;
+        };
+        if session
+            .pending_plan
+            .as_ref()
+            .and_then(|plan| plan.request_id.as_deref())
+            != Some(request_id)
+        {
+            return;
+        }
+        session.pending_plan = None;
+        if session.phase == SessionPhase::WaitingApproval && session.pending_permission.is_none() {
+            session.phase = if session.pending_question.is_some() {
+                SessionPhase::WaitingInput
+            } else {
+                SessionPhase::Processing
+            };
+        }
+        session.update_duration();
+        drop(session);
         self.emit_update();
     }
 
