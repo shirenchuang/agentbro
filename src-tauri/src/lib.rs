@@ -166,6 +166,26 @@ async fn set_notch_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(
 }
 
 #[tauri::command]
+fn restore_notch_webview_focus(window: tauri::WebviewWindow) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if window.label() == "notch" {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        if hwnd.0 == unsafe { GetForegroundWindow() } {
+            window
+                .as_ref()
+                .set_focus()
+                .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+    Ok(false)
+}
+
+#[tauri::command]
 async fn set_notch_ignore_cursor_events(
     app: tauri::AppHandle,
     ignore: bool,
@@ -6443,6 +6463,7 @@ pub fn run() {
             set_global_action_shortcuts,
             perform_haptic,
             set_notch_focusable,
+            restore_notch_webview_focus,
             restart_app,
             is_homebrew_install,
             open_image,

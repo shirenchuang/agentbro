@@ -1,16 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApprovalBar } from '../components/notch/ApprovalBar'
-import { setNotchFocusable } from '../services/tauriApi'
+import { restoreNotchWebviewFocus, setNotchFocusable } from '../services/tauriApi'
 import { useSessionStore } from '../stores/sessionStore'
 import type { SessionState } from '../types/agent'
+import { isWindowsPlatform } from '../utils/platform'
 
 vi.mock('../services/tauriApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tauriApi')>()
   return {
     ...actual,
     setNotchFocusable: vi.fn(() => Promise.resolve()),
+    restoreNotchWebviewFocus: vi.fn(() => Promise.resolve(true)),
   }
 })
 
@@ -18,7 +20,7 @@ vi.mock('../utils/platform', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/platform')>()
   return {
     ...actual,
-    isWindowsPlatform: () => false,
+    isWindowsPlatform: vi.fn(() => false),
   }
 })
 
@@ -80,6 +82,8 @@ describe('ApprovalBar composer gating', () => {
   beforeEach(() => {
     useSessionStore.getState().setCodexAppServerLive(false)
     vi.mocked(setNotchFocusable).mockClear()
+    vi.mocked(restoreNotchWebviewFocus).mockReset().mockResolvedValue(true)
+    vi.mocked(isWindowsPlatform).mockReturnValue(false)
   })
 
   it('renders the default text input for a tmux Claude session', () => {
@@ -136,6 +140,50 @@ describe('ApprovalBar composer gating', () => {
 
     await user.click(allow)
     expect(onAllow).toHaveBeenCalledTimes(2)
+  })
+
+  it('recovers Windows keyboard input only for a focused permission action without answering it', async () => {
+    vi.mocked(isWindowsPlatform).mockReturnValue(true)
+    const onDeny = vi.fn()
+    const onAllow = vi.fn()
+    const documentFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const user = userEvent.setup()
+    try {
+      renderBar(
+        session({
+          phase: 'waiting_approval',
+          pendingPermission: { toolName: 'Edit', toolInput: 'review.md' },
+        }),
+        { onDeny, onAllow },
+      )
+      const deny = screen.getByRole('button', { name: 'Deny' })
+      const allow = screen.getByRole('button', { name: 'Allow once' })
+      fireEvent.blur(window)
+
+      deny.focus()
+      documentFocus.mockReturnValue(true)
+      fireEvent.blur(window)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(restoreNotchWebviewFocus).not.toHaveBeenCalled()
+
+      documentFocus.mockReturnValue(false)
+      fireEvent.blur(window)
+      fireEvent.blur(window)
+      await waitFor(() => expect(restoreNotchWebviewFocus).toHaveBeenCalledTimes(1))
+      fireEvent.blur(window)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(restoreNotchWebviewFocus).toHaveBeenCalledTimes(1)
+      expect(onDeny).not.toHaveBeenCalled()
+      expect(onAllow).not.toHaveBeenCalled()
+
+      allow.focus()
+      fireEvent.blur(window)
+      await waitFor(() => expect(restoreNotchWebviewFocus).toHaveBeenCalledTimes(2))
+      await user.keyboard('{Enter}')
+      expect(onAllow).toHaveBeenCalledTimes(1)
+    } finally {
+      documentFocus.mockRestore()
+    }
   })
 
   it('ignores secondary and middle mouse presses on permission buttons', () => {
