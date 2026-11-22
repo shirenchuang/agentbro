@@ -22,7 +22,7 @@ function Invoke-IslandRendererRequest(
             } until ($frame.EndOfMessage)
             $response = [Text.Encoding]::UTF8.GetString($body.ToArray()) | ConvertFrom-Json
         } until ($response.id -eq $RequestId)
-        if ($response.error) { throw "$Method failed: $($response.error.message)" }
+        if ($response.error) { throw ("$Method failed: $($response.error.message) $($response.error.data)").TrimEnd() }
         $response.result
     } finally {
         $body.Dispose()
@@ -43,7 +43,7 @@ function Get-IslandDebuggerEndpoints([int]$Port) {
 
 function Find-IslandRendererEndpoint([int]$Port) {
     $expression = "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === 'notch'"
-    $recordTimeline = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-island-timeline.js') -Raw
+    $recordTimeline = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windows-island-timeline.js'))
     foreach ($endpoint in Get-IslandDebuggerEndpoints $Port) {
         $socket = [Net.WebSockets.ClientWebSocket]::new()
         $timeout = [Threading.CancellationTokenSource]::new(3000)
