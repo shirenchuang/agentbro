@@ -43,6 +43,7 @@ function Get-IslandDebuggerEndpoints([int]$Port) {
 
 function Find-IslandRendererEndpoint([int]$Port) {
     $expression = "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === 'notch'"
+    $recordTimeline = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-island-timeline.js') -Raw
     foreach ($endpoint in Get-IslandDebuggerEndpoints $Port) {
         $socket = [Net.WebSockets.ClientWebSocket]::new()
         $timeout = [Threading.CancellationTokenSource]::new(3000)
@@ -52,7 +53,18 @@ function Find-IslandRendererEndpoint([int]$Port) {
                 expression = $expression
                 returnByValue = $true
             }
-            if ($response.result.value -eq $true) { return $endpoint.AbsoluteUri }
+            if ($response.result.value -eq $true) {
+                try {
+                    $recorder = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
+                        expression = $recordTimeline
+                        returnByValue = $true
+                    } 2
+                    Write-Host "Island renderer timeline installed: $($recorder.result.value -eq $true)."
+                } catch {
+                    Write-Host "Could not install the Island renderer timeline: $_"
+                }
+                return $endpoint.AbsoluteUri
+            }
         } catch {
             Write-Verbose "Could not identify a WebView2 page: $_"
         } finally {
@@ -152,6 +164,7 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
         panel: panel.dataset.islandState, bounds: bounds(panel.getBoundingClientRect()), controls,
         focused: document.hasFocus(), activeControl: labelFor(document.activeElement?.closest('button, [role="button"]')),
         visibility: document.visibilityState, capturedAt: new Date().toISOString(),
+        timeline: window[Symbol.for('agentbro.windowsSmokeTimeline')]?.slice(-60),
         viewport: [window.innerWidth, window.innerHeight], devicePixelRatio: window.devicePixelRatio,
         zoomed: Boolean(visual && (visual.scale !== 1 || visual.offsetLeft !== 0 || visual.offsetTop !== 0)),
     };
@@ -178,7 +191,12 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
             $state = $evaluated.result.value
             if (-not $state) { continue }
             Write-Host "Island renderer used preselected target: $isPrepared."
+            $timeline = $state.timeline
+            $state.PSObject.Properties.Remove('timeline')
             Write-Host "Island renderer DOM at $([DateTimeOffset]::UtcNow.ToString('O')): $($state | ConvertTo-Json -Depth 5 -Compress)"
+            if ($timeline) {
+                Write-Host "Island renderer timeline: $(ConvertTo-Json -InputObject @($timeline) -Depth 5 -Compress)"
+            }
 
             Write-IslandProviderSnapshot $WindowHandle 'before hit testing'
             $stage = 'hit-test Windows accessibility'
@@ -190,6 +208,7 @@ function Write-IslandRendererState([int]$Port, [IntPtr]$WindowHandle, [uri]$Pref
             $timeout.Dispose()
             $timeout = [Threading.CancellationTokenSource]::new(6000)
             $verified = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' $domRequest 2
+            if ($verified.result.value) { $verified.result.value.PSObject.Properties.Remove('timeline') }
             Write-Host "Island renderer DOM after hit testing: $($verified.result.value | ConvertTo-Json -Depth 5 -Compress)"
 
             $stage = 'read accessibility'

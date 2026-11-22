@@ -476,6 +476,9 @@ function Click-IslandElement(
     if ($nativeOwner -ne $AppProcessId) {
         throw "A different window owns the click point: $($owner.ProcessName) / $($owner.MainWindowTitle)"
     }
+    if ($TracePermissionUi) {
+        Write-Host "Native click for $Description at $([DateTimeOffset]::UtcNow.ToString('O'))."
+    }
     [AgentBroSmokeInput]::Click()
 }
 
@@ -599,7 +602,7 @@ function Test-KeyboardPermissionDenial(
         }
         if ($TracePermissionUi) {
             Save-PermissionFrame $clock $Attempt 'before-space'
-            Write-Host "Before sending Space: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            Write-Host "Before sending Space at $([DateTimeOffset]::UtcNow.ToString('O')): $([AgentBroSmokeInput]::DescribeForegroundFocus())."
         }
         if ($reply.IsCompleted) { throw 'The permission request ended before the Space key was sent' }
         $clock.Start()
