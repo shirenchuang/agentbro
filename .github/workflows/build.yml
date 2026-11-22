@@ -34,6 +34,10 @@ on:
         description: Repeat approval and record Hook timing, screenshots and accessibility state
         type: boolean
         default: false
+      windows_trace_permission_renderer:
+        description: Compare the Island renderer and UI Automation on an isolated runner
+        type: boolean
+        default: false
       windows_verify_drag:
         description: Move the installed Island with native pointer input and verify that it stops on release
         type: boolean
@@ -44,6 +48,10 @@ on:
         default: false
       windows_automation_focus_permission:
         description: Reproduce programmatic UI Automation focus on the permission button
+        type: boolean
+        default: false
+      windows_probe_permission_focus_recovery:
+        description: Move focus to the renderer child, then test restoring keyboard input
         type: boolean
         default: false
       windows_verify_startup_stacks:
@@ -352,9 +360,11 @@ jobs:
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
           VERIFY_AGENT_PACKAGE_CONSOLE: ${{ inputs.windows_verify_agent_package_console }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
+          TRACE_PERMISSION_RENDERER: ${{ inputs.windows_trace_permission_renderer }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
+          PROBE_PERMISSION_FOCUS_RECOVERY: ${{ inputs.windows_probe_permission_focus_recovery }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1
@@ -370,6 +380,7 @@ jobs:
                   -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
                   -VerifyAgentPackageConsole:($env:VERIFY_AGENT_PACKAGE_CONSOLE -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
+                  -TracePermissionRenderer:($env:TRACE_PERMISSION_RENDERER -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `
                   -CloseStartupSettings:($env:CLOSE_STARTUP_SETTINGS -eq 'true') `
                   -AutomationFocusPermission:($env:AUTOMATION_FOCUS_PERMISSION -eq 'true') `
