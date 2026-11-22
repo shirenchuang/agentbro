@@ -87,13 +87,11 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
             $range = Find-PackDocumentText $settings $label
             if ($range) { $range.GetBoundingRectangles() }
         })
-        $top = [double]::PositiveInfinity
-        $bottom = [double]::NegativeInfinity
-        for ($y = 1; $y -lt $rectangles.Count; $y += 4) {
-            $top = [Math]::Min($top, $rectangles[$y])
-            $bottom = [Math]::Max($bottom, $rectangles[$y] + $rectangles[$y + 2])
+        $bounds = [Windows.Rect]::Empty
+        foreach ($rectangle in $rectangles) {
+            $bounds = [Windows.Rect]::Union($bounds, $rectangle)
         }
-        $height = ($bottom - $top) / $scale
+        $height = $bounds.Height / $scale
         if ($height -le 0 -or $height -gt 24) {
             throw "The Agent version label '$label' occupies $([int]$height)px instead of one line"
         }
