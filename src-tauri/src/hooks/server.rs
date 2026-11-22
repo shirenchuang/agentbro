@@ -188,7 +188,14 @@ pub struct QuestionResponse {
 
 /// A pending question waiting for UI response
 pub(crate) struct PendingQuestionEntry {
-    pub(crate) tx: oneshot::Sender<QuestionResponse>,
+    tool_use_id: String,
+    tx: oneshot::Sender<QuestionReply>,
+}
+
+struct QuestionReply {
+    response: QuestionResponse,
+    ack: oneshot::Sender<Result<(), String>>,
+    deadline: tokio::time::Instant,
 }
 
 /// Plan response sent back to hook script
@@ -251,7 +258,7 @@ enum PendingWebhookCheck {
         tool_name: String,
     },
     Question {
-        question: String,
+        tool_use_id: String,
     },
     Plan {
         title: String,
@@ -817,10 +824,10 @@ impl HookServer {
                     pending.tool_name == *tool_name
                 }
             }),
-            PendingWebhookCheck::Question { question } => session
+            PendingWebhookCheck::Question { tool_use_id } => session
                 .pending_question
                 .as_ref()
-                .is_some_and(|pending| pending.question == *question),
+                .is_some_and(|pending| pending.tool_use_id.as_ref() == Some(tool_use_id)),
             PendingWebhookCheck::Plan { title, content } => session
                 .pending_plan
                 .as_ref()
@@ -1206,36 +1213,48 @@ impl HookServer {
                     Self::play_sound(&sound, SoundEvent::NeedsApproval);
                 }
 
-                store.set_pending_question(
-                    session_id,
-                    Some(PendingQuestion {
-                        question: question.clone(),
-                        options: options.clone(),
-                        descriptions: descriptions.clone(),
-                        header: header.clone(),
-                        multi_select,
-                        questions: questions
-                            .iter()
-                            .map(|q| PendingQuestionItem {
-                                id: None,
-                                question: q.question.clone(),
-                                header: q.header.clone(),
-                                options: q
-                                    .options
-                                    .iter()
-                                    .map(|opt| PendingQuestionOption {
-                                        label: opt.label.clone(),
-                                        description: opt.description.clone(),
-                                    })
-                                    .collect(),
-                                multi_select: q.multi_select,
-                            })
-                            .collect(),
-                        tool_use_id: None,
-                        source: None,
-                        response_mode: None,
-                    }),
-                );
+                let tool_use_id = format!("question:{}", uuid::Uuid::new_v4());
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending_map = pending_q.lock().await;
+                    pending_map.insert(
+                        session_id.clone(),
+                        PendingQuestionEntry {
+                            tool_use_id: tool_use_id.clone(),
+                            tx,
+                        },
+                    );
+                    store.set_pending_question(
+                        session_id,
+                        Some(PendingQuestion {
+                            question: question.clone(),
+                            options: options.clone(),
+                            descriptions: descriptions.clone(),
+                            header: header.clone(),
+                            multi_select,
+                            questions: questions
+                                .iter()
+                                .map(|q| PendingQuestionItem {
+                                    id: None,
+                                    question: q.question.clone(),
+                                    header: q.header.clone(),
+                                    options: q
+                                        .options
+                                        .iter()
+                                        .map(|opt| PendingQuestionOption {
+                                            label: opt.label.clone(),
+                                            description: opt.description.clone(),
+                                        })
+                                        .collect(),
+                                    multi_select: q.multi_select,
+                                })
+                                .collect(),
+                            tool_use_id: Some(tool_use_id.clone()),
+                            source: None,
+                            response_mode: None,
+                        }),
+                    );
+                }
                 Self::update_session_metadata_from_raw(&store, &raw);
                 Self::dispatch_webhook_event(
                     &config_store,
@@ -1246,7 +1265,7 @@ impl HookServer {
                     Self::source_for_webhook(&store, &raw, session_id, None),
                     session_id.clone(),
                     Some(PendingWebhookCheck::Question {
-                        question: question.clone(),
+                        tool_use_id: tool_use_id.clone(),
                     }),
                 );
 
@@ -1262,33 +1281,48 @@ impl HookServer {
                     }
                 }
 
-                // Create a oneshot channel for the question response
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut pending_map = pending_q.lock().await;
-                    pending_map.insert(session_id.clone(), PendingQuestionEntry { tx });
-                }
-
                 let response =
                     tokio::time::timeout(Self::interaction_response_timeout(&raw), rx).await;
 
                 match response {
-                    Ok(Ok(resp)) => {
-                        let json = serde_json::to_string(&resp)?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                        writer.flush().await?;
-
-                        Self::play_sound(&sound, SoundEvent::TaskConfirmation);
-
-                        store.set_pending_question(session_id, None);
-                        store.update_phase(session_id, SessionPhase::Processing);
+                    Ok(Ok(reply)) => {
+                        let result = tokio::time::timeout_at(reply.deadline, async {
+                            let json = serde_json::to_vec(&reply.response)?;
+                            writer.write_all(&json).await?;
+                            writer.write_all(b"\n").await?;
+                            writer.flush().await?;
+                            Ok::<(), anyhow::Error>(())
+                        })
+                        .await
+                        .map_err(|_| {
+                            "The question Hook did not receive the response in time.".to_string()
+                        })
+                        .and_then(|result| {
+                            result.map_err(|error| {
+                                format!("Failed to write question response: {error}")
+                            })
+                        });
+                        let delivered = result.is_ok();
+                        if delivered {
+                            store.clear_matching_question(session_id, Some(&tool_use_id));
+                        }
+                        let _ = reply.ack.send(result);
+                        if delivered {
+                            drop(tokio::task::spawn_blocking(move || {
+                                Self::play_sound(&sound, SoundEvent::TaskConfirmation);
+                            }));
+                        }
                     }
                     _ => {
                         let mut pending_map = pending_q.lock().await;
-                        pending_map.remove(session_id);
-                        store.set_pending_question(session_id, None);
-                        log::warn!("Question request timed out for session {}", session_id);
+                        if pending_map
+                            .get(session_id)
+                            .is_some_and(|entry| entry.tool_use_id == tool_use_id)
+                        {
+                            pending_map.remove(session_id);
+                            store.clear_matching_question(session_id, Some(&tool_use_id));
+                            log::warn!("Question request timed out for session {}", session_id);
+                        }
                     }
                 }
             }
@@ -3155,15 +3189,43 @@ impl HookServer {
     }
 
     /// Respond to a pending question from the UI
-    pub async fn respond_question(&self, session_id: &str, answer: String) -> anyhow::Result<()> {
-        let mut pending_map = self.pending_questions.lock().await;
-        if let Some(entry) = pending_map.remove(session_id) {
-            let response = QuestionResponse { answer };
-            let _ = entry.tx.send(response);
-            Ok(())
-        } else {
-            anyhow::bail!("No pending question for session {}", session_id)
-        }
+    pub async fn respond_question(
+        &self,
+        session_id: &str,
+        answer: String,
+        tool_use_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let entry = {
+            let mut pending_map = self.pending_questions.lock().await;
+            if pending_map
+                .get(session_id)
+                .is_some_and(|entry| tool_use_id.is_some_and(|id| id != entry.tool_use_id))
+            {
+                anyhow::bail!("The original question is no longer waiting for an answer.")
+            }
+            pending_map.remove(session_id).ok_or_else(|| {
+                anyhow::anyhow!("The original question is no longer waiting for an answer.")
+            })?
+        };
+        let (ack, delivered) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        entry
+            .tx
+            .send(QuestionReply {
+                response: QuestionResponse { answer },
+                ack,
+                deadline,
+            })
+            .map_err(|_| anyhow::anyhow!("The question Hook has stopped waiting for an answer."))?;
+        tokio::time::timeout_at(deadline + Duration::from_secs(1), delivered)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("The question Hook did not confirm the response in time.")
+            })?
+            .map_err(|_| {
+                anyhow::anyhow!("The question Hook disconnected before confirming the response.")
+            })?
+            .map_err(anyhow::Error::msg)
     }
 
     /// Respond to a pending plan approval from the UI
@@ -3934,6 +3996,137 @@ mod tests {
             assert_eq!(response["decision"], expected);
             task.await.unwrap().unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn question_responses_preserve_replacement_and_reach_the_waiting_hook() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let mut requests = Vec::new();
+        for question in ["First question?", "Second question?"] {
+            let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let task = tokio::spawn(HookServer::handle_connection(
+                connection,
+                server.connection_context(),
+            ));
+            let event = serde_json::json!({
+                "agent": "claude-code",
+                "event": "AskQuestion",
+                "session_id": "question-session",
+                "cwd": "/workspace/project",
+                "question": question,
+                "options": ["Yes", "No"],
+            });
+            client
+                .write_all(format!("{event}\n").as_bytes())
+                .await
+                .unwrap();
+            let tool_use_id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(pending) = store
+                        .get_session("question-session")
+                        .and_then(|session| session.pending_question)
+                        .filter(|pending| pending.question == question)
+                    {
+                        break pending.tool_use_id.unwrap();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("question should become visible");
+            requests.push((client, task, tool_use_id));
+        }
+
+        let (mut client, task, current_id) = requests.pop().unwrap();
+        let (old_client, old_task, old_id) = requests.pop().unwrap();
+        assert_ne!(old_id, current_id);
+        tokio::time::timeout(Duration::from_secs(2), old_task)
+            .await
+            .expect("replaced connection should finish")
+            .unwrap()
+            .unwrap();
+        assert!(server
+            .respond_question("question-session", "Yes".to_string(), Some(&old_id))
+            .await
+            .is_err());
+        let mut old_response = String::new();
+        assert_eq!(
+            BufReader::new(old_client)
+                .read_line(&mut old_response)
+                .await
+                .unwrap(),
+            0
+        );
+        server
+            .respond_question("question-session", "No".to_string(), Some(&current_id))
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BufReader::new(&mut client).read_line(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).unwrap(),
+            serde_json::json!({"answer": "No"}),
+        );
+        task.await.unwrap().unwrap();
+        let session = store.get_session("question-session").unwrap();
+        assert!(session.pending_question.is_none());
+        assert_eq!(session.phase, SessionPhase::Processing);
+    }
+
+    #[tokio::test]
+    async fn question_responses_report_a_closed_hook_write() {
+        let store = Arc::new(SessionStore::new());
+        let server = HookServer::new(
+            store.clone(),
+            Arc::new(vec![Arc::new(
+                crate::agents::claude_code::ClaudeCodeAdapter::new(),
+            )]),
+        );
+        let (mut client, connection) = tokio::io::duplex(4096);
+        let task = tokio::spawn(HookServer::handle_connection(
+            connection,
+            server.connection_context(),
+        ));
+        client.write_all(b"{\"agent\":\"claude-code\",\"event\":\"AskQuestion\",\"session_id\":\"closed\",\"question\":\"Continue?\"}\n")
+            .await.unwrap();
+        let tool_use_id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(pending) = store
+                    .get_session("closed")
+                    .and_then(|session| session.pending_question)
+                {
+                    break pending.tool_use_id.unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("question should become visible");
+        drop(client);
+        let error = server
+            .respond_question("closed", "Yes".to_string(), Some(&tool_use_id))
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("Failed to write question response:"));
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

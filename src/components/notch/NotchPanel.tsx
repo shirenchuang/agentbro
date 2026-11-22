@@ -2,10 +2,10 @@ import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type ComponentProps, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { answerDisplayedPermission, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedQuestion, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay, type QuestionIdentity } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
-import { respondQuestion, respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, PermissionRequest, SubagentInfo } from '../../types/agent'
@@ -178,7 +178,6 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
         <QuestionCard
           overlay={overlay}
           session={session}
-          onAnswer={(answer) => { respondQuestion(session.id, answer); useSessionStore.getState().clearQuestion(session.id) }}
           onShowSessions={onShowSessions}
           onDismiss={onDismiss}
           onDraftStateChange={onDraftStateChange}
@@ -1206,12 +1205,19 @@ export function NotchPanel() {
       // Primary modifier + 1/2/3 selects an option.
       const num = parseInt(e.key, 10)
       if (primaryModifierPressed(e) && num >= 1 && num <= 3) {
-        const activeQuestion = active?.pendingQuestion
-        const options = active && !activeQuestion?.multiSelect ? activeQuestion?.options : undefined
-        if (active && options && options[num - 1]) {
+        const overlay = store.activeOverlay
+        const shownQuestion = overlay?.type === 'question'
+          && store.panelState !== 'collapsed'
+          && !(store.panelState === 'hover' && inlineBlockingOverlayIdsRef.current.has(overlay.id))
+          ? overlay
+          : undefined
+        const question = shownQuestion ? shownQuestion.data as QuestionIdentity : active?.pendingQuestion
+        const sessionId = shownQuestion?.sessionId ?? active?.id
+        if (!question || question.multiSelect || (question.questions?.length ?? 0) > 1) return
+        const option = question.options?.[num - 1]
+        if (sessionId && option) {
           e.preventDefault()
-          respondQuestion(active.id, options[num - 1])
-          useSessionStore.getState().clearQuestion(active.id)
+          void answerDisplayedQuestion(sessionId, question, typeof option === 'string' ? option : option.label)
         }
       }
     }

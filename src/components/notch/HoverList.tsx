@@ -9,9 +9,9 @@ import { computePriority } from '../../types/priority'
 import { PixelIndicator } from './PixelIndicator'
 import { MascotRouter } from './mascots'
 import { useConfigStore } from '../../stores/configStore'
-import { answerDisplayedPermission, useSessionStore } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedQuestion, questionKey, questionReplyError, useSessionStore } from '../../stores/sessionStore'
 import { isDarkColorTheme, useThemeStore } from '../../stores/themeStore'
-import { respondPlan, respondQuestion, setNotchFocusable } from '../../services/tauriApi'
+import { respondPlan, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { formatDurationShort } from '../../utils/time'
 import { getToolActivityLabel } from '../../utils/toolLabels'
@@ -729,6 +729,7 @@ function parseInlineQuestionTag(question: string): { tag: string | null; text: s
 function InlineQuestionPreview({ session, onDraftStateChange }: { session: SessionState; onDraftStateChange?: (hasDraft: boolean) => void }) {
   const { t } = useTranslation()
   const q = session.pendingQuestion
+  const error = useSessionStore((state) => questionReplyError(state, session.id, q))
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
   const [nestedSelections, setNestedSelections] = useState<Record<number, number | number[]>>({})
   const [nestedCustomAnswers, setNestedCustomAnswers] = useState<Record<number, string>>({})
@@ -743,13 +744,14 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
     onDraftStateChange?.(anyInputActive)
   }, [anyInputActive, onDraftStateChange])
   useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
+  useEffect(() => {
+    if (anyInputActive) return () => { void setNotchFocusable(false) }
+  }, [anyInputActive])
 
   if (!q) return null
 
   const submitAnswer = (answer: string) => {
-    respondQuestion(session.id, answer)
-      .then(() => useSessionStore.getState().clearQuestion(session.id))
-      .catch((error) => console.warn('[notch] inline respondQuestion:', error))
+    void answerDisplayedQuestion(session.id, q, answer)
   }
 
   const nestedQuestions = q.questions || []
@@ -909,6 +911,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
         >
           {'✓'} 提交所有回答
         </button>
+        {error && <div role="alert" className="question-card__error">{error}</div>}
       </div>
     )
   }
@@ -981,12 +984,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
                 e.preventDefault()
                 if (composing) return
                 const val = customText.trim()
-                if (val) {
-                  submitAnswer(val)
-                  setShowCustomInput(false)
-                  setCustomText('')
-                  setNotchFocusable(false)
-                }
+                if (val) submitAnswer(val)
               }}
             >
               <span className="hover-list__inline-question-opt-index">{inlineOptions.length + 1}</span>
@@ -1039,6 +1037,7 @@ function InlineQuestionPreview({ session, onDraftStateChange }: { session: Sessi
           )}
         </div>
       )}
+      {error && <div role="alert" className="question-card__error">{error}</div>}
     </div>
   )
 }
@@ -1204,7 +1203,7 @@ function SessionCard({
   const showPassiveDot = isPassiveSession(session) && session.phase !== 'ready'
   const canJump = canJumpToSession(session)
   const inlinePermission = session.pendingPermission ?? getOverlayPermissionForSession(session, activeOverlay)
-  const showInlineQuestion = !!session.pendingQuestion
+  const inlineQuestion = session.pendingQuestion
   const showInlinePlan = !!(session.planTitle || session.planContent)
   const notice = inferSessionNotice(session)
   const listSubagents = getSessionListSubagents(session)
@@ -1429,7 +1428,7 @@ function SessionCard({
         {inlinePermission && <InlinePermissionPreview session={session} permission={inlinePermission} />}
 
         {/* Row 8: inline question */}
-        {showInlineQuestion && <InlineQuestionPreview session={session} onDraftStateChange={onInputDraftStateChange} />}
+        {inlineQuestion && <InlineQuestionPreview key={questionKey(inlineQuestion)} session={session} onDraftStateChange={onInputDraftStateChange} />}
 
         {/* Row 9: inline plan */}
         {showInlinePlan && <InlinePlanPreview session={session} />}

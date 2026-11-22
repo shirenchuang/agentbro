@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverList } from '../components/notch/HoverList'
@@ -55,6 +55,12 @@ function session(overrides: Partial<SessionState> = {}): SessionState {
     pid: 1234,
     ...overrides,
   }
+}
+
+function renderInlineQuestion(pendingQuestion: NonNullable<SessionState['pendingQuestion']>, onSessionClick = vi.fn()) {
+  const pending = session({ phase: 'waiting_input', pendingQuestion })
+  useSessionStore.setState({ sessions: { s1: pending }, sessionList: [pending], questionReplies: new Map() })
+  return render(<HoverList sessions={[pending]} onSessionClick={onSessionClick} />)
 }
 
 describe('HoverList interactions', () => {
@@ -1052,20 +1058,13 @@ describe('HoverList interactions', () => {
 
   it('routes inline question options without opening the row', async () => {
     const onSessionClick = vi.fn()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: { question: 'Pick a target', options: ['Preview', 'Ship'] },
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    renderInlineQuestion({ question: 'Pick a target', options: ['Preview', 'Ship'] }, onSessionClick)
 
     fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('renders inline question options as compact question cards with descriptions', () => {
@@ -1089,52 +1088,37 @@ describe('HoverList interactions', () => {
     expect(screen.getByText('Expanded detail')).toHaveClass('hover-list__inline-question-opt-desc')
   })
 
-  it('routes inline multi-select question answers as joined text', () => {
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: {
-            question: 'Pick targets',
-            options: ['Preview', 'Docs', 'Production'],
-            multiSelect: true,
-          },
-        })]}
-        onSessionClick={vi.fn()}
-      />,
-    )
+  it('routes inline multi-select question answers as joined text', async () => {
+    renderInlineQuestion({
+      question: 'Pick targets',
+      options: ['Preview', 'Docs', 'Production'],
+      multiSelect: true,
+    })
 
     fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
     fireEvent.mouseDown(screen.getByText('Production').closest('button')!)
     fireEvent.mouseDown(screen.getByRole('button', { name: '确认 (2)' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Production')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes inline multi-question answers as JSON', () => {
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: {
-            question: '[Deploy] Choose options',
-            options: ['Preview', 'Ship'],
-            questions: [
-              {
-                question: 'Which target?',
-                options: [{ label: 'Preview' }, { label: 'Ship' }],
-                multiSelect: true,
-              },
-              {
-                question: 'Notify channel?',
-                options: [{ label: 'Yes' }, { label: 'No' }],
-              },
-            ],
-          },
-        })]}
-        onSessionClick={vi.fn()}
-      />,
-    )
+  it('routes inline multi-question answers as JSON', async () => {
+    renderInlineQuestion({
+      question: '[Deploy] Choose options',
+      options: ['Preview', 'Ship'],
+      questions: [
+        {
+          question: 'Which target?',
+          options: [{ label: 'Preview' }, { label: 'Ship' }],
+          multiSelect: true,
+        },
+        {
+          question: 'Notify channel?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    })
 
     fireEvent.mouseDown(screen.getByText('Preview').closest('button')!)
     fireEvent.mouseDown(screen.getByText('Ship').closest('button')!)
@@ -1148,6 +1132,7 @@ describe('HoverList interactions', () => {
         'Notify channel?': 'No',
       }),
     )
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('routes inline plan actions without opening the row', () => {
@@ -1193,15 +1178,7 @@ describe('HoverList interactions', () => {
   it('selects and submits an inline multi-select reply with the keyboard', async () => {
     const onSessionClick = vi.fn()
     const user = userEvent.setup()
-    render(
-      <HoverList
-        sessions={[session({
-          phase: 'waiting_input',
-          pendingQuestion: { question: 'Pick a target', options: ['Preview', 'Ship'], multiSelect: true },
-        })]}
-        onSessionClick={onSessionClick}
-      />,
-    )
+    renderInlineQuestion({ question: 'Pick a target', options: ['Preview', 'Ship'], multiSelect: true }, onSessionClick)
 
     screen.getByRole('button', { name: /Preview$/ }).focus()
     await user.keyboard(' ')
@@ -1209,6 +1186,7 @@ describe('HoverList interactions', () => {
     await user.keyboard('{Enter}')
     expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Preview')
     expect(onSessionClick).not.toHaveBeenCalled()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('sends inline plan feedback from the input row without opening the row', () => {
