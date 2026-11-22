@@ -947,7 +947,9 @@ try {
             (Find-IslandButton $island { param($Name) $Name -eq 'Back to sessions' })
     }
     Write-Output 'Windows Island rendered the Claude Code activity and opened its session with native mouse input.'
-    $attemptCount = if ($TracePermissionUi) { 6 } else { 1 }
+    $attemptCount = if ($TracePermissionUi -and $AutomationFocusPermission) { 12 }
+                    elseif ($TracePermissionUi) { 6 }
+                    else { 1 }
     $testingPermissions = $true
     foreach ($attempt in 1..$attemptCount) {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
