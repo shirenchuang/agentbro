@@ -881,11 +881,20 @@ $cursorSaved = [AgentBroSmokeInput]::GetCursorPos([ref]$originalCursor)
 $island = $null
 $islandWindow = $null
 $rendererDiscovery = $null
+$nativeFocusTrace = $null
 $testingPermissions = $false
 try {
     if ($CloseStartupSettings) { Close-StartupSettings }
     $islandWindow = Wait-IslandValue 'the visible native Island region' { Find-VisibleIsland }
     $island = $islandWindow.Element
+    if ($TracePermissionUi -and $AutomationFocusPermission) {
+        try {
+            . (Join-Path $PSScriptRoot 'windows-island-focus.ps1')
+            $nativeFocusTrace = [AgentBroIslandFocusTrace]::new($islandWindow.Handle, [uint32]$AppProcessId)
+        } catch {
+            Write-Host "Could not start the native Island focus trace: $_"
+        }
+    }
     if ($RendererTracePort) {
         try {
             # Select by Tauri's window label without enabling Chromium accessibility ahead of the test.
@@ -1010,6 +1019,16 @@ try {
     }
     throw
 } finally {
+    if ($nativeFocusTrace) {
+        try {
+            $focusEvents = $nativeFocusTrace.Finish()
+            $focusEvents | Set-Content -LiteralPath (Join-Path $permissionTraceDirectory 'native-focus.txt')
+            Write-Host "Native Island focus events recorded: $($focusEvents.Count)."
+            $focusEvents | Select-Object -Last 36 | ForEach-Object { Write-Host "Native Island focus: $_" }
+        } catch {
+            Write-Host "Could not save the native Island focus trace: $_"
+        }
+    }
     if ($rendererDiscovery) { Remove-Job -Job $rendererDiscovery -Force }
     if ($cursorSaved) {
         [void][AgentBroSmokeInput]::SetCursorPos($originalCursor.X, $originalCursor.Y)
