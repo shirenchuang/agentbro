@@ -74,31 +74,33 @@ function Find-IslandRendererEndpoint([int]$Port) {
     }
 }
 
-function Request-IslandRendererFocus([uri]$Endpoint) {
+function Request-IslandRendererFocus([uri]$Endpoint, [switch]$BackgroundGuard) {
     $expression = @'
-(async () => {
+(async (backgroundGuard) => {
     const native = window.__TAURI_INTERNALS__;
     const isDenyFocused = () => {
         const button = document.activeElement?.closest('button');
         return (button?.getAttribute('aria-label') || button?.textContent?.trim()) === 'Deny';
     };
-    if (native?.metadata?.currentWindow?.label !== 'notch' || !isDenyFocused()) return null;
+    if (native?.metadata?.currentWindow?.label !== 'notch' || (!backgroundGuard && !isDenyFocused())) return null;
     const before = document.hasFocus();
+    let requested = null;
     try {
-        await native.invoke('restore_notch_webview_focus');
-    } catch {
+        requested = await native.invoke('restore_notch_webview_focus');
+    } catch (error) {
+        if (backgroundGuard) throw error;
         await native.invoke('set_notch_focusable', { focusable: true });
     }
     await new Promise(resolve => setTimeout(resolve, 120));
-    return { before, after: document.hasFocus(), deny: isDenyFocused() };
-})()
+    return { before, after: document.hasFocus(), deny: isDenyFocused(), requested };
+})(CHECK_BACKGROUND)
 '@
     $socket = [Net.WebSockets.ClientWebSocket]::new()
     $timeout = [Threading.CancellationTokenSource]::new(3000)
     try {
         $null = $socket.ConnectAsync($Endpoint, $timeout.Token).GetAwaiter().GetResult()
         $response = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
-            expression = $expression
+            expression = $expression.Replace('CHECK_BACKGROUND', ([string]$BackgroundGuard.IsPresent).ToLowerInvariant())
             returnByValue = $true
             awaitPromise = $true
         }

@@ -518,10 +518,66 @@ function Click-IslandElement(
     [AgentBroSmokeInput]::Click()
 }
 
+function Test-PermissionFocusOutsideIsland(
+    [uri]$Endpoint,
+    [Threading.Tasks.Task[string]]$Reply
+) {
+    $title = 'AgentBro focus test window'
+    $job = Start-Job -ArgumentList $title -ScriptBlock {
+        param($Title)
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+        $form = [Windows.Forms.Form]::new()
+        try {
+            $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+            $form.Text = $Title
+            $form.Width = 250
+            $form.Height = 90
+            $form.StartPosition = 'Manual'
+            $form.Location = [Drawing.Point]::new($area.Right - 265, $area.Bottom - 105)
+            $form.TopMost = $true
+            $null = $form.ShowDialog()
+        } finally {
+            $form.Dispose()
+        }
+    }
+    try {
+        $condition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty, $title)
+        $fixture = Wait-IslandValue 'the separate focus test window' {
+            [Windows.Automation.AutomationElement]::RootElement.FindFirst(
+                [Windows.Automation.TreeScope]::Children, $condition)
+        }
+        $handle = [IntPtr]$fixture.Current.NativeWindowHandle
+        $bounds = $fixture.Current.BoundingRectangle
+        $x = [int]($bounds.Left + $bounds.Width / 2)
+        $y = [int]($bounds.Top + $bounds.Height * 0.7)
+        if ([AgentBroSmokeInput]::WindowAtScreenPoint($x, $y) -ne $handle -or
+            -not [AgentBroSmokeInput]::SetCursorPos($x, $y)) {
+            throw 'The separate focus test window is not reachable.'
+        }
+        [AgentBroSmokeInput]::Click()
+        $null = Wait-IslandValue 'the separate window to become foreground' {
+            [AgentBroSmokeInput]::GetForegroundWindow() -eq $handle
+        }
+        Start-Sleep -Milliseconds 250
+        $focus = Request-IslandRendererFocus $Endpoint -BackgroundGuard
+        Write-Host "Island background focus guard: $($focus | ConvertTo-Json -Compress)."
+        if ($null -eq $focus -or $focus.before -or $focus.after -or $focus.requested -ne $false -or
+            [AgentBroSmokeInput]::GetForegroundWindow() -ne $handle -or $Reply.IsCompleted) {
+            throw 'A background Island must leave focus and the original permission request untouched.'
+        }
+        Write-Output 'The separate desktop window kept focus and the original Hook received no decision.'
+    } finally {
+        Stop-Job -Job $job
+        Remove-Job -Job $job
+    }
+}
+
 function Test-KeyboardPermissionDenial(
     [Windows.Automation.AutomationElement]$Island,
     [IntPtr]$WindowHandle,
-    [int]$Attempt
+    [int]$Attempt,
+    [switch]$VerifyBackgroundGuard
 ) {
     $connection = [System.Net.Sockets.TcpClient]::new()
     $keyboardReplyTimedOut = $false
@@ -637,12 +693,16 @@ function Test-KeyboardPermissionDenial(
             }
             throw
         }
-        if ($probePermissionFocusRecovery -and $Attempt -eq 1) {
+        if ($probePermissionFocusRecovery -and ($Attempt -eq 1 -or $VerifyBackgroundGuard)) {
             if (-not $rendererDiscovery -or -not (Wait-Job -Job $rendererDiscovery -Timeout 4)) {
                 throw 'The renderer endpoint was unavailable for the permission focus recovery probe.'
             }
             $endpoint = Receive-Job -Job $rendererDiscovery -Keep
             if (-not $endpoint) { throw 'The permission focus recovery probe could not find the Island renderer.' }
+            if ($VerifyBackgroundGuard) {
+                Test-PermissionFocusOutsideIsland $endpoint $reply
+                return
+            }
             $startedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
             [AgentBroSmokeInput]::FocusRendererChild($WindowHandle)
             Write-Host "Staged native renderer-child focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
@@ -1049,6 +1109,11 @@ try {
     if ($VerifyAgentPackageConsole) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
         Test-InstalledAgentPackageConsole $island
+    }
+    if ($probePermissionFocusRecovery) {
+        $testingPermissions = $true
+        Test-KeyboardPermissionDenial $island $islandWindow.Handle ($attemptCount + 1) -VerifyBackgroundGuard
+        $testingPermissions = $false
     }
 } catch {
     try {
