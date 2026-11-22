@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::{timeout, Duration};
@@ -864,24 +864,20 @@ async fn run_agent_command(
     let out_id = agent_id.to_string();
     let out_op = operation.to_string();
     let stdout_task = tokio::spawn(async move {
-        if let Some(stdout) = stdout {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_output(&out_app, &out_id, &out_op, "stdout", &line, false, None);
-            }
-        }
+        forward_package_output(stdout, |line| {
+            emit_output(&out_app, &out_id, &out_op, "stdout", line, false, None);
+        })
+        .await
     });
 
     let err_app = app.clone();
     let err_id = agent_id.to_string();
     let err_op = operation.to_string();
     let stderr_task = tokio::spawn(async move {
-        if let Some(stderr) = stderr {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_output(&err_app, &err_id, &err_op, "stderr", &line, false, None);
-            }
-        }
+        forward_package_output(stderr, |line| {
+            emit_output(&err_app, &err_id, &err_op, "stderr", line, false, None);
+        })
+        .await
     });
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -908,6 +904,28 @@ async fn run_agent_command(
     } else {
         Err(format!("{operation} failed for {agent_id}"))
     }
+}
+
+async fn forward_package_output(
+    pipe: Option<impl AsyncRead + Unpin>,
+    mut emit: impl FnMut(&str),
+) -> std::io::Result<()> {
+    let Some(pipe) = pipe else {
+        return Ok(());
+    };
+    let mut reader = BufReader::new(pipe);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).await? != 0 {
+        if line.last() == Some(&b'\n') {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+        }
+        emit(&String::from_utf8_lossy(&line));
+        line.clear();
+    }
+    Ok(())
 }
 
 fn native_claude_package_command(launcher: &Path, operation: &str) -> Result<Command, String> {
@@ -1990,6 +2008,24 @@ fn app_no_uninstall(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn package_output_continues_after_non_utf8_bytes() {
+        let mut bytes = "开始\r\n\r\nlegacy ".as_bytes().to_vec();
+        bytes.extend_from_slice(b"\xff line\r\nfinished\nfinal line");
+        let mut received = Vec::new();
+
+        super::forward_package_output(Some(bytes.as_slice()), |line| {
+            received.push(line.to_string());
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            received,
+            ["开始", "", "legacy � line", "finished", "final line"]
+        );
+    }
 
     #[test]
     fn agent_package_operation_rejects_overlap_until_the_guard_is_released() {
