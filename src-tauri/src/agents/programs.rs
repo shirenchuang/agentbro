@@ -10,6 +10,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
+#[cfg(target_os = "windows")]
+mod windows_app_paths;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentProgramKind {
@@ -1189,9 +1192,20 @@ pub(crate) fn installed_app_path_for_agent(agent_id: &str) -> Option<String> {
 }
 
 fn installed_app_path(agent_id: &str, meta: &ProgramMetadata) -> Option<String> {
-    app_path_candidates(agent_id, meta)
+    let existing = app_path_candidates(agent_id, meta)
         .into_iter()
-        .find(|path| Path::new(path).exists())
+        .find(|path| {
+            if cfg!(target_os = "windows") {
+                Path::new(path).is_file()
+            } else {
+                Path::new(path).exists()
+            }
+        });
+    #[cfg(target_os = "windows")]
+    let existing = existing.or_else(|| {
+        windows_app_paths::find_registered(&windows_registration_names(agent_id, meta))
+    });
+    existing
 }
 
 pub(crate) fn detected_status_for_agent_program(agent_id: &str) -> AdapterStatus {
@@ -1378,6 +1392,25 @@ fn windows_executable_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<Strin
             })
             .collect(),
     )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_registration_names(agent_id: &str, meta: &ProgramMetadata) -> Vec<String> {
+    if meta.kind != AgentProgramKind::App || agent_id == "cline" {
+        return Vec::new();
+    }
+    windows_executable_names(agent_id, meta)
+        .into_iter()
+        .filter(|name| !name.eq_ignore_ascii_case("Launcher.exe"))
+        .filter(|name| match agent_id {
+            "codebuddycn" | "codybuddycn" => !name.eq_ignore_ascii_case("CodeBuddy.exe"),
+            "easyclaw-v2" => !name.eq_ignore_ascii_case("EasyClaw.exe"),
+            "antigravity" => !name.eq_ignore_ascii_case("agy.exe"),
+            "kiro" => !name.eq_ignore_ascii_case("kiro-cli.exe"),
+            "qwen" => !name.eq_ignore_ascii_case("qwen-coder.exe"),
+            _ => true,
+        })
+        .collect()
 }
 
 fn dedupe_owned(values: Vec<String>) -> Vec<String> {
@@ -1813,7 +1846,8 @@ fn app(
         package_name: None,
         install_command: None,
         update_command: None,
-        uninstall_command: Some(APP_TRASH_UNINSTALL_COMMAND),
+        uninstall_command: (RuntimePlatform::current() == RuntimePlatform::Macos)
+            .then_some(APP_TRASH_UNINSTALL_COMMAND),
         app_path: Some(app_path),
         config_dir: Some(config_dir),
         download_url: Some(url),
@@ -1961,9 +1995,12 @@ mod tests {
     }
 
     #[test]
-    fn standalone_apps_can_move_to_trash_without_exposing_host_apps() {
+    fn desktop_trash_uninstall_is_available_only_on_macos() {
         let kiro = metadata_for("kiro").expect("kiro metadata");
-        assert_eq!(kiro.uninstall_command, Some(APP_TRASH_UNINSTALL_COMMAND));
+        assert_eq!(
+            kiro.uninstall_command,
+            cfg!(target_os = "macos").then_some(APP_TRASH_UNINSTALL_COMMAND)
+        );
 
         let cline = metadata_for("cline").expect("cline metadata");
         assert_eq!(cline.uninstall_command, None);
@@ -2097,6 +2134,24 @@ mod tests {
             let suffix = format!("\\Programs\\QwenWorkCN\\{executable}");
             assert!(paths.iter().any(|path| path.ends_with(&suffix)));
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_registration_names_match_only_the_desktop_agent() {
+        let names = |agent| {
+            super::windows_registration_names(agent, &metadata_for(agent).expect("Agent metadata"))
+        };
+
+        assert_eq!(names("cursor"), ["Cursor.exe"]);
+        assert!(names("cursor-cli").is_empty());
+        assert!(names("cline").is_empty());
+        assert!(names("qwenwork-cn").contains(&"QwenWorkCN.exe".to_string()));
+        assert!(!names("qwenwork-cn").contains(&"Launcher.exe".to_string()));
+        assert_eq!(names("easyclaw-v2"), ["EasyClaw V2.exe"]);
+        assert!(!names("codebuddycn")
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("CodeBuddy.exe")));
     }
 
     #[test]

@@ -17,7 +17,8 @@ param(
     [switch]$VerifyDrag,
     [switch]$CloseStartupSettings,
     [switch]$AutomationFocusPermission,
-    [switch]$VerifyAgentPackageConsole
+    [switch]$VerifyAgentPackageConsole,
+    [switch]$VerifyRegisteredAgentApp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -823,7 +824,7 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
-    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole) {
+    if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }
     if ($PackImportPath) {
@@ -835,9 +836,14 @@ try {
     if ($PackManifestLink) {
         Test-InstalledPackManifestLink $island $PackManifestLink
     }
-    if ($VerifyAgentPackageConsole) {
+    if ($VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-agent-package.ps1')
+    }
+    if ($VerifyAgentPackageConsole) {
         Test-InstalledAgentPackageConsole $island
+    }
+    if ($VerifyRegisteredAgentApp) {
+        Test-InstalledRegisteredAgentApp $island
     }
 } catch {
     try {
@@ -855,7 +861,7 @@ try {
                     Write-Host "$($_.Name) ($($_.ProcessId)) parent: $($parent.ProcessName) ($($_.ParentProcessId))."
                 }
         }
-        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole) {
+        if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
             foreach ($window in Get-IslandWindows) {
                 Write-Output "Window: $($window.Current.Name) ($($window.Current.ClassName))"
                 $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
