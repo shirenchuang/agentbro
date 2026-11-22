@@ -3599,6 +3599,18 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(update).toHaveBeenCalledTimes(1)
   })
 
+  it('discards an entry lookup error once Agent Management is closed', async () => {
+    let failLookup!: (error: Error) => void
+    const refresh = vi.spyOn(agentApi, 'refresh').mockReturnValue(new Promise((_, reject) => { failLookup = reject }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const page = render(<AgentManagementPage />)
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    page.unmount()
+
+    await act(async () => failLookup(new Error('Old Agent lookup failed')))
+    expect(useSkillStoreV2.getState().error).toBeNull()
+  })
+
   it.each([
     { installedVersion: '2.0.0-beta.1', latestVersion: '1.9.9', status: 'installed' },
     { installedVersion: '1.2.3+local.1', latestVersion: '1.2.3+upstream.2', status: 'installed' },

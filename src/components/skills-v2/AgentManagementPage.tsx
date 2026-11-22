@@ -173,7 +173,7 @@ export function AgentManagementPage() {
       if (isLatest()) useSkillStoreV2.setState({ agentProgramSnapshot: { ...runtime, programs } })
       return programs
     } catch (e) {
-      if (isLatest()) setError(skillErrorMessage(t, e))
+      if (request === programRequestRef.current && isLatest()) setError(skillErrorMessage(t, e))
     } finally {
       if (request === programRequestRef.current && isAgentRuntimeSelection(runtime)) setProgramLoading(false)
     }
