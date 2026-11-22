@@ -7436,7 +7436,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(container.querySelector('.sm2__rail')).toBeNull()
   })
 
-  async function renderPackPage() {
+  async function renderPackPage(overrides: Partial<SkillPackDetail> = {}) {
     const skill = makeSkill()
     const pack: SkillPackDetail = {
       id: 'default',
@@ -7447,6 +7447,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
       appliedAgents: [],
       createdAt: '',
       updatedAt: '',
+      ...overrides,
     }
     const agents = useSkillStoreV2.getState().agents
     const overview = {
@@ -8044,9 +8045,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(upsertPack).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'daily-pack', skillIds: [] }),
-      { deferSync: true },
+      { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID },
     ))
-    await waitFor(() => expect(syncPack).toHaveBeenCalledWith('daily-pack', []))
+    await waitFor(() => expect(syncPack).toHaveBeenCalledWith('daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(screen.getByText('“Daily Pack”已保存，正在后台同步到 Agent…')).toBeInTheDocument()
   })
 
@@ -8107,11 +8108,90 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(upsertPack).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'daily-pack', skillIds: ['release-checklist', 'pireel'] }),
-      { deferSync: true },
+      { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID },
     ))
     await waitFor(() => expect(document.body.querySelector('.sm2__pack-builder-modal')).toBeNull())
-    expect(syncPack).toHaveBeenCalledWith('daily-pack', [])
+    expect(syncPack).toHaveBeenCalledWith('daily-pack', [], LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(screen.getByText('“Daily Pack”已保存，正在后台同步到 Agent…')).toBeInTheDocument()
+  })
+
+  it('discards a Skill Pack save response after switching away and back', async () => {
+    const { pack, skill } = await renderPackPage()
+    let resolveSave!: (pack: SkillPackDetail) => void
+    const pending = new Promise<SkillPackDetail>((resolve) => { resolveSave = resolve })
+    const upsert = vi.spyOn(skillApiV2, 'upsertPack').mockReturnValue(pending)
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(new Promise(() => {}))
+    fireEvent.click(screen.getByRole('button', { name: /新建技能包/ }))
+    const builder = within(screen.getByRole('dialog', { name: '创建技能包' }))
+    fireEvent.change(builder.getByLabelText('技能包名称'), { target: { value: 'Saved elsewhere' } })
+    fireEvent.click(builder.getByRole('button', { name: `添加 ${skill.name} 到技能包` }))
+    fireEvent.click(builder.getByRole('button', { name: '创建技能包' }))
+    expect(upsert).toHaveBeenCalledTimes(1)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => {
+      resolveSave({ ...pack, id: 'saved-elsewhere', name: 'Saved elsewhere', pendingSyncCount: 1, syncStatus: 'pending' })
+    })
+
+    expect(sync).not.toHaveBeenCalled()
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(pack.id)
+    expect(screen.queryByRole('dialog', { name: '创建技能包' })).not.toBeInTheDocument()
+  })
+
+  it('discards a failed Skill Pack sync response after switching away and back', async () => {
+    const { pack } = await renderPackPage({ id: 'sync-pack', pendingSyncCount: 1, syncStatus: 'pending' })
+    type SyncResult = Awaited<ReturnType<typeof skillApiV2.syncPackToAgents>>
+    let resolveSync!: (result: SyncResult) => void
+    const pending = new Promise<SyncResult>((resolve) => { resolveSync = resolve })
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(pending)
+    const preview = vi.spyOn(skillApiV2, 'previewApplyPack')
+    fireEvent.click(screen.getByRole('button', { name: '同步全部' }))
+    expect(sync).toHaveBeenCalledTimes(1)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-machine')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => {
+      resolveSync({
+        packId: pack.id, packName: pack.name, revision: 1, status: 'failed',
+        agents: [{ agentId: 'codex', displayName: 'Codex', status: 'failed', error: 'A target already exists.' }],
+      })
+    })
+
+    expect(preview).not.toHaveBeenCalled()
+    expect(screen.queryByText(/个 Agent 同步失败/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '同步全部' })).toBeEnabled()
+  })
+
+  it('keeps the newly selected Skill Pack after the previous sync finishes', async () => {
+    const { pack, overview } = await renderPackPage({ id: 'sync-pack', pendingSyncCount: 1, syncStatus: 'pending' })
+    const other = { ...pack, id: 'other-pack', name: 'Other Pack' }
+    const packs = [...overview.packs, { ...overview.packs[0], id: other.id, name: other.name }]
+    act(() => useSkillStoreV2.setState({ packs }))
+    vi.mocked(skillApiV2.overview).mockResolvedValue({ ...overview, packs })
+    vi.mocked(skillApiV2.getPackDetail).mockImplementation(async (id) => id === other.id ? other : pack)
+    type SyncResult = Awaited<ReturnType<typeof skillApiV2.syncPackToAgents>>
+    let resolveSync!: (result: SyncResult) => void
+    const pending = new Promise<SyncResult>((resolve) => { resolveSync = resolve })
+    const sync = vi.spyOn(skillApiV2, 'syncPackToAgents').mockReturnValue(pending)
+    fireEvent.click(screen.getByRole('button', { name: '同步全部' }))
+    expect(sync).toHaveBeenCalledWith(pack.id, [], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: /^Other Pack/ }))
+    expect(await screen.findByRole('heading', { name: other.name })).toBeInTheDocument()
+
+    await act(async () => {
+      resolveSync({ packId: pack.id, packName: pack.name, revision: 1, status: 'synced', agents: [] })
+    })
+
+    expect(useSkillStoreV2.getState().selectedPackId).toBe(other.id)
+    expect(screen.getByRole('heading', { name: other.name })).toBeInTheDocument()
+    expect(screen.queryByText('已同步 0 个 Agent。')).not.toBeInTheDocument()
   })
 
   it('filters pack builder skill choices by source', async () => {
@@ -8212,7 +8292,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(document.body.querySelector('.sm2__slideover--skill-detail')).not.toBeNull()
   })
 
-  it('opens a blocker resolution dialog when pack sync hits an unmanaged same-name skill', async () => {
+  it.each([false, true])('scopes the pack sync blocker dialog, switch runtime=%s', async (switchRuntime) => {
     const pack: SkillPackDetail = {
       id: 'pack-ant',
       name: '蚂蚁Skill',
@@ -8279,7 +8359,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
         { agentId: 'codex', displayName: 'Codex', status: 'failed', error: '1 blocker(s) need manual resolution before syncing.' },
       ],
     })
-    vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue({
+    const preview: DistributionPreview = {
       skillIds: ['antcode-skill'],
       targetAgents: ['codex'],
       requestedMode: 'link',
@@ -8295,7 +8375,9 @@ describe('Skill detail slider + agent page render without crashing', () => {
         },
       ],
       blockerDecisions: [],
-    })
+    }
+    const previewApply = vi.spyOn(skillApiV2, 'previewApplyPack').mockResolvedValue(preview)
+    const execute = vi.spyOn(skillApiV2, 'executeApplyPack').mockResolvedValue({ ...preview, blockers: [] })
 
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     render(<SkillPackPage />)
@@ -8306,7 +8388,27 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.getAllByText(/未接管的同名 Skill/).length).toBeGreaterThan(0)
     expect(screen.getByText(/antcode-skill\/codex/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '覆盖安装' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '忽略此目标' })).toBeInTheDocument()
+    expect(previewApply).toHaveBeenCalledWith(pack.id, ['codex'], 'link', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    fireEvent.click(screen.getByRole('button', { name: '忽略此目标' }))
+    const confirm = screen.getByRole('button', { name: '按选择同步' })
+    if (switchRuntime) {
+      const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+      act(() => {
+        selectEnvironment('other-machine')
+        selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      })
+      fireEvent.click(confirm)
+      expect(execute).not.toHaveBeenCalled()
+      expect(screen.queryByText('确认同步冲突')).not.toBeInTheDocument()
+      return
+    }
+
+    fireEvent.click(confirm)
+    expect(execute).toHaveBeenCalledWith(
+      pack.id, ['codex'], 'link', [{ skillId: 'antcode-skill', agentId: 'codex', action: 'skip' }],
+      preview, LOCAL_RUNTIME_ENVIRONMENT_ID,
+    )
+    await waitFor(() => expect(screen.queryByText('确认同步冲突')).not.toBeInTheDocument())
   })
 
   it('refreshes the selected agent detail after revoking a pack from the pack workspace', async () => {
