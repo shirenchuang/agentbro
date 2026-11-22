@@ -242,11 +242,11 @@ function Open-LinkedPackFixture(
         $button = Find-PackControl $Settings 'Import from link'
         if ($button -and $button.Current.IsEnabled) { $button }
     }
-    Invoke-PackControl $open
+    Invoke-PackControl $open | Out-Host
     $field = Wait-IslandValue 'the GitHub link field' {
         Find-PackControl $Settings 'GitHub link' ([Windows.Automation.ControlType]::Edit)
     }
-    Click-IslandElement $field 'GitHub link field'
+    Click-IslandElement $field 'GitHub link field' | Out-Host
     if (-not [AgentBroSmokeInput]::PasteInWindow([IntPtr]$Settings.Current.NativeWindowHandle)) {
         throw 'AgentBro Settings lost focus before pasting the GitHub link'
     }
@@ -255,7 +255,7 @@ function Open-LinkedPackFixture(
         $button = Find-PackControl $Settings 'Review Skill Pack'
         if ($inputValue.Current.Value -ceq $Link -and $button -and $button.Current.IsEnabled) { $button }
     }
-    Invoke-PackControl $review
+    Invoke-PackControl $review | Out-Host
     Wait-IslandValue 'the downloaded Skill Pack preview' {
         $button = Find-PackControl $Settings 'Create Skill Pack'
         if ($button -and $button.Current.IsEnabled -and (Test-PackVisibleText $Settings $Name)) { $button }
