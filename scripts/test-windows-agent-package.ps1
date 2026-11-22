@@ -22,9 +22,20 @@
         }
         [AgentBroSmokeInput]::AppendCharacter($character)
     }
-    Click-IslandElement $null "$AgentName in Agent Management" -FindElement {
-        Find-IslandButton $settings { param($Name) $Name -eq $AgentName }
-    } | Out-Host
+    $null = Wait-IslandValue "selecting $AgentName in Agent Management" {
+        try {
+            $agent = Find-PackControl $settings $AgentName ([Windows.Automation.ControlType]::Button)
+            $invoke = $null
+            if ($agent -and $agent.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                $invoke.Invoke()
+                return $true
+            }
+        } catch {
+            if ($_.Exception -isnot [Windows.Automation.ElementNotAvailableException] -and
+                $_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]) { throw }
+        }
+    }
+    Write-Host "Selected $AgentName through Windows UI Automation."
     $settings
 }
 
