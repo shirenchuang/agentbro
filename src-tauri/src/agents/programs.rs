@@ -613,7 +613,7 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
 }
 
 async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = npm_probe_output(
+    let output = package_probe_output(
         npm.args([
             "list",
             "-g",
@@ -635,7 +635,7 @@ async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String
 }
 
 async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
-    let output = npm_probe_output(
+    let output = package_probe_output(
         npm.args([
             "view",
             package,
@@ -659,8 +659,11 @@ async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-async fn npm_probe_output(npm: &mut Command, deadline: Duration) -> Option<std::process::Output> {
-    timeout(deadline, npm.kill_on_drop(true).output())
+async fn package_probe_output(
+    command: &mut Command,
+    deadline: Duration,
+) -> Option<std::process::Output> {
+    timeout(deadline, command.kill_on_drop(true).output())
         .await
         .ok()?
         .ok()
@@ -760,17 +763,19 @@ async fn run_agent_command(
     {
         return trash_agent_app(app, agent_id, &meta).await;
     }
-    let command = if agent_id == "aider" && operation == "uninstall" {
-        aider_uninstall_command().await?
+    let (command_line, mut command) = if agent_id == "aider" && operation == "uninstall" {
+        aider_uninstall_command(RuntimePlatform::current(), executable::find_binary).await?
     } else {
-        match operation {
+        let command_line = match operation {
             "install" => meta.install_command,
             "update" => meta.update_command,
             "uninstall" => meta.uninstall_command,
             _ => None,
         }
         .ok_or_else(|| format!("{operation} is not supported for {agent_id}"))?
-        .to_string()
+        .to_string();
+        let command = package_operation_command(&command_line);
+        (command_line, command)
     };
 
     emit_output(
@@ -778,12 +783,12 @@ async fn run_agent_command(
         agent_id,
         operation,
         "info",
-        &format!("$ {command}"),
+        &format!("$ {command_line}"),
         false,
         None,
     );
 
-    let mut child = package_operation_command(&command)
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -842,41 +847,60 @@ async fn run_agent_command(
     }
 }
 
-async fn aider_uninstall_command() -> Result<String, String> {
-    if command_output_contains("uv", &["tool", "list"], "aider-chat").await {
-        return Ok("uv tool uninstall aider-chat".to_string());
-    }
-    if command_output_contains("pipx", &["list", "--short"], "aider-chat").await {
-        return Ok("pipx uninstall aider-chat".to_string());
-    }
-    if command_succeeds("python3", &["-m", "pip", "show", "aider-chat"]).await {
-        return Ok("python3 -m pip uninstall -y aider-chat".to_string());
+async fn aider_uninstall_command(
+    platform: RuntimePlatform,
+    find_binary: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<(String, Command), String> {
+    let path = executable::augmented_path_env();
+    let python_launchers: &[&str] = if platform == RuntimePlatform::Windows {
+        &["python", "py", "python3"]
+    } else {
+        &["python3"]
+    };
+    let tool_managers = [
+        (
+            "uv",
+            &["tool", "list"][..],
+            &["tool", "uninstall", "aider-chat"][..],
+        ),
+        (
+            "pipx",
+            &["list", "--short"][..],
+            &["uninstall", "aider-chat"][..],
+        ),
+    ];
+    let pip_managers = python_launchers.iter().map(|&launcher| {
+        (
+            launcher,
+            &["-m", "pip", "show", "aider-chat"][..],
+            &["-m", "pip", "uninstall", "-y", "aider-chat"][..],
+        )
+    });
+    for (binary, probe_args, uninstall_args) in tool_managers.into_iter().chain(pip_managers) {
+        let Some(launcher) = find_binary(binary) else {
+            continue;
+        };
+        let is_pip = python_launchers.contains(&binary);
+        let command_for_launcher = || {
+            let mut command = package_command(&launcher, path.as_deref());
+            if is_pip && platform == RuntimePlatform::Windows {
+                command.env("PYTHON_MANAGER_AUTOMATIC_INSTALL", "false");
+            }
+            command
+        };
+        let mut probe = command_for_launcher();
+        let output = package_probe_output(probe.args(probe_args), Duration::from_secs(5)).await;
+        let package_found = output.is_some_and(|output| {
+            output.status.success()
+                && (is_pip || String::from_utf8_lossy(&output.stdout).contains("aider-chat"))
+        });
+        if package_found {
+            let mut command = command_for_launcher();
+            command.args(uninstall_args);
+            return Ok((format!("{binary} {}", uninstall_args.join(" ")), command));
+        }
     }
     Err("Aider is present, but its package manager could not be determined".to_string())
-}
-
-async fn command_output_contains(binary: &str, args: &[&str], needle: &str) -> bool {
-    let Some(path) = executable::find_binary(binary) else {
-        return false;
-    };
-    background_tokio_command(path)
-        .args(args)
-        .output()
-        .await
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).contains(needle))
-}
-
-async fn command_succeeds(binary: &str, args: &[&str]) -> bool {
-    let Some(path) = executable::find_binary(binary) else {
-        return false;
-    };
-    background_tokio_command(path)
-        .args(args)
-        .output()
-        .await
-        .is_ok_and(|output| output.status.success())
 }
 
 async fn trash_agent_app(
@@ -2115,6 +2139,61 @@ mod tests {
         ));
     }
 
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn windows_aider_uninstall_reuses_the_detected_python_launcher() {
+        let directory =
+            std::env::temp_dir().join(format!("agentbro aider {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            directory.join("python launcher.cmd"),
+            concat!(
+                "@echo off\r\n",
+                "if not \"%PYTHON_MANAGER_AUTOMATIC_INSTALL%\"==\"false\" exit /b 1\r\n",
+                "if \"%*\"==\"-m pip show aider-chat\" exit /b 0\r\n",
+                "if not \"%*\"==\"-m pip uninstall -y aider-chat\" exit /b 1\r\n",
+                "echo removed aider-chat\r\n",
+            ),
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            directory.join("python launcher"),
+            r#"#!/bin/sh
+[ "$PYTHON_MANAGER_AUTOMATIC_INSTALL" = false ] || exit 1
+case "$*" in
+    "-m pip show aider-chat") exit 0 ;;
+    "-m pip uninstall -y aider-chat") echo "removed aider-chat" ;;
+    *) exit 1 ;;
+esac
+"#,
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        for binary in ["python", "py", "python3"] {
+            let (line, mut command) =
+                super::aider_uninstall_command(RuntimePlatform::Windows, |name| {
+                    (name == binary).then(|| launcher.clone())
+                })
+                .await
+                .unwrap();
+            assert_eq!(line, format!("{binary} -m pip uninstall -y aider-chat"));
+            assert_eq!(command.as_std().get_program(), launcher.as_os_str());
+            let result = command.output().await.unwrap();
+            assert!(result.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout).trim(),
+                "removed aider-chat"
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn npm_operations_and_versions_use_the_detected_toolchain() {
@@ -2223,7 +2302,7 @@ esac
             .arg(&pid_file);
 
         assert!(
-            super::npm_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
+            super::package_probe_output(&mut npm, tokio::time::Duration::from_millis(500))
                 .await
                 .is_none()
         );
