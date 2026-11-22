@@ -32,4 +32,7 @@
             (Find-PackControl $settings '! agentbro-package-fixture-stderr')
     }
     Write-Output 'The installed Agent Management ran the fixture update and displayed both output streams.'
+    if ($report.shellConsoleVisible -or $report.toolConsoleVisible) {
+        throw 'The package update opened a visible Windows console'
+    }
 }

@@ -161,6 +161,9 @@ function Assert-CompactPackHeader([Windows.Automation.AutomationElement]$Setting
 }
 
 function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island) {
+    foreach ($window in Get-IslandWindows) {
+        if (Find-PackControl $window '技能包') { return $window }
+    }
     $open = Wait-IslandValue 'the Island Settings button' { Find-PackControl $Island 'Settings' }
     Invoke-PackControl $open
     $settings = Wait-IslandValue 'the native Settings window' {
