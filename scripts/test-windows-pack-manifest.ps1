@@ -22,11 +22,7 @@ function Invoke-PackControl([Windows.Automation.AutomationElement]$Element) {
         $pattern.Expand()
         return
     }
-    Move-ToElement $Element
-    if ([AgentBroSmokeInput]::ProcessAtCursor() -ne $AppProcessId) {
-        throw "AgentBro does not own the click point for $($Element.Current.Name)"
-    }
-    [AgentBroSmokeInput]::Click()
+    Click-IslandElement $Element $Element.Current.Name -CenterAfterLayout | Out-Host
 }
 
 function Set-PackDialogFile([string]$Action, [string]$Path) {
