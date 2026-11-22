@@ -46,6 +46,10 @@ type AgentRuntimeSelection = {
   environmentId: string
   selectionRevision: number
 }
+type AgentSkillDetailTarget = AgentRuntimeSelection & {
+  skillId: string
+  fallback: SkillDetailFallback | null
+}
 type PackApplyConflictDialogState = {
   packId: string
   packName: string
@@ -147,8 +151,8 @@ export function AgentManagementPage() {
   const detail = state.selectedAgentDetail?.id === SHARED_SKILLS_AGENT_ID ? null : state.selectedAgentDetail
   const [tab, setTab] = useState<DetailTab>('overview')
   const [adopt, setAdopt] = useState<AdoptDialogState | null>(null)
-  const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
-  const [detailFallback, setDetailFallback] = useState<SkillDetailFallback | null>(null)
+  const [skillDetailTarget, setSkillDetailTarget] = useState<AgentSkillDetailTarget | null>(null)
+  const currentSkillDetail = skillDetailTarget && isAgentRuntimeSelection(skillDetailTarget) ? skillDetailTarget : null
   const [busy, setBusy] = useState(false)
   const [refreshingOverview, setRefreshingOverview] = useState(false)
   const [refreshingAll, setRefreshingAll] = useState(false)
@@ -729,8 +733,7 @@ export function AgentManagementPage() {
   }
 
   const openSkillDetail = (skillId: string, fallback?: SkillDetailFallback | null) => {
-    setDetailSkillId(skillId)
-    setDetailFallback(fallback || null)
+    if (isCurrentRuntime()) setSkillDetailTarget({ ...runtimeSelection, skillId, fallback: fallback ?? null })
   }
 
   const addCustomAgent = async (config: CustomAgentConfig, runtime: AgentRuntimeSelection) => {
@@ -879,13 +882,10 @@ export function AgentManagementPage() {
       </div>
 
       <SkillDetailSlider
-        skillId={detailSkillId}
-        open={!!detailSkillId}
-        fallbackSkill={detailFallback}
-        onClose={() => {
-          setDetailSkillId(null)
-          setDetailFallback(null)
-        }}
+        skillId={currentSkillDetail?.skillId ?? null}
+        open={currentSkillDetail !== null}
+        fallbackSkill={currentSkillDetail?.fallback}
+        onClose={() => setSkillDetailTarget(null)}
       />
 
       {currentAdopt && (
