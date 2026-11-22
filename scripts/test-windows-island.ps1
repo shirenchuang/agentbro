@@ -189,9 +189,7 @@ public static class AgentBroSmokeInput {
         } finally {
             AttachThreadInput(currentThread, targetThread, false);
         }
-        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-        if (GetForegroundWindow() != window || !GetGUIThreadInfo(0, ref info) || info.Focus != childWindow)
-            throw new InvalidOperationException("Could not reproduce native renderer-child focus.");
+        if (GetForegroundWindow() != window) throw new InvalidOperationException("The Island lost foreground focus.");
     }
 
     public static IntPtr WindowAtCursor() {
@@ -645,15 +643,16 @@ function Test-KeyboardPermissionDenial(
             }
             $endpoint = Receive-Job -Job $rendererDiscovery -Keep
             if (-not $endpoint) { throw 'The permission focus recovery probe could not find the Island renderer.' }
+            $startedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
             [AgentBroSmokeInput]::FocusRendererChild($WindowHandle)
             Write-Host "Staged native renderer-child focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
-            $focus = Request-IslandRendererFocus $endpoint
-            Write-Host "Staged Island focus command result: $($focus | ConvertTo-Json -Compress)."
-            if ($null -eq $focus -or $focus.before -or -not $focus.deny) {
+            $focus = Wait-IslandRendererFocusRecovery $endpoint $startedAt
+            Write-Host "Staged Island automatic focus recovery: $($focus | ConvertTo-Json -Compress)."
+            if (-not $focus.lost -or -not $focus.deny) {
                 throw 'The permission focus recovery probe did not reproduce an unfocused document retaining Deny.'
             }
-            if (-not $focus.after) {
-                throw 'The Island focus command did not restore keyboard focus to the renderer.'
+            if (-not $focus.restored) {
+                throw 'The Island did not restore keyboard focus to the renderer automatically.'
             }
         }
         if ($TracePermissionUi) {

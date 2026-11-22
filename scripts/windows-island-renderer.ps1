@@ -84,7 +84,11 @@ function Request-IslandRendererFocus([uri]$Endpoint) {
     };
     if (native?.metadata?.currentWindow?.label !== 'notch' || !isDenyFocused()) return null;
     const before = document.hasFocus();
-    await native.invoke('set_notch_focusable', { focusable: true });
+    try {
+        await native.invoke('restore_notch_webview_focus');
+    } catch {
+        await native.invoke('set_notch_focusable', { focusable: true });
+    }
     await new Promise(resolve => setTimeout(resolve, 120));
     return { before, after: document.hasFocus(), deny: isDenyFocused() };
 })()
@@ -99,6 +103,43 @@ function Request-IslandRendererFocus([uri]$Endpoint) {
             awaitPromise = $true
         }
         if ($response.exceptionDetails) { throw 'The Island focus command did not complete in WebView2.' }
+        $response.result.value
+    } finally {
+        $timeout.Dispose()
+        $socket.Dispose()
+    }
+}
+
+function Wait-IslandRendererFocusRecovery([uri]$Endpoint, [long]$StartedAt) {
+    $expression = @'
+(async (startedAt) => {
+    const frames = window[Symbol.for('agentbro.windowsSmokeTimeline')] ?? [];
+    const deadline = Date.now() + 1000;
+    let state;
+    do {
+        const button = document.activeElement?.closest('button');
+        state = {
+            lost: frames.some(frame => frame.event === 'blur' && !frame.focused &&
+                frame.active === 'deny' && Date.parse(frame.at) >= startedAt),
+            restored: document.hasFocus(),
+            deny: (button?.getAttribute('aria-label') || button?.textContent?.trim()) === 'Deny',
+        };
+        if (state.lost && state.restored && state.deny) break;
+        await new Promise(resolve => setTimeout(resolve, 30));
+    } while (Date.now() < deadline);
+    return state;
+})(STARTED_AT)
+'@
+    $socket = [Net.WebSockets.ClientWebSocket]::new()
+    $timeout = [Threading.CancellationTokenSource]::new(3000)
+    try {
+        $null = $socket.ConnectAsync($Endpoint, $timeout.Token).GetAwaiter().GetResult()
+        $response = Invoke-IslandRendererRequest $socket $timeout.Token 'Runtime.evaluate' @{
+            expression = $expression.Replace('STARTED_AT', [string]$StartedAt)
+            returnByValue = $true
+            awaitPromise = $true
+        }
+        if ($response.exceptionDetails) { throw 'Could not observe the staged renderer focus change.' }
         $response.result.value
     } finally {
         $timeout.Dispose()

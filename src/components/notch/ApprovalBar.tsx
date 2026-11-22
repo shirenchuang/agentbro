@@ -3,8 +3,9 @@ import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEv
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
 import { useSessionStore } from '../../stores/sessionStore'
-import { setNotchFocusable } from '../../services/tauriApi'
+import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
+import { isWindowsPlatform } from '../../utils/platform'
 import { getToolActivityLabel } from '../../utils/toolLabels'
 import { composerHints, getComposerCapability, supportsPersistentPermissionActions, type ComposerLockReason } from '../../utils/sessionCapabilities'
 import './ApprovalBar.css'
@@ -26,9 +27,33 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
   const codexAppServerLive = useSessionStore((state) => state.codexAppServerLive)
   const inputRef = useRef<HTMLInputElement>(null)
   const permissionButtonsRef = useCallback((buttons: HTMLDivElement | null) => {
-    if (!buttons || !restorePermissionFocus) return
+    if (!buttons) return
+    const document = buttons.ownerDocument
+    const view = document.defaultView
+    const recoverOnBlur = isWindowsPlatform()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attemptedButton: Element | null = null
+
+    const onBlur = () => {
+      if (timer !== undefined) return
+      timer = setTimeout(() => {
+        timer = undefined
+        const active = document.activeElement
+        if (!active || !buttons.contains(active) || active === attemptedButton || document.hasFocus()) return
+        attemptedButton = active
+        const retry = () => {
+          if (attemptedButton === active) attemptedButton = null
+        }
+        restoreNotchWebviewFocus().then((restored) => {
+          if (!restored) retry()
+        }, retry)
+      }, 0)
+    }
+    if (recoverOnBlur) view?.addEventListener('blur', onBlur)
     return () => {
-      if (buttons.contains(buttons.ownerDocument.activeElement)) restorePermissionFocus()
+      if (recoverOnBlur) view?.removeEventListener('blur', onBlur)
+      clearTimeout(timer)
+      if (buttons.contains(document.activeElement)) restorePermissionFocus?.()
     }
   }, [restorePermissionFocus])
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
