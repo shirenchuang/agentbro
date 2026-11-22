@@ -3,6 +3,7 @@ use crate::commands::AppState;
 use crate::platform::process::background_tokio_command;
 use crate::skills::{agent_paths, registry};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
@@ -494,12 +495,14 @@ async fn version_info_for(
         Some(package) => package,
         None => return (None, None),
     };
+    let npm = executable::command_path("npm");
+    let path = executable::augmented_path_env();
+    let installed = npm_installed_version(package_command(&npm, path.as_deref()), package);
     if !include_latest {
-        return (npm_installed_version(package).await, None);
+        return (installed.await, None);
     }
-    let (installed, latest) =
-        tokio::join!(npm_installed_version(package), npm_latest_version(package),);
-    (installed, latest)
+    let latest = npm_latest_version(package_command(&npm, path.as_deref()), package);
+    tokio::join!(installed, latest)
 }
 
 #[cfg(target_os = "macos")]
@@ -606,11 +609,10 @@ async fn app_installed_version(_app_path: &str) -> Option<String> {
     None
 }
 
-async fn npm_installed_version(package: &str) -> Option<String> {
+async fn npm_installed_version(mut npm: Command, package: &str) -> Option<String> {
     let output = timeout(
         Duration::from_secs(4),
-        background_tokio_command(command_name("npm"))
-            .args(["list", "-g", package, "--depth=0", "--json"])
+        npm.args(["list", "-g", package, "--depth=0", "--json"])
             .output(),
     )
     .await
@@ -625,12 +627,10 @@ async fn npm_installed_version(package: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-async fn npm_latest_version(package: &str) -> Option<String> {
+async fn npm_latest_version(mut npm: Command, package: &str) -> Option<String> {
     let output = timeout(
         Duration::from_secs(5),
-        background_tokio_command(command_name("npm"))
-            .args(["view", package, "version", "--silent"])
-            .output(),
+        npm.args(["view", package, "version", "--silent"]).output(),
     )
     .await
     .ok()?
@@ -975,26 +975,23 @@ fn emit_output(
     );
 }
 
-fn command_shell(command: &str) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        let mut shell = background_tokio_command(command_name("cmd"));
-        shell.args(["/C", command]);
-        if let Some(path) = executable::augmented_path_env() {
-            shell.env("PATH", path);
-        }
-        shell
+fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command {
+    let mut command = background_tokio_command(program);
+    if let Some(path) = path {
+        command.env("PATH", path);
     }
+    command
+}
 
+fn command_shell(command: &str) -> Command {
+    let path = executable::augmented_path_env();
+    #[cfg(target_os = "windows")]
+    let (program, flag) = (executable::command_path("cmd"), "/C");
     #[cfg(not(target_os = "windows"))]
-    {
-        let mut shell = Command::new("sh");
-        shell.args(["-lc", command]);
-        if let Some(path) = executable::augmented_path_env() {
-            shell.env("PATH", path);
-        }
-        shell
-    }
+    let (program, flag) = ("sh", "-lc");
+    let mut shell = package_command(program, path.as_deref());
+    shell.args([flag, command]);
+    shell
 }
 
 fn open_target(target: &str) -> Result<(), String> {
@@ -1083,10 +1080,6 @@ fn launch_binary(path: &Path) -> Result<(), String> {
     }
 }
 
-fn which(binary: &str) -> Option<String> {
-    executable::find_binary(binary).map(|path| path.display().to_string())
-}
-
 fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> {
     binary_candidates_for_agent(agent_id, meta)
         .into_iter()
@@ -1118,10 +1111,6 @@ fn binary_candidates_for_agent(agent_id: &str, meta: &ProgramMetadata) -> Vec<&'
         .into_iter()
         .filter(|binary| seen.insert(binary.to_ascii_lowercase()))
         .collect()
-}
-
-fn command_name(binary: &str) -> String {
-    which(binary).unwrap_or_else(|| binary.to_string())
 }
 
 fn expand_home(path: &str) -> String {
@@ -2073,6 +2062,71 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn npm_version_probes_find_the_discovered_node_toolchain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_PROBE: &str = "AGENTBRO_TEST_NPM_CHILD_PROBE";
+        if std::env::var_os(CHILD_PROBE).is_some() {
+            let meta = metadata_for("claude-code").unwrap();
+            assert_eq!(
+                version_info_for(&meta, None, true).await,
+                (Some("2.0.0".to_string()), Some("3.0.0".to_string()))
+            );
+            return;
+        }
+
+        let home = std::env::temp_dir().join(format!("agentbro-npm-{}", uuid::Uuid::new_v4()));
+        let launcher = home.join("agent launchers");
+        let toolchain = home.join(".nvm/versions/node/v22.0.0/bin");
+        std::fs::create_dir_all(&launcher).unwrap();
+        std::fs::create_dir_all(&toolchain).unwrap();
+        for (path, contents) in [
+            (
+                launcher.join("npm"),
+                "#!/usr/bin/env agentbro-npm-test-node\n",
+            ),
+            (
+                toolchain.join("agentbro-npm-test-node"),
+                r#"#!/bin/sh
+case "$2" in
+  list) printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"2.0.0"}}}' ;;
+  view) printf '%s\n' '3.0.0' ;;
+  *) exit 1 ;;
+esac
+"#,
+            ),
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path =
+            std::env::join_paths([launcher.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
+                .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .current_dir(&home)
+            .env(CHILD_PROBE, "1")
+            .env("HOME", &home)
+            .env("SHELL", "/bin/sh")
+            .env("PATH", path)
+            .args([
+                "--exact",
+                "agents::programs::tests::npm_version_probes_find_the_discovered_node_toolchain",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("running 1 test"), "{stdout}");
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(target_os = "macos")]
