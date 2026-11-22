@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, RefObject, UIEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { skillApiV2 } from '../../services/skillApiV2'
 import type { CopyTargetDiffPreview, SkillDetail, SkillSummary, FileTreeNode, SkillSourceUpdateCheck } from '../../services/skillApiV2'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
+import { useRuntimeEnvironmentStore } from '../../stores/runtimeEnvironmentStore'
 import { SlideOver } from './SlideOver'
 import { AgentIconBadge } from './AgentIconBadge'
 import { skillModeLabel, skillSourceTypeLabel, targetClaimLabel } from './skillLabels'
@@ -57,7 +58,15 @@ export function SkillDetailSlider({
   fallbackSkill?: SkillDetailFallback | null
 }) {
   const { t } = useTranslation()
-  const [detail, setDetail] = useState<SkillDetail | null>(null)
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const selectionRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  const view = useMemo(() => ({ environmentId, selectionRevision, skillId, open, fallbackSkill }), [
+    environmentId, selectionRevision, skillId, open, fallbackSkill,
+  ])
+  const visibleView = useRef<typeof view | null>(null)
+  const fileRequest = useRef(0)
+  const [loadedDetail, setLoadedDetail] = useState<{ view: typeof view; detail: SkillDetail } | null>(null)
+  const detail = loadedDetail?.view === view ? loadedDetail.detail : null
   const [loading, setLoading] = useState(false)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState('')
@@ -78,25 +87,37 @@ export function SkillDetailSlider({
   const [skillDocContent, setSkillDocContent] = useState('')
   const [copyMenu, setCopyMenu] = useState<CopyMenuState | null>(null)
   const readOnly = fallbackSkill?.readOnly === true
-  const visibleSkillId = useRef<string | null>(null)
+
+  const isCurrentRuntime = () => {
+    const current = useRuntimeEnvironmentStore.getState()
+    return current.selectedEnvironmentId === environmentId && current.selectionRevision === selectionRevision
+  }
+  const isCurrentView = () => visibleView.current === view && open && isCurrentRuntime()
+  const setDetail = (next: SkillDetail) => {
+    if (isCurrentView()) setLoadedDetail({ view, detail: next })
+  }
 
   useEffect(() => {
-    visibleSkillId.current = open ? skillId : null
-    return () => { visibleSkillId.current = null }
-  }, [open, skillId])
+    visibleView.current = view
+    return () => { visibleView.current = null }
+  }, [view])
 
   useEffect(() => {
     if (!open || !skillId) return
     setLoading(true)
     setError(null)
     setTab('overview')
-    setDetail(null)
+    setLoadedDetail(null)
     setActiveFile(null)
+    setFileLoading(false)
     setSkillDocPath(null)
     setSkillDocContent('')
     setFileContent('')
     setDiffPreview(null)
+    setDiffLoadingTarget(null)
     setDiffError(null)
+    setSyncing(null)
+    setDeletingTarget(false)
     setDeleteTargetId(null)
     setBatchDeleteMode(false)
     setCopyMenu(null)
@@ -108,21 +129,26 @@ export function SkillDetailSlider({
       const fallbackDocPath = `${fallback.centerPath}/SKILL.md`
       setSkillDocPath(fallbackDocPath)
       try {
-        const files = await skillApiV2.readFileTree(fallback.centerPath)
+        const files = await skillApiV2.readFileTree(fallback.centerPath, environmentId)
+        if (!isCurrentView()) return
         const skillMd = findFile(files, 'SKILL.md') || fallbackDocPath
         setDetail({ ...d, files })
         setSkillDocPath(skillMd)
         setActiveFile(skillMd)
-        const content = await skillApiV2.readFileContent(skillMd)
+        const content = await skillApiV2.readFileContent(skillMd, environmentId)
+        if (!isCurrentView()) return
         setSkillDocContent(content)
         setFileContent(content)
       } catch {
+        if (!isCurrentView()) return
         try {
-          const content = await skillApiV2.readFileContent(fallbackDocPath)
+          const content = await skillApiV2.readFileContent(fallbackDocPath, environmentId)
+          if (!isCurrentView()) return
           setActiveFile(fallbackDocPath)
           setSkillDocContent(content)
           setFileContent(content)
         } catch {
+          if (!isCurrentView()) return
           setSkillDocContent('')
           setFileContent('')
         }
@@ -134,21 +160,20 @@ export function SkillDetailSlider({
         return
       }
       try {
-        const d = await skillApiV2.getSkillDetail(skillId)
+        const d = await skillApiV2.getSkillDetail(skillId, environmentId)
+        if (!isCurrentView()) return
         setDetail(d)
         const skillMd = findFile(d.files, 'SKILL.md')
         setSkillDocPath(skillMd)
         if (skillMd) {
-          loadFile(skillMd)
-          try {
-            setSkillDocContent(await skillApiV2.readFileContent(skillMd))
-          } catch {
-            setSkillDocContent('')
-          }
+          void loadFile(skillMd)
+          const content = await skillApiV2.readFileContent(skillMd, environmentId).catch(() => '')
+          if (isCurrentView()) setSkillDocContent(content)
         } else {
           setSkillDocContent('')
         }
       } catch (e) {
+        if (!isCurrentView()) return
         if (!fallbackSkill) {
           setError(String(e))
           return
@@ -156,9 +181,11 @@ export function SkillDetailSlider({
         await loadFallbackDetail(fallbackSkill)
       }
     }
-    void loadDetail().finally(() => setLoading(false))
+    void loadDetail().finally(() => {
+      if (isCurrentView()) setLoading(false)
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, skillId, fallbackSkill?.centerPath, readOnly])
+  }, [view])
 
   useEffect(() => {
     if (!copyMenu) return
@@ -177,22 +204,25 @@ export function SkillDetailSlider({
   }, [copyMenu])
 
   const loadFile = async (path: string) => {
+    if (!isCurrentView()) return
+    const request = ++fileRequest.current
+    const isCurrent = () => request === fileRequest.current && isCurrentView()
     setActiveFile(path)
     setFileViewMode(isMarkdownPath(path) ? 'preview' : 'source')
     setFileLoading(true)
     try {
-      const content = await skillApiV2.readFileContent(path)
-      setFileContent(content)
+      const content = await skillApiV2.readFileContent(path, environmentId)
+      if (isCurrent()) setFileContent(content)
     } catch (e) {
-      setFileContent(`无法读取文件：${e}`)
+      if (isCurrent()) setFileContent(`无法读取文件：${e}`)
     } finally {
-      setFileLoading(false)
+      if (isCurrent()) setFileLoading(false)
     }
   }
 
   const refreshUpdatedSource = async (updated: SkillDetail) => {
-    void useSkillStoreV2.getState().loadOverview(true)
-    if (visibleSkillId.current !== updated.id) return
+    if (isCurrentRuntime()) void useSkillStoreV2.getState().loadOverview(true)
+    if (!isCurrentView() || skillId !== updated.id) return
     setDetail(updated)
     const path = findFile(updated.files, 'SKILL.md')
     setSkillDocPath(path)
@@ -201,58 +231,56 @@ export function SkillDetailSlider({
     setFileContent('')
     setFileViewMode('preview')
     if (!path) return
-    const content = await skillApiV2.readFileContent(path).catch(() => '')
-    if (visibleSkillId.current !== updated.id) return
+    const content = await skillApiV2.readFileContent(path, environmentId).catch(() => '')
+    if (!isCurrentView()) return
     setSkillDocContent(content)
     setFileContent(content)
   }
 
   const doSync = async (targetId: string, action: string) => {
+    if (!isCurrentView()) return
     setSyncing(targetId)
     try {
       await skillApiV2.executeSyncCopy(targetId, action)
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
+      if (isCurrentView() && skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
+      if (!isCurrentView()) return
       setDiffPreview(null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError(String(e))
     } finally {
-      setSyncing(null)
+      if (isCurrentView()) setSyncing(null)
     }
   }
 
   const openDiff = async (targetId: string) => {
+    if (!isCurrentView()) return
     setDiffLoadingTarget(targetId)
     setDiffError(null)
     try {
       const preview = await skillApiV2.previewCopyTargetDiff(targetId)
-      setDiffPreview(preview)
+      if (isCurrentView()) setDiffPreview(preview)
     } catch (e) {
-      setDiffError(String(e))
+      if (isCurrentView()) setDiffError(String(e))
     } finally {
-      setDiffLoadingTarget(null)
+      if (isCurrentView()) setDiffLoadingTarget(null)
     }
   }
 
   const confirmDeleteTarget = async () => {
-    if (!deleteTargetId) return
+    if (!deleteTargetId || !isCurrentView()) return
     setDeletingTarget(true)
     try {
-      await skillApiV2.deleteSkillTargetDistribution(deleteTargetId)
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
+      await skillApiV2.deleteSkillTargetDistribution(deleteTargetId, environmentId)
+      if (isCurrentView() && skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
+      if (!isCurrentView()) return
       if (diffPreview?.targetId === deleteTargetId) {
         setDiffPreview(null)
       }
       setDeleteTargetId(null)
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError(String(e))
     } finally {
-      setDeletingTarget(false)
+      if (isCurrentView()) setDeletingTarget(false)
     }
   }
 
@@ -279,40 +307,29 @@ export function SkillDetailSlider({
 
   const confirmBatchDeleteTargets = async () => {
     const targetIds = batchDeleteTargetIds ?? []
-    if (targetIds.length === 0) return
+    if (targetIds.length === 0 || !isCurrentView()) return
     setDeletingTarget(true)
+    let failed: string[] = []
     try {
-      const failed: string[] = []
-      const failedIds: string[] = []
-      for (const targetId of targetIds) {
+      const { failures } = await skillApiV2.deleteSkillTargetDistributions(targetIds, environmentId)
+      if (!isCurrentView()) return
+      failed = failures.map(({ targetId, error }) => {
         const target = detail?.targets.find((item) => item.id === targetId)
-        try {
-          await skillApiV2.deleteSkillTargetDistribution(targetId)
-        } catch (e) {
-          failedIds.push(targetId)
-          failed.push(`${target ? pathBasename(target.targetPath) || targetId : targetId}: ${String(e)}`)
-        }
-      }
-      if (skillId) {
-        const d = await skillApiV2.getSkillDetail(skillId)
-        setDetail(d)
-      }
-      if (diffPreview && targetIds.includes(diffPreview.targetId)) {
+        return `${target ? pathBasename(target.targetPath) || targetId : targetId}: ${error}`
+      })
+      const failedIds = new Set(failures.map(({ targetId }) => targetId))
+      if (diffPreview && targetIds.includes(diffPreview.targetId) && !failedIds.has(diffPreview.targetId)) {
         setDiffPreview(null)
       }
-      if (failed.length > 0) {
-        setError(failed.slice(0, 3).join('\n'))
-        setSelectedDeleteTargetIds(new Set(failedIds))
-      } else {
-        setError(null)
-        setSelectedDeleteTargetIds(new Set())
-        setBatchDeleteMode(false)
-      }
+      setError(failed.slice(0, 3).join('\n') || null)
+      setSelectedDeleteTargetIds(failedIds)
+      setBatchDeleteMode(failedIds.size > 0)
       setBatchDeleteTargetIds(null)
+      if (skillId) setDetail(await skillApiV2.getSkillDetail(skillId, environmentId))
     } catch (e) {
-      setError(String(e))
+      if (isCurrentView()) setError([...failed.slice(0, 3), String(e)].join('\n'))
     } finally {
-      setDeletingTarget(false)
+      if (isCurrentView()) setDeletingTarget(false)
     }
   }
 
@@ -457,7 +474,7 @@ export function SkillDetailSlider({
         </div>
       )}
     </SlideOver>
-    {diffPreview && (
+    {detail && diffPreview && (
       <CopyDiffDialog key={diffPreview.targetId} preview={diffPreview} onClose={() => setDiffPreview(null)} />
     )}
     {deleteTarget && (
@@ -478,7 +495,7 @@ export function SkillDetailSlider({
         </div>
       </PreviewDialog>
     )}
-    {batchDeleteTargetIds && (
+    {detail && batchDeleteTargetIds && (
       <PreviewDialog
         title="确认批量删除 Agent 分发"
         confirmLabel="确认删除"

@@ -498,7 +498,7 @@ describe('Skill library view mode (no Agent matrix)', () => {
     vi.spyOn(skillApiV2, 'getSkillDetail')
       .mockResolvedValueOnce(initialDetail)
       .mockResolvedValueOnce(refreshedDetail)
-    const deleteDistribution = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue(undefined)
+    const deleteDistributions = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 2, failures: [] })
 
     const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
     render(
@@ -516,11 +516,10 @@ describe('Skill library view mode (no Agent matrix)', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除 2 个分发' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => {
-      expect(deleteDistribution).toHaveBeenCalledWith('target-claude')
-      expect(deleteDistribution).toHaveBeenCalledWith('target-codex')
-    })
-    expect(deleteDistribution).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(deleteDistributions).toHaveBeenCalledExactlyOnceWith(
+      ['target-claude', 'target-codex'], LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+    expect(await screen.findByText('尚未分发到任何 Agent')).toBeInTheDocument()
   })
 })
 
@@ -2953,7 +2952,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     )
 
     expect(await screen.findByText('Manual doc.')).toBeInTheDocument()
-    expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill')
+    expect(readFileTree).toHaveBeenCalledWith('/c/skills/manual-skill', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(document.body.querySelector('.sm2__markdown--skilldoc > :first-child')?.tagName).toBe('H1')
     expect(document.body.querySelector('.sm2__skill-frontmatter')).toBeNull()
 
@@ -3227,8 +3226,107 @@ describe('Skill detail slider + agent page render without crashing', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除分发' }))
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
 
-    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-codex'))
+    await waitFor(() => expect(deleteTarget).toHaveBeenCalledWith('target-codex', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(await screen.findByText('尚未分发到任何 Agent')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('keeps batch Skill detail deletion on the confirmed host, runtime switches=%s', async (switchRuntime) => {
+    const local: SkillDetail = {
+      ...makeSkill(),
+      frontmatter: {},
+      files: null,
+      targets: [agentDetail.skills[0], { ...agentDetail.skills[0], id: 'target-2', agentId: 'codex' }],
+      source: null,
+    }
+    const remote = { ...local, name: 'Remote Release Checklist', targets: [] }
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValueOnce(local).mockResolvedValue(
+      switchRuntime ? remote : { ...local, targets: [local.targets[1]] },
+    )
+    let finishRemoval!: () => void
+    const held = new Promise<void>((resolve) => { finishRemoval = resolve })
+    const legacyRuntimes: string[] = []
+    vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockImplementation(async () => {
+      legacyRuntimes.push(useRuntimeEnvironmentStore.getState().selectedEnvironmentId)
+      await held
+    })
+    const remove = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockReturnValue(
+      held.then(() => ({ deleted: 1, failures: [{ targetId: 'target-2', error: 'Local failure' }] })),
+    )
+
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent (2)' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除分发' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: '全选' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除 2 个分发' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '确认批量删除 Agent 分发' })).getByRole('button', { name: '确认删除' }))
+
+    await act(async () => {
+      if (switchRuntime) useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      finishRemoval()
+    })
+
+    expect(legacyRuntimes).toEqual([])
+    expect(remove).toHaveBeenCalledExactlyOnceWith(['target-1', 'target-2'], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    if (switchRuntime) {
+      expect(await screen.findByText('Remote Release Checklist')).toBeInTheDocument()
+      expect(screen.queryByText(/Local failure/)).not.toBeInTheDocument()
+    } else {
+      expect(await screen.findByText(/Local failure/)).toBeInTheDocument()
+      expect(screen.getByText('1 / 1 已选择')).toBeInTheDocument()
+    }
+  })
+
+  it('keeps the new host Skill detail when the previous host responds later', async () => {
+    const local: SkillDetail = { ...makeSkill(), frontmatter: {}, files: null, targets: agentDetail.skills, source: null }
+    let resolveLocal!: (detail: SkillDetail) => void
+    const pendingLocal = new Promise<SkillDetail>((resolve) => { resolveLocal = resolve })
+    const load = vi.spyOn(skillApiV2, 'getSkillDetail')
+      .mockReturnValueOnce(pendingLocal)
+      .mockResolvedValue({ ...local, name: 'Remote Release Checklist', targets: [] })
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    await waitFor(() => expect(load).toHaveBeenCalledWith('release-checklist', LOCAL_RUNTIME_ENVIRONMENT_ID))
+
+    act(() => useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime'))
+    expect(await screen.findByText('Remote Release Checklist')).toBeInTheDocument()
+    await act(async () => { resolveLocal(local) })
+
+    expect(screen.getByText('Remote Release Checklist')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agent (1)' })).not.toBeInTheDocument()
+    expect(load).toHaveBeenLastCalledWith('release-checklist', 'remote-runtime')
+  })
+
+  it.each(['single', 'batch'])('closes a %s Skill detail removal review after switching hosts and back', async (mode) => {
+    vi.spyOn(skillApiV2, 'getSkillDetail').mockResolvedValue({
+      ...makeSkill(),
+      frontmatter: {},
+      files: null,
+      targets: agentDetail.skills,
+      source: null,
+    })
+    const removeOne = vi.spyOn(skillApiV2, 'deleteSkillTargetDistribution').mockResolvedValue()
+    const removeBatch = vi.spyOn(skillApiV2, 'deleteSkillTargetDistributions').mockResolvedValue({ deleted: 1, failures: [] })
+    const { SkillDetailSlider } = await import('../components/skills-v2/SkillDetailSlider')
+    render(<SkillDetailSlider skillId="release-checklist" open onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Agent (1)' }))
+    if (mode === 'batch') {
+      fireEvent.click(screen.getByRole('button', { name: '批量删除分发' }))
+      fireEvent.click(screen.getByRole('checkbox', { name: '全选' }))
+      fireEvent.click(screen.getByRole('button', { name: '删除 1 个分发' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: '删除分发' }))
+    }
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    await act(async () => {
+      useRuntimeEnvironmentStore.getState().selectEnvironment('remote-runtime')
+      useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(removeOne).not.toHaveBeenCalled()
+    expect(removeBatch).not.toHaveBeenCalled()
   })
 
   it('opens skill documentation links with the system browser', async () => {
@@ -4457,7 +4555,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(within(slider).getByRole('button', { name: '文件' })).toBeInTheDocument()
     expect(within(slider).getByRole('button', { name: '来源' })).toBeInTheDocument()
     expect(slider.querySelector('.sm2__detail-pills .sm2__tag--ok')).toHaveTextContent('正常')
-    expect(getSkillDetail).toHaveBeenCalledWith('shared-review')
+    expect(getSkillDetail).toHaveBeenCalledWith('shared-review', LOCAL_RUNTIME_ENVIRONMENT_ID)
   })
 
   it('keeps shared adoption open when its inventory refresh fails without adopting twice', async () => {
@@ -8905,7 +9003,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看 Skill 详情 Release Checklist' }))
 
-    await waitFor(() => expect(getSkillDetail).toHaveBeenCalledWith('release-checklist'))
+    await waitFor(() => expect(getSkillDetail).toHaveBeenCalledWith('release-checklist', LOCAL_RUNTIME_ENVIRONMENT_ID))
     expect(document.body.querySelector('.sm2__slideover--skill-detail')).not.toBeNull()
   })
 
