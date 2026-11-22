@@ -1,0 +1,8 @@
+{
+  "format": "agentbro-skill-pack",
+  "version": 1,
+  "name": "GitHub Link Smoke Pack",
+  "description": "Public fixture for the installed Windows smoke test.",
+  "tags": ["native-smoke"],
+  "skillIds": ["windows-smoke-link-review"]
+}
