@@ -1412,15 +1412,16 @@ export const skillApiV2 = {
           skillApiV2.overview(),
           skillApiV2.listUnmanaged(),
         ]).then(([agentDetail, overview, unmanaged]) => ({ agentDetail, overview, unmanaged })),
-  readAgentConfigFile: (agentId: string, path: string) =>
+  readAgentConfigFile: (agentId: string, path: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })
+      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path }, environmentId)
       : Promise.resolve({ path, content: '', revision: 'demo' }),
   writeAgentConfigFile: (
     agentId: string,
     path: string,
     content: string,
     expectedRevision: string,
+    environmentId?: string,
   ) =>
     isTauriRuntime()
       ? invoke<AgentConfigDocument>('write_agent_config_file_v2', {
@@ -1428,7 +1429,7 @@ export const skillApiV2 = {
           path,
           content,
           expectedRevision,
-        })
+        }, environmentId)
       : Promise.resolve({ path, content, revision: `${expectedRevision}-saved` }),
   listPluginInventory: (agentId: string) =>
     isTauriRuntime()
