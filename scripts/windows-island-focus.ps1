@@ -15,6 +15,8 @@ public sealed class AgentBroIslandFocusTrace {
     private readonly ManualResetEventSlim ready = new ManualResetEventSlim();
     private readonly ManualResetEventSlim stop = new ManualResetEventSlim();
     private readonly Thread worker;
+    private DateTimeOffset anchorTime;
+    private uint anchorTick;
     private string error;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -71,6 +73,8 @@ public sealed class AgentBroIslandFocusTrace {
     }
 
     private void Capture() {
+        anchorTime = DateTimeOffset.UtcNow;
+        anchorTick = GetTickCount();
         WinEvent callback = Observe;
         var foreground = SetWinEventHook(ForegroundEvent, ForegroundEvent, IntPtr.Zero, callback, 0, 0, SkipOwnProcess);
         var focus = SetWinEventHook(FocusEvent, FocusEvent, IntPtr.Zero, callback, 0, 0, SkipOwnProcess);
@@ -95,14 +99,14 @@ public sealed class AgentBroIslandFocusTrace {
         int childId, uint eventThread, uint eventTime) {
         uint process;
         GetWindowThreadProcessId(window, out process);
-        if (type == FocusEvent && process != appProcess && GetAncestor(window, 2) != island) return;
+        var root = GetAncestor(window, 2);
+        if (type == FocusEvent && process != appProcess && root != island) return;
         var name = new StringBuilder(128);
         GetClassName(window, name, name.Capacity);
-        uint age = unchecked(GetTickCount() - eventTime);
-        var at = DateTimeOffset.UtcNow.AddMilliseconds(-age);
+        var at = anchorTime.AddMilliseconds(unchecked((int)(eventTime - anchorTick)));
         var kind = type == ForegroundEvent ? "foreground" : "focus";
-        events.Add(string.Format("{0:O} {1} hwnd={2} class={3} process={4} thread={5} object={6} child={7}",
-            at, kind, window, name, process, eventThread, objectId, childId));
+        events.Add(string.Format("{0:O} {1} hwnd={2} root={3} class={4} process={5} thread={6} object={7} child={8} tick={9}",
+            at, kind, window, root, name, process, eventThread, objectId, childId, eventTime));
         if (events.Count > 512) events.RemoveAt(0);
     }
 
