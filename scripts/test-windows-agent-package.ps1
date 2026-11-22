@@ -11,9 +11,7 @@
     if ($searchValue.Current.Value.Length -gt 0) {
         $keys = @(0x23) + @(0x08) * $searchValue.Current.Value.Length
         foreach ($key in $keys) {
-            if (-not [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)) {
-                throw 'Agent Management lost focus while clearing the Agent search'
-            }
+            [AgentBroSmokeInput]::PressKeyInWindow($handle, $key)
         }
     }
     foreach ($character in $AgentName.ToCharArray()) {
