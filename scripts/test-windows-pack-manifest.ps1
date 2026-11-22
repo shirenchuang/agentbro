@@ -175,9 +175,10 @@ function Open-InstalledAgentSkills([Windows.Automation.AutomationElement]$Island
     }
     $settings = & $findSettings
     if (-not $settings) {
-        Click-IslandElement $null 'Island Settings' -FindElement {
+        $settingsButton = Wait-IslandValue 'the visible Island Settings button' {
             Find-PackControl $Island 'Settings' ([Windows.Automation.ControlType]::Button)
-        } | Out-Host
+        }
+        Click-IslandElement $settingsButton 'Island Settings' -CenterAfterLayout | Out-Host
         $settings = Wait-IslandValue 'the native Settings window' $findSettings
     }
     $welcome = Find-PackControl $settings 'Start AgentBro'
