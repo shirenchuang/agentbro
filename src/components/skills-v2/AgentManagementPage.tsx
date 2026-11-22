@@ -175,9 +175,10 @@ export function AgentManagementPage() {
     setProgramLoading(true)
     try {
       const next = await agentApi.refresh(runtime.environmentId)
-      if (isCurrent()) {
-        setProgramSnapshot({ runtime, programs: Object.fromEntries(next.map((agent) => [agent.id, agent])) })
-      }
+      if (!isCurrent()) return
+      const programs = Object.fromEntries(next.map((agent) => [agent.id, agent]))
+      setProgramSnapshot({ runtime, programs })
+      return programs
     } catch (e) {
       if (isCurrent()) setError(skillErrorMessage(t, e))
     } finally {
@@ -465,8 +466,7 @@ export function AgentManagementPage() {
       return
     }
 
-    const unmanagedItems = useSkillStoreV2.getState().unmanaged
-      .filter((item) => item.agentId === agent.id && !isReadOnlyUnmanaged(item) && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
     setUninstallingAgentId(agent.id)
     const active = { runtime: target, agentId: agent.id, operation: 'uninstall' }
     programOperationRef.current = active
@@ -478,9 +478,12 @@ export function AgentManagementPage() {
     try {
       const program = programs[agent.id]
       const programInstalled = program?.status === 'installed' || program?.status === 'updateAvailable'
-      if (programInstalled && program.uninstallCommand) {
+      const uninstallProgram = Boolean(programInstalled && program?.uninstallCommand)
+      let commandSucceeded = false
+      if (uninstallProgram) {
         try {
           await agentApi.uninstall(agent.id, environmentId)
+          commandSucceeded = true
         } catch (error) {
           failures.push(`程序：${skillErrorMessage(t, error)}`)
         }
@@ -514,42 +517,57 @@ export function AgentManagementPage() {
         }
       }
 
-      const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+      try {
+        const remainingUnmanaged = await skillApiV2.listUnmanaged(environmentId)
+        if (isCurrent()) useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
+      } catch (error) {
+        failures.push(skillErrorMessage(t, error))
+      }
       if (!isCurrent()) return
-      useSkillStoreV2.setState({ unmanaged: remainingUnmanaged })
       setUninstallTarget(null)
-      await Promise.all([loadPrograms(target), state.loadOverview(true)])
+      const [refreshed] = await Promise.all([loadPrograms(target), state.loadOverview(true)])
+      if (!isCurrent()) return
+      const status = refreshed?.[agent.id]?.status
+      const removedProgram = status === 'notInstalled' || status === 'unavailable'
+      if (commandSucceeded && !removedProgram) {
+        failures.unshift(t(status
+          ? 'skills.agentManagement.programStillInstalled'
+          : 'skills.agentManagement.uninstallUnverified', { agent: agent.displayName }))
+      }
+      if ((!uninstallProgram || failures.length > 0) && useSkillStoreV2.getState().selectedAgentId === agent.id) {
+        await state.loadAgentDetail(agent.id, true)
+      }
       if (!isCurrent()) return
       if (failures.length > 0) {
-        if (useSkillStoreV2.getState().selectedAgentId === agent.id) {
-          await state.loadAgentDetail(agent.id, true)
-        }
-        if (isCurrent()) state.setError(`部分卸载失败：${failures.slice(0, 3).join('；')}`)
+        const errors = failures.slice(0, 3).join(' ')
+        state.setError(uninstallProgram
+          ? `部分卸载失败，${errors}`
+          : t('skills.agentManagement.cleanupPartial', { errors }))
+      } else if (!uninstallProgram) {
+        const cleanup = t('skills.agentManagement.cleanupComplete', { agent: agent.displayName })
+        setNotice(removedSkills > 0 ? `${cleanup} ${t('skills.agentManagement.cleanupSkillCount', { count: removedSkills })}` : cleanup)
       } else {
-        const programRemoved = !programInstalled || Boolean(program?.uninstallCommand)
-        if (programRemoved) {
-          const current = useSkillStoreV2.getState()
-          const nextAgents = current.agents.map((item) => item.id === agent.id
-            ? {
-                ...item,
-                enabled: false,
-                installed: false,
-                version: null,
-                managedSkillCount: 0,
-                unmanagedSkillCount: 0,
-              }
-            : item)
-          useSkillStoreV2.setState({ agents: nextAgents })
-          if (current.selectedAgentId === agent.id) {
-            const nextAgent = nextAgents.find((item) => item.installed && item.id !== SHARED_SKILLS_AGENT_ID)
-            await state.selectAgent(nextAgent?.id ?? null)
-          }
+        const current = useSkillStoreV2.getState()
+        const nextAgents = current.agents.map((item) => item.id === agent.id
+          ? {
+              ...item,
+              enabled: false,
+              installed: false,
+              version: null,
+              managedSkillCount: 0,
+              unmanagedSkillCount: 0,
+            }
+          : item)
+        useSkillStoreV2.setState({ agents: nextAgents })
+        if (current.selectedAgentId === agent.id) {
+          const nextAgent = nextAgents.find((item) => item.installed && item.id !== SHARED_SKILLS_AGENT_ID)
+          await state.selectAgent(nextAgent?.id ?? null)
         }
         const cleanup = removedSkills > 0 ? `，已清理 ${removedSkills} 个 Skills` : ''
         if (isCurrent()) setNotice(`Agent「${agent.displayName}」已卸载${cleanup}`)
       }
     } catch (e) {
-      if (isCurrent()) state.setError(`卸载失败：${skillErrorMessage(t, e)}`)
+      if (isCurrent()) state.setError(skillErrorMessage(t, e))
     } finally {
       if (programOperationRef.current === active) programOperationRef.current = null
       setUninstallingAgentId(null)
@@ -655,8 +673,9 @@ export function AgentManagementPage() {
 
   const selectedProgram = detail ? programs[detail.id] ?? null : null
   const selectedProgramInstalled = selectedProgram?.status === 'installed' || selectedProgram?.status === 'updateAvailable'
+  const canUninstallProgram = Boolean(selectedProgramInstalled && selectedProgram?.uninstallCommand)
   const selectedUnmanagedItems = detail
-    ? state.unmanaged.filter((item) => item.agentId === detail.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    ? removableUnmanagedSkills(state.unmanaged, detail.id)
     : []
   const selectedHasResiduals = Boolean(detail && (
     detail.skills.length > 0
@@ -667,15 +686,16 @@ export function AgentManagementPage() {
   const canUninstallSelectedAgent = Boolean(
     selectedProgram
     && !selectedProgram.isCustom
-    && ((selectedProgramInstalled && selectedProgram?.uninstallCommand) || selectedHasResiduals),
+    && (canUninstallProgram || selectedHasResiduals),
   )
   const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
     ? uninstallTarget.agent
     : null
   const uninstallProgram = uninstallAgentTarget ? programs[uninstallAgentTarget.id] ?? null : null
   const uninstallProgramInstalled = uninstallProgram?.status === 'installed' || uninstallProgram?.status === 'updateAvailable'
+  const cleanupOnly = !uninstallProgramInstalled || !uninstallProgram?.uninstallCommand
   const uninstallUnmanagedItems = uninstallAgentTarget
-    ? state.unmanaged.filter((item) => item.agentId === uninstallAgentTarget.id && (item.itemType === 'agent_skill' || item.itemType === 'skill'))
+    ? removableUnmanagedSkills(state.unmanaged, uninstallAgentTarget.id)
     : []
 
   return (
@@ -691,10 +711,10 @@ export function AgentManagementPage() {
               className="sm2__btn sm2__btn--danger"
               disabled={state.loading || actionBusy}
               busy={uninstallingAgentId === detail.id}
-              busyLabel="卸载中"
+              busyLabel={canUninstallProgram ? '卸载中' : t('skills.agentManagement.cleanupBusy')}
               onClick={() => requestUninstall(detail)}
             >
-              卸载 Agent
+              {canUninstallProgram ? '卸载 Agent' : t('skills.agentManagement.cleanupAction')}
             </ActionButton>
           )}
           <ActionButton className="sm2__btn" onClick={refreshOverview} disabled={state.loading || actionBusy} busy={refreshingOverview} busyLabel="刷新中">
@@ -800,9 +820,11 @@ export function AgentManagementPage() {
       )}
       {uninstallTarget && uninstallAgentTarget && (
         <PreviewDialog
-          title={`卸载 Agent「${uninstallAgentTarget.displayName}」`}
-          confirmLabel="确认卸载"
-          busyLabel="卸载中"
+          title={cleanupOnly
+            ? t('skills.agentManagement.cleanupTitle', { agent: uninstallAgentTarget.displayName })
+            : `卸载 Agent「${uninstallAgentTarget.displayName}」`}
+          confirmLabel={cleanupOnly ? t('skills.agentManagement.cleanupConfirm') : '确认卸载'}
+          busyLabel={cleanupOnly ? t('skills.agentManagement.cleanupBusy') : '卸载中'}
           modalClassName="sm2__modal--agent-uninstall"
           destructive
           busy={uninstallingAgentId === uninstallAgentTarget.id}
@@ -816,7 +838,9 @@ export function AgentManagementPage() {
                 : remoteHost?.name || uninstallTarget.environmentId,
             })}
           </p>
-          <p className="sm2-agent-uninstall__intro">卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。</p>
+          <p className="sm2-agent-uninstall__intro">
+            {cleanupOnly ? t('skills.agentManagement.cleanupDescription') : '卸载会移除支持自动卸载的程序，并清理该运行环境中 AgentBro 检测到的残留。'}
+          </p>
           <div className="sm2-agent-uninstall__summary" aria-label="卸载清理范围">
             {uninstallProgramInstalled && uninstallProgram?.uninstallCommand && (
               <div><strong>程序</strong><span>{uninstallProgram.kind === 'app' ? '移到废纸篓' : '执行卸载命令'}</span></div>
@@ -4071,6 +4095,11 @@ function isSharedManagedSkill(item: AgentDetail['skills'][number]) {
 
 function isReadOnlyUnmanaged(item: UnmanagedItemDto) {
   return item.readOnly === true || item.reason === 'agent_builtin_read_only'
+}
+
+function removableUnmanagedSkills(items: UnmanagedItemDto[], agentId: string) {
+  return items.filter((item) => item.agentId === agentId
+    && (item.itemType === 'agent_skill' || item.itemType === 'skill') && !isReadOnlyUnmanaged(item))
 }
 
 function unmanagedSourceLabel(t: Parameters<typeof unmanagedReasonLabel>[0], item: UnmanagedItemDto) {
