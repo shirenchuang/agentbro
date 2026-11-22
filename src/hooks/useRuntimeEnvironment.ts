@@ -7,6 +7,24 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 import { useRemoteServerStore } from '../stores/remoteServerStore'
+import { useSkillStoreV2 } from '../stores/skillStoreV2'
+import type { AgentProgramInfo } from '../services/agentApi'
+
+const emptyAgentPrograms: Readonly<Record<string, AgentProgramInfo>> = {}
+
+export function useCurrentAgentPrograms() {
+  const environmentId = useRuntimeEnvironmentStore((state) => state.selectedEnvironmentId)
+  const selectionRevision = useRuntimeEnvironmentStore((state) => state.selectionRevision)
+  return useSkillStoreV2((state) => {
+    const snapshot = state.agentProgramSnapshot
+    return snapshot
+      && state.runtimeEnvironmentId === environmentId
+      && snapshot.environmentId === environmentId
+      && snapshot.selectionRevision === selectionRevision
+      ? snapshot.programs
+      : emptyAgentPrograms
+  })
+}
 
 export function useRuntimeEnvironmentView() {
   const remoteHosts = useRemoteServerStore((state) => state.remoteHosts)

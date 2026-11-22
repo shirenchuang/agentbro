@@ -34,6 +34,14 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     $null = Wait-IslandValue 'the fixture Claude Code version' {
         Find-PackControl $settings '可更新到 999.0.0'
     }
+    $null = Wait-IslandValue 'the detected CLI under Installed Agents' {
+        $agent = Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
+        if ($agent) {
+            $classes = $agent.Current.ClassName -split '\s+'
+            $classes -contains 'sm2-sidebar__subitem' -and $classes -notcontains 'sm2-sidebar__subitem--muted'
+        }
+    }
+    Write-Output 'The sidebar grouped the detected Claude Code CLI under Installed Agents.'
     $update = Wait-IslandValue 'the Claude Code update action' {
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }

@@ -17,6 +17,7 @@ import type {
   MarketplaceBatchProgress,
 } from '../services/skillApiV2'
 import { skillApiV2 } from '../services/skillApiV2'
+import type { AgentProgramInfo } from '../services/agentApi'
 import { LOCAL_RUNTIME_ENVIRONMENT_ID, useRuntimeEnvironmentStore } from './runtimeEnvironmentStore'
 
 export type SkillManagerTab = 'library' | 'install' | 'packs' | 'projects' | 'agents' | 'diagnostics' | 'settings'
@@ -79,6 +80,11 @@ interface SkillV2State {
   selectedProjectId: string | null
   selectedProjectDetail: ProjectDetail | null
   agents: AgentSummary[]
+  agentProgramSnapshot: {
+    environmentId: string
+    selectionRevision: number
+    programs: Record<string, AgentProgramInfo>
+  } | null
   packs: SkillPackSummary[]
   projects: ProjectSummary[]
   issues: DiagnosisIssue[]
@@ -207,6 +213,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
   selectedProjectId: null,
   selectedProjectDetail: null,
   agents: [],
+  agentProgramSnapshot: null,
   packs: [],
   projects: [],
   issues: [],
@@ -248,6 +255,7 @@ export const useSkillStoreV2 = create<SkillV2State & SkillV2Actions>((set, get) 
       selectedProjectId: null,
       selectedProjectDetail: null,
       agents: [],
+      agentProgramSnapshot: null,
       packs: [],
       projects: [],
       issues: [],
