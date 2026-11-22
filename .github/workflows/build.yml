@@ -50,6 +50,10 @@ on:
         description: Reproduce programmatic UI Automation focus on the permission button
         type: boolean
         default: false
+      windows_probe_permission_focus_recovery:
+        description: Move focus to the renderer child, then test restoring keyboard input
+        type: boolean
+        default: false
       windows_verify_startup_stacks:
         description: Verify that the x64 Windows startup sampler resolves AgentBro frames
         type: boolean
@@ -360,6 +364,7 @@ jobs:
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
           CLOSE_STARTUP_SETTINGS: ${{ inputs.windows_close_startup_settings }}
           AUTOMATION_FOCUS_PERMISSION: ${{ inputs.windows_automation_focus_permission }}
+          PROBE_PERMISSION_FOCUS_RECOVERY: ${{ inputs.windows_probe_permission_focus_recovery }}
           VERIFY_STARTUP_STACKS: ${{ inputs.windows_verify_startup_stacks }}
         run: |
           $installer = Get-ChildItem -Path windows-installers -Recurse -Filter '*-setup.exe' -File | Select-Object -First 1

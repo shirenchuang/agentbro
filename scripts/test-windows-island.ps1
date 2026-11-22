@@ -19,6 +19,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$probePermissionFocusRecovery = $env:PROBE_PERMISSION_FOCUS_RECOVERY -eq 'true'
+if ($probePermissionFocusRecovery -and (-not $TracePermissionUi -or -not $RendererTracePort -or -not $AutomationFocusPermission)) {
+    throw 'The permission focus recovery probe requires renderer tracing and UI Automation focus.'
+}
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 if ($TracePermissionUi) {
@@ -155,6 +159,40 @@ public static class AgentBroSmokeInput {
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr window);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool AttachThreadInput(uint from, uint to, bool attach);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    public static void FocusRendererChild(IntPtr window) {
+        if (GetForegroundWindow() != window) throw new InvalidOperationException("The Island is not foreground.");
+        var children = Array.FindAll(WebContentWindows(window), child => {
+            var name = new StringBuilder(128);
+            GetClassName(child, name, name.Capacity);
+            return name.ToString() == "Chrome_RenderWidgetHostHWND";
+        });
+        if (children.Length != 1) throw new InvalidOperationException("Expected one renderer focus window.");
+        var childWindow = children[0];
+        uint processId;
+        var targetThread = GetWindowThreadProcessId(childWindow, out processId);
+        var currentThread = GetCurrentThreadId();
+        if (!AttachThreadInput(currentThread, targetThread, true))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            if (GetForegroundWindow() != window) throw new InvalidOperationException("The Island lost foreground focus.");
+            SetFocus(childWindow);
+        } finally {
+            AttachThreadInput(currentThread, targetThread, false);
+        }
+        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (GetForegroundWindow() != window || !GetGUIThreadInfo(0, ref info) || info.Focus != childWindow)
+            throw new InvalidOperationException("Could not reproduce native renderer-child focus.");
+    }
 
     public static IntPtr WindowAtCursor() {
         Point point;
@@ -600,6 +638,23 @@ function Test-KeyboardPermissionDenial(
                 }
             }
             throw
+        }
+        if ($probePermissionFocusRecovery -and $Attempt -eq 1) {
+            if (-not $rendererDiscovery -or -not (Wait-Job -Job $rendererDiscovery -Timeout 4)) {
+                throw 'The renderer endpoint was unavailable for the permission focus recovery probe.'
+            }
+            $endpoint = Receive-Job -Job $rendererDiscovery -Keep
+            if (-not $endpoint) { throw 'The permission focus recovery probe could not find the Island renderer.' }
+            [AgentBroSmokeInput]::FocusRendererChild($WindowHandle)
+            Write-Host "Staged native renderer-child focus: $([AgentBroSmokeInput]::DescribeForegroundFocus())."
+            $focus = Request-IslandRendererFocus $endpoint
+            Write-Host "Staged Island focus command result: $($focus | ConvertTo-Json -Compress)."
+            if ($null -eq $focus -or $focus.before -or -not $focus.deny) {
+                throw 'The permission focus recovery probe did not reproduce an unfocused document retaining Deny.'
+            }
+            if (-not $focus.after) {
+                throw 'The Island focus command did not restore keyboard focus to the renderer.'
+            }
         }
         if ($TracePermissionUi) {
             Save-PermissionFrame $clock $Attempt 'before-space'
