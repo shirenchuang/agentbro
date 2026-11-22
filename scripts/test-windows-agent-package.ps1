@@ -70,6 +70,10 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
             Find-IslandButton $island.Element { param($Name) $Name -eq 'Quit AgentBro' }
         }
         $reopened = Open-ManagedAgent $island.Element 'Claude Code'
+        $null = Wait-IslandValue 'package output restored in the new Settings window' {
+            Find-PackControl $reopened '* $ npm install -g @anthropic-ai/claude-code@latest'
+        }
+        Write-Output 'Agent Management restored the package command output after recreating Settings.'
         Click-IslandElement $null 'try another update from the new Settings window' -FindElement {
             $button = Find-PackControl $reopened '更新此 Agent' ([Windows.Automation.ControlType]::Button)
             if ($button -and $button.Current.IsEnabled) { $button }
@@ -83,6 +87,10 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         Write-Output 'The native app rejected an overlapping package update from the reopened Settings window.'
     } finally {
         $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
+    }
+    $null = Wait-IslandValue 'package stdout and stderr in the new Settings window' {
+        (Find-PackControl $reopened '> agentbro-package-fixture-stdout') -and
+            (Find-PackControl $reopened '! agentbro-package-fixture-stderr')
     }
 }
 

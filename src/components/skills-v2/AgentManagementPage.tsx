@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir } from '@tauri-apps/api/path'
 import { useSkillStoreV2 } from '../../stores/skillStoreV2'
 import { skillApiV2 } from '../../services/skillApiV2'
-import { agentApi, isAgentPackageOperationBusy, type AgentOutputEvent, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
+import { agentApi, isAgentPackageOperationBusy, type AgentPackageOutput, type AgentProgramInfo, type CustomAgentConfig } from '../../services/agentApi'
 import { configureAgentHookEvents, getAllHookStatus, installAgentHook, uninstallAgentHook, type HookEventStatus, type HookStatus } from '../../services/tauriApi'
 import type { AgentConfigDocument, AgentDetail, AdoptPreview, ConflictBlocker, DistributionBlockerDecision, DistributionPreview, MoveDirectSkillToPackPreview, SkillPackSummary, SkillSummary, UnmanagedItemDto } from '../../services/skillApiV2'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -142,7 +142,8 @@ export function AgentManagementPage() {
   const [settledProgramRuntime, setSettledProgramRuntime] = useState<AgentRuntimeSelection | null>(null)
   const programLoading = settledProgramRuntime?.environmentId !== runtimeEnvironmentId
     || settledProgramRuntime.selectionRevision !== runtimeSelectionRevision
-  const [agentOutput, setAgentOutput] = useState<string[]>([])
+  const [packageOutput, setPackageOutput] = useState<{ scope: AgentSkillScope; lines: string[] } | null>(null)
+  const agentOutput = packageOutput && isCurrentAgentSkillScope(packageOutput.scope) ? packageOutput.lines : []
   const [notice, setNotice] = useState<string | null>(null)
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
@@ -198,29 +199,34 @@ export function AgentManagementPage() {
   }, [state.customAgentDialogRequest, runtimeEnvironmentId, runtimeSelectionRevision])
 
   useEffect(() => {
+    const agentId = state.selectedAgentId
+    if (!isLocal || !agentId) return
+    const scope = { agentId, environmentId: runtimeEnvironmentId, runtimeSelectionRevision, agentSelectionRevision: state.agentSelectionRevision }
     let unlisten: (() => void) | null = null
-    let alive = true
-    agentApi.onOutput((event) => {
-      const { agentProgramOperation: active, selectedAgentId } = useSkillStoreV2.getState()
-      if (
-        !alive || !active || active.environmentId !== LOCAL_RUNTIME_ENVIRONMENT_ID
-        || !isAgentRuntimeSelection(active)
-        || event.agentId !== active.agentId || event.operation !== active.operation
-        || event.agentId !== selectedAgentId
-      ) return
-      setAgentOutput((prev) => [...prev, formatAgentOutput(event)].slice(-10))
-    }).then((next) => {
-      if (alive) unlisten = next
-      else next()
-    }).catch(() => {
-      // Output streaming is best-effort; the awaited install/update command
-      // still reports failure through the action itself.
-    })
+    let closed = false
+    let revision = 0
+    const applyOutput = (output: AgentPackageOutput) => {
+      if (closed || output.agentId !== agentId || output.revision <= revision || !isCurrentAgentSkillScope(scope)) return
+      revision = output.revision
+      setPackageOutput({ scope, lines: output.lines.map(formatAgentOutput) })
+    }
+    const subscribe = async () => {
+      // Subscribe before reading so output emitted during window creation is recovered.
+      const stop = await agentApi.onPackageOutput(applyOutput).catch(() => null)
+      if (closed) {
+        stop?.()
+        return
+      }
+      unlisten = stop
+      const output = await agentApi.packageOutput(agentId).catch(() => null)
+      if (output) applyOutput(output)
+    }
+    void subscribe()
     return () => {
-      alive = false
+      closed = true
       unlisten?.()
     }
-  }, [])
+  }, [isLocal, runtimeEnvironmentId, runtimeSelectionRevision, state.agentSelectionRevision, state.selectedAgentId])
 
   useEffect(() => {
     if (agents.length === 0) {
@@ -243,7 +249,6 @@ export function AgentManagementPage() {
 
   useEffect(() => {
     setNotice(null)
-    setAgentOutput([])
   }, [state.selectedAgentId, runtimeSelectionRevision])
 
   useEffect(() => () => {
@@ -434,7 +439,6 @@ export function AgentManagementPage() {
     if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
-    setAgentOutput([])
     try {
       let commandError: string | null = null
       try {
@@ -512,7 +516,6 @@ export function AgentManagementPage() {
     if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
     state.setError(null)
-    setAgentOutput([])
     const failures: string[] = []
     let removedSkills = 0
     try {
@@ -1157,9 +1160,9 @@ function deriveCustomAgentPaths(root: string) {
   }
 }
 
-function formatAgentOutput(event: AgentOutputEvent) {
-  const prefix = event.stream === 'stderr' ? '!' : event.stream === 'stdout' ? '>' : '*'
-  return `${prefix} ${event.line}`
+function formatAgentOutput(line: AgentPackageOutput['lines'][number]) {
+  const prefix = line.stream === 'stderr' ? '!' : line.stream === 'stdout' ? '>' : '*'
+  return `${prefix} ${line.line}`
 }
 
 interface ActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

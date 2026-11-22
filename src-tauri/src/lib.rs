@@ -6526,6 +6526,7 @@ pub fn run() {
             remove_marketplace_source_cmd,
             agents::programs::agent_list,
             agents::programs::agent_refresh,
+            agents::programs::agent_package_output,
             agents::programs::agent_install,
             agents::programs::agent_update,
             agents::programs::agent_uninstall,

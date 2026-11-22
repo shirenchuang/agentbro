@@ -16,6 +16,12 @@ export function isAgentPackageOperationBusy(error: unknown) {
   return (error instanceof Error ? error.message : error) === 'agent_package_operation_in_progress'
 }
 
+export interface AgentPackageOutput {
+  agentId: string
+  revision: number
+  lines: Pick<AgentOutputEvent, 'stream' | 'line'>[]
+}
+
 async function invoke<T = void>(
   command: string,
   args?: Record<string, unknown>,
@@ -358,5 +364,14 @@ export const agentApi = {
   onOutput: async (handler: (event: AgentOutputEvent) => void): Promise<UnlistenFn> => {
     if (!isTauriRuntime()) return () => {}
     return listen<AgentOutputEvent>('agent-output', (event) => handler(event.payload))
+  },
+
+  packageOutput: (agentId: string) => isTauriRuntime()
+    ? invoke<AgentPackageOutput | null>('agent_package_output', { agentId }, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    : Promise.resolve(null),
+
+  onPackageOutput: async (handler: (output: AgentPackageOutput) => void): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) return () => {}
+    return listen<AgentPackageOutput>('agent-package-output', (event) => handler(event.payload))
   },
 }
