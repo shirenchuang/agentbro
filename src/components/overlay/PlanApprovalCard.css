@@ -194,6 +194,11 @@
   color: var(--island-warning-text);
 }
 
+.plan-approval__error {
+  color: var(--island-warning-text);
+  font-size: 11px;
+}
+
 .plan-approval__subagent-status--error {
   color: var(--island-danger-text);
 }

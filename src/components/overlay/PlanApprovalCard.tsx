@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { OverlayItem, SessionState, SubagentInfo } from '../../types/agent'
+import { answerDisplayedPlan, planReplyError, useSessionStore, type PlanIdentity } from '../../stores/sessionStore'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
 import { OverlayCard } from './OverlayCard'
 import './PlanApprovalCard.css'
@@ -10,10 +11,6 @@ import './PlanApprovalCard.css'
 interface PlanApprovalCardProps {
   overlay: OverlayItem
   session: SessionState
-  onSendFeedback: (feedback: string) => void
-  onManualReview: () => void
-  onAcceptEdits: () => void
-  onAutoApprove: () => void
   onJumpToTerminal?: () => void
   onShowSessions?: () => void
   onDismiss: () => void
@@ -57,9 +54,10 @@ function CompactSubagentSummary({ subagents }: { subagents: SubagentInfo[] }) {
   )
 }
 
-export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualReview, onAcceptEdits, onAutoApprove, onJumpToTerminal, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: PlanApprovalCardProps) {
+export function PlanApprovalCard({ overlay, session, onJumpToTerminal, onShowSessions, onDismiss, onDraftStateChange, sessionCount }: PlanApprovalCardProps) {
   const { t } = useTranslation()
-  const data = overlay.data as { planTitle?: string; planContent: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
+  const data = overlay.data as PlanIdentity & { planContent: string; requestedPermissions?: Array<string | { tool: string; prompt: string }> }
+  const error = useSessionStore((state) => planReplyError(state, session.id, data))
   const [feedback, setFeedback] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const hasDraft = feedback.trim().length > 0
@@ -70,12 +68,13 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
 
   useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange])
 
+  const submitPlan = (mode: string, message?: string) => {
+    void answerDisplayedPlan(session.id, data, mode, message)
+  }
+
   const handleSendFeedback = () => {
     const val = feedback.trim()
-    if (val) {
-      onSendFeedback(val)
-      setFeedback('')
-    }
+    if (val) submitPlan('feedback', val)
   }
 
   return (
@@ -140,17 +139,18 @@ export function PlanApprovalCard({ overlay, session, onSendFeedback, onManualRev
       <div className="plan-approval__actions">
         <button
           className="plan-approval__btn plan-approval__btn--feedback"
-          onClick={feedback.trim() ? handleSendFeedback : onManualReview}
+          onClick={feedback.trim() ? handleSendFeedback : () => submitPlan('manual')}
         >
           {feedback.trim() ? t('notch.sendFeedback', { defaultValue: 'Send Feedback' }) : t('notch.manualReview', { defaultValue: 'Manual Review' })}
         </button>
-        <button className="plan-approval__btn plan-approval__btn--accept" onClick={onAcceptEdits}>
+        <button className="plan-approval__btn plan-approval__btn--accept" onClick={() => submitPlan('acceptEdits')}>
           {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
         </button>
-        <button className="plan-approval__btn plan-approval__btn--auto" onClick={onAutoApprove}>
+        <button className="plan-approval__btn plan-approval__btn--auto" onClick={() => submitPlan('bypassPermissions')}>
           {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
         </button>
       </div>
+      {error && <div className="plan-approval__error" role="alert">{error}</div>}
     </OverlayCard>
   )
 }

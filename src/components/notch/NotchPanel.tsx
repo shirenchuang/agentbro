@@ -2,10 +2,10 @@ import { listen as listenTauriEvent } from '@tauri-apps/api/event'
 /* AgentBro — Notch Panel (Layered Dynamic Island) */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, type ComponentProps, type CSSProperties, type PointerEvent } from 'react'
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { answerDisplayedPermission, answerDisplayedQuestion, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay, type QuestionIdentity } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedPlan, answerDisplayedQuestion, useSessionStore, selectSessionList, selectPanelState, selectRateLimits, selectUsageSnapshots, selectActiveOverlay, type PlanIdentity, type QuestionIdentity } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useUpdateStore } from '../../stores/updateStore'
-import { respondPlan, sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
+import { sendMessage, jumpToTerminal, resizeNotch, setNotchOpacity, getChatHistoryTail, performHaptic, setNotchFocusable, setNotchIgnoreCursorEvents, openSettingsWindow, startNotchDrag, endNotchDrag, isCursorOverNotch, isTerminalFocused, isTauri } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
 import { computePriority } from '../../types/priority'
 import type { OverlayItem, PanelState, PermissionRequest, SubagentInfo } from '../../types/agent'
@@ -162,10 +162,6 @@ function OverlayRenderer({ overlay, onDismiss, onShowSessions, sessionCount, onD
         <PlanApprovalCard
           overlay={overlay}
           session={session}
-          onSendFeedback={(msg) => { respondPlan(session.id, 'feedback', msg); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
-          onManualReview={() => { respondPlan(session.id, 'manual'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
-          onAcceptEdits={() => { respondPlan(session.id, 'acceptEdits'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
-          onAutoApprove={() => { respondPlan(session.id, 'bypassPermissions'); useSessionStore.getState().clearPlan(session.id); onDismiss() }}
           onJumpToTerminal={() => jumpToTerminal(session.id).catch((error) => console.warn('[notch] jumpToTerminal:', error))}
           onShowSessions={onShowSessions}
           onDismiss={onDismiss}
@@ -1145,31 +1141,33 @@ export function NotchPanel() {
       }
 
       const active = store.activeSessionId ? store.sessions[store.activeSessionId] : null
+      const overlay = store.activeOverlay
+      const shownOverlay = overlay && store.panelState !== 'collapsed'
+        && !(store.panelState === 'hover' && inlineBlockingOverlayIdsRef.current.has(overlay.id))
+        ? overlay
+        : undefined
 
-      // Approve action
       const approveBinding = findShortcut('approve-action')
-      if (approveBinding && shortcutMatchesEvent(approveBinding.keys, e) && active?.phase === 'waiting_approval') {
-        e.preventDefault()
-        if (active.planContent || active.planTitle) {
-          respondPlan(active.id, 'acceptEdits')
-          useSessionStore.getState().clearPlan(active.id)
-        } else {
-          answerDisplayedPermission(active.id, active.pendingPermission, true)
-        }
-        return
-      }
-
-      // Reject action
       const rejectBinding = findShortcut('reject-action')
-      if (rejectBinding && shortcutMatchesEvent(rejectBinding.keys, e) && active?.phase === 'waiting_approval') {
-        e.preventDefault()
-        if (active.planContent || active.planTitle) {
-          respondPlan(active.id, 'manual')
-          useSessionStore.getState().clearPlan(active.id)
-        } else {
-          answerDisplayedPermission(active.id, active.pendingPermission, false)
+      const approve = approveBinding && shortcutMatchesEvent(approveBinding.keys, e)
+      const reject = rejectBinding && shortcutMatchesEvent(rejectBinding.keys, e)
+      if (approve || reject) {
+        if (shownOverlay?.type === 'plan') {
+          e.preventDefault()
+          void answerDisplayedPlan(shownOverlay.sessionId, shownOverlay.data as PlanIdentity, approve ? 'acceptEdits' : 'manual')
+          return
         }
-        return
+        if (active?.phase === 'waiting_approval') {
+          e.preventDefault()
+          if (active.planContent || active.planTitle) {
+            if (!shownOverlay || !isBlockingOverlay(shownOverlay)) {
+              void answerDisplayedPlan(active.id, active, approve ? 'acceptEdits' : 'manual')
+            }
+          } else {
+            answerDisplayedPermission(active.id, active.pendingPermission, Boolean(approve))
+          }
+          return
+        }
       }
 
       const nextBinding = findShortcut('next-session')
@@ -1205,12 +1203,7 @@ export function NotchPanel() {
       // Primary modifier + 1/2/3 selects an option.
       const num = parseInt(e.key, 10)
       if (primaryModifierPressed(e) && num >= 1 && num <= 3) {
-        const overlay = store.activeOverlay
-        const shownQuestion = overlay?.type === 'question'
-          && store.panelState !== 'collapsed'
-          && !(store.panelState === 'hover' && inlineBlockingOverlayIdsRef.current.has(overlay.id))
-          ? overlay
-          : undefined
+        const shownQuestion = shownOverlay?.type === 'question' ? shownOverlay : undefined
         const question = shownQuestion ? shownQuestion.data as QuestionIdentity : active?.pendingQuestion
         const sessionId = shownQuestion?.sessionId ?? active?.id
         if (!question || question.multiSelect || (question.questions?.length ?? 0) > 1) return

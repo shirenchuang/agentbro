@@ -18,7 +18,6 @@ import {
   isTauri,
   jumpToTerminal,
   openSettingsWindow,
-  respondPlan,
   sendMessage,
   setNotchIgnoreCursorEvents,
   startPetDrag,
@@ -979,28 +978,9 @@ function PetBlockingOverlay({
 
       {overlay.type === 'plan' && (
         <PlanApprovalCard
+          key={overlay.id}
           overlay={overlay}
           session={session}
-          onSendFeedback={(message) => {
-            respondPlan(session.id, 'feedback', message)
-            useSessionStore.getState().clearPlan(session.id)
-            onClose()
-          }}
-          onManualReview={() => {
-            respondPlan(session.id, 'manual')
-            useSessionStore.getState().clearPlan(session.id)
-            onClose()
-          }}
-          onAcceptEdits={() => {
-            respondPlan(session.id, 'acceptEdits')
-            useSessionStore.getState().clearPlan(session.id)
-            onClose()
-          }}
-          onAutoApprove={() => {
-            respondPlan(session.id, 'bypassPermissions')
-            useSessionStore.getState().clearPlan(session.id)
-            onClose()
-          }}
           onJumpToTerminal={() => jumpToTerminal(session.id).catch((error) => console.warn('[PetSurface] jumpToTerminal:', error))}
           onDismiss={onClose}
           onShowSessions={showSessions}

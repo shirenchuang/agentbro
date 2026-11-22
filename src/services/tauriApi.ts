@@ -125,6 +125,7 @@ export interface BackendSession {
     }>
   } | null
   pendingPlan: {
+    requestId?: string | null
     title: string
     content: string
     permissions: string[]
@@ -537,12 +538,12 @@ export async function respondQuestion(sessionId: string, answer: string, toolUse
   return invoke('respond_question', { sessionId, answer, toolUseId: toolUseId ?? null })
 }
 
-export async function respondPlan(sessionId: string, mode: string, message?: string): Promise<void> {
+export async function respondPlan(sessionId: string, mode: string, message?: string, requestId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondPlan(${sessionId}, "${mode}", "${message ?? ''}")`)
     return
   }
-  return invoke('respond_plan', { sessionId, mode, message: message ?? null })
+  return invoke('respond_plan', { sessionId, mode, message: message ?? null, requestId: requestId ?? null })
 }
 
 export async function respondAutoApprove(sessionId: string, toolUseId?: string): Promise<void> {
