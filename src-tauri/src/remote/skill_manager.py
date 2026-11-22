@@ -55,6 +55,7 @@ STATE_MUTATING_COMMANDS = {
     "execute_fix_diagnosis_issue",
     "execute_upsert_skill_pack",
     "execute_import_skill_pack_manifest",
+    "restore_skill_pack_member",
     "execute_delete_skill_pack",
     "execute_apply_skill_pack",
     "execute_sync_skill_pack_to_agents",
@@ -643,7 +644,15 @@ def add_pack_content_file(digest, relative, source):
             raise ValueError("A Skill file changed while it was being verified")
 
 
-def pack_content_fingerprint(directory):
+def valid_pack_component(name):
+    return bool(name) and not (
+        name.endswith((".", " "))
+        or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 or ch in '<>:"/\\|?*' for ch in name)
+        or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name.split(".", 1)[0], re.I | re.ASCII)
+    )
+
+
+def pack_content_fingerprint(directory, staged=None, local_import_layout=False):
     root = directory.resolve(strict=True)
     if not stat.S_ISREG((root / "SKILL.md").lstat().st_mode):
         raise ValueError("The installed path is not a Skill directory")
@@ -654,6 +663,13 @@ def pack_content_fingerprint(directory):
             name = entry.name
             if has_surrogate(name):
                 raise ValueError("Skill file names must be UTF-8")
+            if local_import_layout and (
+                entry.is_symlink() or name in (
+                    ".git", ".DS_Store", "node_modules", "target", "__pycache__", ".idea",
+                    ".venv", "venv", "output",
+                ) or name.endswith((".tmp", ".swp"))
+            ):
+                continue
             source = entry
             if entry.is_symlink():
                 try:
@@ -665,9 +681,7 @@ def pack_content_fingerprint(directory):
             mode = source.stat().st_mode
             if stat.S_ISDIR(mode) and name in (".git", "__pycache__", "__pypackages__"):
                 continue
-            if (name.endswith((".", " ")) or name.lower() == ".git"
-                    or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 or ch in '<>:"/\\|?*' for ch in name)
-                    or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name.split(".", 1)[0], re.I | re.ASCII)):
+            if not valid_pack_component(name) or name.lower() == ".git":
                 raise ValueError("Unsupported Skill file name: " + name)
             relative = prefix + name
             if stat.S_ISDIR(mode) and source not in ancestors:
@@ -678,11 +692,70 @@ def pack_content_fingerprint(directory):
     collect(root, "", {root})
     digest = hashlib.sha256()
     for relative, file in sorted(files.items()):
+        if staged is not None:
+            target = staged / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file, target)
+            file = target
         add_pack_content_file(digest, relative, file)
     return digest.hexdigest()
 
 
-def skill_pack_fingerprints(skill_ids):
+def valid_pack_git_source(source):
+    if (not isinstance(source, dict) or set(source) != {"repository", "commit", "skillPath"}
+            or not all(isinstance(value, str) for value in source.values())):
+        return False
+    repository = source["repository"]
+    parts = repository.split("/")
+    return (
+        len(parts) == 2 and all(re.fullmatch(r"[A-Za-z0-9._-]+", part) and not part.endswith(".") for part in parts)
+        and not parts[1].endswith(".git")
+        and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source["commit"])
+        and source["skillPath"].split("/")[-1] == "SKILL.md"
+        and all(valid_pack_component(part) and part.lower() != ".git" for part in source["skillPath"].split("/"))
+    )
+
+
+def pack_git_source_from_record(record):
+    uri, commit = record.get("sourceUri"), record.get("sourceRef")
+    if not isinstance(uri, str) or not isinstance(commit, str):
+        return None
+    prefix = "https://github.com/"
+    encoded = uri.startswith(prefix)
+    if not encoded:
+        prefix = "github:"
+    if not uri.startswith(prefix) or "?" in uri or "#" in uri:
+        return None
+    parts = uri[len(prefix):].rstrip("/").split("/")
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[:2]
+    repo = repo[:-4] if repo.endswith(".git") else repo
+    path = parts[2:]
+    if path and path[0] == "tree":
+        if len(path) < 2 or not path[1]:
+            return None
+        path = path[2:]
+    if encoded:
+        try:
+            if any(re.search(r"%(?![0-9a-fA-F]{2})", part) for part in path):
+                return None
+            path = [urllib.parse.unquote(part, errors="strict") for part in path]
+        except UnicodeError:
+            return None
+        if any("/" in part for part in path):
+            return None
+    if not path or path[-1] != "SKILL.md":
+        path.append("SKILL.md")
+    source = {
+        "repository": owner + "/" + repo,
+        "commit": commit.lower(),
+        "skillPath": "/".join(path),
+    }
+    return source if valid_pack_git_source(source) else None
+
+
+def skill_pack_fingerprints(skill_ids, include_sources=False):
     paths = {path.name: path for path in center_path().iterdir()}
     items = []
     for skill_id in skill_ids:
@@ -697,18 +770,90 @@ def skill_pack_fingerprints(skill_ids):
             entry["missing"] = True
         except (OSError, RuntimeError, ValueError):
             pass
+        if (include_sources and entry["fingerprint"]
+                and valid_pack_component(skill_id) and not skill_id.startswith((".", " "))):
+            source = pack_git_source_from_record(STATE["sources"].get(skill_id, {}))
+            if source:
+                entry["source"] = source
         items.append(entry)
     return items
 
 
-def import_reviewed_skill_pack(manifest, reviewed, accept_local_copies):
-    if manifest.get("version") != 2 or manifest.get("format") != "agentbro-skill-pack":
-        raise ValueError("A content review requires Skill Pack version 2")
+def validate_reviewable_skill_pack(manifest):
+    if manifest.get("version") not in (2, 3) or manifest.get("format") != "agentbro-skill-pack":
+        raise ValueError("A content review requires Skill Pack version 2 or later")
     ids = manifest["skillIds"]
     expected = manifest.get("skillFingerprints", {})
     if (not manifest["name"].strip() or len(set(ids)) != len(ids)
             or any(key not in ids or not re.fullmatch(r"[0-9a-f]{64}", value) for key, value in expected.items())):
         raise ValueError("Invalid Skill Pack manifest")
+    sources = manifest.get("skillSources", {})
+    if manifest["version"] < 3 and sources:
+        raise ValueError("Pinned GitHub sources require Skill Pack version 3")
+    for skill_id, source in sources.items():
+        if (skill_id not in expected or not valid_pack_component(skill_id)
+                or skill_id.startswith((".", " ")) or not valid_pack_git_source(source)):
+            raise ValueError(f"Invalid pinned GitHub source for '{skill_id}'")
+
+
+def restore_pack_skill(manifest, skill_id):
+    validate_reviewable_skill_pack(manifest)
+    source = manifest.get("skillSources", {}).get(skill_id)
+    if not source:
+        raise ValueError("The Skill has no pinned GitHub source")
+    center = center_path().resolve()
+    destination = center / skill_id
+    if path_present(destination):
+        raise ValueError("The Skill already exists in the selected library")
+    repository = "https://github.com/" + source["repository"] + ".git"
+    commit = source["commit"]
+    checkout, temporary = clone_repository(repository, commit)
+    try:
+        if run_repository_git(checkout, "rev-parse", "HEAD").lower() != commit.lower():
+            raise ValueError("Git did not return the recorded Skill commit")
+        directory = repository_relative_path(checkout.resolve(), source["skillPath"]).parent
+        expected = manifest["skillFingerprints"][skill_id]
+        with tempfile.TemporaryDirectory(prefix=".agentbro-skill-import-", dir=str(center)) as staging:
+            staged = pathlib.Path(staging) / "skill"
+            # The local library filters some entries that SSH imports retain.
+            if pack_content_fingerprint(directory, staged, local_import_layout=True) != expected:
+                shutil.rmtree(staged)
+                pack_content_fingerprint(directory, staged)
+            if pack_content_fingerprint(staged) != expected:
+                raise ValueError("Skill content does not match the recorded fingerprint")
+            try:
+                destination.mkdir()
+            except FileExistsError:
+                raise ValueError("The Skill already exists in the selected library")
+            try:
+                staged.rename(destination)
+            except OSError:
+                destination.rmdir()
+                raise
+            relative = pathlib.PurePosixPath(source["skillPath"]).parent.as_posix()
+            STATE["sources"][skill_id] = {
+                "sourceType": "github",
+                "sourceUri": repository_skill_source(repository, commit, relative),
+                "sourceRef": commit,
+                "importedFromAgent": None,
+                "importedFromPath": None,
+                "installedVia": "remote_git",
+                "createdAt": now(),
+                "updatedAt": now(),
+            }
+            try:
+                save_state()
+            except OSError:
+                destination.rename(staged)
+                raise
+    finally:
+        temporary.cleanup()
+
+
+def import_reviewed_skill_pack(manifest, reviewed, accept_local_copies):
+    validate_reviewable_skill_pack(manifest)
+    ids = manifest["skillIds"]
+    expected = manifest.get("skillFingerprints", {})
     current = skill_pack_fingerprints(ids)
     if current != reviewed:
         raise ValueError("The selected library changed since review. Recheck the Skill Pack.")
@@ -4152,7 +4297,9 @@ def dispatch():
     if command == "get_skill_pack_detail":
         return pack_detail(args["packId"])
     if command == "get_skill_pack_fingerprints":
-        return skill_pack_fingerprints(args["skillIds"])
+        return skill_pack_fingerprints(args["skillIds"], args.get("includeSources", False))
+    if command == "restore_skill_pack_member":
+        return restore_pack_skill(args["manifest"], args["skillId"])
     if command == "execute_import_skill_pack_manifest":
         return import_reviewed_skill_pack(args["manifest"], args["reviewed"], args["acceptLocalCopies"])
     if command == "execute_upsert_skill_pack":

@@ -7446,6 +7446,109 @@ describe('Skill detail slider + agent page render without crashing', () => {
     })
   })
 
+  it('exports pinned GitHub sources only when explicitly requested', async () => {
+    const { skill } = await renderPackPage()
+    const file = '/Team/pinned.agentbro-pack.json'
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' }
+    vi.mocked(saveDialog).mockResolvedValueOnce(file)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint: 'a'.repeat(64), source },
+    ])
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出并包含 GitHub 来源' }))
+    await waitFor(() => expect(write).toHaveBeenCalledWith(file, expect.objectContaining({
+      version: 3,
+      skillSources: { [skill.id]: source },
+    })))
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
+  })
+
+  it('reviews a pinned source, reports a failed restore, and rechecks before creating the Pack', async () => {
+    const { pack, skill } = await renderPackPage()
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: fingerprint },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce([{ skillId: skill.id, missing: true, fingerprint: null }])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockRejectedValueOnce('Skill content does not match the recorded fingerprint.')
+      .mockResolvedValueOnce(undefined)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockResolvedValue({ ...pack, id: 'restored-pack', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const restoreButton = dialog.getByRole('button', { name: `恢复 ${skill.id}` })
+    expect(dialog.getByText(/example\/workflows.*review\/SKILL\.md/)).toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: '创建技能包' })).toBeDisabled()
+    fireEvent.click(restoreButton)
+    expect(await dialog.findByRole('alert')).toHaveTextContent('does not match the recorded fingerprint')
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(create).not.toHaveBeenCalled()
+
+    fireEvent.click(restoreButton)
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(2))
+    const confirm = await dialog.findByRole('button', { name: '创建技能包' })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(manifest, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('leaves a pending Skill Pack restore bound to its original SSH host', async () => {
+    const { skill } = await renderPackPage()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('pack-ssh-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'pack-ssh-host' })
+    })
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Remote pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: 'a'.repeat(64) },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValue([{ skillId: skill.id, missing: true, fingerprint: null }])
+    let finish!: () => void
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    fireEvent.click(dialog.getByRole('button', { name: `恢复 ${skill.id}` }))
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, 'pack-ssh-host')
+    act(() => {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+    })
+    await act(async () => finish())
+    expect(review).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
+  })
+
   it('previews missing Skill Pack members and imports a new pack in manifest order', async () => {
     const { pack, skill, overview } = await renderPackPage()
     const manifest: SkillPackManifest = {

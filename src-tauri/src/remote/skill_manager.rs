@@ -133,6 +133,7 @@ fn command_timeout(command: &str) -> u64 {
     match command {
         "execute_marketplace_skill_batch"
         | "import_github_repo_skills"
+        | "restore_skill_pack_member"
         | "execute_add_center_skill"
         | "agent_install"
         | "agent_update"
@@ -274,7 +275,13 @@ json.dump = fail_snapshot_write
         git(&["commit", "-m", "default"]);
         git(&["checkout", "-b", "feature/review"]);
         write_remote_skill(&skill, "Demo", "Reviewed version");
-        git(&["add", "."]);
+        std::fs::create_dir(skill.join("output")).unwrap();
+        std::fs::write(
+            skill.join("output/generated.txt"),
+            "included by SSH imports",
+        )
+        .unwrap();
+        git(&["add", "--force", "."]);
         git(&["commit", "-m", "review"]);
         let reviewed_commit = git(&["rev-parse", "HEAD"]);
         let source = "https://github.com/example/skills/tree/feature/review/skills/demo";
@@ -357,6 +364,84 @@ json.dump = fail_snapshot_write
             std::fs::read_to_string(home.path().join(".agentbro/skills/raw-demo/SKILL.md"))
                 .unwrap();
         assert!(raw_content.contains("Reviewed version"));
+
+        let fingerprints = run_script(
+            home.path(),
+            "get_skill_pack_fingerprints",
+            serde_json::json!({ "skillIds": ["demo"], "includeSources": true }),
+        );
+        assert_eq!(
+            fingerprints[0]["source"],
+            serde_json::json!({
+                "repository": "example/skills",
+                "commit": reviewed_commit,
+                "skillPath": "skills/demo/SKILL.md",
+            }),
+        );
+        let restore_command = "restore_skill_pack_member";
+        let mut manifest = serde_json::json!({
+            "format": "agentbro-skill-pack", "version": 3, "name": "Review pack",
+            "skillIds": ["restored"],
+            "skillFingerprints": { "restored": "0".repeat(64) },
+            "skillSources": { "restored": fingerprints[0]["source"] },
+        });
+        let restore_args =
+            |manifest: &Value| serde_json::json!({ "manifest": manifest, "skillId": "restored" });
+        let destination = home.path().join(".agentbro/skills/restored");
+        let error = run_script_error(home.path(), restore_command, restore_args(&manifest));
+        assert!(error.contains("does not match the recorded fingerprint"));
+        assert!(!destination.exists());
+
+        manifest["skillFingerprints"]["restored"] = fingerprints[0]["fingerprint"].clone();
+        run_script(home.path(), restore_command, restore_args(&manifest));
+        assert!(destination.join("output/generated.txt").is_file());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            contents
+        );
+        let error = run_script_error(home.path(), restore_command, restore_args(&manifest));
+        assert!(error.contains("already exists"));
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            contents
+        );
+        let reviewed = run_script(
+            home.path(),
+            "get_skill_pack_fingerprints",
+            serde_json::json!({ "skillIds": ["restored"] }),
+        );
+        assert!(reviewed[0].get("source").is_none());
+        let pack = run_script(
+            home.path(),
+            "execute_import_skill_pack_manifest",
+            serde_json::json!({ "manifest": manifest, "reviewed": reviewed, "acceptLocalCopies": false }),
+        );
+        assert_eq!(pack["members"][0]["skillId"], "restored");
+
+        let local_copy = home.path().join(".agentbro/skills/local-copy");
+        write_remote_skill(&local_copy, "Demo", "Reviewed version");
+        let local_review = run_script(
+            home.path(),
+            "get_skill_pack_fingerprints",
+            serde_json::json!({ "skillIds": ["local-copy"] }),
+        );
+        let filtered_manifest = serde_json::json!({
+            "format": "agentbro-skill-pack", "version": 3, "name": "Pack from desktop",
+            "skillIds": ["restored-filtered"],
+            "skillFingerprints": { "restored-filtered": local_review[0]["fingerprint"] },
+            "skillSources": { "restored-filtered": fingerprints[0]["source"] },
+        });
+        run_script(
+            home.path(),
+            restore_command,
+            serde_json::json!({ "manifest": filtered_manifest, "skillId": "restored-filtered" }),
+        );
+        let filtered = home.path().join(".agentbro/skills/restored-filtered");
+        assert_eq!(
+            std::fs::read_to_string(filtered.join("SKILL.md")).unwrap(),
+            contents
+        );
+        assert!(!filtered.join("output").exists());
     }
 
     #[test]

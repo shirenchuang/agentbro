@@ -419,8 +419,17 @@ pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> R
 #[tauri::command(async)]
 pub fn get_skill_pack_fingerprints(
     skill_ids: Vec<String>,
+    include_sources: Option<bool>,
 ) -> Result<Vec<SkillPackFingerprint>, String> {
-    svc()?.skill_pack_fingerprints(&skill_ids)
+    svc()?.skill_pack_fingerprints(&skill_ids, include_sources.unwrap_or(false))
+}
+
+#[tauri::command(async)]
+pub fn restore_skill_pack_member(
+    manifest: SkillPackManifest,
+    skill_id: String,
+) -> Result<(), String> {
+    svc()?.restore_pack_skill(&manifest, &skill_id)
 }
 
 #[tauri::command(async)]

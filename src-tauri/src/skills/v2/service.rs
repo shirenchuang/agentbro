@@ -5139,15 +5139,16 @@ impl Service {
     pub fn skill_pack_fingerprints(
         &self,
         skill_ids: &[String],
+        include_sources: bool,
     ) -> Result<Vec<SkillPackFingerprint>, String> {
         let _guard = self
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let current = self.read_skill_pack_fingerprints(skill_ids)?;
+        let current = self.read_skill_pack_fingerprints(skill_ids, include_sources)?;
         if current.iter().any(|member| member.missing) {
             self.scan_center_into_db()?;
-            return self.read_skill_pack_fingerprints(skill_ids);
+            return self.read_skill_pack_fingerprints(skill_ids, include_sources);
         }
         Ok(current)
     }
@@ -5155,6 +5156,7 @@ impl Service {
     fn read_skill_pack_fingerprints(
         &self,
         skill_ids: &[String],
+        include_sources: bool,
     ) -> Result<Vec<SkillPackFingerprint>, String> {
         skill_ids
             .iter()
@@ -5164,6 +5166,7 @@ impl Service {
                         skill_id: id.clone(),
                         missing: true,
                         fingerprint: None,
+                        source: None,
                     });
                 };
                 let path = Path::new(&row.center_path);
@@ -5181,10 +5184,24 @@ impl Service {
                                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                             )
                         });
+                let source = if include_sources
+                    && fingerprint.is_some()
+                    && super::project_lock::valid_skill_name(id)
+                {
+                    self.source_for_skill(id)?.and_then(|source| {
+                        SkillPackGitHubSource::from_recorded_uri(
+                            source.source_uri.as_deref()?,
+                            source.source_ref.as_deref()?,
+                        )
+                    })
+                } else {
+                    None
+                };
                 Ok(SkillPackFingerprint {
                     skill_id: id.clone(),
                     missing,
                     fingerprint,
+                    source,
                 })
             })
             .collect()
@@ -5197,14 +5214,14 @@ impl Service {
         accept_local_copies: bool,
     ) -> Result<SkillPackDetail, String> {
         super::pack_manifest::validate(&manifest)?;
-        if manifest.version != 2 {
-            return Err("A content review requires Skill Pack version 2.".to_string());
+        if manifest.version < 2 {
+            return Err("A content review requires Skill Pack version 2 or later.".to_string());
         }
         let _guard = self
             .center_import_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids)?;
+        let current = self.read_skill_pack_fingerprints(&manifest.skill_ids, false)?;
         super::pack_manifest::validate_review(&manifest, reviewed, &current, accept_local_copies)?;
         self.upsert_skill_pack_deferred(UpsertPackInput {
             id: String::new(),
@@ -5213,6 +5230,99 @@ impl Service {
             tags: manifest.tags,
             skill_ids: manifest.skill_ids,
         })
+    }
+
+    pub fn restore_pack_skill(
+        &self,
+        manifest: &SkillPackManifest,
+        skill_id: &str,
+    ) -> Result<(), String> {
+        self.restore_pack_skill_with(manifest, skill_id, installer::checkout_skill_lock_ref)
+    }
+
+    pub(super) fn restore_pack_skill_with(
+        &self,
+        manifest: &SkillPackManifest,
+        skill_id: &str,
+        fetch: impl FnOnce(&str, &str) -> Result<(PathBuf, TempInstallDir), String>,
+    ) -> Result<(), String> {
+        use super::project_lock::{
+            checked_source_skill, fingerprint_canonical_skill_directory, stage_skill_copy,
+        };
+        use crate::data_dir::rename_path_if_absent;
+
+        super::pack_manifest::validate(manifest)?;
+        let source = manifest
+            .skill_sources
+            .get(skill_id)
+            .ok_or("The Skill has no pinned GitHub source.")?;
+        let expected = &manifest.skill_fingerprints[skill_id];
+        let skill_ids = [skill_id.to_string()];
+        let missing = |members: &[SkillPackFingerprint]| members.iter().all(|item| item.missing);
+        if !missing(&self.skill_pack_fingerprints(&skill_ids, false)?) {
+            return Err("The Skill already exists in the selected library.".to_string());
+        }
+
+        let (checkout, _checkout_directory) = fetch(&source.git_url(), &source.commit)?;
+        if !installer::read_checkout_commit(&checkout)
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(&source.commit))
+        {
+            return Err("Git did not return the recorded Skill commit.".to_string());
+        }
+        let repository = checkout.canonicalize().map_err(|error| error.to_string())?;
+        let directory = checked_source_skill(&repository, &repository.join(source.directory()?))?;
+
+        let _guard = self
+            .center_import_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.scan_center_into_db()?;
+        if !missing(&self.read_skill_pack_fingerprints(&skill_ids, false)?) {
+            return Err("The Skill already exists in the selected library.".to_string());
+        }
+        let center = self.center_path()?;
+        std::fs::create_dir_all(&center).map_err(|error| error.to_string())?;
+        let staging = TempInstallDir::create_hidden_in(&center)?;
+        let staged = staging.path().join("skill");
+        fsutil::copy_dir_recursive(&directory, &staged)?;
+        let fingerprint = || {
+            let canonical = staged.canonicalize().map_err(|error| error.to_string())?;
+            fingerprint_canonical_skill_directory(&canonical, false)
+        };
+        if fingerprint()? != *expected {
+            // SSH imports can retain files that the local library omits.
+            fsutil::remove_path(&staged)?;
+            stage_skill_copy(&directory, &staged, false)?;
+            if fingerprint()? != *expected {
+                return Err("Skill content does not match the recorded fingerprint.".to_string());
+            }
+        }
+        let destination = center.join(skill_id);
+        let input = AddCenterSkillInput {
+            source_path: directory.display().to_string(),
+            source_type: "github".to_string(),
+            source_uri: Some(source.source_uri()?),
+            imported_from_agent: None,
+            imported_from_path: None,
+            multi: Some(false),
+            import_mode: Some("copy".to_string()),
+        };
+        rename_path_if_absent(&staged, &destination)
+            .map_err(|error| format!("Could not restore the missing Skill: {error}"))?;
+        if let Err(error) = self.record_source_after_write(
+            skill_id,
+            &destination,
+            &directory,
+            &input,
+            Some(&source.commit),
+        ) {
+            rename_path_if_absent(&destination, &staged).map_err(|rollback| {
+                format!("{error}. Could not roll back the new Skill: {rollback}")
+            })?;
+            return Err(error);
+        }
+        self.refresh_snapshot_best_effort();
+        Ok(())
     }
 
     pub fn upsert_skill_pack(&self, pack: UpsertPackInput) -> Result<SkillPackDetail, String> {

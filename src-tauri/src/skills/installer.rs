@@ -30,8 +30,16 @@ pub(crate) struct TempInstallDir(PathBuf);
 
 impl TempInstallDir {
     pub(crate) fn create_in(parent: &Path) -> Result<Self, String> {
+        Self::create_with_prefix(parent, "agentbro-skill-import-")
+    }
+
+    pub(crate) fn create_hidden_in(parent: &Path) -> Result<Self, String> {
+        Self::create_with_prefix(parent, ".agentbro-skill-import-")
+    }
+
+    fn create_with_prefix(parent: &Path, prefix: &str) -> Result<Self, String> {
         fs::create_dir_all(parent).map_err(|error| format!("Prepare Skill import: {error}"))?;
-        let path = parent.join(format!("agentbro-skill-import-{}", uuid::Uuid::new_v4()));
+        let path = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path)
             .map_err(|error| format!("Create temporary Skill directory: {error}"))?;
         Ok(Self(path))
