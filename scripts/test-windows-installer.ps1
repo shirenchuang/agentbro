@@ -29,6 +29,7 @@ if ($VerifyAgentPackageConsole) {
         throw 'The package manager fixture requires an isolated GitHub-hosted runner'
     }
     $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
+    $env:AGENTBRO_PACKAGE_CONSOLE_HOST = (Get-Process -Id $PID).Path
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
     $env:AGENTBRO_PACKAGE_FIXTURE_RESUME = Join-Path $stage 'package-resume'
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
@@ -65,10 +66,14 @@ if /i "%~1"=="view" (
     exit /b 0
 )
 if "%~1 %~2 %~3"=="install -g @anthropic-ai/claude-code@latest" (
+    >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo npm fixture entered the update
     set "agentbro_retry="
     if exist "%AGENTBRO_PACKAGE_CONSOLE_RESULT%" set "agentbro_retry=1"
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
-    if errorlevel 1 exit /b 1
+    "%AGENTBRO_PACKAGE_CONSOLE_HOST%" -NoProfile -NonInteractive -File "%AGENTBRO_PACKAGE_CONSOLE_PROBE%"
+    if errorlevel 1 (
+        >> "%AGENTBRO_PACKAGE_CONSOLE_RESULT%.trace" echo PowerShell probe exited with an error
+        exit /b 1
+    )
     if defined agentbro_retry type nul > "%AGENTBRO_PACKAGE_FIXTURE_UPDATED%"
     echo agentbro-package-fixture-stdout
     >&2 echo agentbro-package-fixture-stderr
@@ -497,6 +502,15 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
         }
         Write-Output ($output.GetAwaiter().GetResult())
         if ($tester.ExitCode -ne 0) {
+            if ($VerifyAgentPackageConsole) {
+                $fixtureTrace = "$env:AGENTBRO_PACKAGE_CONSOLE_RESULT.trace"
+                if (Test-Path -LiteralPath $fixtureTrace -PathType Leaf) {
+                    Write-Output 'Agent package fixture progress:'
+                    Get-Content -LiteralPath $fixtureTrace
+                } else {
+                    Write-Output 'The Agent package fixture did not enter the update.'
+                }
+            }
             throw "The installed app did not pass the desktop interaction check: $($errors.GetAwaiter().GetResult())"
         }
     } finally {
