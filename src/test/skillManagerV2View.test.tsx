@@ -6581,7 +6581,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('编辑配置文件内容')
-    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json')
+    expect(readConfig).toHaveBeenCalledWith('claude-code', '/c/config.json', LOCAL_RUNTIME_ENVIRONMENT_ID)
     expect(editor).toHaveValue('{\n  "enabled": false,\n  "threshold": 9007199254740993\n}\n')
     expect(screen.getByText('JSON 语法正确')).toBeInTheDocument()
     expect(within(configRow as HTMLElement).queryByRole('button', { name: /复制/ })).not.toBeInTheDocument()
@@ -6601,11 +6601,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
       '/c/config.json',
       '{\n  "enabled": true\n}\n',
       'sha256:before',
+      LOCAL_RUNTIME_ENVIRONMENT_ID,
     )
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
 
     fireEvent.click(within(configRow as HTMLElement).getByRole('button', { name: '定位' }))
     await waitFor(() => expect(revealPath).toHaveBeenCalledWith('/c/config.json'))
+  })
+
+  it('keeps Agent config edits typed during a save and saves them with the new revision', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"count":0}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+      .mockResolvedValueOnce({ path, content: '{"count":2}', revision: 'second' })
+      .mockRejectedValueOnce('Configuration write failed temporarily')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+
+    fireEvent.change(editor, { target: { value: '{"count":1}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+    fireEvent.change(editor, { target: { value: '{"count":2}' } })
+    await act(async () => saved({ path, content: '{"count":1}', revision: 'first' }))
+    expect(editor).toHaveValue('{"count":2}')
+    const save = screen.getByRole('button', { name: '保存更改' })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() => expect(write).toHaveBeenNthCalledWith(
+      2, 'claude-code', path, '{"count":2}', 'first', LOCAL_RUNTIME_ENVIRONMENT_ID,
+    ))
+    await within(screen.getByRole('dialog')).findByText('配置已保存，原文件已备份')
+
+    fireEvent.change(editor, { target: { value: '{"count":3}' } })
+    fireEvent.click(save)
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent('Configuration write failed temporarily')
+    expect(editor).toHaveValue('{"count":3}')
+    expect(save).toBeEnabled()
+  })
+
+  it('ignores an Agent config save response after changing environments', async () => {
+    const path = '/c/config.json'
+    vi.spyOn(skillApiV2, 'readAgentConfigFile').mockResolvedValue({ path, content: '{"enabled":false}', revision: 'initial' })
+    let saved!: (document: { path: string; content: string; revision: string }) => void
+    const write = vi.spyOn(skillApiV2, 'writeAgentConfigFile')
+      .mockReturnValueOnce(new Promise((resolve) => { saved = resolve }))
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+    fireEvent.click(screen.getByText('路径与设置'))
+    const row = screen.getByText('配置文件').closest('.sm2__config-resource') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+    const editor = await screen.findByLabelText('编辑配置文件内容')
+    fireEvent.change(editor, { target: { value: '{"enabled":true}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更改' }))
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('different-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => saved({ path, content: '{"enabled":true}', revision: 'saved' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('配置已保存，原文件已备份')).not.toBeInTheDocument()
+    expect(write).toHaveBeenCalledTimes(1)
   })
 
   it('shows hook bridge command details and open actions', async () => {
@@ -7444,6 +7506,109 @@ describe('Skill detail slider + agent page render without crashing', () => {
       skillIds: [skill.id],
       skillFingerprints: { [skill.id]: fingerprint },
     })
+  })
+
+  it('exports pinned GitHub sources only when explicitly requested', async () => {
+    const { skill } = await renderPackPage()
+    const file = '/Team/pinned.agentbro-pack.json'
+    const source = { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' }
+    vi.mocked(saveDialog).mockResolvedValueOnce(file)
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue([
+      { skillId: skill.id, missing: false, fingerprint: 'a'.repeat(64), source },
+    ])
+    const write = vi.spyOn(skillApiV2, 'writePackManifest').mockResolvedValue(undefined)
+    fireEvent.click(screen.getByLabelText('更多操作'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出并包含 GitHub 来源' }))
+    await waitFor(() => expect(write).toHaveBeenCalledWith(file, expect.objectContaining({
+      version: 3,
+      skillSources: { [skill.id]: source },
+    })))
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID, true)
+  })
+
+  it('reviews a pinned source, reports a failed restore, and rechecks before creating the Pack', async () => {
+    const { pack, skill } = await renderPackPage()
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: fingerprint },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValueOnce([{ skillId: skill.id, missing: true, fingerprint: null }])
+      .mockResolvedValueOnce(reviewed)
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockRejectedValueOnce('Skill content does not match the recorded fingerprint.')
+      .mockResolvedValueOnce(undefined)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack')
+      .mockResolvedValue({ ...pack, id: 'restored-pack', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    const restoreButton = dialog.getByRole('button', { name: `恢复 ${skill.id}` })
+    expect(dialog.getByText(/example\/workflows.*review\/SKILL\.md/)).toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: '创建技能包' })).toBeDisabled()
+    fireEvent.click(restoreButton)
+    expect(await dialog.findByRole('alert')).toHaveTextContent('does not match the recorded fingerprint')
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(create).not.toHaveBeenCalled()
+
+    fireEvent.click(restoreButton)
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(2))
+    const confirm = await dialog.findByRole('button', { name: '创建技能包' })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(create).toHaveBeenCalledWith(manifest, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('leaves a pending Skill Pack restore bound to its original SSH host', async () => {
+    const { skill } = await renderPackPage()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('pack-ssh-host')
+      useSkillStoreV2.setState({ runtimeEnvironmentId: 'pack-ssh-host' })
+    })
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack',
+      version: 3,
+      name: 'Remote pinned pack',
+      description: '',
+      tags: [],
+      skillIds: [skill.id],
+      skillFingerprints: { [skill.id]: 'a'.repeat(64) },
+      skillSources: {
+        [skill.id]: { repository: 'example/workflows', commit: 'b'.repeat(40), skillPath: 'review/SKILL.md' },
+      },
+    }
+    vi.mocked(openDialog).mockResolvedValueOnce('/Team/pinned.json')
+    vi.spyOn(skillApiV2, 'readPackManifest').mockResolvedValue(manifest)
+    const review = vi.spyOn(skillApiV2, 'getPackFingerprints')
+      .mockResolvedValue([{ skillId: skill.id, missing: true, fingerprint: null }])
+    let finish!: () => void
+    const restore = vi.spyOn(skillApiV2, 'restorePackMember')
+      .mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+
+    fireEvent.click(screen.getByRole('button', { name: '导入技能包' }))
+    const dialog = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    fireEvent.click(dialog.getByRole('button', { name: `恢复 ${skill.id}` }))
+    expect(restore).toHaveBeenCalledWith(manifest, skill.id, 'pack-ssh-host')
+    act(() => {
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+      useSkillStoreV2.setState({ runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+    })
+    await act(async () => finish())
+    expect(review).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: '导入技能包' })).not.toBeInTheDocument()
   })
 
   it('previews missing Skill Pack members and imports a new pack in manifest order', async () => {

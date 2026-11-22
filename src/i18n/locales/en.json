@@ -698,6 +698,12 @@
   "skills": {
     "projectsTab": "Projects",
     "packManifest": {
+      "exportWithSources": "Export with GitHub sources",
+      "exportedWithoutSources": "Skill Pack exported. No pinned GitHub sources were available.",
+      "pinnedReview": "Restore missing Skills from their recorded GitHub sources, then review the result before importing.",
+      "restore": "Restore",
+      "restoreMember": "Restore {{name}}",
+      "restoring": "Restoring…",
       "match": "Content matches",
       "different": "Different content",
       "unrecorded": "No fingerprint in the manifest",

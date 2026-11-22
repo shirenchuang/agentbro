@@ -403,6 +403,16 @@ pub struct SkillPackManifest {
     pub skill_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skill_fingerprints: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_sources: BTreeMap<String, SkillPackGitHubSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillPackGitHubSource {
+    pub repository: String,
+    pub commit: String,
+    pub skill_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,6 +421,8 @@ pub struct SkillPackFingerprint {
     pub skill_id: String,
     pub missing: bool,
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SkillPackGitHubSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

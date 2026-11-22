@@ -125,8 +125,13 @@ export function SkillPackPage() {
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
-  const [packImport, setPackImport] = useState<PackImport | null>(null)
+  const [packImportDraft, setPackImport] = useState<PackImport | null>(null)
   const [packImportError, setPackImportError] = useState<string | null>(null)
+  const [restoringMember, setRestoringMember] = useState<{ runtime: PackRuntime; skillId: string } | null>(null)
+  const runtimeRevision = useRuntimeEnvironmentStore((runtime) => runtime.selectionRevision)
+  const packImport = packImportDraft?.runtime.selectionRevision === runtimeRevision ? packImportDraft : null
+  const activeRestore = restoringMember?.runtime.selectionRevision === runtimeRevision ? restoringMember : null
+  const packImportBusy = busy || Boolean(activeRestore)
 
   useEffect(() => {
     if (state.initialized && !state.startupScanInFlight) void state.loadOverview()
@@ -205,7 +210,7 @@ export function SkillPackPage() {
       if (typeof path !== 'string' || !isPackRuntimeCurrent(runtime)) return
       const manifest = await skillApiV2.readPackManifest(path)
       if (!isPackRuntimeCurrent(runtime)) return
-      const reviewed = manifest.version === 2
+      const reviewed = manifest.version >= 2
         ? await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
         : null
       if (!reviewed) await state.loadOverview(true)
@@ -218,7 +223,7 @@ export function SkillPackPage() {
   }
 
   const refreshPackComparison = async () => {
-    if (!packImport || busy) return
+    if (!packImport || packImportBusy) return
     const { manifest, runtime } = packImport
     if (!isPackRuntimeCurrent(runtime)) {
       setPackImport(null)
@@ -236,8 +241,31 @@ export function SkillPackPage() {
     }
   }
 
+  const restorePackMember = async (skillId: string) => {
+    if (packImportBusy || !packImport || !packImport.manifest.skillSources?.[skillId]
+      || packMemberStatuses.get(skillId) !== 'missing') return
+    const { manifest, runtime } = packImport
+    if (!isPackRuntimeCurrent(runtime)) return
+    const operation = { runtime, skillId }
+    setRestoringMember(operation)
+    setPackImportError(null)
+    try {
+      await skillApiV2.restorePackMember(manifest, skillId, runtime.selectedEnvironmentId)
+      if (!isPackRuntimeCurrent(runtime)) return
+      const reviewed = await skillApiV2.getPackFingerprints(manifest.skillIds, runtime.selectedEnvironmentId)
+      if (isPackRuntimeCurrent(runtime)) {
+        setPackImport({ manifest, runtime, reviewed, acceptLocalCopies: false })
+        await state.loadOverview(true)
+      }
+    } catch (error) {
+      if (isPackRuntimeCurrent(runtime)) setPackImportError(String(error))
+    } finally {
+      setRestoringMember((current) => current === operation ? null : current)
+    }
+  }
+
   const importPackManifest = async () => {
-    if (busy || !packImport || packImportBlocked) return
+    if (packImportBusy || !packImport || packImportBlocked) return
     const { manifest, runtime, reviewed, acceptLocalCopies } = packImport
     if (!isPackRuntimeCurrent(runtime)) {
       setPackImport(null)
@@ -268,7 +296,7 @@ export function SkillPackPage() {
     }
   }
 
-  const exportPackManifest = async (pack: SkillPackDetail) => {
+  const exportPackManifest = async (pack: SkillPackDetail, includeSources = false) => {
     const runtime = useRuntimeEnvironmentStore.getState()
     if (busy || !isPackRuntimeCurrent(runtime)) return
     setBusy(true)
@@ -281,11 +309,17 @@ export function SkillPackPage() {
       })
       if (!path || !isPackRuntimeCurrent(runtime)) return
       const skillIds = pack.members.map((member) => member.skillId)
-      const fingerprints = await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId)
+      const fingerprints = includeSources
+        ? await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId, true)
+        : await skillApiV2.getPackFingerprints(skillIds, runtime.selectedEnvironmentId)
       if (!isPackRuntimeCurrent(runtime)) return
+      const sources = includeSources ? Object.fromEntries(fingerprints.flatMap(({ skillId, source }) =>
+        source ? [[skillId, source]] : [],
+      )) : {}
+      const hasSources = Object.keys(sources).length > 0
       await skillApiV2.writePackManifest(path, {
         format: 'agentbro-skill-pack',
-        version: 2,
+        version: hasSources ? 3 : 2,
         name: pack.name,
         description: pack.description,
         tags: pack.tags,
@@ -293,8 +327,11 @@ export function SkillPackPage() {
         skillFingerprints: Object.fromEntries(fingerprints.flatMap(({ skillId, fingerprint }) =>
           fingerprint ? [[skillId, fingerprint]] : [],
         )),
+        ...(hasSources ? { skillSources: sources } : {}),
       })
-      if (isPackRuntimeCurrent(runtime)) setSyncNotice(t('skills.packManifest.exported'))
+      if (isPackRuntimeCurrent(runtime)) {
+        setSyncNotice(t(includeSources && !hasSources ? 'skills.packManifest.exportedWithoutSources' : 'skills.packManifest.exported'))
+      }
     } catch (error) {
       if (isPackRuntimeCurrent(runtime)) state.setError(String(error))
     } finally {
@@ -456,7 +493,7 @@ export function SkillPackPage() {
               busy={busy}
               onApply={() => setApplyFor(detail)}
               onEdit={startEdit}
-              onExport={() => exportPackManifest(detail)}
+              onExport={(withSources) => exportPackManifest(detail, withSources)}
               onDuplicate={startDuplicate}
               onDelete={() => openDelete(detail.id)}
               onRemoveSkill={(skillId) => openRemoveSkill(detail.id, skillId)}
@@ -481,22 +518,23 @@ export function SkillPackPage() {
           title={t('skills.packManifest.import')}
           confirmLabel={t('skills.packManifest.create')}
           cancelLabel={t('settings.cancel')}
-          busyLabel={t('skills.packManifest.creating')}
-          busy={busy}
+          busyLabel={t(activeRestore ? 'skills.packManifest.restoring' : 'skills.packManifest.creating')}
+          busy={packImportBusy}
           disabled={packImportBlocked}
           onConfirm={importPackManifest}
-          onCancel={() => { if (!busy) setPackImport(null) }}
+          onCancel={() => { if (!packImportBusy) setPackImport(null) }}
         >
           <h4>{packImport.manifest.name}</h4>
           {packImport.manifest.description && <p>{packImport.manifest.description}</p>}
           {packImport.manifest.tags.length > 0 && <p>{packImport.manifest.tags.join(', ')}</p>}
-          <p>{t('skills.packManifest.review')}</p>
+          <p>{t(packImport.manifest.version >= 3 ? 'skills.packManifest.pinnedReview' : 'skills.packManifest.review')}</p>
           {hasMissingPackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.missingHelp')}</div>}
           {hasUnavailablePackSkills && <div className="sm2__notice sm2__notice--warn">{t('skills.packManifest.unavailableHelp')}</div>}
           {packImport.manifest.skillIds.length ? (
             <ul className="sm2__pack-manifest-members">
               {packImport.manifest.skillIds.map((id) => {
                 const status = packMemberStatuses.get(id)
+                const source = status === 'missing' ? packImport.manifest.skillSources?.[id] : undefined
                 return (
                   <li key={id} className="sm2__change">
                     <code>{id}</code>
@@ -504,6 +542,20 @@ export function SkillPackPage() {
                       <span className={status === 'match' ? 'sm2__tag' : 'sm2__tag sm2__tag--warn'}>
                         {t(`skills.packManifest.${status}`)}
                       </span>
+                    )}
+                    {source && (
+                      <div className="sm2__pack-manifest-source">
+                        <code title={source.commit}>{source.repository}@{source.commit.slice(0, 12)} · {source.skillPath}</code>
+                        <button
+                          className="sm2__btn"
+                          type="button"
+                          aria-label={t('skills.packManifest.restoreMember', { name: id })}
+                          disabled={packImportBusy}
+                          onClick={() => void restorePackMember(id)}
+                        >
+                          {t(activeRestore?.skillId === id ? 'skills.packManifest.restoring' : 'skills.packManifest.restore')}
+                        </button>
+                      </div>
                     )}
                   </li>
                 )
@@ -515,14 +567,14 @@ export function SkillPackPage() {
               <input
                 type="checkbox"
                 checked={packImport.acceptLocalCopies}
-                disabled={busy || hasMissingPackSkills || hasUnavailablePackSkills}
+                disabled={packImportBusy || hasMissingPackSkills || hasUnavailablePackSkills}
                 onChange={(event) => setPackImport({ ...packImport, acceptLocalCopies: event.target.checked })}
               />
               {t('skills.packManifest.useLocalCopies')}
             </label>
           )}
           {packImport.reviewed && (
-            <button className="sm2__btn" type="button" disabled={busy} onClick={refreshPackComparison}>
+            <button className="sm2__btn" type="button" disabled={packImportBusy} onClick={refreshPackComparison}>
               {t('skills.packManifest.recheck')}
             </button>
           )}
@@ -790,7 +842,7 @@ function PackDetail({
   membershipsLoading: boolean
   onApply: () => void
   onEdit: () => void
-  onExport: () => void
+  onExport: (withSources: boolean) => void
   onDuplicate: () => void
   onDelete: () => void
   onRemoveSkill: (skillId: string) => void
@@ -843,7 +895,8 @@ function PackDetail({
           <details className="sm2__pack-more">
             <summary aria-label="更多操作">•••</summary>
             <div role="menu">
-              <button role="menuitem" onClick={onExport} disabled={busy}>{t('skills.packManifest.export')}</button>
+              <button role="menuitem" onClick={() => onExport(false)} disabled={busy}>{t('skills.packManifest.export')}</button>
+              <button role="menuitem" onClick={() => onExport(true)} disabled={busy}>{t('skills.packManifest.exportWithSources')}</button>
               {!isDefault && (
                 <>
                   <button role="menuitem" onClick={onDuplicate} disabled={busy}>复制技能包</button>

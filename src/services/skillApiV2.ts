@@ -203,18 +203,26 @@ export interface SkillPackDetail {
 
 export interface SkillPackManifest {
   format: 'agentbro-skill-pack'
-  version: 1 | 2
+  version: 1 | 2 | 3
   name: string
   description: string
   tags: string[]
   skillIds: string[]
   skillFingerprints?: Record<string, string>
+  skillSources?: Record<string, SkillPackGitHubSource>
+}
+
+export interface SkillPackGitHubSource {
+  repository: string
+  commit: string
+  skillPath: string
 }
 
 export interface SkillPackFingerprint {
   skillId: string
   missing: boolean
   fingerprint: string | null
+  source?: SkillPackGitHubSource
 }
 
 export interface McpServerStatus {
@@ -1349,8 +1357,10 @@ export const skillApiV2 = {
   readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
-  getPackFingerprints: (skillIds: string[], environmentId: string) =>
-    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds }, environmentId),
+  getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>
+    invoke<SkillPackFingerprint[]>('get_skill_pack_fingerprints', { skillIds, includeSources }, environmentId),
+  restorePackMember: (manifest: SkillPackManifest, skillId: string, environmentId: string) =>
+    invoke<void>('restore_skill_pack_member', { manifest, skillId }, environmentId),
   importReviewedPack: (
     manifest: SkillPackManifest,
     reviewed: SkillPackFingerprint[],
@@ -1412,15 +1422,16 @@ export const skillApiV2 = {
           skillApiV2.overview(),
           skillApiV2.listUnmanaged(),
         ]).then(([agentDetail, overview, unmanaged]) => ({ agentDetail, overview, unmanaged })),
-  readAgentConfigFile: (agentId: string, path: string) =>
+  readAgentConfigFile: (agentId: string, path: string, environmentId?: string) =>
     isTauriRuntime()
-      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path })
+      ? invoke<AgentConfigDocument>('read_agent_config_file_v2', { agentId, path }, environmentId)
       : Promise.resolve({ path, content: '', revision: 'demo' }),
   writeAgentConfigFile: (
     agentId: string,
     path: string,
     content: string,
     expectedRevision: string,
+    environmentId?: string,
   ) =>
     isTauriRuntime()
       ? invoke<AgentConfigDocument>('write_agent_config_file_v2', {
@@ -1428,7 +1439,7 @@ export const skillApiV2 = {
           path,
           content,
           expectedRevision,
-        })
+        }, environmentId)
       : Promise.resolve({ path, content, revision: `${expectedRevision}-saved` }),
   listPluginInventory: (agentId: string) =>
     isTauriRuntime()

@@ -119,8 +119,11 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         tags: vec![],
         skill_ids: vec!["review".to_string()],
         skill_fingerprints: Default::default(),
+        skill_sources: Default::default(),
     };
-    let reviewed = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
     let expected = "f01a46a872990d61dbb42eb09dcd3d38051e4fa727ddca5a2da56d81968be8ef";
     assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected));
     manifest
@@ -134,7 +137,9 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
         .import_reviewed_skill_pack(manifest.clone(), &reviewed, true)
         .unwrap_err();
     assert!(error.contains("changed since review"));
-    let updated = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    let updated = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
     assert_ne!(reviewed, updated);
     let error = svc
         .import_reviewed_skill_pack(manifest.clone(), &updated, false)
@@ -153,7 +158,7 @@ fn pack_manifest_verifies_live_skill_files_before_import() {
 
     fs::remove_file(directory.join("SKILL.md")).unwrap();
     let missing = svc
-        .skill_pack_fingerprints(&["review".to_string()])
+        .skill_pack_fingerprints(&["review".to_string()], false)
         .unwrap();
     assert!(missing[0].missing);
     assert_eq!(missing[0].fingerprint, None);
@@ -164,7 +169,7 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
     let (_home, svc, _lock) = fresh_service("pack-recheck-manual-copy");
     let center = svc.center_path().unwrap();
     let skill_ids = vec!["manual-review".to_string()];
-    let initial_review = svc.skill_pack_fingerprints(&skill_ids).unwrap();
+    let initial_review = svc.skill_pack_fingerprints(&skill_ids, false).unwrap();
     assert!(initial_review[0].missing);
 
     let skill = write_skill(&center, "copied-folder", "manual-review", Some("copied"));
@@ -181,9 +186,12 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
         tags: Vec::new(),
         skill_ids,
         skill_fingerprints: [(String::from("manual-review"), fingerprint.clone())].into(),
+        skill_sources: Default::default(),
     };
 
-    let reviewed = svc.skill_pack_fingerprints(&manifest.skill_ids).unwrap();
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
     assert!(!reviewed[0].missing);
     assert_eq!(
         reviewed[0].fingerprint.as_deref(),
@@ -195,6 +203,115 @@ fn pack_recheck_discovers_a_manually_copied_skill_in_a_cold_library() {
     assert_eq!(pack.members[0].skill_id, "manual-review");
     assert!(!pack.members[0].missing);
     assert!(skill.join("SKILL.md").is_file());
+}
+
+#[test]
+fn pack_restore_checks_the_pinned_git_content_before_installing() {
+    let (home, svc, _lock) = fresh_service("pinned-pack-restore");
+    let upstream = home.path.join("upstream");
+    let skill = write_skill(&upstream, "skills/审阅", "review", Some("recorded"));
+    fs::create_dir(skill.join("output")).unwrap();
+    fs::write(
+        skill.join("output/generated.txt"),
+        "included by SSH imports",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(&upstream)
+            .args([
+                "-c",
+                "user.name=AgentBro Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["add", "--force", "."]);
+    git(&["commit", "-m", "recorded"]);
+    let commit = git(&["rev-parse", "HEAD"]);
+    let expected = super::project_lock::fingerprint_canonical_skill_directory(
+        &skill.canonicalize().unwrap(),
+        false,
+    )
+    .unwrap();
+    fs::write(skill.join("reference.md"), "later version").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "later"]);
+    let pin = SkillPackGitHubSource {
+        repository: "example/workflows".to_string(),
+        commit,
+        skill_path: "skills/审阅/SKILL.md".to_string(),
+    };
+    let skill_id = "team-review".to_string();
+    let mut manifest = SkillPackManifest {
+        format: "agentbro-skill-pack".to_string(),
+        version: 3,
+        name: "Team workflows".to_string(),
+        description: String::new(),
+        tags: Vec::new(),
+        skill_ids: vec![skill_id.clone()],
+        skill_fingerprints: [(skill_id.clone(), "0".repeat(64))].into(),
+        skill_sources: [(skill_id.clone(), pin.clone())].into(),
+    };
+    let fetch = |url: &str, revision: &str| {
+        assert_eq!(url, "https://github.com/example/workflows.git");
+        assert_eq!(revision, pin.commit);
+        crate::skills::installer::checkout_skill_lock_ref(upstream.to_str().unwrap(), revision)
+    };
+    let destination = svc.center_path().unwrap().join(&skill_id);
+    let error = svc
+        .restore_pack_skill_with(&manifest, &skill_id, fetch)
+        .unwrap_err();
+    assert!(error.contains("does not match the recorded fingerprint"));
+    assert!(!destination.exists());
+
+    manifest
+        .skill_fingerprints
+        .insert(skill_id.clone(), expected.clone());
+    let pack_file = home.path.join("pack.json");
+    super::pack_manifest::write(&pack_file, &manifest).unwrap();
+    assert_eq!(super::pack_manifest::read(&pack_file).unwrap(), manifest);
+    svc.restore_pack_skill_with(&manifest, &skill_id, fetch)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "recorded"
+    );
+    assert!(destination.join("output/generated.txt").is_file());
+    let error = svc
+        .restore_pack_skill_with(&manifest, &skill_id, |_, _| {
+            panic!("would fetch an existing Skill")
+        })
+        .unwrap_err();
+    assert!(error.contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(destination.join("reference.md")).unwrap(),
+        "recorded"
+    );
+
+    let exported = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, true)
+        .unwrap();
+    assert_eq!(exported[0].source.as_ref(), Some(&pin));
+    let reviewed = svc
+        .skill_pack_fingerprints(&manifest.skill_ids, false)
+        .unwrap();
+    assert_eq!(reviewed[0].source, None);
+    assert_eq!(reviewed[0].fingerprint.as_deref(), Some(expected.as_str()));
+    let pack = svc
+        .import_reviewed_skill_pack(manifest, &reviewed, false)
+        .unwrap();
+    assert_eq!(pack.members[0].skill_id, skill_id);
 }
 
 fn insert_shared_managed_target(
