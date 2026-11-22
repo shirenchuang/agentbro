@@ -1355,6 +1355,8 @@ export const skillApiV2 = {
   getPackDetail: (packId: string, environmentId?: string) =>
     isTauriRuntime() ? invoke<SkillPackDetail>('get_skill_pack_detail', { packId }, environmentId) : Promise.resolve(null as unknown as SkillPackDetail),
   readPackManifest: (path: string) => tauriInvoke<SkillPackManifest>('read_skill_pack_manifest', { path }),
+  readPackManifestLink: (link: string) =>
+    tauriInvoke<{ manifest: SkillPackManifest; sourceUrl: string }>('read_skill_pack_manifest_link', { link }),
   writePackManifest: (path: string, manifest: SkillPackManifest) =>
     tauriInvoke<void>('write_skill_pack_manifest', { path, manifest }),
   getPackFingerprints: (skillIds: string[], environmentId: string, includeSources?: boolean) =>

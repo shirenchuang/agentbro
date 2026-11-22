@@ -699,6 +699,12 @@
   "skills": {
     "projectsTab": "プロジェクト",
     "packManifest": {
+      "importFromLink": "リンクからインポート",
+      "reviewLink": "スキルパックを確認",
+      "readingLink": "GitHub ファイルを読み込み中…",
+      "linkHint": "公開 GitHub リポジトリのスキルパックファイルへのリンクを貼り付けてください。",
+      "link": "GitHub リンク",
+      "linkSource": "ダウンロード元",
       "exportWithSources": "GitHub ソースを含めてエクスポート",
       "exportedWithoutSources": "スキルパックをエクスポートしました。固定された GitHub ソースはありませんでした。",
       "pinnedReview": "不足しているスキルを記録された GitHub ソースから復元し、結果を確認してからインポートします。",

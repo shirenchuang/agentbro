@@ -411,6 +411,13 @@ pub fn read_skill_pack_manifest(path: String) -> Result<SkillPackManifest, Strin
     super::pack_manifest::read(std::path::Path::new(&path))
 }
 
+#[tauri::command]
+pub async fn read_skill_pack_manifest_link(
+    link: String,
+) -> Result<LinkedSkillPackManifest, String> {
+    super::pack_manifest::read_link(&link).await
+}
+
 #[tauri::command(async)]
 pub fn write_skill_pack_manifest(path: String, manifest: SkillPackManifest) -> Result<(), String> {
     super::pack_manifest::write(std::path::Path::new(&path), &manifest)

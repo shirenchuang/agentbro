@@ -1,10 +1,13 @@
-use super::models::{SkillPackFingerprint, SkillPackGitHubSource, SkillPackManifest};
+use super::models::{
+    LinkedSkillPackManifest, SkillPackFingerprint, SkillPackGitHubSource, SkillPackManifest,
+};
 use super::project_lock::{locked_skill_directory, valid_skill_name};
 use crate::skills::installer::TempInstallDir;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
 
 const MAX_BYTES: usize = 1024 * 1024;
 const FORMAT: &str = "agentbro-skill-pack";
@@ -18,11 +21,93 @@ pub(super) fn read(path: &Path) -> Result<SkillPackManifest, String> {
     fs::File::open(path)
         .and_then(|file| file.take((MAX_BYTES + 1) as u64).read_to_end(&mut bytes))
         .map_err(|error| error.to_string())?;
+    decode(&bytes)
+}
+
+fn decode(bytes: &[u8]) -> Result<SkillPackManifest, String> {
     check_size(bytes.len())?;
-    let manifest = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+    let manifest = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
         .map_err(|error| format!("Invalid Skill Pack JSON. {error}"))?;
     validate(&manifest)?;
     Ok(manifest)
+}
+
+fn github_file_url(link: &str) -> Result<reqwest::Url, String> {
+    let invalid = || "Paste an HTTPS link to a file in a public GitHub repository.".to_string();
+    let link = link.trim();
+    if link.contains('\\') {
+        return Err(invalid());
+    }
+    let url = reqwest::Url::parse(link).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return Err(invalid());
+    }
+    let segments: Vec<_> = url.path_segments().ok_or_else(invalid)?.collect();
+    let (owner, repo, file) = match (url.host_str(), segments.as_slice()) {
+        (Some("github.com"), [owner, repo, "blob" | "raw", file @ ..]) => (owner, repo, file),
+        (Some("raw.githubusercontent.com"), [owner, repo, file @ ..]) => (owner, repo, file),
+        _ => return Err(invalid()),
+    };
+    if !github_repository_component(owner)
+        || !github_repository_component(repo)
+        || file.len() < 2
+        || file.iter().any(|part| part.is_empty())
+    {
+        return Err(invalid());
+    }
+    reqwest::Url::parse(&format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{}",
+        file.join("/")
+    ))
+    .map_err(|_| invalid())
+}
+
+pub(super) async fn read_link(link: &str) -> Result<LinkedSkillPackManifest, String> {
+    let url = github_file_url(link)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client.get(url.clone()).send().await.map_err(|error| {
+        format!(
+            "Could not download the GitHub file: {}",
+            error.without_url()
+        )
+    })?;
+    Ok(LinkedSkillPackManifest {
+        manifest: read_link_response(response).await?,
+        source_url: url.into(),
+    })
+}
+
+async fn read_link_response(mut response: reqwest::Response) -> Result<SkillPackManifest, String> {
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not open the public GitHub file (HTTP {}). Check the file link and repository visibility.",
+            response.status().as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_BYTES as u64)
+    {
+        return Err("Skill Pack JSON must be 1 MiB or smaller.".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Could not read the GitHub file: {}", error.without_url()))?
+    {
+        check_size(bytes.len() + chunk.len())?;
+        bytes.extend_from_slice(&chunk);
+    }
+    decode(&bytes)
 }
 
 pub(super) fn write(path: &Path, manifest: &SkillPackManifest) -> Result<(), String> {
@@ -96,20 +181,23 @@ pub(super) fn validate(manifest: &SkillPackManifest) -> Result<(), String> {
     Ok(())
 }
 
+fn github_repository_component(part: &str) -> bool {
+    !part.is_empty()
+        && !part.ends_with('.')
+        && part
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
 impl SkillPackGitHubSource {
     fn validate(&self) -> Result<(), String> {
-        let component = |part: &str| {
-            !part.is_empty()
-                && !part.ends_with('.')
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        };
         if !self
             .repository
             .split_once('/')
             .is_some_and(|(owner, repo)| {
-                component(owner) && component(repo) && !repo.ends_with(".git")
+                github_repository_component(owner)
+                    && github_repository_component(repo)
+                    && !repo.ends_with(".git")
             })
             || !matches!(self.commit.len(), 40 | 64)
             || !self.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -233,6 +321,96 @@ mod tests {
             skill_fingerprints: Default::default(),
             skill_sources: Default::default(),
         }
+    }
+
+    #[test]
+    fn github_pack_links_preserve_branch_and_file_paths() {
+        for link in [
+            " https://github.com/owner/repo/blob/feature%2Freview/技能包.json?plain=1#L2 ",
+            "https://github.com/owner/repo/raw/feature%2Freview/技能包.json",
+            "https://raw.githubusercontent.com/owner/repo/feature%2Freview/技能包.json?raw=1",
+        ] {
+            assert_eq!(
+                github_file_url(link).unwrap().as_str(),
+                "https://raw.githubusercontent.com/owner/repo/feature%2Freview/%E6%8A%80%E8%83%BD%E5%8C%85.json"
+            );
+        }
+        let commit = "a".repeat(40);
+        for reference in ["refs/heads/feature/review", &commit] {
+            let link = format!("https://github.com/owner/repo/blob/{reference}/team/pack.json");
+            assert_eq!(
+                github_file_url(&link).unwrap().as_str(),
+                format!("https://raw.githubusercontent.com/owner/repo/{reference}/team/pack.json")
+            );
+        }
+        for link in [
+            "http://github.com/owner/repo/blob/main/pack.json",
+            "https://github.com.evil.test/owner/repo/blob/main/pack.json",
+            "https://user:secret@raw.githubusercontent.com/owner/repo/main/pack.json",
+            "https://github.com:444/owner/repo/blob/main/pack.json",
+            "https://github.com/owner/repo/tree/main/pack.json",
+            "https://github.com/owner/repo/blob/main/",
+            "https://raw.githubusercontent.com/owner/repo/main//pack.json",
+            "file:///tmp/pack.json",
+        ] {
+            assert!(github_file_url(link).is_err(), "{link}");
+        }
+    }
+
+    async fn fixture_response(status: &str, headers: &str, bytes: Vec<u8>) -> reqwest::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let header = format!("HTTP/1.1 {status}\r\nConnection: close\r\n{headers}\r\n");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            stream.write_all(header.as_bytes()).await.unwrap();
+            let _ = stream.write_all(&bytes).await;
+        });
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/fixture.json"))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn github_pack_downloads_use_the_shared_schema_and_bound_the_body() {
+        let manifest = manifest();
+        let body = [
+            b"\xef\xbb\xbf".as_slice(),
+            &serde_json::to_vec(&manifest).unwrap(),
+        ]
+        .concat();
+        let response = fixture_response("200 OK", "", body).await;
+        assert_eq!(read_link_response(response).await.unwrap(), manifest);
+
+        let response = fixture_response("200 OK", "", b"<html>Not a Pack</html>".to_vec()).await;
+        assert!(read_link_response(response)
+            .await
+            .unwrap_err()
+            .contains("Invalid Skill Pack JSON"));
+        let response = fixture_response("200 OK", "", vec![b' '; MAX_BYTES + 1]).await;
+        assert!(read_link_response(response)
+            .await
+            .unwrap_err()
+            .contains("1 MiB"));
+        let response = fixture_response(
+            "302 Found",
+            "Location: http://127.0.0.1:1/unwanted\r\nContent-Length: 0\r\n",
+            Vec::new(),
+        )
+        .await;
+        assert!(read_link_response(response)
+            .await
+            .unwrap_err()
+            .contains("HTTP 302"));
     }
 
     #[test]

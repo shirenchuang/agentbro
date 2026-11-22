@@ -739,6 +739,12 @@
   "skills": {
     "projectsTab": "项目",
     "packManifest": {
+      "importFromLink": "从链接导入",
+      "reviewLink": "预览技能包",
+      "readingLink": "正在读取 GitHub 文件…",
+      "linkHint": "粘贴公开 GitHub 仓库中的技能包文件链接。",
+      "link": "GitHub 链接",
+      "linkSource": "下载来源",
       "exportWithSources": "导出并包含 GitHub 来源",
       "exportedWithoutSources": "技能包已导出，没有可包含的固定 GitHub 来源。",
       "pinnedReview": "可按记录的 GitHub 来源恢复缺失技能，核对内容后再导入。",

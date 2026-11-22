@@ -7475,6 +7475,73 @@ describe('Skill detail slider + agent page render without crashing', () => {
     return { pack, skill, dialog: within(screen.getByRole('dialog', { name: '应用「Review pack」' })) }
   }
 
+  it('reviews a shared GitHub Pack and keeps its source through recheck and confirmation', async () => {
+    const { pack, skill } = await renderPackPage()
+    const link = 'https://github.com/example/workflows/blob/main/team.agentbro-pack.json'
+    const sourceUrl = 'https://raw.githubusercontent.com/example/workflows/main/team.agentbro-pack.json'
+    const fingerprint = 'a'.repeat(64)
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Shared Pack', description: '',
+      tags: ['review'], skillIds: [skill.id], skillFingerprints: { [skill.id]: fingerprint },
+    }
+    const read = vi.spyOn(skillApiV2, 'readPackManifestLink')
+      .mockRejectedValueOnce('Could not open the public GitHub file (HTTP 404).')
+      .mockResolvedValueOnce({ manifest, sourceUrl })
+    const reviewed = [{ skillId: skill.id, missing: false, fingerprint }]
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints').mockResolvedValue(reviewed)
+    const create = vi.spyOn(skillApiV2, 'importReviewedPack').mockResolvedValue({ ...pack, id: 'linked', name: manifest.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '从链接导入' }))
+    const inputDialog = within(screen.getByRole('dialog', { name: '从链接导入' }))
+    const input = inputDialog.getByLabelText('GitHub 链接')
+    const review = inputDialog.getByRole('button', { name: '预览技能包' })
+    expect(review).toBeDisabled()
+    fireEvent.change(input, { target: { value: link } })
+    fireEvent.click(review)
+    expect(await inputDialog.findByRole('alert')).toHaveTextContent('HTTP 404')
+    expect(input).toHaveValue(link)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    const preview = within(await screen.findByRole('dialog', { name: '导入技能包' }))
+    expect(preview.getByText(manifest.name)).toBeInTheDocument()
+    expect(preview.getByText(sourceUrl)).toBeInTheDocument()
+    expect(fingerprints).toHaveBeenCalledWith([skill.id], LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.click(preview.getByRole('button', { name: '重新比对技能' }))
+    await waitFor(() => expect(preview.getByRole('button', { name: '创建技能包' })).toBeEnabled())
+    expect(preview.getByText(sourceUrl)).toBeInTheDocument()
+    expect(read).toHaveBeenCalledTimes(2)
+    fireEvent.click(preview.getByRole('button', { name: '创建技能包' }))
+    await waitFor(() => expect(create).toHaveBeenCalledWith(manifest, reviewed, false, LOCAL_RUNTIME_ENVIRONMENT_ID))
+  })
+
+  it('discards a shared Pack download after changing the selected runtime', async () => {
+    const { skill } = await renderPackPage()
+    const sourceUrl = 'https://raw.githubusercontent.com/example/repo/main/pack.json'
+    const manifest: SkillPackManifest = {
+      format: 'agentbro-skill-pack', version: 2, name: 'Old host Pack', description: '',
+      tags: [], skillIds: [skill.id],
+    }
+    let finish!: (value: { manifest: SkillPackManifest; sourceUrl: string }) => void
+    const read = vi.spyOn(skillApiV2, 'readPackManifestLink')
+      .mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    const fingerprints = vi.spyOn(skillApiV2, 'getPackFingerprints')
+    fireEvent.click(screen.getByRole('button', { name: '从链接导入' }))
+    const dialog = within(screen.getByRole('dialog', { name: '从链接导入' }))
+    fireEvent.change(dialog.getByLabelText('GitHub 链接'), { target: { value: sourceUrl } })
+    fireEvent.click(dialog.getByRole('button', { name: '预览技能包' }))
+    expect(read).toHaveBeenCalledWith(sourceUrl)
+
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    await act(async () => finish({ manifest, sourceUrl }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(fingerprints).not.toHaveBeenCalled()
+  })
+
   it('exports the Skill Pack definition and its reviewed contents', async () => {
     const { pack, skill } = await renderPackPage()
     act(() => useSkillStoreV2.setState({

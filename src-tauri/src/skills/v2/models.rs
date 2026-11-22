@@ -407,6 +407,13 @@ pub struct SkillPackManifest {
     pub skill_sources: BTreeMap<String, SkillPackGitHubSource>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedSkillPackManifest {
+    pub manifest: SkillPackManifest,
+    pub source_url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillPackGitHubSource {
