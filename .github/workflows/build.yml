@@ -287,6 +287,9 @@ jobs:
           & $testExecutable --exact agents::programs::tests::windows_aider_uninstall_reuses_the_detected_python_launcher
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          & $testExecutable agents::programs::tests::native_claude_
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & $testExecutable --exact agents::programs::tests::windows_registration_names_match_only_the_desktop_agent
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

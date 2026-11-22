@@ -1250,6 +1250,8 @@
       "programResultUnverified": "명령이 완료되었습니다. {{agent}}의 설치 상태 또는 버전을 확인할 수 없습니다.",
       "programStillUndetected": "명령이 완료되었습니다. {{agent}}가 아직 감지되지 않습니다.",
       "programVersionUnchanged": "업데이트 명령이 완료되었습니다. {{agent}}의 버전은 여전히 {{version}}입니다.",
+      "nativeCheckAndUpdate": "확인 후 업데이트",
+      "nativeUpdateChecked": "업데이트 확인이 완료되었습니다. {{agent}}의 현재 버전은 {{version}}입니다.",
       "remoteHooks": {
         "unsupported": "이 에이전트의 훅은 SSH를 통해 관리할 수 없습니다.",
         "confirmUninstall": "{{host}}에서 {{agent}} 훅을 제거할까요?"

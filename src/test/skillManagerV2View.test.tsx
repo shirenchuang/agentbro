@@ -3567,7 +3567,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     useSkillStoreV2.setState({
       agents: [makeSidebarAgent('codex', 'Codex', { managed: 1 })],
       selectedAgentId: 'codex',
-      selectedAgentDetail: { ...agentDetail, id: 'codex', displayName: 'Codex', version: '9.9.9' },
+      selectedAgentDetail: { ...agentDetail, id: 'codex', displayName: 'Codex', version: '9.9.9', latestVersion: '9.9.10' },
     })
     vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
     vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
@@ -3590,6 +3590,43 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('button', { name: '无需更新' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '卸载 Agent' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '清理残留' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '路径与设置' }))
+    expect(screen.queryByText('9.9.10')).not.toBeInTheDocument()
+  })
+
+  it.each(['2.1.89', null])('runs the native Claude updater without a registry version when the previous version is %s', async (previousVersion) => {
+    useSkillStoreV2.setState({ selectedAgentDetail: { ...agentDetail, version: '1.0.0' } })
+    const native = makeProgram({
+      packageManager: 'native',
+      packageName: null,
+      installedVersion: '2.1.89',
+      latestVersion: null,
+      installCommand: null,
+      updateCommand: 'claude update',
+      uninstallCommand: null,
+    })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([{ ...native, installedVersion: previousVersion }])
+      .mockResolvedValueOnce([native])
+      .mockResolvedValue([makeProgram({ ...native, installedVersion: '2.1.90' })])
+    const update = vi.spyOn(agentApi, 'update').mockResolvedValue(undefined)
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(useSkillStoreV2.getState(), 'loadAgentDetail').mockResolvedValue()
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    const check = await screen.findByRole('button', { name: '检查并更新' })
+    expect(screen.getByText(previousVersion ? '当前版本 2.1.89' : '当前版本 未知')).toBeInTheDocument()
+    fireEvent.click(check)
+    expect(update).toHaveBeenCalledExactlyOnceWith('claude-code', LOCAL_RUNTIME_ENVIRONMENT_ID)
+    expect(await screen.findByText('更新检查完成，Claude Code 当前版本为 2.1.89。')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清理残留' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '检查并更新' }))
+    expect(await screen.findByText('Agent 更新完成')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 2.1.90')).toBeInTheDocument()
   })
 
   it('keeps an update active across Agent Management navigation and keeps its verified version', async () => {

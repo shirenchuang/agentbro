@@ -1098,6 +1098,8 @@
       "programResultUnverified": "Komut tamamlandı. AgentBro, {{agent}} kurulumunu veya sürümünü doğrulayamadı.",
       "programStillUndetected": "Komut tamamlandı. AgentBro hâlâ {{agent}} aracını algılayamıyor.",
       "programVersionUnchanged": "Güncelleme komutu tamamlandı. {{agent}} hâlâ {{version}} sürümünde.",
+      "nativeCheckAndUpdate": "Denetle ve güncelle",
+      "nativeUpdateChecked": "Güncelleme denetimi tamamlandı. {{agent}} şu anda {{version}} sürümünde.",
       "remoteHooks": {
         "unsupported": "Bu aracı için SSH üzerinden Hook yönetimi kullanılamıyor.",
         "confirmUninstall": "{{host}} üzerindeki {{agent}} Hook’u kaldırılsın mı?"

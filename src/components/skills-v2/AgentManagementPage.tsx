@@ -427,7 +427,9 @@ export function AgentManagementPage() {
   const changeAgentProgram = async (agentId: string, operation: 'install' | 'update') => {
     if (!isCurrentRuntime()) return
     const previous = programs[agentId]
-    const previousVersion = previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
+    const previousVersion = previous?.packageManager === 'native'
+      ? previous.installedVersion
+      : previous?.installedVersion ?? (detail?.id === agentId ? detail.version : null)
     const active = { ...runtimeSelection, agentId, operation }
     if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
@@ -468,8 +470,13 @@ export function AgentManagementPage() {
       }
       if (operation === 'update') {
         const { installedVersion, latestVersion } = detected
-        if (!installedVersion || (!previousVersion && installedVersion !== latestVersion)) {
+        const nativeUpdate = detected.packageManager === 'native'
+        if (!installedVersion || (!nativeUpdate && !previousVersion && installedVersion !== latestVersion)) {
           state.setError(t('skills.agentManagement.programResultUnverified', { agent }))
+          return
+        }
+        if (nativeUpdate && (!previousVersion || installedVersion === previousVersion)) {
+          setNotice(t('skills.agentManagement.nativeUpdateChecked', { agent, version: installedVersion }))
           return
         }
         if (installedVersion === previousVersion && installedVersion !== latestVersion) {
@@ -1287,7 +1294,10 @@ function AgentDetailView({
   const canInstall = Boolean(program?.installCommand)
   const canOpenDownload = Boolean(program?.downloadUrl)
   const canDeleteCustom = program?.isCustom === true
-  const installedVersion = desktopManaged ? program.installedVersion : program?.installedVersion ?? detail.version
+  const nativeProgram = program?.packageManager === 'native'
+  const installedVersion = desktopManaged || nativeProgram
+    ? program.installedVersion
+    : program?.installedVersion ?? detail.version
   const logicalSkillCount = countLogicalAgentSkills(
     detail.skills,
     unmanaged,
@@ -1296,19 +1306,23 @@ function AgentDetailView({
     readOnlySkills,
   )
   const updateAvailable = program?.status === 'updateAvailable' && Boolean(program.latestVersion && program.updateCommand)
+  const nativeUpdater = installed && nativeProgram && Boolean(program.updateCommand)
   const versionLabel = installed ? installedVersion || '未知' : '未安装'
   const updateLabel = desktopManaged ? t('skills.agentManagement.desktopManagedUpdate') : !installed
     ? canInstall ? '可一键安装' : canOpenDownload ? '可打开安装页' : '未提供安装方式'
-    : updateAvailable
+    : nativeUpdater ? null : updateAvailable
       ? `可更新到 ${program.latestVersion}`
       : program?.latestVersion
         ? program.latestVersion === installedVersion ? '已是最新版本' : null
         : programLoading ? '正在获取最新版本' : '未检测到最新版本'
+  const updateButtonLabel = nativeUpdater
+    ? t('skills.agentManagement.nativeCheckAndUpdate')
+    : updateAvailable ? '更新此 Agent' : '无需更新'
   const primaryAction = !installed
     ? canInstall
       ? { label: installing ? '正在安装' : '安装此 Agent', disabled: busy || installing, onClick: () => onInstall(detail.id), busy: installing }
       : { label: opening ? '正在打开' : '打开安装页', disabled: busy || !canOpenDownload, onClick: () => onOpenDownload(detail.id), busy: opening }
-    : { label: updating ? '正在更新' : updateAvailable ? '更新此 Agent' : '无需更新', disabled: busy || scanning || updating || !updateAvailable, onClick: () => onUpdate(detail.id), busy: updating }
+    : { label: updating ? '正在更新' : updateButtonLabel, disabled: busy || scanning || updating || (!updateAvailable && !nativeUpdater), onClick: () => onUpdate(detail.id), busy: updating }
   const tabs: Array<{ id: DetailTab; label: string }> = [
     { id: 'overview', label: '概览' },
     { id: 'skills', label: `Skills (${logicalSkillCount})` },
@@ -4467,8 +4481,9 @@ function ConfigTab({ detail, program }: { detail: AgentDetail; program: AgentPro
   const agentSelectionRevision = useSkillStoreV2((state) => state.agentSelectionRevision)
   const scope = { agentId: detail.id, environmentId, runtimeSelectionRevision, agentSelectionRevision }
   const desktopManaged = program?.kind === 'cli' && program.packageManager === 'app'
-  const currentVersion = desktopManaged ? program.installedVersion : program?.installedVersion ?? detail.version
-  const latestVersion = program?.latestVersion ?? detail.latestVersion
+  const resolvedVersions = desktopManaged || program?.packageManager === 'native'
+  const currentVersion = resolvedVersions ? program.installedVersion : program?.installedVersion ?? detail.version
+  const latestVersion = resolvedVersions ? program.latestVersion : program?.latestVersion ?? detail.latestVersion
   const executablePath = program?.appPath ?? program?.binaryPath ?? null
   const executableIsApp = Boolean(program?.appPath)
   const skillsDir = detail.skillsDir ?? program?.skillsDir ?? null

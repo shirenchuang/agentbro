@@ -1249,6 +1249,8 @@
       "programResultUnverified": "The command completed. AgentBro could not verify the installation or version of {{agent}}.",
       "programStillUndetected": "The command completed. AgentBro still cannot detect {{agent}}.",
       "programVersionUnchanged": "The update command completed. {{agent}} is still at {{version}}.",
+      "nativeCheckAndUpdate": "Check and update",
+      "nativeUpdateChecked": "Update check complete. {{agent}} is at {{version}}.",
       "remoteHooks": {
         "unsupported": "Hook management over SSH is unavailable for this Agent.",
         "confirmUninstall": "Uninstall the {{agent}} Hook on {{host}}?"
