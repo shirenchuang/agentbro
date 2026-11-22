@@ -60,3 +60,7 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo check --locked --tests --manifest-path src-tauri/Cargo.toml
+      - name: Test Agent program management
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib agents::programs::tests
+      - name: Test Agent launcher discovery
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib agents::executable::tests

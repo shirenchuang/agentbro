@@ -39,6 +39,36 @@ pub fn find_codex_cli_binary() -> Option<PathBuf> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn is_desktop_bundled_codex_cli(binary: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    let candidates = macos_application_dirs()
+        .filter_map(chatgpt_bundled_codex)
+        .map(|(_, cli)| cli);
+    #[cfg(target_os = "windows")]
+    let candidates = windows_codex_bundled_cli_candidates();
+
+    matches_bundled_codex_cli(binary, candidates)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn is_desktop_bundled_codex_cli(_binary: &Path) -> bool {
+    false
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn matches_bundled_codex_cli(binary: &Path, candidates: impl IntoIterator<Item = PathBuf>) -> bool {
+    let canonical = binary.canonicalize().ok();
+    candidates.into_iter().any(|candidate| {
+        candidate == binary
+            || canonical.as_ref().is_some_and(|selected| {
+                candidate
+                    .canonicalize()
+                    .is_ok_and(|resolved| &resolved == selected)
+            })
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub fn codex_desktop_app_candidates() -> Vec<PathBuf> {
     find_chatgpt_bundled_codex(macos_application_dirs())
@@ -61,14 +91,17 @@ fn macos_application_dirs() -> impl Iterator<Item = PathBuf> {
 fn find_chatgpt_bundled_codex(
     application_dirs: impl IntoIterator<Item = PathBuf>,
 ) -> Option<(PathBuf, PathBuf)> {
+    application_dirs.into_iter().find_map(chatgpt_bundled_codex)
+}
+
+#[cfg(target_os = "macos")]
+fn chatgpt_bundled_codex(dir: PathBuf) -> Option<(PathBuf, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
-    application_dirs.into_iter().find_map(|dir| {
-        let app = dir.join("ChatGPT.app");
-        let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
-        let metadata = cli.metadata().ok()?;
-        (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
-    })
+    let app = dir.join("ChatGPT.app");
+    let cli = app.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+    let metadata = cli.metadata().ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some((app, cli))
 }
 
 #[cfg(target_os = "windows")]
@@ -653,11 +686,38 @@ mod tests {
         let app_dirs = [system_apps, user_apps];
         let non_executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
-        let executable = super::find_chatgpt_bundled_codex(app_dirs);
+        let executable = super::find_chatgpt_bundled_codex(app_dirs.clone());
+        let standalone = temp.join("codex");
+        fs::write(&standalone, "").unwrap();
+        let alias = temp.join("desktop alias");
+        std::os::unix::fs::symlink(&cli, &alias).unwrap();
+        let candidates = || {
+            app_dirs
+                .clone()
+                .into_iter()
+                .filter_map(super::chatgpt_bundled_codex)
+                .map(|(_, cli)| cli)
+        };
+        assert!(super::matches_bundled_codex_cli(&cli, candidates()));
+        assert!(super::matches_bundled_codex_cli(&alias, candidates()));
+        assert!(!super::matches_bundled_codex_cli(&standalone, candidates()));
         fs::remove_dir_all(temp).unwrap();
 
         assert_eq!(non_executable, None);
         assert_eq!(executable, Some((app, cli)));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_bundled_codex_matches_only_the_selected_desktop_candidate() {
+        let home = std::path::PathBuf::from("test-user");
+        let desktop = home.join("OpenAI/Codex/bin/version/codex.exe");
+        let standalone = home.join("npm/codex.cmd");
+        assert!(super::matches_bundled_codex_cli(
+            &desktop,
+            [desktop.clone()]
+        ));
+        assert!(!super::matches_bundled_codex_cli(&standalone, [desktop]));
     }
 
     #[test]

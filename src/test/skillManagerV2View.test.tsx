@@ -3563,6 +3563,37 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('shows desktop-managed updates for the selected bundled Codex', async () => {
+    useSkillStoreV2.setState({
+      agents: [makeSidebarAgent('codex', 'Codex', { managed: 1 })],
+      selectedAgentId: 'codex',
+      selectedAgentDetail: { ...agentDetail, id: 'codex', displayName: 'Codex', version: '9.9.9', latestVersion: '9.9.10' },
+    })
+    vi.spyOn(useSkillStoreV2.getState(), 'loadOverview').mockResolvedValue()
+    vi.spyOn(agentApi, 'refresh').mockResolvedValue([makeProgram({
+      id: 'codex',
+      displayName: 'Codex',
+      packageManager: 'app',
+      packageName: null,
+      installedVersion: '0.169.1',
+      binaryPath: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      installCommand: null,
+      updateCommand: null,
+      uninstallCommand: null,
+      hooksInstalled: true,
+    })])
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    render(<AgentManagementPage />)
+
+    expect(await screen.findByText('随桌面客户端更新')).toBeInTheDocument()
+    expect(screen.getByText('当前版本 0.169.1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '无需更新' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '卸载 Agent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清理残留' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '路径与设置' }))
+    expect(screen.queryByText('9.9.10')).not.toBeInTheDocument()
+  })
+
   it.each(['2.1.89', null])('runs the native Claude updater without a registry version when the previous version is %s', async (previousVersion) => {
     useSkillStoreV2.setState({ selectedAgentDetail: { ...agentDetail, version: '1.0.0' } })
     const native = makeProgram({
