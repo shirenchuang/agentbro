@@ -16,7 +16,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:RUNNER_TEMP "AgentBro smoke $([Guid]::NewGuid().ToString('N'))"
 $installDir = Join-Path $stage 'installed app'
-$appWorkingDirectory = $installDir
 $fixtureBin = Join-Path $stage 'bin'
 $env:CLAUDE_CONFIG_DIR = Join-Path $stage 'Claude config'
 $env:Path = "$fixtureBin;$env:Path"
@@ -31,7 +30,6 @@ if ($VerifyAgentPackageConsole) {
     $env:npm_config_offline = 'true'
     $env:npm_config_cache = Join-Path $stage 'isolated npm cache'
     $env:npm_config_prefix = Join-Path $stage 'isolated npm prefix'
-    $appWorkingDirectory = $fixtureBin
     $fixtureNpm = @'
 @echo off
 if /i "%~1"=="list" (
@@ -211,7 +209,7 @@ Get-ChildItem -LiteralPath $webViewPath -Directory -ErrorAction SilentlyContinue
 $stdoutPath = Join-Path $stage 'agentbro.stdout.log'
 $stderrPath = Join-Path $stage 'agentbro.stderr.log'
 if ($VerifyDrag) { $env:AGENTBRO_TRACE_ISLAND_DRAG = '1' }
-$app = Start-Process -FilePath $appPath -WorkingDirectory $appWorkingDirectory -PassThru `
+$app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 function Wait-AppCondition([string]$Description, [scriptblock]$Condition) {
     $deadline = (Get-Date).AddSeconds(45)
