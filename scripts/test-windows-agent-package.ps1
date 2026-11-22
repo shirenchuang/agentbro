@@ -42,6 +42,9 @@ function Test-InstalledAgentPackageAcrossSettingsWindows(
         $button = Find-PackControl $Settings '获取版本' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) { $button }
     }
+    Click-IslandElement $null 'select the restored Claude Code fixture' -FindElement {
+        Find-IslandButton $Settings { param($Name) $Name -eq 'Claude Code' }
+    }
     Click-IslandElement $null 'start a package update before closing Settings' -FindElement {
         $button = Find-PackControl $Settings '更新此 Agent' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) { $button }
