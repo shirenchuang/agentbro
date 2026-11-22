@@ -83,8 +83,17 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
     }
     Invoke-PackControl $fetchVersions
     $labelHeights = foreach ($label in @('当前版本 2.0.0', '可更新到 999.0.0')) {
-        $control = Wait-IslandValue "the Agent version label $label" { Find-PackControl $settings $label }
-        $height = $control.Current.BoundingRectangle.Height / $scale
+        $rectangles = @(Wait-IslandValue "the visible bounds of Agent version label $label" {
+            $range = Find-PackDocumentText $settings $label
+            if ($range) { $range.GetBoundingRectangles() }
+        })
+        $top = [double]::PositiveInfinity
+        $bottom = [double]::NegativeInfinity
+        for ($y = 1; $y -lt $rectangles.Count; $y += 4) {
+            $top = [Math]::Min($top, $rectangles[$y])
+            $bottom = [Math]::Max($bottom, $rectangles[$y] + $rectangles[$y + 2])
+        }
+        $height = ($bottom - $top) / $scale
         if ($height -le 0 -or $height -gt 24) {
             throw "The Agent version label '$label' occupies $([int]$height)px instead of one line"
         }

@@ -79,18 +79,20 @@ function Set-PackDialogFile([string]$Action, [string]$Path) {
     Invoke-PackControl $submit
 }
 
-function Test-PackVisibleText([Windows.Automation.AutomationElement]$Settings, [string]$Expected) {
-    if (Find-PackControl $Settings $Expected) { return $true }
+function Find-PackDocumentText([Windows.Automation.AutomationElement]$Settings, [string]$Expected) {
     $document = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)
     foreach ($element in $Settings.FindAll([Windows.Automation.TreeScope]::Descendants, $document)) {
         $text = $null
-        if ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$text) -and
-            $text.DocumentRange.FindText($Expected, $false, $false)) {
-            return $true
+        if ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$text)) {
+            $range = $text.DocumentRange.FindText($Expected, $false, $false)
+            if ($range) { return $range }
         }
     }
-    return $false
+}
+
+function Test-PackVisibleText([Windows.Automation.AutomationElement]$Settings, [string]$Expected) {
+    (Find-PackControl $Settings $Expected) -or (Find-PackDocumentText $Settings $Expected)
 }
 
 function Import-PackFixture(
