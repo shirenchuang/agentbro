@@ -2807,6 +2807,7 @@ describe('Skill detail slider + agent page render without crashing', () => {
     useRuntimeEnvironmentStore.setState({ selectedEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
     useSkillStoreV2.setState({
       runtimeEnvironmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+      agentProgramSnapshot: null,
       viewMode: 'cards',
       filters: { query: '', source: '', status: '', type: '' },
       skills: [makeSkill()],
@@ -3696,6 +3697,90 @@ describe('Skill detail slider + agent page render without crashing', () => {
 
     await waitFor(() => expect(useSkillStoreV2.getState().selectedAgentId).toBe('claude-code'))
     expect(screen.queryByText('.agents')).not.toBeInTheDocument()
+  })
+
+  it('groups sidebar Agents by detected program status and updates the grouping after refresh', async () => {
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      agents: [
+        { ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false },
+        makeSidebarAgent('codex', 'Codex'),
+      ],
+    })
+    vi.spyOn(agentApi, 'refresh')
+      .mockResolvedValueOnce([
+        makeProgram({ installedVersion: '2.0.0' }),
+        makeProgram({ id: 'codex', displayName: 'Codex', status: 'notInstalled' }),
+      ])
+      .mockResolvedValue([
+        makeProgram({ status: 'notInstalled', binaryPath: null }),
+        makeProgram({ id: 'codex', displayName: 'Codex', status: 'updateAvailable' }),
+      ])
+    vi.spyOn(useSkillStoreV2.getState(), 'refresh').mockResolvedValue()
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { AgentManagementPage } = await import('../components/skills-v2/AgentManagementPage')
+    const { container } = render(
+      <>
+        <SettingsSidebar
+          activeSection="skill-manager-v2"
+          activeIslandView="overview"
+          activeMonitorView="overview"
+          collapsed={false}
+          onCollapsedChange={() => {}}
+          onSelect={() => {}}
+          onIslandViewChange={() => {}}
+          onMonitorViewChange={() => {}}
+        />
+        <AgentManagementPage />
+      </>,
+    )
+
+    expect(await screen.findByText('当前版本 2.0.0')).toBeInTheDocument()
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-agent-id="codex"]')).toBeNull()
+    expect(useSkillStoreV2.getState().agents.find((agent) => agent.id === 'claude-code')?.installed).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新总览' }))
+
+    await waitFor(() => expect(container.querySelector('[data-agent-id="codex"]')).toBeInTheDocument())
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeNull()
+    expect(screen.getByText('当前版本 未安装')).toBeInTheDocument()
+  })
+
+  it('ignores an Agent program snapshot after leaving and returning to the same runtime', async () => {
+    const { selectionRevision } = useRuntimeEnvironmentStore.getState()
+    useSkillStoreV2.setState({
+      activeTab: 'agents',
+      agents: [{ ...makeSidebarAgent('claude-code', 'Claude Code'), installed: false }],
+      agentProgramSnapshot: {
+        environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID,
+        selectionRevision,
+        programs: { 'claude-code': makeProgram() },
+      },
+    })
+
+    const { SettingsSidebar } = await import('../components/settings/SettingsSidebar')
+    const { container } = render(
+      <SettingsSidebar
+        activeSection="skill-manager-v2"
+        activeIslandView="overview"
+        activeMonitorView="overview"
+        collapsed={false}
+        onCollapsedChange={() => {}}
+        onSelect={() => {}}
+        onIslandViewChange={() => {}}
+        onMonitorViewChange={() => {}}
+      />,
+    )
+
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeInTheDocument()
+    const { selectEnvironment } = useRuntimeEnvironmentStore.getState()
+    act(() => {
+      selectEnvironment('other-host')
+      selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
+    })
+    expect(container.querySelector('[data-agent-id="claude-code"]')).toBeNull()
   })
 
   it('sorts installed sidebar agents by active usage and supports drag reorder', async () => {
