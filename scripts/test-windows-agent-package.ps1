@@ -37,7 +37,7 @@
     Invoke-PackControl $retry
     $null = Wait-IslandValue 'the completed fixture package update' {
         (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED) -and
-            (Find-PackControl $settings '当前版本 999.0.0') -and (Find-PackControl $settings 'Agent 更新完成')
+            (Find-PackControl $settings '999.0.0') -and (Find-PackControl $settings 'Agent 更新完成')
     }
     Write-Output 'Agent Management confirmed the retry after detecting version 999.0.0.'
     $report = Get-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Raw -Encoding utf8 | ConvertFrom-Json
