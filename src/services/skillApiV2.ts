@@ -922,6 +922,8 @@ export interface GitHubRepoPreview {
     repo: string
     branch: string
     normalizedUrl: string
+    revision?: string | null
+    requestedPath?: string | null
   }
   skills: Array<{
     sourcePath: string
@@ -1136,7 +1138,7 @@ export const skillApiV2 = {
       defaultDistributeMode: overview.settings.defaultDistributeMode,
     })
   },
-  refresh: () => (isTauriRuntime() ? invoke<void>('skill_manager_refresh') : Promise.resolve()),
+  refresh: (environmentId?: string) => (isTauriRuntime() ? invoke<void>('skill_manager_refresh', undefined, environmentId) : Promise.resolve()),
   refreshOverview: (environmentId?: string) =>
     isTauriRuntime()
       ? invoke<SkillManagerOverview>('skill_manager_refresh_overview', undefined, environmentId)
@@ -1232,20 +1234,24 @@ export const skillApiV2 = {
     isTauriRuntime()
       ? listen<MarketplaceBatchProgress>('marketplace-skill-batch-progress', (event) => handler(event.payload))
       : Promise.resolve(() => {}),
-  previewGitHubRepoImport: (repoUrl: string, githubToken?: string) =>
+  previewGitHubRepoImport: (repoUrl: string, githubToken?: string, environmentId?: string): Promise<GitHubRepoPreview> =>
     isTauriRuntime()
       ? invoke<GitHubRepoPreview>('preview_github_repo_import', {
           repoUrl,
           githubToken: githubToken?.trim() || null,
-        })
+        }, environmentId)
       : Promise.resolve({ repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl }, skills: [] }),
-  importGitHubRepoSkills: (repoUrl: string, selections: GitHubSkillImportSelection[], githubToken?: string) =>
+  importGitHubRepoSkills: (
+    repoUrl: string, selections: GitHubSkillImportSelection[], githubToken?: string,
+    options: { environmentId?: string; expectedCommit?: string | null } = {},
+  ) =>
     isTauriRuntime()
       ? invoke<GitHubRepoImportResult>('import_github_repo_skills', {
           repoUrl,
           selections,
           githubToken: githubToken?.trim() || null,
-        })
+          expectedCommit: options.expectedCommit ?? null,
+        }, options.environmentId)
       : Promise.resolve({
           repo: { owner: '', repo: '', branch: 'HEAD', normalizedUrl: repoUrl },
           importedSkills: [],

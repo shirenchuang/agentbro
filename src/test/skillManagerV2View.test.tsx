@@ -961,6 +961,8 @@ describe('Marketplace install flow', () => {
 describe('Git install skill preview view modes', () => {
   beforeEach(() => {
     cleanup()
+    vi.restoreAllMocks()
+    useRuntimeEnvironmentStore.getState().selectEnvironment(LOCAL_RUNTIME_ENVIRONMENT_ID)
     vi.spyOn(skillApiV2, 'previewGitHubRepoImport').mockResolvedValue({
       repo: {
         owner: 'anthropics',
@@ -1031,6 +1033,7 @@ describe('Git install skill preview view modes', () => {
       expect(preview).toHaveBeenCalledWith(
         'https://github.com/acme/private-skills',
         'github-test-token',
+        LOCAL_RUNTIME_ENVIRONMENT_ID,
       )
     })
 
@@ -1041,8 +1044,84 @@ describe('Git install skill preview view modes', () => {
         'https://github.com/acme/private-skills',
         expect.any(Array),
         'github-test-token',
+        { environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID, expectedCommit: undefined },
       )
     })
+  })
+  it.each([false, true])('discards a Git preview after switching runtime, return=%s', async (returnToHost) => {
+    const host = 'preview-ssh'
+    const runtime = useRuntimeEnvironmentStore.getState()
+    runtime.selectEnvironment(host)
+    let finishPreview!: (preview: Awaited<ReturnType<typeof skillApiV2.previewGitHubRepoImport>>) => void
+    const preview = vi.mocked(skillApiV2.previewGitHubRepoImport)
+    preview.mockReturnValueOnce(new Promise((resolve) => { finishPreview = resolve }))
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills')
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    const url = 'https://github.com/acme/skills/tree/main/skills/demo'
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    expect(preview).toHaveBeenCalledWith(url, '', host)
+
+    await act(async () => {
+      runtime.selectEnvironment('other-ssh')
+      if (returnToHost) runtime.selectEnvironment(host)
+      finishPreview({
+        repo: { owner: 'acme', repo: 'skills', branch: 'main', normalizedUrl: url, revision: 'a'.repeat(40) },
+        skills: [{
+          sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+          rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+        }],
+      })
+    })
+    expect(install).not.toHaveBeenCalled()
+    expect(screen.getByText('检测 Skill')).toBeInTheDocument()
+    expect(screen.queryByText('Demo')).not.toBeInTheDocument()
+  })
+
+  it('keeps review open when a slash is part of the SSH Git branch name', async () => {
+    useRuntimeEnvironmentStore.getState().selectEnvironment('preview-ssh')
+    const url = 'https://github.com/acme/skills/tree/feature/review'
+    vi.mocked(skillApiV2.previewGitHubRepoImport).mockResolvedValueOnce({
+      repo: {
+        owner: 'acme', repo: 'skills', branch: 'feature/review', normalizedUrl: url,
+        revision: 'b'.repeat(40), requestedPath: null,
+      },
+      skills: [{
+        sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+        rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+      }],
+    })
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills')
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    expect(await screen.findByText('安装所选 (1)')).toBeInTheDocument()
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('uses the reviewed commit and SSH host for a direct Git Skill install', async () => {
+    const host = 'preview-ssh'
+    useRuntimeEnvironmentStore.getState().selectEnvironment(host)
+    const url = 'https://github.com/acme/skills/tree/main/skills/demo'
+    const revision = 'b'.repeat(40)
+    const repo = { owner: 'acme', repo: 'skills', branch: 'main', normalizedUrl: url, revision }
+    vi.mocked(skillApiV2.previewGitHubRepoImport).mockResolvedValueOnce({
+      repo,
+      skills: [{
+        sourcePath: 'skills/demo', skillId: 'demo', skillName: 'Demo', description: null,
+        rootDirectory: '', skillDirectoryName: 'demo', downloadUrl: url, conflict: null,
+      }],
+    })
+    const install = vi.spyOn(skillApiV2, 'importGitHubRepoSkills').mockResolvedValue({
+      repo, importedSkills: [], skippedSkills: [],
+    })
+    const { GitPanel } = await import('../components/skills-v2/InstallView')
+    render(<GitPanel initialUrl={url} onDone={() => {}} />)
+    fireEvent.click(screen.getByText('检测 Skill'))
+    await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(
+      url, [{ sourcePath: 'skills/demo', resolution: 'overwrite' }], '',
+      { environmentId: host, expectedCommit: revision },
+    ))
   })
 })
 
