@@ -140,11 +140,13 @@ impl CodexAppServerBridge {
         &self,
         thread_id: &str,
         answers: BTreeMap<String, Vec<String>>,
+        tool_use_id: Option<&str>,
     ) -> Result<bool, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let command = CodexAppServerCommand::Question {
             thread_id: thread_id.to_string(),
             answers,
+            tool_use_id: tool_use_id.map(str::to_owned),
             reply: reply_tx,
         };
         let Some(tx) = self.tx.lock().await.clone() else {
@@ -222,6 +224,7 @@ enum CodexAppServerCommand {
     Question {
         thread_id: String,
         answers: BTreeMap<String, Vec<String>>,
+        tool_use_id: Option<String>,
         reply: oneshot::Sender<Result<bool, String>>,
     },
     RateLimits {
@@ -1464,10 +1467,16 @@ async fn handle_codex_app_server_command(
         CodexAppServerCommand::Question {
             thread_id,
             answers,
+            tool_use_id,
             reply,
         } => {
             let result = match pending_requests.remove(&thread_id) {
-                Some(pending) if pending.kind == CodexAppServerPendingKind::UserInput => {
+                Some(pending)
+                    if pending.kind == CodexAppServerPendingKind::UserInput
+                        && tool_use_id
+                            .as_ref()
+                            .is_none_or(|id| *id == request_id_to_string(&pending.request_id)) =>
+                {
                     match write_ws_json(
                         sink,
                         serde_json::json!({
@@ -1478,10 +1487,16 @@ async fn handle_codex_app_server_command(
                     .await
                     {
                         Ok(()) => {
-                            clear_codex_app_server_interaction(store, &thread_id);
+                            store.clear_matching_question(
+                                &thread_id,
+                                Some(&request_id_to_string(&pending.request_id)),
+                            );
                             Ok(true)
                         }
-                        Err(err) => Err(err),
+                        Err(err) => {
+                            pending_requests.insert(thread_id, pending);
+                            Err(err)
+                        }
                     }
                 }
                 Some(pending) => {
@@ -1611,15 +1626,6 @@ fn upsert_codex_app_server_pending_question(
         session.pending_question = Some(pending_question);
         session.pending_permission = None;
         session.pending_plan = None;
-    });
-}
-
-fn clear_codex_app_server_interaction(store: &SessionStore, thread_id: &str) {
-    store.update_session(thread_id, |session| {
-        session.pending_permission = None;
-        session.pending_question = None;
-        session.pending_plan = None;
-        session.phase = SessionPhase::Processing;
     });
 }
 
@@ -3628,52 +3634,60 @@ pub async fn respond_question(
     state: State<'_, AppState>,
     session_id: String,
     answer: String,
+    tool_use_id: Option<String>,
 ) -> Result<(), String> {
-    log::info!(
-        "Question response: session={}, answer={}",
-        session_id,
-        answer
-    );
+    respond_to_question(&state, &session_id, answer, tool_use_id.as_deref()).await
+}
 
-    if let Some(session) = state.session_store.get_session(&session_id) {
-        if let Some(question) = session.pending_question.clone() {
-            if is_codex_app_server_question(&question) {
-                let answers = codex_answers_for_pending_question(&question, &answer);
-                match state
-                    .codex_app_server
-                    .respond_question(&session_id, answers)
-                    .await
-                {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(err) => log::warn!(
-                        "Codex app-server question response failed for {}: {}",
-                        session_id,
-                        err
-                    ),
-                }
-            }
-            if is_codex_rollout_question(&question) {
-                let call_id = question
-                    .tool_use_id
-                    .as_deref()
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Codex question is missing call_id".to_string())?;
-                let answers = codex_answers_for_pending_question(&question, &answer);
-                submit_codex_request_user_input_output(&session_id, call_id, answers).await?;
-                state.session_store.set_pending_question(&session_id, None);
-                state.session_store.update_phase(
-                    &session_id,
-                    crate::hooks::session_store::SessionPhase::Processing,
-                );
-                return Ok(());
-            }
+pub(crate) async fn respond_to_question(
+    state: &AppState,
+    session_id: &str,
+    answer: String,
+    tool_use_id: Option<&str>,
+) -> Result<(), String> {
+    log::info!("Question response: session={}", session_id);
+    let pending = state
+        .session_store
+        .get_session(session_id)
+        .and_then(|session| session.pending_question);
+    if tool_use_id.is_some_and(|id| {
+        pending
+            .as_ref()
+            .and_then(|question| question.tool_use_id.as_deref())
+            != Some(id)
+    }) {
+        return Err("The original question is no longer waiting for an answer.".to_string());
+    }
+    if let Some(question) = pending {
+        if is_codex_app_server_question(&question) {
+            let answers = codex_answers_for_pending_question(&question, &answer);
+            return match state
+                .codex_app_server
+                .respond_question(session_id, answers, question.tool_use_id.as_deref())
+                .await?
+            {
+                true => Ok(()),
+                false => Err("Codex is no longer waiting for this answer.".to_string()),
+            };
+        }
+        if is_codex_rollout_question(&question) {
+            let call_id = question
+                .tool_use_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Codex question is missing call_id".to_string())?;
+            let answers = codex_answers_for_pending_question(&question, &answer);
+            submit_codex_request_user_input_output(session_id, call_id, answers).await?;
+            state
+                .session_store
+                .clear_matching_question(session_id, Some(call_id));
+            return Ok(());
         }
     }
 
     state
         .hook_server
-        .respond_question(&session_id, answer)
+        .respond_question(session_id, answer, tool_use_id)
         .await
         .map_err(|e| e.to_string())
 }

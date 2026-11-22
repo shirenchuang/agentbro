@@ -529,12 +529,12 @@ export async function respondPermission(sessionId: string, allowed: boolean, alw
   return invoke('respond_permission', { sessionId, allowed, always: always ?? false, toolUseId: toolUseId ?? null })
 }
 
-export async function respondQuestion(sessionId: string, answer: string): Promise<void> {
+export async function respondQuestion(sessionId: string, answer: string, toolUseId?: string): Promise<void> {
   if (!isTauri()) {
     console.log(`[mock] respondQuestion(${sessionId}, "${answer}")`)
     return
   }
-  return invoke('respond_question', { sessionId, answer })
+  return invoke('respond_question', { sessionId, answer, toolUseId: toolUseId ?? null })
 }
 
 export async function respondPlan(sessionId: string, mode: string, message?: string): Promise<void> {

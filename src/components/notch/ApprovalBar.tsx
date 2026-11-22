@@ -2,7 +2,7 @@
 import { useEffect, useRef, useCallback, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SessionState } from '../../types/agent'
-import { useSessionStore } from '../../stores/sessionStore'
+import { questionKey, useSessionStore } from '../../stores/sessionStore'
 import { restoreNotchWebviewFocus, setNotchFocusable } from '../../services/tauriApi'
 import { islandActionProps, runIslandAction } from '../../utils/islandActions'
 import { isWindowsPlatform } from '../../utils/platform'
@@ -57,19 +57,19 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     }
   }, [restorePermissionFocus])
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [draftState, setDraftState] = useState({ sessionId: session.id, value: '' })
+  const pendingQuestionKey = session.pendingQuestion ? questionKey(session.pendingQuestion) : ''
+  const questionScope = `${session.id}:${pendingQuestionKey}`
+  const draftScope = pendingQuestionKey ? questionScope : session.id
+  const [draftState, setDraftState] = useState({ scope: draftScope, value: '' })
   const [questionState, setQuestionState] = useState<{
     key: string
     selected: number[]
     answers: Record<number, number | number[]>
   }>({ key: '', selected: [], answers: {} })
-  const draft = draftState.sessionId === session.id ? draftState.value : ''
+  const draft = draftState.scope === draftScope ? draftState.value : ''
   const hasDraft = draft.trim().length > 0
-  const questionKey = session.pendingQuestion
-    ? `${session.id}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}:${session.pendingQuestion.questions?.length ?? 0}`
-    : ''
-  const selected = questionState.key === questionKey ? questionState.selected : []
-  const answers = questionState.key === questionKey ? questionState.answers : {}
+  const selected = questionState.key === questionScope ? questionState.selected : []
+  const answers = questionState.key === questionScope ? questionState.answers : {}
   const supportsPersistentActions = supportsPersistentPermissionActions(session.agentType)
 
   useEffect(() => {
@@ -101,8 +101,8 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     const val = draft.trim()
     if (!val) return
     onSendMessage(draft)
-    setDraftState({ sessionId: session.id, value: '' })
-  }, [draft, onSendMessage, session.id])
+    if (!pendingQuestionKey) setDraftState({ scope: draftScope, value: '' })
+  }, [draft, draftScope, onSendMessage, pendingQuestionKey])
 
   const handleSendButton = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     runIslandAction(event, () => {
@@ -127,7 +127,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.planFeedback', { defaultValue: '\u544A\u8BC9 Claude \u9700\u8981\u4FEE\u6539\u4EC0\u4E48...' })}
             value={draft}
-            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
+            onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -203,7 +203,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     const hasMultipleQuestions = nestedQuestions.length > 1
     const toggleSingleQuestionOption = (index: number) => {
       setQuestionState((current) => {
-        const base = current.key === questionKey ? current : { key: questionKey, selected: [], answers: {} }
+        const base = current.key === questionScope ? current : { key: questionScope, selected: [], answers: {} }
         const next = base.selected.includes(index)
           ? base.selected.filter((item) => item !== index)
           : [...base.selected, index]
@@ -212,7 +212,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
     }
     const toggleNestedQuestionOption = (questionIndex: number, optionIndex: number, multiSelect?: boolean) => {
       setQuestionState((current) => {
-        const base = current.key === questionKey ? current : { key: questionKey, selected: [], answers: {} }
+        const base = current.key === questionScope ? current : { key: questionScope, selected: [], answers: {} }
         if (!multiSelect) return { ...base, answers: { ...base.answers, [questionIndex]: optionIndex } }
 
         const existing = Array.isArray(base.answers[questionIndex])
@@ -318,7 +318,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
             data-has-draft={hasDraft ? 'true' : 'false'}
             placeholder={t('notch.typeReply')}
             value={draft}
-            onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
+            onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 sendDraft()
@@ -352,7 +352,7 @@ export function ApprovalBar({ session, onAllow, onAllowAlways, onDeny, restorePe
           data-has-draft={hasDraft ? 'true' : 'false'}
           placeholder={t('notch.typeMessage')}
           value={draft}
-          onChange={(e) => setDraftState({ sessionId: session.id, value: e.target.value })}
+          onChange={(e) => setDraftState({ scope: draftScope, value: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               sendDraft()

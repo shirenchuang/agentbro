@@ -190,11 +190,21 @@ pub struct PendingQuestion {
     pub multi_select: bool,
     #[serde(default)]
     pub questions: Vec<QuestionItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "toolUseId",
+        alias = "tool_use_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tool_use_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "responseMode",
+        alias = "response_mode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub response_mode: Option<String>,
 }
 
@@ -591,6 +601,28 @@ impl SessionStore {
         self.emit_update();
     }
 
+    pub fn clear_matching_question(&self, session_id: &str, tool_use_id: Option<&str>) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            let Some(question) = session.pending_question.as_ref() else {
+                return;
+            };
+            if question.tool_use_id.as_deref() != tool_use_id {
+                return;
+            }
+            session.pending_question = None;
+            if session.phase == SessionPhase::WaitingInput {
+                session.phase =
+                    if session.pending_permission.is_some() || session.pending_plan.is_some() {
+                        SessionPhase::WaitingApproval
+                    } else {
+                        SessionPhase::Processing
+                    };
+            }
+            session.update_duration();
+        }
+        self.emit_update();
+    }
+
     /// Set pending plan approval on a session
     pub fn set_pending_plan(&self, session_id: &str, plan: Option<PendingPlan>) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
@@ -977,6 +1009,24 @@ mod tests {
         let store = SessionStore::new();
         store.get_or_create_session("s1", "claude-code", "agentbro", "/tmp/agentbro", "iTerm");
         store
+    }
+
+    #[test]
+    fn pending_question_accepts_legacy_ids_and_serializes_for_the_frontend() {
+        let question: PendingQuestion = serde_json::from_value(serde_json::json!({
+            "question": "Continue?",
+            "options": ["Yes", "No"],
+            "descriptions": [],
+            "multiSelect": false,
+            "tool_use_id": "request-2",
+            "response_mode": "app_server",
+        }))
+        .unwrap();
+        let value = serde_json::to_value(question).unwrap();
+        assert_eq!(value["toolUseId"], "request-2");
+        assert_eq!(value["responseMode"], "app_server");
+        assert!(value.get("tool_use_id").is_none());
+        assert!(value.get("response_mode").is_none());
     }
 
     #[test]

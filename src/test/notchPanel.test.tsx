@@ -100,6 +100,7 @@ function mountIsland(activeOverlay: OverlayItem | null = null, sessionOverrides:
     panelState: 'hover',
     activeOverlay,
     overlayQueue: activeOverlay ? [activeOverlay] : [],
+    questionReplies: new Map(),
     rateLimits: undefined,
     hookNotification: null,
     wakeSilencedUntil: 0,
@@ -1313,10 +1314,11 @@ describe('NotchPanel island shell', () => {
     await waitFor(() => expect(tauriMocks.sendMessage).toHaveBeenCalledWith('s1', 'continue please'))
   })
 
-  it('routes detail question input through the hook question responder', async () => {
+  it('keeps a failed detail reply and its draft available for retry', async () => {
+    tauriMocks.respondQuestion.mockRejectedValueOnce(new Error('Hook disconnected'))
     mountIsland(null, {
       phase: 'waiting_input',
-      pendingQuestion: { question: 'Need confirmation', options: [] },
+      pendingQuestion: { toolUseId: 'detail-question', question: 'Need confirmation', options: [] },
     })
 
     fireEvent.click(screen.getByText('agentbro · Port dynamic island'))
@@ -1326,9 +1328,14 @@ describe('NotchPanel island shell', () => {
     fireEvent.change(input, { target: { value: 'ok' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    await waitFor(() => expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'ok'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hook disconnected')
+    expect(input).toHaveValue('ok')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion?.toolUseId).toBe('detail-question')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(tauriMocks.respondQuestion).toHaveBeenNthCalledWith(2, 's1', 'ok', 'detail-question')
     expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'ok')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('routes detail approval bar actions on mouse down', async () => {
@@ -1498,7 +1505,7 @@ describe('NotchPanel island shell', () => {
     expect(useSessionStore.getState().sessions.s1.pendingPermission).toBeDefined()
   })
 
-  it('routes numbered question shortcuts through respondQuestion', () => {
+  it('routes numbered question shortcuts through respondQuestion', async () => {
     mountIsland(null, {
       phase: 'waiting_input',
       pendingQuestion: { question: 'Pick one', options: ['Overlay', 'Detail', 'Compact'] },
@@ -1508,7 +1515,7 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Detail')
     expect(tauriMocks.sendMessage).not.toHaveBeenCalledWith('s1', 'Detail')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('does not collapse multi-select questions through numbered shortcuts', () => {
@@ -1521,6 +1528,29 @@ describe('NotchPanel island shell', () => {
 
     expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeDefined()
+  })
+
+  it('uses the visible question card for numbered shortcuts when another session is selected', async () => {
+    const visibleQuestion = { toolUseId: 'visible', question: 'Pick a view', options: ['Overlay', 'Detail'] }
+    const otherQuestion = { toolUseId: 'other', question: 'Pick a target', options: ['Local', 'Remote'] }
+    mountIsland({
+      id: 'visible-question',
+      sessionId: 's1',
+      type: 'question',
+      data: visibleQuestion,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: visibleQuestion })
+    act(() => {
+      const s1 = useSessionStore.getState().sessions.s1
+      const s2 = session({ id: 's2', phase: 'waiting_input', pendingQuestion: otherQuestion })
+      useSessionStore.setState({ sessions: { s1, s2 }, sessionList: [s1, s2], activeSessionId: 's2' })
+    })
+
+    fireEvent.keyDown(window, { key: '2', ...primaryModifierKeyEvent() })
+
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Detail', 'visible')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+    expect(useSessionStore.getState().sessions.s2.pendingQuestion).toEqual(otherQuestion)
   })
 
   it('routes configured approval shortcuts to plan modes when a plan is pending', () => {
@@ -1795,7 +1825,7 @@ describe('NotchPanel island shell', () => {
     expect(screen.getByRole('button', { name: 'Accept Edits' })).toBeInTheDocument()
   })
 
-  it('routes question overlay answers to respondQuestion and clears the pending question', () => {
+  it('routes question overlay answers to respondQuestion and clears the pending question', async () => {
     mountIsland({
       id: 'question-s1',
       sessionId: 's1',
@@ -1811,7 +1841,40 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByText('Ship it').closest('.question-card__option-row')!)
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Ship it')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
+  })
+
+  it('keeps a replacement question visible after the earlier reply finishes', async () => {
+    const sent = deferred()
+    tauriMocks.respondQuestion.mockReturnValueOnce(sent.promise)
+    const first = { toolUseId: 'first', question: 'Pick one', options: ['Ship it', 'Revise'] }
+    mountIsland({
+      id: 'question-first',
+      sessionId: 's1',
+      type: 'question',
+      data: first,
+      createdAt: Date.now(),
+    }, { phase: 'waiting_input', pendingQuestion: first })
+
+    const option = screen.getByText('Ship it').closest('.question-card__option-row')!
+    fireEvent.mouseDown(option)
+    fireEvent.mouseDown(option)
+    expect(tauriMocks.respondQuestion).toHaveBeenCalledExactlyOnceWith('s1', 'Ship it', 'first')
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(first)
+
+    const second = { ...first, toolUseId: 'second', options: ['Ship it', 'Pause here'] }
+    act(() => {
+      const state = useSessionStore.getState()
+      state.replaceAllSessions([{ ...state.sessions.s1, pendingQuestion: second }])
+    })
+    await act(async () => sent.resolve())
+    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toEqual(second)
+    expect(useSessionStore.getState().activeOverlay?.data).toEqual(second)
+
+    const replaceOption = await screen.findByText('Pause here')
+    fireEvent.mouseDown(replaceOption.closest('.question-card__option-row')!)
+    expect(tauriMocks.respondQuestion).toHaveBeenNthCalledWith(2, 's1', 'Pause here', 'second')
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('opens custom input from the question chat action', () => {
@@ -1833,7 +1896,7 @@ describe('NotchPanel island shell', () => {
     expect(tauriMocks.respondQuestion).not.toHaveBeenCalled()
   })
 
-  it('routes skip interview as a free-form question answer', () => {
+  it('routes skip interview as a free-form question answer', async () => {
     mountIsland({
       id: 'question-skip-s1',
       sessionId: 's1',
@@ -1848,10 +1911,10 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Skip interview' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Skip interview and plan immediately')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes multi-select question answers as a joined answer string', () => {
+  it('routes multi-select question answers as a joined answer string', async () => {
     mountIsland({
       id: 'question-multi-s1',
       sessionId: 's1',
@@ -1868,10 +1931,10 @@ describe('NotchPanel island shell', () => {
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Confirm (2)' }))
 
     expect(tauriMocks.respondQuestion).toHaveBeenCalledWith('s1', 'Preview, Docs')
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
-  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', () => {
+  it('routes multi-question answers as JSON for the AskUserQuestion hook bridge', async () => {
     mountIsland({
       id: 'question-batch-s1',
       sessionId: 's1',
@@ -1931,7 +1994,7 @@ describe('NotchPanel island shell', () => {
         'Notify channel?': 'No',
       }),
     )
-    expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined()
+    await waitFor(() => expect(useSessionStore.getState().sessions.s1.pendingQuestion).toBeUndefined())
   })
 
   it('routes plan overlay decisions to respondPlan and dismisses the overlay', () => {

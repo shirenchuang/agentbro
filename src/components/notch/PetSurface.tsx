@@ -19,7 +19,6 @@ import {
   jumpToTerminal,
   openSettingsWindow,
   respondPlan,
-  respondQuestion,
   sendMessage,
   setNotchIgnoreCursorEvents,
   startPetDrag,
@@ -972,11 +971,6 @@ function PetBlockingOverlay({
         <QuestionCard
           overlay={overlay}
           session={session}
-          onAnswer={(answer) => {
-            respondQuestion(session.id, answer)
-              .then(() => useSessionStore.getState().clearQuestion(session.id))
-              .catch((error) => console.warn('[PetSurface] respondQuestion:', error))
-          }}
           onDismiss={onClose}
           onShowSessions={showSessions}
           sessionCount={sessionCount}

@@ -571,6 +571,51 @@ function Test-KeyboardPermissionDenial(
     }
 }
 
+function Test-InstalledQuestionReply([Windows.Automation.AutomationElement]$Island) {
+    $connection = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connection.Connect([System.Net.IPAddress]::Loopback, [int]$env:AGENTBRO_HOOK_PORT)
+        $stream = $connection.GetStream()
+        $answer = 'Reply to Windows test'
+        $event = @{
+            agent = 'claude-code'
+            event = 'AskQuestion'
+            session_id = $SessionId
+            cwd = $Workspace
+            question = 'Can the Windows Island return this answer?'
+            options = @($answer, 'Skip Windows test')
+        }
+        $line = ($event | ConvertTo-Json -Compress) + "`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $reader = [System.IO.StreamReader]::new($stream)
+        $reply = $reader.ReadLineAsync()
+
+        $showSessions = Wait-IslandValue 'the question card session list button' {
+            Find-IslandButton $Island {
+                param($Name)
+                $Name -eq 'Make agents easier to use' -or $Name -match '^Show all \d+ sessions$'
+            }
+        }
+        Click-IslandElement $showSessions 'Question card session list button' -CenterAfterLayout
+        $option = Wait-IslandValue 'the inline answer in the waiting session' {
+            $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
+            if ($group) { Find-IslandButton $group { param($Name) $Name.EndsWith($answer) } }
+        }
+        Click-IslandElement $option 'Inline question answer' -CenterAfterLayout
+        if (-not $reply.Wait(8000)) { throw 'The original Hook did not receive an answer from the Windows Island' }
+        $response = $reply.GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($response.answer -ne $answer) { throw "Unexpected Hook question answer: $($response.answer)" }
+        $null = Wait-IslandValue 'the answered question to disappear from the session list' {
+            $group = Find-IslandSessionGroup $Island { param($Name) $Name.Contains($ProjectName) }
+            $group -and -not (Find-IslandButton $group { param($Name) $Name.EndsWith($answer) })
+        }
+        Write-Output 'Windows Island sent the inline question answer to the original Hook socket.'
+    } finally {
+        $connection.Dispose()
+    }
+}
+
 function Get-IslandCenterX([IntPtr]$WindowHandle) {
     $bounds = [AgentBroSmokeInput+Rect]::new()
     if (-not [AgentBroSmokeInput]::GetWindowRect($WindowHandle, [ref]$bounds)) {
@@ -824,6 +869,7 @@ try {
         Write-Output "Windows approval attempt $attempt of $attemptCount."
         Test-KeyboardPermissionDenial $island $islandWindow.Handle $attempt
     }
+    Test-InstalledQuestionReply $island
     if ($PackImportPath -or $PinnedPackImportPath -or $PackManifestLink -or $VerifyAgentPackageConsole -or $VerifyRegisteredAgentApp) {
         . (Join-Path $PSScriptRoot 'test-windows-pack-manifest.ps1')
     }

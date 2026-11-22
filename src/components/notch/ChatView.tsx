@@ -1,7 +1,7 @@
 /* ChatView — Conversation-style message list for active session */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { answerDisplayedPermission, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
+import { answerDisplayedPermission, answerDisplayedQuestion, questionReplyError, useSessionStore, selectActiveSession } from '../../stores/sessionStore'
 import { useConfigStore } from '../../stores/configStore'
 import { getChatHistoryTail, getSubagentChatHistory } from '../../services/tauriApi'
 import { mapParsedMessages } from '../../hooks/useTauri'
@@ -12,7 +12,7 @@ import { CollapsedGroup } from './CollapsedGroup'
 import { ApprovalBar } from './ApprovalBar'
 import { TokenBar } from './TokenBar'
 import type { ChatMessage, SessionState, SubagentInfo, ToolStatus } from '../../types/agent'
-import { respondQuestion, respondPlan, sendMessage, jumpToTerminal, setNotchFocusable } from '../../services/tauriApi'
+import { respondPlan, sendMessage, jumpToTerminal, setNotchFocusable } from '../../services/tauriApi'
 import { getAgentDisplayName } from '../../utils/sessionDisplay'
 import './ChatView.css'
 
@@ -114,6 +114,7 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
   const [userScrolled, setUserScrolled] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const questionError = useSessionStore((state) => activeSession && questionReplyError(state, activeSession.id, activeSession.pendingQuestion))
   const [subagentHistory, setSubagentHistory] = useState<{
     sessionId: string
     agentId: string
@@ -236,8 +237,9 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
     setSendError(null)
     try {
       if (activeSession.pendingQuestion) {
-        await respondQuestion(activeSession.id, msg)
-        useSessionStore.getState().clearQuestion(activeSession.id)
+        if (!(await answerDisplayedQuestion(activeSession.id, activeSession.pendingQuestion, msg))) return
+        const current = useSessionStore.getState().sessions[activeSession.id]
+        if (current?.phase !== 'processing' || current.pendingQuestion || current.pendingPermission || current.planTitle || current.planContent) return
       } else if (activeSession.planContent) {
         await respondPlan(activeSession.id, 'feedback', msg)
         useSessionStore.getState().clearPlan(activeSession.id)
@@ -420,12 +422,14 @@ export function ChatView({ onBack, initialSubagentId, onInitialSubagentHandled, 
         </button>
       )}
 
-      {!currentSubagentHistory && sendError && (
-        <div className="chat-view__send-error">
-          <span>{sendError}</span>
-          <button type="button" onClick={() => setSendError(null)}>
-            {t('notch.dismiss', '关闭')}
-          </button>
+      {!currentSubagentHistory && (sendError || questionError) && (
+        <div role="alert" className="chat-view__send-error">
+          <span>{sendError || questionError}</span>
+          {sendError && (
+            <button type="button" onClick={() => setSendError(null)}>
+              {t('notch.dismiss', '关闭')}
+            </button>
+          )}
         </div>
       )}
 

@@ -37,7 +37,7 @@ use hooks::conversation_parser::{
 };
 use hooks::file_watcher::ConversationWatcher;
 use hooks::server::HookServer;
-use hooks::session_store::{SessionPhase, SessionState, SessionStore};
+use hooks::session_store::{SessionState, SessionStore};
 use network_monitor::NetworkMonitor;
 use platform::display::{find_target_monitor, list_displays_inner, DisplayInfo};
 use sound::{SoundEngine, SoundEvent, SoundPack, SoundPackImportResult};
@@ -2167,52 +2167,28 @@ fn handle_question_skip_shortcut(app: tauri::AppHandle) {
     let Some(session) = first_pending_question(&state.session_store) else {
         return;
     };
-    let session_id = session.id.clone();
-    let answer = session
-        .pending_question
-        .as_ref()
-        .and_then(|question| question.options.first().cloned())
-        .unwrap_or_default();
-    let hook_server = state.hook_server.clone();
-    let codex_app_server = state.codex_app_server.clone();
-    let session_store = state.session_store.clone();
+    let session_id = session.id;
+    let Some(question) = session.pending_question else {
+        return;
+    };
+    let answer = question.options.first().cloned().unwrap_or_default();
 
     tauri::async_runtime::spawn(async move {
-        if let Some(question) = session.pending_question.as_ref() {
-            if question.source.as_deref() == Some("codex_app_server_request_user_input")
-                && question.response_mode.as_deref() == Some("app_server")
-            {
-                let mut answers = std::collections::BTreeMap::new();
-                let answer_id = question
-                    .questions
-                    .first()
-                    .and_then(|item| item.id.clone())
-                    .unwrap_or_else(|| question.question.clone());
-                answers.insert(answer_id, vec![answer.clone()]);
-                match codex_app_server
-                    .respond_question(&session_id, answers)
-                    .await
-                {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(err) => log::warn!(
-                        "Global question shortcut Codex app-server response failed for {}: {}",
-                        session_id,
-                        err
-                    ),
-                }
-            }
-        }
-        if let Err(err) = hook_server.respond_question(&session_id, answer).await {
+        let state = app.state::<AppState>();
+        if let Err(err) = commands::respond_to_question(
+            &state,
+            &session_id,
+            answer,
+            question.tool_use_id.as_deref(),
+        )
+        .await
+        {
             log::warn!(
                 "Global question skip shortcut failed for {}: {}",
                 session_id,
                 err
             );
-            return;
         }
-        session_store.set_pending_question(&session_id, None);
-        session_store.update_phase(&session_id, SessionPhase::Processing);
     });
 }
 
