@@ -2041,9 +2041,12 @@ describe('NotchPanel island shell', () => {
     fireEvent.click(document.querySelector('.plan-approval__content')!)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledWith('s1')
 
-    fireEvent.click(screen.getByText('Accept Edits'))
+    const accept = screen.getByRole('button', { name: 'Accept Edits' })
+    expect(accept.closest('.overlay-card__body')).toBeNull()
+    fireEvent.mouseDown(accept)
+    fireEvent.click(accept, { detail: 1 })
 
-    expect(tauriMocks.respondPlan).toHaveBeenCalledWith('s1', 'acceptEdits', undefined, undefined)
+    expect(tauriMocks.respondPlan).toHaveBeenCalledExactlyOnceWith('s1', 'acceptEdits', undefined, undefined)
     expect(tauriMocks.jumpToTerminal).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(useSessionStore.getState().activeOverlay).toBeNull())
     expect(useSessionStore.getState().sessions.s1.planContent).toBeUndefined()

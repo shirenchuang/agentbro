@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import type { OverlayItem, SessionState, SubagentInfo } from '../../types/agent'
 import { answerDisplayedPlan, planReplyError, useSessionStore, type PlanIdentity } from '../../stores/sessionStore'
 import { formatPlanMarkdown, parsePlanPermission } from '../../utils/plan'
+import { islandActionProps } from '../../utils/islandActions'
 import { OverlayCard } from './OverlayCard'
 import './PlanApprovalCard.css'
 
@@ -86,6 +87,45 @@ export function PlanApprovalCard({ overlay, session, onJumpToTerminal, onShowSes
       onCardClick={onJumpToTerminal}
       className="overlay-card--plan-approval"
       bodyClassName="plan-approval"
+      controls={
+        <div className="plan-approval__controls">
+          <div className="plan-approval__input-row">
+            <input
+              ref={inputRef}
+              className="plan-approval__input"
+              data-has-draft={hasDraft ? 'true' : 'false'}
+              placeholder={t('notch.planFeedback', { defaultValue: 'Tell Claude what to change...' })}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSendFeedback() }}
+            />
+          </div>
+          <div className="plan-approval__actions">
+            <button
+              type="button"
+              className="plan-approval__btn plan-approval__btn--feedback"
+              {...islandActionProps(hasDraft ? handleSendFeedback : () => submitPlan('manual'))}
+            >
+              {hasDraft ? t('notch.sendFeedback', { defaultValue: 'Send Feedback' }) : t('notch.manualReview', { defaultValue: 'Manual Review' })}
+            </button>
+            <button
+              type="button"
+              className="plan-approval__btn plan-approval__btn--accept"
+              {...islandActionProps(() => submitPlan('acceptEdits'))}
+            >
+              {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
+            </button>
+            <button
+              type="button"
+              className="plan-approval__btn plan-approval__btn--auto"
+              {...islandActionProps(() => submitPlan('bypassPermissions'))}
+            >
+              {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
+            </button>
+          </div>
+          {error && <div className="plan-approval__error" role="alert">{error}</div>}
+        </div>
+      }
     >
       <CompactSubagentSummary subagents={session.subagents || []} />
 
@@ -122,35 +162,6 @@ export function PlanApprovalCard({ overlay, session, onJumpToTerminal, onShowSes
         </div>
       )}
 
-      {/* Feedback input */}
-      <div className="plan-approval__input-row">
-        <input
-          ref={inputRef}
-          className="plan-approval__input"
-          data-has-draft={hasDraft ? 'true' : 'false'}
-          placeholder={t('notch.planFeedback', { defaultValue: 'Tell Claude what to change...' })}
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleSendFeedback() }}
-        />
-      </div>
-
-      {/* Actions */}
-      <div className="plan-approval__actions">
-        <button
-          className="plan-approval__btn plan-approval__btn--feedback"
-          onClick={feedback.trim() ? handleSendFeedback : () => submitPlan('manual')}
-        >
-          {feedback.trim() ? t('notch.sendFeedback', { defaultValue: 'Send Feedback' }) : t('notch.manualReview', { defaultValue: 'Manual Review' })}
-        </button>
-        <button className="plan-approval__btn plan-approval__btn--accept" onClick={() => submitPlan('acceptEdits')}>
-          {t('notch.acceptEdits', { defaultValue: 'Accept Edits' })}
-        </button>
-        <button className="plan-approval__btn plan-approval__btn--auto" onClick={() => submitPlan('bypassPermissions')}>
-          {t('notch.autoApprovePerms', { defaultValue: 'Auto' })}
-        </button>
-      </div>
-      {error && <div className="plan-approval__error" role="alert">{error}</div>}
     </OverlayCard>
   )
 }
