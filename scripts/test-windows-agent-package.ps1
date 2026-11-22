@@ -35,4 +35,33 @@
     if ($report.shellConsoleVisible -or $report.toolConsoleVisible) {
         throw 'The package update opened a visible Windows console'
     }
+
+    $uninstall = Wait-IslandValue 'the uninstall button for the installed Agent' {
+        $button = Find-PackControl $settings '卸载 Agent'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $uninstall
+    $confirm = Wait-IslandValue 'the uninstall confirmation' { Find-PackControl $settings '确认卸载' }
+    Invoke-PackControl $confirm
+    $null = Wait-IslandValue 'the Agent still detected after the first uninstall' {
+        Test-PackVisibleText $settings 'The uninstall command completed. AgentBro still detects Claude Code.'
+    }
+    $fixtureLauncher = Join-Path (Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) 'bin\claude.cmd'
+    if (-not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf)) {
+        throw 'The first package uninstall unexpectedly removed the fixture launcher'
+    }
+    Write-Output 'The first uninstall exited successfully. Agent Management kept the detected Agent visible.'
+
+    $retry = Wait-IslandValue 'the enabled uninstall after detecting the remaining Agent' {
+        $button = Find-PackControl $settings '卸载 Agent'
+        if ($button -and $button.Current.IsEnabled) { $button }
+    }
+    Invoke-PackControl $retry
+    $confirm = Wait-IslandValue 'the second uninstall confirmation' { Find-PackControl $settings '确认卸载' }
+    Invoke-PackControl $confirm
+    $null = Wait-IslandValue 'the confirmed uninstall of the fixture launcher' {
+        -not (Test-Path -LiteralPath $fixtureLauncher -PathType Leaf) -and
+            (Test-PackVisibleText $settings 'Agent「Claude Code」已卸载')
+    }
+    Write-Output 'Agent Management confirmed the uninstall after the fixture launcher was removed.'
 }
