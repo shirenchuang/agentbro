@@ -90,6 +90,29 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         Find-IslandButton $settings { param($Name) $Name -eq '更新此 Agent' }
     }
     Invoke-PackControl $update
+    try {
+        $null = Wait-IslandValue 'the running fixture update' {
+            Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -PathType Leaf
+        }
+        Click-IslandElement $null 'Projects during the Agent update' -FindElement {
+            Find-PackControl $settings 'Projects' ([Windows.Automation.ControlType]::Button)
+        }
+        $null = Wait-IslandValue 'the Projects page during the Agent update' {
+            Find-PackControl $settings '项目'
+        }
+        Click-IslandElement $null 'return to Agent Management during the update' -FindElement {
+            Find-PackControl $settings 'Agent 管理' ([Windows.Automation.ControlType]::Button)
+        }
+        $running = Wait-IslandValue 'the disabled package action after returning to Agent Management' {
+            Find-IslandButton $settings { param($Name) $Name -in @('正在更新', '更新此 Agent') }
+        }
+        if ($running.Current.Name -ne '正在更新' -or $running.Current.IsEnabled) {
+            throw 'Agent Management offered another update while the existing package command was still running'
+        }
+        Write-Output 'Agent Management kept the running package update disabled after returning from Projects.'
+    } finally {
+        $null = New-Item -ItemType File -Path $env:AGENTBRO_PACKAGE_FIXTURE_RESUME -Force
+    }
     $null = Wait-IslandValue 'the unchanged installed version after the first update' {
         (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT) -and
             (Test-PackVisibleText $settings 'The update command completed. Claude Code is still at 2.0.0.')

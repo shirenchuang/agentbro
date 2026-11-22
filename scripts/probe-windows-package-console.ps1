@@ -28,3 +28,10 @@ $shellWindow = [AgentBro.PackageConsole]::GetConsoleWindow()
 $report.shellConsoleVisible = $shellWindow -ne [IntPtr]::Zero -and [AgentBro.PackageConsole]::IsWindowVisible($shellWindow)
 [void][AgentBro.PackageConsole]::FreeConsole()
 $report | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:AGENTBRO_PACKAGE_CONSOLE_RESULT -Encoding utf8
+if ($env:AGENTBRO_PACKAGE_FIXTURE_RESUME -and -not $env:agentbro_retry) {
+    $deadline = (Get-Date).AddSeconds(45)
+    while (-not (Test-Path -LiteralPath $env:AGENTBRO_PACKAGE_FIXTURE_RESUME)) {
+        if ((Get-Date) -ge $deadline) { throw 'The package navigation test did not resume the first update' }
+        Start-Sleep -Milliseconds 100
+    }
+}

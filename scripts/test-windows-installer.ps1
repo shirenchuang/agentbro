@@ -30,6 +30,7 @@ if ($VerifyAgentPackageConsole) {
     }
     $env:AGENTBRO_PACKAGE_CONSOLE_RESULT = Join-Path $stage 'package-console.json'
     $env:AGENTBRO_PACKAGE_CONSOLE_PROBE = Join-Path $PSScriptRoot 'probe-windows-package-console.ps1'
+    $env:AGENTBRO_PACKAGE_FIXTURE_RESUME = Join-Path $stage 'package-resume'
     $env:AGENTBRO_PACKAGE_FIXTURE_UPDATED = Join-Path $stage 'package-updated'
     $env:AGENTBRO_PACKAGE_FIXTURE_NEW_TAG = Join-Path $stage 'package-new-tag'
     $env:npm_config_offline = 'true'
