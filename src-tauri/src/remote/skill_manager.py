@@ -1910,13 +1910,13 @@ def normalize_repository(source):
         parts = [item for item in spec.split("/") if item]
         if len(parts) < 3:
             raise ValueError("skills.sh source must be owner/repository/skill-id")
-        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:])
+        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:]), None
     if source.startswith("https://skills.sh/"):
         spec = source[len("https://skills.sh/"):].strip("/")
         parts = [item for item in spec.split("/") if item]
         if len(parts) < 3:
             raise ValueError("skills.sh source must be owner/repository/skill-id")
-        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:])
+        return "https://github.com/" + parts[0] + "/" + parts[1] + ".git", "/".join(parts[2:]), None
     if source.startswith("https://raw.githubusercontent.com/"):
         parts = [
             item for item in urllib.parse.urlparse(source).path.strip("/").split("/")
@@ -1928,48 +1928,71 @@ def normalize_repository(source):
                 requested = requested[:-1]
             return (
                 "https://github.com/" + parts[0] + "/" + parts[1] + ".git",
-                "/".join(requested) or None,
+                "/".join(urllib.parse.unquote(item) for item in requested) or None,
+                urllib.parse.unquote(parts[2]),
             )
     if source.startswith("https://github.com/"):
         parsed = urllib.parse.urlparse(source)
         parts = [item for item in parsed.path.strip("/").split("/") if item]
-        if len(parts) >= 5 and parts[2] in ("tree", "blob"):
+        if len(parts) >= 4 and parts[2] in ("tree", "blob"):
             requested = parts[4:]
             if requested and requested[-1] == "SKILL.md":
                 requested = requested[:-1]
             return (
                 "https://github.com/" + parts[0] + "/" + parts[1] + ".git",
-                "/".join(requested) or None,
+                "/".join(urllib.parse.unquote(item) for item in requested) or None,
+                urllib.parse.unquote(parts[3]),
             )
     if source.startswith(("https://github.com/", "https://gitlab.com/", "git@github.com:", "git@gitlab.com:")):
-        return source, None
-    return None, None
+        return source, None, None
+    return None, None, None
+
+
+def resolve_repository_source(source):
+    repository, requested, reference = normalize_repository(source)
+    if (not requested or not reference or "/" in reference or reference == "HEAD"
+            or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", reference)):
+        return repository, requested, reference
+
+    pieces = [reference, *requested.split("/")]
+    names = [
+        "/".join(pieces[:length])
+        for length in range(1, len(pieces) + 1)
+    ]
+    if not all(re.fullmatch(r"[A-Za-z0-9._/-]+", name) for name in names):
+        return repository, requested, reference
+    patterns = [f"refs/{namespace}/{name}" for name in names for namespace in ("heads", "tags")]
+    output = run_repository_git(HOME, "ls-remote", "--refs", "--", repository, *patterns)
+    advertised = {line.partition("\t")[2] for line in output.splitlines()}
+    for index in range(len(names) - 1, -1, -1):
+        name = names[index]
+        if "refs/heads/" + name in advertised or "refs/tags/" + name in advertised:
+            return repository, "/".join(pieces[index + 1:]) or None, name
+    return repository, requested, reference
 
 
 def source_candidates(input_value):
     source_path = str(input_value.get("sourcePath") or "")
-    repository, requested = normalize_repository(
+    repository, requested, reference = resolve_repository_source(
         input_value.get("sourceUri") or source_path
     )
-    temporary = None
     if repository:
-        temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-skill-")
-        root = pathlib.Path(temporary.name) / "repo"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", repository, str(root)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    else:
-        root = safe_home_path(source_path, allow_missing=False)
-        if root.is_file() and root.suffix.lower() == ".zip":
-            temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-archive-")
-            extracted = pathlib.Path(temporary.name) / "extracted"
-            extracted.mkdir(parents=True, exist_ok=True)
-            shutil.unpack_archive(str(root), str(extracted), "zip")
-            root = extracted
+        root, temporary = clone_repository(repository, reference)
+        try:
+            candidates = repository_skill_directories(root, requested, reference is not None)
+        except Exception:
+            temporary.cleanup()
+            raise
+        return root, candidates, temporary, repository, reference
+
+    temporary = None
+    root = safe_home_path(source_path, allow_missing=False)
+    if root.is_file() and root.suffix.lower() == ".zip":
+        temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-archive-")
+        extracted = pathlib.Path(temporary.name) / "extracted"
+        extracted.mkdir(parents=True, exist_ok=True)
+        shutil.unpack_archive(str(root), str(extracted), "zip")
+        root = extracted
     candidates = []
     if root.is_dir() and (root / "SKILL.md").is_file():
         candidates = [root]
@@ -1978,18 +2001,11 @@ def source_candidates(input_value):
             path.parent for path in root.rglob("SKILL.md")
             if len(path.relative_to(root).parts) <= 7
         ]
-    if requested:
-        requested_parts = tuple(item for item in requested.split("/") if item)
-        candidates = [
-            item for item in candidates
-            if item.name == requested_parts[-1]
-            or item.relative_to(root).parts[-len(requested_parts):] == requested_parts
-        ]
-    return root, candidates, temporary
+    return root, candidates, temporary, None, None
 
 
 def preview_add(input_value):
-    root, candidates, temporary = source_candidates(input_value)
+    _root, candidates, temporary, _repository, _reference = source_candidates(input_value)
     try:
         center = center_path()
         result = []
@@ -2035,9 +2051,10 @@ def preview_add(input_value):
 
 
 def execute_add(input_value, decisions):
-    root, candidates, temporary = source_candidates(input_value)
+    root, candidates, temporary, repository, reference = source_candidates(input_value)
     try:
         decision_map = {item["skillId"]: item for item in decisions}
+        revision = run_repository_git(root, "rev-parse", "HEAD") if repository else None
         center = center_path()
         installed = []
         updated = []
@@ -2070,8 +2087,9 @@ def execute_add(input_value, decisions):
                 installed.append(skill_id)
             STATE["sources"][skill_id] = {
                 "sourceType": input_value.get("sourceType", "remote_import"),
-                "sourceUri": input_value.get("sourceUri"),
-                "sourceRef": None,
+                "sourceUri": (repository_skill_source(repository, reference, source.relative_to(root).as_posix())
+                              if repository else input_value.get("sourceUri")),
+                "sourceRef": revision,
                 "importedFromAgent": input_value.get("importedFromAgent"),
                 "importedFromPath": input_value.get("importedFromPath"),
                 "installedVia": "remote",
@@ -2340,23 +2358,78 @@ def install_to_project(project_id, agent_id, skill_ids, mode):
     return scan_project_data(project)
 
 
-def clone_repository(repo_url):
-    repository, requested = normalize_repository(repo_url)
-    if not repository:
-        raise ValueError("Only GitHub, GitLab, and skills.sh repositories are supported")
-    temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-repo-")
-    root = pathlib.Path(temporary.name) / "repo"
-    subprocess.run(
-        ["git", "clone", "--depth", "1", repository, str(root)],
-        check=True,
+def run_repository_git(root, *args):
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        check=True,
     )
-    return repository, requested, root, temporary
+    return result.stdout.strip()
 
 
-def repository_info(repo_url):
+def clone_repository(repository, reference=None):
+    if not repository:
+        raise ValueError("Only GitHub, GitLab, and skills.sh repositories are supported")
+    temporary = tempfile.TemporaryDirectory(prefix="agentbro-remote-repo-")
+    directory = pathlib.Path(temporary.name)
+    root = directory / "repo"
+    try:
+        if reference is None:
+            run_repository_git(directory, "clone", "--depth", "1", "--", repository, str(root))
+        else:
+            if not reference or reference.startswith(("-", "+")) or ":" in reference:
+                raise ValueError("Invalid Git revision")
+            root.mkdir()
+            run_repository_git(root, "check-ref-format", "--allow-onelevel", reference)
+            run_repository_git(root, "init", "--quiet", "--template=")
+            run_repository_git(root, "fetch", "--quiet", "--depth=1", "--no-tags",
+                               "--no-recurse-submodules", "--", repository, reference)
+            run_repository_git(root, "-c", "core.hooksPath=.git/agentbro-no-hooks",
+                               "checkout", "--quiet", "--detach", "FETCH_HEAD")
+        return root, temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
+
+
+def repository_relative_path(root, relative):
+    path = pathlib.PurePosixPath(relative)
+    if path.is_absolute() or ".." in path.parts or "\\" in str(path):
+        raise ValueError("Invalid repository Skill path")
+    canonical = (root / path).resolve()
+    if canonical != root and root not in canonical.parents:
+        raise ValueError("Skill path resolves outside the repository")
+    return root / path
+
+
+def repository_skill_directories(root, requested=None, exact=False):
+    if not root.is_dir():
+        return []
+    canonical = root.resolve()
+    scoped = repository_relative_path(canonical, requested) if requested and exact else canonical
+    if not scoped.is_dir():
+        return []
+    candidates = [scoped] if (scoped / "SKILL.md").is_file() else [
+        path.parent for path in scoped.rglob("SKILL.md")
+        if len(path.relative_to(scoped).parts) <= 7
+    ]
+    if requested and not exact:
+        parts = tuple(item for item in requested.split("/") if item)
+        candidates = [
+            item for item in candidates
+            if item.name == parts[-1] or item.relative_to(canonical).parts[-len(parts):] == parts
+        ]
+    return [
+        root / item.relative_to(canonical)
+        for item in candidates
+        if (item.resolve() == canonical or canonical in item.resolve().parents)
+        and not (item / "SKILL.md").is_symlink()
+    ]
+
+
+def repository_info(repo_url, reference=None, revision=None, requested=None):
     clean = str(repo_url).split("#", 1)[0].rstrip("/")
     path = clean
     if clean.startswith("git@"):
@@ -2371,25 +2444,19 @@ def repository_info(repo_url):
     return {
         "owner": owner,
         "repo": repo,
-        "branch": "HEAD",
+        "branch": reference or "HEAD",
         "normalizedUrl": clean,
+        "revision": revision,
+        "requestedPath": requested,
     }
 
 
 def github_preview(repo_url):
-    repository, requested, root, temporary = clone_repository(repo_url)
+    repository, requested, reference = resolve_repository_source(repo_url)
+    root, temporary = clone_repository(repository, reference)
     try:
-        candidates = [root] if (root / "SKILL.md").is_file() else [
-            item.parent for item in root.rglob("SKILL.md")
-            if len(item.relative_to(root).parts) <= 7
-        ]
-        if requested:
-            parts = tuple(item for item in requested.split("/") if item)
-            candidates = [
-                item for item in candidates
-                if item.name == parts[-1]
-                or item.relative_to(root).parts[-len(parts):] == parts
-            ]
+        revision = run_repository_git(root, "rev-parse", "HEAD")
+        candidates = repository_skill_directories(root, requested, reference is not None)
         center = center_path()
         skills = []
         for path in candidates:
@@ -2415,23 +2482,37 @@ def github_preview(repo_url):
                 "downloadUrl": repository,
                 "conflict": conflict,
             })
-        return {"repo": repository_info(repository), "skills": skills}
+        return {"repo": repository_info(repository, reference, revision, requested), "skills": skills}
     finally:
         temporary.cleanup()
 
 
-def github_import(repo_url, selections):
-    repository, requested, root, temporary = clone_repository(repo_url)
+def repository_skill_source(repository, reference, relative):
+    if not repository.startswith("https://github.com/"):
+        return repository
+    suffix = "/" + urllib.parse.quote(relative, safe="/") if relative != "." else ""
+    base = repository[:-4] if repository.endswith(".git") else repository
+    return base + "/tree/" + urllib.parse.quote(reference or "HEAD", safe="") + suffix
+
+
+def github_import(repo_url, selections, expected_commit=None):
+    repository, requested, reference = resolve_repository_source(repo_url)
+    if expected_commit is not None and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", expected_commit):
+        raise ValueError("Invalid reviewed Git commit")
+    root, temporary = clone_repository(repository, expected_commit or reference)
     try:
+        revision = run_repository_git(root, "rev-parse", "HEAD")
+        if expected_commit and revision.lower() != expected_commit.lower():
+            raise ValueError("The checked out Git commit differs from the preview")
+        approved_paths = set(repository_skill_directories(root, requested, reference is not None))
         imported = []
         skipped = []
         for selection in selections:
-            relative = pathlib.Path(str(selection.get("sourcePath") or ""))
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError("Invalid repository Skill path")
-            source = root / relative
-            if not source.is_dir() or not (source / "SKILL.md").is_file():
-                raise ValueError("Skill path not found in repository: " + str(relative))
+            relative = str(selection.get("sourcePath") or ".")
+            source = repository_relative_path(root.resolve(), relative)
+            source = root / source.relative_to(root.resolve())
+            if source not in approved_paths:
+                raise ValueError("Skill path not found in repository: " + relative)
             original_id = safe_id(source.name)
             resolution = selection.get("resolution", "overwrite")
             if resolution == "skip":
@@ -2460,8 +2541,8 @@ def github_import(repo_url, selections):
             })
             STATE["sources"][skill_id] = {
                 "sourceType": "github",
-                "sourceUri": repository,
-                "sourceRef": str(relative),
+                "sourceUri": repository_skill_source(repository, reference, relative),
+                "sourceRef": revision,
                 "importedFromAgent": None,
                 "importedFromPath": None,
                 "installedVia": "remote_git",
@@ -2470,7 +2551,7 @@ def github_import(repo_url, selections):
             }
         save_state()
         return {
-            "repo": repository_info(repository),
+            "repo": repository_info(repository, reference, revision, requested),
             "importedSkills": imported,
             "skippedSkills": skipped,
         }
@@ -3860,7 +3941,7 @@ def dispatch():
     if command == "preview_github_repo_import":
         return github_preview(args["repoUrl"])
     if command == "import_github_repo_skills":
-        return github_import(args["repoUrl"], args.get("selections", []))
+        return github_import(args["repoUrl"], args.get("selections", []), args.get("expectedCommit"))
     if command == "preview_delete_center_skill":
         return preview_delete([args["skillId"]])
     if command == "preview_delete_center_skills":
