@@ -26,6 +26,10 @@ on:
         description: Exercise Skill Pack manifests through the native Open and Save dialogs
         type: boolean
         default: false
+      windows_verify_pinned_pack_manifest:
+        description: Restore a pinned Git revision from a Skill Pack through the installed app
+        type: boolean
+        default: false
       windows_verify_agent_package_console:
         description: Observe the Windows console used by a package update from installed Agent Management
         type: boolean
@@ -353,6 +357,7 @@ jobs:
         env:
           VERIFY_QWENWORK: ${{ inputs.windows_verify_qwenwork }}
           VERIFY_PACK_MANIFEST: ${{ inputs.windows_verify_pack_manifest }}
+          VERIFY_PINNED_PACK_MANIFEST: ${{ inputs.windows_verify_pinned_pack_manifest }}
           VERIFY_AGENT_PACKAGE_CONSOLE: ${{ inputs.windows_verify_agent_package_console }}
           TRACE_PERMISSION_UI: ${{ inputs.windows_trace_permission_ui }}
           VERIFY_DRAG: ${{ inputs.windows_verify_drag }}
@@ -371,6 +376,7 @@ jobs:
               ./scripts/test-windows-installer.ps1 -Installer $installer.FullName -VerifyIsland `
                   -VerifyQwenWork:($env:VERIFY_QWENWORK -eq 'true') `
                   -VerifyPackManifest:($env:VERIFY_PACK_MANIFEST -eq 'true') `
+                  -VerifyPinnedPackManifest:($env:VERIFY_PINNED_PACK_MANIFEST -eq 'true') `
                   -VerifyAgentPackageConsole:($env:VERIFY_AGENT_PACKAGE_CONSOLE -eq 'true') `
                   -TracePermissionUi:($env:TRACE_PERMISSION_UI -eq 'true') `
                   -VerifyDrag:($env:VERIFY_DRAG -eq 'true') `

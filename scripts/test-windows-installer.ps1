@@ -4,6 +4,7 @@ param(
     [switch]$VerifyIsland,
     [switch]$VerifyQwenWork,
     [switch]$VerifyPackManifest,
+    [switch]$VerifyPinnedPackManifest,
     [switch]$TracePermissionUi,
     [string]$SymbolsDirectory,
     [switch]$VerifyDrag,
@@ -170,6 +171,56 @@ $null = New-Item -ItemType Directory -Path $restoredWorkspace, $restoredProjects
 $packFixtures = @()
 $packImportPath = $null
 $packExportPath = $null
+$pinnedPackPath = $null
+$pinnedPackExportPath = $null
+if ($VerifyPinnedPackManifest) {
+    if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw 'The pinned Git checkout fixture requires an isolated GitHub-hosted runner'
+    }
+    $repo = Join-Path $stage 'Pinned Pack Git fixture'
+    $source = Join-Path $repo 'skills\review\SKILL.md'
+    New-Item -ItemType Directory -Path (Split-Path $source) -Force | Out-Null
+    $recorded = "---`nname: Pinned review`n---`nPinned fixture commit.`n"
+    [IO.File]::WriteAllText($source, $recorded, [Text.UTF8Encoding]::new($false))
+    function Invoke-FixtureGit([string[]]$Arguments) {
+        & git -C $repo -c 'user.name=AgentBro Fixture' -c 'user.email=fixture@example.invalid' -c commit.gpgSign=false @Arguments
+        if ($LASTEXITCODE -ne 0) { throw "Git failed in the pinned Pack fixture: $Arguments" }
+    }
+    Invoke-FixtureGit @('init', '-b', 'main') | Out-Host
+    Invoke-FixtureGit @('add', '.') | Out-Host
+    Invoke-FixtureGit @('commit', '-m', 'Pinned Skill') | Out-Host
+    $commit = Invoke-FixtureGit @('rev-parse', 'HEAD')
+    [IO.File]::WriteAllText($source, $recorded.Replace('Pinned fixture commit.', 'Later branch content.'), [Text.UTF8Encoding]::new($false))
+    Invoke-FixtureGit @('add', '.') | Out-Host
+    Invoke-FixtureGit @('commit', '-m', 'Advance fixture branch') | Out-Host
+    $repoUri = ([uri]::new($repo)).AbsoluteUri
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = "url.$repoUri.insteadOf"
+    $env:GIT_CONFIG_VALUE_0 = 'https://github.com/agentbro-fixture/windows-pack-smoke.git'
+    $fingerprintBytes = [Text.Encoding]::UTF8.GetBytes("SKILL.md`0$([Text.Encoding]::UTF8.GetByteCount($recorded))`0$recorded")
+    $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($fingerprintBytes)).ToLowerInvariant()
+    $id = "windows-pinned-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $profileDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    $packFixtures += Join-Path $profileDirectory ".agentbro\skills\$id"
+    $pinnedPackPath = Join-Path $stage 'Pinned Pack.agentbro-pack.json'
+    $pinnedPackExportPath = Join-Path $stage 'Re-exported pinned Pack.agentbro-pack.json'
+    @{
+        format = 'agentbro-skill-pack'
+        version = 3
+        name = "Native pinned Pack $id"
+        description = ''
+        tags = @()
+        skillIds = @($id)
+        skillFingerprints = @{ $id = $fingerprint }
+        skillSources = @{
+            $id = @{
+                repository = 'agentbro-fixture/windows-pack-smoke'
+                commit = $commit
+                skillPath = 'skills/review/SKILL.md'
+            }
+        }
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pinnedPackPath -Encoding utf8
+}
 if ($VerifyPackManifest) {
     $manifestDirectory = Join-Path $stage '共享 技能'
     $packImportPath = Join-Path $manifestDirectory '导入 技能包.agentbro-pack.json'
@@ -358,6 +409,11 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
             $start.ArgumentList.Add($argument)
         }
     }
+    if ($VerifyPinnedPackManifest) {
+        foreach ($argument in @('-PinnedPackImportPath', $pinnedPackPath, '-PinnedPackExportPath', $pinnedPackExportPath)) {
+            $start.ArgumentList.Add($argument)
+        }
+    }
     if ($VerifyQwenWork) { $start.ArgumentList.Add('-VerifyQwenWork') }
     if ($VerifyAgentPackageConsole) { $start.ArgumentList.Add('-VerifyAgentPackageConsole') }
     if ($TracePermissionUi) { $start.ArgumentList.Add('-TracePermissionUi') }
@@ -372,7 +428,7 @@ function Test-InstalledIsland([string]$ProjectName, [string]$SessionId, [string]
     try {
         $output = $tester.StandardOutput.ReadToEndAsync()
         $errors = $tester.StandardError.ReadToEndAsync()
-        $desktopTimeout = if ($VerifyPackManifest -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
+        $desktopTimeout = if ($VerifyPackManifest -or $VerifyPinnedPackManifest -or $VerifyAgentPackageConsole) { 180000 } else { 120000 }
         if (-not $tester.WaitForExit($desktopTimeout)) {
             throw 'The installed desktop interaction check timed out'
         }
@@ -445,7 +501,7 @@ try {
 
     Send-ClaudeToolEvent $bashPath @('-c', $bridgeHooks[0].command) $event
     Write-Output 'Windows installation, Claude Hook repair, and event delivery through Git Bash passed.'
-    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
+    if ($VerifyIsland -or $VerifyPackManifest -or $VerifyPinnedPackManifest -or $VerifyDrag -or $VerifyQwenWork -or $VerifyAgentPackageConsole) {
         # The Git Bash Hook can report a short-lived intermediary as its parent PID.
         # The test PowerShell process stays alive as the parent of this UI fixture.
         $event.session_id = $restoredSession
