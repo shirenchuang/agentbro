@@ -30,6 +30,13 @@
 
 function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement]$Island) {
     $settings = Open-ManagedAgent $Island 'Claude Code'
+    $settingsBounds = $settings.Current.BoundingRectangle
+    $scale = [AgentBroSmokeInput]::GetDpiForWindow([IntPtr]$settings.Current.NativeWindowHandle) / 96.0
+    if ($scale -le 0) { throw 'Could not read the Settings window DPI' }
+    if ($settingsBounds.Width / $scale -gt 1050) {
+        $transform = $settings.GetCurrentPattern([Windows.Automation.TransformPattern]::Pattern)
+        $transform.Resize(1024 * $scale, $settingsBounds.Height)
+    }
     $fixtureStage = Split-Path $env:AGENTBRO_PACKAGE_CONSOLE_RESULT
     $fixtureLauncher = Join-Path $fixtureStage 'bin\claude.cmd'
     $fallbackLauncher = Join-Path $fixtureStage 'fallback bin\claude.exe'
@@ -75,9 +82,15 @@ function Test-InstalledAgentPackageConsole([Windows.Automation.AutomationElement
         if ($button -and $button.Current.IsEnabled) { $button }
     }
     Invoke-PackControl $fetchVersions
-    $null = Wait-IslandValue 'the fixture Claude Code version' {
-        Find-PackControl $settings '可更新到 999.0.0'
+    $labelHeights = foreach ($label in @('当前版本 2.0.0', '可更新到 999.0.0')) {
+        $control = Wait-IslandValue "the Agent version label $label" { Find-PackControl $settings $label }
+        $height = $control.Current.BoundingRectangle.Height / $scale
+        if ($height -le 0 -or $height -gt 24) {
+            throw "The Agent version label '$label' occupies $([int]$height)px instead of one line"
+        }
+        [int]$height
     }
+    Write-Output "Agent version labels stayed on one line in compact Settings ($($labelHeights -join ', ')px high)."
     $null = Wait-IslandValue 'the detected CLI under Installed Agents' {
         $agent = Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
         if ($agent) {
