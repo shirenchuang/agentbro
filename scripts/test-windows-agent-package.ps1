@@ -2,11 +2,14 @@
     $settings = Open-InstalledAgentSkills $Island
     $agents = Wait-IslandValue 'the Agent Management navigation item' { Find-PackControl $settings 'Agent 管理' }
     Invoke-PackControl $agents
-    if (-not (Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' })) {
-        $uninstalled = Wait-IslandValue 'the collapsed Agent list' {
-            Find-IslandButton $settings { param($Name) $Name -like '*未安装 Agent*' }
+    $search = Wait-IslandValue 'the Agent search' { Find-PackControl $settings 'Search Agents' }
+    Click-IslandElement $search 'Agent search'
+    $handle = [IntPtr]$settings.Current.NativeWindowHandle
+    foreach ($character in 'Claude Code'.ToCharArray()) {
+        if ([AgentBroSmokeInput]::GetForegroundWindow() -ne $handle) {
+            throw 'Agent Management lost focus before entering the Agent search'
         }
-        Invoke-PackControl $uninstalled
+        [AgentBroSmokeInput]::AppendCharacter($character)
     }
     $claude = Wait-IslandValue 'Claude Code in Agent Management' {
         Find-IslandButton $settings { param($Name) $Name -eq 'Claude Code' }
