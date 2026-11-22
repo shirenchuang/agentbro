@@ -418,12 +418,17 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
         AgentProgramKind::App if id == "antigravity" => find_agent_binary(&id, &meta),
         AgentProgramKind::App => None,
     };
+    let desktop_codex = desktop_codex_launcher(&id, binary_path.as_deref());
     let native_claude = native_claude_launcher(&id, binary_path.as_deref());
-    if native_claude.is_some() {
-        meta.package_manager = Some("native");
+    if desktop_codex.is_some() || native_claude.is_some() {
+        meta.package_manager = Some(if desktop_codex.is_some() {
+            "app"
+        } else {
+            "native"
+        });
         meta.package_name = None;
         meta.install_command = None;
-        meta.update_command = Some(CLAUDE_NATIVE_UPDATE_COMMAND);
+        meta.update_command = native_claude.map(|_| CLAUDE_NATIVE_UPDATE_COMMAND);
         meta.uninstall_command = None;
     }
     let app_path = match &meta.kind {
@@ -442,7 +447,9 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     let paths = agent_paths::paths_for_agent(&id);
     let skill_path = paths.skill_dirs.first().map(PathBuf::as_path);
     let skills_dir = skill_path.map(|path| path.display().to_string());
-    let (installed_version, latest_version) = if let Some(launcher) = native_claude {
+    let (installed_version, latest_version) = if let Some(launcher) = desktop_codex {
+        (desktop_codex_version(launcher).await, None)
+    } else if let Some(launcher) = native_claude {
         (native_claude_version(launcher).await, None)
     } else if installed {
         version_info_for(&meta, app_path.as_deref(), include_latest).await
@@ -490,7 +497,21 @@ async fn info_for_agent_seed(seed: AgentProgramSeed, include_latest: bool) -> Ag
     }
 }
 
+async fn desktop_codex_version(launcher: &Path) -> Option<String> {
+    selected_cli_version(launcher, |line| line.strip_prefix("codex-cli ")).await
+}
+
 async fn native_claude_version(launcher: &Path) -> Option<String> {
+    selected_cli_version(launcher, |line| {
+        Some(line.strip_suffix(" (Claude Code)").unwrap_or(line))
+    })
+    .await
+}
+
+async fn selected_cli_version(
+    launcher: &Path,
+    version_from_line: fn(&str) -> Option<&str>,
+) -> Option<String> {
     let path = executable::augmented_path_env();
     let mut command = package_command(launcher, path.as_deref());
     let output = package_probe_output(command.arg("--version"), Duration::from_secs(5)).await?;
@@ -501,8 +522,7 @@ async fn native_claude_version(launcher: &Path) -> Option<String> {
         .ok()?
         .lines()
         .find_map(|line| {
-            let line = line.trim();
-            let version = line.strip_suffix(" (Claude Code)").unwrap_or(line);
+            let version = version_from_line(line.trim())?.trim();
             parse_semver(version).map(|_| version.to_string())
         })
 }
@@ -766,11 +786,15 @@ async fn run_agent_command(
 ) -> Result<(), String> {
     let meta = metadata_for(agent_id).ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
     let _package_operation = claim_agent_package_operation()?;
-    let installed_binary = if agent_id == "claude-code" || operation == "uninstall" {
-        find_agent_binary(agent_id, &meta)
-    } else {
-        None
-    };
+    let installed_binary =
+        if matches!(agent_id, "codex" | "claude-code") || operation == "uninstall" {
+            find_agent_binary(agent_id, &meta)
+        } else {
+            None
+        };
+    if desktop_codex_launcher(agent_id, installed_binary.as_deref()).is_some() {
+        return Err("The selected Codex installation is managed by its desktop client".to_string());
+    }
     if operation == "uninstall"
         && !program_is_installed_for_agent(
             agent_id,
@@ -1158,6 +1182,10 @@ fn find_agent_binary(agent_id: &str, meta: &ProgramMetadata) -> Option<PathBuf> 
     binary_candidates_for_agent(agent_id, meta)
         .into_iter()
         .find_map(executable::find_binary)
+}
+
+fn desktop_codex_launcher<'a>(agent_id: &str, binary: Option<&'a Path>) -> Option<&'a Path> {
+    binary.filter(|path| agent_id == "codex" && executable::is_desktop_bundled_codex_cli(path))
 }
 
 fn native_claude_launcher<'a>(agent_id: &str, binary: Option<&'a Path>) -> Option<&'a Path> {
@@ -1974,6 +2002,34 @@ mod tests {
         assert!(super::claim_agent_package_operation().is_ok());
     }
 
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn desktop_codex_version_runs_the_selected_launcher() {
+        let temporary =
+            crate::skills::installer::TempInstallDir::create_in(&std::env::temp_dir()).unwrap();
+        #[cfg(windows)]
+        let (launcher, script) = (
+            temporary.path().join("bundled codex.cmd"),
+            "@echo off\r\nif not \"%~1\"==\"--version\" exit /b 1\r\necho codex-cli 0.169.1\r\n",
+        );
+        #[cfg(unix)]
+        let (launcher, script) = (
+            temporary.path().join("bundled codex"),
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 1\necho 'codex-cli 0.169.1'\n",
+        );
+        std::fs::write(&launcher, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            super::desktop_codex_version(&launcher).await.as_deref(),
+            Some("0.169.1")
+        );
+    }
+
     #[test]
     fn native_claude_windows_launcher_is_distinct_from_npm_shims() {
         let home = Path::new("test-user");
@@ -2540,7 +2596,7 @@ esac
         assert!(paths.iter().any(|path| path == "/usr/bin/cursor"));
         assert!(paths
             .iter()
-            .any(|path| path.ends_with("/.local/share/applications/cursor.desktop")));
+            .any(|path| Path::new(path).ends_with(".local/share/applications/cursor.desktop")));
     }
 
     #[test]
