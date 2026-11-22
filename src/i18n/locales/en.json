@@ -1269,6 +1269,7 @@
       "cleanupComplete": "Cleaned up AgentBro resources for {{agent}}.",
       "cleanupSkillCount": "Removed {{count}} Skills.",
       "cleanupPartial": "Cleanup incomplete. {{errors}}",
+      "uninstallReviewChanged": "The program or Hook status for {{agent}} has changed. Review the cleanup again before confirming.",
       "programStillInstalled": "The uninstall command completed. AgentBro still detects {{agent}}.",
       "uninstallUnverified": "The uninstall command completed. AgentBro could not verify removal of {{agent}}.",
       "cleanupBusy": "Cleaning up",

@@ -1270,6 +1270,7 @@
       "cleanupComplete": "{{agent}} の AgentBro リソースをクリーンアップしました。",
       "cleanupSkillCount": "{{count}} 件の Skill を削除しました。",
       "cleanupPartial": "クリーンアップが一部失敗しました。{{errors}}",
+      "uninstallReviewChanged": "{{agent}} のプログラムまたは Hook の状態が変わりました。確認画面を開き直して、クリーンアップの範囲を確認してください。",
       "programStillInstalled": "アンインストールコマンドは完了しました。{{agent}} はまだ検出されています。",
       "uninstallUnverified": "アンインストールコマンドは完了しました。{{agent}} が削除されたことを確認できませんでした。",
       "cleanupBusy": "クリーンアップ中",

@@ -1118,6 +1118,7 @@
       "cleanupComplete": "{{agent}} için AgentBro kaynakları temizlendi.",
       "cleanupSkillCount": "{{count}} Skill kaldırıldı.",
       "cleanupPartial": "Temizleme tamamlanamadı. {{errors}}",
+      "uninstallReviewChanged": "{{agent}} için program veya Hook durumu değişti. Onaylamadan önce temizleme kapsamını yeniden gözden geçirin.",
       "programStillInstalled": "Kaldırma komutu tamamlandı. AgentBro hâlâ {{agent}} aracını algılıyor.",
       "uninstallUnverified": "Kaldırma komutu tamamlandı. AgentBro, {{agent}} aracının kaldırıldığını doğrulayamadı.",
       "cleanupBusy": "Temizleniyor",

@@ -83,6 +83,10 @@ type AdoptDialogState = {
 type AgentActionTarget = AgentRuntimeSelection & {
   agent: AgentDetail
 }
+type AgentUninstallTarget = AgentActionTarget & {
+  program: AgentProgramInfo
+  unmanagedItems: UnmanagedItemDto[]
+}
 
 const PAGE_SIZE = 28
 const SHARED_SKILLS_AGENT_ID = 'agents'
@@ -106,6 +110,19 @@ function isCurrentAgentSkillScope(scope: AgentSkillScope) {
   return isRuntimeEnvironment(scope.environmentId, scope.runtimeSelectionRevision)
     && selectedAgentId === scope.agentId
     && agentSelectionRevision === scope.agentSelectionRevision
+}
+
+function matchesReviewedUninstallProgram(reviewed: AgentProgramInfo, current: AgentProgramInfo) {
+  return isAgentProgramInstalled(reviewed) === isAgentProgramInstalled(current)
+    && reviewed.kind === current.kind
+    && reviewed.binaryPath === current.binaryPath
+    && reviewed.appPath === current.appPath
+    && reviewed.installedVersion === current.installedVersion
+    && reviewed.packageManager === current.packageManager
+    && reviewed.packageName === current.packageName
+    && reviewed.uninstallCommand === current.uninstallCommand
+    && reviewed.hooksInstalled === current.hooksInstalled
+    && reviewed.configDir === current.configDir
 }
 
 export function AgentManagementPage() {
@@ -148,7 +165,7 @@ export function AgentManagementPage() {
   const [packApplyConflict, setPackApplyConflict] = useState<PackApplyConflictDialogState | null>(null)
   const [packApplyBusy, setPackApplyBusy] = useState(false)
   const [customDialogRuntime, setCustomDialogRuntime] = useState<AgentRuntimeSelection | null>(null)
-  const [uninstallTarget, setUninstallTarget] = useState<AgentActionTarget | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<AgentUninstallTarget | null>(null)
   const [deleteAgentTarget, setDeleteAgentTarget] = useState<AgentActionTarget | null>(null)
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
   const programRequestRef = useRef(0)
@@ -535,20 +552,30 @@ export function AgentManagementPage() {
 
   const requestUninstall = (agent: AgentDetail) => {
     const { selectedEnvironmentId, selectionRevision } = useRuntimeEnvironmentStore.getState()
-    if (isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) {
-      setUninstallTarget({ agent, environmentId: selectedEnvironmentId, selectionRevision })
-    }
+    const program = programs[agent.id]
+    if (!program || !isRuntimeEnvironment(selectedEnvironmentId, selectionRevision)) return
+    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
+    setUninstallTarget({ agent, program, unmanagedItems, environmentId: selectedEnvironmentId, selectionRevision })
   }
 
-  const uninstallAgent = async (target: AgentActionTarget) => {
-    const { agent, environmentId, selectionRevision } = target
+  const uninstallAgent = async (target: AgentUninstallTarget) => {
+    const { agent, program, unmanagedItems, environmentId, selectionRevision } = target
     const isCurrent = () => isAgentRuntimeSelection(target)
     if (!isCurrent()) {
       setUninstallTarget(null)
       return
     }
 
-    const unmanagedItems = removableUnmanagedSkills(useSkillStoreV2.getState().unmanaged, agent.id)
+    const snapshot = useSkillStoreV2.getState().agentProgramSnapshot
+    const currentProgram = snapshot?.environmentId === environmentId && snapshot.selectionRevision === selectionRevision
+      ? snapshot.programs[agent.id]
+      : undefined
+    if (!currentProgram || !matchesReviewedUninstallProgram(program, currentProgram)) {
+      setUninstallTarget(null)
+      state.setError(t('skills.agentManagement.uninstallReviewChanged', { agent: agent.displayName }))
+      return
+    }
+
     const active = { environmentId, selectionRevision, agentId: agent.id, operation: 'uninstall' } as const
     if (!state.beginAgentProgramOperation(active)) return
     setNotice(null)
@@ -556,9 +583,7 @@ export function AgentManagementPage() {
     const failures: string[] = []
     let removedSkills = 0
     try {
-      const program = programs[agent.id]
-      const programInstalled = program?.status === 'installed' || program?.status === 'updateAvailable'
-      const uninstallProgram = Boolean(programInstalled && program?.uninstallCommand)
+      const uninstallProgram = Boolean(isAgentProgramInstalled(program) && program.uninstallCommand)
       let commandSucceeded = false
       if (uninstallProgram) {
         try {
@@ -596,7 +621,7 @@ export function AgentManagementPage() {
         }
       }
 
-      if (program?.hooksInstalled) {
+      if (program.hooksInstalled) {
         try {
           await agentApi.uninstallHook(agent.id, environmentId)
         } catch (error) {
@@ -641,8 +666,6 @@ export function AgentManagementPage() {
               enabled: false,
               installed: false,
               version: null,
-              managedSkillCount: 0,
-              unmanagedSkillCount: 0,
             }
           : item)
         useSkillStoreV2.setState({ agents: nextAgents })
@@ -781,12 +804,10 @@ export function AgentManagementPage() {
   const uninstallAgentTarget = uninstallTarget && isRuntimeEnvironment(uninstallTarget.environmentId, uninstallTarget.selectionRevision)
     ? uninstallTarget.agent
     : null
-  const uninstallProgram = uninstallAgentTarget ? programs[uninstallAgentTarget.id] ?? null : null
-  const uninstallProgramInstalled = uninstallProgram?.status === 'installed' || uninstallProgram?.status === 'updateAvailable'
+  const uninstallProgram = uninstallTarget?.program
+  const uninstallProgramInstalled = uninstallProgram ? isAgentProgramInstalled(uninstallProgram) : false
   const cleanupOnly = !uninstallProgramInstalled || !uninstallProgram?.uninstallCommand
-  const uninstallUnmanagedItems = uninstallAgentTarget
-    ? removableUnmanagedSkills(state.unmanaged, uninstallAgentTarget.id)
-    : []
+  const uninstallUnmanagedItems = uninstallTarget?.unmanagedItems ?? []
 
   return (
     <div className="sm2 sm2--agents">
