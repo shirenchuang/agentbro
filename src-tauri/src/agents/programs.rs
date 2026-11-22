@@ -773,7 +773,7 @@ async fn run_agent_command(
         None,
     );
 
-    let mut child = command_shell(&command)
+    let mut child = package_operation_command(&command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -966,8 +966,14 @@ fn package_command(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command 
     command
 }
 
-fn command_shell(command: &str) -> Command {
+fn package_operation_command(command: &str) -> Command {
     let path = executable::augmented_path_env();
+    if let Some(arguments) = command.strip_prefix("npm ") {
+        let mut process = package_command(executable::command_path("npm"), path.as_deref());
+        process.args(arguments.split_ascii_whitespace());
+        return process;
+    }
+
     #[cfg(target_os = "windows")]
     let (program, flag) = (executable::command_path("cmd"), "/C");
     #[cfg(not(target_os = "windows"))]
@@ -2090,7 +2096,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn npm_version_probes_find_the_discovered_node_toolchain() {
+    async fn npm_operations_and_versions_use_the_detected_toolchain() {
         use std::os::unix::fs::PermissionsExt;
 
         const CHILD_PROBE: &str = "AGENTBRO_TEST_NPM_CHILD_PROBE";
@@ -2100,18 +2106,44 @@ mod tests {
                 version_info_for(&meta, None, true).await,
                 (Some("2.0.0".to_string()), Some("3.0.0".to_string()))
             );
+            for command in [
+                meta.install_command.unwrap(),
+                meta.update_command.unwrap(),
+                meta.uninstall_command.unwrap(),
+            ] {
+                let output = super::package_operation_command(command)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success(), "{command}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    format!("selected {command}")
+                );
+            }
             return;
         }
 
         let home = std::env::temp_dir().join(format!("agentbro-npm-{}", uuid::Uuid::new_v4()));
         let launcher = home.join("agent launchers");
+        let login_launcher = home.join("login tools");
         let toolchain = home.join(".nvm/versions/node/v22.0.0/bin");
         std::fs::create_dir_all(&launcher).unwrap();
+        std::fs::create_dir_all(&login_launcher).unwrap();
         std::fs::create_dir_all(&toolchain).unwrap();
+        std::fs::write(
+            home.join(".profile"),
+            r#"export PATH="$HOME/login tools:$PATH""#,
+        )
+        .unwrap();
         for (path, contents) in [
             (
                 launcher.join("npm"),
                 "#!/usr/bin/env agentbro-npm-test-node\n",
+            ),
+            (
+                login_launcher.join("npm"),
+                "#!/bin/sh\nprintf '%s\\n' 'login npm'\n",
             ),
             (
                 toolchain.join("agentbro-npm-test-node"),
@@ -2125,6 +2157,7 @@ case "$2" in
     [ "$6 $7 $8" = "--no-update-notifier --fetch-retries=0 --fetch-timeout=4000" ] || exit 1
     printf '%s\n' '3.0.0'
     ;;
+  install|uninstall) shift; printf 'selected npm %s\n' "$*" ;;
   *) exit 1 ;;
 esac
 "#,
@@ -2144,7 +2177,7 @@ esac
             .env("PATH", path)
             .args([
                 "--exact",
-                "agents::programs::tests::npm_version_probes_find_the_discovered_node_toolchain",
+                "agents::programs::tests::npm_operations_and_versions_use_the_detected_toolchain",
                 "--nocapture",
             ])
             .output()
