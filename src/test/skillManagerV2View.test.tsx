@@ -8053,6 +8053,39 @@ describe('Skill detail slider + agent page render without crashing', () => {
     expect(screen.queryByText('标签')).not.toBeInTheDocument()
   })
 
+  it.each(['edit', 'duplicate'] as const)('preserves a Skill Pack description and tags on %s', async (mode) => {
+    const { pack, skill } = await renderPackPage({
+      id: 'shared-workflow',
+      description: 'Use this pack for deployment reviews. 部署检查。',
+      tags: ['release', '团队'],
+    })
+    const save = vi.spyOn(skillApiV2, 'upsertPack').mockResolvedValue({
+      ...pack,
+      id: mode === 'edit' ? pack.id : 'copy-of-shared-workflow',
+      name: 'Reviewed workflow',
+    })
+
+    if (mode === 'edit') {
+      fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    } else {
+      fireEvent.click(screen.getByLabelText('更多操作'))
+      fireEvent.click(screen.getByRole('menuitem', { name: '复制技能包' }))
+    }
+    const builder = within(screen.getByRole('dialog', { name: mode === 'edit' ? '编辑技能包' : '复制技能包' }))
+    fireEvent.change(builder.getByLabelText('技能包名称'), { target: { value: 'Reviewed workflow' } })
+    await act(async () => {
+      fireEvent.click(builder.getByRole('button', { name: mode === 'edit' ? '保存更改' : '创建技能包' }))
+    })
+
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      id: mode === 'edit' ? pack.id : '',
+      name: 'Reviewed workflow',
+      description: pack.description,
+      tags: ['release', '团队'],
+      skillIds: [skill.id],
+    }, { deferSync: true, environmentId: LOCAL_RUNTIME_ENVIRONMENT_ID })
+  })
+
   it('keeps pack builder skill choices visible and removable', async () => {
     const { SkillPackPage } = await import('../components/skills-v2/SkillPackPage')
     const { container } = render(<SkillPackPage />)
