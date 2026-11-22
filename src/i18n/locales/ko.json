@@ -1233,6 +1233,10 @@
       "packNamed": "팩: {{name}}"
     },
     "agentManagement": {
+      "remoteHooks": {
+        "unsupported": "이 에이전트의 훅은 SSH를 통해 관리할 수 없습니다.",
+        "confirmUninstall": "{{host}}에서 {{agent}} 훅을 제거할까요?"
+      },
       "sidebarSearch": "Agent 검색",
       "sidebarSearchEmpty": "일치하는 Agent가 없습니다",
       "scanComplete": "스캔 완료: 관리됨 {{managed}}, 관리되지 않음 {{unmanaged}}",

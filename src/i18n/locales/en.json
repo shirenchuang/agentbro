@@ -1232,6 +1232,10 @@
       "packNamed": "Pack: {{name}}"
     },
     "agentManagement": {
+      "remoteHooks": {
+        "unsupported": "Hook management over SSH is unavailable for this Agent.",
+        "confirmUninstall": "Uninstall the {{agent}} Hook on {{host}}?"
+      },
       "sidebarSearch": "Search Agents",
       "sidebarSearchEmpty": "No matching Agents",
       "scanComplete": "Scan complete: {{managed}} managed, {{unmanaged}} unmanaged",

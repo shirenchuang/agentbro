@@ -6,6 +6,12 @@ import {
   useRuntimeEnvironmentStore,
 } from '../stores/runtimeEnvironmentStore'
 
+const remoteHookCommands = new Map([
+  ['install_agent_hook', 'install_remote_agent_hooks'],
+  ['uninstall_agent_hook', 'uninstall_remote_agent_hooks'],
+  ['get_remote_agent_hook_status', 'get_remote_agent_hook_status'],
+])
+
 async function invoke<T = void>(
   command: string,
   args?: Record<string, unknown>,
@@ -17,10 +23,8 @@ async function invoke<T = void>(
   if (command === 'agent_open_download') {
     return tauriInvoke<T>(command, args)
   }
-  if (command === 'install_agent_hook' || command === 'uninstall_agent_hook') {
-    const remoteCommand = command === 'install_agent_hook'
-      ? 'install_remote_agent_hooks'
-      : 'uninstall_remote_agent_hooks'
+  const remoteCommand = remoteHookCommands.get(command)
+  if (remoteCommand) {
     const agentId = args?.toolName === 'cursor' ? 'cursor-cli' : args?.toolName
     return tauriInvoke<T>(remoteCommand, {
       id: environmentId,
@@ -36,6 +40,7 @@ async function invoke<T = void>(
 
 export type AgentProgramKind = 'cli' | 'app'
 export type AgentProgramStatus = 'installed' | 'notInstalled' | 'updateAvailable' | 'unavailable'
+export type RemoteAgentHookStatus = 'unsupported' | 'notInstalled' | 'installed' | 'needsReinstall' | 'settingsCorrupted'
 
 export interface AgentProgramInfo {
   id: string
@@ -278,8 +283,12 @@ export const agentApi = {
     ? invoke('agent_open_app', { agentId })
     : Promise.resolve(),
 
-  installHook: (agentId: string) => isTauriRuntime()
-    ? invoke('install_agent_hook', { toolName: agentId })
+  remoteHookStatus: (agentId: string, environmentId: string): Promise<RemoteAgentHookStatus> => isTauriRuntime()
+    ? invoke('get_remote_agent_hook_status', { toolName: agentId }, environmentId)
+    : Promise.resolve('unsupported'),
+
+  installHook: (agentId: string, environmentId?: string) => isTauriRuntime()
+    ? invoke('install_agent_hook', { toolName: agentId }, environmentId)
     : Promise.resolve(),
 
   uninstallHook: (agentId: string, environmentId?: string) => isTauriRuntime()
